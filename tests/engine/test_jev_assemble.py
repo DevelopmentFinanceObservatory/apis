@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import pytest
@@ -186,9 +186,10 @@ def _alternates(shapes: list[ShapeDraft], elect: Mapping[int, float], best: floa
     return read
 
 
-def _near_alt(nouls: Mapping[str, float]) -> object:
-    p = nouls["elect|1"]
-    answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 1.0 - p, 1: p})
+def _elected_alike(nouls: Mapping[str, float]) -> object:
+    """The alternates of two shapes measuring the phrase equally well, shape 0 elected at
+    0.8, which no structural branch relates."""
+    answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 0.8, 1: nouls["elect|1"]})
     output, _conf = _assemble(_request([_shape(0), _shape(1, population="Place")]), answers)
     return output.also_plausible
 
@@ -243,14 +244,15 @@ _CUTS = {
         [0, 1],
     ),
     "alt_floor": _Cut(
-        _alternates([_shape(0), _shape(1, population="Place")], {0: 0.9, 1: 0.1}, 0.32),
+        _alternates([_shape(0), _shape(1, population="Place")], {0: 0.5, 1: 0.48}, 0.32),
         "m|1",
         0.3,
         0.31,
         None,
         [1],
     ),
-    "near_alt": _Cut(_near_alt, "elect|1", 0.04, 0.05, None, [1]),
+    # Gemini's rated-pool bar: at least 0.9 of the top election.
+    "elected_alike": _Cut(_elected_alike, "elect|1", 0.71, 0.72, None, [1]),
     "measure_value": _Cut(
         _elected(_PERSON_AND_PLACE, {0: 0.6, 1: 0.4}, {"m|0": 0.9, "m|1": 0.9}),
         "mv|Place",
@@ -566,7 +568,7 @@ def test_an_alternate_stands_only_near_the_best_measure_score(measure: float, al
     """An alternate scoring under 0.9 of the best measure score is a weaker reading, the
     bar a Gemini nomination clears on its rating (`gemini.nominated_near_best`)."""
     shapes = [_shape(0), _shape(1, population="Place")]
-    answers = _answers({"m|0": 0.9, "m|1": measure}, elect={0: 0.6, 1: 0.4})
+    answers = _answers({"m|0": 0.9, "m|1": measure}, elect={0: 0.6, 1: 0.55})
 
     result, _conf = bind_result(jev_menu(_request(shapes)), answers, stated_form=None)
 
@@ -1104,3 +1106,238 @@ def test_the_house_policies_weigh_the_drafts_the_span_rule_leaves():
     _assemble(request, answers)
 
     assert seen == [{0: True, 1: True}]
+
+
+def test_a_word_written_twice_pays_for_one_value_each_time():
+    """ "private" names the debtor at its first occurrence and the creditors at its second,
+    so neither claim takes the other's words."""
+    request = _request([_IDS], variable="private sector debt to private creditors")
+    answers = _span_answers(
+        request,
+        {
+            ("how:idsDebtorType", "IDSDebtorTypePrivateSector"): 0.95,
+            ("how:idsCreditorType", "IDSCreditorTypePRVT"): 0.9,
+        },
+        {
+            "IDSDebtorTypePrivateSector": "private sector",
+            "IDSCreditorTypePRVT": "private",
+            "measure": "debt",
+        },
+        **{"part|how:idsDebtorType": 0.9, "part|how:idsCreditorType": 0.9},
+    )
+
+    output, conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    assert set(_bound(output)) == {"idsDebtorType", "idsCreditorType"}
+    assert conf.inferred == {}
+
+
+def test_three_claims_on_a_word_written_twice_keep_two():
+    """The debtor takes the first "private", so the creditors and the non-guaranteed status
+    contest the second. Each pair fits, but the three together do not: the lightest drops."""
+    request = _request([_IDS], variable="private sector debt to private creditors")
+    answers = _span_answers(
+        request,
+        {
+            ("how:idsDebtorType", "IDSDebtorTypePrivateSector"): 0.95,
+            ("how:idsCreditorType", "IDSCreditorTypePRVT"): 0.9,
+            ("how:guaranteeStatus", "NotPubliclyGuaranteed"): 0.8,
+        },
+        {
+            "IDSDebtorTypePrivateSector": "private sector",
+            "IDSCreditorTypePRVT": "private",
+            "NotPubliclyGuaranteed": "private",
+            "measure": "debt",
+        },
+        **{"part|how:idsDebtorType": 0.9, "part|how:idsCreditorType": 0.9},
+    )
+
+    output, conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    assert set(_bound(output)) == {"idsDebtorType", "idsCreditorType"}
+    assert conf.inferred == {"how:guaranteeStatus": ("NotPubliclyGuaranteed",)}
+
+
+_HEALTH_AND_LOANS = _shape(
+    0,
+    population="FinancialFlow",
+    measured="amount",
+    slots=[
+        ("how", "crsPurpose", ["CRSPurposeCode120", "CRSPurposeCode110"]),
+        ("how", "crsTypeOfFinance", ["CRSTypeOfFinance420", "CRSTypeOfFinance110"]),
+    ],
+)
+
+
+def test_a_value_named_by_the_measure_s_own_words_stays_where_no_member_holds_it():
+    """ "loans" is the measure's whole span and the finance type's: the user chose it, so it
+    stays though only health grants and education loans exist, and the engine refuses."""
+    request = _request([_HEALTH_AND_LOANS], variable="health loans")
+    answers = _span_answers(
+        request,
+        {
+            ("how:crsPurpose", "CRSPurposeCode120"): 0.95,
+            ("how:crsTypeOfFinance", "CRSTypeOfFinance420"): 0.95,
+        },
+        {"CRSPurposeCode120": "health", "CRSTypeOfFinance420": "loans", "measure": "loans"},
+    )
+    population = (
+        {"crsPurpose": "CRSPurposeCode120", "crsTypeOfFinance": "CRSTypeOfFinance110"},
+        {"crsPurpose": "CRSPurposeCode110", "crsTypeOfFinance": "CRSTypeOfFinance420"},
+    )
+
+    output, _conf = assemble(
+        jev_menu(request), answers, stated_form=None, populations={0: population}
+    )
+
+    assert _bound(output) == {
+        "crsPurpose": ["CRSPurposeCode120"],
+        "crsTypeOfFinance": ["CRSTypeOfFinance420"],
+    }
+
+
+def test_each_value_of_a_set_pays_for_its_own_words():
+    """A set's value Jev finds no words for is judged alone and leaves the set; the value
+    the phrase names stays."""
+    request = _request([_HEALTH_AND_LOANS], variable="health loans")
+    answers = _span_answers(
+        request,
+        {
+            ("how:crsPurpose", "CRSPurposeCode120"): 0.95,
+            ("how:crsPurpose", "CRSPurposeCode110"): 0.85,
+            ("how:crsTypeOfFinance", "CRSTypeOfFinance420"): 0.95,
+        },
+        {
+            "CRSPurposeCode120": "health",
+            "CRSPurposeCode110": "none",
+            "CRSTypeOfFinance420": "loans",
+            "measure": "none",
+        },
+        **{"several|how:crsPurpose": 0.9},
+    )
+
+    output, conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    assert _bound(output)["crsPurpose"] == ["CRSPurposeCode120"]
+    assert conf.inferred == {"how:crsPurpose": ("CRSPurposeCode110",)}
+
+
+def test_a_set_keeps_the_value_no_other_claim_contests():
+    """B's words are its own; A and C claim the same word, so one of them stays."""
+    shape = _shape(0, slots=[("how", "p", ["A", "B"]), ("how", "q", ["C", "D"])])
+    request = _request([shape], variable="x y")
+    answers = _span_answers(
+        request,
+        {("how:p", "A"): 0.95, ("how:p", "B"): 0.95, ("how:q", "C"): 0.95},
+        {"A": "x", "B": "y", "C": "x", "measure": "none"},
+        **{"several|how:p": 0.7},
+    )
+
+    output, _conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    bound = _bound(output)
+    assert "B" in bound.get("p", [])
+    assert ("A" in bound.get("p", [])) != ("C" in bound.get("q", []))
+
+
+_ONE_GUARANTEE = replace(
+    _IDS,
+    slot_taxonomy={
+        **(_IDS.slot_taxonomy or {}),
+        "how:guaranteeStatus": ["PublicOrPubliclyGuaranteed"],
+    },
+)
+
+
+def test_a_named_one_member_value_contests_its_words_by_weight():
+    """The one-member guarantee status and the public-sector debtor both read "public". The
+    guarantee status weighs more and keeps the word, so the debtor is left unbound."""
+    request = _request([_ONE_GUARANTEE], variable="public debt")
+    answers = _span_answers(
+        request,
+        {
+            ("how:guaranteeStatus", "PublicOrPubliclyGuaranteed"): 0.95,
+            ("how:idsDebtorType", "IDSDebtorTypePS"): 0.85,
+        },
+        {"PublicOrPubliclyGuaranteed": "public", "IDSDebtorTypePS": "public", "measure": "debt"},
+        **{"part|how:idsDebtorType": 0.9},
+    )
+    population = (
+        {"guaranteeStatus": "PublicOrPubliclyGuaranteed"},
+        {"idsDebtorType": "IDSDebtorTypePS"},
+    )
+
+    output, conf = assemble(
+        jev_menu(request), answers, stated_form=None, populations={0: population}
+    )
+
+    assert _bound(output) == {"guaranteeStatus": ["PublicOrPubliclyGuaranteed"]}
+    assert conf.inferred == {"how:idsDebtorType": ("IDSDebtorTypePS",)}
+
+
+def test_a_named_one_member_value_that_loses_its_words_stays_as_the_slot_s_only_option():
+    request = _request([_ONE_GUARANTEE], variable="public debt")
+    answers = _span_answers(
+        request,
+        {
+            ("how:guaranteeStatus", "PublicOrPubliclyGuaranteed"): 0.7,
+            ("how:idsDebtorType", "IDSDebtorTypePS"): 0.95,
+        },
+        {"PublicOrPubliclyGuaranteed": "public", "IDSDebtorTypePS": "public", "measure": "debt"},
+        **{"part|how:idsDebtorType": 0.9},
+    )
+
+    output, conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    assert _binding(output, "how:guaranteeStatus").evidence == "sole_option"
+    assert _bound(output)["idsDebtorType"] == ["IDSDebtorTypePS"]
+    assert conf.inferred == {"how:guaranteeStatus": ("PublicOrPubliclyGuaranteed",)}
+
+
+@pytest.mark.parametrize(
+    ("shape", "start", "bound"),
+    [
+        pytest.param(
+            _IDS, 0, {"guaranteeStatus": ["PublicOrPubliclyGuaranteed"]}, id="matched-words"
+        ),
+        pytest.param(
+            _ONE_GUARANTEE,
+            0,
+            {"guaranteeStatus": ["PublicOrPubliclyGuaranteed"]},
+            id="matched-words-one-member",
+        ),
+        pytest.param(
+            _IDS,
+            None,
+            {
+                "guaranteeStatus": ["PublicOrPubliclyGuaranteed"],
+                "idsDebtorType": ["IDSDebtorTypePS"],
+            },
+            id="no-offsets",
+        ),
+    ],
+)
+def test_a_value_the_matcher_fixed_keeps_its_words_whatever_jev_weighs(shape, start, bound):
+    """The matcher fixed the guarantee status from "public"; the debtor reading the same word
+    loses however likely Jev rates it, and so when the status is the slot's only value and
+    Jev does not name it. A match read from other text reserves no words."""
+    match = QualifierMatch(
+        code_system="guaranteeStatus",
+        code_dcid="PublicOrPubliclyGuaranteed",
+        label="public or publicly guaranteed",
+        source="label",
+        matched_text="public",
+        start=start,
+        end=None if start is None else start + len("public"),
+    )
+    request = replace(_request([shape], variable="public debt"), admitted_qualifiers=[(match,)])
+    answers = _span_answers(
+        request,
+        {("how:idsDebtorType", "IDSDebtorTypePS"): 0.99},
+        {"IDSDebtorTypePS": "public", "measure": "debt"},
+        **{"part|how:idsDebtorType": 0.9},
+    )
+
+    output, _conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    assert _bound(output) == bound

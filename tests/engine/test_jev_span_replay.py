@@ -9,8 +9,8 @@ bind asked no span round. A slot's ``offered`` is the elected shape's own taxono
 it differs from the union (a sole option's one value, or the union less a value the shape
 does not offer), and ``fixed`` the value the menu fixed (`bind._QualifierMenu.fixed`).
 ``recorded_drafts`` are the drafts the recording's binder returned. They follow the rule
-under test for the typed pair's three runs, DPPG 2020's fourth and PCBK's fourth, and
-another span rule for the other runs, so the replays assert the drafts in `_SPANNED`.
+under test for DPPG 2020's fourth run and PCBK's fourth, and an earlier span rule for the
+other runs, so the replays assert the drafts in `_SPANNED`.
 
 The menu is rebuilt as the one shape the recordings elect, so the replay reads the same
 question ids, positions and taxonomy the recorded bind did.
@@ -147,8 +147,9 @@ _SPANNED = {
         "crsTypeOfFinance": ["CRSTypeOfFinance420"],
     },
     # Two typed values in words of their own stay though no member holds them together.
-    # No measure-worded value joins them, so the engine refuses on what the user wrote.
-    "public_sector_ppg": {"idsDebtorType": ["IDSDebtorTypePS"], **_PPG},
+    # Amount outstanding's "debt" is the measure's whole span, so it is worded and stays
+    # beside them; the engine refuses on what the user wrote.
+    "public_sector_ppg": {**_AO, "idsDebtorType": ["IDSDebtorTypePS"], **_PPG},
 }
 
 # Runs whose round-one drafts differ from the query's other runs. DPPG 2020's round-three
@@ -178,15 +179,12 @@ def test_a_recorded_bind_keeps_the_values_the_phrase_pays_for(name: str, k: int)
 
 
 @pytest.mark.parametrize("k", range(3))
-def test_the_typed_pair_drops_only_values_it_never_wrote(k: int):
+def test_the_typed_pair_drops_only_the_instrument_whose_words_kept_values_hold(k: int):
     record = _record("public_sector_ppg")
 
     _named, conf = replay(record, record["runs"][k])
 
-    assert conf.inferred == {
-        "how:financialPositionType": ("AmountOutstanding",),
-        "how:financingResource": ("DebtInstrument",),
-    }
+    assert conf.inferred == {"how:financingResource": ("DebtInstrument",)}
 
 
 @pytest.mark.parametrize(

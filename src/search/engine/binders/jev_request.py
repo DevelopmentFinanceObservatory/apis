@@ -264,16 +264,26 @@ def spans(variable: str) -> list[str]:
     return list(found)[: _CHOICE_CAP - 1]
 
 
-def span_positions(variable: str, span: str) -> frozenset[int]:
-    """The positions of the words of `variable`, split as `spans` splits them, that `span`
-    covers wherever it occurs."""
+def span_occurrences(variable: str, span: str) -> tuple[frozenset[int], ...]:
+    """Each occurrence of `span` in `variable`, as the positions of the words it covers,
+    words split as `spans` splits them, in phrase order. Empty when `span` is no span of
+    `variable`."""
     words = list(_WORD_RE.finditer(variable))
-    return frozenset(
-        k
+    return tuple(
+        frozenset(range(i, j + 1))
         for i in range(len(words))
         for j in range(i, min(i + _MAX_SPAN_WORDS, len(words)))
         if variable[words[i].start() : words[j].end()] == span
-        for k in range(i, j + 1)
+    )
+
+
+def word_positions(variable: str, start: int, end: int) -> frozenset[int]:
+    """The positions of the words of `variable`, split as `spans` splits them, that the
+    characters `start` to `end` touch."""
+    return frozenset(
+        k
+        for k, word in enumerate(_WORD_RE.finditer(variable))
+        if word.start() < end and start < word.end()
     )
 
 

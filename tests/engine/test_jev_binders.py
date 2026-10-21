@@ -34,6 +34,7 @@ from search.engine.binders.jev import JevCall, member_population, member_populat
 from search.engine.binders.jev_assemble import (
     Confidence,
     JevAnswers,
+    assemble,
     assemble_quantity,
     bind_result,
     frame_stated_form,
@@ -61,6 +62,8 @@ from search.models import (
 from tests.engine._binders import FakeAsk, FixedBinder, answer_all, keep_the_pick
 from tests.engine._builders import sv_arcs
 from tests.engine._jev_golden import GOLDEN, golden_paths, load_item
+from tests.graph_release.support import serving_index
+from tests.statvar_members.role_grid import synthetic_index
 
 _GOLDEN = load_item(golden_paths()[0])
 _DENOMINATORS = [GraphRef(ref="Amount_EconomicActivity_GrossDomesticProduction", label="GDP")]
@@ -399,6 +402,64 @@ def test_a_member_population_is_read_only_where_it_is_complete(complete, populat
     """An exact elected set is the population. A recall sample of a five-tuple the index
     and the catalogue do not hold is none, so no draft is dropped over it."""
     assert member_population(_unicorns(complete=complete)) == population
+
+
+def _flows() -> ShapeDraft:
+    """A flow shape over the role grid's totals with untwinned two-role rows, whose public
+    arrears row belongs to the two-role class an unbound query does not elect."""
+    return ShapeDraft(
+        shape_id="flows",
+        label="Flows",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(
+            SlotKeyDraft(axis="how", property_dcid="flowType", label="flow type"),
+            SlotKeyDraft(axis="how", property_dcid="guarantee", label="guarantee"),
+        ),
+        slot_taxonomy={
+            "how:flowType": ["Service", "Disbursement", "Arrears"],
+            "how:guarantee": ["Public", "Private"],
+        },
+        sv_arc_facts_complete=False,
+    )
+
+
+def test_a_member_population_holds_every_role_class_a_later_binding_can_elect():
+    """Binding public arrears elects the two-role row; the population read before any
+    binding holds it, and the bind keeps both values the phrase names."""
+    shape = _flows()
+    menu_request = BindRequest(
+        variable="public arrears",
+        shapes=[shape],
+        query_text="public arrears",
+        apply_policies=keep_the_pick,
+    )
+    answers = JevAnswers(
+        nouls={"m|0": 0.95, "n|how:flowType|2": 0.95, "n|how:guarantee|0": 0.95},
+        choices={
+            "elect": {"Shape 0": 1.0},
+            "span|how:flowType|Arrears": {"arrears": 1.0},
+            "span|how:guarantee|Public": {"public": 1.0},
+            "span|measure": {"public arrears": 1.0},
+        },
+    )
+
+    with serving_index(synthetic_index("totals with untwinned two-role rows")):
+        population = member_population(shape)
+        output, _conf = assemble(
+            jev_menu(menu_request),
+            answers,
+            stated_form=None,
+            populations={0: population} if population is not None else None,
+        )
+
+    assert population is not None
+    assert {"flowType": "Arrears", "guarantee": "Public"} in population
+    bound = {b.property_dcid: b.value_dcids for b in output.bindings if b.kind == "value"}
+    assert bound == {"flowType": ["Arrears"], "guarantee": ["Public"]}
 
 
 # -- the fallback ------------------------------------------------------------------------

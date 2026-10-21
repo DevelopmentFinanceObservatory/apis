@@ -12,16 +12,18 @@ applies the rules the engine applies to every binder's drafts (`bind.ground_bind
 
 One stretch of the phrase pays for one slot value. A bind runs in two rounds: `span_round`
 reads the first round's answers and returns the ``span|`` questions they call for, and
-`assemble` reads the merged answers of both. Where two values of one shape, or a value and
-the measure, name overlapping words, the shape keeps one of them (`_span_owned`), so
-"public and publicly guaranteed" binds the guarantee status alone and no public-sector
-debtor beside it.
+`assemble` reads the merged answers of both. Where two values of one shape name
+overlapping words, the shape keeps one of them (`_span_owned`), so "public and publicly
+guaranteed" binds the guarantee status alone and no public-sector debtor beside it. A value
+whose words lie inside the measure's, or partly across them, yields to the values the
+phrase names and stays only where a member holds it beside them; one whose words equal or
+contain the measure's is the user's choice and contends as any named value does.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import get_args
@@ -37,9 +39,11 @@ from search.engine.bind import (
 )
 from search.engine.binders.base import BindResult
 from search.engine.binders.gemini import (
+    RATED_POOL_FRACTION,
     holds_drafted_values,
     holds_requested_slots,
     mentioned_drafts,
+    near_best,
     nominated_near_best,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
@@ -56,10 +60,12 @@ from search.engine.binders.jev_request import (
     NONE_OF_THESE,
     SPAN_MEASURE,
     span_id,
-    span_positions,
+    span_occurrences,
     span_questions,
+    word_positions,
 )
 from search.engine.frame import Frame
+from search.engine.qualifier_match import QualifierMatch
 from search.engine.quantity_read import QuantityOutput
 from search.engine.retrieval.bound_values import bound_values_from_bindings
 from search.engine.shape import ShapeDraft
@@ -91,7 +97,8 @@ class Thresholds:
     reading. Without an election answer the pool keeps shapes within `near` of the best
     measure score; with one, the products of election and measure score at least
     ``1 - near_elect`` of the best. An alternate is "elected alike" when its election is at
-    least ``1 - near_alt`` of the top and its measure score above `alt_floor`. A nominal
+    least 0.9 of the top, the bar Gemini's rated pool uses (`gemini.near_best` with
+    `gemini.RATED_POOL_FRACTION`), and its measure score above `alt_floor`. A nominal
     output shape joins the pool within `widen` of the best measure score. ``mv`` above
     `measure_value` names a measure-axis value, and above `policy_value` one of two a house
     policy chooses between (`_names_value`); ``named`` above `named` names the dataset, ``n``
@@ -110,7 +117,6 @@ class Thresholds:
     ask: float = 0.15
     near: float = 0.15
     near_elect: float = 0.8
-    near_alt: float = 0.95
     alt_floor: float = 0.3
     widen: float = 0.2
     part: float = 0.15
@@ -579,7 +585,7 @@ def _alternates(
             k != e
             and top
             and conf.measures[k] > t.alt_floor
-            and conf.election.get(k, 0.0) >= (1 - t.near_alt) * top
+            and near_best(conf.election.get(k, 0.0), top, RATED_POOL_FRACTION)
         ):
             conf.alternates[k] = "elected alike"
             out.append((conf.measures[k], k))
@@ -654,12 +660,17 @@ def _draft(
 
 @dataclass(frozen=True, slots=True)
 class _Slot:
-    """One slot's draft (`_bind_slot`). A `seed` is a value the menu set: a fixed value,
-    a tie's chosen row or the member of a one-member taxonomy. No other value's words
-    unseat it, and every reading the span rule weighs holds it when the phrase names it."""
+    """One slot's draft (`_bind_slot`), with what the span rule reads beside it.
+
+    `anchors` are the qualifier matches that set its values, the menu's fixed values and a
+    tie's chosen row, empty for a slot Jev drafted. `named` is Jev's ``n|`` probability for
+    each value it drafted, and `one_member` marks a value bound because the slot's taxonomy
+    holds no other."""
 
     draft: SlotBindingDraft
-    seed: bool = False
+    anchors: tuple[QualifierMatch, ...] = ()
+    named: Mapping[str, float] = field(default_factory=dict)
+    one_member: bool = False
 
 
 def _shape_drafts(
@@ -681,6 +692,20 @@ def _slot_drafts(
     return [_bind_slot(menu, answers, s, prop, conf, t) for prop in menu.listed[s]]
 
 
+@dataclass(frozen=True, slots=True)
+class _Claim:
+    """One value a slot drafted, as the span rule weighs it: the slot's index among the
+    shape's drafts, the value, w = logit(p_n x p_span), and each occurrence of the words
+    its ``span|`` argmax names (`jev_request.span_occurrences`). `occurrences` is None for
+    a value Jev found no words for, and empty for one whose words were not read, which
+    conflicts with nothing."""
+
+    slot: int
+    value: str
+    weight: float
+    occurrences: tuple[frozenset[int], ...] | None
+
+
 def _span_owned(
     menu: JevMenu,
     answers: JevAnswers,
@@ -691,181 +716,230 @@ def _span_owned(
     """The drafts of `slots` with each stretch of the phrase paying for one value.
 
     The values the phrase names (`gemini.mentioned_drafts`) on two or more properties
-    contend; with fewer the drafts stand as drafted. Seeds (`_Slot.seed`) contend in no
-    span contest and take part in every realisability check. ``sole_option`` drafts take
-    part in neither: the phrase names none of their values, and the engine unbinds one the
-    members do not all share before any requirement is judged.
+    contend; with fewer the drafts stand as drafted. ``sole_option`` drafts take no part:
+    the phrase names none of their values, and the engine unbinds one the members do not
+    all share before any requirement is judged.
 
-    Every other named draft is read through the argmax of its ``span|`` answers
-    (`_read_span`), against the argmax of ``span|measure``, and is one of:
+    A slot the qualifier matcher set (`_Slot.anchors`: the menu's fixed values and a tie's
+    chosen row) is an anchor. Its words are the matches' character offsets, it never loses,
+    and every realisability check holds it. Every other named value is a claim
+    (`_Claim`), one per value of a set, weighed by its own ``n|`` probability and its span
+    answer's. A claim is wordless when Jev answered "none"; measure-worded when every
+    occurrence of its words overlaps an occurrence of the measure's words
+    (``span|measure``) without containing it, so the measure noun implies it, as
+    "Outstanding external debt" implies a loan through "debt"; else worded. A value whose
+    words equal or contain the measure's is worded: the user chose those words.
 
-    - worded: Jev gave it words that do not overlap the measure's;
-    - measure-worded: its words overlap the measure's, as "debt stocks" implies an amount
-      outstanding and "loans" a loan;
-    - wordless: Jev answered "none".
+    A set of claims is word-consistent when one occurrence of each claim's words can be
+    chosen, clear of every anchor's words and of the other claims' chosen words, two values
+    of one slot excepted (``several|`` already read them together). The test is joint, so
+    three claims on a word written twice do not fit, and every ambiguity of a repeated word
+    resolves toward keeping. The rule, in order:
 
-    Each weighs w = logit(p_n x p_span), the log-odds that Jev names the value with the
-    words it gave. The rule, in order:
+    1. Of the worded claims, the maximal word-consistent subset with the largest sum of w
+       stays: a claim is dropped only because a kept claim or an anchor holds its words, so
+       a conflict keeps one value however weak both claims are. A losing claim stays when
+       it narrows nothing beyond the kept claims and the anchors (`narrows_nothing`), as
+       "net flows" names one concept on two properties. Realisability plays no part, so a
+       typed value is never traded for a weaker one that fits the data.
+    2. A measure-worded claim that is not word-consistent with the claims step 1 chose
+       drops.
+    3. Of the rest, the word-consistent subset stays that a member holds together with the
+       kept claims and the anchors, then the larger subset, then the larger sum of w. When
+       no member holds the kept claims and the anchors, none stays: the engine refuses on
+       the typed values and should name no value the user never wrote. With no complete
+       population every one stays, the engine's loud refusal over a silent broadening.
+    4. A wordless claim stays only when it narrows nothing beyond everything kept.
 
-    1. Two worded drafts conflict when their words overlap, pair by pair. A worded draft in
-       no conflict stays. Of the conflicting ones, the maximal subset with no conflicting
-       pair and the largest sum of w stays. A draft is dropped only because a kept one
-       claims its words, so a conflict keeps one value however weak both claims are. A
-       losing draft stays when it narrows nothing beyond the kept worded drafts and the
-       seeds (`narrows_nothing`), as "net flows" names one concept on two properties.
-       Realisability is not weighed here, so a typed value stays against a weaker one that
-       fits the data.
-    2. A measure-worded draft whose words overlap a kept worded draft is dropped.
-    3. Of the rest, the subset with no overlapping pair stays that a member holds together
-       with the kept worded drafts and the seeds, then the larger subset, then the larger
-       sum of w. When no member holds the kept worded drafts and the seeds, none stays, so
-       the engine refuses on the typed values and names no value the user never wrote.
-       With no complete population every one stays, which gives the engine's loud refusal
-       over a silent broadening.
-    4. A wordless draft stays only when it narrows nothing beyond everything kept.
+    Ties fall to the subset whose sorted (property, value) list sorts first, and subsets
+    are enumerated exactly. Each slot is rebuilt from its surviving values: two or more
+    bind a set, one a value, none leaves it unbound. A one-member slot whose value loses
+    keeps it as ``sole_option``, since the slot offers nothing else, and the engine then
+    unbinds it silently if it conflicts. `conf.inferred` lists each value taken from the
+    phrase.
 
-    Ties fall to the subset whose sorted (property, values) list sorts first, and subsets
-    are enumerated exactly. A dropped draft is left unbound and listed in `conf.inferred`.
-
-    A member holds a draft when it asserts one of the draft's values, widened as the
-    engine widens a bound value (`bound_values.bound_values_from_bindings`), and a member
-    silent on the property holds none. `population` is None when the shape has no complete
-    member population (`jev.member_population`). No draft then narrows nothing, since one
-    dropped over a sample could be held by a member the sample lacks.
+    A member holds a slot when it asserts one of its kept values, widened as the engine
+    widens a bound value (`bound_values.bound_values_from_bindings`); a member silent on
+    the property holds none. `population` is None when the shape has no complete member
+    population (`jev.member_population`): no claim then narrows nothing, since one dropped
+    over a sample could be held by a member the sample lacks.
     """
     drafts = [slot.draft for slot in slots]
     named = [i for i, slot in enumerate(slots) if mentioned_drafts([slot.draft])]
     if len({drafts[i].property_dcid for i in named}) < 2:
         return drafts
     variable = menu.request.variable
-    seeds = [i for i in named if slots[i].seed]
-    # A measure Jev finds no words for marks no draft measure-worded.
-    measure = _read_span(answers, [SPAN_MEASURE], variable)[0] or frozenset()
+    anchored = [i for i in named if slots[i].anchors]
+    reserved = frozenset[int]().union(
+        *(
+            word_positions(variable, m.start, m.end)
+            for i in anchored
+            for m in slots[i].anchors
+            if m.start is not None and m.end is not None
+        )
+    )
+    measure = _read_occurrences(answers, SPAN_MEASURE, variable)[0] or ()
 
-    words: dict[int, frozenset[int]] = {}
-    weight: dict[int, float] = {}
-    worded: list[int] = []
-    measured: list[int] = []
-    wordless: list[int] = []
+    worded: list[_Claim] = []
+    measured: list[_Claim] = []
+    wordless: list[_Claim] = []
     for i in named:
-        if slots[i].seed:
+        if slots[i].anchors:
             continue
         d = drafts[i]
         prop = (d.axis, d.property_dcid or "")
-        read, p_span = _read_span(answers, [span_id(prop, v) for v in d.value_dcids], variable)
-        weight[i] = _logit(conf.slots.get(prop_id(prop), 0.5) * p_span)
-        if read is None:
-            wordless.append(i)
-            continue
-        words[i] = read
-        (measured if read & measure else worded).append(i)
+        for value in d.value_dcids:
+            occurrences, p_span = _read_occurrences(answers, span_id(prop, value), variable)
+            weight = _logit(slots[i].named.get(value, 0.5) * p_span)
+            claim = _Claim(i, value, weight, occurrences)
+            if occurrences is None:
+                wordless.append(claim)
+            elif occurrences and all(
+                any(o & m and not o >= m for m in measure) for o in occurrences
+            ):
+                measured.append(claim)
+            else:
+                worded.append(claim)
 
-    widened = {
-        i: frozenset(bound_values_from_bindings([drafts[i]]).get(prop, drafts[i].value_dcids))
-        for i in named
-        if (prop := drafts[i].property_dcid) is not None
-    }
+    def consistent(claims: Sequence[_Claim]) -> bool:
+        placing = [c for c in claims if c.occurrences]
+        placed: list[tuple[int, frozenset[int]]] = []
 
-    def holds(member: Mapping[str, str], i: int) -> bool:
-        return member.get(drafts[i].property_dcid or "") in widened[i]
+        def place(k: int) -> bool:
+            if k == len(placing):
+                return True
+            c = placing[k]
+            for o in c.occurrences or ():
+                if o & reserved or any(slot != c.slot and o & q for slot, q in placed):
+                    continue
+                placed.append((c.slot, o))
+                if place(k + 1):
+                    return True
+                placed.pop()
+            return False
 
-    def realisable(kept: Collection[int]) -> bool:
-        return population is not None and any(all(holds(m, i) for i in kept) for m in population)
+        return place(0)
 
-    def narrows_nothing(i: int, kept: Collection[int]) -> bool:
+    widened: dict[tuple[int, frozenset[str]], frozenset[str]] = {}
+
+    def holds(member: Mapping[str, str], claims: Sequence[_Claim]) -> bool:
+        values: dict[int, set[str]] = {i: set(drafts[i].value_dcids) for i in anchored}
+        for c in claims:
+            values.setdefault(c.slot, set()).add(c.value)
+        for i, held in values.items():
+            key = (i, frozenset(held))
+            if key not in widened:
+                prop = drafts[i].property_dcid or ""
+                bound = bound_values_from_bindings(
+                    [_draft((drafts[i].axis, prop), "set", sorted(held))]
+                )
+                widened[key] = frozenset(bound.get(prop, held))
+            if member.get(drafts[i].property_dcid or "") not in widened[key]:
+                return False
+        return True
+
+    def realisable(claims: Sequence[_Claim]) -> bool:
+        return population is not None and any(holds(m, claims) for m in population)
+
+    def narrows_nothing(c: _Claim, kept: Sequence[_Claim]) -> bool:
         if population is None:
             return False
-        holding = [m for m in population if all(holds(m, k) for k in kept)]
-        return bool(holding) and all(holds(m, i) for m in holding)
+        holding = [m for m in population if holds(m, kept)]
+        return bool(holding) and all(holds(m, [c]) for m in holding)
 
-    def overlap(a: int, b: int) -> bool:
-        return not words[a].isdisjoint(words[b])
+    def subsets(
+        claims: Sequence[_Claim],
+        allowed: Callable[[list[_Claim]], bool],
+        score: Callable[[list[_Claim]], tuple[float, ...]],
+        *,
+        given: Sequence[_Claim] = (),
+    ) -> list[_Claim]:
+        """The allowed subset of `claims`, each joined by every claim in `given`, with the
+        highest score, ties to the first sorted (property, value) list."""
+        found = [[*given, *c] for r in range(len(claims) + 1) for c in combinations(claims, r)]
+        found = [c for c in found if allowed(c)]
 
-    def apart(subset: Sequence[int]) -> bool:
-        return not any(overlap(a, b) for a, b in combinations(subset, 2))
+        def key(c: list[_Claim]) -> list[tuple[str, str]]:
+            return sorted((drafts[x.slot].property_dcid or "", x.value) for x in c)
 
-    def key(subset: Sequence[int]) -> list[tuple[str, ...]]:
-        return sorted((drafts[i].property_dcid or "", *drafts[i].value_dcids) for i in subset)
+        return min(found, key=lambda c: (tuple(-x for x in score(c)), key(c)))
 
-    # 1. Worded drafts.
-    contested = [i for i in worded if any(overlap(i, j) for j in worded if j != i)]
-
-    def maximal(subset: Sequence[int]) -> bool:
-        return apart(subset) and all(
-            any(overlap(i, k) for k in subset) for i in contested if i not in subset
+    # 1. Worded claims. A claim with an occurrence clear of the anchors and of every other
+    # slot's claims fits beside any subset, so it is in every maximal one; only the rest
+    # are enumerated.
+    def contested(c: _Claim) -> bool:
+        return bool(c.occurrences) and all(
+            o & reserved
+            or any(x.slot != c.slot and o & q for x in worded for q in x.occurrences or ())
+            for o in c.occurrences or ()
         )
 
-    won = _best_subset(contested, maximal, lambda c: (sum(weight[i] for i in c),), key)
-    kept = [i for i in worded if i not in contested or i in won]
-    base = [*kept, *seeds]
-    kept += [i for i in contested if i not in won and narrows_nothing(i, base)]
-    anchor = [*kept, *seeds]
+    won = subsets(
+        [x for x in worded if contested(x)],
+        lambda c: consistent(c) and not any(consistent([*c, x]) for x in worded if x not in c),
+        lambda c: (sum(x.weight for x in c),),
+        given=[x for x in worded if not contested(x)],
+    )
+    kept = [*won, *(x for x in worded if x not in won and narrows_nothing(x, won))]
 
-    # 2 and 3. Measure-worded drafts.
-    open_ = [i for i in measured if not any(overlap(i, k) for k in kept)]
+    # 2 and 3. Measure-worded claims. Words are checked against the claims that won; one
+    # kept for narrowing nothing shares its words with them.
+    open_ = [x for x in measured if consistent([*won, x])]
     if population is None:
         kept += open_
-    elif realisable(anchor):
-        kept += _best_subset(
+    elif realisable(kept):
+        kept += subsets(
             open_,
-            apart,
-            lambda c: (realisable([*anchor, *c]), len(c), sum(weight[i] for i in c)),
-            key,
+            lambda c: consistent([*won, *c]),
+            lambda c: (realisable([*kept, *c]), len(c), sum(x.weight for x in c)),
         )
 
-    # 4. Wordless drafts.
-    kept += [i for i in wordless if narrows_nothing(i, [*kept, *seeds])]
+    # 4. Wordless claims.
+    kept += [x for x in wordless if narrows_nothing(x, kept)]
 
+    survivors = {(c.slot, c.value) for c in kept}
     for i in named:
-        if slots[i].seed or i in kept:
+        if slots[i].anchors:
             continue
         d = drafts[i]
         prop = (d.axis, d.property_dcid or "")
-        conf.inferred[prop_id(prop)] = tuple(d.value_dcids)
-        conf.slots.pop(prop_id(prop), None)
-        drafts[i] = _draft(prop, "unbound")
+        pid = prop_id(prop)
+        staying = [v for v in d.value_dcids if (i, v) in survivors]
+        if staying == d.value_dcids:
+            continue
+        conf.inferred[pid] = tuple(v for v in d.value_dcids if v not in staying)
+        if slots[i].one_member:
+            drafts[i] = _draft(prop, "value", d.value_dcids, evidence="sole_option")
+            conf.slots.pop(pid, None)
+        elif len(staying) >= 2:
+            drafts[i] = _draft(prop, "set", staying)
+        elif staying:
+            drafts[i] = _draft(prop, "value", staying)
+            conf.slots[pid] = slots[i].named.get(staying[0], conf.slots.get(pid, 0.5))
+        else:
+            drafts[i] = _draft(prop, "unbound")
+            conf.slots.pop(pid, None)
     return drafts
 
 
-def _read_span(
-    answers: JevAnswers, qids: Sequence[str], variable: str
-) -> tuple[frozenset[int] | None, float]:
-    """The words of `variable` the argmax answers to `qids` name and the least probability
-    among those argmaxes. A question Jev did not answer names no words at probability 1.0,
-    so its draft conflicts with nothing. The words are None when every answered argmax is
-    `NONE`."""
-    named: list[frozenset[int]] = []
-    p = 1.0
-    wordless = False
-    for qid in qids:
-        span = answers.choice(qid)
-        if span is None:
-            continue
-        p = min(p, float(answers.choices[qid][span]))
-        if span == NONE:
-            wordless = True
-        else:
-            named.append(span_positions(variable, span))
-    if wordless and not named:
+def _read_occurrences(
+    answers: JevAnswers, qid: str, variable: str
+) -> tuple[tuple[frozenset[int], ...] | None, float]:
+    """Each occurrence in `variable` of the words the argmax answer to `qid` names, and its
+    probability. None when the argmax is `NONE`. A question Jev did not answer, and an
+    answer naming no span of `variable`, give no occurrence at probability 1.0."""
+    span = answers.choice(qid)
+    if span is None:
+        return (), 1.0
+    p = float(answers.choices[qid][span])
+    if span == NONE:
         return None, p
-    return frozenset[int]().union(*named), p
+    return span_occurrences(variable, span), p
 
 
 def _logit(p: float) -> float:
     p = min(max(p, _LOG_ODDS_CLAMP), 1 - _LOG_ODDS_CLAMP)
     return math.log(p / (1 - p))
-
-
-def _best_subset(
-    items: Sequence[int],
-    allowed: Callable[[Sequence[int]], bool],
-    score: Callable[[Sequence[int]], tuple[float, ...]],
-    key: Callable[[Sequence[int]], list[tuple[str, ...]]],
-) -> list[int]:
-    """The subset of `items` that `allowed` admits with the highest `score`, the one whose
-    `key` sorts first on a tie, found by enumerating every subset."""
-    subsets = [list(c) for r in range(len(items) + 1) for c in combinations(items, r) if allowed(c)]
-    return min(subsets, key=lambda c: (tuple(-x for x in score(c)), key(c)))
 
 
 def _bind_slot(
@@ -889,24 +963,32 @@ def _bind_slot(
         if (p := answers.noul(f"n|{pid}|{j}")) > t.value
     }
     # Fixed values bind as given, and a tie group binds the option Jev chose.
-    fixed = [m.code_dcid for m in qmenu.fixed if m.code_system == property_dcid]
+    anchors = [m for m in qmenu.fixed if m.code_system == property_dcid]
     # A tie can span code systems ("budget support" is a cooperation modality and a CRS
     # purpose), so the chosen row's own system names the slot it binds.
     for g, rows in enumerate(qmenu.groups):
         qid = f"tie|{s}|{g}"
-        if (choice := answers.choice(qid)) and any(
-            r.code_dcid == choice and r.code_system == property_dcid for r in rows
+        if (choice := answers.choice(qid)) and (
+            chosen := [r for r in rows if r.code_dcid == choice and r.code_system == property_dcid]
         ):
-            fixed.append(choice)
+            anchors.append(chosen[0])
             conf.slots[pid] = float(answers.choices[qid][choice])
-    forced = list(dict.fromkeys(fixed))
+    forced = list(dict.fromkeys(m.code_dcid for m in anchors))
     taxonomy = (shape.slot_taxonomy or {}).get(f"{axis}:{property_dcid}", [])
-    # A one-member taxonomy binds that member: mentioned when the phrase names it.
+    # A one-member taxonomy binds that member: mentioned when the phrase names it or the
+    # qualifier matcher set it.
     if len(taxonomy) == 1 and forced in ([], taxonomy):
-        evidence: DraftBindingEvidence = "mentioned" if taxonomy[0] in named else "sole_option"
-        return _Slot(_draft(prop, "value", taxonomy, evidence=evidence), seed=True)
+        sole = taxonomy[0]
+        evidence: DraftBindingEvidence = "mentioned" if sole in named or anchors else "sole_option"
+        return _Slot(
+            _draft(prop, "value", taxonomy, evidence=evidence),
+            anchors=tuple(anchors),
+            named={sole: named[sole]} if sole in named else {},
+            one_member=True,
+        )
     if forced:
-        return _Slot(_draft(prop, "value" if len(forced) == 1 else "set", forced), seed=True)
+        kind: DraftBindingKind = "value" if len(forced) == 1 else "set"
+        return _Slot(_draft(prop, kind, forced), anchors=tuple(anchors))
     # A named value under another named value adds nothing to it, and the slot's declared
     # default is the engine's to bind.
     index = get_index()
@@ -922,11 +1004,11 @@ def _bind_slot(
         offered = [v for v in offered if named[v] > t.part_n]
     if len(offered) >= 2 and answers.noul(f"several|{pid}") > t.several:
         conf.slots[pid] = answers.noul(f"several|{pid}")
-        return _Slot(_draft(prop, "set", offered))
+        return _Slot(_draft(prop, "set", offered), named={v: named[v] for v in offered})
     if offered:
         best = max(offered, key=named.__getitem__)
         conf.slots[pid] = named[best]
-        return _Slot(_draft(prop, "value", [best]))
+        return _Slot(_draft(prop, "value", [best]), named={best: named[best]})
     for k, phrase in enumerate(menu.request.dropped_qualifier_phrases):
         if (p := answers.noul(f"all|{pid}|{k}")) > t.requested_all:
             conf.slots[pid] = p

@@ -37,9 +37,9 @@ from search.engine.binders.jev_request import bind_request, quantity_request
 from search.engine.binders.jev_split import RequestTooLarge
 from search.engine.config import settings
 from search.engine.retrieval.bound_values import (
+    held_family_arcs,
     held_family_exact,
     index_member_rows,
-    shape_member_facts,
     shape_query,
 )
 from search.engine.retrieval.facts import read_constraints
@@ -254,34 +254,39 @@ def member_populations(
 
 
 def member_population(shape: ShapeDraft) -> Population | None:
-    """The constraints of every member `shape` can elect, before any slot binds, or None
+    """The constraints of every member a binding of `shape`'s slots could elect, or None
     when no source lists them all. Reads the code index and the catalogue's tables, and no
     graph.
 
-    The population is complete when it is one of:
+    The population is the whole family, before any dataset or role class is elected, since
+    a later source facet or entity role can elect members outside the subset an unbound
+    query elects. It is one of:
 
     - the shape's own members, when they are the exact elected set
       (`ShapeDraft.sv_arc_facts_complete`);
     - the listed rows of its five-tuple (`CodeIndex.listed_by_five_tuple`) with the index
-      rows of its family (`bound_values.index_member_rows`), which the export verifies are
-      every StatVar of the five-tuple, so the graph walk elects among them alone
-      (`code_index.members.listed_group`), as for World Bank IDS;
-    - the family the index resolves for the shape with no slot bound
-      (`bound_values.shape_member_facts`, ``index_sourced``);
-    - the family the catalogue holds whole for it (`bound_values.held_family_exact`).
+      rows of its family, which the export verifies are every StatVar of the five-tuple, so
+      the graph walk elects among them alone (`code_index.members.listed_group`), as for
+      World Bank IDS;
+    - every row of the family the index carries for it, whatever dataset publishes the row
+      (`bound_values.index_member_rows`);
+    - every member of the family the catalogue holds whole for it
+      (`bound_values.held_family_exact`), of every role class
+      (`bound_values.held_family_arcs`).
 
-    A recalled sample, and a held family the walk may extend, are no population. The listed
-    rows span every role class of the five-tuple, so a pair of values two classes hold
-    apart reads as held.
+    A recalled sample, and a held family the walk may extend, are no population. A
+    population spanning several datasets or role classes is a superset of what any one
+    binding elects: realisability over it can keep a value no elected subset holds, which
+    the engine then refuses on loudly, and a value narrows nothing over it less often.
     """
-    query = shape_query(shape, (), ())
     if shape.sv_arc_facts_complete:
         return tuple(read_constraints(arcs) for arcs in (shape.sv_arc_facts or {}).values())
     index = get_index()
-    if listed := index.listed_by_five_tuple.get(query.five_tuple):
-        rows = {row.dcid: row for row in (*index_member_rows(shape, index), *listed)}
-        return tuple(dict(row.constraint_properties) for row in rows.values())
-    members, index_sourced = shape_member_facts(shape, query)
-    if index_sourced or held_family_exact(shape):
-        return tuple(member.read_constraints() for member in members.values())
+    rows = index_member_rows(shape, index)
+    if listed := index.listed_by_five_tuple.get(shape_query(shape, (), ()).five_tuple):
+        rows = tuple({row.dcid: row for row in (*rows, *listed)}.values())
+    if rows:
+        return tuple(dict(row.constraint_properties) for row in rows)
+    if held_family_exact(shape):
+        return tuple(read_constraints(arcs) for arcs in held_family_arcs(shape).values())
     return None
