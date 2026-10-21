@@ -24,6 +24,7 @@ from search.engine.binders import (
     QuantityRequest,
     ShadowBinder,
     configured_binder,
+    jev_assemble,
     recording_fallbacks,
     routes_to_jev,
 )
@@ -381,6 +382,27 @@ def test_a_failed_span_round_falls_back_to_gemini(caplog):
         str(len(second)),
         "-",
     )
+
+
+def test_a_span_rule_past_its_search_budget_falls_back_to_gemini(monkeypatch, caplog):
+    """A span rule that passes `SPAN_SEARCH_BUDGET` serves the bind from Gemini under
+    ``span_budget``, before Jev's house policies run, so the policies run once, on
+    Gemini's election."""
+    monkeypatch.setattr(jev_assemble, "SPAN_SEARCH_BUDGET", 1)
+    ask = FakeAsk(_spanned_answers())
+    binder = FallbackBinder(primary=JevBinder(ask=ask), fallback=_GeminiDouble(_ELECTS_FIRST))
+    step = _CountingStep()
+    caplog.set_level(logging.INFO, logger="search.engine.binders.part_log")
+
+    with recording_fallbacks() as record:
+        result, _usage = asyncio.run(binder.bind(_golden_request(step, _SPANNED), llm=None))
+
+    assert result.binder == "gemini"
+    assert record.reasons == ["span_budget"]
+    assert step.calls == 1
+    assert len(ask.requests) == 2
+    fields = _fields(*_binder_parts(caplog))
+    assert (fields["fallback"], fields["jev_error"]) == ("span_budget", "span_budget")
 
 
 def _unicorns(*, complete: bool) -> ShapeDraft:

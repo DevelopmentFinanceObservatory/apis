@@ -23,9 +23,8 @@ contain the measure's is the user's choice and contends as any named value does.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from itertools import combinations
 from typing import get_args
 
 from code_index.shared import get_index, get_measure_index
@@ -87,6 +86,13 @@ QUANTITY_GATE = 0.5
 
 # A probability of 0 or 1 has no finite log-odds.
 _LOG_ODDS_CLAMP = 1e-6
+
+# The nodes the span rule's searches may visit for one shape (`_Search`): each step of a
+# subset walk, each fit test and each placement a test tries. The largest bind of the
+# golden and span fixtures visits 79, and ten values of each of two slots claiming one
+# word visit 1,195. Random menus of 24 and 40 claims on three slots spend 0.5 to 3.4
+# microseconds a node, so the budget holds one shape's search under about 70 ms.
+SPAN_SEARCH_BUDGET = 20_000
 
 type Population = tuple[Mapping[str, str], ...]
 """The constraints each member of a shape's complete member population asserts, by
@@ -739,15 +745,157 @@ def _slot_drafts(
 @dataclass(frozen=True, slots=True)
 class _Claim:
     """One value a slot drafted, as the span rule weighs it: the slot's index among the
-    shape's drafts, the value, w = logit(p_n x p_span), and each occurrence of the words
-    its ``span|`` argmax names (`jev_request.span_occurrences`). `occurrences` is None for
-    a value Jev found no words for, and empty for one whose words were not read, which
-    conflicts with nothing."""
+    shape's drafts and its property, the value, w = logit(p_n x p_span), and each
+    occurrence of the words its ``span|`` argmax names (`jev_request.span_occurrences`).
+    `occurrences` is None for a value Jev found no words for, and empty for one whose words
+    were not read, which conflicts with nothing."""
 
     slot: int
+    property_dcid: str
     value: str
     weight: float
     occurrences: tuple[frozenset[int], ...] | None
+
+
+class SpanSearchExhausted(Exception):
+    """The span rule's searches for one shape passed `SPAN_SEARCH_BUDGET` nodes."""
+
+
+@dataclass(slots=True)
+class _Search:
+    """The nodes the span rule's searches for one shape have visited, against `budget`
+    (`SPAN_SEARCH_BUDGET`)."""
+
+    budget: int
+    nodes: int = 0
+
+    def visit(self) -> None:
+        """Counts one node.
+
+        Raises:
+            SpanSearchExhausted: The search passed its budget.
+        """
+        self.nodes += 1
+        if self.nodes > self.budget:
+            raise SpanSearchExhausted(f"span search passed {self.budget} nodes")
+
+
+def _fits(claims: Sequence[_Claim], reserved: frozenset[int], search: _Search) -> bool:
+    """Whether `claims` are word-consistent: one occurrence of each claim's words can be
+    chosen, clear of `reserved` and of the other claims' chosen words, two values of one
+    slot excepted. Each test and each placement it tries is a node of `search`."""
+    search.visit()
+    placing = [
+        (c.slot, [o for o in c.occurrences if not o & reserved]) for c in claims if c.occurrences
+    ]
+    if any(not usable for _slot, usable in placing):
+        return False
+    # Words written once leave nothing to choose: the claims fit when no two of different
+    # slots share a word.
+    if all(len(usable) == 1 for _slot, usable in placing):
+        return not any(
+            a != b and o[0] & q[0] for i, (a, o) in enumerate(placing) for b, q in placing[i + 1 :]
+        )
+    placed: list[tuple[int, frozenset[int]]] = []
+
+    def place(k: int) -> bool:
+        search.visit()
+        if k == len(placing):
+            return True
+        slot, usable = placing[k]
+        for o in usable:
+            if any(other != slot and o & q for other, q in placed):
+                continue
+            placed.append((slot, o))
+            if place(k + 1):
+                return True
+            placed.pop()
+        return False
+
+    return place(0)
+
+
+def _fitting_subsets(
+    claims: Sequence[_Claim],
+    reserved: frozenset[int],
+    search: _Search,
+    *,
+    beside: Sequence[_Claim] = (),
+    maximal: bool = False,
+) -> Iterator[list[_Claim]]:
+    """Each subset of `claims` word-consistent with `beside` (`_fits`), in `claims` order,
+    built one claim at a time: a branch whose claims stop fitting ends there, so no subset
+    holding it is built. With `maximal`, only the subsets no other claim of `claims` fits
+    beside. A branch leaving out a claim then ends when the claim fits beside the claims
+    chosen and every later claim that fits beside them, since every subset the branch
+    reaches lies within those and so leaves room for it."""
+    chosen: list[_Claim] = []
+
+    def fits(*more: _Claim) -> bool:
+        return _fits([*beside, *chosen, *more], reserved, search)
+
+    def walk(k: int) -> Iterator[list[_Claim]]:
+        search.visit()
+        if k == len(claims):
+            if not maximal or not any(fits(c) for c in claims if c not in chosen):
+                yield list(chosen)
+            return
+        if fits(claims[k]):
+            chosen.append(claims[k])
+            yield from walk(k + 1)
+            chosen.pop()
+            if maximal and fits(claims[k], *(c for c in claims[k + 1 :] if fits(c))):
+                return
+        yield from walk(k + 1)
+
+    return walk(0)
+
+
+def _sort_key(claims: Sequence[_Claim]) -> list[tuple[str, str]]:
+    return sorted((c.property_dcid, c.value) for c in claims)
+
+
+def _heaviest(claims: Sequence[_Claim]) -> tuple[float, list[tuple[str, str]]]:
+    """Step 1's order: the larger sum of w first, then the first sorted list."""
+    return -sum(c.weight for c in claims), _sort_key(claims)
+
+
+def _owners(worded: Sequence[_Claim], reserved: frozenset[int], search: _Search) -> list[_Claim]:
+    """Step 1 of the span rule (`_span_owned`): the maximal word-consistent subset of
+    `worded` with the largest sum of w, ties to the first sorted (property, value) list.
+
+    Two claims of different slots contend when an occurrence of one's words shares a word
+    with an occurrence of the other's, neither touching `reserved`. A claim that contends
+    with none on one of its occurrences fits beside any subset, so it is in every maximal
+    one. The rest split into groups that contend only within themselves, and fit,
+    maximality and the sum of w each hold group by group, so each group is searched alone
+    (`_fitting_subsets`). The tie-break composes too: of two maximal subsets of a group
+    neither holds the other, since a subset of claims that fit fits, so the one whose
+    sorted list sorts first still does with any other group's claims merged into both."""
+
+    def usable(c: _Claim) -> list[frozenset[int]]:
+        return [o for o in c.occurrences or () if not o & reserved]
+
+    def contend(a: _Claim, b: _Claim) -> bool:
+        return a.slot != b.slot and any(o & q for o in usable(a) for q in usable(b))
+
+    def free(c: _Claim) -> bool:
+        return c.occurrences == () or any(
+            not any(x.slot != c.slot and o & q for x in worded for q in usable(x))
+            for o in usable(c)
+        )
+
+    won = [c for c in worded if free(c)]
+    groups: list[list[_Claim]] = []
+    for c in (c for c in worded if not free(c)):
+        joined = [g for g in groups if any(contend(c, x) for x in g)]
+        merged = [x for g in joined for x in g]
+        groups = [g for g in groups if g not in joined]
+        groups.append([*merged, c])
+    for group in groups:
+        group.sort(key=worded.index)
+        won += min(_fitting_subsets(group, reserved, search, maximal=True), key=_heaviest)
+    return won
 
 
 def _span_owned(
@@ -795,8 +943,9 @@ def _span_owned(
        population every one stays, the engine's loud refusal over a silent broadening.
     4. A wordless claim stays only when it narrows nothing beyond everything kept.
 
-    Ties fall to the subset whose sorted (property, value) list sorts first, and subsets
-    are enumerated exactly. Each slot is rebuilt from its surviving values: two or more
+    Ties fall to the subset whose sorted (property, value) list sorts first. Steps 1 and 3
+    search exactly (`_owners`, `_fitting_subsets`), within `SPAN_SEARCH_BUDGET` nodes for
+    the shape. Each slot is rebuilt from its surviving values: two or more
     bind a set, one a value, none leaves it unbound. A one-member slot whose value loses
     keeps it as ``sole_option``, since the slot offers nothing else, and the engine then
     unbinds it silently if it conflicts. `conf.inferred` lists each value taken from the
@@ -807,6 +956,9 @@ def _span_owned(
     the property holds none. `population` is None when the shape has no complete member
     population (`jev.member_population`): no claim then narrows nothing, since one dropped
     over a sample could be held by a member the sample lacks.
+
+    Raises:
+        SpanSearchExhausted: The searches passed `SPAN_SEARCH_BUDGET` nodes.
     """
     drafts = [slot.draft for slot in slots]
     named = [i for i, slot in enumerate(slots) if mentioned_drafts([slot.draft])]
@@ -835,7 +987,7 @@ def _span_owned(
         for value in d.value_dcids:
             occurrences, p_span = _read_occurrences(answers, span_id(prop, value), variable)
             weight = _logit(slots[i].named.get(value, 0.5) * p_span)
-            claim = _Claim(i, value, weight, occurrences)
+            claim = _Claim(i, prop[1], value, weight, occurrences)
             if occurrences is None:
                 wordless.append(claim)
             elif occurrences and all(
@@ -844,25 +996,6 @@ def _span_owned(
                 measured.append(claim)
             else:
                 worded.append(claim)
-
-    def consistent(claims: Sequence[_Claim]) -> bool:
-        placing = [c for c in claims if c.occurrences]
-        placed: list[tuple[int, frozenset[int]]] = []
-
-        def place(k: int) -> bool:
-            if k == len(placing):
-                return True
-            c = placing[k]
-            for o in c.occurrences or ():
-                if o & reserved or any(slot != c.slot and o & q for slot, q in placed):
-                    continue
-                placed.append((c.slot, o))
-                if place(k + 1):
-                    return True
-                placed.pop()
-            return False
-
-        return place(0)
 
     widened: dict[tuple[int, frozenset[str]], frozenset[str]] = {}
 
@@ -891,52 +1024,21 @@ def _span_owned(
         holding = [m for m in population if holds(m, kept)]
         return bool(holding) and all(holds(m, [c]) for m in holding)
 
-    def subsets(
-        claims: Sequence[_Claim],
-        allowed: Callable[[list[_Claim]], bool],
-        score: Callable[[list[_Claim]], tuple[float, ...]],
-        *,
-        given: Sequence[_Claim] = (),
-    ) -> list[_Claim]:
-        """The allowed subset of `claims`, each joined by every claim in `given`, with the
-        highest score, ties to the first sorted (property, value) list."""
-        found = [[*given, *c] for r in range(len(claims) + 1) for c in combinations(claims, r)]
-        found = [c for c in found if allowed(c)]
-
-        def key(c: list[_Claim]) -> list[tuple[str, str]]:
-            return sorted((drafts[x.slot].property_dcid or "", x.value) for x in c)
-
-        return min(found, key=lambda c: (tuple(-x for x in score(c)), key(c)))
-
-    # 1. Worded claims. A claim with an occurrence clear of the anchors and of every other
-    # slot's claims fits beside any subset, so it is in every maximal one; only the rest
-    # are enumerated.
-    def contested(c: _Claim) -> bool:
-        return bool(c.occurrences) and all(
-            o & reserved
-            or any(x.slot != c.slot and o & q for x in worded for q in x.occurrences or ())
-            for o in c.occurrences or ()
-        )
-
-    won = subsets(
-        [x for x in worded if contested(x)],
-        lambda c: consistent(c) and not any(consistent([*c, x]) for x in worded if x not in c),
-        lambda c: (sum(x.weight for x in c),),
-        given=[x for x in worded if not contested(x)],
-    )
+    # 1. Worded claims.
+    search = _Search(SPAN_SEARCH_BUDGET)
+    won = _owners(worded, reserved, search)
     kept = [*won, *(x for x in worded if x not in won and narrows_nothing(x, won))]
 
     # 2 and 3. Measure-worded claims. Words are checked against the claims that won; one
     # kept for narrowing nothing shares its words with them.
-    open_ = [x for x in measured if consistent([*won, x])]
+    def best_held(c: Sequence[_Claim]) -> tuple[int, int, float, list[tuple[str, str]]]:
+        return -realisable([*kept, *c]), -len(c), -sum(x.weight for x in c), _sort_key(c)
+
+    open_ = [x for x in measured if _fits([*won, x], reserved, search)]
     if population is None:
         kept += open_
     elif realisable(kept):
-        kept += subsets(
-            open_,
-            lambda c: consistent([*won, *c]),
-            lambda c: (realisable([*kept, *c]), len(c), sum(x.weight for x in c)),
-        )
+        kept += min(_fitting_subsets(open_, reserved, search, beside=won), key=best_held)
 
     # 4. Wordless claims.
     kept += [x for x in wordless if narrows_nothing(x, kept)]

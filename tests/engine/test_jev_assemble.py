@@ -3,9 +3,11 @@ house policies on answer sets no dev item reaches."""
 
 from __future__ import annotations
 
+import random
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import combinations, product
 from typing import cast
 
 import pytest
@@ -16,9 +18,13 @@ from search.engine.binders.base import ApplyPolicies, BindRequest
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev_assemble import (
     ASK_TEXT,
+    SPAN_SEARCH_BUDGET,
     Confidence,
     JevAnswers,
     SpanRound,
+    _Claim,
+    _owners,
+    _Search,
     assemble,
     assemble_quantity,
     bind_result,
@@ -1261,6 +1267,99 @@ def test_a_set_keeps_the_value_no_other_claim_contests():
     bound = _bound(output)
     assert "B" in bound.get("p", [])
     assert ("A" in bound.get("p", [])) != ("C" in bound.get("q", []))
+
+
+def _owners_by_enumeration(worded: Sequence[_Claim], reserved: frozenset[int]) -> set[_Claim]:
+    """Step 1 of the span rule over every subset of `worded`: the maximal word-consistent
+    subset with the largest sum of w, ties to the first sorted (property, value) list."""
+
+    def fits(claims: Sequence[_Claim]) -> bool:
+        placing = [c for c in claims if c.occurrences]
+        choices = [[o for o in c.occurrences or () if not o & reserved] for c in placing]
+        return any(
+            not any(
+                a.slot != b.slot and o & q
+                for (a, o), (b, q) in combinations(zip(placing, chosen, strict=True), 2)
+            )
+            for chosen in product(*choices)
+        )
+
+    fitting = [list(c) for r in range(len(worded) + 1) for c in combinations(worded, r)]
+    fitting = [c for c in fitting if fits(c)]
+    maximal = [c for c in fitting if not any(fits([*c, x]) for x in worded if x not in c)]
+    return set(
+        min(
+            maximal,
+            key=lambda c: (
+                -sum(x.weight for x in c),
+                sorted((x.property_dcid, x.value) for x in c),
+            ),
+        )
+    )
+
+
+def _random_claims(rng: random.Random) -> tuple[list[_Claim], frozenset[int]]:
+    """Up to eight claims on two or three slots over four words, each written once, twice or
+    not read, some spanning two words, and an anchor on one word half the time."""
+    slots = rng.randint(2, 3)
+    claims = []
+    for k in range(rng.randint(1, 8)):
+        slot = rng.randrange(slots)
+        occurrences = []
+        for _ in range(rng.choice([0, 1, 1, 2])):
+            start = rng.randrange(4)
+            occurrences.append(frozenset(range(start, min(start + rng.randint(1, 2), 4))))
+        claims.append(_Claim(slot, f"p{slot}", f"v{k}", rng.uniform(-3, 3), tuple(occurrences)))
+    reserved = frozenset({rng.randrange(4)}) if rng.random() < 0.5 else frozenset()
+    return claims, reserved
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_the_word_owners_are_the_heaviest_maximal_subset_of_every_subset(seed: int):
+    """The search in groups (`_owners`) keeps what enumerating every subset keeps."""
+    claims, reserved = _random_claims(random.Random(seed))
+
+    owners = _owners(claims, reserved, _Search(SPAN_SEARCH_BUDGET))
+
+    assert set(owners) == _owners_by_enumeration(claims, reserved)
+
+
+def test_tied_word_owners_fall_to_the_first_sorted_list_across_groups():
+    """Two groups of two claims contending for one word each, every claim weighing 1: each
+    group keeps its claim on the first property, as the whole subset's sorted list does."""
+    claims = [
+        _Claim(0, "p0", "a", 1.0, (frozenset({0}),)),
+        _Claim(1, "p1", "b", 1.0, (frozenset({0}),)),
+        _Claim(1, "p1", "d", 1.0, (frozenset({1}),)),
+        _Claim(0, "p0", "c", 1.0, (frozenset({1}),)),
+    ]
+
+    owners = _owners(claims, frozenset(), _Search(SPAN_SEARCH_BUDGET))
+
+    assert {c.value for c in owners} == {"a", "c"}
+    assert set(owners) == _owners_by_enumeration(claims, frozenset())
+
+
+def test_twenty_values_claiming_one_word_settle_within_the_search_budget():
+    """Ten values of each of two slots all claim "x": the heavier slot keeps every one,
+    and the span rule settles it without passing its budget."""
+    ps = [f"P{i}" for i in range(10)]
+    qs = [f"Q{i}" for i in range(10)]
+    shape = _shape(0, slots=[("how", "p", ps), ("how", "q", qs)])
+    request = _request([shape], variable="x y")
+    named = {("how:p", v): 0.9 + i * 0.005 for i, v in enumerate(ps)}
+    named |= {("how:q", v): 0.9 + i * 0.004 for i, v in enumerate(qs)}
+    answers = _span_answers(
+        request,
+        named,
+        {**dict.fromkeys(ps + qs, "x"), "measure": "none"},
+        **{"several|how:p": 0.9, "several|how:q": 0.9},
+    )
+
+    output, conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    assert _bound(output) == {"p": ps}
+    assert conf.inferred == {"how:q": tuple(qs)}
 
 
 _ONE_GUARANTEE = replace(

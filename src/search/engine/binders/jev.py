@@ -7,8 +7,9 @@ when its answers call for one (`jev_assemble.span_round`), a second request aski
 words name each contending value, and assembles both rounds' answers with
 `jev_assemble.bind_result`, which runs the request's house-policy step once on an answer
 that elects a shape. Every failure of a Jev request, in either round, leaves as one
-`JevFailure`, raised before any answer is assembled, so a binder that falls back on it runs
-the house policies at most once per call.
+`JevFailure`, raised before any answer is assembled, and so does a span rule that passes
+its search budget, raised before the house policies run, so a binder that falls back on it
+runs the house policies at most once per call.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from search.engine.binders.base import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.jev_assemble import (
     JevAnswers,
     Population,
+    SpanSearchExhausted,
     assemble_quantity,
     bind_result,
     frame_stated_form,
@@ -50,7 +52,9 @@ if TYPE_CHECKING:
     from search.engine.config import SearchSettings
     from search.engine.quantity_read import QuantityOutput
 
-type FallbackCause = Literal["timeout", "429", "5xx", "402", "breaker_open", "too_large", "error"]
+type FallbackCause = Literal[
+    "timeout", "429", "5xx", "402", "breaker_open", "too_large", "span_budget", "error"
+]
 """Why a Jev request gave no answer, as the ``binder_part`` line states it."""
 
 
@@ -128,9 +132,11 @@ class JevCall:
 
 class JevFailure(Exception):
     """A Jev request that gave no answer: the breaker was open, the request was too large
-    to send, or the call failed or overran its ceiling (`jev_client.JevError`). `reason`
-    classes it and `kind` names it (the `JevError` kind, or ``too_large``); `call` is the
-    failed request's time and question count."""
+    to send, or the call failed or overran its ceiling (`jev_client.JevError`), or a bind
+    whose answers the span rule could not settle within its search budget
+    (`jev_assemble.SpanSearchExhausted`). `reason` classes it and `kind` names it (the
+    `JevError` kind, ``too_large`` or ``span_budget``); `call` is the failed request's time
+    and question count."""
 
     def __init__(self, reason: FallbackCause, kind: str, call: JevCall) -> None:
         super().__init__(f"jev {kind}")
@@ -195,8 +201,10 @@ class JevBinder:
         the event loop.
 
         Raises:
-            JevFailure: Either request gave no answer. A failed span round carries both
-                requests' time and questions.
+            JevFailure: Either request gave no answer, or the span rule passed its search
+                budget (``span_budget``), which it does before the house policies run. A
+                failed span round, and a passed budget, carry both requests' time and
+                questions.
         """
         menu = jev_menu(request)
         form = frame_stated_form(request.frame)
@@ -211,7 +219,12 @@ class JevBinder:
                 raise JevFailure(exc.reason, exc.kind, call.plus(exc.call)) from exc
             answers, call = answers.merged(more), call.plus(second)
             populations = await asyncio.to_thread(member_populations, request.shapes, spans.shapes)
-        result, confidence = bind_result(menu, answers, stated_form=form, populations=populations)
+        try:
+            result, confidence = bind_result(
+                menu, answers, stated_form=form, populations=populations
+            )
+        except SpanSearchExhausted as exc:
+            raise JevFailure("span_budget", "span_budget", call) from exc
         inferred = tuple(
             f"{prop.partition(':')[2]}={value}"
             for prop, values in confidence.inferred.items()
