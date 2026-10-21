@@ -10,7 +10,9 @@ an answer its configured binder did not give. A successful fallback is a normal 
 marks nothing degraded.
 
 A part whose Jev call fell back sends its later calls straight to the fallback, so a slow
-Jev costs each part one Jev ceiling (`Settings.jev_ceiling_s`), not one per call.
+Jev costs each part one Jev ceiling (`Settings.jev_ceiling_s`), not one per call. Those
+later calls log ``fallback=inherited`` on their ``binder_part`` line, so only a call whose
+Jev request failed carries a ``jev_error``.
 
 A Jev request fails before its answer is assembled, so the house policies have not run when
 the fallback starts. A bind call whose Jev path raised after they ran raises
@@ -112,6 +114,7 @@ class FallbackBinder:
     ) -> tuple[QuantityOutput, dict | None]:
         started = time.perf_counter()
         failure = self._earlier_failure(request.part)
+        inherited = failure is not None
         if failure is None:
             try:
                 output, call = await self.primary.quantity(request)
@@ -133,6 +136,7 @@ class FallbackBinder:
             served_by=self.fallback.name,
             ms=elapsed_ms(started),
             failure=failure,
+            inherited=inherited,
         )
         return answer
 
@@ -154,6 +158,7 @@ class FallbackBinder:
 
         step: ApplyPolicies = apply_policies
         failure = self._earlier_failure(request.part)
+        inherited = failure is not None
         if failure is None:
             try:
                 result, call = await self.primary.elect(
@@ -181,6 +186,7 @@ class FallbackBinder:
             served_by=self.fallback.name,
             ms=elapsed_ms(started),
             failure=failure,
+            inherited=inherited,
         )
         return result, usage
 

@@ -247,6 +247,29 @@ def _population_india_extraction() -> dict:
     }
 
 
+def test_single_variable_queries_cannot_share_an_unindexed_value_grounding_result():
+    base = _base_response()
+
+    async def run():
+        cache = _new_cache()
+        extraction = _population_india_extraction()
+        female = "female population India"
+        male = "male population India"
+        writer = _make_scope(cache)
+        assert await writer.lookup_raw(female) is None
+        extraction["query_text"] = female
+        assert await writer.lookup_parsed(query=female, **extraction) is None
+        await writer.store(base)
+
+        reader = _make_scope(cache)
+        assert await reader.lookup_raw(male) is None
+        extraction["query_text"] = male
+        assert await reader.lookup_parsed(query=male, **extraction) is None
+        await reader.release()
+
+    asyncio.run(run())
+
+
 async def _woken_layer2_follower(
     cache: ResponseCache, extraction: dict, *, query_1: str, query_2: str
 ) -> tuple[CacheScope, CacheScope, ResolveResponse]:

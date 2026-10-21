@@ -36,8 +36,10 @@ from search.engine.bind_repair import (
 from search.engine.binders import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.base import PolicyContractError
 from search.engine.binders.house_policy import (
+    POLICY_ORDER,
     Context,
     PolicyChoice,
+    PolicyName,
     PolicyPool,
     ShapeFacts,
     apply_house_policies,
@@ -2872,6 +2874,56 @@ def _coverage_records(
     return [*unsupported, *records]
 
 
+def model_only_values(
+    state: ResolveState, prop: str, values: Sequence[str], labels: Mapping[str, str]
+) -> tuple[str, ...]:
+    """The `values` bound on `prop` that no recorded term of the request supports, so only
+    the bind model read them from the words. A term supports every value on `prop` when it
+    is an admitted qualifier match on `prop` or a query record a binding on it covers, and
+    supports one value when one of its names (`_value_names`) is a run of the variable,
+    a dropped qualifier phrase or the single-variable query, so "women" names Female by
+    its synonym. Each source is read separately. A value with no name is the model's. An
+    answer that cannot apply a supported value refuses `qualifier_not_bound` on it, and one
+    that cannot apply a model-only value discloses it (`unrealisable.unbind_unrealisable`,
+    `_stray_requirements`)."""
+    if any(match.code_system == prop for match in state.admitted_qualifiers) or any(
+        record.slot == prop and record.disposition == "bound" for record in state.query_qualifiers
+    ):
+        return ()
+    texts = [state.variable, *state.dropped_qualifier_phrases]
+    if query_text := state.query_text:
+        texts.append(query_text)
+    sources = [tokenize(text) for text in dict.fromkeys(texts)]
+    return tuple(
+        value
+        for value in values
+        if not any(
+            _token_occurrences(tokens, name)
+            for tokens in sources
+            for name in _value_names(prop, value, labels.get(value))
+        )
+    )
+
+
+def _value_names(prop: str, value: str, label: str | None) -> tuple[str, ...]:
+    """Every name the qualifier matcher reads for `value` on `prop`, and its graph `label`:
+    the code index's label and synonyms of the code, and the label and synonyms of each
+    matchable measure value on `prop` that spells its reading, aliases included."""
+    code = get_index().code_by_dcid(value)
+    measure_index = get_measure_index()
+    reading = measure_index.reading_set(value)
+    return (
+        *(() if label is None else (label,)),
+        *(() if code is None else (code.label, *code.synonyms)),
+        *(
+            text
+            for row in measure_index.values
+            if row.axis == prop and row.matchable and row.dcid in reading
+            for text in (row.label, *row.synonyms)
+        ),
+    )
+
+
 def value_requirements(
     state: ResolveState, recorded: Sequence[ResolvedQualifier]
 ) -> tuple[Requirement, ...]:
@@ -3271,9 +3323,10 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        ``"uncovered"``, and every other exclusion or comparison phrase
        (`_coverage_records`). In log mode election vetting logs them instead
        (`phase_election._repair_bindings`) and the answer reads without them.
-    10. Each value the bind drafted on a property the elected shape has no slot for
-       (`ResolveState.stray_requirements`), ``unbound`` with evidence ``"model"``, in
-       every coverage mode, unless a record above already names that text.
+    10. Each value the bind drafted on a property the elected shape has no slot for and a
+       recorded term supports (`ResolveState.stray_requirements`), ``unbound`` with
+       evidence ``"model"``, in every coverage mode, unless a record above already names
+       that text.
 
     The words naming a value a shape on the bind menu holds are no record here: election
     vetting records them as value requirements (`value_requirements`), which each final
@@ -3426,7 +3479,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     resolved.extend(
         requirement.term
         for requirement in state.stray_requirements
-        if _normalize(requirement.term.text) not in already_recorded
+        if requirement.refuses and _normalize(requirement.term.text) not in already_recorded
     )
     return resolved
 
@@ -3470,46 +3523,6 @@ def _model_records(
             )
         )
     return records
-
-
-def _validate_requested_all_bindings(
-    bindings: list[SlotBindingDraft],
-    dropped_qualifier_phrases: list[str],
-    *,
-    slot_properties: frozenset[str],
-) -> tuple[list[SlotBindingDraft], frozenset[str]]:
-    """Validate model ``requested_all`` claims before defaults or warning suppression use them.
-
-    A claim must be unbound, name a property on the elected shape, and reproduce a dropped
-    phrase exactly. A claim on a code system the index declares must also name that slot by
-    its declared plain name (`names_plain_name`), the noun the part shows for it and the
-    slot a declared default narrows. "Across all flows" asks for every flow, while "total"
-    names no slot, so the flow default still binds. Demote invalid claims to ``mentioned``
-    and clear their phrase. Return bindings in order plus normalised phrases from valid
-    claims only.
-    """
-    declarations = get_index().declarations
-    applied: set[str] = set()
-    validated: list[SlotBindingDraft] = []
-    for binding in bindings:
-        if binding.evidence == "requested_all":
-            phrase = binding.requested_all_phrase
-            declaration = declarations.get(binding.property_dcid or "")
-            if (
-                binding.kind == "unbound"
-                and binding.property_dcid in slot_properties
-                and phrase is not None
-                and phrase in dropped_qualifier_phrases
-                and (declaration is None or names_plain_name(phrase, declaration.plain_name))
-            ):
-                applied.add(_normalize(phrase))
-                validated.append(binding)
-                continue
-            binding = binding.model_copy(
-                update={"evidence": "mentioned", "requested_all_phrase": None}
-            )
-        validated.append(binding)
-    return validated, frozenset(applied)
 
 
 def operation_slot_phrases(
@@ -3634,10 +3647,12 @@ class _HousePolicyStep:
             holds=holds,
         )
 
-    def chooses_on(self, indices: Sequence[int], axis: str) -> bool:
-        """Whether a house policy would choose on measure axis `axis` among the menu shapes
-        at `indices` (`house_policy.chooses_on`). Not a call of the step."""
-        return chooses_on(self._facts_of(indices), self._context(indices), axis)
+    def chooses_on(
+        self, indices: Sequence[int], axis: str, *, policies: Sequence[PolicyName] = POLICY_ORDER
+    ) -> bool:
+        """Whether one of `policies` would choose on measure axis `axis` among the menu
+        shapes at `indices` (`house_policy.chooses_on`). Not a call of the step."""
+        return chooses_on(self._facts_of(indices), self._context(indices), axis, policies=policies)
 
     @cached_property
     def _facts(self) -> tuple[ShapeFacts, ...]:
@@ -3692,8 +3707,9 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
     policies elect (``elected``) and the one the part answers with after the menu-rank
     tie-break (``answered``, `_elected_index`), each None when the reply elects none, the
     policy pool, the policies that narrowed, the reply's
-    ratings as it wrote them (None on a refusal), the facts the policies read
-    of each pool shape, and whether the schema refused the reply (`decision` None)."""
+    ratings as it wrote them (None on a refusal), the binder's own scores
+    (`BindResult.scores`), the facts the policies read of each pool shape, and whether the
+    schema refused the reply (`decision` None)."""
     pool = decision.policy_pool if decision is not None else None
     choice = decision.policy_choice if decision is not None else None
     output = decision.output if decision is not None else None
@@ -3708,6 +3724,7 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
         "pool": list(pool.measuring) if pool is not None else [],
         "fired": list(choice.fired) if choice is not None else [],
         "ratings": [r.model_dump() for r in output.measuring] if output is not None else None,
+        "scores": dict(decision.scores) if decision is not None else {},
         "facts": [asdict(f) for f in choice.facts] if choice is not None else [],
         "refused": decision is None,
     }
@@ -3742,9 +3759,10 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     value) refuses ``variable_not_resolved`` with the call's usage and warns
     ``degenerate_binding_detected``. A value or set draft on a property the elected shape
     has no slot for leaves the output (`split_stray_bindings`), and its value is recorded
-    in the ledger as a requirement (`_stray_requirements`) every answer is held to: the
-    part answers from the readings that apply it, and refuses ``qualifier_not_bound`` on it,
-    with the elected reading flagged, when none does.
+    in the ledger as a requirement (`_stray_requirements`). Every answer is held to a value
+    a recorded term supports. The part answers from the readings that apply it, and refuses
+    ``qualifier_not_bound`` on it, with the elected reading flagged, when none does. An
+    answer that leaves a value only the model read unapplied stands and discloses it.
 
     A model that asks declines every admissible reading. When it names the nearest refused
     reading, that reading stands in as the elected shape (`_stand_in_declined`), so the
@@ -3913,8 +3931,11 @@ async def _stray_requirements(
     state: ResolveState, stray: Sequence[SlotBindingDraft]
 ) -> tuple[Requirement, ...]:
     """One requirement per property `stray` binds values on: the values the bind drafted on
-    properties the elected shape has no slot for (`split_stray_bindings`). The values on
-    one property are a set the request names (`ValueRule`), applied by membership: an
+    properties the elected shape has no slot for (`split_stray_bindings`). A value no
+    recorded term supports (`model_only_values`) is a requirement of its own that does not
+    refuse (`Requirement.refuses`). An answer that leaves it unapplied stands and departs
+    `measure_not_applied` under the value's name. The other values on one property are a
+    set the request names (`ValueRule`), applied by membership: an
     answer that binds one of them, or every member of which holds one, applies it, and the
     elected answer, which drops the draft, leaves it unmet unless every member holds one.
     Its term is ``unbound`` with evidence ``"model"``, named by the values' labels joined
@@ -3955,7 +3976,29 @@ async def _stray_requirements(
     for prop, value in values:
         by_prop.setdefault(prop, []).append(value)
     requirements: list[Requirement] = []
-    for prop, drafted in by_prop.items():
+    for prop, values_on in by_prop.items():
+        model = model_only_values(state, prop, values_on, labels)
+        requirements.extend(
+            Requirement(
+                term=ResolvedQualifier(
+                    text=labels[value],
+                    named=[GraphRef(ref=value, label=labels[value])],
+                    slot=None,
+                    disposition="unbound",
+                    evidence="model",
+                ),
+                origin="stray",
+                rule=ValueRule(values=frozenset({(prop, value)})),
+                departure=unapplied_departure(
+                    labels[value], asked=labels[value], property_dcid=prop
+                ),
+                refuses=False,
+            )
+            for value in model
+        )
+        drafted = [value for value in values_on if value not in model]
+        if not drafted:
+            continue
         named = [GraphRef(ref=value, label=labels[value]) for value in drafted]
         label = " and ".join(ref.label for ref in named)
         requirements.append(

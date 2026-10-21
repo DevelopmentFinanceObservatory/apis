@@ -249,15 +249,9 @@ def test_leader_timeout_wakes_every_follower_with_timed_out_done(monkeypatch, se
         assert dones[0].timed_out is True
 
 
-def test_two_differently_worded_queries_run_concurrently_bind_once(monkeypatch):
-    """Sequential layer-2 hits are covered by
-    test_response_cache_e2e.py's test_differently_worded_query_hits_layer2;
-    this drives the same query pair through asyncio.gather instead, so the
-    second wording's own lookup_parsed call races the first's while it is
-    still in flight rather than finding it already stored. Slows the
-    leader's own fan-out (fanout.resolve_variable) so the second query's
-    extract() and lookup_parsed call are guaranteed to land before the
-    leader's bind finishes and stores.
+def test_different_single_variable_queries_bind_independently(monkeypatch):
+    """Concurrent queries keep separate layer-2 leases when their full text differs,
+    because each can name graph values its extraction omits.
     """
     original_resolve_variable = fanout_module.resolve_variable
 
@@ -287,18 +281,18 @@ def test_two_differently_worded_queries_run_concurrently_bind_once(monkeypatch):
         mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
         r1, r2 = asyncio.run(asyncio.wait_for(_run_both(), timeout=10))
 
-    assert llm.calls.count("_UniversalBindOutput") == 1  # single-flight, not once per wording
-    assert r1.parts == r2.parts
+    assert llm.calls.count("_UniversalBindOutput") == 2
+    assert r1.status == r2.status == "definite"
     assert r1.query_echo.raw_query == _QUERY_A
     assert r2.query_echo.raw_query == _QUERY_B
 
 
-def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
+def test_layer2_multivariable_leader_timeout_wakes_the_follower_with_timed_out_done(
     monkeypatch, search_settings
 ):
     clock = frozen_monotonic_clock(monkeypatch)
     search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
-    monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["only"]))
+    monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["only", "also"]))
 
     cache = ResponseCache()
     stub, fan_out_calls = _stall_leader_past_deadline_once_followers_wait(
@@ -340,7 +334,7 @@ def test_layer2_leader_timeout_wakes_the_layer2_follower_with_timed_out_done(
 
     leader_events, follower_events = asyncio.run(asyncio.wait_for(_run(), timeout=10))
 
-    assert len(fan_out_calls) == 1  # the follower never ran its own fan-out
+    assert len(fan_out_calls) == 2  # the follower never ran its own fan-out
 
     leader_dones = [e for e in leader_events if isinstance(e, DoneEvent)]
     assert len(leader_dones) == 1

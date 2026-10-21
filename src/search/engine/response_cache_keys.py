@@ -256,6 +256,7 @@ def layer2_key(
     declared_default_slots_named: Sequence[str],
     scope: dict,
     query_text_negated_stated_words: Sequence[str] = (),
+    query_text_value_source: str | None = None,
     source_codes: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
@@ -288,9 +289,10 @@ def layer2_key(
     (`bind_repair.stated_words_negated`), which the key states only when there is one, and the
     warnings extraction adds to the answer (`extraction_warnings`): a relative date the parser
     could not read, quoting its wording, and the variable and qualifier caps, counting what
-    the model named before them. The key states those only when there is one. They keep
-    layer 2 sound when distinct queries produce the same extraction without
-    hashing raw query text, preserving reuse when those readers agree.
+    the model named before them. The key states those only when there is one.
+    `query_text_value_source` holds the single-variable query whose words ground drafted
+    values. Their names can come from graph taxonomies known only after retrieval, so
+    the whole source participates in the key.
     """
     document = {
         "scope": scope,
@@ -312,6 +314,8 @@ def layer2_key(
     }
     if query_text_negated_stated_words:
         document["query_text_negated_stated_words"] = list(query_text_negated_stated_words)
+    if query_text_value_source is not None:
+        document["query_text_value_source"] = " ".join(query_text_value_source.split())
     if any(code is not None for code in source_codes):
         document["source_codes"] = list(source_codes)
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:

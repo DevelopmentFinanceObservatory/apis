@@ -149,6 +149,7 @@ def _run(
     sv_score: float,
     role_query: str,
     sdmx: FakeSdmxClient,
+    variable: str = "aid",
     date_request: DateRequest | None = None,
     include_observations: bool = False,
     unit_text: str | None = None,
@@ -180,7 +181,7 @@ def _run(
     )
     return asyncio.run(
         resolve_variable(
-            "aid",
+            variable,
             entities=entities,
             date_request=date_request,
             detect_query=role_query,
@@ -1075,8 +1076,9 @@ class _StrayBindLLM:
 
 def test_empty_discovery_with_a_stray_value_refuses_naming_it(monkeypatch):
     """Discovery finds no recipient with data, which refuses `no_observations` before any
-    answer is judged. The bind drafted Female on a slot the elected shape lacks, which the
-    elected answer leaves unmet, and `qualifier_not_bound` ranks first, so the part refuses
+    answer is judged. The bind drafted Female, which the words name, on a slot the elected
+    shape lacks, which the elected answer leaves unmet, and `qualifier_not_bound` ranks
+    first, so the part refuses
     naming it (`phase_shared.settle_unjudged_refusal`), with the elected answer as its
     flagged match, whose trace records the term, and keeps the recipient axis discovery
     left open. Nothing departs."""
@@ -1090,6 +1092,7 @@ def test_empty_discovery_with_a_stray_value_refuses_naming_it(monkeypatch):
         sv_score=0.9,
         role_query="aid disbursed",
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        variable="female aid",
     )
 
     assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")

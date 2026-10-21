@@ -1,9 +1,10 @@
-"""Golden replay of the Jev binder: stored Jev answers reproduce each item's expected output.
+"""Golden replay of the Jev binder: stored Jev answers give each item's expected output.
 
 Each item (`_jev_golden`) holds the answers Jev gave on one dev item and the bind output,
 quantity read and election rules the assembler builds from them under the house policies in
-`binders/house_policy.py`. The port's requests ask exactly the questions those answers
-answer, and its assembly gives that output.
+`binders/house_policy.py`. Each expected output is the assembler's own, judged against the
+item's agreed label of the evaluation set, so a change to an expectation is a judged change
+of behaviour. The requests ask exactly the questions those answers answer.
 """
 
 from __future__ import annotations
@@ -62,14 +63,18 @@ def test_the_house_policies_run_once_on_an_election_and_never_on_an_ask(path: Pa
 
 def test_a_house_policy_moves_the_loan_to_the_taxonomy_that_states_it():
     """ "World Bank loans" to Tanzania, with Jev's support for the CRS purpose "action
-    relating to debt" at 0.01 in place of the stored 0.67: the loan is then the one
-    constraint Jev recognised on its CRS pick, DAC2a, the recipient default, states it as
-    non-grant finance in its own taxonomy, and the policy moves the part there. With the
-    stored answers DAC2a has no slot for the purpose, and the CRS shape stays (the golden
-    item)."""
+    relating to debt" at 0.01 in place of the stored 0.67, and no ``none`` share in
+    ``electq`` in place of the stored 0.95, under which the part asks (the golden item):
+    the loan is then the one constraint Jev recognised on its CRS pick, DAC2a, the
+    recipient default, states it as non-grant finance in its own taxonomy, and the policy
+    moves the part there."""
     item = load_item(GOLDEN / "synthetic-74b382efc5_p0.json")
     stored = item.answers
-    answers = JevAnswers(nouls={**stored.nouls, "n|how:crsPurpose|8": 0.01}, choices=stored.choices)
+    electq = {k: p for k, p in stored.choices["electq"].items() if k != "none"}
+    answers = JevAnswers(
+        nouls={**stored.nouls, "n|how:crsPurpose|8": 0.01},
+        choices={**stored.choices, "electq": electq},
+    )
 
     out, _conf = replay(item, answers=answers)
 

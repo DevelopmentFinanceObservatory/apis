@@ -8,18 +8,23 @@ defaults.
 
 The six policies run in order, each over the survivors of the one before:
 
-1. `nominal_vs_va`: nominal output (EconomicActivity `amount`, Nominal where only some
-   output shapes are) over value added, when a value-added shape is among the candidates.
-2. `amount_vs_ge`: on FinancialFlow shapes, grant equivalent, or `amount` when the window
-   starts before grant-equivalent reporting does (`GE_STARTS`) or names no start year, so
-   the years before it stay in the answer.
-3. `net_vs_gross`: a shape whose `nettingBasis` slot offers Gross.
-4. `default_dataset`: a shape whose family the part's house default dataset
+1. `nominal_vs_va`: among output (EconomicActivity `amount`) and value-added shapes,
+   nominal output (Nominal where only some output shapes are) over value added, when a
+   value-added shape is among the candidates.
+2. `amount_vs_ge`: among FinancialFlow shapes measuring `amount` or `grantEquivalent`,
+   grant equivalent, or `amount` when the window starts before grant-equivalent reporting
+   does (`GE_STARTS`) or names no start year, so the years before it stay in the answer.
+3. `net_vs_gross`: among shapes with a `nettingBasis` slot, one that offers Gross.
+4. `commit_vs_disb`: among FinancialObligation shapes and FinancialFlow shapes with a
+   `financialFlowType` slot, a flow whose slot offers Disbursement.
+5. `default_dataset`: a shape whose family the part's house default dataset
    (`Context.wanted_dataset`) publishes. An opt-in table is its own dataset, so the
    imputed multilateral sectors family fits no house default.
-5. `commit_vs_disb`: a FinancialFlow shape whose `financialFlowType` slot offers
-   Disbursement.
 6. `data_at_places`: a shape with data at the named places.
+
+The four convention policies (`CONVENTION_POLICIES`) run first, so a dataset default
+never sets aside a shape a convention would keep: a donor's loans go to the disbursements
+of one dataset, not the commitments of the house default.
 
 Where a policy run over a binder's pool alone would choose on a measure axis (`chooses_on`),
 the binder narrows the pool on that axis only to a value the phrase names outright.
@@ -28,8 +33,9 @@ The policies choose only among the pool shapes that hold every constraint the bi
 recognised on its pick (`apply_house_policies`'s `holds`), so a policy never trades a value
 the phrase names for a convention. The pick holds its own.
 
-A policy narrows only when some, not all, candidates fit it, and does nothing with one
-candidate left.
+A policy judges only the candidates in its domain, the shapes its convention compares, and
+keeps every other one. It narrows only when some, not all, of its domain fit it, and does
+nothing with one candidate left.
 
 Several shapes may survive. The tie-break picks one:
 
@@ -59,8 +65,8 @@ type PolicyName = Literal[
     "nominal_vs_va",
     "amount_vs_ge",
     "net_vs_gross",
-    "default_dataset",
     "commit_vs_disb",
+    "default_dataset",
     "data_at_places",
 ]
 
@@ -68,9 +74,19 @@ POLICY_ORDER: tuple[PolicyName, ...] = (
     "nominal_vs_va",
     "amount_vs_ge",
     "net_vs_gross",
-    "default_dataset",
     "commit_vs_disb",
+    "default_dataset",
     "data_at_places",
+)
+
+# The policies that choose between measure values by a house convention. `default_dataset`
+# and `data_at_places` choose by the part's situation, its house default and the data at
+# its places, so they set no reading of the words.
+CONVENTION_POLICIES: tuple[PolicyName, ...] = (
+    "nominal_vs_va",
+    "amount_vs_ge",
+    "net_vs_gross",
+    "commit_vs_disb",
 )
 
 # The first year donors report official development assistance as grant equivalent.
@@ -148,14 +164,20 @@ class PolicyChoice:
     facts: tuple[ShapeFacts, ...]
 
 
-def chooses_on(facts: Sequence[ShapeFacts], context: Context, axis: str) -> bool:
-    """Whether a house policy, run over `facts` alone (`apply_policy`), keeps fewer of their
-    values on the shape-kind measure axis `axis` than they hold, so the policy rather than
-    the phrase decides between them there."""
+def chooses_on(
+    facts: Sequence[ShapeFacts],
+    context: Context,
+    axis: str,
+    *,
+    policies: Sequence[PolicyName] = POLICY_ORDER,
+) -> bool:
+    """Whether one of `policies`, run over `facts` alone (`apply_policy`), keeps fewer of
+    their values on the shape-kind measure axis `axis` than they hold, so the policy rather
+    than the phrase decides between them there."""
     read = attrgetter(_AXIS_FACTS[axis])
     held = {read(f) for f in facts}
     return len(held) > 1 and any(
-        {read(f) for f in apply_policy(policy, facts, context)} != held for policy in POLICY_ORDER
+        {read(f) for f in apply_policy(policy, facts, context)} != held for policy in policies
     )
 
 
@@ -289,26 +311,61 @@ def _with_data(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
     return [s.index for s in shapes if s.available is True]
 
 
-_FITS: Mapping[PolicyName, Callable[[Sequence[ShapeFacts], Context], list[int]]] = {
-    "nominal_vs_va": _nominal_output,
-    "amount_vs_ge": _amount_or_ge,
-    "net_vs_gross": _gross,
-    "default_dataset": _default_dataset,
-    "commit_vs_disb": _disbursed,
-    "data_at_places": _with_data,
+def _output_or_value_added(s: ShapeFacts) -> bool:
+    return (s.population_type, s.measured_property) == ("EconomicActivity", "amount") or (
+        s.measured_property == "valueAdded"
+    )
+
+
+def _flow_amount_or_ge(s: ShapeFacts) -> bool:
+    return s.population_type == "FinancialFlow" and s.measured_property in (
+        "amount",
+        "grantEquivalent",
+    )
+
+
+def _netted(s: ShapeFacts) -> bool:
+    return s.netting is not None
+
+
+def _flow_or_obligation(s: ShapeFacts) -> bool:
+    return (s.population_type == "FinancialFlow" and s.flow_types is not None) or (
+        s.population_type == "FinancialObligation"
+    )
+
+
+def _any_shape(_s: ShapeFacts) -> bool:
+    return True
+
+
+# Each policy's domain, the shapes it compares, and the domain shapes it keeps.
+_POLICIES: Mapping[
+    PolicyName,
+    tuple[Callable[[ShapeFacts], bool], Callable[[Sequence[ShapeFacts], Context], list[int]]],
+] = {
+    "nominal_vs_va": (_output_or_value_added, _nominal_output),
+    "amount_vs_ge": (_flow_amount_or_ge, _amount_or_ge),
+    "net_vs_gross": (_netted, _gross),
+    "commit_vs_disb": (_flow_or_obligation, _disbursed),
+    "default_dataset": (_any_shape, _default_dataset),
+    "data_at_places": (_any_shape, _with_data),
 }
 
 
 def apply_policy(
     policy: PolicyName, candidates: Sequence[ShapeFacts], ctx: Context
 ) -> list[ShapeFacts]:
-    """The candidates `policy` keeps. These are the ones that fit when some, not all, fit, and
-    all of them otherwise."""
+    """The candidates `policy` keeps: every candidate outside its domain, and of those in
+    it the ones that fit when some, not all, fit, else all of them. A policy compares only
+    the shapes its convention is about, so "imputed multilateral" outflows stay beside
+    the amount and grant-equivalent shapes `amount_vs_ge` chooses between."""
     if len(candidates) < 2:
         return list(candidates)
-    fitting = set(_FITS[policy](candidates, ctx))
-    if 0 < len(fitting) < len(candidates):
-        return [s for s in candidates if s.index in fitting]
+    in_domain, fits = _POLICIES[policy]
+    domain = [s for s in candidates if in_domain(s)]
+    fitting = set(fits(domain, ctx))
+    if 0 < len(fitting) < len(domain):
+        return [s for s in candidates if not in_domain(s) or s.index in fitting]
     return list(candidates)
 
 

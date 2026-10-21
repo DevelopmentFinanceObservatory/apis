@@ -83,13 +83,11 @@ type ReplayedPlaceOptions = Callable[
 
 # ---------------------------------------------------------------------------
 # Raw-text inputs absent from Extraction: one `role_query` reader checks each
-# DoorRole occurrence on every leg. Five `query_text` readers run only for one-
-# variable requests: qualifier matches and ties (one reading serves both),
-# two-reading spans, unsupported phrases, default triggers, and the defaulted
-# slots the query names.
+# DoorRole occurrence on every leg. Single-variable requests also read qualifier
+# vocabulary, defaults, written phrases, negated dataset words and graph value names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
-# Reuse pipeline helpers and index;
-# the key builder receives JSON-safe results, not raw text or the index.
+# Graph value names are known only after retrieval, so their signal keeps the whole
+# query. The other signals reuse the pipeline helpers and index.
 # ---------------------------------------------------------------------------
 
 
@@ -110,6 +108,7 @@ class Layer2Signals:
     declared_default_slots_named: tuple[str, ...]
     written_variable_phrases: tuple[str | None, ...]
     query_text_negated_stated_words: tuple[str, ...]
+    query_text_value_source: str | None
 
 
 def _role_contradiction(name: str, role: DoorRole, *, query: str) -> dict[str, object]:
@@ -153,6 +152,7 @@ def compute_layer2_signals(
             declared_default_slots_named=(),
             written_variable_phrases=(),
             query_text_negated_stated_words=(),
+            query_text_value_source=None,
         )
     index = get_index()
     measure_index = get_measure_index()
@@ -182,6 +182,7 @@ def compute_layer2_signals(
             written_phrase(variable, query_text) for variable in variables
         ),
         query_text_negated_stated_words=stated_words_negated(query_text, index=index),
+        query_text_value_source=query_text,
     )
 
 
@@ -424,6 +425,7 @@ class CacheScope:
             declared_default_slots_named=signals.declared_default_slots_named,
             written_variable_phrases=signals.written_variable_phrases,
             query_text_negated_stated_words=signals.query_text_negated_stated_words,
+            query_text_value_source=signals.query_text_value_source,
             scope=self._scope,
             separate=separate,
             extraction_warnings=extraction_warnings,

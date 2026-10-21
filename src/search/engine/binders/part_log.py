@@ -1,7 +1,9 @@
 """The ``binder_part`` line: one per quantity read and per bind call, naming the binder the
 request was routed to, the one that served the call, why it fell back when it did, and the
-Jev request's time, questions, chunks and tokens when one was sent. Fallback share, 402 and
-429 counts and Jev latency are log-based metrics on this line.
+Jev request's time, questions, chunks and tokens when one was sent. A part's later calls
+after a fallback log ``fallback=inherited`` with no ``jev_error`` and no Jev counts, so the
+lines that carry ``jev_error`` count the Jev requests that failed, each once. Fallback
+share, 402 and 429 counts and Jev latency are log-based metrics on this line.
 """
 
 from __future__ import annotations
@@ -36,11 +38,14 @@ def log_binder_part(
     ms: int,
     jev: JevCall | None = None,
     failure: JevFailure | None = None,
+    inherited: bool = False,
 ) -> None:
     """Log one ``binder_part`` line. `binder` is the binder the request was routed to and
     `served_by` the one whose answer the part reads; `jev` is the Jev request that answered,
-    and `failure` the one that did not."""
-    sent = failure.call if failure is not None else jev
+    and `failure` the one that did not. `inherited` marks a call that sent no request
+    because an earlier call of its part had failed: it logs ``fallback=inherited``, no
+    ``jev_error`` and no Jev counts, which the failed request's line already carries."""
+    sent = None if inherited else failure.call if failure is not None else jev
     counts = (
         ("-",) * 5
         if sent is None
@@ -55,8 +60,8 @@ def log_binder_part(
         call,
         binder,
         served_by,
-        "-" if failure is None else failure.reason,
-        "-" if failure is None else failure.kind,
+        "inherited" if inherited else "-" if failure is None else failure.reason,
+        "-" if failure is None or inherited else failure.kind,
         ms,
         *counts,
     )
