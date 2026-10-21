@@ -43,7 +43,7 @@ from search.engine.region.candidate_admission import alternates_unevaluated_warn
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
-from search.engine.region.phase_election import _phase_settle
+from search.engine.region.phase_election import _phase_settle, log_would_refuse
 from search.engine.region.phase_intake import (
     _phase_check_entities,
     _phase_derive_shapes,
@@ -829,6 +829,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     )
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
+                    log_would_refuse(state, result)
                     return _stating_unevaluated(
                         dataclasses.replace(
                             with_requirement_departures(

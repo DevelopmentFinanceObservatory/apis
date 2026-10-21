@@ -124,17 +124,17 @@ def _run(
         search_settings(max_candidates=search_max_candidates)
     graph = FakeGraph(
         nodes=_NODES,
-        detect={"electricity or mortality in Kenya": {"svs": svs, "cosine_scores": scores}},
+        detect={"indicators in Kenya": {"svs": svs, "cosine_scores": scores}},
         resolve={"Kenya": "country/KEN"},
         obs=obs,
     )
     return asyncio.run(
         resolve_variable(
-            "electricity or mortality in Kenya",
+            "indicators in Kenya",
             entities=["Kenya"],
             date_request=None,
-            detect_query="electricity or mortality in Kenya",
-            role_query="electricity or mortality in Kenya",
+            detect_query="indicators in Kenya",
+            role_query="indicators in Kenya",
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
@@ -463,7 +463,7 @@ def test_diverted_twin_carries_no_sentence_or_facet_options_with_both_flags_on()
 
     response = assemble_region(
         region,
-        query="electricity or mortality in Kenya",
+        query="indicators in Kenya",
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",

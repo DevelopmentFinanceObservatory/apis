@@ -34,7 +34,9 @@ _NODES = {
     _SV_SURVIVOR: {
         "label": "Facet collapse SV survivor",
         "type": "StatisticalVariable",
-        "arcs": _std_arcs("Facet collapse SV survivor", meas_prop="amountSurvivor"),
+        "arcs": _std_arcs(
+            "Facet collapse aggregation test variable survivor", meas_prop="amountSurvivor"
+        ),
     },
     _SV_DROPPED: {
         "label": "Facet collapse SV dropped",

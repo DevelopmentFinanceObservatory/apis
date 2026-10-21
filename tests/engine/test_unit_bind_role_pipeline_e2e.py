@@ -46,7 +46,7 @@ _NOR = "country/NOR"
 
 _STANDARD_ARCS = {
     "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-    "name": {"nodes": [{"value": "Unit bind role pipeline standard"}]},
+    "name": {"nodes": [{"value": "Unit bind role pipeline query standard"}]},
     "populationType": {"nodes": [{"dcid": "TestUnitBindRoleActivity"}]},
     "measuredProperty": {"nodes": [{"dcid": "testUnitBindRoleAmount"}]},
     "statType": {"nodes": [{"dcid": "measuredValue"}]},

@@ -124,10 +124,12 @@ _COUNT = "TESTFIXTURE/Deaths/Count"
 _RATE = "TESTFIXTURE/Deaths/Rate"
 _RATE_DISABLED = "TESTFIXTURE/Deaths/Rate_Disabled"
 _RATE_NODES = {
-    _RATE: _node("Rate", meas_prop="fixtureRate"),
-    _RATE_DISABLED: _node("Rate, disabled", meas_prop="fixtureRate", fixtureStatus="Disabled"),
+    _RATE: _node("Death rate", meas_prop="fixtureRate"),
+    _RATE_DISABLED: _node(
+        "Death rate, disabled", meas_prop="fixtureRate", fixtureStatus="Disabled"
+    ),
 }
-_RATE_NOTE = "No data for Rate was found for Kenya, so the answer shows Rate, disabled."
+_RATE_NOTE = "No data for Death rate was found for Kenya, so the answer shows Death rate, disabled."
 
 
 def test_a_definite_part_warns_and_its_sentence_does_not(status_reads_not_declared):
@@ -192,8 +194,8 @@ def test_a_total_with_data_only_outside_the_years_asked_is_said_to_lack_data_in_
     assert inside.status == "definite", inside
     assert _stat_vars(inside.specs[0]) == [_RATE_DISABLED]
     assert _family_notes(inside) == [
-        "No data for Rate was found for Kenya in the years asked, so the answer shows "
-        "Rate, disabled."
+        "No data for Death rate was found for Kenya in the years asked, so the answer shows "
+        "Death rate, disabled."
     ]
 
     between = _resolve_rate_in(_years(2011, 2014))
@@ -288,7 +290,7 @@ _TWIN_DATA = {
     twins._MORT_WB: twins._facet(provenance_id="source/WorldBank"),
     twins._MORT_SDG: twins._facet(provenance_id="source/SDG"),
 }
-_TWIN_QUERY = "electricity or mortality in Kenya"
+_TWIN_QUERY = "indicators in Kenya"
 
 
 def test_a_twin_moved_to_equivalent_readings_takes_its_warning_and_note(

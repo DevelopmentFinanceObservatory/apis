@@ -3,6 +3,7 @@ default its bindings (`_phase_settle`)."""
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
@@ -32,7 +33,7 @@ from search.engine.region.named_source import with_named_source, without_dataset
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches_against_elected_shape,
     _bound_code_records,
-    _coverage_records,
+    _coverage_reading,
     _elected_index,
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
@@ -925,16 +926,16 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
         return refused
 
     # Resolve query qualifiers against the final bindings, each one no binding covers a
-    # requirement (`requirements.record_reading`). In "refuse" coverage mode an uncovered
-    # word beside a recognised code is a record and the part refuses on it. In log mode the
-    # record is logged once here, outside `unrealisable.unbind_unrealisable`'s re-read, and
-    # a word of a qualifier term the elected shape's own reading leaves unread is a term
+    # requirement (`requirements.record_reading`). In "refuse" coverage mode a word of the
+    # variable no reader covers is a record and the part refuses on it. In log mode the
+    # record is kept once here, outside `unrealisable.unbind_unrealisable`'s re-read, for
+    # the line the pass logs when it ends (`log_would_refuse`), and a word of a qualifier term the elected shape's own reading leaves unread is a term
     # no answer is judged on (`_unread_qualifier_phrases`). In refuse mode a record already
     # covers that word. In log mode a term of a part naming no dataset that names only codes
-    # no shape can bind is withheld (`_withheld_qualifiers`), logged here alike, and is a
+    # no shape can bind is withheld (`_withheld_qualifiers`), kept here alike, and is a
     # term no answer is judged on, whatever its property. Each value the request names by
     # its graph label is recorded once as a requirement (`value_requirements`) in refuse
-    # mode, and in log mode the elected answer's unmet ones are logged here by the same
+    # mode, and in log mode the elected answer's unmet ones are kept by the same
     # rule (`judge_value_requirements`). Each value the bind drafted on a slot the elected
     # shape lacks is a requirement judged by the same rule, which bind recorded
     # (`phase_rank_bind._stray_requirements`), so its query record adds none. Every
@@ -944,16 +945,16 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
     withheld = _withheld_qualifiers(state)
     log_mode = settings().qualifier_coverage == "log"
     recorded = (*state.query_qualifiers, *withheld)
-    coverage = _coverage_records(state, recorded) if log_mode else []
-    values = value_requirements(state, (*recorded, *coverage))
-    if log_mode:
+    coverage = _coverage_reading(state, recorded) if log_mode else None
+    values = value_requirements(state, (*recorded, *(coverage.records if coverage else ())))
+    if coverage is not None:
         unmet = judge_value_requirements(values, state.shape_draft, state.bindings, state)
-        for record in (*withheld, *coverage, *(requirement.term for requirement in unmet)):
-            logger.info(
-                "qualifier_coverage would_refuse phrase=%s codes=%s",
-                record.text,
-                ",".join(ref.ref for ref in record.named),
-            )
+        state.would_refuse = (
+            *withheld,
+            *coverage.records,
+            *(requirement.term for requirement in unmet),
+        )
+        state.word_verdicts = coverage.verdicts
     else:
         for requirement in values:
             state.requirements = with_requirement(state.requirements, requirement)
@@ -977,3 +978,26 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
         state.require_unapplied(phrase, asked=phrase, property_dcid=None, origin="bind")
 
     return None
+
+
+def log_would_refuse(state: ResolveState, result: RegionResult) -> None:
+    """Log one ``qualifier_coverage would_refuse`` line, a JSON object, per term the pass's
+    elected answer would refuse on in refuse mode (`ResolveState.would_refuse`): the part's
+    index, the pass's pool, the variable, the elected shape, the term's phrase and the codes
+    it names, the status `result`, the pass's answer, reached, the spec ids it answers with,
+    and its flagged match's on a refusal, and each word of the variable with the reader that
+    reads it, else ``"unread"`` (`ResolveState.word_verdicts`)."""
+    specs = result.specs or result.flagged_match or ()
+    for record in state.would_refuse:
+        line = {
+            "part": state.variable_index,
+            "pool": state.pool,
+            "variable": state.variable,
+            "shape": state.shape_draft.shape_id,
+            "phrase": record.text,
+            "codes": [ref.ref for ref in record.named],
+            "status": result.status,
+            "spec_ids": [spec.spec_id for spec in specs],
+            "words": [list(verdict) for verdict in state.word_verdicts],
+        }
+        logger.info("qualifier_coverage would_refuse %s", json.dumps(line, separators=(",", ":")))

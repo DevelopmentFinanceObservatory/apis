@@ -74,8 +74,8 @@ def _sv_arcs(*, label: str, source: str) -> dict:
 _NODES = {
     _FRA: {"label": "France", "type": "Country"},
     _DEU: {"label": "Germany", "type": "Country"},
-    _SV_A: {"label": "Flow A", "arcs": _sv_arcs(label="Flow A", source="SourceA")},
-    _SV_B: {"label": "Flow B", "arcs": _sv_arcs(label="Flow B", source="SourceB")},
+    _SV_A: {"label": "Flow A", "arcs": _sv_arcs(label="Aid flow A", source="SourceA")},
+    _SV_B: {"label": "Flow B", "arcs": _sv_arcs(label="Aid flow B", source="SourceB")},
 }
 
 

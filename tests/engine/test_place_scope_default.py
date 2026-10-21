@@ -59,7 +59,7 @@ _NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Population"}]},
+            "name": {"nodes": [{"value": "Test place scope population"}]},
             "populationType": {"nodes": [{"dcid": "Person"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -360,7 +360,7 @@ _CANDIDATES_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Household Population"}]},
+            "name": {"nodes": [{"value": "Test place scope household population"}]},
             "populationType": {"nodes": [{"dcid": "Household"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -479,7 +479,7 @@ _BOUND_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Bare Incidence"}]},
+            "name": {"nodes": [{"value": "Test place scope bare incidence"}]},
             "populationType": {"nodes": [{"dcid": "TestIncidenceEvent"}]},
             "measuredProperty": {"nodes": [{"dcid": "testIncidence"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -527,7 +527,7 @@ def _bound_family_catalogue() -> FakeCatalogue:
         arcs=build_arc_tables(
             dfo={},
             base={
-                _BOUND_SV: arcs("Test Bare Incidence"),
+                _BOUND_SV: arcs("Test place scope bare incidence"),
                 _BOUND_FEMALE_SV: arcs(
                     "Test Female Incidence", asserts=("testSex", "Female", "TestSexEnum")
                 ),
@@ -879,9 +879,15 @@ def test_a_placeless_relaxation_is_suggested_over_the_default_scope_of_its_own_m
     a resubmit of it is, so both are suggested: the first as a worldwide total."""
     graph = FakeGraph(
         nodes={
-            _RELAX_BOTH: _relax_sv("Female adults", "Female", "Years15Onwards"),
-            _RELAX_SEX: _relax_sv("Male adults", "Male", "Years15Onwards"),
-            _RELAX_AGE: _relax_sv("Female seniors", "Female", "Years65Onwards"),
+            _RELAX_BOTH: _relax_sv(
+                "Test place scope population: female adults", "Female", "Years15Onwards"
+            ),
+            _RELAX_SEX: _relax_sv(
+                "Test place scope population: male adults", "Male", "Years15Onwards"
+            ),
+            _RELAX_AGE: _relax_sv(
+                "Test place scope population: female seniors", "Female", "Years65Onwards"
+            ),
             "Female": {"label": "Female"},
             "Male": {"label": "Male"},
             "Years15Onwards": {"label": "15 years or over"},
@@ -953,7 +959,7 @@ _TOTAL_AND_PART_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             **_NODES[_SV]["arcs"],
-            "name": {"nodes": [{"value": "Test Population, female"}]},
+            "name": {"nodes": [{"value": "Test place scope population, female"}]},
             "constraintProperties": {"nodes": [{"dcid": "gender"}]},
             "gender": {"nodes": [{"dcid": "Female"}]},
         },
@@ -1095,8 +1101,10 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
     graph = _ProbeLogGraph(
         nodes={
             _SV_B: _CANDIDATES_NODES[_SV_B],
-            _U_FEMALE: _member_node("Test Population, female", "gender", "Female"),
-            _U_OVER65: _member_node("Test Population, 65 and over", "age", "Years65Onwards"),
+            _U_FEMALE: _member_node("Test place scope population, female", "gender", "Female"),
+            _U_OVER65: _member_node(
+                "Test place scope population, 65 and over", "age", "Years65Onwards"
+            ),
         },
         detect={_DETECT_QUERY: {"svs": svs, "cosine_scores": scores}},
         resolve={},

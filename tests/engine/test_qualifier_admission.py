@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import time
 from collections.abc import Sequence
@@ -535,6 +536,7 @@ def test_a_term_the_elected_crs_shape_reads_in_part_is_unavailable(named_at, var
         bindings=[flow],
         admitted_ties=(),
     )
+    state.entities = ["Kenya"]
     state.scope = scope
     reading = read_text(
         variable, _REAL_INDEX, get_measure_index(), vocabularies=[shape_vocabulary(shape)]
@@ -719,6 +721,9 @@ def test_attributed_as_a_plain_verb_names_no_measure(query, entities, variable, 
     ]
 
 
+_WOULD_REFUSE = "qualifier_coverage would_refuse "
+
+
 @pytest.mark.parametrize("mode", ["log", "refuse"])
 def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(search_settings, caplog, mode):
     """ "Goods donations" names two CRS cooperation modalities, and no index row holds
@@ -738,9 +743,10 @@ def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(search_setti
 
     assert menu == [(_TWO_ENDED_CRS_SV,)]
     would_refuse = [
-        r.getMessage()
+        (line["phrase"], line["codes"])
         for r in caplog.records
-        if "qualifier_coverage would_refuse" in r.getMessage()
+        if (message := r.getMessage()).startswith(_WOULD_REFUSE)
+        for line in [json.loads(message.removeprefix(_WOULD_REFUSE))]
     ]
     dropped = [w for w in result.warnings if w.code == QUERY_QUALIFIER_DROPPED]
     if mode == "log":
@@ -748,8 +754,7 @@ def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(search_setti
         assert not result.unbound_qualifiers
         assert len(dropped) == 1 and "goods donations" in dropped[0].message
         assert would_refuse == [
-            "qualifier_coverage would_refuse phrase=goods donations "
-            "codes=CRSCooperationModalityJ,CRSCooperationModalityJ01"
+            ("goods donations", ["CRSCooperationModalityJ", "CRSCooperationModalityJ01"])
         ]
         return
     assert result.no_data_reason == "qualifier_not_bound"
@@ -1245,6 +1250,7 @@ def test_two_matches_on_one_code_system_bind_by_the_connective_between_them(
     state.variable_spans_by_vocabulary = {
         vocabulary: own.spans for vocabulary, own in reading.by_vocabulary.items()
     }
+    state.entities = ["Kenya"]
     state.query_text = query
     state.query_qualifier_matches = query_qualifiers(
         variable, query_text=query, vocabularies=[vocabulary]

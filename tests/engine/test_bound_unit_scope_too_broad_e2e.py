@@ -73,12 +73,12 @@ _NODES = {
     _SV_A: {
         "label": "Bound unit scope SourceA",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Bound unit scope SourceA", _VAL_A),
+        "arcs": _sv_arcs("Bound unit scope too broad test variable, source A", _VAL_A),
     },
     _SV_B: {
         "label": "Bound unit scope SourceB",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Bound unit scope SourceB", _VAL_B),
+        "arcs": _sv_arcs("Bound unit scope too broad test variable, source B", _VAL_B),
     },
 }
 

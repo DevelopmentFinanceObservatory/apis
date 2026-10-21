@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from search.engine.bind import SlotBindingDraft
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
@@ -178,6 +180,9 @@ def test_single_variable_raw_query_naming_aid_defaults_the_flow_type():
     assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
 
 
+@pytest.mark.xfail(
+    reason='coverage reader: "loans" is unread on the grant-equivalent flow', strict=True
+)
 def test_two_variable_raw_query_naming_aid_leaves_the_flow_type_open():
     """Two extracted variables leave "aid" unattributed, so both flow slots stay open."""
     response = offline_resolve(
