@@ -5,6 +5,7 @@ Requests use offline fixtures and fake model clients.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 from pathlib import Path
@@ -1949,31 +1950,45 @@ def test_request_scope_cleanup_survives_a_self_cancellation_landing_on_the_first
 # ---------------------------------------------------------------------------
 
 
-def test_build_candidates_region_one_survivor_collapses_to_definite():
-    """A candidate set where exactly one promote survives to `definite`
+@pytest.mark.parametrize(
+    ("repeats", "resolves"),
+    [
+        pytest.param(
+            0, "2 candidates were posted; 1 still resolves to a definite answer", id="one"
+        ),
+        pytest.param(
+            1, "3 candidates were posted; 2 still resolve and rebuild to 1 reading", id="repeated"
+        ),
+    ],
+)
+def test_build_candidates_region_one_survivor_collapses_to_definite(repeats: int, resolves: str):
+    """A candidate set where exactly one reading survives to `definite`
     collapses to that survivor's own RegionResult, re-stamped with the
     entry's own variable_text/timing/earliest_index -- not a one-element
     `candidates` part, which CandidateSet.specs' own min_length=2 has no
-    wire shape for."""
+    wire shape for. A repeat of the survivor counts as resolving and
+    rebuilds to the same reading."""
     ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
     birth_rate_part = ethiopia.parts[1]
     survivor_spec = _spec_with_sv(birth_rate_part, _CRUDE_BIRTH_RATE)
     other_spec = _spec_with_sv(birth_rate_part, _FERTILITY_RATE)
     entry = _candidates_entry_from_part(
         birth_rate_part,
-        candidates=[survivor_spec, other_spec],
+        candidates=[survivor_spec] * (1 + repeats) + [other_spec],
         variable_text="birth rate",
         separate=True,
     )
+    survivor = RegionResult(
+        variable_text="ignored",
+        status="definite",
+        specs=(survivor_spec,),
+        no_data_reason=None,
+        warnings=(),
+        timing_by_step={"recall": 5},
+    )
     promoted = [
-        RegionResult(
-            variable_text="ignored",
-            status="definite",
-            specs=(survivor_spec,),
-            no_data_reason=None,
-            warnings=(),
-            timing_by_step={"recall": 5},
-        ),
+        survivor,
+        *[dataclasses.replace(survivor, timing_by_step={}) for _ in range(repeats)],
         RegionResult(
             variable_text="ignored",
             status="no_data",
@@ -1994,8 +2009,7 @@ def test_build_candidates_region_one_survivor_collapses_to_definite():
     assert region.timing_by_step == {"recall": 8}
     warning = next(w for w in region.warnings if w.code == "candidates_collapsed_definite")
     assert warning.message == (
-        "2 candidates were posted; 1 still resolves to a definite answer, so the part "
-        "is reported as that answer and not as the posted candidate set."
+        f"{resolves}, so the part is reported as that answer and not as the posted candidate set."
     )
 
 

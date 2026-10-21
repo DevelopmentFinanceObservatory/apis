@@ -19,7 +19,8 @@
 A `dataset_resubmit` identity entry posts every slot bound and may echo the part's list
 back. Its part states the echoed items that still hold, matched by kind and binding and
 worded from the rebuilt Spec. A declared default holds while its slot still binds the
-echoed value dcids (`Assumption.refs`). An entry with no echo reads as a fresh request.
+echoed value dcids (`Assumption.refs`). An entry with no echo states the open roles and
+place scope the answer reads and no declared default, since it binds every slot.
 
 The sentence closes with the items as one clause (`clause_tokens`), for example "Assumed:
 official development assistance; every provider."
@@ -82,7 +83,7 @@ def assumptions_for(
     echoed `refs`, and states those refs. An open role holds while `spec` still reads it open
     on the echoed axis, and the place scope while `spec` still names no place. An item the
     echo lacks is left out, since the posted identity or its edit asked for it, so an empty
-    echo states none. With no echo, `spec` reads as a fresh request does."""
+    echo states none. With no echo, the result is every item `spec` yields."""
     heading = heading_for(spec).heading
     echoed = {_echo_key(item) for item in echo or ()}
     slots = (own_spec or spec).resolved.trace.slot_filters

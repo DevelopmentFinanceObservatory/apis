@@ -1417,7 +1417,9 @@ def test_a_candidate_whose_open_creditor_its_twin_serves_keeps_its_spec_id(monke
     assert part.spec.spec_id == spec.spec_id
     assert part.spec.definition.identity.open_roles == ["origin"]
     (warning,) = (w for w in part.warnings if w.code == "candidates_collapsed_definite")
-    assert warning.message.startswith("2 candidates were posted and all rebuild to 1 reading")
+    assert warning.message.startswith(
+        "2 candidates were posted; 2 still resolve and rebuild to 1 reading"
+    )
 
 
 @pytest.mark.parametrize(

@@ -89,27 +89,22 @@ def _merge_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
 def _candidates_collapsed_warning(*, posted: int, resolved: int, survivors: int) -> Warning:
     """Report a collapsed candidate set with posted and surviving counts.
 
-    One survivor yields `candidates_collapsed_definite`. Its message says the candidates
-    rebuild to one reading when every posted candidate resolved, and says how many still
-    resolve otherwise. Zero yields `candidates_collapsed_no_data`.
+    One survivor yields `candidates_collapsed_definite`. Its message says how many posted
+    candidates still resolve and, when more than one does, that they rebuild to one
+    reading. Zero yields `candidates_collapsed_no_data`.
     """
-    if survivors == 1 and resolved == posted:
-        return Warning(
-            code="candidates_collapsed_definite",
-            severity="warn",
-            message=(
-                f"{posted} candidates were posted and all rebuild to 1 reading, so the "
-                "part is reported as that answer and not as the posted candidate set."
-            ),
-        )
     if survivors == 1:
+        resolves = (
+            "1 still resolves to a definite answer"
+            if resolved == 1
+            else f"{resolved} still resolve and rebuild to 1 reading"
+        )
         return Warning(
             code="candidates_collapsed_definite",
             severity="warn",
             message=(
-                f"{posted} candidates were posted; 1 still resolves to a definite "
-                "answer, so the part is reported as that answer and not as the "
-                "posted candidate set."
+                f"{posted} candidates were posted; {resolves}, so the part is reported "
+                "as that answer and not as the posted candidate set."
             ),
         )
     return Warning(

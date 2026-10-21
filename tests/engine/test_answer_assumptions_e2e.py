@@ -679,8 +679,8 @@ def test_an_edited_candidates_set_restates_each_reading_s_echo(
         assert response.rendered_sentence.endswith(_ASSUMED_CLAUSE)
         (warning,) = (w for w in part.warnings if w.code == "candidates_collapsed_definite")
         assert warning.message == (
-            "2 candidates were posted and all rebuild to 1 reading, so the part is reported "
-            "as that answer and not as the posted candidate set."
+            "2 candidates were posted; 2 still resolve and rebuild to 1 reading, so the part "
+            "is reported as that answer and not as the posted candidate set."
         )
         return
     part, sentence = _edited_set([*identities, _loan_identity()], [*echoes, loan_echo])
