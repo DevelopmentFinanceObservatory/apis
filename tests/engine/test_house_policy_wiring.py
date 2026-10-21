@@ -654,6 +654,7 @@ def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFix
             "pool": [0, 1],
             "fired": ["default_dataset"],
             "ratings": [{"index": 0, "rating": 1.0}, {"index": 1, "rating": 1.0}],
+            "scores": {},
             "refused": False,
         }
         for pool in ("ours", "un_system")
@@ -681,6 +682,7 @@ def test_a_schema_refusal_logs_a_refused_bind_decision(caplog: pytest.LogCapture
         "pool": [],
         "fired": [],
         "ratings": None,
+        "scores": {},
         "facts": [],
         "refused": True,
     }
@@ -899,7 +901,11 @@ _NETTING = SlotKeyDraft(axis="how", property_dcid="nettingBasis", label="netting
 _EVERY_SECTOR = _shape(
     "every_sector",
     _SECTOR_SLOT,
-    taxonomy={"how:crsPurpose": ["CRSPurposeCode111", "CRSPurposeCode112"]},
+    _NETTING,
+    taxonomy={
+        "how:crsPurpose": ["CRSPurposeCode111", "CRSPurposeCode112"],
+        "how:nettingBasis": ["Net"],
+    },
 )
 # A rival offering Gross, which `net_vs_gross` elects, on one sector of the two.
 _ONE_SECTOR_GROSS = _shape(

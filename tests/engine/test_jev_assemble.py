@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -192,6 +192,12 @@ def _elected(shapes: list[ShapeDraft], elect: Mapping[int, float], base: Mapping
     return read
 
 
+def _declined(nouls: Mapping[str, float]) -> object:
+    answers = _answers(nouls, elect={0: 1.0}, choices={"electq": {"Shape 0": 0.3, "none": 0.7}})
+    output, _conf = _assemble(_request([_shape(0)]), answers)
+    return output.ask is not None
+
+
 def _gate(nouls: Mapping[str, float]) -> object:
     answers = _answers(nouls, choices={"q|form": {"per_person": 0.9, "none": 0.1}})
     return assemble_quantity(answers, []).stated_form
@@ -208,13 +214,14 @@ _AMOUNT_AND_GE = [
 
 _CUTS = {
     "ask": _Cut(_ask, "m|0", 0.15, 0.16, True, False),
+    "decline": _Cut(_declined, "m|0", 0.4, 0.41, True, False),
     "measures": _Cut(
-        _alternates(_PLAIN_AND_DIVIDED, {0: 1.0}, 0.55),
+        _pool(lambda n: _answers({"m|0": 0.6, **n}, elect={0: 1.0}), [_VALUE_ADDED, _OUTPUT]),
         "m|1",
         0.5,
         0.51,
-        None,
-        [1],
+        [0],
+        [0, 1],
     ),
     "near": _Cut(
         _pool(lambda n: _answers({"m|0": 0.9, **n}), [_shape(0), _shape(1, population="Place")]),
@@ -234,14 +241,14 @@ _CUTS = {
         [0, 1],
     ),
     "alt_floor": _Cut(
-        _alternates([_shape(0), _shape(1, population="Place")], {0: 0.9, 1: 0.1}, 0.32),
+        _alternates([_shape(0), _shape(1, population="Place")], {0: 0.5, 1: 0.5}, 0.32),
         "m|1",
         0.3,
         0.31,
         None,
         [1],
     ),
-    "near_alt": _Cut(_near_alt, "elect|1", 0.04, 0.05, None, [1]),
+    "near_alt": _Cut(_near_alt, "elect|1", 0.33, 0.34, None, [1]),
     "measure_value": _Cut(
         _elected(_PERSON_AND_PLACE, {0: 0.6, 1: 0.4}, {"m|0": 0.9, "m|1": 0.9}),
         "mv|Place",
@@ -754,3 +761,92 @@ def test_the_frame_states_a_form_only_when_the_question_names_one():
     assert frame_stated_form(_frame()) is None
     assert frame_stated_form(framed("level", "default")) is None
     assert frame_stated_form(framed("per_person", "reader")) == "per_person"
+
+
+_GE = _shape(0, population="FinancialFlow", measured="grantEquivalent", qualifier="Nominal")
+_AMOUNT = _shape(1, population="FinancialFlow", measured="amount", qualifier="Nominal")
+
+
+@pytest.mark.parametrize(
+    ("shapes", "nouls", "elected", "pool", "rules"),
+    [
+        pytest.param(
+            [_GE, _AMOUNT],
+            {"mv|grantEquivalent": 0.58},
+            1,
+            [0, 1],
+            ["house: amount_vs_ge"],
+            id="convention-variant-to-the-policy",
+        ),
+        pytest.param(
+            [_GE, _AMOUNT],
+            {"mv|grantEquivalent": 0.95},
+            0,
+            [0],
+            ["named: measuredProperty"],
+            id="named-value-keeps-it",
+        ),
+        pytest.param(
+            [_GE, replace(_AMOUNT, datasets=("provenance/OtherDataset",))],
+            {"mv|grantEquivalent": 0.58},
+            0,
+            [0],
+            [],
+            id="another-dataset-s-variant-stays-out",
+        ),
+        pytest.param(
+            [_shape(0), _shape(1, population="Place")], {}, 0, [0], [], id="other-reading-stays-out"
+        ),
+    ],
+)
+def test_the_pool_holds_a_convention_variant_the_election_sets_aside(
+    shapes: list[ShapeDraft], nouls: dict[str, float], elected: int, pool: list[int], rules: list
+):
+    """ "education grants" with no start year: Jev elects grant equivalent 0.92 to 0.075, and
+    the amount shape, measuring the phrase within `near`, still reaches `amount_vs_ge`,
+    which keeps the amount. A shape of another reading, or of the same reading in another
+    dataset, that the election sets aside stays out."""
+    answers = _answers({"m|0": 0.86, "m|1": 0.81, **nouls}, elect={0: 0.92, 1: 0.075})
+
+    output, conf = _assemble(_request(shapes), answers)
+
+    assert output.chosen_shape_index == elected
+    assert conf.pool is not None and sorted(conf.pool.measuring) == pool
+    assert conf.rules == rules
+
+
+@pytest.mark.parametrize(("none", "asks"), [(0.35, False), (0.36, True)])
+def test_the_part_asks_when_electq_puts_none_above_every_shape(none: float, asks: bool):
+    shapes = [_shape(0), _shape(1, population="Place")]
+    electq = {"Shape 0": 0.3, "Shape 1": 0.7 - none, "none": none}
+    answers = _answers({"m|0": 0.3, "m|1": 0.3}, elect={0: 0.5, 1: 0.5}, choices={"electq": electq})
+
+    output, conf = _assemble(_request(shapes), answers)
+
+    assert (output.ask is not None) is asks
+    assert ("ask: none of the shapes gives what the query asks for" in conf.rules) is asks
+
+
+@pytest.mark.parametrize(("form", "elected", "also"), [(None, 0, [1]), ("per_person", 1, None)])
+def test_a_reading_of_another_base_is_an_alternate_only_when_the_phrase_states_no_form(
+    form: str | None, elected: int, also: list[int] | None
+):
+    answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 0.45, 1: 0.55})
+
+    output, _conf = _assemble(_request(_PLAIN_AND_DIVIDED), answers, form=form)
+
+    assert output.chosen_shape_index == elected
+    assert output.also_plausible == also
+
+
+def test_the_bind_result_carries_each_shape_s_scores():
+    shapes = [_shape(0), _shape(1, population="Place")]
+    answers = _answers(
+        {"m|0": 0.9, "m|1": 0.8},
+        elect={0: 0.6, 1: 0.4},
+        choices={"electq": {"Shape 0": 0.5, "Shape 1": 0.1, "none": 0.4}},
+    )
+
+    result, _conf = bind_result(jev_menu(_request(shapes)), answers, stated_form=None)
+
+    assert result.scores == {"measure": [0.9, 0.8], "election": [0.55, 0.25], "none": 0.4}

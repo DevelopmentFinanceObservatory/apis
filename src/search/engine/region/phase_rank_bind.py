@@ -3692,8 +3692,9 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
     policies elect (``elected``) and the one the part answers with after the menu-rank
     tie-break (``answered``, `_elected_index`), each None when the reply elects none, the
     policy pool, the policies that narrowed, the reply's
-    ratings as it wrote them (None on a refusal), the facts the policies read
-    of each pool shape, and whether the schema refused the reply (`decision` None)."""
+    ratings as it wrote them (None on a refusal), the binder's own scores
+    (`BindResult.scores`), the facts the policies read of each pool shape, and whether the
+    schema refused the reply (`decision` None)."""
     pool = decision.policy_pool if decision is not None else None
     choice = decision.policy_choice if decision is not None else None
     output = decision.output if decision is not None else None
@@ -3708,6 +3709,7 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
         "pool": list(pool.measuring) if pool is not None else [],
         "fired": list(choice.fired) if choice is not None else [],
         "ratings": [r.model_dump() for r in output.measuring] if output is not None else None,
+        "scores": dict(decision.scores) if decision is not None else {},
         "facts": [asdict(f) for f in choice.facts] if choice is not None else [],
         "refused": decision is None,
     }

@@ -10,7 +10,7 @@ takes one `QuantityRequest`.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -111,13 +111,16 @@ class BindResult:
     lacks leave it (`bind.split_stray_bindings`), and with the house policies' election in
     place of the binder's. `policy_pool` is the pool the house policies chose from and
     `policy_choice` what they chose, both None on a reply that elects no shape. `binder`
-    names the binder that answered.
+    names the binder that answered. `scores` holds the scores the binder's decisions read,
+    each a per-shape list in menu order or one number for the part, as the
+    ``bind_decision`` line logs them; empty when the binder states none.
     """
 
     output: _UniversalBindOutput
     binder: str
     policy_pool: PolicyPool | None = None
     policy_choice: PolicyChoice | None = None
+    scores: Mapping[str, Sequence[float] | float] = field(default_factory=dict)
 
 
 class Binder(Protocol):
