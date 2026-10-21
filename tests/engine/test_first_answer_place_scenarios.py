@@ -76,7 +76,8 @@ from search.engine.region.observations import fetch as observation_fetch
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
-from search.models import Resolution, Spec
+from search.models import Assumption, Resolution, Spec
+from search.render.assumptions import assumptions_for
 from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._facet_option_builds import wrap_facet_option_builds
@@ -1373,7 +1374,8 @@ def test_a_placeless_one_role_question_discovers_its_recipients_from_coverage(
     scenario_id, offered, search_settings
 ) -> None:
     """With no place named, the recipient-only series stays in the election, alone or beside
-    a subject-only reading, and answers over the recipients its one-role coverage rows name."""
+    a subject-only reading, and answers over the recipients its one-role coverage rows name.
+    The role scope default warns beside the open recipients the answer assumes."""
     scenario = _SCENARIOS[scenario_id]
     _patch_settings(scenario, search_settings)
 
@@ -1385,6 +1387,9 @@ def test_a_placeless_one_role_question_discovers_its_recipients_from_coverage(
     assert ids_spec.resolved.scope.axis == "destination"
     assert [member.ref for member in ids_spec.resolved.scope.members] == [_USA]
     assert "role_scope_defaulted" in [warning.code for warning in result.warnings]
+    assert assumptions_for(ids_spec) == [
+        Assumption(kind="open_role", binding_ref="where:", text="every recipient")
+    ]
 
 
 # A subject-only series with the recipient-only IDS series' five-tuple and constraints. With

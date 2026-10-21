@@ -119,17 +119,19 @@ def _build_candidates_region(
     No-data and unsupported promotes both drop. Two or more survivors rebuild
     the set. One becomes definite and zero becomes no-data, each with a warning.
     Each survivor carries its candidate's assumptions echo. A set reads each reading with
-    its own, and a lone survivor's definite part states its own.
+    its own, and a lone survivor's definite part states its own. Candidates that rebuild
+    to one spec_id keep the first, with its echo, as a first-pass set keeps one reading
+    per spec_id.
     """
     echoes = [
         None if candidate.assumptions is None else tuple(candidate.assumptions)
         for candidate in entry.candidates
     ]
-    survivors = [
-        dataclasses.replace(r, assumption_echo=echo)
-        for r, echo in zip(promoted, echoes, strict=True)
-        if r.status == "definite"
-    ]
+    by_spec_id: dict[str, RegionResult] = {}
+    for r, echo in zip(promoted, echoes, strict=True):
+        if r.status == "definite":
+            by_spec_id.setdefault(r.spec.spec_id, dataclasses.replace(r, assumption_echo=echo))
+    survivors = list(by_spec_id.values())
     timing_by_step = _merge_timing_by_step(promoted)
 
     if len(survivors) >= 2:

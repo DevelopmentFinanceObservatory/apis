@@ -177,13 +177,16 @@ def _open_roles(
     `search.models.asked_open_axes` holds it: the identity lists it in `open_roles`, it is
     in ``asked_axes``, or one of ``operations`` runs over it. The noun is the role's in the
     answer's flow family (`role_wording`). A role a spoken how value narrows ("owed to bondholders")
-    states no open role, so it assumes none."""
+    states no open role, so it assumes none. The destination shares the where slot, so a
+    place scope (`_place_scope`) is that slot's one statement and the destination states no
+    open role beside it."""
     identity = spec.definition.identity
     asked = {role_key_axis(key) for key in identity.entities} | asked_open_axes(
         {*(identity.open_roles or ()), *asked_axes}, operations
     )
     scope = spec.resolved.scope
     scoped = role_key_axis(scope.axis) if scope is not None else None
+    place_scoped = scope is not None and scope.axis == "observationAbout"
     wording = role_wording(heading.family)
     return [
         Assumption(
@@ -195,6 +198,7 @@ def _open_roles(
         if phrase.axis is not None
         and (not phrase.entity_dcids or phrase.axis == scoped)
         and phrase.axis not in asked
+        and not (place_scoped and phrase.axis == "destination")
     ]
 
 

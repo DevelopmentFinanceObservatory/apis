@@ -226,6 +226,28 @@ def test_a_request_naming_no_place_assumes_the_place_scope_as_its_members_are_ty
     ]
 
 
+def test_a_place_scope_is_the_one_assumption_of_the_where_slot_the_destination_shares():
+    """mls-004 read across every country, as a request naming no place is: the heading
+    states the where slot once, through the recipients, and the clause states it once,
+    through the place scope, so the recipients assume no open role beside it."""
+    spec = _panel_spec("mls-004")
+    scope = ResolvedScope(
+        axis="observationAbout",
+        members=[
+            ResolvedEntity(ref=ref, role="observationAbout", entity_type="Country")
+            for ref in ("country/GHA", "country/KEN")
+        ],
+    )
+    scoped = spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"scope": scope})})
+    heading = heading_for(scoped).heading
+    assert heading.subject is None
+    assert [role.axis for role in heading.roles] == ["destination", "origin"]
+    assert assumptions_for(scoped) == [
+        _EVERY_PROVIDER,
+        Assumption(kind="place_scope", binding_ref="where:", text="every country"),
+    ]
+
+
 def test_a_role_the_scope_default_filled_is_assumed_whatever_its_member_count():
     """crs-002 names Bangladesh and no provider. With the provider scope defaulted to Japan
     alone, the heading reads "from Japan", and the role is still assumed."""

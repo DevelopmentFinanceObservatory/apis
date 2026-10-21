@@ -342,7 +342,8 @@ def test_a_resubmit_states_the_echoed_assumptions_that_still_hold(
 ):
     """Each echoed item holds while the rebuilt answer still yields it, matched by kind,
     binding and value dcids, and is worded from the rebuilt answer. With no edit to the
-    flow slot, a repost or a new year keeps the official development assistance default."""
+    flow slot, a repost or a new year keeps the official development assistance default.
+    The rebuilt trace records the flow as posted, whatever the echo states."""
     first = _first_answer()
     identity = first.spec.definition.identity
     if edit == "year":
@@ -353,13 +354,24 @@ def test_a_resubmit_states_the_echoed_assumptions_that_still_hold(
         identity = _bound(identity, "crsTypeOfFinance", "CRSTypeOfFinance110")
     part = _resubmit(identity, echo=first.assumptions if isinstance(echo, str) else echo)
     assert part.assumptions == expected
+    assert _provenance(part)["how:crsTypeOfFlow"] == "binder"
+
+
+def _provenance(part: DefinitePart) -> dict[str, str]:
+    """Each slot's provenance in the part's trace, by its binding ref."""
+    return {f.key.as_ref(): f.provenance for f in part.spec.resolved.trace.slot_filters}
 
 
 def test_a_resubmit_with_no_echo_states_the_roles_alone():
     """The posted identity binds the flow, so with no echo the engine records it as posted
-    and assumes only what the identity leaves open."""
+    and assumes only what the identity leaves open. Every posted slot reads `binder` but
+    the flow type, which the identity's measure family election forces."""
     first = _first_answer()
-    assert _resubmit(first.spec.definition.identity, echo=None).assumptions == _ASSUMED_ROLES
+    part = _resubmit(first.spec.definition.identity, echo=None)
+    assert part.assumptions == _ASSUMED_ROLES
+    assert {ref: p for ref, p in _provenance(part).items() if p != "binder"} == {
+        "how:financialFlowType": "measure_elected"
+    }
 
 
 def test_an_edit_that_changes_the_defaulted_slot_drops_its_assumption():
@@ -600,31 +612,46 @@ def _edited_set(
 
 
 @pytest.mark.parametrize(
-    ("aid_echo", "loan_echo", "aid", "loans"),
+    ("aid_echo", "reposts", "loan_echo", "aid", "loans"),
     [
         pytest.param(
             [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            [],
             _ASSUMED_LOAN_ROLES,
             [_ASSUMED_ODA, *_ASSUMED_ROLES],
             _ASSUMED_LOAN_ROLES,
             id="each-reading-echoes-its-list",
         ),
         # The echo of a reading that stated none states none for that reading alone.
-        pytest.param([], _ASSUMED_LOAN_ROLES, [], _ASSUMED_LOAN_ROLES, id="aid-echoes-empty"),
+        pytest.param([], [], _ASSUMED_LOAN_ROLES, [], _ASSUMED_LOAN_ROLES, id="aid-echoes-empty"),
         # With no echo the posted identity binds the flow, so no reading states its default.
-        pytest.param(None, None, _ASSUMED_ROLES, _ASSUMED_LOAN_ROLES, id="no-echo"),
+        pytest.param(None, [], None, _ASSUMED_ROLES, _ASSUMED_LOAN_ROLES, id="no-echo"),
+        # The aid reading posted again rebuilds to its spec_id, so the set keeps the first
+        # with its own echo.
+        pytest.param(
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            [[]],
+            _ASSUMED_LOAN_ROLES,
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            _ASSUMED_LOAN_ROLES,
+            id="aid-posted-twice",
+        ),
     ],
 )
 def test_an_edited_candidates_set_restates_each_reading_s_echo(
     aid_echo: list[Assumption] | None,
+    reposts: list[list[Assumption] | None],
     loan_echo: list[Assumption] | None,
     aid: list[Assumption],
     loans: list[Assumption],
 ):
     """A year edit of the aid-or-loans set keeps the official development assistance
-    default on the aid reading that echoes it, each reading read with its own echo."""
+    default on the aid reading that echoes it, each reading read with its own echo. The
+    aid reading is posted again after the first with each of ``reposts`` as its echo."""
+    aid_identity = _first_answer().spec.definition.identity
     part, sentence = _edited_set(
-        [_first_answer().spec.definition.identity, _loan_identity()], [aid_echo, loan_echo]
+        [aid_identity, *(aid_identity for _ in reposts), _loan_identity()],
+        [aid_echo, *reposts, loan_echo],
     )
     aid_spec, loan_spec = part.candidates.specs
     assert part.reading_assumptions == {aid_spec.spec_id: aid, loan_spec.spec_id: loans}
