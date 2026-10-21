@@ -1,12 +1,13 @@
 """End-to-end tests for a part's `assumptions` on the raw-text and dataset_resubmit doors.
 
 "aid flows to Kenya" leaves the flow slot open, so the election fixes it to its declared
-default, official development assistance (CRSTypeOfFlow10, short name "ODA"), and the
-fixture's heading reads both flow roles open ("to all recipients from all providers").
+default, official development assistance (CRSTypeOfFlow10, short name "ODA"). Kenya binds
+the where slot, which the destination shares, so the heading names the recipient and reads
+the providers open ("to Kenya from all providers").
 A resubmit posts the identity whole, so the engine records the flow as posted, and the
 part keeps the default only through the entry's `assumptions` echo, matched to the rebuilt
 slot by its value dcids. A candidates entry posting the aid reading beside a loan reading,
-whose debt roles read "every debtor" and "every creditor", shows a part whose readings
+whose open creditors read "every creditor", shows a part whose readings
 share no item, each reading's own list in `reading_assumptions`.
 """
 
@@ -56,11 +57,8 @@ _ASSUMED_ODA = Assumption(
     text="official development assistance",
     refs=["CRSTypeOfFlow10"],
 )
-_ASSUMED_ROLES = [
-    Assumption(kind="open_role", binding_ref="where:", text="every recipient"),
-    Assumption(kind="open_role", binding_ref="origin:", text="every provider"),
-]
-_ASSUMED_CLAUSE = " Assumed: official development assistance; every recipient; every provider."
+_ASSUMED_ROLES = [Assumption(kind="open_role", binding_ref="origin:", text="every provider")]
+_ASSUMED_CLAUSE = " Assumed: official development assistance; every provider."
 # A parametrize row's echo that is the first answer's own list.
 _FIRST = "first"
 
@@ -81,6 +79,9 @@ def _first_answer() -> DefinitePart:
         sdmx=_EMPTY_SDMX,
     )
     assert response.rendered_sentence is not None
+    assert response.rendered_sentence.startswith(
+        "Test grant equivalent flow to Kenya from all providers in 2020."
+    )
     assert response.rendered_sentence.endswith(_ASSUMED_CLAUSE)
     part = response.parts[0]
     assert isinstance(part, DefinitePart)
@@ -154,8 +155,9 @@ def _resubmit(
 
 
 def test_a_first_answer_lists_its_declared_default_and_every_open_role():
-    """The flow default and the two roles no request word named are the part's assumptions,
-    in clause order, and the envelope sentence closes with them."""
+    """The flow default and the providers no request word named are the part's assumptions,
+    in clause order, and the envelope sentence closes with them. The recipient the request
+    named is no assumption."""
     assert _first_answer().assumptions == [_ASSUMED_ODA, *_ASSUMED_ROLES]
 
 
@@ -257,8 +259,9 @@ def test_an_unchanged_repost_of_a_merged_part_keeps_its_default(reposted: int):
     [
         pytest.param(None, _ASSUMED_ROLES, id="no-operation"),
         # "top 5 donors" ranks over the providers, so the request asked every one of them.
-        pytest.param("origin", _ASSUMED_ROLES[:1], id="rank-over-origin"),
-        pytest.param("destination", _ASSUMED_ROLES[1:], id="rank-over-destination"),
+        pytest.param("origin", [], id="rank-over-origin"),
+        # Kenya names the recipient, so a rank over it leaves the providers open.
+        pytest.param("destination", _ASSUMED_ROLES, id="rank-over-destination"),
         # An operation over places asks no flow role (`asked_open_axes`).
         pytest.param("place", _ASSUMED_ROLES, id="rank-over-place"),
     ],
@@ -282,7 +285,8 @@ def test_a_role_an_operation_runs_over_is_asked(over: str | None, expected: list
     assert part.assumptions == expected
     assert response.rendered_sentence is not None
     clause = "; ".join(item.text for item in expected)
-    assert response.rendered_sentence.endswith(f" Assumed: {clause}.")
+    assert response.rendered_sentence.endswith(f" Assumed: {clause}." if expected else ".")
+    assert ("Assumed:" in response.rendered_sentence) == bool(expected)
 
 
 @pytest.mark.parametrize(
@@ -391,7 +395,7 @@ def test_a_folded_part_states_only_its_own_assumptions():
     first = _first_answer()
     identity = first.spec.definition.identity
     ghana = identity.model_copy(update={"entities": {"observationAbout": ["country/GHA"]}})
-    echo = [_ASSUMED_ODA, _ASSUMED_ROLES[1]]
+    echo = [_ASSUMED_ODA, *_ASSUMED_ROLES]
     response = offline_resolve(
         ResolveRequest(
             input=DatasetResubmitInput(
@@ -422,13 +426,10 @@ def test_a_folded_part_states_only_its_own_assumptions():
 
 
 # A loan disbursement series outside the code index. Its `financialFlowType` puts it in the
-# debt lending family, whose roles read "every debtor" and "every creditor" where the aid
-# series reads "every recipient" and "every provider".
+# debt lending family, whose open origin reads "every creditor" where the aid series reads
+# "every provider".
 _LOAN_SV_DCID = "TESTFIXTURE/AnswerAssumptionsE2E/LoanDisbursement"
-_ASSUMED_LOAN_ROLES = [
-    Assumption(kind="open_role", binding_ref="where:", text="every debtor"),
-    Assumption(kind="open_role", binding_ref="origin:", text="every creditor"),
-]
+_ASSUMED_LOAN_ROLES = [Assumption(kind="open_role", binding_ref="origin:", text="every creditor")]
 
 
 def _graph_with_loans() -> FakeGraph:
@@ -516,12 +517,12 @@ def _aid_or_loans(operations: list[Operation]) -> CandidatesPart:
     ("operations", "aid", "loans"),
     [
         pytest.param([], _ASSUMED_ROLES, _ASSUMED_LOAN_ROLES, id="no-operation"),
-        # A rank over the destination asks it on every reading, leaving the origin open.
+        # A rank over the origin asks it on every reading.
         pytest.param(
-            [Operation(verb="rank", phrase="top 5 recipients", over="destination")],
-            _ASSUMED_ROLES[1:],
-            _ASSUMED_LOAN_ROLES[1:],
-            id="rank-over-destination",
+            [Operation(verb="rank", phrase="top 5 donors", over="origin")],
+            [],
+            [],
+            id="rank-over-origin",
         ),
     ],
 )
@@ -643,9 +644,9 @@ def test_an_edited_candidates_set_states_the_default_and_roles_its_readings_shar
     echo: list[Assumption] | None, shared: list[Assumption]
 ):
     """Two aid readings, one binding the standard grant the other leaves to the series,
-    both echo the official development assistance default and both read every recipient
-    and every provider. After a year edit the part and its clause state each item every
-    reading's own list holds."""
+    both echo the official development assistance default and both read every provider.
+    After a year edit the part and its clause state each item every reading's own list
+    holds."""
     identity = _first_answer().spec.definition.identity
     part, sentence = _edited_set(
         [identity, _bound(identity, "crsTypeOfFinance", "CRSTypeOfFinance110")], [echo, echo]

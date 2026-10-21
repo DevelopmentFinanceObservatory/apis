@@ -1865,15 +1865,25 @@ def test_a_folded_part_keeps_its_items_beside_a_separate_part_of_the_same_spec(
     assert ("every provider", 1) in _clause_tokens(plan)
 
 
-def test_a_mixed_answer_opens_with_how_many_parts_it_answered():
+@pytest.mark.parametrize(
+    ("folds", "opener"),
+    [
+        pytest.param(0, "Answered 1 of 2 parts.", id="definite-and-no-data"),
+        # A part folded into the definite one is answered with it.
+        pytest.param(1, "Answered 2 of 3 parts.", id="with-a-folded-part"),
+    ],
+)
+def test_a_mixed_answer_opens_with_how_many_parts_it_answered(folds: int, opener: str):
     """A definite part beside a no-data part gives a plan that opens with two unowned
-    coverage tokens, the opener and a space, and no other token takes that segment."""
+    coverage tokens, the opener and a space, and no other token takes that segment. The
+    count of answered parts includes the parts folded into a definite one."""
+    spec = _spec(slots=[_what_slot("Total population")])
     rendered, plan = compose_envelope_sentence(
-        [_definite(_spec(slots=[_what_slot("Total population")])), _unresolved("GDP")]
+        [_definite(spec), *[_folded(spec)] * folds, _unresolved("GDP")]
     )
-    assert rendered == "Answered 1 of 2 parts. Total population. No data."
+    assert rendered == f"{opener} Total population. No data."
     assert [(t.text, t.segment, t.part_index) for t in plan[:2]] == [
-        ("Answered 1 of 2 parts.", "coverage", None),
+        (opener, "coverage", None),
         (" ", "coverage", None),
     ]
     assert all(t.segment != "coverage" for t in plan[2:])

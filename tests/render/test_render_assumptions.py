@@ -19,17 +19,22 @@ from pydantic import ValidationError
 from scripts.sentence_golden import golden_parts
 from search.models import (
     Assumption,
+    BindingValue,
     BreadthDim,
     CandidatesPart,
     CoverageBreadth,
     DefinitePart,
+    GraphRef,
+    Operation,
     ResolvedEntity,
     ResolvedFilter,
     ResolvedScope,
+    SlotValue,
     Spec,
 )
 from search.render.assumptions import assumptions_for, common_assumptions
 from search.render.candidates import candidates_sentence_plan
+from search.render.heading import heading_for
 from search.render.tokens import sentence_from_plan
 from tests.render._helpers import _spec, _what_slot
 
@@ -132,6 +137,53 @@ def test_open_roles_are_the_roles_the_heading_states_open(
     value narrows ("owed to bondholders") states none, and a fully asked question lists
     none."""
     assert _open_roles(assumptions_for(_panel_spec(query_id))) == expected
+
+
+def _kenya_on_the_where_slot(spec: Spec) -> Spec:
+    """`spec` asked for Kenya with no direction: a subject entity its where slot binds, held
+    by the identity, with no scope default."""
+    kenya = GraphRef(ref="country/KEN", label="Kenya")
+    slots = [
+        slot.model_copy(
+            update={"binding": BindingValue(value=SlotValue(ref=kenya, value_kind="entity"))}
+        )
+        if slot.key.axis == "where"
+        else slot
+        for slot in spec.resolved.slots
+    ]
+    entity = ResolvedEntity(
+        ref=kenya.ref, label=kenya.label, entity_type="Country", role="observationAbout"
+    )
+    resolved = spec.resolved.model_copy(
+        update={"slots": slots, "entities": [entity], "scope": None}
+    )
+    identity = spec.definition.identity.model_copy(
+        update={"entities": {"observationAbout": [kenya.ref]}}
+    )
+    definition = spec.definition.model_copy(update={"identity": identity})
+    return spec.model_copy(update={"definition": definition, "resolved": resolved})
+
+
+def test_a_place_the_destination_s_where_slot_binds_is_the_asked_recipient():
+    """mls-004 read with Kenya named and no direction: the destination shares the where slot
+    that binds Kenya, so the heading names Kenya as the recipient, and only the providers
+    are assumed."""
+    spec = _kenya_on_the_where_slot(_panel_spec("mls-004"))
+    destination = heading_for(spec).heading.roles[0]
+    assert (destination.axis, destination.text, destination.entity_dcids) == (
+        "destination",
+        "Kenya",
+        ("country/KEN",),
+    )
+    assert _open_roles(assumptions_for(spec)) == [_EVERY_PROVIDER]
+
+
+def test_a_role_an_operation_runs_over_is_no_assumption():
+    """A rank over the recipients of mls-004 asks every one of them."""
+    rank = Operation(verb="rank", phrase="top 5 recipients", over="destination")
+    assert _open_roles(assumptions_for(_panel_spec("mls-004"), operations=[rank])) == [
+        _EVERY_PROVIDER
+    ]
 
 
 def test_a_role_asked_member_by_member_is_no_assumption():
