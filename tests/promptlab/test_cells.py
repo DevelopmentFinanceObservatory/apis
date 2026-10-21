@@ -137,16 +137,17 @@ def _cell_manifest() -> CellManifest:
 
 def _fake_llm_for_bind_cell(capture: CaptureStore, rung: Rung) -> FakeLLM:
     """Build a FakeLLM fixture for each captured, truncated bind prompt."""
-    from promptlab.bindmenu import truncate_menu
+    from promptlab.bindmenu import parse_menu, truncate_menu
     from promptlab.compose import compose
-    from search.engine.bind import _UniversalBindOutput
+    from search.engine.bind import _UniversalBindOutput, bind_schema
 
     bind_system = compose(rung.bind)
     canned = _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[], ask=None)
     responses = {}
     for record in capture.bind_records():
         truncated = truncate_menu(record.prompt, rung.run.top_k)
-        key = fixture_key(_UniversalBindOutput, bind_system, truncated)
+        schema = bind_schema(len(parse_menu(truncated)[1]))
+        key = fixture_key(schema, bind_system, truncated)
         responses[key] = canned.model_dump(mode="json")
     return FakeLLM(responses=responses)
 

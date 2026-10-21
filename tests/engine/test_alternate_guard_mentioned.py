@@ -13,12 +13,13 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import DraftBindingEvidence, SlotBindingDraft
 from search.engine.quantity import quantity_requirement
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.alternate_guard import inadmissible_alternates, query_pins
 from search.engine.shape import ShapeDraft
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -319,13 +320,12 @@ class _GdpBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 _binding("activitySource", ["GrossDomesticProduction"], evidence=self._evidence)
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 

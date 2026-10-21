@@ -312,6 +312,7 @@ jobs:
           # differ from the build.
           SEARCH_RESPONSE_CACHE_ENABLED: "false"
           SEARCH_LLM_MEMO_MAX_BYTES: "0"
+          SEARCH_EXTRACT_STORE: "off"
           COVERAGE_INDEX_CHECK: "off"
           SHARD: ${{ matrix.shard.index }}
           # The Datasets surface, for its members door. Each app reads its own

@@ -24,8 +24,8 @@ from search.engine.bind import (
     CandidateMenu,
     SlotBindingDraft,
     _build_universal_bind_prompt,
-    _UniversalBindOutput,
 )
+from search.engine.binders import GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -70,6 +70,7 @@ from search.heading.departure_fact import DepartureFact
 from search.models import SourceMention
 from search.render.plan import render_sentence
 from series_coverage.schema import RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -705,15 +706,11 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
         ),
     ],
 )
-def test_attributed_as_a_plain_verb_names_no_measure(
-    monkeypatch, query, entities, variable, recalled
-):
+def test_attributed_as_a_plain_verb_names_no_measure(query, entities, variable, recalled):
     """The attributed-amount measure reads on phrases that name it ("attributed to donors",
     "attributed aid"). The verb alone names none, so the answer warns of no dropped
     qualifier."""
-    result, _menu = _resolve_two_ended(
-        monkeypatch, query, entities, variable=variable, recalled=(recalled,)
-    )
+    result, _menu = _resolve_two_ended(query, entities, variable=variable, recalled=(recalled,))
 
     assert not [
         w
@@ -723,9 +720,7 @@ def test_attributed_as_a_plain_verb_names_no_measure(
 
 
 @pytest.mark.parametrize("mode", ["log", "refuse"])
-def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(
-    monkeypatch, search_settings, caplog, mode
-):
+def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(search_settings, caplog, mode):
     """ "Goods donations" names two CRS cooperation modalities, and no index row holds
     either, so bind is never offered them. The part names no dataset, so the record
     follows the coverage mode. In refuse mode the part refuses `qualifier_not_bound` on
@@ -735,7 +730,6 @@ def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(
     search_settings(qualifier_coverage=mode)
     with caplog.at_level(logging.INFO, logger="search.engine.region.phase_election"):
         result, menu = _resolve_two_ended(
-            monkeypatch,
             "ODA goods donations from France to Kenya",
             ["France", "Kenya"],
             variable="ODA goods donations",
@@ -818,9 +812,7 @@ def _vet_state(
         admitted_ties=admitted_ties,
         variable_matched_qualifier_phrases=variable_matched_qualifier_phrases,
         query_qualifier_readings=query_qualifier_readings,
-        bind_result=_UniversalBindOutput(
-            chosen_shape_index=chosen_shape_index, bindings=bindings, also_plausible=None, ask=None
-        ),
+        bind_result=elected_reply(chosen_shape_index, bindings=bindings, also_plausible=None),
         coverage=empty_coverage_snapshot(),
     )
 
@@ -1503,6 +1495,7 @@ def test_n2_fanout_broadcasts_query_text_none_to_every_leg():
                 resolver=resolver,
                 admission=admission,
                 llm=FakeLLM(responses={}),
+                binder=GeminiBinder(),
                 sdmx=sdmx,
                 base_timing={},
                 pre_resolved=None,
@@ -1912,9 +1905,7 @@ class _NoBindingLLM:
         # The raw phrase appears only in the echoed variable line, not fixed context.
         fixed_context = prompt.split("FIXED CONTEXT")[1].split("CANDIDATE")[0]
         assert "standard grants" not in fixed_context
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[]), None
 
 
 def _run_e2e(
@@ -2038,7 +2029,7 @@ class _PermissiveNoBindingLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[], ask=None),
+            elected_reply(0, also_plausible=[]),
             None,
         )
 
@@ -2069,8 +2060,8 @@ class _TieElectingLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0,
+            elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="what",
@@ -2080,7 +2071,6 @@ class _TieElectingLLM:
                     )
                 ],
                 also_plausible=[],
-                ask=None,
             ),
             None,
         )
@@ -2457,9 +2447,7 @@ class _MenuChoosingLLM:
             value_dcids=["CRSPurposeCode11110"],
         )
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[binding], also_plausible=[], ask=None
-            ),
+            elected_reply(0, bindings=[binding], also_plausible=[]),
             None,
         )
 

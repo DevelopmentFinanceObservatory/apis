@@ -1,7 +1,8 @@
 """The authored declarations the code index export reads.
 
 Code systems, datasets, party kinds and total groups, measure axes, labels and nouns,
-synonyms, concept groups, shape slot defaults, measure classes and variable aliases. The export
+synonyms, concept groups, shape slot defaults, implied values, measure classes and variable
+aliases. The export
 (`code_index.export`) reads them beside the graph. Nothing here reads the graph or imports a
 script, so a build that has no graph client can load them.
 """
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
+    HouseDefaultCase,
+    ImpliedValue,
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
@@ -47,7 +50,8 @@ class CodeSystemConfig:
     system, scope codes belong to other systems, and `when_named` entries are lowercase and
     non-empty. Export validates these conditions before writing. `no_vocabulary_terms` lists
     the lowercase words naming a distinction of this axis no code expresses
-    (`CodeSystemDeclaration.no_vocabulary_terms`).
+    (`CodeSystemDeclaration.no_vocabulary_terms`). `house_case` is the kind of question an
+    admitted code makes a part (`CodeSystemDeclaration.house_case`).
     """
 
     code_system: str
@@ -60,6 +64,7 @@ class CodeSystemConfig:
     plain_name: str
     default: DeclaredDefault | None = None
     no_vocabulary_terms: tuple[str, ...] = ()
+    house_case: HouseDefaultCase | None = None
 
 
 _CRS = "provenance/OECDCreditorReportingSystem"
@@ -85,6 +90,11 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         absent_reading="not_declared",
         declared_by_every_statvar_of=(_CRS, _IMPUTED_MULTILATERAL_SECTORS),
         plain_name="sector",
+        house_case="sector",
+        # The CRS tags climate finance with its Rio markers, which the pipeline drops, and no
+        # purpose code names it, so a question naming climate on a CRS shape refuses the
+        # qualifier.
+        no_vocabulary_terms=("climate",),
     ),
     CodeSystemConfig(
         code_system="crsTypeOfFinance",
@@ -241,6 +251,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
             StatedWord(word="bilateral", measured_property="amount"),
             StatedWord(word="bilateral", measured_property="grantEquivalent"),
         ),
+        house_default_for=("sector",),
     ),
     DatasetDeclaration(
         provenance=_IMPUTED_MULTILATERAL_SECTORS,
@@ -267,6 +278,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="unknown",
         account="provider",
         rank=20,
+        house_default_for=("donor",),
     ),
     DatasetDeclaration(
         provenance=_DAC2A,
@@ -285,6 +297,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
             ),
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
+        house_default_for=("recipient",),
     ),
     DatasetDeclaration(
         provenance=_DAC2B,
@@ -1233,6 +1246,26 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
 SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
     ShapeSlotDefault(
         population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
+    ),
+)
+
+# Life expectancy is life expectancy at birth, and gross domestic product is the product of
+# all economic activities. The headline series of each states nothing on the property, and
+# the series stating the value covers fewer years (`LifeExpectancy_Person_0Years` runs 1980
+# to 2020). The export refuses a declaration no StatVar of the measure states
+# (`code_index.export.verify_implied_values`).
+IMPLIED_VALUES: tuple[ImpliedValue, ...] = (
+    ImpliedValue(
+        population_type="Person",
+        measured_property="lifeExpectancy",
+        property_dcid="age",
+        value_dcid="Years0",
+    ),
+    ImpliedValue(
+        population_type="EconomicActivity",
+        measured_property="amount",
+        property_dcid="economicSector",
+        value_dcid="AllEconomicActivities",
     ),
 )
 

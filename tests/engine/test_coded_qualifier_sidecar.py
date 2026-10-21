@@ -14,7 +14,7 @@ from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.extract import Extraction, ExtractionResult, _system_instruction, extract
+from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction, ExtractionResult, extract
 from search.engine.qualifier_match import (
     CodedQualifier,
     QualifierSpan,
@@ -382,7 +382,7 @@ def test_qualifiers_empty_is_the_exact_baseline_behaviour():
 
 def _stub_extract_llm(query: str, payload: dict) -> FakeLLM:
     """Serve a fixed extraction payload for one query."""
-    return FakeLLM(responses={fixture_key(Extraction, _system_instruction(), query): payload})
+    return FakeLLM(responses={fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query): payload})
 
 
 _EQUIVALENCE_SHAPE = _shape(
@@ -670,7 +670,9 @@ _KEY_SCOPE = scope_document(
     seam_default=True,
     qualifier_coverage="log",
     build_commit="commit-a",
+    binder="gemini",
     model="model-a",
+    engine_model="model-a",
     seed=1,
     today="2026-09-22",
     graph_generation="unknown",

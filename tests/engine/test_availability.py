@@ -12,7 +12,7 @@ from typing import ClassVar
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.config import settings
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphCapExceededError, GraphInfraError
@@ -33,6 +33,7 @@ from search.engine.retrieval.standard import standard_resolve
 from search.engine.shape import ShapeDraft
 from search.models import RawTextInput, ResolveRequest, ResubmitIdentityPayload, TimeWindow
 from tests.engine._base_identity import make_identity
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve, walk_options
@@ -199,8 +200,8 @@ class TestMemberProbeRunsNearestReal:
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -210,7 +211,6 @@ class TestMemberProbeRunsNearestReal:
                     ),
                 ],
                 also_plausible=None,
-                ask=None,
             ), None
 
     @staticmethod
@@ -372,12 +372,7 @@ class _NoEntityBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=[],
-            ask=None,
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=[]), None
 
 
 class TestEntityLessDefiniteConfidenceFreshPath:

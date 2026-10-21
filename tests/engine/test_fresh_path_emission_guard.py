@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import (
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
     NO_MEMBER_HAS_DATA_AT_PLACE,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._builders import sv_arcs as _sv_arcs
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -77,8 +78,8 @@ class _GenderBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -88,7 +89,6 @@ class _GenderBindLLM:
                 ),
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 
@@ -243,8 +243,8 @@ class _SplitOwnershipBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -260,7 +260,6 @@ class _SplitOwnershipBindLLM:
                 ),
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 

@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from materialise.roles import axis_for_role
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.concurrency import scoped_concurrency
 from search.engine.extract import DateRequest
@@ -20,6 +20,7 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import CoverageBreadth, DateRange, ResubmitIdentityPayload, TimeWindow
 from series_coverage.schema import FacetMetadata, RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     CoverageRow,
     FakeCoverageService,
@@ -108,7 +109,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _graph_for(
@@ -1069,7 +1070,7 @@ class _StrayBindLLM:
         stray = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[stray]), None
+        return elected_reply(0, bindings=[stray]), None
 
 
 def test_empty_discovery_with_a_stray_value_refuses_naming_it(monkeypatch):
@@ -1196,9 +1197,7 @@ class _RoleBearingCandidateBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
 def test_candidates_path_buffered_discovered_scope_single_survivor_reuses_the_index(

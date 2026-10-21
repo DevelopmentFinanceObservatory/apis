@@ -29,6 +29,7 @@ from entity_resolution import Admission
 from origin_catalogue import BASE
 from search.engine import core as search_core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import GeminiBinder
 from search.engine.departures import warning_key
 from search.engine.entry.parsed import _open_axes_for_part
 from search.engine.errors import EngineInputError, FamilyNotResolvableError, RoleSignatureError
@@ -106,6 +107,7 @@ from series_coverage.shared import CoverageSnapshot
 from statvar_members import MemberEnumerator, member_digest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._binders import elected_reply
 from tests.engine._builders import bound_place_context, flow_place_roles
 from tests.engine._fake_coverage import (
     FIXTURE_PROVENANCE,
@@ -262,9 +264,7 @@ def test_a_question_naming_no_place_offers_a_one_role_shape_to_the_election():
                     if label in prompt
                 ]
             )
-            return _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
-            ), None
+            return elected_reply(0, also_plausible=None), None
 
     query = "national income"
     graph = FakeGraph(
@@ -950,9 +950,7 @@ class _BindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
-        ), None
+        return elected_reply(0, also_plausible=None), None
 
 
 class _AskNearestLLM:
@@ -1073,6 +1071,7 @@ def _run_leg(
             resolver=make_resolver(graph),
             admission=Admission(graph=graph),
             llm=_BindLLM(),
+            binder=GeminiBinder(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             base_timing={},
             pre_resolved=None,
@@ -1774,9 +1773,7 @@ def test_a_candidate_of_another_role_class_binds_its_place_in_its_own_role():
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
-            return _UniversalBindOutput(
-                chosen_shape_index=1, bindings=[], also_plausible=[0], ask=None
-            ), None
+            return elected_reply(1, also_plausible=[0]), None
 
     query = "national income of Kenya"
     graph = FakeGraph(
@@ -1960,9 +1957,7 @@ def test_a_role_bearing_candidate_beside_a_subject_only_election_answers_its_own
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
-            return _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-            ), None
+            return elected_reply(0, also_plausible=[1]), None
 
     query = "national income of Kenya"
     graph = FakeGraph(
@@ -2368,9 +2363,7 @@ class _ElectFirstLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible, ask=None
-        ), None
+        return elected_reply(0, also_plausible=self._also_plausible), None
 
 
 def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
@@ -2532,8 +2525,8 @@ def _relax_llm(**drafts: tuple[str, str]):
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -2545,7 +2538,6 @@ def _relax_llm(**drafts: tuple[str, str]):
                     for prop, (value, evidence) in drafts.items()
                 ],
                 also_plausible=None,
-                ask=None,
             ), None
 
     return _DraftLLM()

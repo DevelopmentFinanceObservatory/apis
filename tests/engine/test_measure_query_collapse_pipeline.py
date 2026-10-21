@@ -15,7 +15,6 @@ import pytest
 from code_index.shared import get_index, get_measure_index
 from code_index.types import MeasureAxis
 from entity_resolution import Admission, EntityResolver
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.departures import warning_key
@@ -31,6 +30,7 @@ from search.engine.retrieval.bound_values import _named_free_values
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.heading.departure_fact import DepartureFact
 from search.models import TraceDefaultReading
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._index_slots import index_slot_keys
 from tests.engine._quantity import QuantityReadOnlyLLM
@@ -143,9 +143,7 @@ def _run_prune_and_elect(state: ResolveState) -> None:
     result = asyncio.run(_phase_prune_and_rank(state))
     assert result is None, "expected _phase_prune_and_rank to fall through"
     assert len(state.capped_shapes) == 1
-    state.bind_result = _UniversalBindOutput(
-        chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-    )
+    state.bind_result = elected_reply(0, bindings=[], also_plausible=[])
     result = _vet_election(state)
     assert result is None, "expected _vet_election to fall through"
     depart_requirements(state)
@@ -410,9 +408,7 @@ def _elect_reading_ppp(variable: str, shape: ShapeDraft) -> ResolveState:
     assert asyncio.run(_phase_prune_and_rank(state)) is None
     state.query_qualifier_readings, owned = match_query_readings(state.variable)
     state.variable_matched_qualifier_phrases |= owned
-    state.bind_result = _UniversalBindOutput(
-        chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-    )
+    state.bind_result = elected_reply(0, bindings=[], also_plausible=[])
     assert _vet_election(state) is None
     depart_requirements(state)
     return state

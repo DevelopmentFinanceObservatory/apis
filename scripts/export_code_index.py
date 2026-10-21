@@ -75,6 +75,7 @@ from typing import TYPE_CHECKING
 from code_index.declarations import (
     CODE_SYSTEMS,
     DATASETS,
+    IMPLIED_VALUES,
     LISTED_DATASETS,
     MEASURE_AXES,
     MEASURE_NOUNS,
@@ -98,6 +99,7 @@ from code_index.export import (
     listed_dcids,
     stamp_counts,
     verify_complete_systems,
+    verify_implied_values,
 )
 from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.types import (
@@ -287,6 +289,7 @@ def main() -> None:
     )
     reader = export_reader(f"{base}/core/api", os.environ.get("SEARCH_GRAPH_TOKEN"))
     try:
+        verify_implied_values(reader, IMPLIED_VALUES)
         document = export_index(
             reader,
             graph_endpoint=base,

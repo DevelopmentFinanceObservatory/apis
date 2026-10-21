@@ -20,6 +20,7 @@ from code_index.declarations import (
     CODE_SYSTEMS,
     CONCEPT_GROUPS,
     DATASETS,
+    IMPLIED_VALUES,
     MEASURE_CLASSES,
     MEASURE_VALUE_TEXT,
     PARTLY_STATED_VALUES,
@@ -38,6 +39,8 @@ from code_index.export import (
     ExportRefused,
     PartyPublication,
     _apply_concept_groups,
+    _dataset_to_dict,
+    _implied_value_to_dict,
     _measure_class_to_dict,
     _minimal_system_sets,
     _partly_stated_value_to_dict,
@@ -58,6 +61,7 @@ from code_index.export import (
     export_value_parents,
     stamp_counts,
     strip_system_suffix,
+    verify_implied_values,
 )
 from code_index.loader import (
     IndexFormatError,
@@ -71,6 +75,7 @@ from code_index.shared import get_index
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
+    ImpliedValue,
     MeasureAxis,
     MeasurePartitionLabel,
     PartlyStatedValue,
@@ -1836,11 +1841,18 @@ def test_committed_packaged_index_carries_the_authored_declarations():
     assert payload["partly_stated_values"] == [
         _partly_stated_value_to_dict(v) for v in PARTLY_STATED_VALUES
     ]
+    assert payload["implied_values"] == [_implied_value_to_dict(v) for v in IMPLIED_VALUES]
+    assert payload["datasets"] == sorted(
+        (_dataset_to_dict(d) for d in DATASETS), key=lambda row: row["provenance"]
+    )
     assert payload["measure_classes"] == [_measure_class_to_dict(d) for d in MEASURE_CLASSES]
     assert payload["variable_aliases"] == dict(VARIABLE_ALIASES)
     assert payload["stat_type_words"] == [_stat_type_word_to_dict(d) for d in STAT_TYPE_WORDS]
     assert {d["code_system"]: d["no_vocabulary_terms"] for d in payload["declarations"]} == {
         config.code_system: list(config.no_vocabulary_terms) for config in CODE_SYSTEMS
+    }
+    assert {d["code_system"]: d.get("house_case") for d in payload["declarations"]} == {
+        config.code_system: config.house_case for config in CODE_SYSTEMS
     }
 
 
@@ -2399,6 +2411,7 @@ def test_main_exits_non_zero_with_the_refusal_when_the_export_refuses(monkeypatc
     monkeypatch.setattr(
         script, "load_coverage_join", lambda uri, *, datasets: CoverageJoin("b", {})
     )
+    monkeypatch.setattr(script, "verify_implied_values", lambda reader, implied_values: None)
     monkeypatch.setattr(script, "export_index", refuse)
     monkeypatch.setattr(sys, "argv", ["export_code_index.py", "--out", str(out)])
 
@@ -2407,6 +2420,44 @@ def test_main_exits_non_zero_with_the_refusal_when_the_export_refuses(monkeypatc
 
     assert exited.value.code == "provenance/TestDataset has no StatVar row"
     assert not out.exists()
+
+
+_AT_BIRTH = ImpliedValue(
+    population_type="Person",
+    measured_property="lifeExpectancy",
+    property_dcid="age",
+    value_dcid="Years0",
+)
+
+
+@pytest.mark.parametrize(
+    ("arcs", "refused"),
+    [
+        pytest.param(
+            {"populationType": ("Person",), "measuredProperty": ("lifeExpectancy",)},
+            False,
+            id="a-statvar-of-the-measure-states-the-value",
+        ),
+        pytest.param(
+            {"populationType": ("Person",), "measuredProperty": ("count",)},
+            True,
+            id="only-another-measure-states-it",
+        ),
+    ],
+)
+def test_the_export_refuses_an_implied_value_no_statvar_of_its_measure_states(arcs, refused):
+    """The index holds no row of a catalogue family, so the export reads the graph: some
+    StatVar of the measure must state the value on the property."""
+    graph = _FakeGraph(forward_arcs={"LifeExpectancy_Person_0Years": {**arcs, "age": ("Years0",)}})
+
+    if refused:
+        with pytest.raises(ExportRefused, match="Person/lifeExpectancy"):
+            verify_implied_values(graph, [_AT_BIRTH])
+    else:
+        verify_implied_values(graph, [_AT_BIRTH])  # raises nothing
+    assert graph.calls == [
+        ("Years0", "age", (("measuredProperty", "lifeExpectancy"), ("populationType", "Person")))
+    ]
 
 
 def test_export_index_refuses_a_declared_dataset_with_no_row():

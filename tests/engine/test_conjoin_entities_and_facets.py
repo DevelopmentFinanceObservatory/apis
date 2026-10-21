@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+from search.engine.binders import GeminiBinder
 from search.engine.concurrency import scoped_concurrency
 from search.engine.conjoin import BINDING_FOLDED, combine_regions
 from search.engine.enrichment import _reconcile_after_collapse
@@ -1063,6 +1064,7 @@ def test_a_multi_variable_answer_offers_the_merged_facet_options():
         include_skills=False,
         skills_index=None,
         coverage=empty_coverage_snapshot(),
+        binder=GeminiBinder(),
     )
 
     async def _response():

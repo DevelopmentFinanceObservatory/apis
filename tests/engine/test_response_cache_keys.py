@@ -37,7 +37,9 @@ def _scope(
     seam_default: bool = True,
     qualifier_coverage: Literal["log", "refuse"] = "log",
     build_commit: str = "commit-a",
+    binder: str = "gemini",
     model: str = "model-a",
+    engine_model: str = "model-a",
     seed: int | None = 1,
     today: str = "2026-09-20",
     graph_generation: str = "gen-a",
@@ -53,7 +55,9 @@ def _scope(
         seam_default=seam_default,
         qualifier_coverage=qualifier_coverage,
         build_commit=build_commit,
+        binder=binder,
         model=model,
+        engine_model=engine_model,
         seed=seed,
         today=today,
         graph_generation=graph_generation,
@@ -751,6 +755,24 @@ def test_different_model_changes_key() -> None:
     assert a != b
 
 
+def test_two_binders_never_share_a_key() -> None:
+    """The binder a request resolved to keys both layers, even when the two binders name
+    the same model, so each binder's answers are served only to its own requests."""
+    gemini = _scope(binder="gemini", model="model-a")
+    other = _scope(binder="jev", model="model-a")
+    assert layer1_key(query="gdp kenya", scope=gemini) != layer1_key(query="gdp kenya", scope=other)
+    assert _layer2_key(scope=gemini) != _layer2_key(scope=other)
+
+
+def test_the_engine_model_keys_a_jev_answer() -> None:
+    """Extraction runs on the engine's Gemini model whichever binder answers, so a change
+    of it changes the key under a Jev-named binder whose own model stays the same."""
+    a = _scope(binder="jev", model="jev-1.13.0", engine_model="gemini-a")
+    b = _scope(binder="jev", model="jev-1.13.0", engine_model="gemini-b")
+    assert layer1_key(query="gdp kenya", scope=a) != layer1_key(query="gdp kenya", scope=b)
+    assert _layer2_key(scope=a) != _layer2_key(scope=b)
+
+
 def test_different_seed_changes_key() -> None:
     a = layer1_key(query="gdp kenya", scope=_scope(seed=1))
     b = layer1_key(query="gdp kenya", scope=_scope(seed=2))
@@ -806,7 +828,9 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         seam_default=True,
         qualifier_coverage="log",
         build_commit="commit-a",
+        binder="gemini",
         model="model-a",
+        engine_model="model-a",
         seed=1,
         today="2026-09-20",
         graph_generation="gen-a",
@@ -818,7 +842,9 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
     scope_reversed = scope_document(
         today="2026-09-20",
         seed=1,
+        binder="gemini",
         model="model-a",
+        engine_model="model-a",
         build_commit="commit-a",
         seam_default=True,
         qualifier_coverage="log",

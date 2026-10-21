@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.models import (
     CandidatesPart,
@@ -21,6 +20,7 @@ from search.models import (
 )
 from search.render.tokens import sentence_from_plan
 from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
+from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
 from tests.engine._quantity import NO_QUANTITY
@@ -155,7 +155,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def test_place_other_kind_resolution_reaches_no_observations():

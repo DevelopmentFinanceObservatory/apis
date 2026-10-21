@@ -12,12 +12,13 @@ import asyncio
 import httpx
 
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import IdentityCurrencyRole
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -110,7 +111,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _run_standard(*, unit_text: str, sdmx: EngineSdmxClient | None = None):
@@ -249,7 +250,7 @@ class _StrayBindLLM:
         stray = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[stray]), None
+        return elected_reply(0, bindings=[stray]), None
 
 
 def test_a_missing_facet_beside_a_stray_value_refuses_naming_it() -> None:

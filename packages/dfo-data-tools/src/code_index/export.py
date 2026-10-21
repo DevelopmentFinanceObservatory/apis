@@ -26,6 +26,7 @@ from code_index.declarations import (
     CONCEPT_GROUPS,
     DATASETS,
     DECLARED_MEASURE_VALUES,
+    IMPLIED_VALUES,
     MEASURE_AXES,
     MEASURE_CLASSES,
     MEASURE_NOUNS,
@@ -47,6 +48,7 @@ from code_index.tokens import Token, TokenLookup, singular, tokenize
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
+    ImpliedValue,
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
@@ -526,6 +528,39 @@ def _partly_stated_value_to_dict(declared: PartlyStatedValue) -> dict:
     }
 
 
+def _implied_value_to_dict(declared: ImpliedValue) -> dict:
+    return {
+        "population_type": declared.population_type,
+        "measured_property": declared.measured_property,
+        "property": declared.property_dcid,
+        "value": declared.value_dcid,
+    }
+
+
+def verify_implied_values(reader: ExportReader, implied_values: Sequence[ImpliedValue]) -> None:
+    """Reject with `ExportRefused` a declaration no StatVar of its measure states: the graph
+    holds no StatVar of the declared `populationType` and `measuredProperty` with the value
+    on the property, so the value is no reading of the measure. The index holds no row of
+    a catalogue family such as life expectancy, so the loader cannot check it
+    (`code_index.loader._check_implied_values`)."""
+    for declared in implied_values:
+        page = reader.node_subjects(
+            declared.value_dcid,
+            property=declared.property_dcid,
+            filters={
+                "populationType": declared.population_type,
+                "measuredProperty": declared.measured_property,
+            },
+            max_results=1,
+        )
+        if not page.dcids:
+            raise ExportRefused(
+                f"no {declared.population_type}/{declared.measured_property} StatVar states "
+                f"{declared.property_dcid}={declared.value_dcid} -- delete the declaration "
+                "from IMPLIED_VALUES"
+            )
+
+
 def _measure_class_to_dict(declaration: MeasureClassDeclaration) -> dict:
     return {
         "class": declaration.measure_class,
@@ -585,6 +620,7 @@ def export_code_system(
         "default": _declared_default_to_dict(config.default),
         "enum_dcid": config.enum_dcid,
         "no_vocabulary_terms": list(config.no_vocabulary_terms),
+        **({"house_case": config.house_case} if config.house_case is not None else {}),
     }
     return declaration, rows
 
@@ -1627,6 +1663,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
             if dataset.party_words
             else {}
         ),
+        **(
+            {"house_default_for": list(dataset.house_default_for)}
+            if dataset.house_default_for
+            else {}
+        ),
     }
 
 
@@ -1672,6 +1713,7 @@ def export_graph_blocks(
     listed: Collection[str] = (),
     shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
     partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
+    implied_values: Sequence[ImpliedValue] = IMPLIED_VALUES,
     measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
     variable_aliases: Mapping[str, str] = VARIABLE_ALIASES,
     stat_type_words: Sequence[StatTypeWordDeclaration] = STAT_TYPE_WORDS,
@@ -1746,6 +1788,7 @@ def export_graph_blocks(
         ],
         "shape_slot_defaults": [_shape_slot_default_to_dict(d) for d in shape_slot_defaults],
         "partly_stated_values": [_partly_stated_value_to_dict(v) for v in partly_stated_values],
+        "implied_values": [_implied_value_to_dict(v) for v in implied_values],
         "measure_classes": [_measure_class_to_dict(d) for d in measure_classes],
         "variable_aliases": dict(variable_aliases),
         "stat_type_words": [_stat_type_word_to_dict(d) for d in stat_type_words],
