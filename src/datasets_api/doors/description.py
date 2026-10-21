@@ -244,7 +244,7 @@ def _vocabulary(
     `inputs`, the records of the versions `record` was computed from, is labelled by its title
     (`version_title`), worded from the same label read. The vocabulary's revision names the
     graph generation stamped as the reads start and the build of the catalogue the request is
-    bound to, with the bound release under `GRAPH_RELEASE_ORIGIN` (`current_words_build`)."""
+    bound to, with the bound release (`current_words_build`)."""
     generation = graph.generation_stamp().token
     deadline = time.monotonic() + _GRAPH_READ_SECONDS
     degraded = False

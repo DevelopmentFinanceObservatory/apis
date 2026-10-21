@@ -876,12 +876,11 @@ def test_reading_arc_tables_refuses_a_node_twice_in_one_table(tmp_path: Path) ->
 
 
 def test_the_family_tables_round_trip_and_the_manifest_counts_and_measures_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """The build holds one summary per family of its arc tables' and UN tables' variables,
-    computed when it is encoded, and the loaded snapshot serves them. With
-    `GRAPH_RELEASE_ORIGIN` on, loading also summarises the base variables alone."""
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+    computed when it is encoded, and the loaded snapshot serves them. Loading also summarises
+    the base variables alone, which the snapshot joins to the bound release's."""
     uri = _uri(tmp_path)
     arcs, mirror = sample_arc_tables(), sample_un_mirror()
     manifest = publish_sample(uri, un_mirror=mirror, arcs=arcs).manifest
@@ -895,12 +894,9 @@ def test_the_family_tables_round_trip_and_the_manifest_counts_and_measures_them(
     assert family is not None
     assert len(family.members) == 2
     assert CatalogueManifest.from_json(manifest.to_json()) == manifest
-    assert snapshot.base_families is None
-    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     base = summarise_table(arcs.base)
     assert base
-    assert load_catalogue(uri).base_families == base
+    assert snapshot.base_families == base
 
 
 def _rewrite_families(path: Path, column: str, value: object) -> None:

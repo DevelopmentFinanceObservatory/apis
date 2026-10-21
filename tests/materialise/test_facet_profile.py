@@ -39,7 +39,7 @@ from origin_catalogue import BASE, DFO, Catalogue, bound_catalogue
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
-from tests.graph_release.support import build_test_release, sample_tables
+from tests.graph_release.support import build_view_release
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 from ._scope_availability import ScopeAvailability
@@ -452,7 +452,7 @@ def test_a_flight_reads_under_the_catalogue_it_is_keyed_on(executor):
 
 def test_a_flight_reads_under_the_callers_graph_release(executor, tmp_path: Path):
     """A flight runs in an empty context, so it binds the release its caller has bound."""
-    manifest = build_test_release((tmp_path / "releases").as_uri(), tables=sample_tables())
+    manifest = build_view_release((tmp_path / "releases").as_uri())
     release = ReleaseService(
         uri=(tmp_path / "releases").as_uri(), local_dir=tmp_path / "local"
     ).snapshot()

@@ -12,8 +12,7 @@ and the release carries as an `authored` row recorded from the same read
 (`graph_release.authored`). So the DFO table and summaries read here are the job's for the
 same import.
 
-`ReleaseService` builds the view as a release opens when `GRAPH_RELEASE_ORIGIN` is on
-(`graph_release.context.origin_release_enabled`), and it lives on the `Release`.
+`ReleaseService` builds the view as a release opens, and it lives on the `Release`.
 `origin_catalogue.catalogue.CatalogueSnapshot` reads it through `served_origin` for the DFO
 variables' arcs and joins its summaries to the catalogue's base ones.
 
@@ -94,10 +93,9 @@ class ReleaseOrigin:
         variable the catalogue does not list shares the five-tuple, and no DFO
         StatisticalVariable without observations, which the release leaves out and the mixer
         serves, belongs to the family. Serving checks neither. The builder's gate
-        (`graph_release.gate.check_blind_spots`) fails a release with such a DFO variable in a
-        family it holds. It does not read the catalogue, so it publishes a release whose
-        five-tuple a variable outside it shares with a notice. `scripts/graph_release_parity.py
-        origin` counts both with the same functions."""
+        (`graph_release.gate.check_blind_spots`) counts both: it fails a release with such a DFO
+        variable in a family it holds, and, since it does not read the catalogue, publishes a
+        release whose five-tuple a variable outside it shares with a notice."""
         held = False
         for role_bearing in (False, True):
             key = FamilyKey(

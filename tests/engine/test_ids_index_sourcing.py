@@ -17,6 +17,7 @@ from code_index.members import index_covers_slot_keys, index_family
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
 from code_index.types import StatVarRow
+from graph_release.context import bound_release
 from promptlab.expectations import case_stat_vars
 from search.engine.bind import _build_universal_bind_prompt
 from search.engine.errors import EngineInputError
@@ -70,7 +71,7 @@ from tests.engine._fake_coverage import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import member_walk_reader
 from tests.fixtures import FakeGraph
-from tests.origin_catalogue.support import listing_base_variables
+from tests.graph_release.support import origin_release
 from tests.statvar_members.conftest import FakeMemberArcReader
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -499,18 +500,16 @@ def _promote_state(graph: FakeGraph, slots: list[Slot]) -> _PromoteState:
 
 
 @pytest.mark.usefixtures("unlisted_index")
-def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_walked_member(
-    bind_catalogue,
-):
+def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_walked_member():
     slots = [_slot("financialFlowType", None), _slot("guaranteeStatus", None)]
     arcs = {_IDS_DEBT_SERVICE: _ids_arcs("ServicingPayment")}
     graph = _graph(arcs)
-    # The catalogue lists the walked member, so the member walk reads this graph.
-    bind_catalogue(listing_base_variables(arcs))
-    state = _promote_state(graph, slots)
 
-    _phase_validate(state)
-    assert _phase_reread_arcs(state) is None
+    # The release holds the walked member as DFO, so the member walk reads its arcs.
+    with bound_release(origin_release(arcs)):
+        state = _promote_state(graph, slots)
+        _phase_validate(state)
+        assert _phase_reread_arcs(state) is None
 
     assert state.stat_var_dcids == [_IDS_DEBT_SERVICE]
     assert state.measure_elected_properties == frozenset()
@@ -525,11 +524,9 @@ def _index_listing(*rows: StatVarRow) -> CodeIndex:
 
 
 def test_an_ids_identity_elects_its_listed_members_without_walking_the_graph(monkeypatch):
-    """A family holding a row the index lists is elected from the index: over a graph that
-    holds no StatVar, where a walk finds nothing, the listed debt-service total is elected.
-    Runs with `GRAPH_RELEASE_ORIGIN` off: with it on, the walk of this family reads the bound
-    release, which holds IDS members, in place of the empty graph."""
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
+    """A family holding a row the index lists is elected from the index: over a graph and a
+    release that hold no StatVar of it, where a walk finds nothing, the listed debt-service
+    total is elected."""
     listed = StatVarRow(
         dcid=_IDS_DEBT_SERVICE,
         population_type="FinancialFlow",
@@ -544,17 +541,18 @@ def test_an_ids_identity_elects_its_listed_members_without_walking_the_graph(mon
     slots = [_slot("financialFlowType", None), _slot("guaranteeStatus", None)]
     graph = _graph({})
 
-    listing = _index_listing(listed)
-    monkeypatch.setattr(bound_values_module, "get_index", lambda: listing)
-    state = _promote_state(graph, slots)
-    _phase_validate(state)
-    assert _elected_members(state) == [_IDS_DEBT_SERVICE]
+    with bound_release(origin_release({})):
+        listing = _index_listing(listed)
+        monkeypatch.setattr(bound_values_module, "get_index", lambda: listing)
+        state = _promote_state(graph, slots)
+        _phase_validate(state)
+        assert _elected_members(state) == [_IDS_DEBT_SERVICE]
 
-    unlisted = _index_listing()
-    monkeypatch.setattr(bound_values_module, "get_index", lambda: unlisted)
-    walked = _promote_state(graph, slots)
-    _phase_validate(walked)
-    assert not isinstance(_elected_members(walked), list)
+        unlisted = _index_listing()
+        monkeypatch.setattr(bound_values_module, "get_index", lambda: unlisted)
+        walked = _promote_state(graph, slots)
+        _phase_validate(walked)
+        assert not isinstance(_elected_members(walked), list)
 
 
 def _resubmit_electing(monkeypatch, members: list[str]) -> RegionResult:

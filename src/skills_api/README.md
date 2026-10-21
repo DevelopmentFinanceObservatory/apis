@@ -8,7 +8,7 @@ The surface mounts at `/api/skills` and operates as an independent composition r
                   +--------------------------------------------+
                   |      skills_index.SharedSkillsIndex         |
                   |  process-wide, acquired by Search first,    |
-                  |   rebuilt on a timer, no graph read here    |
+                  | rebuilt on release swap, no graph read here |
                   +--------------------------------------------+
                         |                |                  |
                         v                v                  v
@@ -16,7 +16,7 @@ The surface mounts at `/api/skills` and operates as an independent composition r
                                 {skill_id}           resources/{path}
 ```
 
-This surface holds four doors: health, list, skill, and resources. None of the three content doors reads the graph or builds a graph client. All three read the `index` attribute of one process-wide `skills_index.SharedSkillsIndex`, acquired at this surface's startup (`skills_api.app.skills_surface`) and shared with the Search surface, which is mounted first and supplies the live graph client. An edit to a skill's node reaches these doors once the index's background refresh picks it up, every `skills_index.config.SKILLS_INDEX_REFRESH_SECONDS` (900 seconds).
+This surface holds four doors: health, list, skill, and resources. None of the three content doors reads the graph or builds a graph client. All three read the `index` attribute of one process-wide `skills_index.SharedSkillsIndex`, acquired at this surface's startup (`skills_api.app.skills_surface`) and shared with the Search surface, which is mounted first and supplies the live graph client. The index rebuilds in the background each time the process's graph release service swaps to a newer release, so an edit to a skill's node reaches these doors with the release that carries it.
 
 ### Components
 
@@ -121,9 +121,9 @@ Reports status and the capability version token.
 
 ## Caching
 
-Every 200 from the list, skill and resources doors carries a strong `ETag` and `Cache-Control: public, max-age=N`, where N is the whole seconds until the index's next rebuild (`SharedSkillsIndex.seconds_until_next_rebuild`), at least 1. With `GRAPH_RELEASE_ORIGIN` on, a release swap rebuilds the index at once, so they carry `Cache-Control: public, no-cache` and a cache revalidates each response by its ETag. A matching `If-None-Match` answers 304. Each door caches encoded bodies per index generation (`skills_api.doors._response_cache.GenerationBodyCache`), up to 8 MiB per door, and drops them all when the generation changes.
+Every 200 from the list, skill and resources doors carries a strong `ETag` and `Cache-Control: public, no-cache`. A release swap rebuilds the index at once, so a cache revalidates each response by its ETag. A matching `If-None-Match` answers 304. Each door caches encoded bodies per index generation (`skills_api.doors._response_cache.GenerationBodyCache`), up to 8 MiB per door, and drops them all when the generation changes.
 
-Before the index's first build the three content doors refuse `503 service_unavailable`. A 200 with an empty list would be cached for a whole refresh window and read as an empty catalogue, and a 503 is never cached.
+Before the index's first build the three content doors refuse `503 service_unavailable`. A 200 with an empty list would read as an empty catalogue, and a 503 is never cached.
 
 ## Configuration
 
@@ -169,4 +169,4 @@ The index build (`skills_index.build.build_index`) enforces the bounds the publi
 | `404` | `not_found` | No route matches | None | No |
 | `503` | `service_unavailable` | The index has not finished its first build | None | Yes |
 
-Replicas rebuild on independent timers, so an id one replica names can be unknown to another for up to one refresh interval. The remedy for that `skill_not_found` is to retry once or re-read the list.
+Each replica swaps releases on its own recheck (every 60 seconds, `graph_release.service.DEFAULT_RECHECK_SECONDS`) and then rebuilds, so an id one replica names can be unknown to another until that replica has swapped and rebuilt. The remedy for that `skill_not_found` is to retry once or re-read the list.

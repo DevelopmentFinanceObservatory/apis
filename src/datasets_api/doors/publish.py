@@ -519,7 +519,7 @@ def publish_frame(
             # Use the materialise frame builder for shared frame construction. A publish
             # builds its frame on a work thread outside the materialise permits
             # (`admission.MaterialisePermits`). The work executor's permit alone bounds how
-            # many publishes hold a frame, and a coverage reload does not wait for them.
+            # many publishes hold a frame, and a release swap does not wait for them.
             frame = build_frame(role_keys=role_keys, rows=rows)
     except FrameError as exc:
         raise PublishFrameInvalid(category=exc.category, message=str(exc)) from exc

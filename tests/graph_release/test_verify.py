@@ -14,13 +14,6 @@ from graph_release.format import Manifest
 from tests.graph_release.support import build_test_release, build_view_release, sample_tables
 
 
-@pytest.fixture(autouse=True)
-def _flags_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify builds the views and the origin view whatever the serving flags say."""
-    monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
-
-
 def _logged(capsys: pytest.CaptureFixture[str]) -> dict:
     (line,) = capsys.readouterr().out.splitlines()
     return json.loads(line)

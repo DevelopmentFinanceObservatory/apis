@@ -7,8 +7,8 @@ property, its label and type, and, for every node those arcs name, its label and
 names the arcs carry for it. The arcs name a node with no name by its dcid and a node of
 several names by its first, where its label is none or its last name. The build in
 `tests/fixtures/origin_catalogue_eval` must answer each from its tables with the same value,
-or leave it to a live read. The tests run with `GRAPH_RELEASE_ORIGIN` off, as only then does
-the build's own DFO table answer.
+or leave it to a live read. The tests read the build's own DFO table (`JobTables`) in place
+of the bound release's.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from typing import Any
 
 import pytest
 
-from origin_catalogue import CatalogueSnapshot
 from origin_catalogue.artifact import load_catalogue
 from origin_catalogue.graph import _table_arcs, _table_label, _table_type, _Unmirrored
 from scripts.stage_origin_catalogue_fixture import stage_fixture
+from tests.origin_catalogue.support import JobTables
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _RECORDED: dict[str, dict[str, dict[str, Any]]] = json.loads(
@@ -32,15 +32,12 @@ _RECORDED: dict[str, dict[str, dict[str, Any]]] = json.loads(
 
 
 @pytest.fixture(scope="module")
-def catalogue(tmp_path_factory: pytest.TempPathFactory) -> CatalogueSnapshot:
-    return load_catalogue(
-        stage_fixture(_FIXTURES / "origin_catalogue_eval", tmp_path_factory.mktemp("eval"))
+def catalogue(tmp_path_factory: pytest.TempPathFactory) -> JobTables:
+    return JobTables(
+        load_catalogue(
+            stage_fixture(_FIXTURES / "origin_catalogue_eval", tmp_path_factory.mktemp("eval"))
+        )
     )
-
-
-@pytest.fixture(autouse=True)
-def _build_dfo_table(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
 
 
 def _value_sets(arcs: Mapping[str, dict] | None) -> dict[str, list[str]] | None:

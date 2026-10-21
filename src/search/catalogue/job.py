@@ -2,23 +2,23 @@
 
 A run:
 
-1. computes the build key from the build ids the origin catalogue's and
-   the coverage index's pointers name, `DFO_BUILD_COMMIT` and a digest of
-   `examples.toml`, and exits without loading either artifact when
-   `current.json` already carries it (`search_catalogue_job_noop`) or
-   `refused.json` refused it within `REFUSAL_RETRY_SECONDS`
-   (`search_catalogue_job_still_refused`);
+1. computes the build key from the origin catalogue build id and the graph
+   release id the two pointers name, `DFO_BUILD_COMMIT` and a digest of
+   `examples.toml`, and exits without loading the catalogue or opening the
+   release when `current.json` already carries it
+   (`search_catalogue_job_noop`) or `refused.json` refused it within
+   `REFUSAL_RETRY_SECONDS` (`search_catalogue_job_still_refused`);
 2. loads the origin catalogue build `ORIGIN_CATALOGUE_URI` names, under
-   the serving surfaces' `ORIGIN_CATALOGUE_*` settings, and the coverage
-   index `COVERAGE_ARTIFACT_URI` names, and checks the key again against
-   the builds it loaded;
+   the serving surfaces' `ORIGIN_CATALOGUE_*` settings, binds the served
+   graph release, and checks the key again against the catalogue it loaded
+   and the release it bound;
 3. takes the create-only lease `lease.json` at the format root and exits
    while another run holds an unexpired one;
 4. finds each example's places with data (`search.catalogue.presence`) and
    counts publishers, countries and aid (`search.catalogue.counts`);
 5. runs each example through the search engine in-process, with the
-   origin catalogue build bound, and the served graph release when
-   `GRAPH_RELEASE_URI` is set, at its default place and at the test
+   origin catalogue build and the served graph release bound, at its
+   default place and at the test
    places where it has data (`search.catalogue.check`), trying a run that
    raised, timed out or had its preview read fail once more. When a run
    still fails in the engine, the job logs `search_catalogue_job_failed`
@@ -30,26 +30,22 @@ A run:
    `search_catalogue_job_refused` at `ERROR`, recording the key in
    `refused.json` and exiting 1, so the last published build keeps
    serving;
-7. discards the build if the coverage index moved while it ran, and
-   otherwise publishes it with a conditional `current.json` write.
+7. publishes the build with a conditional `current.json` write.
 
 Every run prunes builds nothing can still be reading. Every run that exits
 0 logs `search_catalogue_job_heartbeat` last, naming the published build
 and its age.
 
-With `GRAPH_RELEASE_COVERAGE` on, the served graph release takes the
-coverage index's place, and `GRAPH_RELEASE_URI` is required. Step 1 keys on
-the release id the release pointer names, and from step 2 to the end the run
-binds the served release and reads its coverage view. The release id fills
-the build inputs' `coverage_build_id`. The bound release never moves, so
-step 7 publishes a build of the release the run bound. A run with no release
-to bind, because `GRAPH_RELEASE_URI` is unset, no release is published or the
-release's views do not build, logs `search_catalogue_job_failed` with the
-`reason` and exits 1. The first two end the run before the origin catalogue
-loads.
+The run reads coverage from the bound release's coverage view, and the
+release id fills the build inputs' `coverage_build_id`. The bound release
+never moves, so step 7 publishes a build of the release the run bound. A run
+with no release to bind, because `GRAPH_RELEASE_URI` is unset, no release is
+published or the release's views do not build, logs
+`search_catalogue_job_failed` with the `reason` and exits 1. The first two end
+the run before the origin catalogue loads.
 
 Environment: `SEARCH_CATALOGUE_URI` (`gs://` or `file://`),
-`ORIGIN_CATALOGUE_URI` and `COVERAGE_ARTIFACT_URI` are required, with the
+`ORIGIN_CATALOGUE_URI` and `GRAPH_RELEASE_URI` are required, with the
 engine's own settings (`GEMINI_API_KEY`, `SEARCH_GRAPH_BASE`, ...).
 `SEARCH_CATALOGUE_MAX_CONCURRENCY` bounds concurrent engine calls (default
 4).
@@ -82,15 +78,7 @@ from artifact_publication.uri import ArtifactUriError
 from code_index.shared import get_index
 from dc_graph import GraphReadError
 from dfo_platform.build import build_commit
-from graph_release.context import (
-    URI_ENV_VAR,
-    ReleaseNotBound,
-    ReleaseViewsNotBuilt,
-    bound_served_release,
-    coverage_views_enabled,
-    optional_release_service,
-    release_uri,
-)
+from graph_release.context import URI_ENV_VAR, ReleaseNotBound, bound_served_release, release_uri
 from origin_catalogue import bound_catalogue
 from origin_catalogue.artifact import CatalogueArtifactError as OriginArtifactError
 from origin_catalogue.artifact import load_catalogue
@@ -119,14 +107,7 @@ from search.catalogue.counts import catalogue_counts
 from search.catalogue.examples import Example, ExamplesError, ExampleSet, load_examples
 from search.catalogue.presence import PresenceRefusal, example_places
 from search.models import ResolveRequest, ResolveResponse
-from series_coverage.loader import CoverageArtifactError
-from series_coverage.shared import (
-    CoverageIncompatibleError,
-    CoverageIndexCheckValueError,
-    CoverageSnapshot,
-    ServedCoverage,
-    get_coverage_service,
-)
+from series_coverage.shared import CoverageSnapshot, get_coverage_service
 
 if TYPE_CHECKING:
     from graph_release.service import ReleaseService
@@ -171,13 +152,12 @@ class JobSettings(AliasOnlySettings):
 
     artifact_uri: str = Field(min_length=1, alias="SEARCH_CATALOGUE_URI")
     origin_catalogue_uri: str = Field(min_length=1, alias="ORIGIN_CATALOGUE_URI")
-    coverage_uri: str = Field(min_length=1, alias="COVERAGE_ARTIFACT_URI")
     max_concurrency: int = Field(default=4, ge=1, alias="SEARCH_CATALOGUE_MAX_CONCURRENCY")
 
 
 class CoverageSource(Protocol):
     """Where the engine reads the coverage index, which
-    `series_coverage.shared.CoverageService` provides."""
+    `series_coverage.shared.ReleaseCoverage` provides."""
 
     def snapshot(self) -> CoverageSnapshot: ...
 
@@ -201,8 +181,8 @@ async def run(
     """One job run. `resolve` must read `catalogue`, which the caller binds.
     Raises `CatalogueFloorError` after logging and recording a refused
     build, and `CatalogueEngineError` after logging a check run the engine
-    failed twice; a no-op, a still-refused key, a skip, a discard or a lost
-    publish race returns, and a run that returns logs its heartbeat last."""
+    failed twice; a no-op, a still-refused key, a skip or a lost publish
+    race returns, and a run that returns logs its heartbeat last."""
     await _build(
         settings,
         examples=examples,
@@ -222,8 +202,8 @@ def nothing_to_build(
     """Whether a run with `inputs` has nothing to build: the published build
     carries their key, or a build with it was refused within
     `REFUSAL_RETRY_SECONDS`. When so, logs the no-op and the heartbeat, as
-    `run` would. `main` asks this with the build ids the two artifacts'
-    pointers name, so an unchanged run loads neither artifact."""
+    `run` would. `main` asks this with the ids the origin catalogue's and the
+    graph release's pointers name, so an unchanged run loads neither."""
     published, _ = read_pointer(settings.artifact_uri)
     if not _settled(settings, build_key(inputs), published=published, clock=clock):
         return False
@@ -309,15 +289,6 @@ async def _build(
             inputs=inputs,
             clock=clock,
         )
-        moved_to = coverage.snapshot().manifest.build_id
-        if moved_to != inputs.coverage_build_id:
-            emit(
-                "search_catalogue_job_discarded",
-                reason="coverage_moved_during_build",
-                key=key,
-                coverage_build_id=moved_to,
-            )
-            return
         if not publish(settings.artifact_uri, artifact, expected_generation=generation):
             emit("search_catalogue_job_lost_publish_race", key=key, catalogue_version=version)
             return
@@ -519,17 +490,15 @@ def _heartbeat(settings: JobSettings, *, clock: Callable[[], float]) -> None:
 
 
 def _pointer_inputs(
-    settings: JobSettings, *, coverage: ServedCoverage, examples: ExampleSet, commit: str
+    settings: JobSettings, *, examples: ExampleSet, commit: str
 ) -> BuildInputs | None:
-    """The build inputs the origin pointer and the served coverage build name,
-    or `None` when the origin pointer is missing or malformed. The service
-    serves a fallback build while `current.json` names one its index rejects,
-    so the served build keys the run. With `GRAPH_RELEASE_COVERAGE` on, the
-    graph release's pointer names the coverage build, read first, so a run with
-    no release raises `ReleaseUnavailable` whatever the origin pointer holds.
-    The loaded catalogue decides the key a build carries; these only let an
-    unchanged run skip loading it."""
-    served = _pointed_release_id() if coverage_views_enabled() else coverage.manifest.build_id
+    """The build inputs the origin pointer and the graph release's pointer
+    name, or `None` when the origin pointer is missing or malformed. The
+    release pointer is read first, so a run with no release raises
+    `ReleaseUnavailable` whatever the origin pointer holds. The loaded
+    catalogue and the bound release decide the key a build carries; these
+    only let an unchanged run skip loading them."""
+    served = _pointed_release_id()
     origin = read_origin_pointer(settings.origin_catalogue_uri)
     if origin is None:
         return None
@@ -558,16 +527,18 @@ def _pointed_release_id() -> str:
     return pointer.release_id
 
 
-def _release_service() -> ReleaseService | None:
-    """`optional_release_service()`, raising `ReleaseUnavailable` when no release
+def _release_service() -> ReleaseService:
+    """`get_release_service()`, raising `ReleaseUnavailable` when
+    `GRAPH_RELEASE_URI` is unset or blank (`release_uri_missing`), no release
     is published (`no_release`) or its views do not build (`views_refused`)."""
-    if release_uri() is None:
-        return None
-    # The module imports NumPy and pyarrow, which only a configured release needs.
+    # The modules import NumPy and pyarrow, which an unchanged run never needs.
+    from graph_release.service import ReleaseUriMissingError, get_release_service
     from graph_release.views import ViewRefused
 
     try:
-        return optional_release_service()
+        return get_release_service()
+    except ReleaseUriMissingError as exc:
+        raise ReleaseUnavailable("release_uri_missing", str(exc)) from exc
     except FileNotFoundError as exc:
         raise ReleaseUnavailable("no_release", str(exc)) from exc
     except ViewRefused as exc:
@@ -633,8 +604,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commit = build_commit()
     try:
         examples = load_examples()
-        coverage = get_coverage_service()
-        pointed = _pointer_inputs(settings, coverage=coverage, examples=examples, commit=commit)
+        pointed = _pointer_inputs(settings, examples=examples, commit=commit)
         if pointed is not None and nothing_to_build(settings, inputs=pointed):
             return 0
         catalogue = _load_origin_catalogue(settings)
@@ -650,7 +620,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     settings,
                     examples=examples,
                     catalogue=catalogue,
-                    coverage=coverage,
+                    coverage=get_coverage_service(),
                     resolve=resolve,
                     place_names=place_names,
                     commit=commit,
@@ -669,14 +639,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (
         ArtifactUriError,
         CatalogueArtifactError,
-        CoverageArtifactError,
-        CoverageIncompatibleError,
-        CoverageIndexCheckValueError,
         ExamplesError,
         GraphReadError,
         OriginArtifactError,
         ReleaseNotBound,
-        ReleaseViewsNotBuilt,
     ) as exc:
         emit("search_catalogue_job_failed", severity="ERROR", error=str(exc))
         logger.error("search catalogue job failed: %s", exc)

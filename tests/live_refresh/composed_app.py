@@ -55,8 +55,10 @@ import argparse
 import hashlib
 import itertools
 import os
+import shutil
+import tempfile
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -89,6 +91,8 @@ from datasets_api.reference_store import LiveArtifactReferenceWriter
 from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import create_app
+from graph_release.context import URI_ENV_VAR, bound_served_release
+from graph_release.service import get_release_service, reset_release_service
 from materialise import EnrichmentLookup
 from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
@@ -105,8 +109,9 @@ from statvar_members import MemberEnumerator
 from tests.artifact_store.conftest import FakeGCSClient
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
+from tests.graph_release.support import build_session_release
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_service
-from tests.series_coverage.support import coverage_table, session_coverage_service
+from tests.series_coverage.support import coverage_table
 from tests.spec_registry.conftest import FakeDatasetStore
 
 LIVE_REFRESH_PRINCIPAL = "live-refresh-test-principal"
@@ -165,7 +170,6 @@ _PAST_RECHECK = timedelta(minutes=20)
 # The source's `lastDataRefreshDate` before the first move. Each move advances it a day.
 _FIRST_REFRESH = datetime(2026, 9, 1, tzinfo=UTC)
 _OPERATION_LEASE_SECONDS = 60
-_COVERAGE_SLICE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "coverage_slice"
 _EXECUTION_IDENTITY = "engine-test|grammar-1.0.0|reduction-test"
 
 
@@ -443,14 +447,6 @@ class _Coverage:
             horizon=horizon,
         )
 
-    def serves(self, snapshot: CoverageSnapshot) -> bool:
-        """`current()` builds an index per call, so the stamp identifies the served build."""
-        return snapshot.stamp == self.stamp
-
-    def register_load_guard(self, guard: object) -> Callable[[], None]:
-        """This fake never loads a build, so no guard is ever entered."""
-        return lambda: None
-
     def snapshot(self) -> CoverageSnapshot:
         index = self.current()
         stamp = self.stamp
@@ -467,9 +463,6 @@ class _Coverage:
             ),
             stamp=stamp,
         )
-
-    def snapshot_current(self) -> CoverageSnapshot:
-        return self.snapshot()
 
 
 def _sdmx_client(observations: Observations) -> SdmxClient:
@@ -1007,17 +1000,23 @@ STARTUP_ENV = {
 @contextmanager
 def offline_services() -> Iterator[None]:
     """Do for a process outside pytest what `tests/conftest.py` does for the test suite: set
-    `STARTUP_ENV` where unset, and install the fake origin catalogue service and the coverage
-    service over the recorded slice, which the Datasets surface loads at construction."""
+    `STARTUP_ENV` where unset, install the fake origin catalogue service, publish the suite's
+    graph release (`build_session_release`) to a temporary `GRAPH_RELEASE_URI`, and bind the
+    release the process's release service serves, which every surface reads."""
     for name, value in STARTUP_ENV.items():
         os.environ.setdefault(name, value)
-    os.environ.setdefault("COVERAGE_ARTIFACT_URI", f"file://{_COVERAGE_SLICE_DIR}")
-    os.environ.setdefault("COVERAGE_RECHECK_SECONDS", "0")
-    with (
-        catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service()),
-        session_coverage_service(),
-    ):
-        yield
+    release_dir = Path(tempfile.mkdtemp(prefix="live-refresh-graph-release-"))
+    os.environ[URI_ENV_VAR] = (release_dir / "releases").as_uri()
+    try:
+        build_session_release(os.environ[URI_ENV_VAR])
+        with (
+            catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service()),
+            bound_served_release(get_release_service()),
+        ):
+            yield
+    finally:
+        reset_release_service()
+        shutil.rmtree(release_dir, ignore_errors=True)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

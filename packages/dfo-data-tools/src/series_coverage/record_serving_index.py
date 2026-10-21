@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import sys
 
-from code_index.shared import get_index
+from code_index.loader import default_index_path, load_index
 from series_coverage.compatibility import record_serving_index
 
 _ARTIFACT_URI_ENV_VAR = "COVERAGE_ARTIFACT_URI"
@@ -31,7 +31,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    index = get_index()
+    index = load_index(default_index_path())
     try:
         record_serving_index(artifact_uri, index)
     except ValueError as exc:

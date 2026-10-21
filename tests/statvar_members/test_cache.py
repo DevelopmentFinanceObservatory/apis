@@ -3,9 +3,9 @@ query keying, the one member cap, single flight and the group it hands its waite
 deadline refusals and unsettled groups, cached settled groups beside dismissed inconsistent
 candidates, and the weight bound.
 
-With `GRAPH_RELEASE_ORIGIN` on, every DFO family of the recorded release's slice walks the
-release's graph reader to the group a walk of the graph finds, a family with a base member walks
-the graph, a walk refuses with no release bound, and a swap keys afresh."""
+Every DFO family of the recorded release's slice walks the release's graph reader to the group a
+walk of the graph finds, a family with a base member walks the graph, a walk refuses with no
+release bound, and a swap keys afresh."""
 
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ from statvar_members.enumerate import (
     SlotBinding,
 )
 from statvar_members.types import UNRESOLVED_NODE, FiveTuple
-from tests.graph_release.recorded import platform_parts, recorded_dfo_arcs
-from tests.graph_release.support import build_test_release
+from tests.graph_release.recorded import recorded_dfo_arcs
+from tests.graph_release.support import build_view_release, origin_release
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue
 from tests.origin_catalogue.support import build_labelled
 
@@ -358,7 +358,7 @@ def test_two_concurrent_misses_on_one_key_run_one_enumeration():
         results.append(_kenya(enumerator, reader))
 
     # Each thread runs in a copy of the test's context, as a request pool's do, so a walk
-    # under `GRAPH_RELEASE_ORIGIN` reads the bound release.
+    # reads the bound release.
     first = threading.Thread(target=contextvars.copy_context().run, args=(call,))
     first.start()
     assert reader.entered.wait(timeout=5)
@@ -508,13 +508,10 @@ def recorded_slice() -> tuple[dict[str, dict[str, tuple[str, ...]]], CatalogueSn
 
 
 def _origin_release(root: Path, *, revision: str = "rev-a") -> Release:
-    """The recorded slice's release, opened with its origin view."""
+    """The recorded slice's release, opened with its views and its origin view."""
     uri = (root / "releases").as_uri()
-    build_test_release(uri, tables=platform_parts().tables(), dc_serving_revision=revision)
-    service = ReleaseService(
-        uri=uri, local_dir=root / "local", recheck_seconds=0, build_origin=True
-    )
-    return service.snapshot()
+    build_view_release(uri, dc_serving_revision=revision)
+    return ReleaseService(uri=uri, local_dir=root / "local", recheck_seconds=0).snapshot()
 
 
 def _five_tuple(key: FamilyKey) -> FiveTuple:
@@ -529,13 +526,13 @@ def _five_tuple(key: FamilyKey) -> FiveTuple:
 
 
 def test_every_dfo_family_walks_the_release_to_the_group_the_graph_gives(
-    recorded_slice, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    recorded_slice, tmp_path: Path
 ) -> None:
     """Each family's walk with every slot unbound and with each property bound to each of its
-    values, members, family and order included, reads the graph for none of them."""
+    values, members, family and order included, reads the graph for none of them. The graph's
+    group is the one a walk finds under a release holding no DFO variable."""
     variables, catalogue = recorded_slice
     release = _origin_release(tmp_path)
-    assert release.origin is not None
     queries = []
     for key, summary in release.origin.families.items():
         if key.population_type == "FinancialPosition":
@@ -563,11 +560,9 @@ def test_every_dfo_family_walks_the_release_to_the_group_the_graph_gives(
         with bound_catalogue(catalogue):
             return [walk(enumerator, five_tuple, slots) for five_tuple, slots in queries]
 
-    monkeypatch.delenv("GRAPH_RELEASE_ORIGIN", raising=False)
-    live = walks()
+    with bound_release(origin_release({})):
+        live = walks()
     walked = dict(graph.calls)
-    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     with bound_release(release):
         served = walks()
 
@@ -578,14 +573,10 @@ def test_every_dfo_family_walks_the_release_to_the_group_the_graph_gives(
     assert sum(len(group.members) for group in groups) > len(groups)
 
 
-def test_a_family_with_a_base_member_walks_the_graph(
-    recorded_slice, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_family_with_a_base_member_walks_the_graph(recorded_slice, tmp_path: Path) -> None:
     variables, catalogue = recorded_slice
     release = _origin_release(tmp_path)
     graph = FakeMemberArcReader(arcs=variables)
-    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
 
     with bound_release(release), bound_catalogue(catalogue):
         group = MemberEnumerator().enumerate(
@@ -597,11 +588,7 @@ def test_a_family_with_a_base_member_walks_the_graph(
 
 
 @pytest.mark.unbound_release
-def test_a_walk_under_the_origin_flag_refuses_with_no_release_bound(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+def test_a_walk_refuses_with_no_release_bound() -> None:
     reader = kenya_reader()
 
     with pytest.raises(ReleaseNotBound):
@@ -610,9 +597,7 @@ def test_a_walk_under_the_origin_flag_refuses_with_no_release_bound(
     assert reader.calls["node_subjects"] == 0
 
 
-def test_a_release_swap_keys_the_walk_afresh(
-    recorded_slice, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_release_swap_keys_the_walk_afresh(recorded_slice, tmp_path: Path) -> None:
     """A family the release does not hold, read from the graph under one stamp key, walks
     again under the next release and hits again under the first."""
     variables, catalogue = recorded_slice
@@ -621,8 +606,6 @@ def test_a_release_swap_keys_the_walk_afresh(
     assert first.release_id != second.release_id
     graph = FakeMemberArcReader(arcs=variables)
     enumerator = MemberEnumerator()
-    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
 
     def walk(release: Release) -> None:
         with bound_release(release), bound_catalogue(catalogue):
@@ -656,9 +639,7 @@ class _SwappingService:
             callback(release)
 
 
-def test_a_swap_drops_the_replaced_release_s_groups(
-    recorded_slice, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_swap_drops_the_replaced_release_s_groups(recorded_slice, tmp_path: Path) -> None:
     """Following the service, a swap drops the groups keyed on the replaced release, a walk
     still bound to it stores nothing, and the new release's groups are stored. `close` stops
     following."""
@@ -669,8 +650,6 @@ def test_a_swap_drops_the_replaced_release_s_groups(
     service = _SwappingService(first)
     enumerator = MemberEnumerator()
     enumerator.follow_swaps(cast("ReleaseService", service))
-    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
 
     def walks(release: Release) -> int:
         with bound_release(release), bound_catalogue(catalogue):

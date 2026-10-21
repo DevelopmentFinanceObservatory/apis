@@ -914,10 +914,9 @@ def test_a_cached_frame_rereads_its_words_once_its_stamps_change_or_age(
 ):
     """A cached frame serves its labels, citation and source documents while the graph
     generation and catalogue build they were read under hold and they are younger than that
-    generation's cache lifetime. A new build, a new generation, a new release under
-    `GRAPH_RELEASE_ORIGIN` or a day's age re-reads them from the cached bytes, so a card
-    composed after a source's refresh dates change shows the new dates, under the stamps of the
-    read they came from."""
+    generation's cache lifetime. A new build, a new generation, a new release or a day's age
+    re-reads them from the cached bytes, so a card composed after a source's refresh dates
+    change shows the new dates, under the stamps of the read they came from."""
     first_release, second_release = release_at_revision("rev-1"), release_at_revision("rev-2")
     stack = ExitStack()
     request.addfinalizer(stack.close)

@@ -60,10 +60,9 @@ def _index(content_hash: str) -> CodeIndex:
     return CodeIndex(stamp=stamp, declarations=(), codes=(), statvars=())
 
 
-def test_the_served_code_index_keys_a_detection_under_the_coverage_flag(monkeypatch) -> None:
-    """With `GRAPH_RELEASE_COVERAGE` on, the rival rows come from the bound release's code
-    index, so a release serving another index detects afresh and one serving the first hits."""
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+def test_the_served_code_index_keys_a_detection(monkeypatch) -> None:
+    """The rival rows come from the bound release's code index, so a release serving another
+    index detects afresh and one serving the first hits."""
     call_count = [0]
 
     def fake_post(self, path, payload, *, deadline=None):

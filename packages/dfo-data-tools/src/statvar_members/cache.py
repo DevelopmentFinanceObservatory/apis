@@ -9,10 +9,10 @@ by `graph_generation.ttu_from_stamp_key`, so a new graph generation or catalogue
 walks afresh, and an unknown generation keeps its entries for the shorter unknown
 lifetime.
 
-With `GRAPH_RELEASE_ORIGIN` on, a call reads the request's graph release
-(`graph_release.context.served_origin`), and raises when none is bound. A family the release
-holds (`graph_release.origin.ReleaseOrigin.holds_family`) walks the release's graph reader in
-place of the caller's, and every entry's key also holds the release id, so a swap walks afresh.
+A call reads the request's graph release (`graph_release.context.current_release`), and
+raises when none is bound. A family the release holds
+(`graph_release.origin.ReleaseOrigin.holds_family`) walks the release's graph reader in place
+of the caller's, and every entry's key also holds the release id, so a swap walks afresh.
 An enumerator following the process's release service (`MemberEnumerator.follow_swaps`, which
 `graph_release.service` sets up for `shared_enumerator`) drops the entries of every other
 release once a swap serves a new one, and stores none for a replaced release after it.
@@ -61,7 +61,7 @@ That is fourteen deep-root families of 13,800 dcids, or thousands of the median 
 
 type _CacheKey = tuple[
     str,
-    str | None,
+    str,
     FiveTuple,
     frozenset[tuple[str, SlotBinding]],
     frozenset[tuple[str, AbsentReading]],
@@ -141,10 +141,9 @@ class MemberEnumerator:
                 del self._groups[key]
 
     def _storable(self, key: _CacheKey) -> bool:
-        """Whether `key` names no release, or the one the followed service serves. Called
-        under `_lock`."""
-        release = key[1]
-        return release is None or self._served_release in (None, release)
+        """Whether `key` names the release the followed service serves, or no service is
+        followed. Called under `_lock`."""
+        return self._served_release in (None, key[1])
 
     def enumerate(
         self,
@@ -166,8 +165,8 @@ class MemberEnumerator:
         reading `graph` on a miss.
 
         `stamp_key` is the `GenerationStamp.key` of `graph`'s reads. The cache key holds it, the
-        release id under `GRAPH_RELEASE_ORIGIN` (`_served_walk`), the five-tuple, slots,
-        readings, `subject_ceiling`, extra candidates, and bound and open role keys. `deadline`
+        bound release's id (`_served_walk`), the five-tuple, slots, readings,
+        `subject_ceiling`, extra candidates, and bound and open role keys. `deadline`
         bounds the walk's first page and `full_read_deadline`, which defaults to `deadline` and
         stays out of the key, its full read. The later of the two bounds any wait for another
         call's walk of the same key. A read or wait past its bound raises `MemberReadDeadline`.
@@ -311,26 +310,19 @@ class MemberEnumerator:
         return group
 
 
-def _served_walk(
-    graph: MemberArcReader, *, five_tuple: FiveTuple
-) -> tuple[MemberArcReader, str | None]:
-    """The reader `five_tuple`'s walk reads and the release its group keys on: `graph` and
-    `None` with `GRAPH_RELEASE_ORIGIN` off. With it on, the bound release's id, and a family
-    the release holds reads the release's graph reader. Raises
-    `graph_release.context.ReleaseNotBound` when no release is bound."""
+def _served_walk(graph: MemberArcReader, *, five_tuple: FiveTuple) -> tuple[MemberArcReader, str]:
+    """The reader `five_tuple`'s walk reads and the release its group keys on: the bound
+    release's id, and the release's graph reader for a family the release holds, else `graph`.
+    Raises `graph_release.context.ReleaseNotBound` when no release is bound."""
     # Imported here, as `_ttu` imports `graph_generation`, so `statvar_members` imports
     # without the release and catalogue packages.
-    from graph_release.context import current_release, served_origin
-
-    origin = served_origin()
-    if origin is None:
-        return graph, None
+    from graph_release.context import current_release
     from origin_catalogue.context import current_catalogue
 
-    release = current_release().release_id
-    if origin.holds_family(five_tuple, catalogue=current_catalogue()):
-        return origin.reader, release
-    return graph, release
+    release = current_release()
+    if release.origin.holds_family(five_tuple, catalogue=current_catalogue()):
+        return release.origin.reader, release.release_id
+    return graph, release.release_id
 
 
 def _later(deadline: float | None, full_read_deadline: float | None) -> float | None:

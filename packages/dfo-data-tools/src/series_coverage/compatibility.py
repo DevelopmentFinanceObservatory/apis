@@ -7,8 +7,7 @@ serves, so the two agree only while the build carries the index's provenances. S
 mint elect the members of a listed dataset's family from the index's listed rows alone, so the
 two also agree only while the build assigns that dataset no StatVar the index does not list.
 `index_coverage_differences` is the one test of both: `python -m series_coverage.verify_index`
-runs it at deploy, the coverage job after each publish, and `CoverageService` before it serves
-a build.
+runs it at deploy, and the coverage job after each publish.
 
 `<format root>/compatible/<content_hash>.json`, in `current.json`'s form, names a build
 compatible with the index whose `IndexStamp.content_hash` it carries. `record_if_compatible`

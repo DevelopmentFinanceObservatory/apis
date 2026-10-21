@@ -49,8 +49,9 @@ exactly once. The eval gate workflow runs N shards on parallel jobs, each agains
 head and base apps, and combines their exit codes: 1 if any shard exits 1, else 3 if any
 exits 3, else 0. A shard that holds no case exits 0 and its summary says so.
 
-Scoring reads the graph, SDMX and the coverage index (``search.eval.live_clients``), so
-the environment needs the same graph settings and ``COVERAGE_ARTIFACT_URI`` as the apps.
+Scoring reads the graph, SDMX and the graph release's coverage view
+(``search.eval.live_clients``), so the environment needs the same graph settings and
+``GRAPH_RELEASE_URI`` as the apps.
 ``just eval-paired`` and ``just eval-run`` wrap the two modes.
 """
 
@@ -73,7 +74,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
-from graph_release.context import bound_served_release, optional_release_service
+from graph_release.context import bound_served_release
+from graph_release.service import ReleaseService, get_release_service
 from origin_catalogue import Catalogue, bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from search.eval.apis_auth import apis_auth
@@ -119,7 +121,6 @@ from search.eval.runner import (
 from search.eval.summary import paired_markdown, single_markdown, single_text
 
 if TYPE_CHECKING:
-    from graph_release.service import ReleaseService
     from search.engine.clients.sdmx import EngineSdmxClient
     from search.eval.graph import GraphClient
     from series_coverage.shared import ServedCoverage
@@ -135,10 +136,10 @@ _TIMEOUT_S = 90.0
 class Reads:
     """The graph, SDMX and coverage reads the checks score against, the origin
     catalogue the graph client's reads need bound, and the release service whose served
-    release a run binds beside it, `None` when `GRAPH_RELEASE_URI` is unset."""
+    release a run binds beside it."""
 
     catalogue: Catalogue
-    release: ReleaseService | None = None
+    release: ReleaseService
     graph: GraphClient | None = None
     sdmx: EngineSdmxClient | None = None
     coverage: ServedCoverage | None = None
@@ -807,11 +808,10 @@ def _load_catalogue() -> Catalogue:
         raise SetupError(f"the origin catalogue does not load: {exc!r}") from exc
 
 
-def _load_release() -> ReleaseService | None:
-    """The release service ``GRAPH_RELEASE_URI`` names, opened as the app opens it, or
-    ``None`` when it is unset."""
+def _load_release() -> ReleaseService:
+    """The release service ``GRAPH_RELEASE_URI`` names, opened as the app opens it."""
     try:
-        return optional_release_service()
+        return get_release_service()
     except Exception as exc:
         raise SetupError(f"the graph release does not load: {exc!r}") from exc
 

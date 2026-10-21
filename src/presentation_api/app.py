@@ -28,7 +28,8 @@ from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.recipe_store import RecipeReader
 from dfo_platform.app import Surface
 from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
-from graph_release.context import bound_served_release, optional_release_service
+from graph_release.context import bound_served_release
+from graph_release.service import get_release_service
 from origin_catalogue import bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from presentation_api.codes import PRESENTATION_CODE_CATALOGUE
@@ -65,13 +66,16 @@ def presentation_surface(
     by its rule, so only the frame a revision is stored on renders. `vocabulary_source` gives
     the words cards' descriptions are composed from, and defaults to a `LiveVocabularySource`
     over the code index.
+
+    Each request binds the origin catalogue's loaded snapshot and the release service's served
+    graph release, so an unset `GRAPH_RELEASE_URI` or an unreadable release fails startup.
     """
     effective_release_registry: ReleaseRegistry = (
         release_registry if release_registry is not None else BakedReleaseRegistry()
     )
     release = effective_release_registry.pinned()
     catalogue = get_catalogue_service()
-    release_service = optional_release_service()
+    release_service = get_release_service()
     capability_version = compute_presentation_capability_version(release=release)
     logger.info(
         "Presentation surface resolved catalog_version=%s capability_version=%s",

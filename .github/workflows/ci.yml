@@ -244,10 +244,6 @@ jobs:
           # Turns a missing or moved vector suite into a failure rather than a
           # silent module-level skip.
           DFO_SPEC_KIT_REQUIRED: "1"
-          # Serves every surface from the bound graph release's views and its
-          # origin view, as tests/conftest.py's session release carries them.
-          GRAPH_RELEASE_COVERAGE: "1"
-          GRAPH_RELEASE_ORIGIN: "1"
         # -n auto lives here rather than in [tool.pytest.ini_options] addopts
         # so it never applies to a targeted single-test run, where it would
         # interleave output and break pdb. `--shard` runs this group's test
@@ -384,6 +380,29 @@ jobs:
       - name: Smoke-check materialise, dfo_platform, dataset_store, datasets_api, and graph_api import
         run: uv run python -c "import materialise; import dfo_platform; import dataset_store; import datasets_api; import graph_api; print('ok')"
 
+  graph_only_install:
+    # Proves the `graph` extra installs on its own: graph_api.app imports
+    # everything the Graph surface needs at startup, numpy included, from the
+    # extras `graph` pulls in, with neither `engine` nor `datasets`.
+    needs: passed-tree
+    if: >-
+      !cancelled() &&
+      needs.passed-tree.outputs.passed != 'true' &&
+      github.event.pull_request.draft != true &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Install dependencies (graph only)
+        run: uv sync --frozen --no-default-groups --extra graph
+
+      - name: Smoke-check the graph_api.app import
+        run: uv run python -c "import graph_api.app; print('ok')"
+
   package-install:
     # Proves the dfo-data-tools member installs on its own, as the
     # commit-pinned git dependency with a subdirectory that external
@@ -511,39 +530,46 @@ jobs:
       # mask exactly the failure this job exists to catch.
       #
       # `deployed_surfaces()` mounts Search unconditionally, regardless of
-      # `DFO_GRAPH_SURFACE`, and Search's own surface construction loads the
-      # process-wide coverage artifact (`series_coverage.shared
-      # .get_coverage_service()`) before it can answer any request -- so this
-      # container needs a real `COVERAGE_ARTIFACT_URI` to start at all, the
-      # same recorded slice the test suite reads (`tests/fixtures
-      # /coverage_slice`), bind-mounted read-only alongside the read-only root
-      # filesystem. Search also loads the origin catalogue at construction
+      # `DFO_GRAPH_SURFACE`, and every surface serves from the graph release
+      # under `GRAPH_RELEASE_URI` (`graph_release.service.get_release_service`),
+      # opening it with its views and origin view before it can answer any
+      # request -- so this container needs a published release to start at
+      # all. The image's own Python, with the checkout's `tests` mounted,
+      # publishes a release whose views build
+      # (`tests.graph_release.support.build_view_release`: the packaged code
+      # index and the recorded platform parts) into a runner directory, which
+      # the app's container mounts read-only. Search also loads the origin
+      # catalogue at construction
       # (`origin_catalogue.service.get_catalogue_service`), so the job mounts
       # the committed sample build (`tests/fixtures/origin_catalogue`, written
       # by scripts/record_origin_catalogue_fixture.py) the same way. That
       # directory holds a format root's contents, so it mounts at the root
-      # name the image reads (`origin_catalogue.schema.FORMAT_ROOT`). The slice
-      # covers a subset of the packaged code index's StatVars, so the coverage
-      # service would refuse it; COVERAGE_INDEX_CHECK=off serves it unchecked
-      # and logs a warning on every load. Search refuses to import without
-      # SEARCH_GRAPH_BASE, and healthz reads no graph, so an unroutable host
-      # is enough.
+      # name the image reads (`origin_catalogue.schema.FORMAT_ROOT`). Search
+      # refuses to import without SEARCH_GRAPH_BASE, and healthz reads no
+      # graph, so an unroutable host is enough.
       - name: Run the image read-only and confirm the Graph surface starts
         run: |
           format_root="$(docker run --rm dfo-apis:ci \
             python -c 'from origin_catalogue.schema import FORMAT_ROOT; print(FORMAT_ROOT)')"
 
+          release_dir="$RUNNER_TEMP/graph-release"
+          mkdir -p "$release_dir"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$(pwd)/tests:/app/tests:ro" \
+            -v "$release_dir:/graph-release" \
+            dfo-apis:ci \
+            python -c 'from tests.graph_release.support import build_view_release; build_view_release("file:///graph-release")'
+
           docker run -d --name dfo-apis-ci \
             --read-only --tmpfs /tmp \
-            -v "$(pwd)/tests/fixtures/coverage_slice:/coverage-slice:ro" \
+            -v "$release_dir:/graph-release:ro" \
             -v "$(pwd)/tests/fixtures/origin_catalogue:/origin-catalogue/${format_root}:ro" \
             -p 8080:8080 \
             -e DFO_GRAPH_SURFACE=1 \
             -e GRAPH_DCP_BASE_URL=http://dcp.invalid \
             -e GEMINI_API_KEY=ci-not-a-real-key \
             -e SEARCH_GRAPH_BASE=https://graph.invalid \
-            -e COVERAGE_ARTIFACT_URI=file:///coverage-slice \
-            -e COVERAGE_INDEX_CHECK=off \
+            -e GRAPH_RELEASE_URI=file:///graph-release \
             -e ORIGIN_CATALOGUE_URI=file:///origin-catalogue \
             dfo-apis:ci
 
@@ -605,7 +631,7 @@ jobs:
   # upload from failing a run whose suite passed.
   record-passed-tree:
     continue-on-error: true
-    needs: [passed-tree, lint, test-shard, test, install, datasets_only_install, package-install, docker]
+    needs: [passed-tree, lint, test-shard, test, install, datasets_only_install, graph_only_install, package-install, docker]
     if: >-
       github.run_attempt == 1 &&
       (github.event_name == 'push' || github.base_ref == github.event.repository.default_branch) &&
@@ -615,6 +641,7 @@ jobs:
       needs.test.result == 'success' &&
       needs.install.result == 'success' &&
       needs.datasets_only_install.result == 'success' &&
+      needs.graph_only_install.result == 'success' &&
       needs.package-install.result == 'success' &&
       needs.docker.result == 'success'
     runs-on: ubuntu-latest

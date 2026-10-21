@@ -26,7 +26,7 @@ The surface reads these at import or startup. Only `GRAPH_DCP_BASE_URL` has no d
 | `GRAPH_SDMX_TIMEOUT_SECONDS`    | `30`                   | HTTP timeout of the UN deployment's SDMX client the node reader uses.                                                                                  |
 | `UN_GRAPH_BASE_URL`             | UN System Data Commons | API root that serves `undata/` dcids and their availability.                                                                                           |
 | `ORIGIN_CATALOGUE_URI`          | none                   | Origin catalogue root. A missing or unloadable catalogue fails startup.                                                                                |
-| `COVERAGE_ARTIFACT_URI`         | unset                  | Coverage artifact root. Unset, a missing `coverage` extra or an unreadable artifact leaves coverage out: a variable's `availability` is `null` and a source document serves no currencies or granularity. Startup continues. |
+| `GRAPH_RELEASE_URI`             | none                   | Graph release root. The code index and the coverage behind a variable's `availability` and a source document's currencies and granularity come from the release the pointer names. A missing or unopenable release fails startup. |
 
 A running read keeps its executor worker until it returns, after its request has timed out, so a slow upstream fills the pool and raises `503` for later requests. The executor logs `thread pool graph-dcp saturated` when its workers fill. `GET /api/graph/capabilities` publishes the pool size and the timeouts, and its `data_builds` names the graph generation, origin catalogue, coverage index and code index the process serves.
 

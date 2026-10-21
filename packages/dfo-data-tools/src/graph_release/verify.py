@@ -1,10 +1,9 @@
 """`python -m graph_release.verify` checks that the serving image opens the graph release
 `GRAPH_RELEASE_URI`'s pointer names for this image's format.
 
-It opens the release as a serving process does at startup, through `ReleaseService` with the
-serving views and the origin view built (`build_release_views`, `release_origin`), whatever
-`GRAPH_RELEASE_COVERAGE` and `GRAPH_RELEASE_ORIGIN` say, and logs one `graph_release_verify`
-line with its outcome:
+It opens the release as a serving process does at startup, through `ReleaseService`, which
+builds the serving views and the origin view (`build_release_views`, `release_origin`), and
+logs one `graph_release_verify` line with its outcome:
 
 - `opened`, exit 0: the release opens and its views build.
 - `refused`, exit 1: the pointer is unreadable, or the release does not download, map or build
@@ -56,13 +55,7 @@ def main() -> int:
             )
             return NO_POINTER
         with tempfile.TemporaryDirectory(prefix="graph-release-verify-") as scratch:
-            release = ReleaseService(
-                uri=uri,
-                local_dir=Path(scratch),
-                recheck_seconds=0,
-                build_views=True,
-                build_origin=True,
-            ).snapshot()
+            release = ReleaseService(uri=uri, local_dir=Path(scratch), recheck_seconds=0).snapshot()
     except Exception as exc:
         emit(
             "graph_release_verify",

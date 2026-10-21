@@ -407,16 +407,15 @@ eval-paired HEAD_URL BASE_URL BASE_REF *ARGS:
 eval-run URL *ARGS:
     uv run {{SYNC_ARGS}} python scripts/eval_paired.py --single-url {{URL}} {{ARGS}}
 
-# Reads GEMINI_API_KEY, COVERAGE_ARTIFACT_URI and ORIGIN_CATALOGUE_URI from the environment.
+# Reads GEMINI_API_KEY, GRAPH_RELEASE_URI and ORIGIN_CATALOGUE_URI from the environment.
 #
-# Serve the app with the eval profile: no response cache, no LLM memo, no coverage index check
+# Serve the app with the eval profile: no response cache, no LLM memo
 eval-app PORT:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${GEMINI_API_KEY:?set GEMINI_API_KEY in the environment}"
     export SEARCH_RESPONSE_CACHE_ENABLED=false
     export SEARCH_LLM_MEMO_MAX_BYTES=0
-    export COVERAGE_INDEX_CHECK=off
     export SEARCH_GRAPH_BASE="{{SEARCH_GRAPH_BASE}}"
     if [ -z "${RESOLVEKIT_CACHE_DIR:-}" ]; then
         export RESOLVEKIT_CACHE_DIR="{{justfile_directory()}}/runs/dev_resolvekit"

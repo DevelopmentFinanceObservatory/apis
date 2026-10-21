@@ -28,7 +28,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -59,7 +59,8 @@ from entity_resolution import (
 from graph_generation import GenerationProvider
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
-from graph_release.context import bound_served_release, optional_release_service
+from graph_release.context import bound_served_release
+from graph_release.service import ReleaseService, get_release_service
 from materialise import GraphReader, place_scope
 from materialise.errors import UpstreamVersionChangedError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -132,10 +133,6 @@ from search.models import (
 )
 from series_coverage.shared import get_coverage_service
 from skills_index import SharedSkillsIndex, acquire_shared_index, release_shared_index
-
-if TYPE_CHECKING:
-    # Annotation-only: `graph_release.service` needs the `graph-release` extra.
-    from graph_release.service import ReleaseService
 
 logger = logging.getLogger(__name__)
 
@@ -700,7 +697,7 @@ async def _open_search_deps(
     place_options_pool: PlaceOptionsPool | None,
     generation: GenerationProvider | None,
     catalogue: CatalogueService,
-    release: ReleaseService | None,
+    release: ReleaseService,
     conversion_catalogue: ConversionCatalogueService | None,
 ) -> SearchDeps:
     """Build missing dependencies and return the bundle. The `owned` stack closes clients in
@@ -986,7 +983,7 @@ def _start_conversion_catalogue_load(
     *,
     generation: GenerationProvider,
     catalogue: CatalogueService,
-    release: ReleaseService | None,
+    release: ReleaseService,
     graph: EngineGraphClient,
     reader: GraphReader | None,
     sdmx: MaterialiseSdmxClient,
@@ -1038,13 +1035,12 @@ async def _wait_for_conversion_catalogue(service: ConversionCatalogueService) ->
 @contextmanager
 def _request_scope(
     catalogue: CatalogueService,
-    release: ReleaseService | None,
+    release: ReleaseService,
     conversion_catalogue: ConversionCatalogueService | None,
     variable_breadth: VariableBreadthReader | None,
 ) -> Iterator[None]:
     """Bind the origin catalogue's and the conversion catalogue's loaded snapshots, the
-    served graph release when there is a release service, and the process's whole-variable
-    breadth reader, for one request."""
+    served graph release, and the process's whole-variable breadth reader, for one request."""
     conversion = conversion_catalogue.snapshot() if conversion_catalogue is not None else None
     with (
         bound_catalogue(catalogue.snapshot()),
@@ -1089,14 +1085,13 @@ def search_surface(
     Injected instances remain caller-owned. `materialise_graph` defaults to the live graph
     client. The process-wide generation provider rejects duplicate cache registrations, so
     concurrent apps need separate injected generation providers. Each request binds the origin
-    catalogue's and the conversion catalogue's loaded snapshots for its whole run, and, with
-    `GRAPH_RELEASE_URI` set, the release service's served release. An injected
-    `conversion_catalogue` is served as loaded; without one the lifespan loads a new one.
+    catalogue's and the conversion catalogue's loaded snapshots for its whole run, and the
+    release service's served release. An injected `conversion_catalogue` is served as loaded;
+    without one the lifespan loads a new one.
     """
-    # Fail during construction when an artifact is missing or unreadable.
-    get_coverage_service()
+    # Fail during construction when an artifact or the graph release is missing or unreadable.
     catalogue = get_catalogue_service()
-    release = optional_release_service()
+    release = get_release_service()
     # The documents read the code index as they are built, so they are built under the
     # release a request would bind.
     with bound_served_release(release):

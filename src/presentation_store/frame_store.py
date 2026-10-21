@@ -21,7 +21,7 @@ door's wait ends. A load whose graph label read or family definition read failed
 cached, so the next load reads again. A quarantined family identity is a lasting state, so its
 missing label is cached. The load that reads the labels stamps the frame with the graph
 generation the read starts under and the build of the catalogue the load is bound to, with the
-bound release under `GRAPH_RELEASE_ORIGIN` (`ResolvedFrame.graph_generation`,
+bound release (`ResolvedFrame.graph_generation`,
 `ResolvedFrame.catalogue_build`), and the cached frame keeps
 both, so a card's vocabulary revision names the read its labels came from. A cached frame's
 words, its labels, its anchor's left-out labels, its citation and its source documents, are
@@ -931,9 +931,8 @@ class LiveFrameStore:
 
     def _read_under(self) -> tuple[str | None, str | None]:
         """The graph generation token a graph read starts under now, and the build of the
-        catalogue this load is bound to, joined to the bound release under
-        `GRAPH_RELEASE_ORIGIN` (`current_words_build`), or `(None, None)` for a store with no
-        graph."""
+        catalogue this load is bound to, joined to the bound release (`current_words_build`), or
+        `(None, None)` for a store with no graph."""
         if self._graph is None:
             return None, None
         return self._graph.generation_stamp().token, current_words_build()

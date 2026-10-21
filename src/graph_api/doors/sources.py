@@ -15,9 +15,9 @@ its own deadline, set the same way before it looks the document up. Oversized
 dcids return 400 before a read.
 
 Currency and granularity stay out of the cached document. Each response looks
-them up in the coverage index's per-provenance views, which the index builds
-when it loads, and `materialise.provenance_doc.with_coverage_facts` sets them
-and the gaps they decide, so a coverage refresh shows on the next response.
+them up in the bound release's coverage index's per-provenance views, which the
+index builds when it loads, and `materialise.provenance_doc.with_coverage_facts`
+sets them and the gaps they decide, so a release swap shows on the next response.
 
 The wire mapping converts the cadence token to its label, keeps missing scalars
 null, maps the parsed transformation steps, changelog releases, methodology
@@ -40,12 +40,11 @@ granularity. A Provenance with one-role totals and by-creditor variables
 reads as a two-axis source, and one whose variables all sit on one axis
 serves null. The nouns come from `materialise.roles.axis_noun`.
 Anything else serves null and gaps the path, and the request still succeeds.
-Unset coverage logs nothing per request. Both facts come from one index
-snapshot per response. A failure reading it logs one WARNING and empties both
-facts, and a failure deriving one fact logs a WARNING and empties only that
-fact. The coverage job keeps only role-bearing
-series, so a Provenance without coverage rows reads as unknown, and the
-index cannot see a Provenance's other series.
+Both facts come from one index snapshot per response. A failure reading it logs
+one WARNING and empties both facts, and a failure deriving one fact logs a
+WARNING and empties only that fact. The release's coverage view holds only the
+series of variables that declare roles, so a Provenance without coverage rows
+reads as unknown, and the index cannot see a Provenance's other series.
 
 The source index is a literal route on the same router and makes no graph
 reads. It joins the packaged origin registry (`origin_catalogue.registry`) to
@@ -63,11 +62,11 @@ oversized ids to 400, truncated children to non-retryable 503, deadline
 expiry to 504, and DCP 4xx or other errors to
 502 or 503 respectively.
 
-A documentation response answers `public, max-age=300` with an `ETag` over its body,
-or `no-store` when it asked for coverage facts while the coverage index had failed to load
-or was unreadable (`dfo_platform.static_response.gapped_public_json`). The source index
-answers `public, max-age=300` with a strong `ETag` and a gzip representation, both
-encoded once per origin catalogue `build_id`.
+A documentation response answers `public, max-age=300` with an `ETag` over its body, or
+`no-store` when it asked for coverage facts while the coverage index was unreadable
+(`dfo_platform.static_response.gapped_public_json`). The source index answers
+`public, max-age=300` with a strong `ETag` and a gzip representation, both encoded once per
+origin catalogue `build_id`.
 """
 
 from __future__ import annotations
@@ -214,24 +213,17 @@ def _coverage_facts_of(
     deps: GraphDeps, provenance_dcids: tuple[str, ...]
 ) -> tuple[CoverageFacts, bool]:
     """Return the currencies and granularity the coverage index gives these Provenances, and
-    whether the index failed to load or could not be read, so the gaps those facts leave are
-    transient: an unreadable index can answer a later response, and one that failed to load
-    loads when the process restarts.
+    whether the index could not be read, so the gaps those facts leave are transient: an
+    unreadable index can answer a later response.
 
-    Runs on the event loop, since `current()` returns the served index without I/O and the
-    index builds its per-provenance views when it loads. Without a coverage service the
-    currencies are empty and the granularity is `None`; startup already logged why, and the
-    gaps are transient only when the artifact failed to load (`deps.coverage_load_failed`),
-    since an unset `COVERAGE_ARTIFACT_URI` is a deployment's permanent state. Both
-    facts come from one index snapshot, so a background refresh cannot mix two
-    builds in one response.
+    Runs on the event loop, since `current()` returns the bound release's index without I/O
+    and the index builds its per-provenance views when it loads. Both facts come from one
+    index snapshot, so a release swap cannot mix two builds in one response.
     A failure reading the snapshot logs one WARNING and empties both facts.
     `materialise.provenance_doc.coverage_facts_from_index` then derives each
     fact under its own guard, so a failure logs a WARNING and empties only
     that fact. A failed snapshot read is transient.
     """
-    if deps.coverage is None:
-        return CoverageFacts(), deps.coverage_load_failed
     try:
         index = deps.coverage.current()
     except Exception:

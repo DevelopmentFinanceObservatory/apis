@@ -35,7 +35,6 @@ from dc_sdmx import SdmxClient
 from dfo_platform.request_deadline import submit_detached
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, GenerationStamp
 from graph_generation.stamp import ttu_from_stamp_key
-from graph_release.context import coverage_views_enabled
 from origin_catalogue.context import current_catalogue
 from origin_catalogue.graph import (
     ARCS_CACHE_SIZE,
@@ -469,8 +468,8 @@ class LiveGraphClient:
 
         The cache keys on the generation stamp and the catalogue's build, UN setting and
         source scope, since admission ran before the cut and the scope adds rows past it
-        (`with_rival_families`). With `GRAPH_RELEASE_COVERAGE` on it also keys on the served
-        code index's content hash, since the rival rows come from the bound release's index. A
+        (`with_rival_families`), and on the served code index's content hash, since the rival
+        rows come from the bound release's index. A
         detection enters the cache when its UN resolve succeeds, before `Detection.un` settles,
         so a failed or unfinished one is never served from it.
         """
@@ -482,7 +481,7 @@ class LiveGraphClient:
             catalogue.build_id,
             catalogue.un_system_enabled,
             catalogue.scope,
-            index.stamp.content_hash if coverage_views_enabled() else None,
+            index.stamp.content_hash,
             query,
             self._resolve_target,
             self._detect_k,

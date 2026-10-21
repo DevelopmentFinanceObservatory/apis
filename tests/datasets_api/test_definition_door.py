@@ -7,7 +7,6 @@ from __future__ import annotations
 import io
 import json
 import zipfile
-from collections.abc import Callable
 from urllib.parse import urlsplit
 
 import httpx
@@ -136,13 +135,6 @@ class _MutableCoverageService:
 
     def replace(self, index: CoverageIndex) -> None:
         self._index = index
-
-    def serves(self, snapshot: CoverageSnapshot) -> bool:
-        return snapshot.index is self._index
-
-    def register_load_guard(self, guard: object) -> Callable[[], None]:
-        """This fake never loads a build, so no guard is ever entered."""
-        return lambda: None
 
     def snapshot(self) -> CoverageSnapshot:
         return CoverageSnapshot(

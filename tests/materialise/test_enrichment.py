@@ -366,10 +366,8 @@ def test_budget_bounds_individual_probes_and_the_graph_logs_the_unprobed_count(m
 
 
 def test_a_name_read_under_one_release_is_read_again_under_the_next(monkeypatch):
-    """With `GRAPH_RELEASE_ORIGIN` on, the bound release answers a DFO variable's name, so a
-    name cached under one release is not served under another."""
-    monkeypatch.setenv("GRAPH_RELEASE_ORIGIN", "1")
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+    """The bound release answers a DFO variable's name, so a name cached under one release is
+    not served under another."""
     first, second = release_at_revision("rev-1"), release_at_revision("rev-2")
     names = {first.release_id: "Debt flows", second.release_id: "Debt flows, renamed"}
     graph = FakeGraphReader(arcs={})

@@ -38,11 +38,12 @@ the base variable table lists, or one that neither the withheld set nor a
 topic names, passes, since every facet read still admits facet by facet, and
 `data_commons` names base for it.
 
-With `GRAPH_RELEASE_ORIGIN` on, `CatalogueSnapshot` reads its DFO half from the request's
-graph release (`graph_release.context.served_origin`): a DFO variable's arcs come from the
-release's origin view, and so do the DFO members of each family, joined to the build's base
-summaries (`families.ReleaseFamilies`), which leave out a base variable the release holds. The build's base and schema arcs, and the nodes it
-holds empty, still answer, and a DFO variable the release does not hold is read from the graph.
+`CatalogueSnapshot` reads its DFO half from the request's graph release
+(`graph_release.context.served_origin`): a DFO variable's arcs come from the release's origin
+view, and so do the DFO members of each family, joined to the build's base summaries
+(`families.ReleaseFamilies`), which leave out a base variable the release holds. The build's
+base and schema arcs, and the nodes it holds empty, still answer, and a DFO variable the
+release does not hold is read from the graph.
 """
 
 from __future__ import annotations
@@ -593,16 +594,16 @@ class Catalogue(Protocol):
         ...
 
     def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
-        """The `->*` arcs of a DFO variable, a base variable or a schema node
-        the arc tables hold (`arc_tables.ArcTables.arcs`): empty for a node
-        held and empty, which the graph does not have, and `None` for a dcid
-        the tables do not hold, which is read from the graph."""
+        """The `->*` arcs of a DFO variable the bound graph release holds, or of a base
+        variable or schema node the arc tables hold (`release_held_arcs`): empty for a node
+        held and empty, which the graph does not have, and `None` for a dcid neither holds,
+        which is read from the graph."""
         ...
 
     def held_family(self, key: FamilyKey) -> FamilySummary | None:
-        """The summary of every variable of family `key` the arc tables or, with the UN
-        origin on, the UN tables hold (`families.FamilyTables.family`), as the catalogue
-        job computed it. `None` when they hold none."""
+        """The summary of every variable of family `key` the bound graph release holds, then
+        the base arc table's and, with the UN origin on, the UN tables'
+        (`release_held_family`). `None` when they hold none."""
         ...
 
     def arc_target(self, dcid: str) -> UnArc | None:
@@ -658,9 +659,9 @@ class Catalogue(Protocol):
 class CatalogueSnapshot:
     """One loaded catalogue version. `un` holds the build's UN tables, `arcs`
     its arc tables and `families` the family summaries of both. `base_families` summarises
-    the `base` arc table alone (`families.summarise_table`), which `held_family` joins to a
-    graph release's DFO summaries with `GRAPH_RELEASE_ORIGIN` on, and is `None` for a build
-    loaded with it off.
+    the `base` arc table alone (`families.summarise_table`), which `held_family` joins to the
+    bound graph release's DFO summaries; it is empty, as it is for `EMPTY_ARC_TABLES`, unless
+    given with `arcs`.
     `un_system_enabled` gates UN admission; with it off, no UN provenance or
     candidate is admitted and the UN tables answer nothing.
     `scope` narrows `admit_series` to a request's allowed provenances (`scoped`)."""
@@ -672,7 +673,7 @@ class CatalogueSnapshot:
     families: FamilyTables = EMPTY_FAMILY_TABLES
     un_system_enabled: bool = True
     scope: frozenset[str] | None = None
-    base_families: Mapping[FamilyKey, FamilySummary] | None = None
+    base_families: Mapping[FamilyKey, FamilySummary] = field(default_factory=dict)
 
     @property
     def build_id(self) -> str:
@@ -783,35 +784,16 @@ class CatalogueSnapshot:
         return self.un.nodes.get(dcid) if self.un_system_enabled else None
 
     def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
-        origin = served_origin()
-        if origin is None:
-            return self.arcs.arcs(dcid)
-        released = origin.arcs.get(dcid)
-        if released is not None:
-            return released
-        # The build's own DFO rows give way to the release's, which do not hold this one.
-        held = self.arcs.arcs(dcid)
-        return None if held and dcid in self.arcs.dfo else held
+        return release_held_arcs(self.arcs, dcid)
 
     def held_family(self, key: FamilyKey) -> FamilySummary | None:
-        origin = served_origin()
-        if origin is None:
-            return self.families.family(key, un_system_enabled=self.un_system_enabled)
-        if self.base_families is None:
-            raise ValueError(
-                f"catalogue build {self.build_id!r} was loaded without base family summaries, "
-                "which GRAPH_RELEASE_ORIGIN joins to the release's"
-            )
-        return self.families.family(
+        return release_held_family(
             key,
+            build_id=self.build_id,
+            arcs=self.arcs,
+            families=self.families,
+            base_families=self.base_families,
             un_system_enabled=self.un_system_enabled,
-            release=ReleaseFamilies(
-                dfo=origin.families,
-                base=self.base_families,
-                base_without_dfo=origin.base_families_without_dfo(
-                    self.build_id, base=self.arcs.base, families=self.base_families
-                ),
-            ),
         )
 
     def arc_target(self, dcid: str) -> UnArc | None:
@@ -862,6 +844,45 @@ class CatalogueSnapshot:
         return self.un_system_enabled and self.un.is_candidate(dcid)
 
 
+def release_held_arcs(arcs: ArcTables, dcid: str) -> tuple[UnArc, ...] | None:
+    """`dcid`'s arcs from the bound graph release's origin view, else from a build's `arcs`,
+    whose own DFO rows give way to the release's: a DFO variable the release does not hold is
+    read from the graph. Raises `graph_release.context.ReleaseNotBound` with no release
+    bound."""
+    released = served_origin().arcs.get(dcid)
+    if released is not None:
+        return released
+    held = arcs.arcs(dcid)
+    return None if held and dcid in arcs.dfo else held
+
+
+def release_held_family(
+    key: FamilyKey,
+    *,
+    build_id: str,
+    arcs: ArcTables,
+    families: FamilyTables,
+    base_families: Mapping[FamilyKey, FamilySummary],
+    un_system_enabled: bool,
+) -> FamilySummary | None:
+    """Family `key`'s summary: the bound graph release's DFO members joined to a build's base
+    ones, `base_families` over its `arcs.base`, less any the release holds, then its UN ones
+    from `families` with the UN origin on. Raises `graph_release.context.ReleaseNotBound` with
+    no release bound."""
+    origin = served_origin()
+    return families.family(
+        key,
+        un_system_enabled=un_system_enabled,
+        release=ReleaseFamilies(
+            dfo=origin.families,
+            base=base_families,
+            base_without_dfo=origin.base_families_without_dfo(
+                build_id, base=arcs.base, families=base_families
+            ),
+        ),
+    )
+
+
 def _un_segment(variable: str) -> str:
     """The id segment of a UN variable, `undata/<segment>/...`, which its
     agency's provenance row carries."""
@@ -884,4 +905,6 @@ __all__ = [
     "SourceRef",
     "UnTables",
     "entry_ref",
+    "release_held_arcs",
+    "release_held_family",
 ]

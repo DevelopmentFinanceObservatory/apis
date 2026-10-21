@@ -3,11 +3,13 @@ release, resolvekit."""
 
 import importlib
 import os
+import shutil
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from concurrent import futures
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -17,8 +19,8 @@ import pytest
 
 import graph_release.context as release_context_module
 import origin_catalogue.service as catalogue_service_module
-from graph_release.context import bind_release, bound_release, unbind_release
-from graph_release.service import Release
+from graph_release.context import URI_ENV_VAR, bound_release, bound_served_release
+from graph_release.service import Release, get_release_service, reset_release_service
 from materialise import place_scope
 from origin_catalogue import Catalogue, bound_catalogue, unbind_catalogue
 from origin_catalogue import bind_catalogue as _bind
@@ -28,53 +30,38 @@ from tests.file_shards import (  # noqa: F401  (hooks pytest collects here)
     pytest_collect_file,
     pytest_sessionstart,
 )
-from tests.graph_release.support import slice_coverage_release
+from tests.graph_release.support import build_session_release
 from tests.llm_miss_guard import (  # noqa: F401  (hooks pytest collects here)
     pytest_runtest_makereport,
     pytest_runtest_setup,
 )
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_service
-from tests.series_coverage.support import session_coverage_service
 
 if TYPE_CHECKING:
     from entity_resolution import SharedResolver
     from search.engine.config import SearchSettings
 
 # Set defaults at import time because tests build surfaces during collection.
-# A zero recheck interval keeps the recorded coverage index stable during tests.
-_COVERAGE_SLICE_DIR = Path(__file__).resolve().parent / "fixtures" / "coverage_slice"
-os.environ.setdefault("COVERAGE_ARTIFACT_URI", f"file://{_COVERAGE_SLICE_DIR}")
-os.environ.setdefault("COVERAGE_RECHECK_SECONDS", "0")
-# Every surface serves the bound graph release's views and its origin view.
-os.environ.setdefault("GRAPH_RELEASE_COVERAGE", "1")
-os.environ.setdefault("GRAPH_RELEASE_ORIGIN", "1")
+# Every surface serves the release `pytest_configure` publishes here, through the process's
+# release service (`graph_release.service.get_release_service`). Set unconditionally, so no
+# test opens a release a developer's environment names.
+_SESSION_RELEASE_DIR = Path(tempfile.mkdtemp(prefix="session-graph-release-"))
+os.environ[URI_ENV_VAR] = (_SESSION_RELEASE_DIR / "releases").as_uri()
 # Every bundle render links to the public website origin, which the surfaces require.
 os.environ.setdefault("DFO_PUBLIC_SITE_URL", "https://site.example")
 
-# Surfaces acquire the catalogue and coverage services at construction, some during collection,
-# so both are installed for the whole session. Tests of either service isolate its singleton.
+# Surfaces acquire the catalogue and release services at construction, some during collection,
+# so both are in place for the whole session. Tests of either service isolate its singleton.
 # Surfaces and test modules also read the code index during collection, and `get_index()` reads
-# the bound release's views, so a release with views is bound for the whole session too.
+# the bound release's views, so the served release is bound for the whole session too.
 _session_services = ExitStack()
 _session_release: Release | None = None
 
 
-@contextmanager
-def _bound_session_release() -> Iterator[Release]:
-    """Binds, until the block ends, a graph release whose code index part is the packaged
-    `index.json.gz` document, with its views and its origin view, and the recorded coverage
-    slice at `COVERAGE_ARTIFACT_URI` as its coverage view (`slice_coverage_release`). Its
-    origin view holds the recorded DFO variables, so a catalogue's own DFO rows give way to
-    them."""
-    with slice_coverage_release(os.environ["COVERAGE_ARTIFACT_URI"]) as release:
-        token = bind_release(release)
-        try:
-            yield release
-        finally:
-            unbind_release(token)
-
-
 def pytest_configure(config: pytest.Config) -> None:
+    """Publishes the session release (`build_session_release`), opens it through
+    `get_release_service()` as a surface does, and binds the release that service serves: the
+    packaged code index, the recorded coverage slice and the recorded DFO variables."""
     config.addinivalue_line(
         "markers",
         "unbound_release: runs with no graph release bound, opting out of "
@@ -83,13 +70,15 @@ def pytest_configure(config: pytest.Config) -> None:
     _session_services.enter_context(
         catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service())
     )
-    _session_services.enter_context(session_coverage_service())
+    build_session_release(os.environ[URI_ENV_VAR])
     global _session_release
-    _session_release = _session_services.enter_context(_bound_session_release())
+    _session_release = _session_services.enter_context(bound_served_release(get_release_service()))
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
     _session_services.close()
+    reset_release_service()
+    shutil.rmtree(_SESSION_RELEASE_DIR, ignore_errors=True)
 
 
 class OfflineContractViolation(RuntimeError):
@@ -290,7 +279,7 @@ def _bound_fake_catalogue() -> Iterator[None]:
 
 @pytest.fixture(scope="session")
 def _packaged_index_release() -> Release:
-    """The session's bound graph release (`_bound_session_release`), whose code index is the
+    """The session's served graph release (`pytest_configure`), whose code index is the
     packaged `index.json.gz` document."""
     assert _session_release is not None
     return _session_release

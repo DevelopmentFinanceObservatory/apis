@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from dfo_platform.app import create_app
 from skills_api.app import skills_surface
-from skills_index.config import SKILLS_INDEX_REFRESH_SECONDS
 from skills_index.frontmatter import read_front_matter
 from skills_index.manifest import build_manifest, content_version, skill_file
 from skills_index.types import (
@@ -80,37 +79,17 @@ def index_of(*entries: SkillEntry, issues: tuple[SkillIssue, ...] = ()) -> Skill
 
 
 class NoGraphSharedIndex:
-    """A stand-in for `skills_index.SharedSkillsIndex` exposing exactly the three
-    members a door may read: `.index`, `.rebuilds_on_swap` and
-    `seconds_until_next_rebuild()`. Any other attribute would be a graph read no door
-    makes, so `__getattr__`, which fires only once normal lookup fails, raises.
-
-    `seconds_until_next_rebuild=None` mirrors the real holder before its first
-    build: the method raises, as it does when no generation is bound.
+    """A stand-in for `skills_index.SharedSkillsIndex` exposing exactly the one member a
+    door may read: `.index`. Any other attribute would be a graph read no door makes, so
+    `__getattr__`, which fires only once normal lookup fails, raises.
     """
 
-    def __init__(
-        self,
-        index: SkillsIndex | None,
-        *,
-        seconds_until_next_rebuild: float | None = SKILLS_INDEX_REFRESH_SECONDS,
-        rebuilds_on_swap: bool = False,
-    ) -> None:
+    def __init__(self, index: SkillsIndex | None) -> None:
         self.index = index
-        self.rebuilds_on_swap = rebuilds_on_swap
-        self._seconds_until_next_rebuild = seconds_until_next_rebuild
-
-    def seconds_until_next_rebuild(self) -> float:
-        if self._seconds_until_next_rebuild is None:
-            raise RuntimeError(
-                "seconds_until_next_rebuild() called before any build has bound a generation"
-            )
-        return self._seconds_until_next_rebuild
 
     def __getattr__(self, name: str) -> object:
         raise AssertionError(
-            f"a door read {name!r} off the shared index holder; it should read only "
-            "'.index', '.rebuilds_on_swap' and 'seconds_until_next_rebuild()'"
+            f"a door read {name!r} off the shared index holder; it should read only '.index'"
         )
 
 
@@ -119,17 +98,6 @@ def surface_client(holder: NoGraphSharedIndex) -> TestClient:
     return TestClient(create_app([skills_surface(skills_index=holder)]))
 
 
-def client_for(
-    index: SkillsIndex | None,
-    *,
-    seconds_until_next_rebuild: float | None = SKILLS_INDEX_REFRESH_SECONDS,
-    rebuilds_on_swap: bool = False,
-) -> TestClient:
+def client_for(index: SkillsIndex | None) -> TestClient:
     """A client for the Skills surface serving `index`."""
-    return surface_client(
-        NoGraphSharedIndex(
-            index,
-            seconds_until_next_rebuild=seconds_until_next_rebuild,
-            rebuilds_on_swap=rebuilds_on_swap,
-        )
-    )
+    return surface_client(NoGraphSharedIndex(index))

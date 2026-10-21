@@ -21,6 +21,7 @@ from graph_api.doors.sources import new_provenance_doc_cache
 from graph_api.kinds import KINDS
 from graph_api.resolve_models import ResolveRequest
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
+from series_coverage.shared import get_coverage_service
 
 from .conftest import (
     FakeGraphNodeReader,
@@ -817,6 +818,7 @@ def test_run_resolve_refreshes_the_generation_once():
         dcp_executor=executor,
         generation=generation,
         provenance_docs=new_provenance_doc_cache(executor=executor, generation=generation),
+        coverage=get_coverage_service(),
     )
 
     response = asyncio.run(

@@ -150,13 +150,6 @@ class _MutableCoverageService:
     def replace(self, index) -> None:
         self._index = index
 
-    def serves(self, snapshot: CoverageSnapshot) -> bool:
-        return snapshot.index is self._index
-
-    def register_load_guard(self, guard: object) -> Callable[[], None]:
-        """This fake never loads a build, so no guard is ever entered."""
-        return lambda: None
-
     def snapshot(self) -> CoverageSnapshot:
         return CoverageSnapshot(
             index=self._index,

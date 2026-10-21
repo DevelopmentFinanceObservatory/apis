@@ -69,7 +69,6 @@ from datasets_api.admission import (
     refuse_excel_over_stored_rows,
     refuse_inline_over_ceiling,
     sync_estimate,
-    under_current_coverage,
     within_sync_budget,
     xlsx_splits_totals,
 )
@@ -797,8 +796,8 @@ def _render_stored_rendering(
     With `frame` `None` this takes the permit: it reads the servable stored frame
     (`servable_frame_location`) inside a `bounded_materialise_slot`, and returns `None` for a
     missing frame location or missing or corrupt frame bytes. A full semaphore raises
-    retryable `MintBackpressure` (503) once the wait runs out, and a `coverage_snapshot` a
-    reload replaced during the wait raises `StaleCoverageSnapshot`.
+    retryable `MintBackpressure` (503) once the wait runs out or once a swap replaced the
+    request's bound release (`bounded_materialise_slot`).
 
     A `frame` argument is the stored frame the caller read and verified under a permit it
     still holds. The render then runs under that permit and takes none, since the permits
@@ -851,7 +850,6 @@ def _render_stored_rendering(
         deps.materialise_semaphore,
         wait_seconds=deps.settings.materialise_wait_seconds,
         deadline=deps.deadline,
-        coverage_current=functools.partial(deps.coverage.serves, coverage_snapshot),
     ):
         return _render_located_frame(
             location,
@@ -890,9 +888,7 @@ def head_rendering(
     re-materialises or hands the call on. `coverage_snapshot` feeds an on-demand bundle's
     documentation read.
 
-    The render takes one materialise permit and raises `StaleCoverageSnapshot` when a reload
-    replaced `coverage_snapshot` before the permit was taken, so a caller that took the
-    snapshot earlier runs under `under_current_coverage`. A `frame` argument is the stored
+    The render takes one materialise permit. A `frame` argument is the stored
     frame the caller read and verified under a materialise permit it still holds: the render
     takes those bytes in place of the read, takes no permit, and trusts `coverage_snapshot`
     as taken under that permit. A `plan` argument is the `plan_stored_render` decision the
@@ -1193,11 +1189,7 @@ def serve_current(
     `revoked_under`.
 
     One coverage snapshot serves each pass's head check, admission estimate, fetch, and response
-    stamp:
-    `coverage_snapshot` when given, else the service's. A pass that reaches its materialise
-    permit after a reload replaced the snapshot raises `StaleCoverageSnapshot` to the caller
-    that passed `coverage_snapshot`, which starts again on the served one
-    (`under_current_coverage`); a pass on the service's own snapshot starts again here. A head confirmed within
+    stamp: `coverage_snapshot` when given, else the service's. A head confirmed within
     `head_recheck_interval` serves with no read and skips rehydration; a missing rendering may
     need artifact-store reads. Past that window a head older than `head_max_age` rebuilds,
     which catches corrections no fingerprint member sees. Otherwise `resolve_requests` runs
@@ -1245,10 +1237,8 @@ def serve_current(
             strip_pointer=strip_pointer,
             revoked_under=revoked_under,
         )
-        manifest = (
-            check(coverage_snapshot)
-            if coverage_snapshot is not None
-            else under_current_coverage(deps.coverage.snapshot, check)
+        manifest = check(
+            coverage_snapshot if coverage_snapshot is not None else deps.coverage.snapshot()
         )
         if manifest is not None:
             return _labelled(manifest, trigger=trigger)
@@ -1272,9 +1262,7 @@ def _check_currency(
     revoked_under: Sequence[str],
 ) -> Manifest | None:
     """One pass of `serve_current` on the coverage snapshot `snapshot`. `None` means another
-    caller rebuilt the subject while this one waited, so the head is read again. Raises
-    `StaleCoverageSnapshot` when a reload replaced `snapshot` while the pass waited its
-    rebuild turn or before it took its materialise permit."""
+    caller rebuilt the subject while this one waited, so the head is read again."""
     subject_id = stored.spec_id
     if head_read is not None:
         head = head_read.head
@@ -1311,7 +1299,6 @@ def _check_currency(
         subject_id,
         deadline=deps.deadline,
         wait_seconds=deps.settings.materialise_wait_seconds,
-        coverage_current=functools.partial(deps.coverage.serves, snapshot),
     ) as waited:
         # A rebuild that ended while this caller waited advanced the head. One that failed
         # left it, and this caller then rebuilds as it would have alone.
@@ -1438,7 +1425,6 @@ def _materialise_and_record(
                 ceiling=ceiling,
                 coverage_stamp=coverage_snapshot.stamp,
                 coverage_index=coverage_snapshot.index,
-                coverage_current=functools.partial(deps.coverage.serves, coverage_snapshot),
                 progress=progress,
             )
     except _BODY_POINTING_REFUSALS as exc:
