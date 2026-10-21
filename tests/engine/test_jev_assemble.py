@@ -221,7 +221,7 @@ _AMOUNT_AND_GE = [
 
 _CUTS = {
     "ask": _Cut(_ask, "m|0", 0.15, 0.16, True, False),
-    "decline": _Cut(_declined, "m|0", 0.4, 0.41, True, False),
+    "decline": _Cut(_declined, "m|0", 0.3, 0.31, True, False),
     "measures": _Cut(
         _pool(lambda n: _answers({"m|0": 0.6, **n}, elect={0: 1.0}), [_VALUE_ADDED, _OUTPUT]),
         "m|1",

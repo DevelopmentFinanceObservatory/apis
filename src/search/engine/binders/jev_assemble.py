@@ -94,10 +94,11 @@ class Thresholds:
     # every pick that answers it correctly 0.305 or more.
     ask: float = 0.15
     # Over the 1,405 stored dev answers and their labels, ``none`` above every shape with
-    # no measure score over 0.4 asks on 77 parts the `ask` bar answers: 56 the labels mark
-    # as asks, 14 with a correct definite pick, 2 with a wrong one and 5 candidates. With no
-    # measure bound it asks on 238, 128 of them correct definite picks.
-    decline: float = 0.4
+    # no measure score over 0.3 asks on 57 parts the `ask` bar answers: 44 the labels mark
+    # as asks, 8 with a correct definite pick, 2 with a wrong one and 3 candidates. At 0.4
+    # it asks on 77, 56 of them asks and 14 correct definite picks. The lone shape of
+    # dq-ids-057 measures 0.31 to 0.375 across draws and answers; FDI at 0.155 declines.
+    decline: float = 0.3
     # On the same answers, with the decline off, the pool this bar admits convention
     # variants to changes 12 picks against dev: 7 to a better pick and 3 to a worse one.
     # 0.1, 0.2 and 0.3 change the same picks.

@@ -15,12 +15,16 @@ The six policies run in order, each over the survivors of the one before:
    grant equivalent, or `amount` when the window starts before grant-equivalent reporting
    does (`GE_STARTS`) or names no start year, so the years before it stay in the answer.
 3. `net_vs_gross`: among shapes with a `nettingBasis` slot, one that offers Gross.
-4. `default_dataset`: a shape whose family the part's house default dataset
+4. `commit_vs_disb`: among FinancialObligation shapes and FinancialFlow shapes with a
+   `financialFlowType` slot, a flow whose slot offers Disbursement.
+5. `default_dataset`: a shape whose family the part's house default dataset
    (`Context.wanted_dataset`) publishes. An opt-in table is its own dataset, so the
    imputed multilateral sectors family fits no house default.
-5. `commit_vs_disb`: among FinancialObligation shapes and FinancialFlow shapes with a
-   `financialFlowType` slot, a flow whose slot offers Disbursement.
 6. `data_at_places`: a shape with data at the named places.
+
+The four convention policies (`CONVENTION_POLICIES`) run first, so a dataset default
+never sets aside a shape a convention would keep: a donor's loans go to the disbursements
+of one dataset, not the commitments of the house default.
 
 Where a policy run over a binder's pool alone would choose on a measure axis (`chooses_on`),
 the binder narrows the pool on that axis only to a value the phrase names outright.
@@ -61,8 +65,8 @@ type PolicyName = Literal[
     "nominal_vs_va",
     "amount_vs_ge",
     "net_vs_gross",
-    "default_dataset",
     "commit_vs_disb",
+    "default_dataset",
     "data_at_places",
 ]
 
@@ -70,8 +74,8 @@ POLICY_ORDER: tuple[PolicyName, ...] = (
     "nominal_vs_va",
     "amount_vs_ge",
     "net_vs_gross",
-    "default_dataset",
     "commit_vs_disb",
+    "default_dataset",
     "data_at_places",
 )
 
@@ -342,8 +346,8 @@ _POLICIES: Mapping[
     "nominal_vs_va": (_output_or_value_added, _nominal_output),
     "amount_vs_ge": (_flow_amount_or_ge, _amount_or_ge),
     "net_vs_gross": (_netted, _gross),
-    "default_dataset": (_any_shape, _default_dataset),
     "commit_vs_disb": (_flow_or_obligation, _disbursed),
+    "default_dataset": (_any_shape, _default_dataset),
     "data_at_places": (_any_shape, _with_data),
 }
 

@@ -131,6 +131,23 @@ _BY_DATASET = (
             1,
             id="data-at-the-named-places",
         ),
+        # commit_vs_disb runs before default_dataset, so a donor's loan disbursements in
+        # one dataset win over the commitments the donor default dataset publishes.
+        pytest.param(
+            (
+                _facts(
+                    0,
+                    population_type="FinancialObligation",
+                    flow_types=("Commitment",),
+                    datasets=(_WANTED["donor"],),
+                ),
+                _facts(1, flow_types=("Disbursement",), datasets=(_WANTED["recipient"],)),
+            ),
+            _ctx(case="donor"),
+            0,
+            1,
+            id="disbursement-before-the-default-dataset-s-commitment",
+        ),
         pytest.param((_GE,), _ctx(pre_ge=True), 0, 0, id="single-candidate"),
         # amount_vs_ge runs first, so grant equivalent wins over a gross amount.
         pytest.param((_GE, _AMOUNT), _ctx(), 0, 0, id="grant-equivalent-before-gross"),

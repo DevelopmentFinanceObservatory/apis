@@ -2231,7 +2231,7 @@
         role: destination
 - id: crs-education-grants-france
   query: total education grants from France in 2020-2024
-  why: Education grants from France for 2020 to 2024 bind type of finance 100 and the education purpose, and a declared default binds crsTypeOfFlow 10.
+  why: Education grants from France for 2020 to 2024 bind type of finance 100, the education purpose and default flow type 10, and a window from 2020 takes grant equivalent.
   tags:
     directional_flow: na
     conjunction: none
@@ -2240,7 +2240,7 @@
       measure:
         shape:
           population_type: FinancialFlow
-          measured_property: amount
+          measured_property: grantEquivalent
           stat_type: measuredValue
           measurement_qualifier: Nominal
           measurement_denominator: null
