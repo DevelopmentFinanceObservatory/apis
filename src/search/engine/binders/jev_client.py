@@ -17,7 +17,7 @@ a timed-out or failed connection, a 401 or 403, a 402, a 408, a 429 or a 5xx); f
 is the probe: its success closes the breaker, its unhealthy failure opens it again. A
 failure particular to the request (a refusal, a missing key, an unanswered question) or a
 cut that a wait for a slot shares in (``slot_wait``, ``queued_timeout``) moves the breaker
-neither way, since the process's own queue, not Jev, spent the ceiling.
+neither way, since the process's own queue spent the ceiling.
 """
 
 from __future__ import annotations
@@ -296,8 +296,8 @@ async def _send(
     attempt: _Attempt,
 ) -> SystemOneResponse:
     """One request, retried once on a rate limit or server error when the delay before the
-    retry, a `Retry-After` included, ends before `deadline` (loop time), recorded on
-    `attempt`."""
+    retry, a `Retry-After` included, ends before `deadline` (loop time). It records on
+    `attempt` whether it queued for its slot and whether it was sent."""
     attempt.queued = semaphore.locked()
     async with semaphore:
         budget = deadline - asyncio.get_running_loop().time()

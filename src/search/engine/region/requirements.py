@@ -294,7 +294,7 @@ def judge(
             else:
                 answer.append("unmet" if rule == "unbound" else "outside")
             if not requirement.refuses and answer[-1] == "unmet":
-                # A value only the bind model read: disclosed, never refused.
+                # A value only the bind model read is disclosed and refuses nothing.
                 answer[-1] = "outside"
                 named.pop(j, None)
         outcomes.append(tuple(answer))

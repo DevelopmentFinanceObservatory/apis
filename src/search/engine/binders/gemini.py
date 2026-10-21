@@ -60,8 +60,8 @@ class GeminiBinder:
     reply drafted as named and every value of each slot the reply asks for in full
     (`holds_mentioned_values`), which the pool reads as it admits each shape, once the
     reply's ``requested_all`` claims are validated (`with_valid_requested_all`). A
-    nomination in `also_plausible` stands only when the reply
-    rates it near its best rating, whatever its denominator (`nominated_near_best`).
+    nomination in `also_plausible` stands only when the reply rates it near its best
+    rating, whatever its denominator (`nominated_near_best`).
 
     A reply that rates neither its pick nor a twin of it in `measuring`, an empty one
     included, or rates it below `DECLINE_FLOOR` (`pick_rating`), says the pick measures

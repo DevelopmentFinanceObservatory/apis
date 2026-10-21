@@ -471,8 +471,8 @@ class Requirement:
     departure naming no phrase in particular ("A requested gender value was not applied."),
     true of any of its requirements left unapplied, so it discloses those of its phrases
     that need it whatever the others. `refuses` is `False` for a value only the bind model
-    read (`phase_rank_bind.model_only_values`): an answer is judged on it, and one leaving
-    it unapplied discloses it and is never refused on it."""
+    read (`phase_rank_bind.model_only_values`). An answer is judged on it, and one leaving
+    it unapplied discloses it and stands."""
 
     term: ResolvedQualifier
     origin: RequirementOrigin

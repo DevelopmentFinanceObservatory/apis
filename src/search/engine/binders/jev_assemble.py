@@ -97,17 +97,18 @@ class Thresholds:
     # no measure score over 0.3 asks on 57 parts the `ask` bar answers: 44 the labels mark
     # as asks, 8 with a correct definite pick, 2 with a wrong one and 3 candidates. At 0.4
     # it asks on 77, 56 of them asks and 14 correct definite picks. The lone shape of
-    # dq-ids-057 measures 0.31 to 0.375 across draws and answers; FDI at 0.155 declines.
+    # a labelled lone-shape part measures 0.31 to 0.375 across draws and answers; an FDI
+    # part at 0.155 declines.
     decline: float = 0.3
     # On the same answers, with the decline off, the pool this bar admits convention
-    # variants to changes 12 picks against dev: 7 to a better pick and 3 to a worse one.
-    # 0.1, 0.2 and 0.3 change the same picks.
+    # variants to changes 12 picks against dev: 7 to a better pick, 3 to a worse one and 2
+    # on parts whose labels accept no shape. 0.1, 0.2 and 0.3 change the same picks.
     near: float = 0.15
     near_elect: float = 0.8
     # The election is the mean of two distributions, so two readings Jev cannot tell
     # apart split it about evenly. At 0.5, 40 of the 1,405 parts list alternates, 3 of the
-    # 60 the labels mark as candidates among them; at 0.05 of the top, 285 did, 12 of the
-    # 60 among them.
+    # 60 the labels mark as candidates among them. At 0.95, 285 list them, 12 of the 60
+    # among them.
     near_alt: float = 0.5
     alt_floor: float = 0.3
     widen: float = 0.2
@@ -382,8 +383,8 @@ def _elect(
     leads with, and so fixes the denominator, since the measure questions ignore form and
     base. The pool the house policies see holds the shapes stating that denominator that
     the election puts near its lead, and each variant of the lead on values a house policy
-    chooses between that measures the phrase near the best, so the policies and not the
-    election settle a convention the phrase leaves open."""
+    chooses between that measures the phrase near the best, so the policies settle a
+    convention the phrase leaves open."""
     shapes = menu.request.shapes
     best = max(conf.measures.values(), default=0.0)
     if best <= t.ask:

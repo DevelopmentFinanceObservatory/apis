@@ -249,8 +249,8 @@ def _settle_bindings(
     (`reading_for_shape`), which admission read.
 
     The source drafts leave and invalid ``requested_all`` claims are demoted
-    (`bind.validate_requested_all_bindings`). The binder already applied it to its pick's
-    drafts, and this pass keeps a claim only on a slot of the elected shape. Each slot
+    (`bind.validate_requested_all_bindings`). The binder applies it to its pick's drafts,
+    and this pass keeps a claim only on a slot of the elected shape. Each slot
     whose taxonomy holds one value and that the reply left unbound is claimed as that
     ``sole_option`` value (`_claim_single_member_slots`). A
     ``sole_option`` claim on a value the shape's population shows the slot a reading

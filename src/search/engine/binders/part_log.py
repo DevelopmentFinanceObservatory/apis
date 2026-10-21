@@ -2,8 +2,8 @@
 request was routed to, the one that served the call, why it fell back when it did, and the
 Jev request's time, questions, chunks and tokens when one was sent. A part's later calls
 after a fallback log ``fallback=inherited`` with no ``jev_error`` and no Jev counts, so the
-lines that carry ``jev_error`` count the Jev requests that failed, each once. Fallback share, 402 and 429 counts and Jev
-latency are log-based metrics on this line.
+lines that carry ``jev_error`` count the Jev requests that failed, each once. Fallback
+share, 402 and 429 counts and Jev latency are log-based metrics on this line.
 """
 
 from __future__ import annotations

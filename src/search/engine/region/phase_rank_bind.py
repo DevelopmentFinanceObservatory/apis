@@ -3755,7 +3755,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     ``degenerate_binding_detected``. A value or set draft on a property the elected shape
     has no slot for leaves the output (`split_stray_bindings`), and its value is recorded
     in the ledger as a requirement (`_stray_requirements`). Every answer is held to a value
-    a recorded term supports: the part answers from the readings that apply it, and refuses
+    a recorded term supports. The part answers from the readings that apply it, and refuses
     ``qualifier_not_bound`` on it, with the elected reading flagged, when none does. An
     answer that leaves a value only the model read unapplied stands and discloses it.
 
@@ -3928,7 +3928,7 @@ async def _stray_requirements(
     """One requirement per property `stray` binds values on: the values the bind drafted on
     properties the elected shape has no slot for (`split_stray_bindings`). A value no
     recorded term supports (`model_only_values`) is a requirement of its own that does not
-    refuse (`Requirement.refuses`): an answer that leaves it unapplied stands and departs
+    refuse (`Requirement.refuses`). An answer that leaves it unapplied stands and departs
     `measure_not_applied` under the value's name. The other values on one property are a
     set the request names (`ValueRule`), applied by membership: an
     answer that binds one of them, or every member of which holds one, applies it, and the

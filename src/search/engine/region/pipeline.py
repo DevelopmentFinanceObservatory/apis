@@ -537,7 +537,7 @@ async def _fill_gap(
     `SEARCH_UN_FIRST_PASS_WAIT_S` from the start of our derivation, and ends
     `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands when it is `definite` or
     `candidates`, or when it is `no_data` carrying an `alternate_match` and `result`
-    carries none: of two refusals, the one offering a reading with data at the place
+    carries none. Of two refusals, the one offering a reading with data at the place
     stands, as status rule 1 has a nominee ride on a refusal. Otherwise `result` stands
     with its reason. A `result` holding an
     `alternate_match`, a reading the model nominated from our pool with data at the place,
