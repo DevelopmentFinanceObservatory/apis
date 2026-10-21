@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import pytest
 
@@ -17,13 +18,20 @@ from search.engine.binders.jev_assemble import (
     ASK_TEXT,
     Confidence,
     JevAnswers,
+    SpanRound,
     assemble,
     assemble_quantity,
     bind_result,
     frame_stated_form,
+    span_round,
 )
-from search.engine.binders.jev_menu import jev_menu
-from search.engine.binders.jev_request import bind_request, quantity_request
+from search.engine.binders.jev_menu import asked_values, jev_menu
+from search.engine.binders.jev_request import (
+    SPAN_MEASURE,
+    bind_request,
+    quantity_request,
+    span_id,
+)
 from search.engine.frame import Frame, FrameNormalisation, Stated, StatedBy, door_frame
 from search.engine.qualifier_match import QualifierMatch, QualifierTie, names_plain_name
 from search.engine.region.phase_rank_bind import _HousePolicyStep
@@ -78,6 +86,7 @@ def _frame() -> Frame:
 def _request(
     shapes: Sequence[ShapeDraft],
     *,
+    variable: str = "aid",
     dropped: tuple[str, ...] = (),
     ties: Sequence[tuple[QualifierTie, ...]] = (),
     apply_policies: ApplyPolicies | None = None,
@@ -87,7 +96,7 @@ def _request(
         shapes=shapes, frame=frame, admitted_qualifiers=(), availability=(), code_index=get_index()
     )
     return BindRequest(
-        variable="aid",
+        variable=variable,
         shapes=list(shapes),
         admitted_ties=ties,
         dropped_qualifier_phrases=dropped,
@@ -754,3 +763,344 @@ def test_the_frame_states_a_form_only_when_the_question_names_one():
     assert frame_stated_form(_frame()) is None
     assert frame_stated_form(framed("level", "default")) is None
     assert frame_stated_form(framed("per_person", "reader")) == "per_person"
+
+
+# -- span ownership ----------------------------------------------------------------------
+
+_POSITION: tuple[Axis, str, list[str]] = (
+    "how",
+    "financialPositionType",
+    ["AmountOutstanding", "AmountUndisbursed"],
+)
+_GUARANTEE: tuple[Axis, str, list[str]] = (
+    "how",
+    "guaranteeStatus",
+    ["PublicOrPubliclyGuaranteed", "PubliclyGuaranteedClaim", "NotPubliclyGuaranteed"],
+)
+_DEBTOR: tuple[Axis, str, list[str]] = (
+    "how",
+    "idsDebtorType",
+    [
+        "IDSDebtorTypeCB",
+        "IDSDebtorTypeGG",
+        "IDSDebtorTypeOPS",
+        "IDSDebtorTypePS",
+        "IDSDebtorTypePrivateSector",
+    ],
+)
+_CREDITOR: tuple[Axis, str, list[str]] = (
+    "how",
+    "idsCreditorType",
+    ["IDSCreditorTypePCBK", "IDSCreditorTypePRVT"],
+)
+_RESOURCE: tuple[Axis, str, list[str]] = ("how", "financingResource", ["Loan", "DebtSecurity"])
+_IDS = _shape(
+    0,
+    population="FinancialPosition",
+    measured="amount",
+    label="External debt, by creditor",
+    slots=[_POSITION, _GUARANTEE, _DEBTOR, _CREDITOR, _RESOURCE],
+)
+_IDS_WITHOUT_DEBTOR = _shape(
+    1,
+    population="FinancialPosition",
+    measured="amount",
+    label="External debt",
+    slots=[_POSITION, _GUARANTEE],
+)
+
+
+def _ids_member(**constraints: str) -> dict[str, str]:
+    return {"financialPositionType": "AmountOutstanding", **constraints}
+
+
+# The IDS debt-stock members as the recorded Kenya, Zambia and Bangladesh binds read them.
+# No member holds the guarantee-status aggregate beside a debtor type, nor a private
+# non-guaranteed debtor beside private creditors, nor a loan beside commercial banks.
+_IDS_MEMBERS = (
+    _ids_member(guaranteeStatus="PublicOrPubliclyGuaranteed"),
+    _ids_member(idsDebtorType="IDSDebtorTypePS"),
+    _ids_member(idsDebtorType="IDSDebtorTypeGG"),
+    _ids_member(
+        guaranteeStatus="PubliclyGuaranteedClaim", idsDebtorType="IDSDebtorTypePrivateSector"
+    ),
+    _ids_member(
+        guaranteeStatus="NotPubliclyGuaranteed", idsDebtorType="IDSDebtorTypePrivateSector"
+    ),
+    _ids_member(
+        guaranteeStatus="NotPubliclyGuaranteed",
+        idsDebtorType="IDSDebtorTypePrivateSector",
+        idsCreditorType="IDSCreditorTypePBND",
+    ),
+    _ids_member(idsCreditorType="IDSCreditorTypePRVT"),
+    _ids_member(idsCreditorType="IDSCreditorTypePCBK"),
+    _ids_member(financingResource="Loan"),
+)
+
+
+def _span_answers(
+    request: BindRequest,
+    named: Mapping[tuple[str, str], float],
+    spans: Mapping[str, str | tuple[str, float]],
+    **nouls: float,
+) -> JevAnswers:
+    """Both rounds' answers over `request`: each slot value of `named`, keyed by its slot
+    (``axis:property``) and dcid, at its probability, and each span answer of `spans`,
+    keyed by value dcid or ``measure``, at 1.0 or at the probability given beside it."""
+    menu = jev_menu(request)
+    props: dict[str, tuple[Axis, str]] = {}
+    asked: dict[str, float] = {}
+    for (pid, value), p in named.items():
+        axis, prop = pid.split(":")
+        props[value] = (cast(Axis, axis), prop)
+        asked[f"n|{pid}|{asked_values(menu, props[value]).index(value)}"] = p
+    choices: dict[str, Mapping[str, float]] = {}
+    for key, answer in spans.items():
+        words, p = (answer, 1.0) if isinstance(answer, str) else answer
+        choices[SPAN_MEASURE if key == "measure" else span_id(props[key], key)] = {words: p}
+    return _answers({"m|0": 0.95, **asked, **nouls}, elect={0: 1.0}, choices=choices)
+
+
+def _bound(output: _UniversalBindOutput) -> dict[str, list[str]]:
+    return {
+        b.property_dcid or "": list(b.value_dcids)
+        for b in output.bindings
+        if b.kind in ("value", "set")
+    }
+
+
+_KENYA = "public and publicly guaranteed external debt stocks"
+
+
+@pytest.mark.parametrize(
+    ("debtor", "creditor", "kept"),
+    [
+        pytest.param((0.7, 1.0), (0.8, 1.0), "idsCreditorType", id="likelier-claim-unheld"),
+        pytest.param((0.7, 1.0), (0.9, 0.5), "idsDebtorType", id="weaker-words-lose"),
+    ],
+)
+def test_two_values_on_one_stretch_keep_the_likelier_claim_held_or_not(debtor, creditor, kept):
+    """ "private sector" names the private debtor and the private creditors. The claim with
+    the larger log-odds of naming its value in those words, logit(p_n x p_span), stays,
+    whether or not a member holds it beside the guarantee status, so a typed value stays
+    against a weaker one that happens to fit the data."""
+    request = _request(
+        [_IDS], variable="not publicly guaranteed external debt owed by the private sector"
+    )
+    answers = _span_answers(
+        request,
+        {
+            ("how:guaranteeStatus", "NotPubliclyGuaranteed"): 0.95,
+            ("how:idsDebtorType", "IDSDebtorTypePrivateSector"): debtor[0],
+            ("how:idsCreditorType", "IDSCreditorTypePRVT"): creditor[0],
+        },
+        {
+            "NotPubliclyGuaranteed": "not publicly guaranteed",
+            "IDSDebtorTypePrivateSector": ("private sector", debtor[1]),
+            "IDSCreditorTypePRVT": ("private sector", creditor[1]),
+            "measure": "external debt",
+        },
+        **{"part|how:idsCreditorType": 0.27},
+    )
+
+    output, _conf = assemble(
+        jev_menu(request), answers, stated_form=None, populations={0: _IDS_MEMBERS}
+    )
+
+    assert set(_bound(output)) == {"guaranteeStatus", kept}
+
+
+def test_two_weak_claims_on_one_stretch_keep_one():
+    """Both claims on "private sector" weigh below even odds (logit(0.8 x 0.55) and
+    logit(0.75 x 0.55)). A value is dropped only for one that keeps the words, so the
+    likelier stays and the user's words still narrow the answer."""
+    request = _request([_IDS], variable="external debt owed by the private sector")
+    answers = _span_answers(
+        request,
+        {
+            ("how:idsDebtorType", "IDSDebtorTypePrivateSector"): 0.8,
+            ("how:idsCreditorType", "IDSCreditorTypePRVT"): 0.75,
+        },
+        {
+            "IDSDebtorTypePrivateSector": ("private sector", 0.55),
+            "IDSCreditorTypePRVT": ("private sector", 0.55),
+            "measure": "external debt",
+        },
+        **{"part|how:idsCreditorType": 0.27, "part|how:idsDebtorType": 0.3},
+    )
+
+    output, conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    assert _bound(output) == {"idsDebtorType": ["IDSDebtorTypePrivateSector"]}
+    assert conf.inferred == {"how:idsCreditorType": ("IDSCreditorTypePRVT",)}
+
+
+@pytest.mark.parametrize(
+    ("population", "bound"),
+    [
+        pytest.param(
+            _IDS_MEMBERS,
+            {"idsCreditorType": ["IDSCreditorTypePCBK"]},
+            id="complete-population-drops-the-unheld-loan",
+        ),
+        pytest.param(
+            None,
+            {"idsCreditorType": ["IDSCreditorTypePCBK"], "financingResource": ["Loan"]},
+            id="no-population-keeps-it",
+        ),
+    ],
+)
+def test_a_value_in_the_measure_s_words_stays_only_where_members_hold_it(population, bound):
+    """A loan in the measure's "debt" stays only beside a value a member holds it with.
+    With no complete population nothing is known, so it stays and the engine refuses
+    loudly."""
+    request = _request([_IDS], variable="external debt to commercial banks")
+    answers = _span_answers(
+        request,
+        {
+            ("how:idsCreditorType", "IDSCreditorTypePCBK"): 0.93,
+            ("how:financingResource", "Loan"): 0.73,
+        },
+        {"IDSCreditorTypePCBK": "commercial banks", "Loan": "debt", "measure": "external debt"},
+        **{"part|how:financingResource": 0.35},
+    )
+    populations = {0: population} if population is not None else None
+
+    output, _conf = assemble(jev_menu(request), answers, stated_form=None, populations=populations)
+
+    assert _bound(output) == bound
+
+
+@pytest.mark.parametrize(
+    ("population", "bound"),
+    [
+        pytest.param(_IDS_MEMBERS, {"idsCreditorType": ["IDSCreditorTypePCBK"]}, id="narrows"),
+        pytest.param(
+            (_ids_member(idsCreditorType="IDSCreditorTypePCBK", financingResource="Loan"),),
+            {"idsCreditorType": ["IDSCreditorTypePCBK"], "financingResource": ["Loan"]},
+            id="narrows-nothing",
+        ),
+        pytest.param(None, {"idsCreditorType": ["IDSCreditorTypePCBK"]}, id="no-population"),
+    ],
+)
+def test_a_value_without_words_of_its_own_stays_only_where_it_narrows_nothing(population, bound):
+    """Jev infers a loan (0.73) beside "commercial banks" and finds no words for it. It
+    stays only when every member holding what the bind keeps holds a loan too."""
+    request = _request([_IDS], variable="external debt to commercial banks")
+    answers = _span_answers(
+        request,
+        {
+            ("how:idsCreditorType", "IDSCreditorTypePCBK"): 0.93,
+            ("how:financingResource", "Loan"): 0.73,
+        },
+        {"IDSCreditorTypePCBK": "commercial banks", "Loan": "none", "measure": "external debt"},
+        **{"part|how:financingResource": 0.35},
+    )
+    populations = {0: population} if population is not None else None
+
+    output, _conf = assemble(jev_menu(request), answers, stated_form=None, populations=populations)
+
+    assert _bound(output) == bound
+
+
+_NET = _shape(
+    0,
+    population="FinancialFlow",
+    measured="amount",
+    slots=[
+        ("how", "nettingBasis", ["Gross", "Net"]),
+        ("how", "netOf", ["PrincipalRepayment", "InterestPayment"]),
+    ],
+)
+
+
+@pytest.mark.parametrize(
+    ("population", "bound"),
+    [
+        pytest.param(
+            (
+                {"nettingBasis": "Gross"},
+                {"nettingBasis": "Net", "netOf": "PrincipalRepayment"},
+            ),
+            {"nettingBasis": ["Net"], "netOf": ["PrincipalRepayment"]},
+            id="complete-population-keeps-both",
+        ),
+        pytest.param(None, {"nettingBasis": ["Net"]}, id="no-population-keeps-one"),
+    ],
+)
+def test_one_concept_on_two_properties_keeps_both_values(population, bound):
+    """ "Net flows" names one concept stored as a netting basis and what the flow is net of
+    (`test_source_code._CONCESSIONAL_NET`). Every member that is net is net of principal
+    repayments, so binding the second narrows nothing and both stay. Without a complete
+    population no value is exempt."""
+    request = _request([_NET], variable="net ODA flows")
+    answers = _span_answers(
+        request,
+        {("how:nettingBasis", "Net"): 0.95, ("how:netOf", "PrincipalRepayment"): 0.8},
+        {"Net": "net", "PrincipalRepayment": "net", "measure": "ODA flows"},
+        **{"part|how:netOf": 0.5, "part|how:nettingBasis": 0.5},
+    )
+    populations = {0: population} if population is not None else None
+
+    output, _conf = assemble(jev_menu(request), answers, stated_form=None, populations=populations)
+
+    assert _bound(output) == bound
+
+
+def test_the_span_round_asks_only_for_a_shape_naming_values_on_two_slots():
+    """One named slot asks nothing more. Two ask which words name each value and the
+    measure, keyed by slot and value."""
+    request = _request([_IDS], variable=_KENYA)
+    one = _span_answers(request, {("how:guaranteeStatus", "PublicOrPubliclyGuaranteed"): 0.97}, {})
+    two = _span_answers(
+        request,
+        {
+            ("how:guaranteeStatus", "PublicOrPubliclyGuaranteed"): 0.97,
+            ("how:idsDebtorType", "IDSDebtorTypePS"): 0.75,
+        },
+        {},
+        **{"part|how:idsDebtorType": 0.3},
+    )
+    menu = jev_menu(request)
+
+    assert span_round(menu, one, stated_form=None) == SpanRound({}, ())
+    asked = span_round(menu, two, stated_form=None)
+    assert sorted(asked.questions) == [
+        "span|how:guaranteeStatus|PublicOrPubliclyGuaranteed",
+        "span|how:idsDebtorType|IDSDebtorTypePS",
+        SPAN_MEASURE,
+    ]
+    assert asked.shapes == (0,)
+    options = asked.questions[SPAN_MEASURE].get("criteria") or {}
+    assert {"public", "public and publicly guaranteed", "none"} <= set(options)
+
+
+def test_the_house_policies_weigh_the_drafts_the_span_rule_leaves():
+    """The pick's public-sector debtor shares its words with the guarantee status, so a
+    shape without a debtor slot holds every value the bind keeps."""
+    seen: list[Mapping[int, bool] | None] = []
+
+    def recording(pool, *, ratings=None, holds=None):
+        seen.append(holds)
+        return PolicyChoice(survivor=pool.measuring[0], fired=(), dropped=frozenset(), facts=())
+
+    request = _request([_IDS, _IDS_WITHOUT_DEBTOR], variable=_KENYA, apply_policies=recording)
+    answers = _span_answers(
+        request,
+        {
+            ("how:guaranteeStatus", "PublicOrPubliclyGuaranteed"): 0.97,
+            ("how:idsDebtorType", "IDSDebtorTypePS"): 0.75,
+        },
+        {
+            "PublicOrPubliclyGuaranteed": "public and publicly guaranteed",
+            "IDSDebtorTypePS": "public",
+        },
+        **{"m|1": 0.95, "part|how:idsDebtorType": 0.3},
+    )
+    answers = JevAnswers(
+        nouls=answers.nouls, choices={**answers.choices, "elect": {"Shape 0": 0.6, "Shape 1": 0.4}}
+    )
+
+    _assemble(request, answers)
+
+    assert seen == [{0: True, 1: True}]
