@@ -1,5 +1,5 @@
 """Fresh and resubmit shapes for the same CRS member publish identical,
-level-scoped crsPurpose options. The packaged index supplies the hierarchy
+level-scoped crsPurpose options. The fixture index supplies the hierarchy
 for the member's five-tuple. A resubmit shape never index-sources its members, which once
 flattened every how-slot menu.
 """
@@ -67,7 +67,7 @@ def _shape_draft(*, sv_arc_facts_complete: bool) -> ShapeDraft:
     )
 
 
-def test_fixture_matches_the_real_packaged_index():
+def test_fixture_matches_the_real_index():
     """Independent cross-check, so a corpus refresh that moves this family
     fails loudly here rather than the assertions below silently testing
     stale assumptions."""

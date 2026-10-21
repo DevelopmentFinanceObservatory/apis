@@ -25,13 +25,13 @@ from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_scope import discover_role_scope
 from search.models import TimeWindow
 from search.observations import observation_settings
-from series_coverage.loader import load_coverage
+from series_coverage.schema import CoverageManifest
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_sdmx import CountingSdmxClient, plan_observations
 from tests.fixtures import FakeGraph
+from tests.series_coverage.support import COVERAGE_SLICE_BUILD, slice_index
 
 _FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
-_SLICE_URI = f"file://{_FIXTURES / 'coverage_slice'}"
 _GOLDEN = _FIXTURES / "role_scope_open_oda.json"
 
 _DATE_REQUESTS: dict[str, DateRequest | None] = {
@@ -170,10 +170,15 @@ def _summary(projected: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def _snapshot() -> CoverageSnapshot:
-    loaded = load_coverage(_SLICE_URI)
-    return CoverageSnapshot(
-        index=loaded.index, manifest=loaded.manifest, stamp=loaded.manifest.stamp
+    index = slice_index()
+    recorded = json.loads((COVERAGE_SLICE_BUILD / "manifest.json").read_text())
+    manifest = CoverageManifest(
+        stamp=recorded["stamp"],
+        build_id=recorded["build_id"],
+        built_at=recorded["built_at"],
+        horizon=index.horizon,
     )
+    return CoverageSnapshot(index=index, manifest=manifest, stamp=manifest.stamp)
 
 
 def _discover(snapshot: CoverageSnapshot, date_name: str, axis: RoleAxis) -> Materialised:

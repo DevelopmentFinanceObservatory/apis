@@ -1,18 +1,10 @@
-"""Loads `CodeIndex` and measure-axis data from JSON exports.
-
-The index loads through `importlib.resources`, including from an installed wheel.
-Its repetitive fields compress roughly ninety-fold. `load_index` accepts plain or gzip
-JSON, detected by the magic number. `load_measure_axes` returns a separate `MeasureIndex`."""
+"""Parses a code index document into a `CodeIndex` (`parse_index`) and its measure-axis
+blocks into a separate `MeasureIndex` (`parse_measure_axes`)."""
 
 from __future__ import annotations
 
-import gzip
-import importlib.resources
-import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from importlib.resources.abc import Traversable
-from pathlib import Path
 from typing import cast, get_args
 
 from code_index.query import CodeIndex, DuplicateDcid, partly_stated_five_tuples
@@ -44,27 +36,13 @@ from code_index.types import (
 )
 from dfo_platform.roles import AXIS_LABELS, FlowAccount
 
-_PACKAGE = __package__
-_DATA_DIR = "data"
-_GZIP_MAGIC = b"\x1f\x8b"
-_INDEX_FILENAME = "index.json.gz"
 _ABSENT_OBSERVATION_VALUES: frozenset[AbsentObservation] = frozenset({"zero", "unknown"})
 _FLOW_ACCOUNTS: frozenset[FlowAccount] = frozenset(get_args(FlowAccount.__value__))
 _HOUSE_DEFAULT_CASES: frozenset[HouseDefaultCase] = frozenset(get_args(HouseDefaultCase))
 
 
-def default_index_path() -> Traversable:
-    """The packaged `data/index.json.gz` path."""
-    return importlib.resources.files(_PACKAGE) / _DATA_DIR / _INDEX_FILENAME
-
-
 class IndexFormatError(ValueError):
     """A `CodeIndex` export has a missing required key or a value of the wrong type."""
-
-
-def load_index(source: Traversable | Path | str) -> CodeIndex:
-    """Reads a `CodeIndex` export and parses it with `parse_index`."""
-    return parse_index(_read_json(source), source=source)
 
 
 def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex:
@@ -262,17 +240,6 @@ def _parse_party(row: Mapping) -> PartyRow:
             "residuals; only a total that holds a group and counts no residual makes no claim"
         )
     return party
-
-
-def _read_json(source: Traversable | Path | str) -> dict:
-    """Reads `source` as JSON, decompressing it first when it carries the
-    gzip magic number. Reading the bytes and sniffing them keeps a plain
-    `.json` fixture and the packaged `.json.gz` on one code path.
-    """
-    raw = Path(source).read_bytes() if isinstance(source, Path | str) else source.read_bytes()
-    if raw[:2] == _GZIP_MAGIC:
-        raw = gzip.decompress(raw)
-    return json.loads(raw.decode("utf-8"))
 
 
 def _parse_stamp(payload: Mapping) -> IndexStamp:
@@ -717,8 +684,8 @@ def _check_implied_values(
     Raises `IndexFormatError` for two rows on one measure's property, for a value that is
     not a code of the property where a code system of the index is the property, and for a
     measure the index holds rows of where no row states the value. A measure the index
-    holds no row of, such as a catalogue family, is checked against the graph at export
-    (`code_index.export.verify_implied_values`)."""
+    holds no row of, such as a catalogue family, is checked against the live graph by
+    `tests/code_index/test_implied_values_live.py`."""
     systems = {declaration.code_system for declaration in declarations}
     seen: set[tuple[str, str, str]] = set()
     for declared in rows:
@@ -823,16 +790,8 @@ def parse_measure_axes(payload: Mapping, *, source: object = "<document>") -> Me
     return MeasureIndex(axes=axes, values=values, partition_labels=partition_labels, nouns=nouns)
 
 
-def load_measure_axes(source: Traversable | Path | str) -> MeasureIndex:
-    """Reads an export and parses its measure-axis blocks with `parse_measure_axes`."""
-    return parse_measure_axes(_read_json(source), source=source)
-
-
 __all__ = [
     "IndexFormatError",
-    "default_index_path",
-    "load_index",
-    "load_measure_axes",
     "parse_index",
     "parse_measure_axes",
 ]

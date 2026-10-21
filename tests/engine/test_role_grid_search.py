@@ -10,15 +10,15 @@ and the open axes the request asks for:
   from the answer, which carries the open roles the rule admits.
 
 Each is compared with the rule and with what the members door serves for the minted
-identity (`tests.datasets_api.test_role_grid_members`). The packaged code index decides the
-packaged cells, a synthetic index swapped in for the process index decides one population,
+identity (`tests.datasets_api.test_role_grid_members`). The fixture code index decides the
+fixture cells, a synthetic index swapped in for the process index decides one population,
 and the recall path reads a synthetic population from the shape's recalled members, with
 the member walk Search runs for `stated_members`.
 
 Search binds a place on a flow axis of a role-bearing shape, so the cells that bind
 `observationAbout` are left out, as are the populations that hold a subject-only row. An
 index population of more than 1,000 rows is asked naming its dataset only. A
-bound value the packaged index widens to its descendants is left out too: the grid's cell
+bound value the fixture index widens to its descendants is left out too: the grid's cell
 holds the rows of the value alone.
 
 Each comparison is made twice: with the identity that carries the open roles the rule
@@ -80,8 +80,8 @@ from statvar_members import (
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
 from tests.datasets_api.test_role_grid_members import (
+    FIXTURE,
     NOT_REPRODUCIBLE,
-    PACKAGED,
     SYNTHETIC_INDEX,
     TIED,
     WALK,
@@ -119,10 +119,10 @@ from tests.statvar_members.role_grid import (
     SharedCell,
     SharedFamily,
     cells,
-    packaged_index,
+    fixture_index,
     places,
     row,
-    sampled_packaged_cells,
+    sampled_fixture_cells,
     shared_cells,
     shared_index,
     synthetic_cells,
@@ -138,7 +138,7 @@ _SAMPLED_SLOTS = 2
 _UNNAMED_ROWS = 1_000
 _RECALL = WALK
 _PATH_LABELS = {
-    PACKAGED: (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
+    FIXTURE: (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
     SYNTHETIC_INDEX: LABELS,
     _RECALL: LABELS,
 }
@@ -153,8 +153,8 @@ def _role_bearing(population: Population) -> bool:
 
 @functools.cache
 def _cells(path: str) -> tuple[Cell, ...]:
-    index = packaged_index()
-    found = sampled_packaged_cells(_SAMPLED_SLOTS) if path == PACKAGED else synthetic_cells()
+    index = fixture_index()
+    found = sampled_fixture_cells(_SAMPLED_SLOTS) if path == FIXTURE else synthetic_cells()
     return tuple(
         cell
         for cell in found
@@ -167,7 +167,7 @@ def _cells(path: str) -> tuple[Cell, ...]:
 @contextlib.contextmanager
 def _process_index(path: str, population: Population) -> Iterator[None]:
     """The process code index Search reads: a synthetic one holding `population` on the
-    synthetic index path, the packaged one otherwise."""
+    synthetic index path, the fixture index otherwise."""
     if path != SYNTHETIC_INDEX:
         yield
         return
@@ -741,7 +741,7 @@ def test_a_donor_only_dac1_question_answers_the_donor_totals_the_mint_serves(
             "country/FRA": {"label": "France", "type": "Country"},
             **{
                 row.dcid: _index_row_node(row)
-                for row in packaged_index().statvars
+                for row in fixture_index().statvars
                 if _DAC1 in row.provenances
             },
         },
@@ -789,7 +789,7 @@ def test_a_donor_only_dac1_question_answers_the_donor_totals_the_mint_serves(
         spec_id=spec.spec_id,
         graph=cast("GraphReader", FakeMintGraphReader(arcs={})),
         enumerator=MemberEnumerator(),
-        code_index=packaged_index(),
+        code_index=fixture_index(),
         bounds=mint_bounds(),
     )
     family = minted.shapes[0].family

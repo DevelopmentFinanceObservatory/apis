@@ -1,12 +1,13 @@
-"""Build and publication machinery shared by `series_coverage.job` and
-`origin_catalogue.job`.
+"""Build and publication machinery shared by the publishing jobs.
 
-Both jobs publish immutable `versions/<build_id>/` directories under a format
-root and commit a `current.json` pointer with a generation-conditional
-write. Both read Spanner through BigQuery `EXTERNAL_QUERY`, key each build
-on the import workflow's `IngestionHistory` and `IngestionLock` rows
-(`ImportKey`), prune builds nothing can still be reading, and alert when
-publication falls behind.
+`origin_catalogue.job` publishes immutable `versions/<build_id>/` directories
+under a format root and commits a `current.json` pointer with a
+generation-conditional write. It reads Spanner through BigQuery
+`EXTERNAL_QUERY`, keys each build on the import workflow's `IngestionHistory`
+and `IngestionLock` rows (`ImportKey`), prunes builds nothing can still be
+reading, and alerts when publication falls behind. `graph_release` and
+`search.catalogue` share its build lease, build ids and events, and
+`graph_release.reads` keys a release on `read_import_key`.
 """
 
 from __future__ import annotations

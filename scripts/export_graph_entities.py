@@ -10,7 +10,9 @@ names resolve to the group, and its DAC codes name the total itself.
 `place-types` lists `Place` and every class below it by `subClassOf`, sorted, which
 `entity_resolution.types.entity_kind` classes as places.
 
-Every command requires `SEARCH_GRAPH_BASE` and read the live graph. Output JSON is stable.
+Every command requires `SEARCH_GRAPH_BASE` and reads the live graph. `entities` also requires
+`GRAPH_RELEASE_URI`: the declared totals come from the code index of the release it names. Output
+JSON is stable.
 Maintainers author `curated_aliases.json` by hand.
 """
 
@@ -24,9 +26,11 @@ from pathlib import Path
 
 import httpx
 
-from code_index.loader import default_index_path, load_index
 from code_index.query import CodeIndex
+from code_index.shared import get_index
 from dc_graph import GraphClient
+from graph_release.context import bound_served_release
+from graph_release.service import get_release_service
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_ENTITIES_OUT = (
@@ -146,14 +150,15 @@ def export_entities(
 ) -> list[dict]:
     """Fetch every `_KIND_BY_TYPE` population and declared donor total in dcid order.
 
-    Each declared total's code-index label must equal its graph name. A total that holds a group
+    The declared totals come from `index`, by default the bound release's code index. Each
+    declared total's code-index label must equal its graph name. A total that holds a group
     becomes a code-only `aggregate` record, named by its dcid, or no record when it has no DAC
     code. Ungrouped Organization totals stay organization records; any other ungrouped total must
     be a graph `DACGroup`. Raise `SystemExit` if any population exceeds `max_results` and would be
     truncated.
     """
     origin_total_labels, grouped_totals = _origin_total_labels(
-        load_index(default_index_path()) if index is None else index
+        get_index() if index is None else index
     )
     dcids_by_type: dict[str, tuple[str, ...]] = {}
     for graph_type in _KIND_BY_TYPE:
@@ -371,7 +376,8 @@ def _cmd_entities(args: argparse.Namespace) -> None:
     base = _graph_base_url()
     reader = GraphClient(base_url=f"{base}/core/api", token=os.environ.get("SEARCH_GRAPH_TOKEN"))
     try:
-        records = export_entities(reader)
+        with bound_served_release(get_release_service()):
+            records = export_entities(reader)
     finally:
         reader.close()
     _write_json(Path(args.out), records)

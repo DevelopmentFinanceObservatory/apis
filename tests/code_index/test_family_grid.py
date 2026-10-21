@@ -1,7 +1,7 @@
 """`index_family` returns, for every identity of a grid over the five-tuples several
 datasets publish, the outcome the index rows decide (`family_grid.asked_family`).
 
-The grid runs over the packaged index and over three synthetic ones: two datasets in one
+The grid runs over the fixture index and over three synthetic ones: two datasets in one
 family, the same two split into nested families by a sparse property, and two datasets
 that each publish one row, the one carrying a property the other's lacks.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from code_index import default_index_path, load_index
 from code_index.members import (
     SourceNotInFamily,
     deciding_query,
@@ -18,6 +17,7 @@ from code_index.members import (
     index_family,
 )
 from code_index.query import CodeIndex
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from .family_grid import (
     asked_family,
@@ -50,7 +50,7 @@ def _disjoint_split_index() -> CodeIndex:
 
 
 _INDEXES = {
-    "packaged": lambda: load_index(default_index_path()),
+    "fixture": lambda: load_index(INDEX_FIXTURE),
     "one-family": lambda: _split_index(sparse=False),
     "split": lambda: _split_index(sparse=True),
     "disjoint-split": _disjoint_split_index,
@@ -76,7 +76,7 @@ def test_the_index_rows_decide_the_family_of_every_grid_identity(name: str):
     `SourceNotInFamily` when only another dataset has such rows, and is left to the graph
     walk when none has. `index_family` answers the deciding query alike. DAC1 and DAC2a
     share the five-tuple of net disbursements as a share of GNI until DAC2a's recipient
-    denominators land, so the packaged grid holds a shared
+    denominators land, so the fixture grid holds a shared
     five-tuple with a denominator."""
     index = _INDEXES[name]()
     rows = {

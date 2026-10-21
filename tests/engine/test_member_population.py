@@ -104,7 +104,7 @@ def test_set_binding_collected_count_matches_population_confirmed():
 
 
 def _index_sourced_shape() -> ShapeDraft:
-    """The packaged index contains this CRS five-tuple. The one-member recall
+    """The fixture index contains this CRS five-tuple. The one-member recall
     pool is incomplete; `declared_roles` are fixture labels and do not affect
     five-tuple matching.
     """
@@ -130,7 +130,7 @@ def _index_sourced_shape() -> ShapeDraft:
 
 
 def test_index_sourced_population_is_exact(monkeypatch):
-    """The packaged index carries this CRS five-tuple, so its full population
+    """The fixture index carries this CRS five-tuple, so its full population
     is exact despite an incomplete one-member recall pool (#893).
     """
     shape = _index_sourced_shape()
@@ -172,7 +172,7 @@ _RECALL_MEMBER = "TestRecallPoolMember_A"
 
 
 def _recall_pool_shape() -> ShapeDraft:
-    """A fabricated five-tuple this deployment's packaged index does not
+    """A fabricated five-tuple the fixture index does not
     carry, with sv_arc_facts_complete=False -- derive_shapes' own stamp for
     every shape its capped confirm fetch produces, regardless of how many
     members that fetch actually returned."""

@@ -1,6 +1,6 @@
 """Test qualifier admission against candidate shapes, then binding and warnings.
 
-Real CRS cases use the packaged index; a synthetic index checks that admission
+Real CRS cases use the fixture index; a synthetic index checks that admission
 also works for code systems outside the CRS corpus.
 """
 
@@ -181,7 +181,7 @@ def _by_system(matches: tuple[QualifierMatch, ...]) -> dict[str, QualifierMatch]
 
 # ---------------------------------------------------------------------------
 # Pre-bind admission: the six-phrase raw-text-door regression, at
-# _admit_qualifier_matches, against the real packaged index.
+# _admit_qualifier_matches, against the real fixture index.
 # ---------------------------------------------------------------------------
 
 
@@ -1048,7 +1048,7 @@ def test_two_nested_matches_on_one_property_force_the_descendant(variable: str):
 
 
 def _crs_amount_shape() -> ShapeDraft:
-    """The shape the packaged index derives for nominal CRS financial-flow amounts."""
+    """The shape the fixture index derives for nominal CRS financial-flow amounts."""
     flow_row = next(row for row in _REAL_INDEX.statvars if row.population_type == "FinancialFlow")
     return ShapeDraft(
         shape_id="crs-amount",
@@ -1837,7 +1837,7 @@ _E2E_SV_DCID = (
 _E2E_KEN_DCID = "country/KEN"
 
 
-def test_e2e_fixture_matches_the_real_packaged_index():
+def test_e2e_fixture_matches_the_real_fixture_index():
     """Confirm the fixture StatVar declares the matched flow and finance values."""
     row = next(r for r in _REAL_INDEX.statvars if r.dcid == _E2E_SV_DCID)
     assert row.constraint_properties["crsTypeOfFlow"] == "CRSTypeOfFlow10"
@@ -1881,12 +1881,12 @@ _E2E_NODES = {
 }
 _E2E_DETECT = {_E2E_QUERY: {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]}}
 
-# The destination-end role every packaged CRS row declares; _E2E_QUERY's own
+# The destination-end role every fixture CRS row declares; _E2E_QUERY's own
 # "to Kenya" places Kenya onto it.
 _E2E_ROLE_RECIPIENT = "financingRecipient"
 
 
-# The origin-end role every packaged CRS row declares alongside
+# The origin-end role every fixture CRS row declares alongside
 # _E2E_ROLE_RECIPIENT -- unbound by _E2E_QUERY, but still required to key the
 # coverage row the destination-bound confirmation reads.
 _E2E_ROLE_PROVIDER = "financingProvider"
@@ -1967,7 +1967,7 @@ def test_e2e_admitted_matches_reach_the_wire_as_forced_value_slots(caplog, monke
     # financialFlowType is one of this deployment's kind="constraint" measure
     # axes. The query does not name it, and admission does not touch it. Once
     # crsTypeOfFlow and crsTypeOfFinance are pinned to the admitted values
-    # above, the real packaged index carries no FinancialFlow row without
+    # above, the real fixture index carries no FinancialFlow row without
     # financialFlowType=Disbursement, so the constraint measure axis election
     # in _repair_bindings forces it. This binding is engine-authored,
     # not an admitted match.

@@ -9,10 +9,10 @@ import weakref
 import pytest
 
 from code_index import CodeIndex
-from code_index.loader import load_index
 from code_index.shared import get_index, get_measure_index, per_index
 from graph_release.context import ReleaseNotBound, bound_release
 from graph_release.service import Release
+from tests.code_index.support import load_index
 
 from .conftest import FIXTURE_PATH
 
@@ -51,7 +51,7 @@ def test_per_index_keeps_no_replaced_index_alive():
 @pytest.fixture
 def served(request: pytest.FixtureRequest) -> Release:
     """The suite's session release, which carries its views (`tests.conftest`)."""
-    return request.getfixturevalue("_packaged_index_release")
+    return request.getfixturevalue("_fixture_index_release")
 
 
 def test_a_bound_release_serves_its_indexes(served: Release):

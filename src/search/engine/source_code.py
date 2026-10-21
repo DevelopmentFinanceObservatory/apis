@@ -1,6 +1,6 @@
 """Resolve a part's publisher series code (`ParsedPart.source_code`) to the StatVars it names.
 
-The packaged code index records each series code the StatVars it lists carry on their
+The release's code index records each series code the StatVars it lists carry on their
 `sourceIndicatorCode` arcs, with the StatVars that carry it under each provenance holding it
 (`CodeIndex.source_code_members`). A code's members replace recall's embedding resolve
 (`interpret.recall`), and shape derivation, the twin election and bind run on them as on a

@@ -249,7 +249,7 @@ a separate number, `dfo-data-tools`' own generic default for a caller of `materi
 
 ## Publish
 
-`POST /frames/publish` has no coverage artifact to estimate against, so it keeps its own fixed,
+`POST /frames/publish` has no coverage view to estimate against, so it keeps its own fixed,
 non-env-tunable row ceiling, `PUBLISH_MAX_ROWS = 250_000`
 (`datasets_api.doors.publish.PUBLISH_MAX_ROWS`), enforced by the same `OverCeilingError` the
 mid-fetch backstop raises. The door builds the whole frame in memory before it stores the canonical

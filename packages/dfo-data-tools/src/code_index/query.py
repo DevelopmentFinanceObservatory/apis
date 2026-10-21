@@ -1,7 +1,6 @@
 """`CodeIndex`: the in-memory, queryable catalogue built from parsed rows and
-declarations. No graph access and no file I/O here -- `loader.load_index`
-is the file-reading entry point that constructs one of these from a
-committed JSON export.
+declarations. No graph access and no file I/O here -- `loader.parse_index`
+constructs one of these from a code index document.
 """
 
 from __future__ import annotations

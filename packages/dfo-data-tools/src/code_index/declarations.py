@@ -1252,8 +1252,8 @@ SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
 # Life expectancy is life expectancy at birth, and gross domestic product is the product of
 # all economic activities. The headline series of each states nothing on the property, and
 # the series stating the value covers fewer years (`LifeExpectancy_Person_0Years` runs 1980
-# to 2020). The export refuses a declaration no StatVar of the measure states
-# (`code_index.export.verify_implied_values`).
+# to 2020). A live test fails on a declaration no StatVar of the measure states in the graph
+# (`tests/code_index/test_implied_values_live.py`).
 IMPLIED_VALUES: tuple[ImpliedValue, ...] = (
     ImpliedValue(
         population_type="Person",

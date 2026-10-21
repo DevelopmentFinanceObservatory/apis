@@ -1,7 +1,7 @@
 """Test dataset declaration parsing, the checks that tie declarations to StatVar rows, and
 absent-observation readings.
 
-The packaged index declares CRS, OECD DAC1, OECD DAC2a, OECD DAC2b and the opt-in imputed
+The fixture index declares CRS, OECD DAC1, OECD DAC2a, OECD DAC2b and the opt-in imputed
 multilateral sectors table, each the provider's account of a flow. DAC1 shares the CRS flow and
 commitment five-tuples, DAC2a shares the CRS and DAC1 flow five-tuple and the imputed table's,
 and DAC2b shares the CRS, DAC1 and DAC2a flow five-tuple.
@@ -17,18 +17,11 @@ import json
 
 import pytest
 
-from code_index import (
-    CodeIndex,
-    DatasetDeclaration,
-    IndexFormatError,
-    IndexStamp,
-    default_index_path,
-    load_index,
-    parse_index,
-)
+from code_index import CodeIndex, DatasetDeclaration, IndexFormatError, IndexStamp, parse_index
 from code_index.query import row_five_tuple
 from code_index.types import ImpliedValue, PartlyStatedValue, PartyWord, StatedWord
 from entity_resolution.types import KINDS
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from .conftest import FIXTURE_PATH
 
@@ -453,8 +446,8 @@ def test_a_codeindex_built_with_no_datasets_at_all_reads_unknown():
     assert index.stamp.coverage_build is None
 
 
-def test_the_packaged_index_declares_crs_and_the_dac_tables_and_the_opt_in_imputed_dataset():
-    index = load_index(default_index_path())
+def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_imputed_dataset():
+    index = load_index(INDEX_FIXTURE)
 
     assert {
         provenance: (dataset.opt_in, dataset.absent_observation, dataset.account, dataset.rank)
@@ -514,8 +507,8 @@ def test_the_packaged_index_declares_crs_and_the_dac_tables_and_the_opt_in_imput
     assert index.house_case_systems() == {"crsPurpose": "sector"}
 
 
-def test_every_packaged_declared_word_names_an_entity_kind_the_resolver_assigns():
-    index = load_index(default_index_path())
+def test_every_fixture_declared_word_names_an_entity_kind_the_resolver_assigns():
+    index = load_index(INDEX_FIXTURE)
 
     kinds = {
         kind
@@ -527,13 +520,13 @@ def test_every_packaged_declared_word_names_an_entity_kind_the_resolver_assigns(
     assert kinds <= set(KINDS)
 
 
-def test_every_packaged_row_belongs_to_the_family_its_own_keys_select():
+def test_every_fixture_row_belongs_to_the_family_its_own_keys_select():
     """Each row's constraint properties select the family that holds it
     (`CodeIndex.family_of`), and that family's datasets are the row's own. CRS, DAC1, DAC2a
     and DAC2b share five-tuples under different codes, and DAC2a's one `attributedAmount` row
     declares fewer properties than the imputed rows, so each such five-tuple holds one family
     per dataset."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
 
     assert index.stamp.coverage_build
     uncovered = [row for row in index.statvars if not row.provenances]
@@ -563,11 +556,11 @@ def test_every_packaged_row_belongs_to_the_family_its_own_keys_select():
     }
 
 
-def test_the_packaged_index_pins_the_constant_slots_of_single_aid_type_five_tuples_only():
+def test_the_fixture_index_pins_the_constant_slots_of_single_aid_type_five_tuples_only():
     """The imputed table holds one aid type, DAC1 publishes grant equivalents as a share of
     GNI for total ODA alone, and DAC2a publishes its ratios for total ODA alone and one
     attributed amount."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
 
     assert {
         (provenance, five_tuple.measured_property): pins
@@ -593,7 +586,7 @@ def test_a_dataset_read_as_zero_reports_explicit_zeros_beside_absent_cells(evide
     """The register reading (`AbsentObservation`) holds for a source whose data carries an
     explicit zero for one member of a (roles, time) cell while other members of the same
     five-tuple have no row there."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     rows = {row.dcid: row for row in index.statvars}
     observed = [rows[observation["variable"]] for observation in evidence["observations"]]
     five_tuples = {row_five_tuple(row) for row in observed}
@@ -606,8 +599,8 @@ def test_a_dataset_read_as_zero_reports_explicit_zeros_beside_absent_cells(evide
     assert index.absent_observation(evidence["provenance"]) == "zero"
 
 
-def test_the_packaged_index_holds_the_aid_type_code_row():
-    index = load_index(default_index_path())
+def test_the_fixture_index_holds_the_aid_type_code_row():
+    index = load_index(INDEX_FIXTURE)
 
     assert index.declarations["dac2aAidType"].summable is False
     aid_type = index.code_by_dcid("DAC2aAidType106")

@@ -1,5 +1,5 @@
 """A named family's elected members follow the posted identity. These tests use
-real packaged-index members for the CRS health-purpose family to pin no-op,
+real fixture-index members for the CRS health-purpose family to pin no-op,
 window, destination, and rollup/leaf edits without a posted seed.
 """
 
@@ -62,7 +62,7 @@ def _synthetic_shape() -> ShapeDraft:
 
 
 def _elected_members(purpose: str) -> tuple[str, ...]:
-    """Return the packaged-index members for a health-family identity."""
+    """Return the fixture-index members for a health-family identity."""
     index = get_index()
     axes = get_measure_index().axes
     bound_values = {
@@ -151,7 +151,7 @@ def _health_base(*, purpose: str, place: str = _KEN, window: TimeWindow | None =
 class TestNoOpAndCoveredEdits:
     """The production defect itself: a byte-for-byte no-op resubmit posting
     `crsPurpose=CRSPurposeCode120` (the rollup), with no seed at all --
-    membership comes entirely from the packaged code index's own election."""
+    membership comes entirely from the fixture code index's own election."""
 
     def test_noop_resubmit_of_the_rollup_bound_identity_resolves_definite(self, monkeypatch):
         _base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)

@@ -3,7 +3,7 @@ data_query and slot token an entity_ambiguous part carries.
 
 An operation rides on the part of the variable extract assigned it, and its phrase
 reaches that variable's bind the way a dropped qualifier's does, with no
-query_qualifier_dropped warning and no sentence note. The fixture is the packaged CRS
+query_qualifier_dropped warning and no sentence note. The fixture is the fixture CRS
 index with the query "standard grants", which leaves crsTypeOfFlow open for the binder.
 """
 

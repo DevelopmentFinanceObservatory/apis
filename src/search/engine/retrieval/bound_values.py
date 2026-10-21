@@ -191,7 +191,7 @@ def _index_five_tuples(index: CodeIndex) -> frozenset[FiveTuple]:
 # A key is a 32-byte digest of the deciding query (`family_query_digest`), so an entry costs its
 # rows plus a constant, whatever the query binds.
 # Each entry holds a tuple of references to rows the index owns, 8 bytes a row, so the row
-# bound caps the memo near 8 MiB: about 80 copies of the packaged index's largest family
+# bound caps the memo near 8 MiB: about 80 copies of the dev release's code index's largest family
 # (12,771 of its 22,208 rows), where the entry bound alone allowed 4,096 copies (400 MiB).
 _FAMILY_CACHE_SIZE = 4096
 _FAMILY_CACHE_ROWS = 1 << 20
@@ -1575,7 +1575,7 @@ def bound_values_from_bindings(bindings: Sequence[SlotBindingDraft]) -> dict[str
     realizability check, so all three compute "what was bound" the same way.
 
     Each property's value list is then widened to every bound value's own
-    descendants, via the packaged code index's descendant walk (see
+    descendants, via the release's code index's descendant walk (see
     _expand_values). This is the resolver's whole expansion step: a value
     bound on a dimension the index declares ``hierarchical`` resolves to that
     node and its descendants that carry members, and every caller of this
@@ -1857,7 +1857,7 @@ def entity_role_keys(
 
 
 def index_decides_membership(identity: BaseIdentity) -> bool:
-    """Whether the packaged code index decides which StatVars `identity` denotes.
+    """Whether the release's code index decides which StatVars `identity` denotes.
 
     The test is the Datasets mint's: a described identity whose deciding slot keys hold
     every constraint property of at least one index row of its five-tuple
@@ -2239,7 +2239,7 @@ def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> Stat
 
 
 def declaration_version(bindings: Sequence[SlotBindingDraft], identity: BaseIdentity) -> str | None:
-    """The packaged code index's ``content_hash``, for a caller stating
+    """The release's code index's ``content_hash``, for a caller stating
     ``ResolvedSpec.declaration_version`` (``apply_declaration_version``).
 
     The hash covers the code-system and dataset declarations, so the version
@@ -3616,10 +3616,10 @@ def five_tuple_families(
 
 
 def prepare_index_views() -> None:
-    """Loads the packaged code index and measure index and builds the views of the index
+    """Loads the release's code index and measure index and builds the views of the index
     that search reads on every resolve: its five-tuples (`index_carries_five_tuple`) and
     the member views (`code_index.members.prepare_member_views`). Each is otherwise built
-    by the first request that reads it, about 135 ms on the packaged index."""
+    by the first request that reads it, about 135 ms on the dev release's code index."""
     index = get_index()
     get_measure_index()
     _index_five_tuples(index)
@@ -3627,12 +3627,12 @@ def prepare_index_views() -> None:
 
 
 def index_carries_five_tuple(five_tuple: FiveTuple, index: CodeIndex | None = None) -> bool:
-    """Whether the packaged code index holds a row of `five_tuple`."""
+    """Whether the release's code index holds a row of `five_tuple`."""
     return five_tuple in _index_five_tuples(index or get_index())
 
 
 def index_carries_shape(shape: ShapeDraft, index: CodeIndex | None = None) -> bool:
-    """Whether the packaged code index carries `shape`: rows of its five-tuple, and, for
+    """Whether the release's code index carries `shape`: rows of its five-tuple, and, for
     a shape with recalled members, the one family those members belong to
     (`shape_family`). `five_tuple_member_facts` gates on it. It says the index describes the
     shape's slot values.

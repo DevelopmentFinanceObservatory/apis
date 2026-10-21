@@ -380,6 +380,9 @@ corpus-check *ARGS:
 corpus-schema:
     uv run {{SYNC_ARGS}} python scripts/eval_corpus.py schema
 
+# Reads GRAPH_RELEASE_URI from the environment: the measure labels come from that release's
+# measure index.
+#
 # Trim a sentence panel run (a directory of raw-*.jsonl) into tests/fixtures/sentence_panel
 sentence-golden RUN:
     uv run {{SYNC_ARGS}} python scripts/sentence_golden.py {{RUN}}

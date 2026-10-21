@@ -327,7 +327,7 @@ def test_shape_facts_read_the_reading_slots_dataset_and_availability():
 
 def _packaged_flow(measured_property: str, *slot_properties: str) -> ShapeDraft:
     """A FinancialFlow shape with no recalled members and no stamped datasets, so its slot
-    properties select its family in the packaged index."""
+    properties select its family in the fixture index."""
     return ShapeDraft(
         shape_id=measured_property,
         label=measured_property,

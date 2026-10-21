@@ -4,7 +4,7 @@ A verbatim claim suppresses the matching default and warning. An unapplied or in
 its warning. Invalid claims leave the default active. A two-variable query checks that extraction
 broadcasts dropped phrases to both bind prompts.
 
-The fixture uses the packaged CRS index and the query "standard grants", which leaves
+The fixture uses the fixture CRS index and the query "standard grants", which leaves
 crsTypeOfFlow open for the binder.
 """
 
@@ -102,7 +102,7 @@ class _ExtractAndFlowRequestedAllLLM(_FlowRequestedAllLLM):
 
 
 def test_requested_all_on_the_flow_slot_suppresses_the_declared_default_end_to_end():
-    """A validated breadth claim leaves the packaged crsTypeOfFlow default unbound (issue #968)."""
+    """A validated breadth claim leaves the fixture index's crsTypeOfFlow default unbound (issue #968)."""
     graph = _e2e_graph_for(_QUERY)
 
     result = asyncio.run(

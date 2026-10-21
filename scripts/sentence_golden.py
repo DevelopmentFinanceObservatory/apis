@@ -19,8 +19,8 @@ sentence. Beside `resolved` each Spec stores `sentence_facts`, what the renderer
 the wire does not carry: the facts of its served members (`search.models.SentenceFacts`),
 which the in-process panel run records from each answer, and, for a Spec whose measure label
 names code pairs, those pairs (`measure_label_named_values`), which the script derives from
-the Spec's `measure_axis_values` and the packaged measure index, as
-`spec_build.measure_label_for_partition` does. A replay states both on the Spec it rebuilds
+the Spec's `measure_axis_values` and the measure index of the release `GRAPH_RELEASE_URI` names,
+as `spec_build.measure_label_for_partition` does. A replay states both on the Spec it rebuilds
 (`golden_parts`). Observations, timing, diagnostics, skills, entity and facet options and the
 rest of the trace go; the model fields that are required but unread (the trace's entity and
 filter lists) are written empty, and a role-axis fact's `member_count`, which the wire omits
@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import functools
 import gzip
 import json
 import sys
@@ -65,8 +64,8 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from code_index.loader import default_index_path, load_measure_axes
-from code_index.types import MeasureIndex, label_for_pairs
+from code_index.shared import get_measure_index
+from code_index.types import label_for_pairs
 from graph_release.context import bound_served_release
 from search.models import (
     CandidatesPart,
@@ -168,19 +167,13 @@ def golden_parts(raw_parts: list[dict[str, Any]]) -> list[Part]:
     ]
 
 
-@functools.cache
-def _packaged_measure_index() -> MeasureIndex:
-    """The packaged export's measure index, read once."""
-    return load_measure_axes(default_index_path())
-
-
 def _named_values(resolved: dict[str, Any]) -> list[list[str]]:
     """The code pairs the measure label of a wire `resolved` names, taken from the authored label
-    its `measure_axis_values` match in the measure index (`label_for_pairs`)."""
+    its `measure_axis_values` match in the bound release's measure index (`label_for_pairs`)."""
     if resolved.get("measure_label") is None:
         return []
     pairs = [(entry["axis"], entry["value"]["ref"]) for entry in resolved["measure_axis_values"]]
-    match = label_for_pairs(pairs, _packaged_measure_index().partition_labels)
+    match = label_for_pairs(pairs, get_measure_index().partition_labels)
     return [list(pair) for pair in match.named_values] if match is not None else []
 
 
@@ -355,7 +348,7 @@ def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
 @contextmanager
 def _bound_golden_release() -> Iterator[None]:
     """Bind the release the golden test reads (`tests.graph_release.support.build_session_release`),
-    whose code index is the packaged export, published to a temporary directory. The renderer
+    whose code index is the recorded index document, published to a temporary directory. The renderer
     reads the code index."""
     # The test support and the release reader are heavy, and only a re-render needs them.
     sys.path.insert(0, str(REPO))
@@ -411,20 +404,23 @@ def main(argv: list[str] | None = None) -> int:
     if not raws:
         print(f"no raw-*.jsonl files in {args.run}", file=sys.stderr)
         return 1
+    from graph_release.service import get_release_service
+
     args.out.mkdir(parents=True, exist_ok=True)
     total = 0
-    for raw in raws:
-        out = args.out / f"{raw.stem.removeprefix('raw-')}.jsonl.gz"
-        old = read_golden(out) if out.exists() else []
-        try:
-            lines = trim_file(raw, out)
-        except ValueError as error:
-            print(error, file=sys.stderr)
-            return 1
-        total += len(lines)
-        print(f"{out}: {len(lines)} queries, {out.stat().st_size:,} bytes")
-        for query_id, before, after in changed_sentences(old, lines):
-            print(f"  {query_id}\n    - {before}\n    + {after}")
+    with bound_served_release(get_release_service()):
+        for raw in raws:
+            out = args.out / f"{raw.stem.removeprefix('raw-')}.jsonl.gz"
+            old = read_golden(out) if out.exists() else []
+            try:
+                lines = trim_file(raw, out)
+            except ValueError as error:
+                print(error, file=sys.stderr)
+                return 1
+            total += len(lines)
+            print(f"{out}: {len(lines)} queries, {out.stat().st_size:,} bytes")
+            for query_id, before, after in changed_sentences(old, lines):
+                print(f"  {query_id}\n    - {before}\n    + {after}")
     print(f"{len(raws)} slices, {total} queries")
     return 0
 

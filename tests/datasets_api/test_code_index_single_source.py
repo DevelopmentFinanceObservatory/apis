@@ -79,7 +79,7 @@ def _graph() -> FakeMintGraphReader:
 
 
 def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
-    """Builds an index with a code system absent from the packaged singleton."""
+    """Builds an index with a code system absent from the fixture index."""
     assert code_system not in get_index().declarations
     return CodeIndex(
         stamp=IndexStamp(
@@ -352,7 +352,7 @@ def test_described_ask_mint_enumerates_using_the_injected_code_indexs_own_readin
 
 
 def test_described_ask_mint_against_the_real_singleton_enumerates_only_the_dominating_member():
-    # The packaged index's default "aggregate" reading keeps only the unconstrained member.
+    # The fixture index's default "aggregate" reading keeps only the unconstrained member.
     identity = _described_ask_identity()
     spec_id = recompute_identity(identity).spec_id
     client, _store = _described_client()

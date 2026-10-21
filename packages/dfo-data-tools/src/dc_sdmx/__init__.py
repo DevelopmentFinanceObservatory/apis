@@ -16,7 +16,6 @@ from dc_sdmx.client import (
     EntityFilter,
     SdmxClient,
     place_slices,
-    plan_entity_chunks,
     plan_request_chunks,
 )
 from dc_sdmx.errors import (
@@ -85,7 +84,6 @@ __all__ = [
     "observation_schema",
     "observed_value",
     "place_slices",
-    "plan_entity_chunks",
     "plan_request_chunks",
     "resolve_data_header",
 ]

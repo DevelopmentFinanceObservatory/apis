@@ -183,7 +183,7 @@ def test_base_family_keeps_its_recalled_member_name():
 
 
 def _index_member(dcid: str, name: str) -> dict:
-    """A graph node for the packaged index row `dcid`, named `name`."""
+    """A graph node for the fixture index row `dcid`, named `name`."""
     row = next(row for row in get_index().statvars if row.dcid == dcid)
     arcs: dict = {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
