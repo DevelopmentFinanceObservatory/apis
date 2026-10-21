@@ -204,7 +204,8 @@ class MemberGroup:
     refusal a truncated page causes states this as the ceiling it crossed,
     alongside `candidates_considered` as the count: the candidate window is
     the bound this read measured, unlike the member count past it, which no
-    bounded read settles. `CANDIDATE_CAP` for the first page, and the caller's
+    bounded read settles. The walk's first-page cap (`CANDIDATE_CAP` unless the caller
+    passes another) for the first page, and the caller's
     `subject_ceiling` for a group the full read built (`full_read`). Meaningful
     only when `truncated` is `True`: a page that read every candidate was still
     read inside this window, which no candidate ever reached."""
@@ -308,7 +309,7 @@ class MemberGroup:
 class MemberReadDeadline(TimeoutError):
     """A walk's graph read started, or failed, past the caller's `deadline`.
 
-    `candidate_cap` is the window being read when time ran out, `CANDIDATE_CAP` or the
+    `candidate_cap` is the window being read when time ran out, the first page's cap or the
     caller's `subject_ceiling`, and `candidates_considered` the subjects that window had
     returned, 0 before its page arrived. Running out of time says nothing about the set's
     size, so a caller treats it as a transient timeout. A retry walks again."""
@@ -414,6 +415,7 @@ def enumerate_members(
     deadline: float | None = None,
     full_read_deadline: float | None = None,
     open_role_keys: Collection[str] = (),
+    candidate_cap: int = CANDIDATE_CAP,
 ) -> MemberGroup:
     """Enumerate matching StatVars and reduce them to the minimal-constraint antichain.
 
@@ -434,7 +436,8 @@ def enumerate_members(
     must supply their registry-backed mapping. `member_cap` limits the reduced
     result and defaults to 700. `MemberEnumerator` passes its own `member_cap`.
 
-    `subject_ceiling`, when set, settles a first page that truncates without proof by
+    `candidate_cap` bounds the first page, `CANDIDATE_CAP` by default. `subject_ceiling`,
+    when set, settles a first page that truncates without proof by
     reading the whole filtered reverse set, up to that many subjects, and confirming
     it (`MemberGroup.full_read`). A complete read settles by construction. A set past
     the ceiling returns a truncated, unproven group with `candidate_cap` the ceiling.
@@ -463,6 +466,7 @@ def enumerate_members(
         deadline=deadline,
         full_read_deadline=full_read_deadline,
         open_role_keys=open_role_keys,
+        candidate_cap=candidate_cap,
     )
 
 
@@ -542,6 +546,7 @@ def _enumerate_resolved(
     deadline: float | None = None,
     full_read_deadline: float | None = None,
     open_role_keys: Collection[str] = (),
+    candidate_cap: int = CANDIDATE_CAP,
 ) -> MemberGroup:
     """Run `_confirm_group` on the reverse-query page plus caller-supplied candidates,
     then, under `subject_ceiling`, on the whole filtered set when that page truncates
@@ -552,13 +557,13 @@ def _enumerate_resolved(
     the first page, then `full_read_deadline`, which defaults to `deadline`."""
     if full_read_deadline is None:
         full_read_deadline = deadline
-    window = _Window(cap=CANDIDATE_CAP, deadline=deadline)
+    window = _Window(cap=candidate_cap, deadline=deadline)
     if deadline is not None or full_read_deadline is not None:
         graph = _DeadlineReader(graph, window)
     if five_tuple.denominator_unresolved:
         graph = _ProvisionalDenominatorReader(graph)
     try:
-        page = _reverse_query(graph, five_tuple, slots=slots, max_results=CANDIDATE_CAP)
+        page = _reverse_query(graph, five_tuple, slots=slots, max_results=candidate_cap)
         window.considered = len(page.dcids)
         if subject_ceiling is None or not page.truncated:
             return _confirm_group(
@@ -568,7 +573,7 @@ def _enumerate_resolved(
                 graph=graph,
                 readings=readings,
                 member_cap=member_cap,
-                candidate_cap=CANDIDATE_CAP,
+                candidate_cap=candidate_cap,
                 truncated=page.truncated,
                 extra_candidates=extra_candidates,
                 role_keys=frozenset(role_keys),
@@ -587,6 +592,7 @@ def _enumerate_resolved(
             extra_candidates=extra_candidates,
             role_keys=frozenset(role_keys),
             open_role_keys=frozenset(open_role_keys),
+            candidate_cap=candidate_cap,
         )
     except _DeadlineCrossed as exc:
         raise MemberReadDeadline(
@@ -610,8 +616,9 @@ def _read_whole_set(
     extra_candidates: Sequence[str],
     role_keys: frozenset[str],
     open_role_keys: frozenset[str],
+    candidate_cap: int,
 ) -> MemberGroup:
-    """Settle a truncated first page. Confirm it when it may hold a root that proves it
+    """Settle a truncated first page, read at `candidate_cap`. Confirm it when it may hold a root that proves it
     complete, and otherwise read the whole filtered set up to `subject_ceiling` and
     confirm that.
 
@@ -635,7 +642,7 @@ def _read_whole_set(
                 graph=graph,
                 readings=readings,
                 member_cap=member_cap,
-                candidate_cap=CANDIDATE_CAP,
+                candidate_cap=candidate_cap,
                 truncated=True,
                 extra_candidates=extra_candidates,
                 role_keys=role_keys,

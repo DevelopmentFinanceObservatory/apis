@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 import time
 
 import pytest
 
 from graph_generation import FakeGeneration, GenerationStamp
+from graph_release.context import bound_release
 from search.engine.errors import EngineInputError
 from search.engine.options import population as population_module
 from search.engine.options.population import OptionsPopulation
@@ -36,6 +38,7 @@ from tests.code_index.aid_identity import (
     imputed_education_aid_identity,
 )
 from tests.fixtures import FakeGraph
+from tests.graph_release.support import release_at_revision
 from tests.statvar_members.conftest import FakeMemberArcReader, kenya_reader
 
 
@@ -183,10 +186,10 @@ def test_concurrent_callers_for_the_same_key_single_flight_to_one_derivation():
         with results_lock:
             results.append(result)
 
-    t1 = threading.Thread(target=worker)
+    t1 = threading.Thread(target=contextvars.copy_context().run, args=(worker,))
     t1.start()
     assert reader.started.wait(timeout=5), "leader never reached the fake reader"
-    t2 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=contextvars.copy_context().run, args=(worker,))
     t2.start()
     time.sleep(0.05)  # give t2 a chance to park on the in-flight slot
     reader.release.set()
@@ -207,7 +210,7 @@ def test_a_follower_past_its_deadline_raises_promptly_while_the_owner_keeps_deri
     def owner():
         memo.get_or_derive(identity, reader)
 
-    t = threading.Thread(target=owner)
+    t = threading.Thread(target=contextvars.copy_context().run, args=(owner,))
     t.start()
     assert reader.started.wait(timeout=5), "owner never reached the fake reader"
 
@@ -236,7 +239,7 @@ def test_join_inflight_false_raises_at_once_without_affecting_the_owner():
     def owner():
         memo.get_or_derive(identity, reader)
 
-    t = threading.Thread(target=owner)
+    t = threading.Thread(target=contextvars.copy_context().run, args=(owner,))
     t.start()
     assert reader.started.wait(timeout=5), "owner never reached the fake reader"
 
@@ -296,10 +299,10 @@ def test_a_waiter_on_a_failing_inflight_derivation_gets_the_same_failure():
         except BaseException as exc:
             errors.append(exc)
 
-    t1 = threading.Thread(target=worker)
+    t1 = threading.Thread(target=contextvars.copy_context().run, args=(worker,))
     t1.start()
     assert started.wait(timeout=5)
-    t2 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=contextvars.copy_context().run, args=(worker,))
     t2.start()
     time.sleep(0.05)
     release.set()
@@ -337,6 +340,21 @@ def test_a_different_slot_binding_is_a_different_key():
     )
 
     assert _population_key(unbound) != _population_key(bound)
+
+
+def test_the_bound_release_keys_the_population():
+    """A member walk reads the bound release's DFO variables, so two releases key apart and
+    one release keys alike."""
+    identity = _identity()
+    first, second = release_at_revision("rev-1"), release_at_revision("rev-2")
+    with bound_release(first):
+        on_first = _population_key(identity)
+        again = _population_key(identity)
+    with bound_release(second):
+        on_second = _population_key(identity)
+
+    assert on_first != on_second
+    assert on_first == again
 
 
 def test_disabled_memo_derives_every_time_with_no_bookkeeping():
@@ -488,7 +506,10 @@ def test_a_post_flip_caller_never_joins_a_pre_flip_in_flight_derivation():
     identity = _identity()
     owner_reader = _CountingReader(kenya_reader(), block_first=True, generation=generation)
 
-    owner_thread = threading.Thread(target=lambda: memo.get_or_derive(identity, owner_reader))
+    owner_thread = threading.Thread(
+        target=contextvars.copy_context().run,
+        args=(lambda: memo.get_or_derive(identity, owner_reader),),
+    )
     owner_thread.start()
     assert owner_reader.started.wait(timeout=5), "owner never reached the fake reader"
 

@@ -135,8 +135,9 @@ def test_import_with_flag_unset_does_not_pull_in_graph_api() -> None:
     script = (
         "import sys\n"
         "import dfo_apis.app as app_module\n"
-        "from tests.series_coverage.support import session_coverage_service\n"
-        "with session_coverage_service():\n"
+        "from graph_release.context import bound_served_release\n"
+        "from graph_release.service import get_release_service\n"
+        "with bound_served_release(get_release_service()):\n"
         "    app_module.deployed_surfaces()\n"
         "bad = [\n"
         "    m for m in sys.modules\n"

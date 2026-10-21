@@ -152,10 +152,8 @@ def _read_pointer(root: str) -> CoveragePointer:
 
 
 def read_published_pointer(base_uri: str) -> CoveragePointer | None:
-    """Reads `current.json` once, returning `None` if it is missing or malformed.
-
-    `CoverageService` uses this cheap check before a full load.
-    """
+    """Reads `current.json` once, returning `None` if it is missing or malformed: a cheap
+    check before a full load."""
     uri = join_uri(format_root(base_uri), POINTER_FILE)
     try:
         raw = read_uri_bytes(uri)

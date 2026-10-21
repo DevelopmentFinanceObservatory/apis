@@ -1,32 +1,55 @@
 """`MemberEnumerator`'s shared member-group cache: hits, generation keying and lifetime,
 query keying, the one member cap, single flight and the group it hands its waiters, uncached
 deadline refusals and unsettled groups, cached settled groups beside dismissed inconsistent
-candidates, and the weight bound."""
+candidates, and the weight bound.
+
+Every DFO family of the recorded release's slice walks the release's graph reader to the group a
+walk of the graph finds, a family with a base member walks the graph, a walk refuses with no
+release bound, and a swap keys afresh."""
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from dc_graph import parse_arcs
 from graph_generation.config import (
     GRAPH_CACHE_MAX_AGE_SECONDS,
     GRAPH_CACHE_UNKNOWN_GENERATION_MAX_AGE_SECONDS,
 )
 from graph_generation.stamp import UNKNOWN_KEY
+from graph_release.context import ReleaseNotBound, bound_release
+from graph_release.service import Release, ReleaseService
+from origin_catalogue import bound_catalogue
+from origin_catalogue.arc_tables import ArcTablesBuilder
+from origin_catalogue.catalogue import CatalogueSnapshot
+from origin_catalogue.families import FamilyKey
+from origin_catalogue.graph import _wire
 from statvar_members.cache import MemberEnumerator
 from statvar_members.enumerate import (
     _REPROBE_BUDGET,
     DEFAULT_MEMBER_CAP,
+    DegenerateObservationProperties,
     MemberEnumerationTooLarge,
     MemberGroup,
     MemberReadDeadline,
+    MemberRoleDisagreement,
+    MultiValuedConstraint,
+    NotAStatisticalVariable,
+    SlotBinding,
 )
 from statvar_members.types import UNRESOLVED_NODE, FiveTuple
+from tests.graph_release.recorded import recorded_dfo_arcs
+from tests.graph_release.support import build_view_release, origin_release
+from tests.origin_catalogue.fake_catalogue import restrictive_catalogue
+from tests.origin_catalogue.support import build_labelled
 
 from .conftest import (
     _KENYA_LIFE_EXPECTANCY_ARCS,
@@ -334,10 +357,12 @@ def test_two_concurrent_misses_on_one_key_run_one_enumeration():
     def call() -> None:
         results.append(_kenya(enumerator, reader))
 
-    first = threading.Thread(target=call)
+    # Each thread runs in a copy of the test's context, as a request pool's do, so a walk
+    # reads the bound release.
+    first = threading.Thread(target=contextvars.copy_context().run, args=(call,))
     first.start()
     assert reader.entered.wait(timeout=5)
-    second = threading.Thread(target=call)
+    second = threading.Thread(target=contextvars.copy_context().run, args=(call,))
     second.start()
     time.sleep(0.2)
     reader.release.set()
@@ -360,10 +385,10 @@ def test_a_call_waiting_on_an_uncached_walk_takes_its_group():
     def call() -> None:
         results.append(_kenya(enumerator, reader, slots=male))
 
-    first = threading.Thread(target=call)
+    first = threading.Thread(target=contextvars.copy_context().run, args=(call,))
     first.start()
     assert reader.entered.wait(timeout=5)
-    second = threading.Thread(target=call)
+    second = threading.Thread(target=contextvars.copy_context().run, args=(call,))
     second.start()
     time.sleep(0.2)
     reader.release.set()
@@ -379,7 +404,9 @@ def test_a_call_waiting_on_an_uncached_walk_takes_its_group():
 def test_a_waiting_call_refuses_at_its_own_deadline():
     reader = _GatedReader()
     enumerator = MemberEnumerator()
-    first = threading.Thread(target=lambda: _kenya(enumerator, reader))
+    first = threading.Thread(
+        target=contextvars.copy_context().run, args=(lambda: _kenya(enumerator, reader),)
+    )
     first.start()
     assert reader.entered.wait(timeout=5)
 
@@ -412,3 +439,227 @@ def test_each_walk_logs_one_info_line(caplog: pytest.LogCaptureFixture):
         False,
         "settled",
     )
+
+
+_POSITIONS = FiveTuple(
+    population_type="FinancialPosition",
+    measured_property="amount",
+    stat_type="measuredValue",
+    measurement_qualifier="Nominal",
+    measurement_denominator="Count_Person",
+)
+_REFUSALS = (
+    DegenerateObservationProperties,
+    MemberEnumerationTooLarge,
+    MemberRoleDisagreement,
+    MultiValuedConstraint,
+    NotAStatisticalVariable,
+)
+"""The refusals a walk raises for its family, which the release's walk must raise alike."""
+_BASE_POSITION = "Amount_FinancialPosition_Base_Nominal_AsAFractionOf_Count_Person"
+"""A base variable of `_POSITIONS`, a family the recorded release otherwise holds whole."""
+
+
+@pytest.fixture(scope="module")
+def recorded_slice() -> tuple[dict[str, dict[str, tuple[str, ...]]], CatalogueSnapshot]:
+    """The recorded slice's DFO variables and `_BASE_POSITION` as our graph answers them, and a
+    catalogue holding the DFO variables and that base variable as the catalogue job reads them."""
+    builder = ArcTablesBuilder()
+    read = recorded_dfo_arcs(builder)
+    # The nodes the catalogue job holds for the DFO variables' denominators.
+    for denominator in sorted(
+        {
+            arc.dcid
+            for rows in builder.table("dfo").values()
+            for arc in rows
+            if arc.property == "measurementDenominator"
+            and arc.dcid is not None
+            and arc.dcid not in read.variables
+        }
+        - {"Count_Person"}
+    ):
+        builder.add("schema", denominator, None)
+    builder.add("base", "Count_Person", {"typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]}})
+    builder.add(
+        "base",
+        _BASE_POSITION,
+        {
+            "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+            "populationType": {"nodes": [{"dcid": "FinancialPosition"}]},
+            "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+            "statType": {"nodes": [{"dcid": "measuredValue"}]},
+            "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
+            "measurementDenominator": {"nodes": [{"dcid": "Count_Person"}]},
+            "observationProperties": {"nodes": [{"dcid": "financingRecipient"}]},
+        },
+    )
+    variables = {
+        dcid: rows
+        for table in ("dfo", "base")
+        for dcid, rows in builder.table(table).items()
+        if dcid != "Count_Person"
+    }
+    properties = sorted({arc.property for rows in variables.values() for arc in rows})
+    graph = {
+        dcid: parse_arcs(_wire(rows), properties, mark_unresolved=True)
+        for dcid, rows in variables.items()
+    }
+    return graph, restrictive_catalogue(dfo_variables=read.variables, arcs=build_labelled(builder))
+
+
+def _origin_release(root: Path, *, revision: str = "rev-a") -> Release:
+    """The recorded slice's release, opened with its views and its origin view."""
+    uri = (root / "releases").as_uri()
+    build_view_release(uri, dc_serving_revision=revision)
+    return ReleaseService(uri=uri, local_dir=root / "local", recheck_seconds=0).snapshot()
+
+
+def _five_tuple(key: FamilyKey) -> FiveTuple:
+    return FiveTuple(
+        population_type=key.population_type or None,
+        measured_property=key.measured_property or None,
+        stat_type=key.stat_type or None,
+        measurement_qualifier=key.measurement_qualifier,
+        measurement_denominator=key.measurement_denominator,
+        denominator_unresolved=key.denominator_unresolved,
+    )
+
+
+def test_every_dfo_family_walks_the_release_to_the_group_the_graph_gives(
+    recorded_slice, tmp_path: Path
+) -> None:
+    """Each family's walk with every slot unbound and with each property bound to each of its
+    values, members, family and order included, reads the graph for none of them. The graph's
+    group is the one a walk finds under a release holding no DFO variable."""
+    variables, catalogue = recorded_slice
+    release = _origin_release(tmp_path)
+    queries = []
+    for key, summary in release.origin.families.items():
+        if key.population_type == "FinancialPosition":
+            continue
+        unbound: dict[str, SlotBinding] = dict.fromkeys(summary.values, ("unbound",))
+        queries.append((_five_tuple(key), unbound))
+        queries += [
+            (_five_tuple(key), {**unbound, prop: ("value", value)})
+            for prop, values in summary.values.items()
+            for value in values
+        ]
+    assert len({five_tuple for five_tuple, _ in queries}) == 5
+    graph = FakeMemberArcReader(arcs=variables)
+
+    def walk(enumerator: MemberEnumerator, five_tuple: FiveTuple, slots) -> object:
+        try:
+            return enumerator.enumerate(
+                graph=graph, stamp_key="rev1", five_tuple=five_tuple, slots=slots
+            )
+        except _REFUSALS as exc:
+            return type(exc), str(exc)
+
+    def walks() -> list[object]:
+        enumerator = MemberEnumerator()
+        with bound_catalogue(catalogue):
+            return [walk(enumerator, five_tuple, slots) for five_tuple, slots in queries]
+
+    with bound_release(origin_release({})):
+        live = walks()
+    walked = dict(graph.calls)
+    with bound_release(release):
+        served = walks()
+
+    assert served == live
+    assert graph.calls == walked
+    groups = [group for group in live if isinstance(group, MemberGroup)]
+    assert len(groups) > len(queries) / 2
+    assert sum(len(group.members) for group in groups) > len(groups)
+
+
+def test_a_family_with_a_base_member_walks_the_graph(recorded_slice, tmp_path: Path) -> None:
+    variables, catalogue = recorded_slice
+    release = _origin_release(tmp_path)
+    graph = FakeMemberArcReader(arcs=variables)
+
+    with bound_release(release), bound_catalogue(catalogue):
+        group = MemberEnumerator().enumerate(
+            graph=graph, stamp_key="rev1", five_tuple=_POSITIONS, slots={}
+        )
+
+    assert graph.calls["node_subjects"] == 1
+    assert _BASE_POSITION in group.family
+
+
+@pytest.mark.unbound_release
+def test_a_walk_refuses_with_no_release_bound() -> None:
+    reader = kenya_reader()
+
+    with pytest.raises(ReleaseNotBound):
+        _kenya(MemberEnumerator(), reader)
+
+    assert reader.calls["node_subjects"] == 0
+
+
+def test_a_release_swap_keys_the_walk_afresh(recorded_slice, tmp_path: Path) -> None:
+    """A family the release does not hold, read from the graph under one stamp key, walks
+    again under the next release and hits again under the first."""
+    variables, catalogue = recorded_slice
+    first = _origin_release(tmp_path / "a", revision="rev-a")
+    second = _origin_release(tmp_path / "b", revision="rev-b")
+    assert first.release_id != second.release_id
+    graph = FakeMemberArcReader(arcs=variables)
+    enumerator = MemberEnumerator()
+
+    def walk(release: Release) -> None:
+        with bound_release(release), bound_catalogue(catalogue):
+            enumerator.enumerate(graph=graph, stamp_key="rev1", five_tuple=_POSITIONS, slots={})
+
+    walk(first)
+    walk(second)
+    assert graph.calls["node_subjects"] == 2
+    walk(first)
+    assert graph.calls["node_subjects"] == 2
+
+
+class _SwappingService:
+    """The two calls `MemberEnumerator.follow_swaps` makes on a `ReleaseService`, with `swap`
+    standing for a recheck that serves a new release."""
+
+    def __init__(self, release: Release) -> None:
+        self.release = release
+        self.callbacks: list[Callable[[Release], None]] = []
+
+    def snapshot(self) -> Release:
+        return self.release
+
+    def on_swap(self, callback: Callable[[Release], None]) -> Callable[[], None]:
+        self.callbacks.append(callback)
+        return lambda: self.callbacks.remove(callback)
+
+    def swap(self, release: Release) -> None:
+        self.release = release
+        for callback in self.callbacks:
+            callback(release)
+
+
+def test_a_swap_drops_the_replaced_release_s_groups(recorded_slice, tmp_path: Path) -> None:
+    """Following the service, a swap drops the groups keyed on the replaced release, a walk
+    still bound to it stores nothing, and the new release's groups are stored. `close` stops
+    following."""
+    variables, catalogue = recorded_slice
+    first = _origin_release(tmp_path / "a", revision="rev-a")
+    second = _origin_release(tmp_path / "b", revision="rev-b")
+    graph = FakeMemberArcReader(arcs=variables)
+    service = _SwappingService(first)
+    enumerator = MemberEnumerator()
+    enumerator.follow_swaps(cast("ReleaseService", service))
+
+    def walks(release: Release) -> int:
+        with bound_release(release), bound_catalogue(catalogue):
+            enumerator.enumerate(graph=graph, stamp_key="rev1", five_tuple=_POSITIONS, slots={})
+        return graph.calls["node_subjects"]
+
+    assert [walks(first), walks(first)] == [1, 1]
+    service.swap(second)
+    assert [walks(first), walks(first)] == [2, 3]
+    assert [walks(second), walks(second)] == [4, 4]
+
+    enumerator.close()
+    assert service.callbacks == []

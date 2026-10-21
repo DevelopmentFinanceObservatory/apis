@@ -1,7 +1,7 @@
 """Measure `CoverageIndex` query latency and peak RSS against a published artifact.
 
 Each mode runs in a spawned process and reports p50/p95/p99 wall time and peak RSS. Cold loads
-and changed-build refreshes use fresh-process repeats and report median and maximum RSS.
+use fresh-process repeats and report median and maximum RSS.
 
 `cold_load` loads the full artifact. `named_bilateral` binds a real donor/recipient pair.
 `named_single_side` binds a donor across ODA variables. `open_oda_family` leaves the
@@ -13,12 +13,7 @@ and changed-build refreshes use fresh-process repeats and report median and maxi
 matching a bare "aid" query. `preview_open_oda` adds reads for the facet discovery elected: the
 first `SEARCH_ROLE_BULK_SERIES_MAX` pairs and the observation count summed across each pair.
 Both bind the origin catalogue at `--catalogue-uri`, which facet ranking reads. Each
-measurement starts with fresh discovery. `changed_stamp_refresh` changes both build id and
-stamp in a scratch copy, then times only the `CoverageService.current()` swap after its recheck
-interval. The service reloads when the pointer's build id changes. It runs with the index check
-off (`COVERAGE_INDEX_CHECK=off`), so any artifact loads, and the timing leaves out the 0.20 to
-0.25 s compatibility check a deployed refresh adds.
-The source artifact stays untouched.
+measurement starts with fresh discovery.
 
 `n_concurrent_threads` starts `--concurrency` threads at a barrier for the same bilateral
 lookup. It reports burst and per-thread latency plus RSS. PyArrow compute kernels release the
@@ -49,7 +44,7 @@ from typing import Any
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_REPEATS = 5
-"""Fresh-process repeats for cold loads and changed-build refreshes."""
+"""Fresh-process repeats for cold loads."""
 
 DEFAULT_INNER_REPEATS = 50
 """In-process query repeats after the artifact loads."""
@@ -131,36 +126,6 @@ def _discover_probe(artifact_uri: str) -> dict[str, Any]:
         "window_first_year": first_year,
         "window_last_year": last_year,
     }
-
-
-def _copy_artifact_to_scratch(source_base_uri: str) -> str:
-    """Copy the current build to a local ``file://`` artifact, preserving its layout and bytes.
-
-    Supports ``gs://`` and ``file://`` sources. The refresh benchmark writes only to this copy.
-    """
-    import tempfile
-
-    from artifact_publication.uri import join_uri, read_uri_bytes, write_uri_bytes
-    from series_coverage.loader import VERSIONS_PREFIX, format_root, load_coverage
-    from series_coverage.schema import POINTER_FILE
-
-    loaded = load_coverage(source_base_uri)
-    build_id = loaded.manifest.build_id
-    scratch = tempfile.mkdtemp(prefix="coverage-bench-copy-")
-    dest_base = f"file://{scratch}"
-    source_root = format_root(source_base_uri)
-    dest_root = format_root(dest_base)
-    source_prefix = join_uri(source_root, VERSIONS_PREFIX, build_id)
-    dest_prefix = join_uri(dest_root, VERSIONS_PREFIX, build_id)
-    for relative in (*loaded.manifest.files.values(), "manifest.json"):
-        write_uri_bytes(
-            join_uri(dest_prefix, relative), read_uri_bytes(join_uri(source_prefix, relative))
-        )
-    write_uri_bytes(
-        join_uri(dest_root, POINTER_FILE),
-        read_uri_bytes(join_uri(source_root, POINTER_FILE)),
-    )
-    return dest_base
 
 
 # Import measured code in each child so its RSS excludes parent-process imports.
@@ -265,75 +230,6 @@ def _run_query_mode_in_child(
         _call_query_mode(loaded, mode, probe)
         wall_samples.append(time.perf_counter() - started)
     result_queue.put({"wall_seconds_samples": wall_samples, "peak_rss_bytes": _max_rss_bytes()})
-
-
-def _run_changed_stamp_refresh_in_child(
-    artifact_uri: str, result_queue: multiprocessing.Queue
-) -> None:
-    import tempfile
-    from dataclasses import replace
-    from pathlib import Path as _Path
-
-    from artifact_publication.uri import join_uri, read_uri_bytes, write_uri_bytes
-    from code_index.shared import get_index
-    from series_coverage.io import write_manifest
-    from series_coverage.loader import VERSIONS_PREFIX, format_root, load_coverage
-    from series_coverage.schema import POINTER_FILE, CoveragePointer
-    from series_coverage.shared import CoverageService
-
-    scratch_base = _copy_artifact_to_scratch(artifact_uri)
-    scratch_root = format_root(scratch_base)
-    loaded = load_coverage(scratch_base)
-    old_stamp = loaded.manifest.stamp
-    old_build_id = loaded.manifest.build_id
-    new_stamp = f"{old_stamp}-bench-refresh"
-    new_build_id = f"{old_build_id}-bench-refresh"
-
-    with tempfile.TemporaryDirectory(prefix="coverage-bench-manifest-") as tmp:
-        local_manifest = _Path(tmp) / "manifest.json"
-        write_manifest(
-            replace(
-                loaded.manifest,
-                stamp=new_stamp,
-                build_id=new_build_id,
-                source=f"{loaded.manifest.source} (measure_coverage_lookup.py refresh benchmark copy)",
-            ),
-            local_manifest,
-        )
-        new_prefix = join_uri(scratch_root, VERSIONS_PREFIX, new_build_id)
-        old_prefix = join_uri(scratch_root, VERSIONS_PREFIX, old_build_id)
-        for relative in loaded.manifest.files.values():
-            write_uri_bytes(
-                join_uri(new_prefix, relative), read_uri_bytes(join_uri(old_prefix, relative))
-            )
-        write_uri_bytes(join_uri(new_prefix, "manifest.json"), local_manifest.read_bytes())
-
-    fake_now = [0.0]
-    service = CoverageService(
-        artifact_uri=scratch_base,
-        index=get_index(),
-        index_check=False,
-        recheck_seconds=10,
-        clock=lambda: fake_now[0],
-    )
-    if service.stamp != old_stamp:
-        raise RuntimeError(f"expected {old_stamp!r} at construction, got {service.stamp!r}")
-
-    write_uri_bytes(
-        join_uri(scratch_root, POINTER_FILE),
-        CoveragePointer(stamp=new_stamp, build_id=new_build_id).to_json().encode(),
-    )
-    fake_now[0] = 11.0
-
-    started = time.perf_counter()
-    service.current()
-    service.close()
-    wall = time.perf_counter() - started
-    if service.stamp != new_stamp:
-        raise RuntimeError(
-            f"refresh never swapped to {new_stamp!r}, still serving {service.stamp!r}"
-        )
-    result_queue.put({"wall_seconds": wall, "peak_rss_bytes": _max_rss_bytes()})
 
 
 def _run_concurrency_in_child(
@@ -450,7 +346,7 @@ def main() -> None:
         "--repeats",
         type=int,
         default=DEFAULT_REPEATS,
-        help=f"Fresh-process repeats for cold_load/changed_stamp_refresh (default {DEFAULT_REPEATS}).",
+        help=f"Fresh-process repeats for cold_load (default {DEFAULT_REPEATS}).",
     )
     parser.add_argument(
         "--inner-repeats",
@@ -465,7 +361,6 @@ def main() -> None:
         help=f"Threads for the n_concurrent_threads mode (default {DEFAULT_CONCURRENCY}).",
     )
     parser.add_argument("--skip-cold-load", action="store_true")
-    parser.add_argument("--skip-refresh", action="store_true")
     parser.add_argument("--skip-concurrency", action="store_true")
     parser.add_argument(
         "--modes",
@@ -501,13 +396,6 @@ def main() -> None:
             (artifact_uri, args.catalogue_uri, mode, probe, args.inner_repeats),
         )
         _report_query_mode(mode, result, results)
-
-    if not args.skip_refresh:
-        samples = [
-            _spawn(_run_changed_stamp_refresh_in_child, (artifact_uri,))
-            for _ in range(args.repeats)
-        ]
-        _report_repeats("changed_stamp_refresh", samples, results)
 
     if not args.skip_concurrency:
         result = _spawn(_run_concurrency_in_child, (artifact_uri, probe, args.concurrency))

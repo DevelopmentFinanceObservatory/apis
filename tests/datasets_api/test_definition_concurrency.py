@@ -4,6 +4,7 @@ and broken-pool handling on `GET /api/datasets/{id}`.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
@@ -205,7 +206,8 @@ def test_over_admission_at_pool_size_one_refuses_definition_backpressure(
 
         first_response: list = []
         first_thread = threading.Thread(
-            target=lambda: first_response.append(client.get(f"/api/datasets/{spec_id}"))
+            target=contextvars.copy_context().run,
+            args=(lambda: first_response.append(client.get(f"/api/datasets/{spec_id}")),),
         )
         first_thread.start()
         assert graph.entered.wait(timeout=5.0), (
@@ -249,7 +251,8 @@ def test_timed_out_call_keeps_its_permit_held_until_it_actually_finishes(
 
         first_response: list = []
         first_thread = threading.Thread(
-            target=lambda: first_response.append(client.get(f"/api/datasets/{spec_id}"))
+            target=contextvars.copy_context().run,
+            args=(lambda: first_response.append(client.get(f"/api/datasets/{spec_id}")),),
         )
         first_thread.start()
         assert graph.entered.wait(timeout=5.0), (
@@ -296,7 +299,10 @@ def test_permit_frees_once_the_background_call_finishes(monkeypatch: pytest.Monk
         graph.entered.clear()
         graph.release.clear()
 
-        first_thread = threading.Thread(target=lambda: client.get(f"/api/datasets/{spec_id}"))
+        first_thread = threading.Thread(
+            target=contextvars.copy_context().run,
+            args=(lambda: client.get(f"/api/datasets/{spec_id}"),),
+        )
         first_thread.start()
         assert graph.entered.wait(timeout=5.0), (
             "first request never reached the blocking graph read"
@@ -425,7 +431,9 @@ def test_concurrent_posts_of_one_unregistered_definition_register_it_once(
         )
 
     with client:
-        threads = [threading.Thread(target=_post) for _ in range(2)]
+        threads = [
+            threading.Thread(target=contextvars.copy_context().run, args=(_post,)) for _ in range(2)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:

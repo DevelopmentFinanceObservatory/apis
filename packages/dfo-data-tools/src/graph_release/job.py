@@ -110,6 +110,7 @@ from graph_release.format import (
     pointer_uri,
 )
 from graph_release.gate import (
+    MAX_PART_BYTES,
     Dependency,
     GateResult,
     GateUnavailable,
@@ -123,6 +124,7 @@ from graph_release.publish import PublishStatus, prune_releases, publish_release
 from graph_release.reads import Snapshot, read_ingested_imports, read_inputs, snapshot_at
 from graph_release.serving_revision import CloudRunAdmin, ServingRevision, ServingRevisionError
 from graph_release.shadow import ComparatorBuild, shadow_builds, shadow_diff
+from statvar_members import SubjectPage
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,7 @@ BUILDER_MODULES: Final[Mapping[str, tuple[str, ...]]] = {
         "format.py",
         "gate.py",
         "job.py",
+        "origin.py",
         "platform.py",
         "publish.py",
         "reads.py",
@@ -167,6 +170,7 @@ BUILDER_MODULES: Final[Mapping[str, tuple[str, ...]]] = {
     ),
     "code_index": ("export.py", "loader.py", "query.py", "types.py"),
     "dc_graph": ("visible_arcs.py",),
+    "origin_catalogue": ("arc_tables.py", "families.py"),
     "series_coverage": ("index.py", "loader.py", "schema.py"),
 }
 """The modules whose source `builder_code_hash` covers: what reads, builds, gates and publishes
@@ -233,6 +237,7 @@ class JobSettings(AliasOnlySettings):
         pattern=r"^(projects/[^/]+/locations/[^/]+/jobs/[^/]+)?$",
         alias="SEARCH_CATALOGUE_JOB_NAME",
     )
+    max_part_bytes: int = Field(default=MAX_PART_BYTES, gt=0, alias="GRAPH_RELEASE_MAX_PART_BYTES")
 
     @model_validator(mode="after")
     def _shadow_needs_comparators(self) -> Self:
@@ -278,7 +283,17 @@ class AdminApi(Protocol):
 
 
 class Mixer(Protocol):
-    """`dc_graph.GraphClient`'s arc reads, for the base parties and the mixer differential."""
+    """`dc_graph.GraphClient`'s reads, for the base parties, the mixer differential and the
+    blind spots."""
+
+    def node_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+    ) -> SubjectPage: ...
 
     def node_arcs_many(
         self, dcids: Sequence[str], *, properties: Sequence[str]
@@ -696,6 +711,7 @@ def _build_phases(
                         graph=graph,
                         sdmx=sdmx,
                         seed=key.stamp,
+                        max_part_bytes=settings.max_part_bytes,
                     )
                 if shadow_parts is not None:
                     # With shadow on the inputs name both comparator builds (step 3).
@@ -746,6 +762,7 @@ def _build_phases(
             pointer=pointer,
             generation=generation,
             phases=phases,
+            gate=gate,
         )
 
 
@@ -807,7 +824,10 @@ def _publish(
     pointer: Pointer | None,
     generation: str | None,
     phases: _Phases,
+    gate: GateResult,
 ) -> _Exit:
+    """Publishes `manifest`. The published event carries `gate`'s notices and its
+    `blind_spots` report, whose `shared` count the notices alert on."""
     built = {"inputs": inputs.to_json(), "release_id": manifest.release_id}
     if pointer is not None and manifest.release_id == pointer.release_id:
         with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
@@ -848,6 +868,8 @@ def _publish(
         parts=len(manifest.parts),
         **inputs.to_json(),
         phases=phases.recorded,
+        notices=gate.summary()["notices"],
+        blind_spots=gate.reports.get("blind_spots"),
     )
     return _Exit("published")
 

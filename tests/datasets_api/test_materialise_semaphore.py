@@ -4,7 +4,7 @@ A barrier-controlled SDMX transport makes overlap observable without timing assu
 
 from __future__ import annotations
 
-import functools
+import contextvars
 import gc
 import itertools
 import math
@@ -15,6 +15,7 @@ import weakref
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest import mock
 
 import httpx
@@ -27,12 +28,10 @@ from code_index.shared import get_index, get_measure_index
 from datasets_api import deps as deps_module
 from datasets_api import serve as serve_module
 from datasets_api.admission import (
-    COVERAGE_RESTARTS,
     STALE_CHECK_SECONDS,
     MaterialisePermits,
     RebuildFlights,
     bounded_materialise_slot,
-    under_current_coverage,
 )
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
@@ -42,19 +41,15 @@ from datasets_api.operations.task_client import NullTaskClient
 from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter, SubjectHead
 from dc_sdmx import SdmxClient
 from dfo_platform.app import create_app
-from graph_release.service import ReleaseService, ReleaseViews
+from graph_release.context import bound_release, current_release
+from graph_release.service import Release, ReleaseService, ReleaseViews
 from materialise.graph import Facet
-from series_coverage import shared as coverage_shared
 from series_coverage.index import CoverageIndex
-from series_coverage.loader import LoadedCoverage
 from series_coverage.schema import (
     ABSENT_ENTITY,
-    CoverageManifest,
-    CoveragePointer,
     FacetMetadata,
     RoleNames,
 )
-from series_coverage.shared import CoverageService, CoverageSnapshot
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -281,8 +276,8 @@ def test_materialise_semaphore_of_one_serialises_two_concurrent_mints():
             resp = client.post("/api/datasets", json=_scope(statvar=statvar_ref))
             results.append(resp.status_code)
 
-        first = threading.Thread(target=_mint, args=(_REF_A,))
-        second = threading.Thread(target=_mint, args=(_REF_B,))
+        first = threading.Thread(target=contextvars.copy_context().run, args=(_mint, _REF_A))
+        second = threading.Thread(target=contextvars.copy_context().run, args=(_mint, _REF_B))
         first.start()
         assert transport.first_entered.wait(timeout=5)
         second.start()
@@ -314,8 +309,8 @@ def test_materialise_semaphore_of_two_lets_two_concurrent_mints_overlap():
             results.append(resp.status_code)
 
         threads = [
-            threading.Thread(target=_mint, args=(_REF_A,)),
-            threading.Thread(target=_mint, args=(_REF_B,)),
+            threading.Thread(target=contextvars.copy_context().run, args=(_mint, _REF_A)),
+            threading.Thread(target=contextvars.copy_context().run, args=(_mint, _REF_B)),
         ]
         for thread in threads:
             thread.start()
@@ -355,8 +350,12 @@ def test_options_route_re_materialise_counts_against_the_semaphore():
             resp = client.get(f"/api/datasets/{spec_id}/options")
             results.append(resp.status_code)
 
-        first = threading.Thread(target=_options, args=(spec_ids[_REF_A],))
-        second = threading.Thread(target=_options, args=(spec_ids[_REF_B],))
+        first = threading.Thread(
+            target=contextvars.copy_context().run, args=(_options, spec_ids[_REF_A])
+        )
+        second = threading.Thread(
+            target=contextvars.copy_context().run, args=(_options, spec_ids[_REF_B])
+        )
         first.start()
         assert transport.first_entered.wait(timeout=5)
         second.start()
@@ -506,7 +505,7 @@ def test_stale_head_rebuild_waits_for_a_materialise_slot_and_times_out_as_503(
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
             results["mint_a"] = resp.status_code
 
-        mint_thread = threading.Thread(target=_mint_a)
+        mint_thread = threading.Thread(target=contextvars.copy_context().run, args=(_mint_a,))
         mint_thread.start()
         assert started.wait(timeout=5)
         # A's probe reads coverage. B's fetch must wait for release.
@@ -577,7 +576,7 @@ def test_materialise_wait_expires_returns_retryable_503_and_frees_the_pool_threa
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
             results["mint_a"] = resp.status_code
 
-        mint_thread = threading.Thread(target=_mint_a)
+        mint_thread = threading.Thread(target=contextvars.copy_context().run, args=(_mint_a,))
         mint_thread.start()
         assert started.wait(timeout=5)
 
@@ -640,8 +639,8 @@ def test_bounded_materialise_slot_with_no_deadline_waits_the_full_setting() -> N
         semaphore.release()
 
 
-def test_a_coverage_reload_takes_every_permit_under_a_stream_of_arrivals() -> None:
-    """Six callers loop on two permits, each releasing and asking again at once. A reload that
+def test_a_release_swap_takes_every_permit_under_a_stream_of_arrivals() -> None:
+    """Six callers loop on two permits, each releasing and asking again at once. A swap that
     starts among them closes the gate, so the permits frames release go to it, and arrivals
     wait at the gate within their own wait bound."""
     permits = MaterialisePermits(2)
@@ -655,30 +654,31 @@ def test_a_coverage_reload_takes_every_permit_under_a_stream_of_arrivals() -> No
             except MintBackpressure:
                 pass
 
-    arrivals = [threading.Thread(target=_arrive) for _ in range(6)]
+    arrivals = [
+        threading.Thread(target=contextvars.copy_context().run, args=(_arrive,)) for _ in range(6)
+    ]
     for arrival in arrivals:
         arrival.start()
-    reloaded = threading.Event()
+    swapped = threading.Event()
 
-    def _reload() -> None:
+    def _swap() -> None:
         with permits.every_permit():
-            reloaded.set()
+            swapped.set()
 
-    reload = threading.Thread(target=_reload, daemon=True)
+    swap = threading.Thread(target=_swap, daemon=True)
     try:
         time.sleep(0.05)
-        reload.start()
-        assert reloaded.wait(timeout=3)
+        swap.start()
+        assert swapped.wait(timeout=3)
     finally:
         stop.set()
         for arrival in arrivals:
             arrival.join(timeout=5)
-    reload.join(timeout=5)
+    swap.join(timeout=5)
 
 
 def test_two_concurrent_drains_run_one_after_the_other() -> None:
-    """A coverage reload and a release swap drain the same two permits at once. Without a
-    drain mutex each takes one permit and waits forever for the other, which a pause after
+    """Two drains take the same two permits at once. Without a drain mutex each takes one permit and waits forever for the other, which a pause after
     each acquire makes certain."""
     permits = MaterialisePermits(2)
     acquire = permits._semaphore.acquire
@@ -705,11 +705,11 @@ def test_two_concurrent_drains_run_one_after_the_other() -> None:
     assert permits.acquire(timeout=0)
 
 
-def test_a_coverage_reload_drains_callers_already_past_the_gate() -> None:
-    """Two callers wait for the one permit past the gate when a reload closes it. Each takes the
-    permit and releases it, or gives up at its own bound, so the reload takes the permit once
+def test_a_release_swap_drains_callers_already_past_the_gate() -> None:
+    """Two callers wait for the one permit past the gate when a swap closes it. Each takes the
+    permit and releases it, or gives up at its own bound, so the swap takes the permit once
     they are done. A caller arriving during the drain waits at the gate and takes the permit
-    only after the reload."""
+    only after the swap."""
     permits = MaterialisePermits(1)
     assert permits.acquire(timeout=0)
     outcomes: list[str] = []
@@ -724,25 +724,28 @@ def test_a_coverage_reload_drains_callers_already_past_the_gate() -> None:
         else:
             outcomes.append("took")
 
-    waiters = [threading.Thread(target=_wait_past_the_gate) for _ in range(2)]
+    waiters = [
+        threading.Thread(target=contextvars.copy_context().run, args=(_wait_past_the_gate,))
+        for _ in range(2)
+    ]
     for waiter in waiters:
         waiter.start()
     # The gate is open, so both pass it at once and wait on the held permit.
     time.sleep(0.1)
-    reloaded = threading.Event()
+    swapped = threading.Event()
 
-    def _reload() -> None:
+    def _swap() -> None:
         with permits.every_permit():
-            order.append("reload")
-            reloaded.set()
+            order.append("swap")
+            swapped.set()
 
     def _arrive_late() -> None:
         assert permits.acquire(timeout=3)
         order.append("late")
         permits.release()
 
-    reload = threading.Thread(target=_reload, daemon=True)
-    reload.start()
+    swap = threading.Thread(target=_swap, daemon=True)
+    swap.start()
     deadline = time.monotonic() + 2
     while permits._draining == 0 and time.monotonic() < deadline:
         time.sleep(0.005)
@@ -751,11 +754,11 @@ def test_a_coverage_reload_drains_callers_already_past_the_gate() -> None:
 
     assert permits.acquire(timeout=0.1) is False
     permits.release()
-    assert reloaded.wait(timeout=3)
-    for thread in (*waiters, late, reload):
+    assert swapped.wait(timeout=3)
+    for thread in (*waiters, late, swap):
         thread.join(timeout=3)
     assert len(outcomes) == 2
-    assert order == ["reload", "late"]
+    assert order == ["swap", "late"]
 
 
 def test_mint_facet_probe_waits_for_a_materialise_slot_and_times_out_as_503(
@@ -801,7 +804,7 @@ def test_mint_facet_probe_waits_for_a_materialise_slot_and_times_out_as_503(
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
             results["mint_a"] = resp.status_code
 
-        mint_thread = threading.Thread(target=_mint_a)
+        mint_thread = threading.Thread(target=contextvars.copy_context().run, args=(_mint_a,))
         mint_thread.start()
         assert started.wait(timeout=5)
         # A's fetch holds the slot. Its probe reads coverage, so B's fetch must wait.
@@ -870,7 +873,7 @@ def test_posted_definition_options_wait_for_the_slot_a_mint_holds_and_refuse_ret
             resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
             results["mint_a"] = resp.status_code
 
-        mint_thread = threading.Thread(target=_mint_a)
+        mint_thread = threading.Thread(target=contextvars.copy_context().run, args=(_mint_a,))
         mint_thread.start()
         assert started.wait(timeout=5)
 
@@ -1036,82 +1039,6 @@ def test_one_permit_is_held_from_the_first_sdmx_request_to_the_last_artifact_wri
     assert log.held_at("sdmx") == log.held_at("write") == {1}
 
 
-def _manifest(build_id: str) -> CoverageManifest:
-    return CoverageManifest(
-        stamp=f"stamp-{build_id}",
-        build_id=build_id,
-        built_at="1970-01-01T00:00:00Z",
-        source="fake",
-        row_counts={},
-        files={},
-        horizon=_coverage_index().horizon,
-    )
-
-
-def test_a_coverage_reload_waits_for_a_running_mint_then_holds_every_permit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A reload of a moved coverage build starts its load only once the mint holding a permit
-    has written its last artifact, and loads holding both of the surface's permits."""
-    log = _PermitLog()
-    _count_permits(monkeypatch, log)
-    published = {"build_id": "build-1"}
-    monkeypatch.setattr(
-        coverage_shared,
-        "read_published_pointer",
-        lambda _uri: CoveragePointer(
-            stamp=f"stamp-{published['build_id']}", build_id=published["build_id"]
-        ),
-    )
-    reloaded = threading.Event()
-
-    def loader(base_uri: str, *, pointer: CoveragePointer | None = None) -> LoadedCoverage:
-        log.record("load")
-        if published["build_id"] != "build-1":
-            reloaded.set()
-        return LoadedCoverage(manifest=_manifest(published["build_id"]), index=_coverage_index())
-
-    coverage = CoverageService(
-        artifact_uri="gs://coverage-fixture/coverage",
-        index=get_index(),
-        index_check=False,
-        recheck_seconds=0,
-        loader=loader,
-    )
-    log.events.clear()
-    release = threading.Event()
-    transport, entered = _logged_transport(log, release=release)
-    results: list[int] = []
-    with _client(
-        materialise_max_concurrency=2,
-        transport=transport,
-        artifact_store=_LoggedArtifactStore(log),
-        coverage=coverage,
-    ) as client:
-        mint = threading.Thread(
-            target=lambda: results.append(
-                client.post("/api/datasets", json=_scope(statvar=_REF_A)).status_code
-            )
-        )
-        mint.start()
-        assert entered.wait(timeout=5)
-        published["build_id"] = "build-2"
-        reload = threading.Thread(target=coverage.snapshot_current)
-        reload.start()
-        assert not reloaded.wait(timeout=0.3)
-        release.set()
-        for thread in (mint, reload):
-            thread.join(timeout=10)
-        assert not mint.is_alive() and not reload.is_alive()
-
-    assert results == [200]
-    assert coverage.stamp == "stamp-build-2"
-    kinds = log.kinds()
-    last_write = len(kinds) - 1 - kinds[::-1].index("write")
-    assert last_write < kinds.index("load")
-    assert log.held_at("load") == {2}
-
-
 @pytest.mark.parametrize("route", ["mint", "get"])
 def test_a_materialisation_past_its_deadline_refuses_timeout_at_the_timeout(route: str) -> None:
     """A mint or GET whose SDMX read outlasts the 1 s timeout answers the retryable `timeout`
@@ -1158,180 +1085,6 @@ def test_a_materialisation_past_its_deadline_refuses_timeout_at_the_timeout(rout
     assert elapsed < 3.0
 
 
-class _CoverageBuilds:
-    """A `CoverageService` over an in-memory pointer and loader. Build `n` serves a new index
-    from `make_index` under the stamp `stamp-build-<n>`. `indexes` holds a weak reference to
-    each build's index, so a test can tell when nothing keeps a replaced one resident. Each
-    snapshot taken is recorded in `log` as `snapshot`, with the permits held at that point."""
-
-    def __init__(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        make_index: Callable[[], CoverageIndex] = _coverage_index,
-        log: _PermitLog | None = None,
-    ) -> None:
-        self._log = log
-        self.published = 1
-        self.indexes: dict[int, weakref.ref[CoverageIndex]] = {}
-        self.snapshots_taken = 0
-        monkeypatch.setattr(
-            coverage_shared,
-            "read_published_pointer",
-            lambda _uri: CoveragePointer(
-                stamp=f"stamp-build-{self.published}", build_id=f"build-{self.published}"
-            ),
-        )
-
-        def loader(base_uri: str, *, pointer: CoveragePointer | None = None) -> LoadedCoverage:
-            index = make_index()
-            self.indexes[self.published] = weakref.ref(index)
-            return LoadedCoverage(
-                manifest=CoverageManifest(
-                    stamp=f"stamp-build-{self.published}",
-                    build_id=f"build-{self.published}",
-                    built_at="1970-01-01T00:00:00Z",
-                    source="fake",
-                    row_counts={},
-                    files={},
-                    horizon=index.horizon,
-                ),
-                index=index,
-            )
-
-        self.service = CoverageService(
-            artifact_uri="gs://coverage-fixture/coverage",
-            index=get_index(),
-            index_check=False,
-            recheck_seconds=0,
-            loader=loader,
-        )
-        for name in ("snapshot", "snapshot_current"):
-            monkeypatch.setattr(self.service, name, self._counting(getattr(self.service, name)))
-
-    def _counting(self, take: Callable[[], CoverageSnapshot]) -> Callable[[], CoverageSnapshot]:
-        def counted() -> CoverageSnapshot:
-            self.snapshots_taken += 1
-            if self._log is not None:
-                self._log.record("snapshot")
-            return take()
-
-        return counted
-
-    def reload(self) -> None:
-        """Publish the next build and load it in the calling thread, which holds no permit."""
-        self.published += 1
-        self.service.snapshot_current()
-
-    def resident(self, build: int) -> bool:
-        """Whether anything still references `build`'s index, after a collection."""
-        gc.collect()
-        return self.indexes[build]() is not None
-
-    def serving(self, index: CoverageIndex) -> int:
-        """The number of the build whose index `index` is."""
-        return next(build for build, ref in self.indexes.items() if ref() is index)
-
-
-class _ReloadBeforePermit(_CountedPermits):
-    """Permits whose `acquire` first runs `before_acquire` in the caller's thread, where a test
-    reloads coverage between a request's snapshot and its permit. The reload lands after the
-    request's last look at its snapshot while it waits, so `keep_waiting` is not asked and the
-    check made once the permit is held is the one that finds it."""
-
-    before_acquire: Callable[[], None] | None = None
-
-    def acquire(self, *, timeout: float, keep_waiting: Callable[[], bool] | None = None) -> bool:
-        if self.before_acquire is not None:
-            self.before_acquire()
-        return super().acquire(timeout=timeout)
-
-    @contextmanager
-    def every_permit(self) -> Iterator[None]:
-        """Log the drain as `reload`, so `acquire` and `release` count requests alone."""
-        with MaterialisePermits.every_permit(self):
-            self._log.record("reload")
-            yield
-
-
-def _reloading_permit(
-    log: _PermitLog, coverage: _CoverageBuilds
-) -> tuple[_ReloadBeforePermit, Callable[..., None]]:
-    """One logged materialise permit and its `schedule`. After `schedule(n)`, each of the next
-    `n` permit requests made once a coverage snapshot was taken meets a completed reload
-    first. `schedule(n, after=m)` lets the first `m` of those requests through untouched."""
-    remaining = [0]
-    untouched = [0]
-
-    def schedule(reloads: int, *, after: int = 0) -> None:
-        coverage.snapshots_taken = 0
-        remaining[0] = reloads
-        untouched[0] = after
-
-    def before_acquire() -> None:
-        if not coverage.snapshots_taken:
-            return
-        if untouched[0]:
-            untouched[0] -= 1
-        elif remaining[0]:
-            remaining[0] -= 1
-            coverage.reload()
-
-    permit = _ReloadBeforePermit(1, log=log)
-    permit.before_acquire = before_acquire
-    return permit, schedule
-
-
-def _reload_before_permit(
-    monkeypatch: pytest.MonkeyPatch, log: _PermitLog, coverage: _CoverageBuilds
-) -> Callable[..., None]:
-    """Build the surface's materialise permits as `_reloading_permit` and return its
-    `schedule`."""
-    permit, schedule = _reloading_permit(log, coverage)
-    monkeypatch.setattr(deps_module, "MaterialisePermits", lambda _permits: permit)
-    return schedule
-
-
-def test_a_mint_whose_snapshot_a_reload_replaced_materialises_on_the_served_build(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A mint took build 1's snapshot and a reload to build 2 completed before its permit. The
-    mint gives the permit back, starts again, and fetches against build 2's index and stamp,
-    after build 1's index has left memory, as its first SDMX request observes."""
-    log = _PermitLog()
-    coverage = _CoverageBuilds(monkeypatch)
-    _reload_before_permit(monkeypatch, log, coverage)(1)
-    transport, _ = _logged_transport(log)
-    old_index_resident: list[bool] = []
-    fetched_on_served_index: list[bool] = []
-
-    def observing_transport(request: httpx.Request) -> httpx.Response:
-        old_index_resident.append(coverage.resident(1))
-        return transport(request)
-
-    real_prewrite = serve_module.prewrite_definition
-
-    def observing_prewrite(**kwargs):
-        fetched_on_served_index.append(kwargs["coverage_index"] is coverage.indexes[2]())
-        return real_prewrite(**kwargs)
-
-    monkeypatch.setattr(serve_module, "prewrite_definition", observing_prewrite)
-    with _client(
-        materialise_max_concurrency=1, transport=observing_transport, coverage=coverage.service
-    ) as client:
-        resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["series_coverage_stamp"] == "stamp-build-2"
-    assert fetched_on_served_index == [True]
-    assert old_index_resident and not any(old_index_resident)
-    # The stale pass takes and returns its permit before anything is fetched.
-    kinds = [kind for kind in log.kinds() if kind in ("acquire", "release", "sdmx")]
-    assert kinds[:4] == ["acquire", "release", "acquire", "sdmx"]
-    assert kinds.count("acquire") == kinds.count("release") == 2
-    assert "coverage_restarts;desc=1" in resp.headers["server-timing"]
-
-
 class _SwapBeforePermit(_CountedPermits):
     """Permits whose next `acquire` first runs `before_acquire` once in the caller's thread,
     where a test swaps the graph release between a request's entry and its permit. It passes
@@ -1358,11 +1111,14 @@ def _swapping_release(
 ) -> tuple[ReleaseService, Callable[[], None]]:
     """A graph release service serving the first of two published releases, and the function
     that swaps it to the second. Each release's views are the packaged code index and
-    `_coverage_index()`, so a request reads the same index from either."""
+    `_coverage_index()`, and each one's origin view is the session release's, so a request
+    reads the same index and origin from either."""
     views = ReleaseViews(
         code_index=get_index(), measure_index=get_measure_index(), coverage=_coverage_index()
     )
+    origin = current_release().origin
     monkeypatch.setattr(release_service_module, "build_release_views", lambda _loaded: views)
+    monkeypatch.setattr(release_service_module, "release_origin", lambda _loaded: origin)
     root = (tmp_path / "releases").as_uri()
     build_test_release(root, tables=sample_tables())
     clock = [0.0]
@@ -1371,7 +1127,6 @@ def _swapping_release(
         local_dir=tmp_path / "local",
         recheck_seconds=60,
         clock=lambda: clock[0],
-        build_views=True,
     )
     second = build_test_release(root, tables=sample_tables(), dc_serving_revision="second")
 
@@ -1392,7 +1147,6 @@ def test_a_mint_bound_to_a_swapped_out_release_refuses_backpressure_without_a_pe
     index, so it cannot start again on the second: it answers the retryable backpressure
     refusal having taken no permit and fetched nothing. The next mint binds the second
     release and is served."""
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
     log = _PermitLog()
     permit = _SwapBeforePermit(1, log=log)
     monkeypatch.setattr(deps_module, "MaterialisePermits", lambda _permits: permit)
@@ -1412,29 +1166,6 @@ def test_a_mint_bound_to_a_swapped_out_release_refuses_backpressure_without_a_pe
     assert "acquire" in log.kinds()
 
 
-def test_a_mint_whose_snapshot_is_replaced_on_every_start_refuses_backpressure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A reload replaces the snapshot before the permit on the first pass and on each of the
-    `COVERAGE_RESTARTS` restarts. The mint then answers the retryable backpressure refusal,
-    having fetched nothing and holding no permit."""
-    log = _PermitLog()
-    coverage = _CoverageBuilds(monkeypatch)
-    _reload_before_permit(monkeypatch, log, coverage)(1 + COVERAGE_RESTARTS)
-    transport, _ = _logged_transport(log)
-    with _client(
-        materialise_max_concurrency=1, transport=transport, coverage=coverage.service
-    ) as client:
-        resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
-
-    assert resp.status_code == 503, resp.text
-    assert resp.json()["code"] == "service_unavailable"
-    assert resp.json()["retryable"] is True
-    kinds = log.kinds()
-    assert "sdmx" not in kinds
-    assert kinds.count("acquire") == kinds.count("release") == 1 + COVERAGE_RESTARTS
-
-
 def _within(condition: Callable[[], bool], *, seconds: float = 3.0) -> bool:
     """Whether `condition` came true within `seconds`, polling every hundredth of a second."""
     ends = time.monotonic() + seconds
@@ -1445,316 +1176,182 @@ def _within(condition: Callable[[], bool], *, seconds: float = 3.0) -> bool:
     return True
 
 
-def _slot_on(permits: MaterialisePermits, coverage: _CoverageBuilds, snapshot: CoverageSnapshot):
-    """A materialise slot for a request that took `snapshot` before it."""
-    return bounded_materialise_slot(
-        permits,
-        wait_seconds=10,
-        coverage_current=functools.partial(coverage.service.serves, snapshot),
-    )
+class _ServedRelease:
+    """Stands in for the request's bound `graph_release.service.Release`, whose `served` is all
+    admission reads. Records when each look was made. With `swapped_after`, every look past
+    that many finds the release swapped out."""
+
+    def __init__(self, *, swapped_after: int | None = None) -> None:
+        self.serving = True
+        self.looks: list[float] = []
+        self._swapped_after = swapped_after
+
+    @property
+    def served(self) -> bool:
+        self.looks.append(time.monotonic())
+        if self._swapped_after is not None and len(self.looks) > self._swapped_after:
+            return False
+        return self.serving
 
 
-def test_a_request_reaching_the_permits_drops_a_replaced_index_while_others_build(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A request took build 1's snapshot and is still computing when a reload serves build 2
-    and two requests on build 2 take both permits. Build 1's index stays resident for that
-    computation. Once the request reaches the permits it drops the index within a few wait
-    slices, while both permits are still held, and waits again on build 2."""
-    coverage = _CoverageBuilds(monkeypatch)
-    permits = MaterialisePermits(2)
-    coverage.service.register_load_guard(permits.every_permit)
-    computing, may_wait, may_finish = threading.Event(), threading.Event(), threading.Event()
-    holding = threading.Semaphore(0)
-    waiter_runs: list[str] = []
-    built_on: list[tuple[str, str]] = []
+def _bound_to(release: _ServedRelease, work: Callable[[], None]) -> threading.Thread:
+    """A started thread running `work` with `release` bound, as a request runs."""
 
-    def waiter(snapshot: CoverageSnapshot) -> None:
-        waiter_runs.append(snapshot.stamp)
-        computing.set()
-        may_wait.wait(timeout=5)
-        with _slot_on(permits, coverage, snapshot):
-            built_on.append(("waiter", snapshot.stamp))
+    def run() -> None:
+        with bound_release(cast(Release, release)):
+            work()
 
-    def admitted(snapshot: CoverageSnapshot) -> None:
-        with _slot_on(permits, coverage, snapshot):
-            holding.release()
-            may_finish.wait(timeout=5)
-            built_on.append(("admitted", snapshot.stamp))
-
-    def request(work: Callable[[CoverageSnapshot], None]) -> threading.Thread:
-        thread = threading.Thread(
-            target=under_current_coverage, args=(coverage.service.snapshot, work)
-        )
-        thread.start()
-        return thread
-
-    threads = [request(waiter)]
-    try:
-        assert computing.wait(timeout=5)
-        coverage.reload()
-        threads += [request(admitted), request(admitted)]
-        assert holding.acquire(timeout=5) and holding.acquire(timeout=5)
-        assert coverage.resident(1)
-
-        may_wait.set()
-
-        assert _within(lambda: not coverage.resident(1))
-        assert _within(lambda: waiter_runs == ["stamp-build-1", "stamp-build-2"])
-        assert built_on == []
-    finally:
-        may_wait.set()
-        may_finish.set()
-        for thread in threads:
-            thread.join(timeout=5)
-    assert sorted(built_on) == [
-        ("admitted", "stamp-build-2"),
-        ("admitted", "stamp-build-2"),
-        ("waiter", "stamp-build-2"),
-    ]
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread
 
 
-def test_a_request_waiting_for_a_permit_drops_a_replaced_index_within_a_wait_slice(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A request that took build 1's snapshot waits behind two held permits when build 2 is
-    served. The service here loads outside the permits, which puts the reload inside the
-    request's wait. The request drops build 1's index within a few wait slices, while both
-    permits are still held, and is admitted on build 2 once one is free."""
-    coverage = _CoverageBuilds(monkeypatch)
+def test_a_request_waiting_for_a_permit_refuses_within_a_wait_slice_of_a_swap() -> None:
+    """A request waits behind two held permits when the service swaps its bound release out.
+    It refuses with the retryable backpressure refusal within a few wait slices, while both
+    permits are still held, and takes none."""
     permits = MaterialisePermits(2)
     assert permits.acquire(timeout=0) and permits.acquire(timeout=0)
-    held = 2
-    looks: list[bool] = []
-    runs: list[str] = []
-    built_on: list[str] = []
+    release = _ServedRelease()
+    outcomes: list[str] = []
 
-    def work(snapshot: CoverageSnapshot) -> None:
-        runs.append(snapshot.stamp)
+    def work() -> None:
+        try:
+            with bounded_materialise_slot(permits, wait_seconds=10):
+                outcomes.append("built")
+        except MintBackpressure:
+            outcomes.append("refused")
 
-        def current() -> bool:
-            looks.append(coverage.service.serves(snapshot))
-            return looks[-1]
-
-        with bounded_materialise_slot(permits, wait_seconds=10, coverage_current=current):
-            built_on.append(snapshot.stamp)
-
-    waiter = threading.Thread(target=under_current_coverage, args=(coverage.service.snapshot, work))
-    waiter.start()
+    waiter = _bound_to(release, work)
     try:
         # The second look is the one made as the wait for a permit starts.
-        assert _within(lambda: len(looks) >= 2)
-        assert looks == [True] * len(looks)
+        assert _within(lambda: len(release.looks) >= 2)
+        release.serving = False
 
-        coverage.reload()
-
-        assert _within(lambda: not coverage.resident(1), seconds=30 * STALE_CHECK_SECONDS)
-        assert _within(lambda: runs == ["stamp-build-1", "stamp-build-2"])
-        assert built_on == []
+        assert _within(lambda: outcomes == ["refused"], seconds=30 * STALE_CHECK_SECONDS)
+    finally:
         permits.release()
-        held -= 1
+        permits.release()
         waiter.join(timeout=5)
-    finally:
-        for _ in range(held):
-            permits.release()
-        waiter.join(timeout=5)
-    assert built_on == ["stamp-build-2"]
+    assert permits.acquire(timeout=0) and permits.acquire(timeout=0)
 
 
-def test_a_request_waiting_its_rebuild_turn_drops_a_replaced_index_while_the_holder_builds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A request took build 1's snapshot and is still reading when a reload serves build 2
-    and a second request for the same subject takes the rebuild turn and the permit on
-    build 2. The first request then waits its turn. It drops build 1's index within a few
-    wait slices, while the holder still builds, starts again on build 2, and is served by the
-    holder's rebuild."""
-    coverage = _CoverageBuilds(monkeypatch)
-    permits = MaterialisePermits(1)
+def test_a_request_waiting_its_rebuild_turn_refuses_within_a_wait_slice_of_a_swap() -> None:
+    """A request waits its turn behind a rebuild of the same subject when the service swaps its
+    bound release out. It refuses with the retryable backpressure refusal within a few wait
+    slices, while the holder still builds."""
     flights = RebuildFlights()
-    coverage.service.register_load_guard(permits.every_permit)
-    reading, may_wait, building, may_finish = (threading.Event() for _ in range(4))
-    waiter_runs: list[str] = []
-    outcomes: list[tuple[str, str, bool]] = []
+    release = _ServedRelease()
+    holding, may_finish = threading.Event(), threading.Event()
+    outcomes: list[str] = []
 
-    def rebuild(name: str, snapshot: CoverageSnapshot) -> None:
-        current = functools.partial(coverage.service.serves, snapshot)
-        with flights.turn(
-            "spec_x", deadline=None, wait_seconds=10, coverage_current=current
-        ) as waited:
-            if waited:
-                outcomes.append((name, snapshot.stamp, True))
-                return
-            with bounded_materialise_slot(permits, wait_seconds=10, coverage_current=current):
-                building.set()
-                may_finish.wait(timeout=5)
-            outcomes.append((name, snapshot.stamp, False))
+    def holder() -> None:
+        with flights.turn("spec_x", deadline=None, wait_seconds=10):
+            holding.set()
+            may_finish.wait(timeout=5)
 
-    def waiter(snapshot: CoverageSnapshot) -> None:
-        waiter_runs.append(snapshot.stamp)
-        reading.set()
-        may_wait.wait(timeout=5)
-        rebuild("waiter", snapshot)
+    def waiter() -> None:
+        try:
+            with flights.turn("spec_x", deadline=None, wait_seconds=10):
+                outcomes.append("entered")
+        except MintBackpressure:
+            outcomes.append("refused")
 
-    def request(work: Callable[[CoverageSnapshot], None]) -> threading.Thread:
-        thread = threading.Thread(
-            target=under_current_coverage, args=(coverage.service.snapshot, work)
-        )
-        thread.start()
-        return thread
-
-    threads = [request(waiter)]
+    threads = [_bound_to(_ServedRelease(), holder)]
     try:
-        assert reading.wait(timeout=5)
-        coverage.reload()
-        threads.append(request(functools.partial(rebuild, "holder")))
-        assert building.wait(timeout=5)
-        assert coverage.resident(1)
+        assert holding.wait(timeout=5)
+        threads.append(_bound_to(release, waiter))
+        assert _within(lambda: len(release.looks) >= 1)
+        release.serving = False
 
-        may_wait.set()
-
-        assert _within(lambda: not coverage.resident(1), seconds=30 * STALE_CHECK_SECONDS)
-        assert _within(lambda: waiter_runs == ["stamp-build-1", "stamp-build-2"])
-        assert outcomes == []
+        assert _within(lambda: outcomes == ["refused"], seconds=30 * STALE_CHECK_SECONDS)
     finally:
-        may_wait.set()
         may_finish.set()
         for thread in threads:
             thread.join(timeout=5)
-    assert sorted(outcomes) == [
-        ("holder", "stamp-build-2", False),
-        ("waiter", "stamp-build-2", True),
-    ]
 
 
-def test_a_request_at_the_gate_during_a_reload_starts_again_without_taking_a_permit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A request that took build 1's snapshot reaches the permits while a reload to build 2
-    holds them. When the reload ends the request takes no permit on build 1: it starts again
-    and takes its one permit on build 2."""
-    log = _PermitLog()
-    loading, may_load = threading.Event(), threading.Event()
-    built = itertools.count(1)
+def test_a_swap_that_lands_as_a_request_takes_its_permit_gives_the_permit_back() -> None:
+    """The release is served at both looks that lead to the permit and swapped out by the look
+    made once the permit is held. The request refuses with the retryable backpressure refusal,
+    runs nothing under the permit, and gives it back."""
+    permits = MaterialisePermits(1)
+    release = _ServedRelease(swapped_after=2)
+    ran: list[bool] = []
 
-    def make_index() -> CoverageIndex:
-        if next(built) > 1:
-            loading.set()
-            may_load.wait(timeout=5)
-        return _coverage_index()
+    with (
+        bound_release(cast(Release, release)),
+        pytest.raises(MintBackpressure),
+        bounded_materialise_slot(permits, wait_seconds=1),
+    ):
+        ran.append(True)
 
-    coverage = _CoverageBuilds(monkeypatch, make_index=make_index)
-    permits = _CountedPermits(1, log=log)
-    coverage.service.register_load_guard(permits.every_permit)
-    took, may_wait = threading.Event(), threading.Event()
-    looks: list[bool] = []
-    built_on: list[str] = []
+    assert ran == []
+    assert len(release.looks) == 3
+    assert permits.acquire(timeout=0)
 
-    def work(snapshot: CoverageSnapshot) -> None:
-        took.set()
-        may_wait.wait(timeout=5)
 
-        def current() -> bool:
-            looks.append(coverage.service.serves(snapshot))
-            return looks[-1]
+def test_a_request_at_the_gate_during_a_swap_refuses_without_taking_a_permit() -> None:
+    """A request reaches the permits while a swap holds every one, and the swap replaces its
+    bound release. When the swap ends the request takes no permit: it refuses with the
+    retryable backpressure refusal."""
+    permits = MaterialisePermits(1)
+    release = _ServedRelease()
+    swapping, may_end = threading.Event(), threading.Event()
+    outcomes: list[str] = []
 
-        with bounded_materialise_slot(permits, wait_seconds=10, coverage_current=current):
-            built_on.append(snapshot.stamp)
+    def swap() -> None:
+        with permits.every_permit():
+            swapping.set()
+            may_end.wait(timeout=5)
 
-    waiter = threading.Thread(target=under_current_coverage, args=(coverage.service.snapshot, work))
-    reload = threading.Thread(target=coverage.reload)
-    waiter.start()
+    def work() -> None:
+        try:
+            with bounded_materialise_slot(permits, wait_seconds=10):
+                outcomes.append("built")
+        except MintBackpressure:
+            outcomes.append("refused")
+
+    swapper = threading.Thread(target=swap)
+    swapper.start()
     try:
-        assert took.wait(timeout=5)
-        reload.start()
-        assert loading.wait(timeout=5)
-        may_wait.set()
-        # The request looked once, found build 1 still served, and went on to the gate.
-        assert _within(lambda: looks == [True])
+        assert swapping.wait(timeout=5)
+        waiter = _bound_to(release, work)
+        # The look made before the gate, which the swap holds closed.
+        assert _within(lambda: len(release.looks) == 1)
+        release.serving = False
     finally:
-        may_wait.set()
-        may_load.set()
-        for thread in (reload, waiter):
-            thread.join(timeout=5)
-    assert built_on == ["stamp-build-2"]
-    # The reload's permit, then the request's one.
-    assert log.kinds() == ["acquire", "release", "acquire", "release"]
+        may_end.set()
+        swapper.join(timeout=5)
+    waiter.join(timeout=5)
+
+    assert outcomes == ["refused"]
+    assert permits.acquire(timeout=0)
 
 
 def test_a_sliced_wait_ends_at_its_bound_and_looks_once_a_slice() -> None:
-    """A wait that checks a coverage snapshot lasts as long as one that checks none, and asks
-    about the snapshot once before it starts and once a slice after that."""
+    """A wait lasts its bound, and asks whether the bound release is served once before it
+    starts and once a slice after that."""
     permits = MaterialisePermits(1)
     assert permits.acquire(timeout=0)
-    looks: list[float] = []
-
-    def current() -> bool:
-        looks.append(time.monotonic())
-        return True
+    release = _ServedRelease()
 
     wait_seconds = 2.5 * STALE_CHECK_SECONDS
     started = time.monotonic()
     try:
         with (
+            bound_release(cast(Release, release)),
             pytest.raises(MintBackpressure),
-            bounded_materialise_slot(permits, wait_seconds=wait_seconds, coverage_current=current),
+            bounded_materialise_slot(permits, wait_seconds=wait_seconds),
         ):
             pass
         elapsed = time.monotonic() - started
     finally:
         permits.release()
     assert wait_seconds <= elapsed < 5.0
-    # One look before the wait and one as it ends, with one per slice begun between them. A
-    # stalled thread begins fewer slices, never more.
-    assert 2 <= len(looks) <= math.ceil(wait_seconds / STALE_CHECK_SECONDS) + 2
-
-
-def test_a_posted_definition_whose_snapshot_a_reload_replaced_materialises_on_the_served_build(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A definition posted to the options route of a deployment that never registered it took
-    build 1's snapshot, and a reload to build 2 completed before its permit. The call gives the
-    permit back, starts again, and materialises against build 2's index after build 1's has
-    left memory, as its first SDMX request observes."""
-    with _client(materialise_max_concurrency=1, transport=_OverlapTrackingTransport()) as minting:
-        minted = minting.post("/api/datasets", json=_scope(statvar=_REF_B))
-        assert minted.status_code == 200, minted.text
-    definition = minted.json()["definition"]
-    log = _PermitLog()
-    coverage = _CoverageBuilds(monkeypatch)
-    schedule = _reload_before_permit(monkeypatch, log, coverage)
-    transport, _ = _logged_transport(log)
-    old_index_resident: list[bool] = []
-    fetched_on_served_index: list[bool] = []
-
-    def observing_transport(request: httpx.Request) -> httpx.Response:
-        old_index_resident.append(coverage.resident(1))
-        return transport(request)
-
-    real_prewrite = serve_module.prewrite_definition
-
-    def observing_prewrite(**kwargs):
-        fetched_on_served_index.append(kwargs["coverage_index"] is coverage.indexes[2]())
-        return real_prewrite(**kwargs)
-
-    monkeypatch.setattr(serve_module, "prewrite_definition", observing_prewrite)
-    with _client(
-        materialise_max_concurrency=1, transport=observing_transport, coverage=coverage.service
-    ) as client:
-        schedule(1)
-        resp = client.post(
-            f"/api/datasets/{definition['spec_id']}/options", json={"definition": definition}
-        )
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["trace"]["served_from"] == "materialise"
-    assert fetched_on_served_index == [True]
-    assert old_index_resident and not any(old_index_resident)
-    # The stale pass takes and returns its permit before anything is fetched.
-    kinds = [kind for kind in log.kinds() if kind in ("acquire", "release", "sdmx")]
-    assert kinds[:4] == ["acquire", "release", "acquire", "sdmx"]
-    assert kinds.count("acquire") == kinds.count("release") == 2
-    assert "coverage_restarts;desc=1" in resp.headers["server-timing"]
+    # One look before the wait and one per slice begun after it. A stalled thread begins fewer
+    # slices, never more.
+    assert 2 <= len(release.looks) <= math.ceil(wait_seconds / STALE_CHECK_SECONDS) + 2
 
 
 @pytest.mark.parametrize("route", ["mint", "options"])

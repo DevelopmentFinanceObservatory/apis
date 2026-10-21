@@ -66,17 +66,22 @@ from __future__ import annotations
 
 import argparse
 import copy
+import functools
 import gzip
 import json
 import sys
+import tempfile
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from pydantic import TypeAdapter
 
-from code_index.shared import get_measure_index
-from code_index.types import label_for_pairs
+from code_index.loader import default_index_path, load_measure_axes
+from code_index.types import MeasureIndex, label_for_pairs
+from graph_release.context import bound_served_release
 from search.models import (
     Assumption,
     CandidatesPart,
@@ -185,13 +190,19 @@ def golden_parts(raw_parts: list[dict[str, Any]]) -> list[Part]:
     ]
 
 
+@functools.cache
+def _packaged_measure_index() -> MeasureIndex:
+    """The packaged export's measure index, read once."""
+    return load_measure_axes(default_index_path())
+
+
 def _named_values(resolved: dict[str, Any]) -> list[list[str]]:
     """The code pairs the measure label of a wire `resolved` names, taken from the authored label
     its `measure_axis_values` match in the measure index (`label_for_pairs`)."""
     if resolved.get("measure_label") is None:
         return []
     pairs = [(entry["axis"], entry["value"]["ref"]) for entry in resolved["measure_axis_values"]]
-    match = label_for_pairs(pairs, get_measure_index().partition_labels)
+    match = label_for_pairs(pairs, _packaged_measure_index().partition_labels)
     return [list(pair) for pair in match.named_values] if match is not None else []
 
 
@@ -384,6 +395,27 @@ def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
     return line
 
 
+@contextmanager
+def _bound_golden_release() -> Iterator[None]:
+    """Bind the release the golden test reads (`tests.graph_release.support.build_session_release`),
+    whose code index is the packaged export, published to a temporary directory. The renderer
+    reads the code index."""
+    # The test support and the release reader are heavy, and only a re-render needs them.
+    sys.path.insert(0, str(REPO))
+    from graph_release.service import ReleaseService
+    from tests.graph_release.support import build_session_release
+
+    with tempfile.TemporaryDirectory(prefix="sentence-golden-") as tmp:
+        root = (Path(tmp) / "releases").as_uri()
+        build_session_release(root)
+        service = ReleaseService(uri=root, local_dir=Path(tmp) / "local")
+        try:
+            with bound_served_release(service):
+                yield
+        finally:
+            service.close()
+
+
 def rerender_golden(out: Path) -> int:
     """Re-render every golden file under `out` in place and print each changed envelope
     sentence. Return the number of queries."""
@@ -413,7 +445,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.rerender:
-        print(f"{rerender_golden(args.out)} queries")
+        with _bound_golden_release():
+            print(f"{rerender_golden(args.out)} queries")
         return 0
     if args.run is None:
         parser.error("a sentence panel output directory is required without --rerender")

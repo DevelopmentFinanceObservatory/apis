@@ -36,8 +36,19 @@ from origin_catalogue import (
     entry_ref,
 )
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
-from origin_catalogue.catalogue import EMPTY_UN_TABLES, SourceDocumentation
-from origin_catalogue.families import FamilyKey, FamilySummary, FamilyTables, family_tables
+from origin_catalogue.catalogue import (
+    EMPTY_UN_TABLES,
+    SourceDocumentation,
+    release_held_arcs,
+    release_held_family,
+)
+from origin_catalogue.families import (
+    FamilyKey,
+    FamilySummary,
+    FamilyTables,
+    family_tables,
+    summarise_table,
+)
 from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.schema import UnAgencyCounts
 from origin_catalogue.service import CatalogueService
@@ -81,7 +92,11 @@ class FakeCatalogue:
     it, empty by default, and names none with the UN origin off.
     `arcs` holds no arc table by default, so every node of ours is read from
     our mixer, and it holds no topic table. `families` are the family tables
-    of `arcs` and `un`, computed as the catalogue job computes them.
+    of `arcs` and `un`, computed as the catalogue job computes them, and `base_families`
+    the summaries of `arcs.base` alone. Its arcs and families answer as a snapshot's do: the
+    bound graph release's DFO half joined to its own base and UN halves
+    (`origin_catalogue.catalogue.release_held_arcs`, `release_held_family`), so its own DFO
+    rows give way to the release's.
     `ingestion` is the ingestion the build read, none by default.
     `superseded` holds the superseded dcids with no successor. A superseded
     dcid is the one candidate it refuses, as a snapshot withholds it. `scope`, set
@@ -101,6 +116,7 @@ class FakeCatalogue:
     un: UnTables = field(default=EMPTY_UN_TABLES, compare=False)
     arcs: ArcTables = field(default=EMPTY_ARC_TABLES, compare=False)
     families: FamilyTables = field(init=False, compare=False, repr=False)
+    base_families: Mapping[FamilyKey, FamilySummary] = field(init=False, compare=False, repr=False)
     successors: Mapping[str, str] = field(default_factory=dict, compare=False)
     superseded: frozenset[str] = frozenset()
     scope: frozenset[str] | None = None
@@ -111,6 +127,7 @@ class FakeCatalogue:
             "families",
             family_tables(dfo=self.arcs.dfo, base=self.arcs.base, un=self.un.mirror),
         )
+        object.__setattr__(self, "base_families", summarise_table(self.arcs.base))
         # Each set of tables names its own build, as a published catalogue's tables change only
         # with its build id, so a cache keyed on the build sees the tables it was built from.
         if not self.build_id:
@@ -177,10 +194,17 @@ class FakeCatalogue:
         return self.un.nodes.get(dcid)
 
     def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
-        return self.arcs.arcs(dcid)
+        return release_held_arcs(self.arcs, dcid)
 
     def held_family(self, key: FamilyKey) -> FamilySummary | None:
-        return self.families.family(key, un_system_enabled=self.un_system_enabled)
+        return release_held_family(
+            key,
+            build_id=self.build_id,
+            arcs=self.arcs,
+            families=self.families,
+            base_families=self.base_families,
+            un_system_enabled=self.un_system_enabled,
+        )
 
     def arc_target(self, dcid: str) -> UnArc | None:
         return self.arcs.targets.get(dcid)
@@ -254,7 +278,8 @@ def restrictive_catalogue(
     for every DFO and base row's entry (`empty_dataset_facts`),
     `source_documentation` to documentation covering no provenance for each
     (`empty_source_documentation`), and `build_id` to one naming its rows
-    and tables (`_fake_build_id`). `ingestion` is the ingestion its manifest records."""
+    and tables (`_fake_build_id`). `ingestion` is the ingestion its manifest records. It carries
+    the base summaries `held_family` joins to the bound release's (`CatalogueSnapshot.base_families`)."""
     rows = {row.id: row for row in provenances}
     places = tuple(scan_places)
     index = {place: i for i, place in enumerate(places)}
@@ -304,6 +329,7 @@ def restrictive_catalogue(
         arcs=arcs,
         families=family_tables(dfo=arcs.dfo, base=arcs.base, un=un_mirror),
         un_system_enabled=un_system_enabled,
+        base_families=summarise_table(arcs.base),
     )
 
 

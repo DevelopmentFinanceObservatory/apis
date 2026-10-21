@@ -9,12 +9,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import pytest
 
+import graph_release.service as release_service
 from artifact_publication.jobs import acquire_lease
-from graph_release.context import ReleaseNotBound, ReleaseViewsNotBuilt, current_release
+from graph_release.context import ReleaseNotBound, current_release
 from graph_release.views import ViewRefused
 from search.catalogue import job
 from search.catalogue.artifact import (
@@ -36,12 +36,8 @@ from search.catalogue.job import (
     run,
 )
 from search.engine.errors import EngineInputError
-from series_coverage.shared import (
-    CoverageIncompatibleError,
-    CoverageIndexCheckValueError,
-    CoverageService,
-    CoverageSnapshot,
-)
+from series_coverage.loader import load_coverage
+from series_coverage.shared import CoverageSnapshot
 from tests.graph_release.support import build_packaged_index_release, build_view_release
 from tests.origin_catalogue.support import CENSUS_POVERTY, CRS_VARIABLE, GDP, POPULATION
 from tests.search_catalogue.support import (
@@ -53,7 +49,7 @@ from tests.search_catalogue.support import (
     publish_catalogue,
     timed_out,
 )
-from tests.series_coverage.support import V1, V2, V3, build_test_artifact, index_for
+from tests.series_coverage.support import V1, V2, V3, build_test_artifact
 
 EXAMPLES = f"""
 [[example]]
@@ -121,19 +117,29 @@ class Setup:
     out: Path
 
 
+@dataclass
+class _StaticCoverage:
+    """Serves one snapshot, as `ReleaseCoverage` serves the bound release's."""
+
+    snapshot_: CoverageSnapshot
+
+    def snapshot(self) -> CoverageSnapshot:
+        return self.snapshot_
+
+
 @pytest.fixture
 def setup(tmp_path) -> Setup:
     out = tmp_path / "out"
-    coverage_uri = build_test_artifact(tmp_path / "coverage")
+    loaded = load_coverage(build_test_artifact(tmp_path / "coverage"))
     return Setup(
         settings=JobSettings(
-            artifact_uri=out.as_uri(),
-            origin_catalogue_uri=(tmp_path / "origin").as_uri(),
-            coverage_uri=coverage_uri,
+            artifact_uri=out.as_uri(), origin_catalogue_uri=(tmp_path / "origin").as_uri()
         ),
         catalogue=origin_snapshot(tmp_path / "origin"),
-        coverage=CoverageService(
-            artifact_uri=coverage_uri, index=index_for(coverage_uri), recheck_seconds=0
+        coverage=_StaticCoverage(
+            CoverageSnapshot(
+                index=loaded.index, manifest=loaded.manifest, stamp=loaded.manifest.stamp
+            )
         ),
         out=out,
     )
@@ -512,25 +518,6 @@ def test_a_new_build_commit_rebuilds(setup, capsys):
     assert second.inputs.build_commit == "c2"
 
 
-@dataclass
-class _MovingCoverage:
-    """Serves the fixture's snapshot, then one naming another build."""
-
-    snapshots: list[CoverageSnapshot]
-
-    def snapshot(self) -> CoverageSnapshot:
-        return self.snapshots.pop(0) if len(self.snapshots) > 1 else self.snapshots[0]
-
-
-def test_a_build_is_discarded_when_the_coverage_index_moves(setup, capsys):
-    loaded = setup.coverage.snapshot()
-    moved = replace(loaded, manifest=replace(loaded.manifest, build_id="another-build"))
-    _run(setup, _engine(), coverage=_MovingCoverage([loaded, moved]))
-    [discarded] = _named(_events(capsys), "search_catalogue_job_discarded")
-    assert discarded["reason"] == "coverage_moved_during_build"
-    assert not (setup.out / FORMAT_ROOT / "current.json").exists()
-
-
 def test_nothing_to_build_answers_from_the_pointers_alone(setup, capsys):
     loaded = setup.coverage.snapshot()
     inputs = BuildInputs(
@@ -573,89 +560,44 @@ def test_nothing_to_build_answers_a_refused_key_from_the_pointers_alone(setup, c
     assert not nothing_to_build(setup.settings, inputs=inputs, clock=lambda: late)
 
 
-def _main_with(
-    monkeypatch, setup, *, coverage, release_coverage: bool = False, catalogue_loads: bool = False
-) -> int:
-    """Runs `main` against `setup`'s settings and examples, with `coverage` as
-    the process-wide coverage service, `GRAPH_RELEASE_COVERAGE` on when
-    `release_coverage`, and no origin catalogue to load unless `catalogue_loads`,
-    when the load answers `setup`'s."""
+def _main_with(monkeypatch, setup, *, catalogue_loads: bool = False) -> int:
+    """Runs `main` against `setup`'s settings and examples, with no origin catalogue to load
+    unless `catalogue_loads`, when the load answers `setup`'s."""
 
     def unloadable(_settings):
         if catalogue_loads:
             return setup.catalogue
         raise AssertionError("the origin catalogue was loaded")
 
-    if release_coverage:
-        monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
-    else:
-        monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
     monkeypatch.setattr(job, "JobSettings", lambda: setup.settings)
     monkeypatch.setattr(job, "build_commit", lambda: "c1")
     monkeypatch.setattr(job, "load_examples", lambda: load_examples(EXAMPLES))
-    monkeypatch.setattr(job, "get_coverage_service", coverage)
     monkeypatch.setattr(job, "_load_origin_catalogue", unloadable)
     return job.main([])
 
 
-def test_a_run_while_a_fallback_build_is_served_settles_as_nothing_to_build(
-    setup, monkeypatch, capsys
-):
-    _run(setup, _engine())
-    served = setup.coverage.manifest.build_id
-    # `current.json` now names a build the service rejected and does not serve.
-    build_test_artifact(Path(urlparse(setup.settings.coverage_uri).path), build_id="rejected-build")
-    assert setup.coverage.manifest.build_id == served
-    capsys.readouterr()
-
-    assert _main_with(monkeypatch, setup, coverage=lambda: setup.coverage) == 0
-    assert "search_catalogue_job_noop" in [event["event"] for event in _events(capsys)]
-
-
-def test_with_the_flag_on_the_key_names_the_release_the_pointer_names(
-    setup, monkeypatch, capsys, tmp_path
-):
+def test_the_key_names_the_release_the_pointer_names(setup, monkeypatch, capsys, tmp_path):
     root = (tmp_path / "releases").as_uri()
     pointed = build_packaged_index_release(root).release_id
     assert pointed != current_release().release_id
     monkeypatch.setenv("GRAPH_RELEASE_URI", root)
     loaded = setup.coverage.snapshot()
     keyed = replace(loaded, manifest=replace(loaded.manifest, build_id=pointed))
-    _run(setup, _engine(), coverage=_MovingCoverage([keyed]))
+    _run(setup, _engine(), coverage=_StaticCoverage(keyed))
     capsys.readouterr()
 
     def unopened():
         raise AssertionError("the release was opened")
 
     # An unchanged run reads the release pointer alone.
-    monkeypatch.setattr(job, "optional_release_service", unopened)
-    served = job.get_coverage_service
-    assert _main_with(monkeypatch, setup, coverage=served, release_coverage=True) == 0
+    monkeypatch.setattr(release_service, "get_release_service", unopened)
+    assert _main_with(monkeypatch, setup) == 0
     assert "search_catalogue_job_noop" in [event["event"] for event in _events(capsys)]
 
     # A new release changes the key, so the run goes on to load the origin catalogue.
     build_view_release(root)
     with pytest.raises(AssertionError, match="origin catalogue was loaded"):
-        _main_with(monkeypatch, setup, coverage=served, release_coverage=True)
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        CoverageIncompatibleError("no build matches the index"),
-        CoverageIndexCheckValueError("COVERAGE_INDEX_CHECK must be off"),
-    ],
-)
-def test_a_coverage_service_that_refuses_is_reported_as_a_failed_job(
-    setup, monkeypatch, capsys, error
-):
-    def refuse():
-        raise error
-
-    assert _main_with(monkeypatch, setup, coverage=refuse) == 1
-    [failed] = _named(_events(capsys), "search_catalogue_job_failed")
-    assert failed["severity"] == "ERROR"
-    assert failed["error"] == str(error)
+        _main_with(monkeypatch, setup)
 
 
 @pytest.mark.parametrize(
@@ -663,7 +605,7 @@ def test_a_coverage_service_that_refuses_is_reported_as_a_failed_job(
     [(None, "release_uri_missing"), (False, "no_release")],
     ids=["uri-unset", "nothing-published"],
 )
-def test_with_the_flag_on_a_run_with_no_release_fails_before_the_catalogue_loads(
+def test_a_run_with_no_release_fails_before_the_catalogue_loads(
     setup, monkeypatch, capsys, tmp_path, published, reason
 ):
     if published is None:
@@ -671,8 +613,7 @@ def test_with_the_flag_on_a_run_with_no_release_fails_before_the_catalogue_loads
     else:
         monkeypatch.setenv("GRAPH_RELEASE_URI", (tmp_path / "releases").as_uri())
 
-    served = job.get_coverage_service
-    assert _main_with(monkeypatch, setup, coverage=served, release_coverage=True) == 1
+    assert _main_with(monkeypatch, setup) == 1
     [failed] = _named(_events(capsys), "search_catalogue_job_failed")
     assert (failed["severity"], failed["reason"]) == ("ERROR", reason)
 
@@ -694,28 +635,25 @@ def _no_engine():
     [
         (_raising(FileNotFoundError("no pointer")), None, "no_release", "no pointer"),
         (_raising(ViewRefused("unbuildable")), None, "views_refused", "unbuildable"),
-        (lambda: None, _raising(ReleaseNotBound("unbound")), None, "unbound"),
-        (lambda: None, _raising(ReleaseViewsNotBuilt("no views")), None, "no views"),
+        (None, _raising(ReleaseNotBound("unbound")), None, "unbound"),
     ],
-    ids=["unpublished-at-open", "views-refused", "not-bound", "views-not-built"],
+    ids=["unpublished-at-open", "views-refused", "not-bound"],
 )
-def test_with_the_flag_on_a_release_failure_is_reported_as_a_failed_job(
+def test_a_release_failure_is_reported_as_a_failed_job(
     setup, monkeypatch, capsys, tmp_path, opened, ran, reason, error
 ):
     """A release that fails as it opens, or a read of it during the run, ends in the job's
-    failure event like any other failure."""
+    failure event like any other failure. `opened` replaces `get_release_service` when set;
+    unset, the run binds the process's served release."""
     root = (tmp_path / "releases").as_uri()
     build_packaged_index_release(root)
     monkeypatch.setenv("GRAPH_RELEASE_URI", root)
-    monkeypatch.setattr(job, "optional_release_service", opened)
+    if opened is not None:
+        monkeypatch.setattr(release_service, "get_release_service", opened)
     monkeypatch.setattr(job, "_live_engine", _no_engine)
     if ran is not None:
         monkeypatch.setattr(job, "run", ran)
 
-    served = job.get_coverage_service
-    assert (
-        _main_with(monkeypatch, setup, coverage=served, release_coverage=True, catalogue_loads=True)
-        == 1
-    )
+    assert _main_with(monkeypatch, setup, catalogue_loads=True) == 1
     [failed] = _named(_events(capsys), "search_catalogue_job_failed")
     assert (failed["severity"], failed.get("reason"), failed["error"]) == ("ERROR", reason, error)
