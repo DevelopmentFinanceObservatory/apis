@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from search.engine.bind import CandidateMenu, _UniversalBindOutput
-    from search.engine.binders.house_policy import PolicyChoice, PolicyPool
+    from search.engine.binders.house_policy import PolicyChoice, PolicyName, PolicyPool
     from search.engine.clients.llm import SupportsLLM
     from search.engine.frame import Frame
     from search.engine.interpretation import Interpretation
@@ -44,9 +44,11 @@ class ApplyPolicies(Protocol):
 class PolicyChoosesOn(Protocol):
     """Whether a house policy, run over the menu shapes at `indices` alone, would choose
     between their values on the shape-kind measure axis `axis` (`house_policy.chooses_on`).
-    It runs no policy step."""
+    `policies` limits the policies asked. It runs no policy step."""
 
-    def __call__(self, indices: Sequence[int], axis: str) -> bool: ...
+    def __call__(
+        self, indices: Sequence[int], axis: str, *, policies: Sequence[PolicyName] = ...
+    ) -> bool: ...
 
 
 class PolicyContractError(Exception):

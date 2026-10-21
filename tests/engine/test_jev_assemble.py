@@ -27,6 +27,7 @@ from search.engine.binders.jev_request import bind_request, quantity_request
 from search.engine.frame import Frame, FrameNormalisation, Stated, StatedBy, door_frame
 from search.engine.qualifier_match import QualifierMatch, QualifierTie, names_plain_name
 from search.engine.region.phase_rank_bind import _HousePolicyStep
+from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import Axis, GraphRef
 
@@ -59,12 +60,12 @@ def _shape(
     )
 
 
-def _frame() -> Frame:
+def _frame(*, donors: Sequence[str] = ()) -> Frame:
     return door_frame(
         door="parsed",
         variable="aid",
-        entities=[],
-        entity_roles={},
+        entities=list(donors),
+        entity_roles={name: [DoorRole(axis="origin", span=name)] for name in donors},
         member_entities=frozenset(),
         pins={},
         date_request=None,
@@ -80,11 +81,17 @@ def _request(
     *,
     dropped: tuple[str, ...] = (),
     ties: Sequence[tuple[QualifierTie, ...]] = (),
+    availability: Sequence[bool | None] = (),
+    donors: Sequence[str] = (),
     apply_policies: ApplyPolicies | None = None,
 ) -> BindRequest:
-    frame = _frame()
+    frame = _frame(donors=donors)
     step = _HousePolicyStep(
-        shapes=shapes, frame=frame, admitted_qualifiers=(), availability=(), code_index=get_index()
+        shapes=shapes,
+        frame=frame,
+        admitted_qualifiers=(),
+        availability=availability,
+        code_index=get_index(),
     )
     return BindRequest(
         variable="aid",
@@ -778,14 +785,25 @@ _AMOUNT_MODALITIES = replace(
     slot_taxonomy={f"how:{_MODALITY}": ["CRSCooperationModalityB021"]},
 )
 _EVERY_MODALITY = {"mv|grantEquivalent": 0.58, f"all|how:{_MODALITY}|0": 0.9}
+# An imputed multilateral flow, its own dataset, and the amount of the donor house default.
+_IMPUTED = replace(
+    _shape(0, population="FinancialFlow", measured="attributedAmount", qualifier="Nominal"),
+    datasets=("provenance/ONEImputedMultilateralSectors",),
+)
+_DONOR_DEFAULT_AMOUNT = replace(_AMOUNT, datasets=("provenance/OECDDAC1",))
+# Two measures, the second with data where the first has none.
+_LIFE = replace(_shape(0, measured="lifeExpectancy"), datasets=("provenance/WHO",))
+_HEALTHY_LIFE = replace(_shape(1, measured="healthyLifeExpectancy"), datasets=("provenance/WHO",))
 
 
 @pytest.mark.parametrize(
-    ("shapes", "nouls", "dropped", "elected", "pool", "rules"),
+    ("shapes", "nouls", "dropped", "availability", "donors", "elected", "pool", "rules"),
     [
         pytest.param(
             [_GE, _AMOUNT],
             {"mv|grantEquivalent": 0.58},
+            (),
+            (),
             (),
             1,
             [0, 1],
@@ -796,6 +814,8 @@ _EVERY_MODALITY = {"mv|grantEquivalent": 0.58, f"all|how:{_MODALITY}|0": 0.9}
             [_GE_MODALITIES, _AMOUNT_MODALITIES],
             _EVERY_MODALITY,
             ("total",),
+            (),
+            (),
             1,
             [0, 1],
             ["house: amount_vs_ge"],
@@ -805,6 +825,8 @@ _EVERY_MODALITY = {"mv|grantEquivalent": 0.58, f"all|how:{_MODALITY}|0": 0.9}
             [_GE_MODALITIES, _AMOUNT_MODALITIES],
             _EVERY_MODALITY,
             ("across all modalities",),
+            (),
+            (),
             0,
             [0, 1],
             [],
@@ -814,28 +836,45 @@ _EVERY_MODALITY = {"mv|grantEquivalent": 0.58, f"all|how:{_MODALITY}|0": 0.9}
             [_GE, _AMOUNT],
             {"mv|grantEquivalent": 0.95},
             (),
+            (),
+            (),
             0,
             [0],
             ["named: measuredProperty"],
             id="named-value-keeps-it",
         ),
         pytest.param(
-            [_GE, replace(_AMOUNT, datasets=("provenance/OtherDataset",))],
-            {"mv|grantEquivalent": 0.58},
-            (),
-            0,
-            [0],
-            [],
-            id="another-dataset-s-variant-stays-out",
-        ),
-        pytest.param(
             [_shape(0), _shape(1, population="Place")],
             {},
+            (),
+            (),
             (),
             0,
             [0],
             [],
             id="other-reading-stays-out",
+        ),
+        pytest.param(
+            [_LIFE, _HEALTHY_LIFE],
+            {},
+            (),
+            (False, True),
+            (),
+            0,
+            [0],
+            [],
+            id="a-measure-the-election-sets-aside-stays-out-for-having-data",
+        ),
+        pytest.param(
+            [_IMPUTED, _DONOR_DEFAULT_AMOUNT],
+            {},
+            (),
+            (),
+            ("France",),
+            0,
+            [0],
+            [],
+            id="the-house-default-s-amount-stays-out-beside-an-imputed-lead",
         ),
     ],
 )
@@ -843,6 +882,8 @@ def test_the_pool_holds_a_convention_variant_the_election_sets_aside(
     shapes: list[ShapeDraft],
     nouls: dict[str, float],
     dropped: tuple[str, ...],
+    availability: tuple[bool, ...],
+    donors: tuple[str, ...],
     elected: int,
     pool: list[int],
     rules: list,
@@ -852,11 +893,15 @@ def test_the_pool_holds_a_convention_variant_the_election_sets_aside(
     which keeps the amount. "Total" names no slot, so Jev's claim that it asks for every
     modality is demoted before the holds check, and the amount shape still reaches the
     policy. "Across all modalities" asks for the one the amount shape lacks, so the policy
-    keeps grant equivalent. A shape of another reading, or of the same reading in another
-    dataset, that the election sets aside stays out."""
+    keeps grant equivalent. A shape of another reading that the election sets aside stays
+    out, and so does another measure that has data where the lead has none, or that the
+    house default dataset of a donor question publishes beside an imputed lead, since data
+    at the places and the house default are no convention between measures."""
     answers = _answers({"m|0": 0.86, "m|1": 0.81, **nouls}, elect={0: 0.92, 1: 0.075})
 
-    output, conf = _assemble(_request(shapes, dropped=dropped), answers)
+    output, conf = _assemble(
+        _request(shapes, dropped=dropped, availability=availability, donors=donors), answers
+    )
 
     assert output.chosen_shape_index == elected
     assert conf.pool is not None and sorted(conf.pool.measuring) == pool

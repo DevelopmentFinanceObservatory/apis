@@ -5,9 +5,10 @@ first use and shared by every call in the process. A request too large to send w
 as concurrent chunks (`jev_split.split_questions`) whose answers merge into one response.
 One `asyncio.timeout` at `Settings.jev_ceiling_s` bounds the whole call: the wait for a
 concurrency slot, every chunk, and the one retry. Every failure leaves as `JevError`. A call
-the ceiling cuts fails as ``timeout`` when any of its requests took a slot and started, and
-as ``slot_wait`` when none did. A ceiling that fires after every request has answered cuts
-nothing outstanding, so the call returns those answers.
+the ceiling cuts fails as ``timeout`` when a request it cut took its slot at once and was
+sent, as ``queued_timeout`` when every cut request that was sent had waited for its slot,
+and as ``slot_wait`` when no cut request was sent. A ceiling that fires after every request
+has answered cuts nothing outstanding, so the call returns those answers.
 
 A circuit breaker shared by the process opens after `BREAKER_FAILURES` consecutive calls
 inside `BREAKER_WINDOW_S` that failed in a way that says Jev is unhealthy (`_HEALTH_KINDS`:
@@ -15,7 +16,8 @@ a timed-out or failed connection, a 401 or 403, a 402, a 408, a 429 or a 5xx); f
 `BREAKER_OPEN_S` every call then fails at once without a request. The first call after that
 is the probe: its success closes the breaker, its unhealthy failure opens it again. A
 failure particular to the request (a refusal, a missing key, an unanswered question) or a
-wait for a slot moves the breaker neither way.
+cut that a wait for a slot shares in (``slot_wait``, ``queued_timeout``) moves the breaker
+neither way, since the process's own queue, not Jev, spent the ceiling.
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ type JevErrorKind = Literal[
     "breaker_open",
     "no_key",
     "slot_wait",
+    "queued_timeout",
     "timeout",
     "connection",
     "rate_limited",
@@ -274,6 +277,15 @@ def _jev_error(exc: TypeSafeError) -> JevError:
     return JevError(exc.status, kind)
 
 
+@dataclass(slots=True)
+class _Attempt:
+    """One chunk's request: whether every slot was taken when it asked for one (`queued`),
+    and whether it holds its slot and started (`sent`)."""
+
+    queued: bool = False
+    sent: bool = False
+
+
 async def _send(
     client: AsyncTypeSafeClient,
     state: JSONContent,
@@ -281,11 +293,12 @@ async def _send(
     *,
     deadline: float,
     semaphore: asyncio.Semaphore,
-    sent: asyncio.Event,
+    attempt: _Attempt,
 ) -> SystemOneResponse:
     """One request, retried once on a rate limit or server error when the delay before the
-    retry, a `Retry-After` included, ends before `deadline` (loop time). `sent` is set once
-    the request holds its slot and starts."""
+    retry, a `Retry-After` included, ends before `deadline` (loop time), recorded on
+    `attempt`."""
+    attempt.queued = semaphore.locked()
     async with semaphore:
         budget = deadline - asyncio.get_running_loop().time()
         if budget <= 0:
@@ -298,7 +311,7 @@ async def _send(
             api_timeout_error=False,
             timeout=budget,
         )
-        sent.set()
+        attempt.sent = True
         try:
             return await client.system_one(state, questions, retry=retry)
         except TypeSafeError as exc:
@@ -312,14 +325,13 @@ async def _ask_chunks(
     settings: SearchSettings,
 ) -> list[SystemOneResponse]:
     """Every chunk's response, sent concurrently under one deadline. The first failed
-    chunk cancels the rest and fails the call. A passed deadline fails it as ``timeout``
-    when any request started, and as ``slot_wait`` when none did, unless every chunk had
-    already answered, when it returns them: a loop stalled past the deadline can run a
-    response before the deadline's timer, and one chunk's answer without the others'
-    completes nothing."""
+    chunk cancels the rest and fails the call. A passed deadline fails it under the kind
+    of the requests it cut (`_cut_kind`), unless every chunk had already answered, when it
+    returns them: a loop stalled past the deadline can run a response before the deadline's
+    timer, and one chunk's answer without the others' completes nothing."""
     client = _client(settings)
     semaphore = _SEMAPHORES.get(lambda: asyncio.Semaphore(settings.jev_max_concurrency))
-    sent = asyncio.Event()
+    attempts = [_Attempt() for _ in chunks]
     deadline = asyncio.get_running_loop().time() + settings.jev_ceiling_s
     tasks: list[asyncio.Task[SystemOneResponse]] = []
     try:
@@ -333,23 +345,36 @@ async def _ask_chunks(
                             chunk,
                             deadline=deadline,
                             semaphore=semaphore,
-                            sent=sent,
+                            attempt=attempt,
                         )
                     )
-                    for chunk in chunks
+                    for chunk, attempt in zip(chunks, attempts, strict=True)
                 ]
     except TimeoutError as exc:
-        if tasks and all(
-            task.done() and not task.cancelled() and not task.exception() for task in tasks
-        ):
+        cut = [a for a, task in zip(attempts, tasks, strict=True) if not _answered(task)]
+        if tasks and not cut:
             return [task.result() for task in tasks]
-        raise JevError(None, "timeout" if sent.is_set() else "slot_wait") from exc
+        raise JevError(None, _cut_kind(cut)) from exc
     except ExceptionGroup as group:
         first = group.exceptions[0]
         if isinstance(first, JevError):
             raise first from group
         raise
     return [task.result() for task in tasks]
+
+
+def _answered(task: asyncio.Task[SystemOneResponse]) -> bool:
+    """Whether `task` ended with a response."""
+    return task.done() and not task.cancelled() and task.exception() is None
+
+
+def _cut_kind(cut: list[_Attempt]) -> JevErrorKind:
+    """The kind of a call whose ceiling cut the requests `cut`: ``timeout`` when one of them
+    was sent without waiting for its slot, so Jev alone spent the ceiling on it;
+    ``queued_timeout`` when each one sent had waited; ``slot_wait`` when none was sent."""
+    if any(a.sent and not a.queued for a in cut):
+        return "timeout"
+    return "queued_timeout" if any(a.sent for a in cut) else "slot_wait"
 
 
 async def ask(

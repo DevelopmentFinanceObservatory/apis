@@ -75,6 +75,16 @@ POLICY_ORDER: tuple[PolicyName, ...] = (
     "data_at_places",
 )
 
+# The policies that choose between measure values by a house convention. `default_dataset`
+# and `data_at_places` choose by the part's situation, its house default and the data at
+# its places, so they set no reading of the words.
+CONVENTION_POLICIES: tuple[PolicyName, ...] = (
+    "nominal_vs_va",
+    "amount_vs_ge",
+    "net_vs_gross",
+    "commit_vs_disb",
+)
+
 # The first year donors report official development assistance as grant equivalent.
 GE_STARTS = 2018
 
@@ -150,14 +160,20 @@ class PolicyChoice:
     facts: tuple[ShapeFacts, ...]
 
 
-def chooses_on(facts: Sequence[ShapeFacts], context: Context, axis: str) -> bool:
-    """Whether a house policy, run over `facts` alone (`apply_policy`), keeps fewer of their
-    values on the shape-kind measure axis `axis` than they hold, so the policy rather than
-    the phrase decides between them there."""
+def chooses_on(
+    facts: Sequence[ShapeFacts],
+    context: Context,
+    axis: str,
+    *,
+    policies: Sequence[PolicyName] = POLICY_ORDER,
+) -> bool:
+    """Whether one of `policies`, run over `facts` alone (`apply_policy`), keeps fewer of
+    their values on the shape-kind measure axis `axis` than they hold, so the policy rather
+    than the phrase decides between them there."""
     read = attrgetter(_AXIS_FACTS[axis])
     held = {read(f) for f in facts}
     return len(held) > 1 and any(
-        {read(f) for f in apply_policy(policy, facts, context)} != held for policy in POLICY_ORDER
+        {read(f) for f in apply_policy(policy, facts, context)} != held for policy in policies
     )
 
 

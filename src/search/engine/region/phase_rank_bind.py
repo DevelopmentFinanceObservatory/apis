@@ -36,8 +36,10 @@ from search.engine.bind_repair import (
 from search.engine.binders import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.base import PolicyContractError
 from search.engine.binders.house_policy import (
+    POLICY_ORDER,
     Context,
     PolicyChoice,
+    PolicyName,
     PolicyPool,
     ShapeFacts,
     apply_house_policies,
@@ -2878,11 +2880,11 @@ def model_only_values(
     """The `values` bound on `prop` that no recorded term of the request supports, so only
     the bind model read them from the words. A term supports every value on `prop` when it
     is an admitted qualifier match on `prop` or a query record a binding on it covers, and
-    supports one value when the value's name in `labels` is a run of the variable's words,
-    as `value_requirements` reads a value the words name. A value with no name is the
-    model's. An answer that cannot apply a supported value refuses `qualifier_not_bound`
-    on it, and one that cannot apply a model-only value discloses it
-    (`unrealisable.unbind_unrealisable`, `_stray_requirements`)."""
+    supports one value when one of its names (`_value_names`) is a run of the variable's
+    words, so "women" names Female by its synonym. A value with no name is the model's. An
+    answer that cannot apply a supported value refuses `qualifier_not_bound` on it, and one
+    that cannot apply a model-only value discloses it (`unrealisable.unbind_unrealisable`,
+    `_stray_requirements`)."""
     if any(match.code_system == prop for match in state.admitted_qualifiers) or any(
         record.slot == prop and record.disposition == "bound" for record in state.query_qualifiers
     ):
@@ -2891,7 +2893,29 @@ def model_only_values(
     return tuple(
         value
         for value in values
-        if (label := labels.get(value)) is None or not _token_occurrences(tokens, label)
+        if not any(
+            _token_occurrences(tokens, name)
+            for name in _value_names(prop, value, labels.get(value))
+        )
+    )
+
+
+def _value_names(prop: str, value: str, label: str | None) -> tuple[str, ...]:
+    """Every name the qualifier matcher reads for `value` on `prop`, and its graph `label`:
+    the code index's label and synonyms of the code, and the label and synonyms of each
+    matchable measure value on `prop` that spells its reading, aliases included."""
+    code = get_index().code_by_dcid(value)
+    measure_index = get_measure_index()
+    reading = measure_index.reading_set(value)
+    return (
+        *(() if label is None else (label,)),
+        *(() if code is None else (code.label, *code.synonyms)),
+        *(
+            text
+            for row in measure_index.values
+            if row.axis == prop and row.matchable and row.dcid in reading
+            for text in (row.label, *row.synonyms)
+        ),
     )
 
 
@@ -3618,10 +3642,12 @@ class _HousePolicyStep:
             holds=holds,
         )
 
-    def chooses_on(self, indices: Sequence[int], axis: str) -> bool:
-        """Whether a house policy would choose on measure axis `axis` among the menu shapes
-        at `indices` (`house_policy.chooses_on`). Not a call of the step."""
-        return chooses_on(self._facts_of(indices), self._context(indices), axis)
+    def chooses_on(
+        self, indices: Sequence[int], axis: str, *, policies: Sequence[PolicyName] = POLICY_ORDER
+    ) -> bool:
+        """Whether one of `policies` would choose on measure axis `axis` among the menu
+        shapes at `indices` (`house_policy.chooses_on`). Not a call of the step."""
+        return chooses_on(self._facts_of(indices), self._context(indices), axis, policies=policies)
 
     @cached_property
     def _facts(self) -> tuple[ShapeFacts, ...]:

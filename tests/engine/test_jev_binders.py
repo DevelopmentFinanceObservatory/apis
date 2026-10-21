@@ -339,7 +339,8 @@ def test_a_defect_after_the_house_policies_ran_breaks_the_contract_not_bound_twi
 def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone(caplog):
     """The quantity read of part 0 pays Jev's ceiling once. Its bind call goes straight to
     Gemini under the same cause, while part 1 still asks Jev. Only the failed request logs
-    a ``jev_error``; the call that inherits the failure logs ``fallback=inherited``."""
+    a ``jev_error`` and its Jev counts; the call that inherits the failure logs
+    ``fallback=inherited`` and no counts."""
     caplog.set_level(logging.INFO, logger="search.engine.binders.part_log")
     ask = FakeAsk(fail=JevError(None, "timeout"))
     gemini = _GeminiDouble(_ELECTS_FIRST)
@@ -371,6 +372,15 @@ def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone(c
         ],
         ["call=bind", "binder=jev", "served_by=gemini", "fallback=inherited", "jev_error=-"],
         ["call=bind", "binder=jev", "served_by=gemini", "fallback=timeout", "jev_error=timeout"],
+    ]
+    failed, inherited, _other = (line.split(" ")[7:] for line in _binder_parts(caplog))
+    assert failed[0] != "jev_ms=-"
+    assert inherited == [
+        "jev_ms=-",
+        "questions=-",
+        "chunks=-",
+        "jev_input_tokens=-",
+        "jev_output_tokens=-",
     ]
 
 

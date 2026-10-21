@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from code_index import shared as code_index_shared
 from code_index.query import CodeIndex
 from code_index.shared import get_index
-from code_index.types import IndexStamp, PartlyStatedValue, StatVarRow
+from code_index.types import IndexStamp, MeasureValueRow, PartlyStatedValue, StatVarRow
 from search.engine.bind import (
     SlotBindingDraft,
     _build_universal_bind_prompt,
@@ -31,6 +31,7 @@ from search.engine.frame import door_frame, with_recall
 from search.engine.interpretation import Interpretation
 from search.engine.quantity import NamedDenominator, quantity_requirement, with_stated_form
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region import phase_rank_bind
 from search.engine.region.phase_rank_bind import _stray_requirements
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.region.requirements import judge
@@ -710,17 +711,33 @@ def test_a_value_bound_on_a_slot_the_elected_shape_lacks_is_disclosed(drafts):
     assert spec.resolved.trace.query_qualifiers == []
 
 
-def test_a_stray_value_is_met_by_an_answer_that_binds_it():
-    """A value the bind drafted on a slot the elected shape lacks and the words name is
-    judged as a value the request names (`_stray_requirements`): the elected population
-    answer leaves "Female" unmet, and an answer by sex that binds it meets it."""
+@pytest.mark.parametrize("variable", ["female population", "population of women"])
+def test_a_stray_value_is_met_by_an_answer_that_binds_it(monkeypatch, variable):
+    """A value the bind drafted on a slot the elected shape lacks and the words name, by
+    its label or by a synonym the measure index holds for it, is judged as a value the
+    request names (`_stray_requirements`): the elected population answer leaves "Female"
+    unmet, and an answer by sex that binds it meets it."""
+    measure_index = phase_rank_bind.get_measure_index()
+    female = MeasureValueRow(
+        dcid="Female",
+        axis="gender",
+        label="Female",
+        synonyms=("women",),
+        short_name=None,
+        matchable=True,
+    )
+    monkeypatch.setattr(
+        phase_rank_bind,
+        "get_measure_index",
+        lambda: dataclasses.replace(measure_index, values=(*measure_index.values, female)),
+    )
     population, by_sex = _shape("population"), _shape("by_sex", slot_keys=(_GENDER_SLOT,))
     state = SimpleNamespace(
         capped_shapes=[population],
         label_dcids=lambda values: values,
         admitted_qualifiers=(),
         query_qualifiers=[],
-        variable="female population",
+        variable=variable,
     )
     stray = [_value("gender", "Female")]
 

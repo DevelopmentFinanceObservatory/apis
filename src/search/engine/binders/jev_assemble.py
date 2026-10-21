@@ -33,7 +33,13 @@ from search.engine.binders.gemini import (
     mentioned_drafts,
     nominated_near_best,
 )
-from search.engine.binders.house_policy import PolicyChoice, PolicyPool
+from search.engine.binders.house_policy import (
+    CONVENTION_POLICIES,
+    POLICY_ORDER,
+    PolicyChoice,
+    PolicyName,
+    PolicyPool,
+)
 from search.engine.binders.jev_menu import (
     AXIS_FIELDS,
     JevMenu,
@@ -44,7 +50,6 @@ from search.engine.binders.jev_menu import (
 from search.engine.binders.jev_request import NONE, NONE_OF_THESE
 from search.engine.frame import Frame
 from search.engine.quantity_read import QuantityOutput
-from search.engine.retrieval.bound_values import shape_part_datasets
 from search.engine.shape import ShapeDraft
 from search.models import GraphRef, QuantityForm
 
@@ -93,8 +98,9 @@ class Thresholds:
     # as asks, 14 with a correct definite pick, 2 with a wrong one and 5 candidates. With no
     # measure bound it asks on 238, 128 of them correct definite picks.
     decline: float = 0.4
-    # On the same answers the convention variants it admits change 13 picks at 0.1 and at
-    # 0.15, and 17 at 0.3.
+    # On the same answers, with the decline off, the pool this bar admits convention
+    # variants to changes 12 picks against dev: 7 to a better pick and 3 to a worse one.
+    # 0.1, 0.2 and 0.3 change the same picks.
     near: float = 0.15
     near_elect: float = 0.8
     # The election is the mean of two distributions, so two readings Jev cannot tell
@@ -146,7 +152,7 @@ class JevAnswers:
 class Confidence:
     """What each decision read: `measures`, `election` and `named` per shape, the shapes the
     election finds `plausible`, `refused` per reading a pinned part refused, `alternates`
-    the rule that listed each alternate,
+    the rule that listed each alternate, ``elected alike`` for every one (`_alternates`),
     `slots` the probability behind each bound slot, `rules` the election rules that
     applied in order, and the house policies' `pool` and `choice`, None when the part
     asks."""
@@ -344,21 +350,21 @@ def _with_nominal_output(
 
 
 def _convention_variant(menu: JevMenu, lead: int, k: int) -> bool:
-    """Whether shape `k` states the reading of `lead` but for values a house policy
-    chooses between: the same population and statistic type and a dataset in common, and on
-    each measure axis where the two differ, and on one at least, a policy run over the
-    pair would choose (`_policy_chooses`), as on amount against grant equivalent of one
-    flow. Across datasets the election's reading of the words stands, so
-    `default_dataset` never trades an imputed multilateral flow the election chose for
-    the house default's amount."""
+    """Whether shape `k` states the reading of `lead` but for values a house convention
+    chooses between: the same population and statistic type, and on each measure axis
+    where the two differ, and on one at least, a convention policy
+    (`house_policy.CONVENTION_POLICIES`) run over the pair would choose, as on amount
+    against grant equivalent of one flow. Data at the places and the house default
+    dataset choose by the part's situation, so a measure the election set aside never
+    replaces the lead for having data, and an imputed multilateral flow the election chose
+    is never traded for the house default's amount."""
     a, b = menu.request.shapes[lead], menu.request.shapes[k]
     if (a.pop_type_dcid, a.stat_type_dcid) != (b.pop_type_dcid, b.stat_type_dcid):
         return False
-    index = get_index()
-    if not set(shape_part_datasets(a, index)) & set(shape_part_datasets(b, index)):
-        return False
     differing = [axis for axis, f in AXIS_FIELDS.items() if getattr(a, f) != getattr(b, f)]
-    return bool(differing) and all(_policy_chooses(menu, (lead, k), axis) for axis in differing)
+    return bool(differing) and all(
+        _policy_chooses(menu, (lead, k), axis, policies=CONVENTION_POLICIES) for axis in differing
+    )
 
 
 def _elect(
@@ -447,11 +453,17 @@ def _elect(
     return choice.survivor
 
 
-def _policy_chooses(menu: JevMenu, indices: Sequence[int], axis: str) -> bool:
-    """Whether a house policy would choose on measure axis `axis` among the menu shapes at
-    `indices` (`BindRequest.policy_chooses_on`), False when no policy reads the menu."""
+def _policy_chooses(
+    menu: JevMenu,
+    indices: Sequence[int],
+    axis: str,
+    *,
+    policies: Sequence[PolicyName] = POLICY_ORDER,
+) -> bool:
+    """Whether one of `policies` would choose on measure axis `axis` among the menu shapes
+    at `indices` (`BindRequest.policy_chooses_on`), False when no policy reads the menu."""
     chooses = menu.request.policy_chooses_on
-    return chooses is not None and chooses(indices, axis)
+    return chooses is not None and chooses(indices, axis, policies=policies)
 
 
 def _names_value(answers: JevAnswers, t: Thresholds, value: str | None, *, owned: bool) -> bool:

@@ -55,6 +55,7 @@ class Ask(Protocol):
 _REASONS: dict[str, FallbackCause] = {
     "timeout": "timeout",
     "slot_wait": "timeout",
+    "queued_timeout": "timeout",
     "request_timeout": "timeout",
     "rate_limited": "429",
     "server": "5xx",
