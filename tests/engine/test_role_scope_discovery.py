@@ -21,7 +21,7 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.shape import ShapeDraft
 from search.models import TimeWindow
-from series_coverage.schema import ABSENT_ENTITY, BUILD_EPOCH_YEAR, FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import (
     CoverageRow,
     FakeCoverageService,
@@ -31,6 +31,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph
+from tests.series_coverage.support import BUILD_EPOCH_YEAR
 
 _SV = "TESTFIXTURE/RoleScopeDiscovery/Flow"
 _SV_A = "TESTFIXTURE/RoleScopeDiscovery/FlowA"
@@ -864,7 +865,7 @@ def test_members_are_sorted_by_dcid(monkeypatch):
 
 def test_discovered_scope_reports_the_shapes_own_member_count(monkeypatch):
     """This shape's five-tuple is a self-authored test fixture, absent from
-    this deployment's packaged CRS index, so member_facts falls back to
+    the fixture CRS index, so member_facts falls back to
     shape.sv_arc_facts unchanged. The resolved population is exactly this
     shape's own one confirmed member, alongside the open-axis (destination)
     and sources dimensions discover_role_scope already builds."""

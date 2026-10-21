@@ -62,7 +62,7 @@ _SHAPE1_BOUND_PROPS = (
     "financialObligationType",
 )
 
-# Fabricated five-tuple absent from the packaged index.
+# Fabricated five-tuple absent from the fixture index.
 _POP_TYPE_2 = "TestBarePopulation"
 _MEAS_PROP_2 = "testBareMeasure"
 _STAT_TYPE_2 = "measuredValue"
@@ -106,7 +106,7 @@ def _sv_node(
 def _synthetic_sv_node(
     dcid: str, *, label: str, pop_type: str, meas_prop: str, stat_type: str, meas_qual: str
 ) -> dict:
-    """Build an unconstrained node for a five-tuple absent from the packaged index."""
+    """Build an unconstrained node for a five-tuple absent from the fixture index."""
     return {
         "label": label,
         "type": "StatisticalVariable",
@@ -245,7 +245,7 @@ def test_broad_candidate_reports_its_real_population_in_menu_order():
     broad_count = broad_spec.resolved.shape.member_count
     narrow_count = narrow_spec.resolved.shape.member_count
 
-    # The packaged index has exactly two members matching the four bound axes.
+    # The fixture index has exactly two members matching the four bound axes.
     assert broad_count == 2
     assert narrow_count == 1
     assert broad_count > narrow_count

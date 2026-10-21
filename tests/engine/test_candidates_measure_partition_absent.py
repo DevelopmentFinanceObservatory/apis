@@ -1,6 +1,6 @@
 """When served StatVars omit `measurementQualifier`, no measure partition matches.
 
-The dev graph serves re-minted CRS StatVars this way, while the packaged index declares Nominal.
+The dev graph serves re-minted CRS StatVars this way, while the fixture index declares Nominal.
 
 The tests return separate candidates, and the no-data fallback refuses an unlabelled measure. The
 fixture uses real CRS siblings but reads their missing qualifier from graph arcs.
@@ -44,7 +44,7 @@ _ALT_SV = (
 
 
 def _sv_arcs_no_measurement_qualifier(dcid: str) -> dict:
-    """Build packaged-index arcs without `measurementQualifier`."""
+    """Build fixture-index arcs without `measurementQualifier`."""
     index = get_index()
     row = next(r for r in index.statvars if r.dcid == dcid)
     return {

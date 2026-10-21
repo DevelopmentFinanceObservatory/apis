@@ -1,4 +1,4 @@
-"""A named family's membership comes from the packaged index election. Real
+"""A named family's membership comes from the fixture index election. Real
 CRS health-purpose members pin equal counts with no seed or a truncated
 200-member seed, and tolerate an elected member missing from the graph.
 """
@@ -24,7 +24,7 @@ from tests.engine.test_resubmit_edit_detection import (
 def test_family_noop_resubmit_with_a_truncated_seed_resolves_the_same_member_count_as_no_seed(
     monkeypatch,
 ):
-    """A 200-member seed must not truncate the family returned by the packaged
+    """A 200-member seed must not truncate the family returned by the fixture index's
     election. With or without that seed, the response retains the full count."""
     _base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
     member_dcids = _elected_members(_PURPOSE_ROLLUP)

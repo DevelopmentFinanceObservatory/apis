@@ -342,7 +342,7 @@ class _FakeCodeIndex:
 
 def test_constraint_value_uses_index_label_when_graph_omits_it(monkeypatch):
     """node_labels_batch omits _PROVISIONAL_SCHEME (absent from the graph
-    fixture's own nodes); the packaged code index carries it, so _ground_answer's
+    fixture's own nodes); the fixture code index carries it, so _ground_answer's
     label fallback renders the index's own label instead of the dcid echo
     test_constraint_value_keeps_evidenced_unlabelled_provisional_dcid pins for
     an index-less dcid."""

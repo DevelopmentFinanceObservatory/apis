@@ -61,11 +61,11 @@ _session_release: Release | None = None
 def pytest_configure(config: pytest.Config) -> None:
     """Publishes the session release (`build_session_release`), opens it through
     `get_release_service()` as a surface does, and binds the release that service serves: the
-    packaged code index, the recorded coverage slice and the recorded DFO variables."""
+    fixture code index, the recorded coverage slice and the recorded DFO variables."""
     config.addinivalue_line(
         "markers",
         "unbound_release: runs with no graph release bound, opting out of "
-        "`_bound_packaged_index_release`",
+        "`_bound_fixture_index_release`",
     )
     _session_services.enter_context(
         catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service())
@@ -278,16 +278,16 @@ def _bound_fake_catalogue() -> Iterator[None]:
 
 
 @pytest.fixture(scope="session")
-def _packaged_index_release() -> Release:
+def _fixture_index_release() -> Release:
     """The session's served graph release (`pytest_configure`), whose code index is the
-    packaged `index.json.gz` document."""
+    recorded index document (`tests.code_index.support.INDEX_FIXTURE`)."""
     assert _session_release is not None
     return _session_release
 
 
 @pytest.fixture(autouse=True)
-def _bound_packaged_index_release(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Bind `_packaged_index_release` for every test not marked `unbound_release`, as a
+def _bound_fixture_index_release(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Bind `_fixture_index_release` for every test not marked `unbound_release`, as a
     request binds its served release, and bind none for a test that is. A surface's own
     request scope binds over it."""
     if request.node.get_closest_marker("unbound_release"):
@@ -297,7 +297,7 @@ def _bound_packaged_index_release(request: pytest.FixtureRequest) -> Iterator[No
         finally:
             release_context_module._BOUND.reset(token)
         return
-    with bound_release(request.getfixturevalue("_packaged_index_release")):
+    with bound_release(request.getfixturevalue("_fixture_index_release")):
         yield
 
 

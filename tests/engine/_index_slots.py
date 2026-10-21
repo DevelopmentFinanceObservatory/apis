@@ -1,4 +1,4 @@
-"""Slot keys of the packaged index's five-tuples, for test shapes and identities.
+"""Slot keys of the fixture index's five-tuples, for test shapes and identities.
 
 `derive_shapes` gives an index-carried shape one slot key per constraint property its
 family's rows carry (`code_index.query.IndexFamily`), and the identity minted from it one

@@ -9,9 +9,10 @@ import json
 
 import pytest
 
-from code_index import CodeIndex, IndexFormatError, default_index_path, load_index
-from code_index.loader import load_measure_axes, parse_measure_axes
+from code_index import CodeIndex, IndexFormatError
+from code_index.loader import parse_measure_axes
 from code_index.query import CrossSystemParent, CyclicParent, DuplicateDcid, InvalidDeclaredDefault
+from tests.code_index.support import INDEX_FIXTURE, load_index, load_measure_axes
 
 from .conftest import FIXTURE_PATH
 
@@ -47,41 +48,36 @@ def test_declarations_carry_the_plain_name_and_graph_id_the_export_stamped(
     }
 
 
-def test_default_index_path_points_inside_the_package_tree():
-    path = default_index_path()
-    assert str(path).endswith("data/index.json.gz")
-
-
-def test_the_packaged_index_declares_a_plain_name_and_graph_id_for_every_code_system():
-    index = load_index(default_index_path())
+def test_the_fixture_index_declares_a_plain_name_and_graph_id_for_every_code_system():
+    index = load_index(INDEX_FIXTURE)
     for declaration in index.declarations.values():
         assert declaration.plain_name
         assert declaration.enum_dcid
     assert index.declarations["crsPurpose"].enum_dcid == "CRSPurposeCodeEnum"
 
 
-def test_the_packaged_index_labels_the_flow_type_and_netting_basis_axes():
-    labels = {axis.axis: axis.label for axis in load_measure_axes(default_index_path()).axes}
+def test_the_fixture_index_labels_the_flow_type_and_netting_basis_axes():
+    labels = {axis.axis: axis.label for axis in load_measure_axes(INDEX_FIXTURE).axes}
     assert labels["financialFlowType"] == "flow type"
     assert labels["nettingBasis"] == "netting basis"
 
 
-def test_the_packaged_index_defines_every_measure_label_and_noun_and_reads_code_definitions():
-    measure_index = load_measure_axes(default_index_path())
+def test_the_fixture_index_defines_every_measure_label_and_noun_and_reads_code_definitions():
+    measure_index = load_measure_axes(INDEX_FIXTURE)
     undefined = [
         label.label
         for label in (*measure_index.partition_labels, *measure_index.nouns)
         if not label.definition
     ]
     assert undefined == []
-    grant = load_index(default_index_path()).code_by_dcid("CRSTypeOfFinance110")
+    grant = load_index(INDEX_FIXTURE).code_by_dcid("CRSTypeOfFinance110")
     assert grant is not None
     assert grant.definition
 
 
-def test_the_packaged_index_loads_and_agrees_with_its_own_stamp():
+def test_the_fixture_index_loads_and_agrees_with_its_own_stamp():
     # The stamped counts catch truncated exports that still parse as JSON.
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
 
     assert sum(index.stamp.code_counts.values()) == len(index.codes)
     assert index.stamp.statvar_shape_counts == {
@@ -370,9 +366,9 @@ def test_refuses_a_declared_default_scoped_under_its_own_code_system(tmp_path):
     assert "CRSTypeOfFlow21" in str(excinfo.value)
 
 
-def test_the_packaged_index_declares_the_crs_type_of_flow_default():
+def test_the_fixture_index_declares_the_crs_type_of_flow_default():
     # #968: An open flow slot selects CRSTypeOfFlow10 for aid under CRSTypeOfFinance100.
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     default = index.declarations["crsTypeOfFlow"].default
     assert default is not None
     assert default.code == "CRSTypeOfFlow10"
@@ -382,8 +378,8 @@ def test_the_packaged_index_declares_the_crs_type_of_flow_default():
     assert default.note is None
 
 
-def test_the_packaged_index_declares_non_concessional_as_the_flow_type_s_unexpressed_word():
-    index = load_index(default_index_path())
+def test_the_fixture_index_declares_non_concessional_as_the_flow_type_s_unexpressed_word():
+    index = load_index(INDEX_FIXTURE)
     assert {
         system: declaration.no_vocabulary_terms
         for system, declaration in index.declarations.items()
@@ -399,12 +395,12 @@ def test_the_packaged_index_declares_non_concessional_as_the_flow_type_s_unexpre
         ("dac2bAidType", "DAC2bAidType296"),
     ],
 )
-def test_the_packaged_index_declares_the_table_total_as_the_open_aid_type_default(
+def test_the_fixture_index_declares_the_table_total_as_the_open_aid_type_default(
     code_system: str, code: str
 ):
     """A DAC1 or DAC2a question that names no aid type reads total ODA, a DAC2b question net
     official non-concessional flows, and the answer says so."""
-    default = load_index(default_index_path()).declarations[code_system].default
+    default = load_index(INDEX_FIXTURE).declarations[code_system].default
     assert default is not None
     assert default.code == code
     assert default.when_open is True
@@ -566,8 +562,8 @@ def test_refuses_a_same_reading_as_that_names_no_canonical_value(values, message
         parse_measure_axes(_price_basis_document(*values))
 
 
-def test_the_packaged_index_files_inflation_adjusted_under_real_value():
-    measure_index = load_measure_axes(default_index_path())
+def test_the_fixture_index_files_inflation_adjusted_under_real_value():
+    measure_index = load_measure_axes(INDEX_FIXTURE)
 
     assert measure_index.reading_order("measurementQualifier") == (
         "Nominal",

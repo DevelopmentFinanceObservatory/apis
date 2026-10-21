@@ -18,7 +18,7 @@ holds, none for an entity whose deflator lacks the base year, and none for an en
 currency names under a conversion into each entity's own currency. The rates leave no row
 out, since the period a unit request shows already holds them.
 
-Rows are null when a member the plan reads is missing from the coverage artifact, since
+Rows are null when a member the plan reads is missing from the release's coverage view, since
 the mint reads it and the count would understate. They are an upper bound (`rows_exact`
 false) under a conversion the count cannot follow in memory
 (`unit.conversion.counted_exact`), and when a series' facets carry no complete date list

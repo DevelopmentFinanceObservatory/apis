@@ -798,7 +798,7 @@ def test_a_shape_none_of_whose_members_the_index_holds_takes_no_slot_key_from_it
 
 
 def _crs_row():
-    """One packaged CRS row of the five-tuple debt service shares, as a recalled node."""
+    """One fixture CRS row of the five-tuple debt service shares, as a recalled node."""
     row = next(
         row
         for row in get_index().statvars
@@ -1178,7 +1178,7 @@ def _debt_index(*dcids: str) -> CodeIndex:
 
 
 def _use_index(monkeypatch: pytest.MonkeyPatch, index: CodeIndex) -> None:
-    """Serve `index` wherever a loaded module reads the packaged index."""
+    """Serve `index` wherever a loaded module reads the fixture index."""
     packaged = code_index_shared.get_index
     for module in list(sys.modules.values()):
         if vars(module).get("get_index") is packaged:
@@ -2078,7 +2078,7 @@ _CRS_PRIMARY = (
 
 
 def _index_shapes(*dcids: str) -> list[ShapeDraft]:
-    """The shapes of the packaged index rows `dcids`, recalled together."""
+    """The shapes of the fixture index rows `dcids`, recalled together."""
     graph = FakeGraph(
         nodes={dcid: _index_row_node(dcid) for dcid in dcids}, obs={}, detect={}, resolve={}
     )

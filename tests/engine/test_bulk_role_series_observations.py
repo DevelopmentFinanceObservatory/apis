@@ -52,7 +52,7 @@ from search.observations import (
     OBSERVATIONS_PREVIEW_TOO_LARGE,
     observation_settings,
 )
-from series_coverage.schema import BUILD_EPOCH_YEAR, FacetMetadata, RoleNames
+from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import (
     FIXTURE_PROVENANCE,
     FakeCoverageService,
@@ -76,6 +76,7 @@ from tests.engine._quantity import NO_QUANTITY
 from tests.engine._role_candidates import role_candidate
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
+from tests.series_coverage.support import BUILD_EPOCH_YEAR
 
 _SV = "TEST/BulkRoleObs_Flow"
 _DONOR = "country/BRDonor"

@@ -176,7 +176,6 @@ def test_every_name_comes_from_the_environment_variables():
         "SERVICE_WORKER",
         "JOB_DATASETS_MIGRATE",
         "JOB_PRESENTATION_MIGRATE",
-        "JOB_COVERAGE",
         "JOB_ORIGIN_CATALOGUE",
         "JOB_SEARCH_CATALOGUE",
         "JOB_DATASETS_MAINTENANCE",
@@ -192,17 +191,16 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Seven job updates, thirteen job executions, and two service updates.
+    # Six job updates, ten job executions, and two service updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
             "JOB_DATASETS_MIGRATE": 2,
             "JOB_PRESENTATION_MIGRATE": 2,
             "JOB_DATASETS_MAINTENANCE": 3,
-            "JOB_COVERAGE": 5,
             "JOB_ORIGIN_CATALOGUE": 3,
             "JOB_GRAPH_RELEASE": 3,
-            "JOB_SEARCH_CATALOGUE": 2,
+            "JOB_SEARCH_CATALOGUE": 3,
             "SERVICE_WORKER": 1,
             "SERVICE_APIS": 1,
         }.items()
@@ -221,16 +219,16 @@ def test_every_name_comes_from_the_environment_variables():
             "Run the presentation migration job",
         ),
         (
-            "Point the coverage job at the new image",
-            "Ensure a compatible coverage artifact is published",
-        ),
-        (
             "Point the origin catalogue job at the new image",
             "Ensure a compatible origin catalogue is published",
         ),
         (
             "Point the graph release job at the new image",
             "Ensure a compatible graph release is published",
+        ),
+        (
+            "Point the search catalogue job at the new image",
+            "Build the search catalogue on the new image",
         ),
     ],
 )
@@ -256,29 +254,41 @@ def test_the_build_fetches_the_public_spec_kit_without_a_credential():
     assert "secrets" not in _step("image").get("env", {})
 
 
-def test_search_catalogue_job_moves_to_the_new_image_and_one_async_build_starts_after_the_service_moves():
-    """The build key includes the image's commit, so every deploy needs a new build. The
-    deploy starts one execution without waiting, which keeps the build's Gemini and graph
-    dependencies out of the release."""
+def test_search_catalogue_builds_on_the_new_image_before_traffic_moves():
+    """The build key includes the image's commit and a format bump starts an empty format
+    root, so the deploy runs the job once on the new image and waits for it, after the
+    origin catalogue and graph release it reads are ensured and before either service moves.
+    The job exits 0 on some runs that publish nothing, so a verify execution after it decides
+    whether a build is published; either failure stops the deploy."""
     names = [step.get("name") for step in _steps()]
     update = "Point the search catalogue job at the new image"
-    start = "Start a search catalogue build on the new image"
+    build = "Build the search catalogue on the new image"
     executions = [
         step.get("name")
         for step in _steps()
         if 'jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}"' in step.get("run", "")
     ]
     update_run = _named(update)["run"]
-    start_run = _named(start)["run"]
+    build_run = _named(build)["run"]
 
     assert 'gcloud run jobs update "${{ vars.JOB_SEARCH_CATALOGUE }}"' in update_run
     assert "--image=" in update_run
-    assert executions == [start]
-    assert "--async" in start_run
-    assert "--wait" not in start_run
-    assert names.index("Ensure a compatible origin catalogue is published") < names.index(update)
-    assert names.index(update) < names.index("Point the datasets worker at the new image")
-    assert names.index("Point Cloud Run at the new image") < names.index(start)
+    assert executions == [build]
+    assert "--async" not in build_run
+    run_job, verify_job = build_run.split("gcloud run jobs execute ")[1:]
+    assert "--wait" in run_job
+    assert "--args" not in run_job
+    assert "--wait" in verify_job
+    assert "--args=-m,search.catalogue.verify" in verify_job
+    assert build_run.lstrip().startswith("set -euo pipefail")
+    assert (
+        names.index("Ensure a compatible origin catalogue is published")
+        < names.index("Ensure a compatible graph release is published")
+        < names.index(update)
+        < names.index(build)
+        < names.index("Point the datasets worker at the new image")
+        < names.index("Point Cloud Run at the new image")
+    )
 
 
 _FAKE_GCLOUD = """#!/bin/bash
@@ -352,7 +362,7 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
     """The previous image writes rows in the old shape, and versions without a description
     record, until both services move, so the settle and then the description backfill run after
     the apis service moves, and they are the deploy's only maintenance executions. The backfill
-    runs after the code index record, so its failure never holds that record back."""
+    runs after the settle, so its failure never holds the settle back."""
     names = [step.get("name") for step in _steps()]
     settle = "Settle rows the previous image wrote"
     backfill = "Backfill description records"
@@ -368,7 +378,7 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
     for name in (settle, backfill):
         assert "--wait" in _named(name)["run"]
     assert names.index("Point Cloud Run at the new image") < names.index(settle)
-    assert names.index("Record the code index the services run") < names.index(backfill)
+    assert names.index(settle) < names.index(backfill)
 
 
 def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
@@ -398,15 +408,13 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
         assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
 
 
-def test_worker_then_service_move_then_the_code_index_is_recorded():
+def test_worker_then_service_move_then_the_maintenance_steps_run():
     names = [step.get("name") for step in _steps()]
 
-    assert names[-6:] == [
+    assert names[-4:] == [
         "Point the datasets worker at the new image",
         "Point Cloud Run at the new image",
-        "Start a search catalogue build on the new image",
         "Settle rows the previous image wrote",
-        "Record the code index the services run",
         "Backfill description records",
     ]
 
@@ -426,7 +434,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 22
+    assert len(later) == 18
     for step in later:
         assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 

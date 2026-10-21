@@ -2,7 +2,7 @@
 recall's embedding resolve, the open roles choose among them, and a code Search cannot serve
 alone refuses with a typed no_data reason.
 
-The codes and StatVars are the packaged code index's: DT.TDS.DEGG.CD names the World Bank
+The codes and StatVars are the fixture code index's: DT.TDS.DEGG.CD names the World Bank
 IDS general-government debt service aggregate and its by-creditor twin."""
 
 from __future__ import annotations
@@ -189,7 +189,7 @@ def _answer(
 
 
 def _minted_members(answer) -> set[str]:
-    """The StatVars the Datasets mint resolves `answer`'s identity to over the packaged
+    """The StatVars the Datasets mint resolves `answer`'s identity to over the fixture
     index, as the orchestrator's fetch by its spec_id reads them."""
     identity = answer.spec.definition.identity.model_dump(mode="json", exclude_none=True)
     resolved = resolve_definition_members(

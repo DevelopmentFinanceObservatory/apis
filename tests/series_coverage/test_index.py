@@ -1,10 +1,9 @@
-"""Pins `CoverageIndex` lookups against the rows in the shared test artifact."""
+"""Pins `CoverageIndex` lookups against the shared test rows and the recorded slice."""
 
 from __future__ import annotations
 
 import tracemalloc
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -24,16 +23,11 @@ from series_coverage.index import (
     ProvenanceShape,
     elected_year,
 )
-from series_coverage.loader import load_coverage
-from series_coverage.schema import (
-    BUILD_EPOCH_YEAR,
-    FORMAT_ROOT,
-    FacetMetadata,
-    RoleNames,
-    YearHorizon,
-)
+from series_coverage.schema import FacetMetadata, RoleNames, YearHorizon
 from tests.series_coverage.support import (
     _ROWS,
+    BUILD_EPOCH_YEAR,
+    COVERAGE_SLICE_BUILD,
     DEU,
     ETH,
     FACET_ACTUALS,
@@ -45,19 +39,19 @@ from tests.series_coverage.support import (
     V2,
     V4,
     V5,
-    build_test_artifact,
+    build_test_index,
     coverage_table,
+    slice_index,
     with_repeated_dictionaries,
 )
 
 
 @pytest.fixture
-def index(tmp_path: Path):
-    uri = build_test_artifact(tmp_path / "coverage")
-    return load_coverage(uri).index
+def index() -> CoverageIndex:
+    return build_test_index()
 
 
-# A minimal, self-built CoverageIndex (no file I/O, no artifact) for the
+# A minimal CoverageIndex built straight from rows, unchecked, for the
 # windowing tests below, which need row shapes support.py's own shared
 # fixture doesn't carry (a facet with data confined to an arbitrary narrow
 # span; a window that reaches past the horizon's epoch or its last year).
@@ -316,8 +310,6 @@ def test_pair_rows_role_bound_to_empty_set_matches_nothing(index) -> None:
 
 # -- bound pushdown parity over the recorded slice --------------------------
 
-_SLICE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "coverage_slice"
-_SLICE_URI = f"file://{_SLICE_DIR}"
 _GBR = "country/GBR"
 
 
@@ -351,13 +343,12 @@ _PARITY_BOUNDS: list[BoundRoles] = [
 
 @pytest.mark.parametrize("bound", _PARITY_BOUNDS, ids=["none", "donor", "recipient", "both"])
 def test_pair_rows_bound_matches_grouped_then_narrowed_read(bound: BoundRoles) -> None:
-    loaded = load_coverage(_SLICE_URI)
-    [parquet] = (_SLICE_DIR / FORMAT_ROOT / "versions" / loaded.manifest.build_id).glob("*.parquet")
-    on_disk = pq.read_table(parquet).cast(loaded.manifest.horizon.schema)
-    variables = sorted(loaded.index.role_names)
+    index = slice_index()
+    on_disk = pq.read_table(COVERAGE_SLICE_BUILD / "coverage.parquet").cast(index.horizon.schema)
+    variables = sorted(index.role_names)
 
     expected = _grouped_then_narrowed(on_disk, variables=variables, bound=bound)
-    actual = _pair_map(loaded.index.pair_rows(variables=variables, bound=bound))
+    actual = _pair_map(index.pair_rows(variables=variables, bound=bound))
 
     assert expected, "the slice carries no row under this bound; the parity check is vacuous"
     assert actual == expected
@@ -373,7 +364,7 @@ def test_series_counts_count_each_facets_pairs_with_data_in_the_window(
     """For every variable of the slice, under every bound and window, a facet's series count
     is the number of its donor and recipient pairs holding an observation in the window, and
     a facet with none is absent."""
-    index = load_coverage(_SLICE_URI).index
+    index = slice_index()
     first, last = window
     counted = 0
     for variable in sorted(index.role_names):
@@ -397,7 +388,7 @@ def test_facet_spans_state_what_filter_candidates_states_over_every_year(
 ) -> None:
     """For every variable of the slice under every bound, a facet's span is the count and
     the first and last years `filter_candidates` states for it with no window."""
-    index = load_coverage(_SLICE_URI).index
+    index = slice_index()
     variables = sorted(index.role_names)
     expected = {
         (coverage.variable, facet.facet_id): (facet.n_obs, facet.first_year, facet.last_year)
@@ -416,7 +407,7 @@ def test_facet_spans_state_what_filter_candidates_states_over_every_year(
 
 @pytest.mark.parametrize("bound", _PARITY_BOUNDS[1:], ids=["donor", "recipient", "both"])
 def test_pair_rows_windowed_bound_matches_the_narrowed_unbound_read(bound: BoundRoles) -> None:
-    index = load_coverage(_SLICE_URI).index
+    index = slice_index()
     variables = sorted(index.role_names)
     unbound = _pair_map(index.pair_rows(variables=variables, first_year=2015, last_year=2020))
     expected = {

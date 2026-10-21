@@ -51,7 +51,7 @@ _PROP_FLOW_TYPE = "financialFlowType"
 _UNBOUND_PROPS = (_PROP_MODALITY, _PROP_FINANCE, _PROP_FLOW)
 _FORCED_FLOW_TYPE_VALUE = "Disbursement"
 
-# Every packaged CRS row declares both roles. "To Kenya" binds the recipient;
+# Every fixture CRS row declares both roles. "To Kenya" binds the recipient;
 # coverage rows still include the unbound provider role.
 _ROLE_RECIPIENT = "financingRecipient"
 _ROLE_PROVIDER = "financingProvider"
@@ -69,8 +69,8 @@ def _facet(*, obs_count: int = 3, facet_id: str = "f1") -> Facet:
     )
 
 
-def test_fixture_matches_the_real_packaged_index():
-    """Validate fixture dcids, five-tuple, declared axes, and role arcs against the packaged index."""
+def test_fixture_matches_the_real_index():
+    """Validate fixture dcids, five-tuple, declared axes, and role arcs against the fixture index."""
     index = get_index()
     target = (_POP_TYPE, _MEAS_PROP, _STAT_TYPE, _MEAS_QUAL, None)
 

@@ -1,7 +1,7 @@
 """Elect a shape and bind its slots in one asynchronous LLM call per variable.
 
 Retrieval scores order the menu and stay out of the prompt. A memo can serve identical
-requests. The prompt uses extracted text and graph or packaged-index metadata. ``value`` selects one member, ``set``
+requests. The prompt uses extracted text and graph or code-index metadata. ``value`` selects one member, ``set``
 selects 2+ without an aggregate, and ``unbound`` leaves a slot open. ``absent`` marks an
 inapplicable property and maps to wire ``unbound`` plus ``inapplicable_slots``.
 """
@@ -639,7 +639,7 @@ def _build_universal_bind_prompt(
     """Build the user prompt for the choose-and-bind call.
 
     User wording comes from the extracted variable and dropped phrases. Shape metadata and
-    admitted qualifier codes and labels come from the graph or packaged index. Admitted
+    admitted qualifier codes and labels come from the graph or the release's code index. Admitted
     matches contribute only their code and label. Dropped phrases request ``unbound`` plus
     ``requested_all`` evidence
     and a verbatim phrase echo. The block appears only when phrases exist.

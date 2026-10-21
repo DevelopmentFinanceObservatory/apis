@@ -3,8 +3,9 @@
 GCS libraries load lazily. `gs://` deployments need `dfo-data-tools[coverage]`.
 Missing paths raise `FileNotFoundError`. Failed conditional writes return
 `False`. Listing a missing prefix returns an empty map, and deleting one is a
-no-op. Serving code reads artifacts. `series_coverage.job` and
-`origin_catalogue.job` write and prune them.
+no-op. Serving code reads artifacts. The publishing jobs
+(`origin_catalogue.job`, `graph_release.job`, `search.catalogue.job`) write
+and prune them.
 """
 
 from __future__ import annotations

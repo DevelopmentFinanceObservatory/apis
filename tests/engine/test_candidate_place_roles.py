@@ -1524,7 +1524,7 @@ def test_places_a_shape_cannot_take_refuse(roles, names_and_roles, places, refus
 
 
 def _index_member_shape(dcid: str) -> ShapeDraft:
-    """The shape `derive_shapes` builds when recall confirms the packaged index row `dcid`
+    """The shape `derive_shapes` builds when recall confirms the fixture index row `dcid`
     alone, with the roles and constraints the row declares."""
     row = next(r for r in get_index().statvars if r.dcid == dcid)
     arcs = {
@@ -1601,7 +1601,7 @@ def _index_member_shape(dcid: str) -> ShapeDraft:
 def test_an_index_shape_binds_the_party_its_family_datasets_declare(
     variable, member, providers
 ) -> None:
-    """Before candidacy stamps its datasets, a shape recall confirmed from the packaged
+    """Before candidacy stamps its datasets, a shape recall confirmed from the fixture
     index answers from the datasets publishing its family: DAC2a's binds the multilaterals
     total as the provider of "multilateral ODA to Kenya", DAC2b's of "multilateral OOF to
     Kenya", and the CRS's none. The word names the party only beside words the shape reads

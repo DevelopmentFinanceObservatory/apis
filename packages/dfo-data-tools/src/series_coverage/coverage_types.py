@@ -95,7 +95,7 @@ class Headline:
     newest year a variable of the read heads, the year it elected
     (`CoverageIndex.elected_years`) or, electing none, its latest year up to the
     build year. When no variable holds a year that early, each heads its latest
-    year. The list stops at the artifact's epoch year, so it holds one or two
+    year. The list stops at the index's epoch year, so it holds one or two
     entries within two years of it.
     The earlier years are counted whether or not a requested window reaches them.
     """

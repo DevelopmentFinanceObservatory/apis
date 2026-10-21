@@ -1,4 +1,4 @@
-"""The relaxed nearest-real probe can confirm members from the packaged index
+"""The relaxed nearest-real probe can confirm members from the fixture index
 that the recall pool missed. Its returned suggestion must use those members'
 own facts. The fixture pairs two real CRS StatVars; only the index-only member
 has observations.

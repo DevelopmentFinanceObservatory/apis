@@ -1,6 +1,6 @@
 """Tests coded-qualifier reattachment, CRS slot binding, and warning suppression.
 
-The fixture uses a packaged, role-bearing CRS StatVar with finance and flow codes.
+The fixture uses a role-bearing CRS StatVar of the fixture index with finance and flow codes.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ _QUALIFIER_PHRASE = "type of finance 110 type of flow 10"
 _VARIABLE_WITH_CODES = f"{_UNFIXED_VARIABLE} {_QUALIFIER_PHRASE}"
 
 _KEN_DCID = "country/KEN"
-# A packaged CRS StatVar with five constraint properties.
+# A fixture CRS StatVar with five constraint properties.
 _SV_DCID = (
     "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
     "CRSPurposeCode99810_Nominal"
@@ -89,7 +89,7 @@ class _DetectSpyGraph(FakeGraph):
 
 
 def _crs_graph() -> _DetectSpyGraph:
-    """Build a graph for the packaged CRS StatVar and composed detect query.
+    """Build a graph for the fixture CRS StatVar and composed detect query.
 
     Kenya's observations use the `financingRecipient` role tuple in the SDMX fixture.
     """

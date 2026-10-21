@@ -1,4 +1,4 @@
-"""Tests when `shape_member_facts` reads a shape's members from the packaged index.
+"""Tests when `shape_member_facts` reads a shape's members from the fixture index.
 
 Only incomplete recall facts widen, and only for a query whose membership the index decides. A
 separate test checks that indexed five-tuples cannot form availability-sibling pairs.
@@ -13,7 +13,7 @@ import json
 import pytest
 
 import search.engine.retrieval.bound_values as bound_values_module
-from code_index import FamilyQuery, StatVarRow, default_index_path, parse_index
+from code_index import FamilyQuery, StatVarRow, parse_index
 from code_index.export import content_hash
 from code_index.shared import get_index, get_measure_index
 from datasets_api.adapter import resolve_definition_members
@@ -55,6 +55,7 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
     imputed_education_aid_identity,
 )
+from tests.code_index.support import INDEX_FIXTURE
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._fake_coverage import (
@@ -190,7 +191,7 @@ def test_a_large_precise_posted_set_still_stays_on_the_recall_path():
 
 
 def test_a_shape_the_index_does_not_carry_keeps_the_recall_pool_unchanged():
-    """A demographic-shaped five-tuple: no row in the packaged index (CRS
+    """A demographic-shaped five-tuple: no row in the fixture index (CRS
     code systems alone) matches it, so the swap never fires."""
     arcs_a = {
         "populationType": {"nodes": [{"dcid": "Person"}]},
@@ -273,7 +274,7 @@ def _education_shape(identity: dict) -> tuple[ShapeDraft, FamilyQuery]:
 
 
 def _search_family(identity: dict) -> set[str]:
-    """The members Search resolves for `identity` from the packaged index."""
+    """The members Search resolves for `identity` from the fixture index."""
     member_facts, index_sourced = shape_member_facts(*_education_shape(identity))
     assert index_sourced is True
     return set(member_facts)
@@ -549,7 +550,7 @@ def test_the_plain_aid_identity_declares_no_aid_type_slot():
 
 
 def _arcs_carrying(constraints: dict[str, str]) -> dict:
-    """Recall arcs for a demographic StatVar the packaged index does not carry."""
+    """Recall arcs for a demographic StatVar the fixture index does not carry."""
     return {
         "populationType": {"nodes": [{"dcid": "Person"}]},
         "measuredProperty": {"nodes": [{"dcid": "unemploymentRate"}]},
@@ -648,7 +649,7 @@ def _plain_aid_identity() -> BaseIdentity:
 
 
 def _index_with_an_edited_dataset_declaration():
-    document = json.loads(gzip.decompress(default_index_path().read_bytes()))
+    document = json.loads(gzip.decompress(INDEX_FIXTURE.read_bytes()))
     imputed = next(d for d in document["datasets"] if d["provenance"] == IMPUTED_PROVENANCE)
     imputed["label"] = f"{imputed['label']} (edited)"
     blocks = {key: value for key, value in document.items() if key != "stamp"}

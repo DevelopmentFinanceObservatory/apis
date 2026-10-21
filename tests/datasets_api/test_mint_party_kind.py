@@ -1,4 +1,4 @@
-"""A DAC2A mint of France's aid serves each party's kind from the packaged index's party
+"""A DAC2A mint of France's aid serves each party's kind from the fixture index's party
 declaration: a long-layout file writes `financingProvider_party_kind` and
 `financingRecipient_party_kind` by default, and a frame-layout file on a bare `party_kind`
 token."""

@@ -48,9 +48,9 @@ from graph_release.publish import (
     prune_releases,
     publish_release,
 )
+from tests.artifact_publication.support import BUCKET, FakeBlob, gs_bucket  # noqa: F401
 from tests.artifact_publication.test_jobs import _conditional_delete
 from tests.graph_release.support import build_test_release, sample_tables
-from tests.series_coverage.test_uri_gs import _BUCKET, _FakeBlob, gs_bucket  # noqa: F401
 
 
 @dataclass
@@ -72,12 +72,12 @@ def bucket(request, tmp_path, monkeypatch) -> Bucket:
         return Bucket(root=root_dir.as_uri(), backdate=backdate_file)
 
     objects = request.getfixturevalue("gs_bucket")
-    monkeypatch.setattr(_FakeBlob, "delete", _conditional_delete)
+    monkeypatch.setattr(FakeBlob, "delete", _conditional_delete)
 
     def backdate_gs(relative: str, written: float) -> None:
         objects[f"releases/{relative}"].time_created = datetime.fromtimestamp(written, UTC)
 
-    return Bucket(root=f"gs://{_BUCKET}/releases", backdate=backdate_gs)
+    return Bucket(root=f"gs://{BUCKET}/releases", backdate=backdate_gs)
 
 
 def _release(

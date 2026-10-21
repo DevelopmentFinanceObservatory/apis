@@ -1,6 +1,6 @@
 """Tests qualifier admission in warnings, filter provenance, and same-shape merges.
 
-Fixtures use packaged CRS data and one synthetic code system.
+Fixtures use fixture CRS data and one synthetic code system.
 """
 
 from __future__ import annotations

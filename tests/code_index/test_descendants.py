@@ -6,7 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from code_index import CodeIndex, default_index_path, load_index
+from code_index import CodeIndex
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 
 def _bounded(fn, /, *args, timeout: float = 3.0, **kwargs):
@@ -59,7 +60,7 @@ def test_a_binding_expands_only_a_parent_disjoint_from_its_children(code: str, e
     """A CRS purpose parent's records are apart from its children's, so a binding reads the
     subtree. A DAC1 aid type parent is the total of its children, so a binding reads the
     parent alone."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
 
     assert len(index.descendants(code)) > 1
     assert index.expansion(code) == (index.descendants(code) if expands else (code,))

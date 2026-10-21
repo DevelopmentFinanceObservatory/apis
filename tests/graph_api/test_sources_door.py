@@ -1044,7 +1044,7 @@ class _FakeCoverage:
 
     def current(self) -> _FakeIndex:
         if self._unreadable:
-            raise RuntimeError("coverage artifact unreadable")
+            raise RuntimeError("coverage view unreadable")
         return _FakeIndex(provenance_currencies=self._units, provenance_shapes=self._shapes)
 
 

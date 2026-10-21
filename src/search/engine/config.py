@@ -182,7 +182,7 @@ class SearchSettings(BaseSettings):
     # inline-display caps. A read of several series shares the cap times its series equally.
     obs_preview_max_rows: int = 20_000
 
-    # Open-axis discovery filters the coverage artifact without a member-count cap.
+    # Open-axis discovery filters the release's coverage view without a member-count cap.
     # scope_min_year floors open-ended windows. Coverage paths also floor at the artifact's
     # epoch_year, the first year represented by its bitmask.
     # scope_max_window_years limits year lists before they become SDMX OR-filters.

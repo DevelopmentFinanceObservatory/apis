@@ -86,7 +86,7 @@ jobs:
       # (httpx, pyarrow), with no FastAPI and no engine extras, which holds
       # dc_sdmx to the independence contract tests/dc_sdmx/test_independence.py
       # asserts. The `coverage` extra (numpy, also free of FastAPI) serves the
-      # session coverage service tests/conftest.py installs.
+      # session release tests/conftest.py binds.
       - name: Install dependencies
         run: uv sync --frozen --no-default-groups --group test --extra sdmx --extra coverage
 

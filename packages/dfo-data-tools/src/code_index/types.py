@@ -628,7 +628,7 @@ def label_for_pairs(
 class MeasureIndex:
     """The measure-axis declarations, their values, their partition labels, and
     the measure nouns parsed from one export -- everything `code_index.loader.
-    load_measure_axes` reads beyond the `CodeIndex` itself. `axes` is empty
+    parse_measure_axes` reads beyond the `CodeIndex` itself. `axes` is empty
     for a deployment that declares no measure family at all, which is a
     supported state.
 

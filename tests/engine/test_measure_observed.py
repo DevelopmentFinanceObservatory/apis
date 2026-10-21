@@ -1,4 +1,4 @@
-"""Tests observed measure partitions for resolved members against the packaged CRS index.
+"""Tests observed measure partitions for resolved members against the fixture CRS index.
 
 The FinancialFlow/amount/measuredValue/Nominal family has four populated partitions.
 """
@@ -39,7 +39,7 @@ def _members_for(dcids: tuple[str, ...]) -> list[IndexMemberFacts]:
 
 
 def _arcs_from_real_row(dcid: str) -> dict:
-    """Build node arcs from a packaged row to compare arcs and index member facts."""
+    """Build node arcs from a fixture row to compare arcs and index member facts."""
     index = get_index()
     row = next(r for r in index.statvars if r.dcid == dcid)
     arcs: dict = {

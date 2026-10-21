@@ -1,6 +1,6 @@
 """Test `_resolve_query_qualifiers` through `_repair_bindings`.
 
-Cases use the packaged code and measure indexes for real CRS terms, with
+Cases use the fixture code and measure indexes for real CRS terms, with
 synthetic shapes that prevent measure-family election from changing bindings.
 """
 

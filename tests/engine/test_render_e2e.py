@@ -182,8 +182,8 @@ def test_place_other_kind_resolution_reaches_no_observations():
     assert r.no_data.reason == "no_observations"
     # The checked series is stated in claim form. Its open_axis_facts state the
     # age/income constraints it declares but this shape's grammar never modelled as
-    # how-slots: a constant axis speaks instead of staying silent. The packaged code
-    # index carries no label for either dcid (it packages only the four CRS code
+    # how-slots: a constant axis speaks instead of staying silent. The fixture code
+    # index carries no label for either dcid (it holds only the four CRS code
     # systems), so each value renders through _humanize_ref's dcid fallback
     # ("Years15Onwards" -> "years 15 onwards", "WithIncome" -> "with income") rather
     # than the raw dcid or silence: the served members really do agree on both

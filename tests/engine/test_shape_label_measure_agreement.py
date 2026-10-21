@@ -23,7 +23,7 @@ from search.models import (
 from search.render.plan import render_sentence
 from tests.engine._builders import conjoin_spec, gref, shape_five_tuple, value_slot
 
-# Two real, packaged CRS StatVarRow dcids sharing every five-tuple/constraint
+# Two real, fixture CRS StatVarRow dcids sharing every five-tuple/constraint
 # value except nettingBasis, the same group derive_shapes would fold into
 # one shape (grouping is by five-tuple alone; nettingBasis is a constraint
 # property, not part of it).
@@ -60,7 +60,7 @@ def _real_partition(dcid: str) -> MeasurePartition:
 
 
 def _fixture_cross_check() -> None:
-    """Both dcids really are packaged today, on opposite sides of
+    """Both dcids really are in the fixture index today, on opposite sides of
     nettingBasis. If a corpus refresh ever drops or reshapes either, the
     test below would otherwise pass or fail for the wrong reason."""
     by_dcid = {r.dcid: r for r in get_index().statvars}
@@ -243,7 +243,7 @@ def test_an_unlabelled_partition_with_nothing_to_compose_falls_back_to_a_served_
 def test_a_group_agreeing_on_an_open_axis_names_it_but_never_a_varying_one():
     """Labels include bound and constant open axes, but omit axes whose served members vary.
 
-    Synthetic axis names fall back to their dcids because the packaged index has no labels for them.
+    Synthetic axis names fall back to their dcids because the fixture index has no labels for them.
     """
     gross_partition = _real_partition(_GROSS_DCID)
     net_partition = _real_partition(_NET_DCID)

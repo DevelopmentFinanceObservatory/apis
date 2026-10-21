@@ -1,6 +1,6 @@
 """Tests query-aware measure collapse in ranking, binding admission, and election warnings.
 
-Real packaged CRS StatVars supply candidates to minimal `ResolveState` fixtures. The index carries
+Real fixture CRS StatVars supply candidates to minimal `ResolveState` fixtures. The index carries
 only `Nominal` measurement qualifiers, so tests vary population types and constraint values.
 """
 
@@ -57,7 +57,7 @@ _REAL_INDEX = get_index()
 
 
 def _fixture_cross_check() -> None:
-    """Confirm fixture dcids and measure values against the packaged index."""
+    """Confirm fixture dcids and measure values against the fixture index."""
     by_dcid = {r.dcid: r for r in _REAL_INDEX.statvars}
     for dcid in (_FF_NOMINAL_DCID, _FO_NOMINAL_DCID, _GRANT_EQ_NOMINAL_DCID):
         assert dcid in by_dcid, dcid

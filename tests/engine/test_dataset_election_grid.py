@@ -407,7 +407,7 @@ def _index(
 
 
 def _use_index(monkeypatch: pytest.MonkeyPatch, index: CodeIndex) -> None:
-    """Serve `index` wherever a loaded module reads the packaged index."""
+    """Serve `index` wherever a loaded module reads the fixture index."""
     packaged = shared_module.get_index
     for module in list(sys.modules.values()):
         if vars(module).get("get_index") is packaged:

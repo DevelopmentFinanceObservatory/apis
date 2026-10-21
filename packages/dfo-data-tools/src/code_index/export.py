@@ -1,9 +1,11 @@
-"""Build the code index's graph blocks from a graph reader.
+"""Build the code index document from a graph reader.
 
 `export_graph_blocks` reads the graph through `ExportReader` and joins it with the authored
-declarations (`code_index.declarations`). `index_bytes` is the one serialisation of an index
-document, so the same document gives the same bytes. Nothing here imports `scripts/` or
-`dc_graph`: a reader supplies the graph reads, and the two names the export needs from
+declarations (`code_index.declarations`). `export_index` completes those blocks into the
+document: provenances and parties from the coverage it joins, and the stamp.
+`graph_release.dfo` builds a release's code index part with it. `index_bytes` is the one
+serialisation of an index document, so the same document gives the same bytes. Nothing here
+imports `dc_graph`: a reader supplies the graph reads, and the two names the export needs from
 `dc_graph` are imported where they are used.
 """
 
@@ -33,9 +35,11 @@ from code_index.declarations import (
     MEASURE_VALUE_TEXT,
     MEASURE_WORD_SYNONYMS_KEPT,
     PARTLY_STATED_VALUES,
+    PARTY_KIND_OVERRIDES,
     PARTY_TYPE_KINDS,
     SHAPE_SLOT_DEFAULTS,
     STAT_TYPE_WORDS,
+    TOTAL_GROUPS,
     VARIABLE_ALIASES,
     CodeSystemConfig,
     KindOverride,
@@ -1022,9 +1026,7 @@ def _verify_five_tuple_completeness(
     Truncated or exhausted reads refuse, as does a subject the forward read finds no node for.
 
     A decided StatVar whose codes lie outside the typed enums escapes both the spine and this
-    check, and nothing else catches it. The check proves completeness at export time. The live
-    drift test (`tests/code_index/test_export_drift.py`) re-exports through
-    `export_graph_blocks` and catches rows changed or removed since the committed index.
+    check, and nothing else catches it. The check proves completeness at export time.
     """
     key_sets: dict[_FiveTuple, set[frozenset[str]]] = {}
     for row in statvars:
@@ -1089,8 +1091,7 @@ def listed_dcids(
 ) -> tuple[str, ...]:
     """Return the sorted StatVars `provenances` assigns to any of `datasets`.
 
-    `provenances` maps a StatVar to the datasets publishing it: a coverage build's
-    (`CoverageJoin.provenances`), or the committed index's listed rows for the drift test. A
+    `provenances` maps a StatVar to the datasets publishing it (`CoverageJoin.provenances`). A
     dataset of `datasets` with no StatVar raises `ExportRefused`, since the export could not list
     its rows."""
     found = {dcid: set(datasets).intersection(sets) for dcid, sets in provenances.items()}
@@ -1325,9 +1326,8 @@ def export_statvars(reader: ExportReader, statvar_dcids: Sequence[str]) -> list[
         arcs = pass1.get(dcid)
         if arcs is None:
             raise ExportRefused(
-                f"the graph holds no node for {dcid} -- it is either a StatVar this "
-                "export just enumerated and the graph dropped mid-read, or a row the "
-                "committed index still carries and the graph no longer holds"
+                f"the graph holds no node for {dcid} -- a StatVar this export enumerated "
+                "or the coverage lists"
             )
         _check_typed_as_statvar(dcid, arcs.get("typeOf", ()))
         for prop in _STATVAR_SHAPE_PROPERTIES:
@@ -1684,9 +1684,7 @@ def export_graph_blocks(
     values into `value_parents` (`export_value_parents`).
 
     StatVar rows carry no `provenances` and the result has no stamp, so it does not load as an
-    index. `export_index` completes it from a coverage build. The drift test compares it with the
-    committed export, listing the same StatVars the committed index lists, so it needs graph
-    credentials alone.
+    index. `export_index` completes it.
     """
     declarations = []
     codes = []
@@ -1750,6 +1748,87 @@ def export_graph_blocks(
         "variable_aliases": dict(variable_aliases),
         "stat_type_words": [_stat_type_word_to_dict(d) for d in stat_type_words],
     }
+
+
+@dataclass(frozen=True)
+class CoverageJoin:
+    """What the export takes from the coverage it joins: each covered variable's sorted
+    provenances, and the donors and recipients of the declared and listed datasets."""
+
+    provenances: Mapping[str, Sequence[str]]
+    parties: Mapping[str, PartyPublication]
+
+
+def export_index(
+    reader: ExportReader,
+    *,
+    graph_endpoint: str,
+    coverage: CoverageJoin,
+    party_reader: ExportReader,
+    code_systems: Sequence[CodeSystemConfig] = CODE_SYSTEMS,
+    measure_axes: Sequence[MeasureAxis] = MEASURE_AXES,
+    measure_partition_labels: Sequence[MeasurePartitionLabel] = MEASURE_PARTITION_LABELS,
+    measure_nouns: Sequence[MeasurePartitionLabel] = MEASURE_NOUNS,
+    datasets: Sequence[DatasetDeclaration] = DATASETS,
+    party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
+    shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
+    partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
+    measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
+    variable_aliases: Mapping[str, str] = VARIABLE_ALIASES,
+    stat_type_words: Sequence[StatTypeWordDeclaration] = STAT_TYPE_WORDS,
+    party_kind_overrides: Mapping[str, KindOverride] = PARTY_KIND_OVERRIDES,
+    total_groups: Mapping[str, TotalGroup] = TOTAL_GROUPS,
+    listed_datasets: Collection[str] = (),
+) -> dict:
+    """Build the index document: the graph blocks (`export_graph_blocks`), with the StatVars
+    `coverage` assigns to `listed_datasets` as listed rows (`listed_dcids`), each row's
+    provenances from `coverage`, every party of `coverage` with its kind and group
+    (`export_parties`, read through `party_reader`), and the stamp.
+
+    The stamp holds only what the blocks determine and `graph_endpoint`: an empty
+    `exported_at` and no `coverage_build`, which `graph_release.views` fills from the release
+    manifest, so an unchanged index keeps its bytes. `statvars_without_coverage` counts the
+    StatVar rows `coverage` gives no provenance.
+
+    Raises `ExportRefused` where a step refuses the graph or the declarations. Whether the
+    finished document loads is checked once, where it is read: the release gate refuses a code
+    index part `parse_index` or `parse_measure_axes` refuses (`code_index_unloadable`).
+    """
+    blocks = export_graph_blocks(
+        reader,
+        code_systems=code_systems,
+        measure_axes=measure_axes,
+        measure_partition_labels=measure_partition_labels,
+        measure_nouns=measure_nouns,
+        datasets=datasets,
+        party_type_kinds=party_type_kinds,
+        listed=listed_dcids(coverage.provenances, listed_datasets),
+        shape_slot_defaults=shape_slot_defaults,
+        partly_stated_values=partly_stated_values,
+        measure_classes=measure_classes,
+        variable_aliases=variable_aliases,
+        stat_type_words=stat_type_words,
+    )
+    for block in ("statvars", "listed_statvars"):
+        for row in blocks[block]:
+            row["provenances"] = sorted(coverage.provenances.get(row["dcid"], ()))
+    verify_complete_systems(blocks["statvars"], code_systems)
+    blocks["parties"] = export_parties(
+        party_reader,
+        coverage.parties,
+        type_kinds=party_type_kinds,
+        kind_overrides=party_kind_overrides,
+        total_groups=total_groups,
+    )
+    stamp = {
+        "graph_endpoint": graph_endpoint,
+        "exported_at": "",
+        **stamp_counts(blocks),
+        "content_hash": content_hash(blocks),
+        "coverage_build": None,
+        "statvars_without_coverage": sum(not row["provenances"] for row in blocks["statvars"]),
+    }
+    return {"stamp": stamp, **blocks}
 
 
 def stamp_counts(blocks: Mapping[str, list[dict]]) -> dict[str, dict[str, int]]:

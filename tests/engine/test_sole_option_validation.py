@@ -97,7 +97,7 @@ def _row(dcid: str, **constraints: str) -> StatVarRow:
 
 
 def _use_index(monkeypatch: pytest.MonkeyPatch, *rows: StatVarRow) -> None:
-    """Serve an index of `rows` wherever a loaded module reads the packaged index."""
+    """Serve an index of `rows` wherever a loaded module reads the fixture index."""
     index = CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="test",

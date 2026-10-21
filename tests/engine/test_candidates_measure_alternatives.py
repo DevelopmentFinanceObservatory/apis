@@ -1,6 +1,6 @@
 """Candidate responses publish measure labels and alternatives for every candidate.
 
-The elected FinancialFlow/grantEquivalent member belongs to a packaged measure family but has no
+The elected FinancialFlow/grantEquivalent member belongs to a fixture index measure family but has no
 alternative measures. The also-plausible FinancialFlow/amount fixture is subject-only, so it does
 not fold into the elected role-bearing shape and has no measure family of its own.
 """
@@ -47,7 +47,7 @@ _ROLE_RECIPIENT = "financingRecipient"
 # Shares the elected shape's populationType (FinancialFlow) but declares no
 # non-subject role, so it neither folds in as a measure sibling
 # (_shapes_are_measure_siblings) nor trips R5's population conjunct. Its
-# RealValue qualifier appears on no row of the packaged index (every row
+# RealValue qualifier appears on no row of the fixture index (every row
 # there is Nominal), so its five-tuple carries no measure family at all.
 _ALT_SV = (
     "Amount_FinancialFlow_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"

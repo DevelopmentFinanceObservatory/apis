@@ -361,7 +361,7 @@ def test_narrowing_crs_type_of_finance_from_the_rollup_to_a_real_leaf_elects_tha
 ):
     """The elected identity binds `crsTypeOfFinance` to the hierarchical rollup
     (`CRSTypeOfFinance100`), and the client narrows to one real leaf
-    (`CRSTypeOfFinance110`): the packaged index's election recovers every real
+    (`CRSTypeOfFinance110`): the fixture index's election recovers every real
     member sharing that leaf.
     """
     leaf = "CRSTypeOfFinance110"

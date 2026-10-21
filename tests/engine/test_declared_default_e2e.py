@@ -1,6 +1,6 @@
 """The declared flow default stamps ``CRSTypeOfFlow10`` as ``declared_default`` (#968).
 
-The fixture uses a packaged-index CRS StatVar.
+The fixture uses a fixture-index CRS StatVar.
 Omitting "ODA" from the query leaves the flow slot open for the default."""
 
 from __future__ import annotations
