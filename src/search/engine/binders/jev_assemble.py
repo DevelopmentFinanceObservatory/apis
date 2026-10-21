@@ -40,9 +40,11 @@ from search.engine.bind import (
 )
 from search.engine.binders.base import BindResult
 from search.engine.binders.gemini import (
+    RATED_POOL_FRACTION,
     holds_drafted_values,
     holds_requested_slots,
     mentioned_drafts,
+    near_best,
     nominated_near_best,
 )
 from search.engine.binders.house_policy import (
@@ -107,9 +109,11 @@ class Thresholds:
     measure score is at least ``1 - near_elect`` of the best product, each convention
     variant of the lead within `near` of the best measure score (`_convention_variant`),
     and each nominal output shape within `widen` of it (`_with_nominal_output`). A
-    plausible shape is an alternate when its measure score is above `alt_floor`. ``mv``
-    above `measure_value` names a measure-axis value, and above `policy_value` one of two a
-    house policy chooses between (`_names_value`); ``named`` above `named` names the
+    plausible shape is an alternate when its measure score is above `alt_floor` and its
+    election at least 0.9 of the elected shape's, the bar Gemini's rated pool uses
+    (`gemini.near_best` with `gemini.RATED_POOL_FRACTION`). ``mv`` above `measure_value`
+    names a measure-axis value, and above `policy_value` one of two a house policy chooses
+    between (`_names_value`); ``named`` above `named` names the
     dataset, ``n`` above `value` a slot value. ``part`` at or under `part` asks for no
     particular value, and a value then needs ``n`` above `part_n`. ``several`` above
     `several` binds a set, and ``all`` above `requested_all` an explicit "every value".
@@ -136,9 +140,13 @@ class Thresholds:
     near: float = 0.15
     near_elect: float = 0.8
     # The election is the mean of two distributions, so two readings Jev cannot tell
-    # apart split it about evenly. At 0.5, 40 of the 1,405 parts list alternates, 3 of the
-    # 60 the labels mark as candidates among them. At 0.95, 285 list them, 12 of the 60
-    # among them.
+    # apart split it about evenly. This bar sets the plausible shapes the lead and the form
+    # rule choose from; at 0.5, 1,126 of the 1,405 labelled parts pick right. Alternates
+    # need 0.9 of the elected shape's election besides: against nominating every plausible
+    # shape, parts whose status matches the label rise from 1,228 to 1,250, candidates
+    # listed on parts labelled definite fall from 35 to 11, candidates listed on parts
+    # labelled candidates from 3 to 1, and parts listing every shape the label requires
+    # from 1,197 to 1,191. One bar for both moves 3 picks.
     near_alt: float = 0.5
     alt_floor: float = 0.3
     widen: float = 0.2
@@ -650,11 +658,11 @@ def _holds(
 def _alternates(
     shapes: Sequence[ShapeDraft], e: int, conf: Confidence, t: Thresholds, form: str | None
 ) -> list[int]:
-    """The shapes the election finds as plausible as `e` (`conf.plausible`) that measure
-    the phrase above `alt_floor`, by measure score, highest first: readings the words do
-    not choose between. A shape a house policy set aside offers a reading it settled, and
-    where the phrase states a form, a shape dividing by another base than `e` offers
-    another quantity."""
+    """The plausible shapes (`conf.plausible`) the election rates at least 0.9 of `e`, the
+    bar Gemini's rated pool uses (`gemini.near_best`), that measure the phrase above
+    `alt_floor`, by measure score, highest first: readings the words do not choose between.
+    A shape a house policy set aside offers a reading it settled, and where the phrase
+    states a form, a shape dividing by another base than `e` offers another quantity."""
     denominator = stated_reading(shapes[e]).denominator
     out = [
         k
@@ -662,6 +670,7 @@ def _alternates(
         if k != e
         and k not in conf.policy_dropped
         and conf.measures[k] > t.alt_floor
+        and near_best(conf.election.get(k, 0.0), conf.election.get(e, 0.0), RATED_POOL_FRACTION)
         and (form is None or stated_reading(shapes[k]).denominator == denominator)
     ]
     for k in out:

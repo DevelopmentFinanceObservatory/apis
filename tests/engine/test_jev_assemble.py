@@ -196,8 +196,16 @@ def _alternates(shapes: list[ShapeDraft], elect: Mapping[int, float], best: floa
 def _near_alt(nouls: Mapping[str, float]) -> object:
     p = nouls["elect|1"]
     answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 1.0 - p, 1: p})
-    output, _conf = _assemble(_request([_shape(0), _shape(1, population="Place")]), answers)
-    return output.also_plausible
+    _output, conf = _assemble(_request([_shape(0), _shape(1, population="Place")]), answers)
+    return sorted(conf.plausible)
+
+
+def _nominated(nouls: Mapping[str, float]) -> object:
+    """The plausible shapes and the alternates of two shapes measuring the phrase equally
+    well, shape 0 elected at 0.5."""
+    answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 0.5, 1: nouls["elect|1"]})
+    output, conf = _assemble(_request([_shape(0), _shape(1, population="Place")]), answers)
+    return sorted(conf.plausible), output.also_plausible
 
 
 def _elected(shapes: list[ShapeDraft], elect: Mapping[int, float], base: Mapping[str, float]):
@@ -264,7 +272,10 @@ _CUTS = {
         None,
         [1],
     ),
-    "near_alt": _Cut(_near_alt, "elect|1", 0.33, 0.34, None, [1]),
+    "near_alt": _Cut(_near_alt, "elect|1", 0.33, 0.34, [0], [0, 1]),
+    # A plausible shape is nominated at 0.9 of the elected shape's election, Gemini's
+    # rated-pool bar (`gemini.RATED_POOL_FRACTION`).
+    "nominated": _Cut(_nominated, "elect|1", 0.425, 0.45, ([0, 1], None), ([0, 1], [1])),
     "measure_value": _Cut(
         _elected(_PERSON_AND_PLACE, {0: 0.6, 1: 0.4}, {"m|0": 0.9, "m|1": 0.9}),
         "mv|Place",
@@ -580,7 +591,7 @@ def test_an_alternate_stands_only_near_the_best_measure_score(measure: float, al
     """An alternate scoring under 0.9 of the best measure score is a weaker reading, the
     bar a Gemini nomination clears on its rating (`gemini.nominated_near_best`)."""
     shapes = [_shape(0), _shape(1, population="Place")]
-    answers = _answers({"m|0": 0.9, "m|1": measure}, elect={0: 0.6, 1: 0.4})
+    answers = _answers({"m|0": 0.9, "m|1": measure}, elect={0: 0.52, 1: 0.48})
 
     result, _conf = bind_result(jev_menu(_request(shapes)), answers, stated_form=None)
 
