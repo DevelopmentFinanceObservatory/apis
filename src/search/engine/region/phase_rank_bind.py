@@ -2880,8 +2880,9 @@ def model_only_values(
     """The `values` bound on `prop` that no recorded term of the request supports, so only
     the bind model read them from the words. A term supports every value on `prop` when it
     is an admitted qualifier match on `prop` or a query record a binding on it covers, and
-    supports one value when one of its names (`_value_names`) is a run of the variable's
-    words, so "women" names Female by its synonym. A value with no name is the model's. An
+    supports one value when one of its names (`_value_names`) is a run of the variable,
+    a dropped qualifier phrase or the single-variable query, so "women" names Female by
+    its synonym. Each source is read separately. A value with no name is the model's. An
     answer that cannot apply a supported value refuses `qualifier_not_bound` on it, and one
     that cannot apply a model-only value discloses it (`unrealisable.unbind_unrealisable`,
     `_stray_requirements`)."""
@@ -2889,12 +2890,16 @@ def model_only_values(
         record.slot == prop and record.disposition == "bound" for record in state.query_qualifiers
     ):
         return ()
-    tokens = tokenize(state.variable)
+    texts = [state.variable, *state.dropped_qualifier_phrases]
+    if state.query_text:
+        texts.append(state.query_text)
+    sources = [tokenize(text) for text in dict.fromkeys(texts)]
     return tuple(
         value
         for value in values
         if not any(
             _token_occurrences(tokens, name)
+            for tokens in sources
             for name in _value_names(prop, value, labels.get(value))
         )
     )

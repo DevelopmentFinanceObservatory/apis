@@ -106,6 +106,8 @@ def _stray_value_labels() -> None:
         admitted_qualifiers=(),
         query_qualifiers=[],
         variable="population",
+        query_text=None,
+        dropped_qualifier_phrases=(),
     )
     (requirement,) = asyncio.run(_stray_requirements(cast(ResolveState, state), [stray]))
     assert requirement.term.text == "sex female"

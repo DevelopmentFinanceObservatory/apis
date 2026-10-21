@@ -3513,6 +3513,8 @@ def _record_stray_female(state: ResolveState) -> None:
         admitted_qualifiers=(),
         query_qualifiers=[],
         variable="female",
+        query_text=None,
+        dropped_qualifier_phrases=(),
     )
     for requirement in asyncio.run(_stray_requirements(cast(ResolveState, labels), [stray])):
         state.requirements = with_requirement(state.requirements, requirement)

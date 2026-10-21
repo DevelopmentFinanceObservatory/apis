@@ -624,7 +624,7 @@ class _ForeignSlotLLM:
 _USAGE = {"input_tokens": 7, "output_tokens": 3, "cached_tokens": 0}
 
 
-def _resolve_population(llm):
+def _resolve_population(llm, *, query_text=None, dropped_qualifier_phrases=()):
     from search.engine.region import resolve_variable
     from tests.fixtures import FakeGraph, make_resolver
 
@@ -645,6 +645,8 @@ def _resolve_population(llm):
             date_request=None,
             detect_query="population",
             role_query="population of Kenya",
+            query_text=query_text,
+            dropped_qualifier_phrases=list(dropped_qualifier_phrases),
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
@@ -711,8 +713,33 @@ def test_a_value_bound_on_a_slot_the_elected_shape_lacks_is_disclosed(drafts):
     assert spec.resolved.trace.query_qualifiers == []
 
 
-@pytest.mark.parametrize("variable", ["female population", "population of women"])
-def test_a_stray_value_is_met_by_an_answer_that_binds_it(monkeypatch, variable):
+@pytest.mark.parametrize(
+    ("query_text", "dropped"),
+    [
+        ("female population in Kenya", ()),
+        (None, ("female",)),
+        ("female population in Kenya", ("female",)),
+    ],
+    ids=["full-query", "dropped-qualifier", "both-sources"],
+)
+def test_a_stray_value_named_outside_the_variable_refuses(query_text, dropped):
+    """Extraction leaves population as the variable and female in another request source.
+    The population shape cannot apply the drafted gender, so the answer refuses it."""
+    result = _resolve_population(
+        _ForeignSlotLLM([_value("gender", "Female")]),
+        query_text=query_text,
+        dropped_qualifier_phrases=dropped,
+    )
+
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert [q.text for q in result.unbound_qualifiers] == ["Female"]
+    assert result.flagged_match is not None
+    assert [m.ref.ref for m in result.flagged_match[0].resolved.members] == [_RESOLVE_SV]
+
+
+@pytest.mark.parametrize("phrase", ["female population", "population of women"])
+@pytest.mark.parametrize("source", ["variable", "query_text", "dropped_qualifier_phrases"])
+def test_a_stray_value_is_met_by_an_answer_that_binds_it(monkeypatch, phrase, source):
     """A value the bind drafted on a slot the elected shape lacks and the words name, by
     its label or by a synonym the measure index holds for it, is judged as a value the
     request names (`_stray_requirements`): the elected population answer leaves "Female"
@@ -737,8 +764,11 @@ def test_a_stray_value_is_met_by_an_answer_that_binds_it(monkeypatch, variable):
         label_dcids=lambda values: values,
         admitted_qualifiers=(),
         query_qualifiers=[],
-        variable=variable,
+        variable="population",
+        query_text=None,
+        dropped_qualifier_phrases=(),
     )
+    setattr(state, source, (phrase,) if source == "dropped_qualifier_phrases" else phrase)
     stray = [_value("gender", "Female")]
 
     requirements = _run(_stray_requirements(state, stray))
@@ -746,6 +776,20 @@ def test_a_stray_value_is_met_by_an_answer_that_binds_it(monkeypatch, variable):
 
     assert [t.text for t in judgement.terms(0)] == ["Female"]
     assert judgement.terms(1) == ()
+
+
+def test_a_value_name_cannot_span_request_text_sources():
+    state = SimpleNamespace(
+        admitted_qualifiers=(),
+        query_qualifiers=[],
+        variable="primary",
+        query_text=None,
+        dropped_qualifier_phrases=("education",),
+    )
+
+    assert phase_rank_bind.model_only_values(
+        state, "crsPurpose", ["CRSPurposeCode11220"], {"CRSPurposeCode11220": "primary education"}
+    ) == ("CRSPurposeCode11220",)
 
 
 # The prompt's member sample uses recall members, even when the index has more.
