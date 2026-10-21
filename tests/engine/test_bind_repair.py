@@ -16,7 +16,6 @@ from search.engine.bind import (
     DraftBindingEvidence,
     DraftBindingKind,
     SlotBindingDraft,
-    _UniversalBindOutput,
 )
 from search.engine.bind_repair import (
     _label_named_in_text,
@@ -29,6 +28,7 @@ from search.engine.qualifier_match import QualifierMatch, QualifierTie
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.shape import ShapeDraft, shape_draft_from
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -81,8 +81,8 @@ class TestGenderedQueryWhereOnlyTheAggregateHasData:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
             assert "'Female'" in prompt, "the gender taxonomy must offer Female"
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -92,7 +92,6 @@ class TestGenderedQueryWhereOnlyTheAggregateHasData:
                     ),
                 ],
                 also_plausible=None,
-                ask=None,
             ), None
 
     @staticmethod

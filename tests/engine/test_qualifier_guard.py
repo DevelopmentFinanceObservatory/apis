@@ -971,20 +971,36 @@ def test_unplaced_no_vocabulary_term_trips_the_guard():
     assert _has_miss(qualifiers)
 
 
-def test_f02_non_concessional_flow_refuses_without_an_llm_unplaced_record():
-    """The bounded unsupported term protects f02 even when the binder does
-    not independently report it as unplaced."""
-    shape = _shape(_FLOW_SLOT)
-    state = _state(
-        variable="non-concessional aid to Kenya",
-        shape_draft=shape,
-        bindings=[_binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"])],
-        unplaced=[],
-    )
+@pytest.mark.parametrize(
+    ("slot", "variable", "bindings", "term"),
+    [
+        pytest.param(
+            _FLOW_SLOT,
+            "non-concessional aid to Kenya",
+            [_binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"])],
+            "non-concessional",
+            id="flow-type",
+        ),
+        # The CRS tags climate finance with Rio markers the pipeline drops.
+        pytest.param(
+            SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="sector"),
+            "climate finance",
+            [],
+            "climate",
+            id="purpose",
+        ),
+    ],
+)
+def test_a_declared_unexpressed_word_refuses_without_an_llm_unplaced_record(
+    slot, variable, bindings, term
+):
+    """A word the shape's code system declares no code expresses refuses even when the
+    binder does not report it as unplaced."""
+    state = _state(variable=variable, shape_draft=_shape(slot), bindings=bindings, unplaced=[])
 
     qualifiers = _run(state)
 
-    assert [(q.text, q.disposition) for q in qualifiers] == [("non-concessional", "no_vocabulary")]
+    assert [(q.text, q.disposition) for q in qualifiers] == [(term, "no_vocabulary")]
     assert _has_miss(qualifiers)
 
 

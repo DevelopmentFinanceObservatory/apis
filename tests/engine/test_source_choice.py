@@ -71,6 +71,7 @@ from search.models import (
 )
 from series_coverage.shared import CoverageSnapshot
 from tests.engine import test_pool_election as pools
+from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -123,7 +124,13 @@ class _FirstShapeLLM:
     """A bind model that elects the first shape of its menu and binds nothing."""
 
     async def generate_structured(self, *, prompt, system, schema):
-        return schema(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None), None
+        return schema(
+            chosen_shape_index=0,
+            bindings=[],
+            also_plausible=None,
+            ask=None,
+            measuring=[{"index": 0, "rating": 1.0}],
+        ), None
 
 
 def _resolve(parts: list[ParsedPart], graph: FakeGraph):
@@ -826,7 +833,13 @@ class _NominatingLLM(pools._ElectLLM):
             prompt=prompt, system=system, schema=schema
         )
         nominated = [i for i, block in enumerate(pools._menu_blocks(prompt)) if _NUMERATE in block]
-        return output.model_copy(update={"also_plausible": nominated}), usage
+        measuring = [
+            *output.measuring,
+            *nominee_ratings(nominated, rated={e.index for e in output.measuring}),
+        ]
+        return output.model_copy(
+            update={"also_plausible": nominated, "measuring": measuring}
+        ), usage
 
 
 @pytest.mark.parametrize(
@@ -968,7 +981,13 @@ class _MenuLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         self.prompts.append(prompt)
-        return schema(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None), None
+        return schema(
+            chosen_shape_index=0,
+            bindings=[],
+            also_plausible=None,
+            ask=None,
+            measuring=[{"index": 0, "rating": 1.0}],
+        ), None
 
 
 def test_an_exclusion_of_every_publisher_the_question_reaches_refuses_naming_it(

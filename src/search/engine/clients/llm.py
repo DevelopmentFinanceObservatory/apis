@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import hashlib
 import json
 import logging
 import re
-import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -28,6 +28,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
+from search.engine.clients.loop_local import LoopLocal
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.response_cache import Lease, ResponseCache
 
@@ -35,16 +36,20 @@ if TYPE_CHECKING:
     from google import genai
     from google.genai.types import GenerateContentConfig, ThinkingConfig
 
+    from search.engine.extraction_store import ExtractionStore
+
 _SchemaT = TypeVar("_SchemaT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
-# Lazy singleton, built on first call to generate_structured.
+# Lazy singletons, built on first call to generate_structured: the served calls' client, and
+# the client of detached calls (`detached`) with its own pools.
 _CLIENT = None
+_DETACHED_CLIENT = None
 
-# Memo hits report zero usage because they skip Gemini. Live calls return None
+# Memo and extraction-store hits report zero usage because they skip Gemini. Live calls return None
 # when Gemini omits usage metadata.
-_MEMO_HIT_USAGE: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+MEMO_HIT_USAGE: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
 # Follower wait limit. HttpOptions.timeout is per phase, so a stalled
 # connection can outlast it. This overall wait uses the same configured bound.
@@ -61,40 +66,30 @@ class _LoopLocalTransport(httpx.AsyncBaseTransport):
     """Keep one ``max_connections`` pool per event loop.
 
     Connections belong to their creating loop, so calls on different loops
-    need separate pools. Pools for closed loops are removed on the next lookup.
-    The lock protects simultaneous loop access from different threads.
+    need separate pools (`loop_local.LoopLocal`).
     HTTP/1.1 uses one request per connection, so the limit bounds each
     loop's concurrent Gemini requests. Pool waits use the request timeout.
     """
 
     def __init__(self, *, max_connections: int) -> None:
-        self._lock = threading.Lock()
         self._limits = httpx.Limits(
             max_connections=max_connections, max_keepalive_connections=max_connections
         )
-        self._pools: dict[asyncio.AbstractEventLoop, httpx.AsyncHTTPTransport] = {}
+        self._pools: LoopLocal[httpx.AsyncHTTPTransport] = LoopLocal()
 
     def _pool(self) -> httpx.AsyncHTTPTransport:
-        loop = asyncio.get_running_loop()
-        with self._lock:
-            for closed in [known for known in self._pools if known.is_closed()]:
-                del self._pools[closed]
-            pool = self._pools.get(loop)
-            if pool is None:
-                pool = self._pools[loop] = httpx.AsyncHTTPTransport(limits=self._limits)
-            return pool
+        return self._pools.get(lambda: httpx.AsyncHTTPTransport(limits=self._limits))
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         return await self._pool().handle_async_request(request)
 
     async def aclose(self) -> None:
-        with self._lock:
-            pool = self._pools.pop(asyncio.get_running_loop(), None)
+        pool = self._pools.pop()
         if pool is not None:
             await pool.aclose()
 
 
-def _build_client(api_key: str) -> genai.Client:
+def _build_client(api_key: str, *, max_connections: int) -> genai.Client:
     """Build a Gemini client using one-attempt httpx requests.
 
     Passing an async httpx client selects google-genai's httpx path, avoiding
@@ -105,6 +100,7 @@ def _build_client(api_key: str) -> genai.Client:
     ``HttpOptions.timeout`` is converted from milliseconds to seconds and
     bounds connect, read, write, and pool waits. Saturated pools raise
     ``httpx.PoolTimeout``, translated to ``LLMInfraError`` by the caller.
+    ``max_connections`` caps each event loop's pool.
     """
     try:
         from google import genai
@@ -115,7 +111,7 @@ def _build_client(api_key: str) -> genai.Client:
             "Install with: uv sync --extra engine (or pip install 'search[engine]')."
         ) from exc
     async_client = httpx.AsyncClient(
-        transport=_LoopLocalTransport(max_connections=config.settings().llm_max_concurrency),
+        transport=_LoopLocalTransport(max_connections=max_connections),
         # Every request carries HttpOptions.timeout. google-genai's httpx clients follow redirects.
         timeout=None,
         follow_redirects=True,
@@ -131,21 +127,39 @@ def _build_client(api_key: str) -> genai.Client:
 
 
 def _get_client() -> genai.Client:
-    """Return (or build) the singleton genai.Client.
+    """Return (or build) the singleton genai.Client of served calls, with
+    ``llm_max_concurrency`` connections per event loop.
 
     Raises LLMInfraError only when a live call is attempted and GEMINI_API_KEY
     is absent. Tests use FakeLLM instead, bypassing this path.
     """
     global _CLIENT
     if _CLIENT is None:
-        api_key = config.settings().gemini_api_key
-        if not api_key:
-            raise LLMInfraError(
-                "GEMINI_API_KEY is required for live LLM calls. "
-                "Set the environment variable or use FakeLLM in tests."
-            )
-        _CLIENT = _build_client(api_key)
+        _CLIENT = _build_client(
+            _required_api_key(), max_connections=config.settings().llm_max_concurrency
+        )
     return _CLIENT
+
+
+def _get_detached_client() -> genai.Client:
+    """Return (or build) the singleton genai.Client of detached calls, with
+    ``jev_shadow_max_inflight`` connections per event loop of its own."""
+    global _DETACHED_CLIENT
+    if _DETACHED_CLIENT is None:
+        _DETACHED_CLIENT = _build_client(
+            _required_api_key(), max_connections=config.settings().jev_shadow_max_inflight
+        )
+    return _DETACHED_CLIENT
+
+
+def _required_api_key() -> str:
+    api_key = config.settings().gemini_api_key
+    if not api_key:
+        raise LLMInfraError(
+            "GEMINI_API_KEY is required for live LLM calls. "
+            "Set the environment variable or use FakeLLM in tests."
+        )
+    return api_key
 
 
 _GEMINI_3_MINOR_RE = re.compile(r"^gemini-3\.(\d+)")
@@ -313,6 +327,30 @@ def recording_llm_usage() -> Iterator[SpentUsage]:
             outer.calls.extend(record.calls)
 
 
+@contextmanager
+def unrecorded_llm_usage() -> Iterator[None]:
+    """Keep the usage of every call in the body of the `with` block out of the enclosing
+    `recording_llm_usage` record: the calls of a detached comparison are not the answer's."""
+    token = _SPENT.set(None)
+    try:
+        yield
+    finally:
+        _SPENT.reset(token)
+
+
+def detached(llm: SupportsLLM) -> SupportsLLM:
+    """`llm` for a call no answer waits on: a shallow copy with no memo, so the call reaches
+    the model even when an identical request is in flight or stored, on the detached
+    client, whose connections are its own, so the call never takes a served call's
+    connection. Any other `SupportsLLM` comes back as it is."""
+    if not isinstance(llm, LLM):
+        return llm
+    clone = copy.copy(llm)
+    clone._memo = None
+    clone._detached = True
+    return clone
+
+
 def _note_spent(usage: dict | None) -> None:
     record = _SPENT.get()
     if record is not None and usage is not None:
@@ -369,7 +407,7 @@ async def _generate_structured[SchemaT: BaseModel](
     if stored is not None:
         logger.info("LLM memo hit: schema=%s", schema.__name__)
         # Each hit builds a fresh instance so callers can mutate their results independently.
-        return _served(stored, schema, model=llm._model), dict(_MEMO_HIT_USAGE)
+        return _served(stored, schema, model=llm._model), dict(MEMO_HIT_USAGE)
 
     assert lease is not None  # acquire() returns a lease exactly when it missed
     if lease.is_leader:
@@ -393,13 +431,13 @@ async def _generate_structured[SchemaT: BaseModel](
     value, _timed_out, _storable = published
     # Followers report zero usage. The leader's live call reports its token cost.
     logger.info("LLM memo hit: schema=%s", schema.__name__)
-    return _served(value, schema, model=llm._model), dict(_MEMO_HIT_USAGE)
+    return _served(value, schema, model=llm._model), dict(MEMO_HIT_USAGE)
 
 
 def _served[SchemaT: BaseModel](text: bytes, schema: type[SchemaT], *, model: str) -> SchemaT:
     """Parse the model's text the memo holds, for a caller that made no call. A refusal
     reaches that caller as `LLMOutputRefused` with zero usage."""
-    return _parse(text, schema, model=model, usage=dict(_MEMO_HIT_USAGE))
+    return _parse(text, schema, model=model, usage=dict(MEMO_HIT_USAGE))
 
 
 # The loop keeps weak task refs. This set retains leaders serving followers after cancellation.
@@ -507,6 +545,13 @@ def build_memo() -> LLMMemo | None:
     )
 
 
+@functools.cache
+def schema_digest(schema: type[BaseModel]) -> str:
+    """SHA-256 of `schema`'s JSON schema, computed once per class."""
+    canonical = json.dumps(schema.model_json_schema(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _memo_key(
     *,
     model: str,
@@ -516,25 +561,45 @@ def _memo_key(
 ) -> str:
     """Hash the resolved model, prompt, schema, and generation config.
 
-    The config dump excludes ``response_schema``. The schema's qualified
-    name identifies it within the process. Other config fields, including the
-    system instruction, temperature, thinking config, and seed, enter the key.
+    The config dump excludes ``response_schema``. The schema enters as its
+    qualified name and a hash of its JSON schema, so a field added without a
+    rename moves the key. Other config fields, including the system
+    instruction, temperature, thinking config, and seed, enter the key.
     A floating model alias keeps its key until the memo entry expires.
 
-    ASCII-escaped JSON handles lone surrogates that can survive request
-    parsing. Such prompts form deterministic keys and reach Gemini as ordinary
-    cache misses.
+    ASCII-escaped JSON keys any prompt, a lone surrogate included, though the
+    request models refuse one in every text a prompt is built from.
     """
     document = {
         "model": model,
         "prompt": prompt,
         "schema": f"{schema.__module__}.{schema.__qualname__}",
+        "schema_fields": schema_digest(schema),
         "config": config.model_dump(mode="json", exclude={"response_schema"}),
     }
     canonical = json.dumps(
         document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")
     return "llm_" + hashlib.sha256(canonical).hexdigest()
+
+
+class _ApiKeyClients:
+    """The two clients of an `LLM` built with its own api key, the served calls' and the
+    detached calls', each built on first use with the pool size its singleton has. Clones of
+    the `LLM` hold this same object, so they share both clients."""
+
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    @functools.cached_property
+    def served(self) -> genai.Client:
+        return _build_client(self._api_key, max_connections=config.settings().llm_max_concurrency)
+
+    @functools.cached_property
+    def detached(self) -> genai.Client:
+        return _build_client(
+            self._api_key, max_connections=config.settings().jev_shadow_max_inflight
+        )
 
 
 class LLM:
@@ -548,13 +613,17 @@ class LLM:
         )
 
     Calls are always live. The engine uses ``generate_structured_async`` for
-    memoisation. Tests inject ``FakeLLM``. Subclasses that skip ``__init__``
-    inherit ``_memo = None`` and keep the live-call behaviour.
+    memoisation. ``extraction_store`` holds the extractions ``extract()`` reads
+    before it calls the model. Tests inject ``FakeLLM``. Subclasses that skip
+    ``__init__`` inherit ``_memo = None`` and ``extraction_store = None`` and keep
+    the live-call behaviour.
     """
 
-    # Class-level default lets subclasses that skip __init__ access `_memo`.
-    # Memo-carrying instances override it in __init__.
+    # Class-level defaults let subclasses that skip __init__ access both stores.
+    # Store-carrying instances override them in __init__.
     _memo: LLMMemo | None = None
+    extraction_store: ExtractionStore | None = None
+    _detached = False
 
     def __init__(
         self,
@@ -564,11 +633,12 @@ class LLM:
         seed: int | None = None,
         thinking_level: str | None = None,
         memo: LLMMemo | None = None,
+        extraction_store: ExtractionStore | None = None,
     ):
-        # An instance api_key creates one client shared with its stage clones. Otherwise _client()
-        # uses the singleton.
+        # An instance api_key gets its own clients, each built on its first call and shared
+        # with the instance's clones. Otherwise _client() uses the singletons.
         self._model = model or config.settings().engine_model
-        self._override_client = _build_client(api_key) if api_key else None
+        self._own_clients = _ApiKeyClients(api_key) if api_key else None
         # Explicit seed and thinking_level kwargs override settings.
         # Unset kwargs use process defaults.
         self._seed = seed if seed is not None else config.settings().llm_seed
@@ -578,11 +648,17 @@ class LLM:
         # A shared memo serves both app surfaces, and for_stage clones share it.
         # None keeps every call live.
         self._memo = memo
+        self.extraction_store = extraction_store
+
+    def sampling_identity(self) -> dict[str, object]:
+        """The model id, seed and thinking level that, with the request, decide the answer."""
+        return {"model": self._model, "seed": self._seed, "thinking_level": self._thinking_level}
 
     def _client(self) -> genai.Client:
-        if self._override_client is not None:
-            return self._override_client
-        return _get_client()
+        own = self._own_clients
+        if self._detached:
+            return own.detached if own is not None else _get_detached_client()
+        return own.served if own is not None else _get_client()
 
     def _resolve_config(self, *, system: str, schema: type[BaseModel]) -> GenerateContentConfig:
         """Build the config shared by live calls and the memo key."""

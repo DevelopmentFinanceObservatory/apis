@@ -13,11 +13,12 @@ import asyncio
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.retrieval.derive import derive_shapes
+from tests.engine._binders import elected_reply
 from tests.engine._discover_fixtures import PROP_PURPOSE as _DEMO_PROP_PURPOSE
 from tests.engine._discover_fixtures import _fake_graph_with_svs, _three_constraint_arcs
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -371,8 +372,8 @@ class _BindPurposeMentionedFlowSoleOption:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -390,7 +391,6 @@ class _BindPurposeMentionedFlowSoleOption:
                 ),
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 

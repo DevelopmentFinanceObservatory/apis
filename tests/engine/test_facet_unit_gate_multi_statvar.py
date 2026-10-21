@@ -16,7 +16,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.facets import FacetSelection, UnitRequest
 from materialise.graph import SubjectPage
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.errors import GraphInfraError
 from search.engine.quantity_read import QuantityOutput
@@ -34,6 +34,7 @@ from search.models import IdentityUnitRequest
 from search.observations import OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -146,8 +147,8 @@ def _set_bind_llm() -> object:
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -157,7 +158,6 @@ def _set_bind_llm() -> object:
                     )
                 ],
                 also_plausible=None,
-                ask=None,
             ), None
 
     return _SetBindLLM()
@@ -399,8 +399,8 @@ class _SetPlusAltBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -410,7 +410,6 @@ class _SetPlusAltBindLLM:
                 )
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 

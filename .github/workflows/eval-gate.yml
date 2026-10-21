@@ -308,6 +308,7 @@ jobs:
           # The eval profile: every request reaches the engine and the LLM.
           SEARCH_RESPONSE_CACHE_ENABLED: "false"
           SEARCH_LLM_MEMO_MAX_BYTES: "0"
+          SEARCH_EXTRACT_STORE: "off"
           SHARD: ${{ matrix.shard.index }}
           # The Datasets surface, for its members door. Each app reads its own
           # database (DATASET_STORE_DATABASE, set per app below) as the runtime

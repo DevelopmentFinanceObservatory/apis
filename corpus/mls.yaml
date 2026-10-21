@@ -45,7 +45,6 @@
   why: Adaptation is a Rio marker outside the purpose codes, so the answer is qualifier_not_bound; a definite answer must bind environmental policy (41010).
   reuse: panel/mls-008
   tags: {theme: climate_energy, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: technical, probe: [missing_data]}
-  known_failure: {issue: 1156, checks: [measure]}
   expect:
     entities: [{dcid: country/SWE, role: origin}]
     definite: {measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode41010}}}

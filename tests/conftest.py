@@ -1,6 +1,7 @@
 """Suite-wide fixtures: response contracts, offline clients, coverage, catalogue, graph
 release, resolvekit."""
 
+import contextlib
 import importlib
 import os
 import shutil
@@ -90,7 +91,8 @@ class OfflineContractViolation(RuntimeError):
 
 def _refuse_sync_request(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
     raise OfflineContractViolation(
-        f"outbound request to {request.url} reached httpx.HTTPTransport.handle_request. "
+        f"outbound request to {request.url} reached {type(self).__module__}."
+        f"{type(self).__name__}.handle_request. "
         "Offline tests must not make real HTTP calls; use httpx.MockTransport, an ASGI "
         "TestClient, or an injected client double instead."
     )
@@ -100,8 +102,8 @@ async def _refuse_async_request(
     self: httpx.AsyncHTTPTransport, request: httpx.Request
 ) -> httpx.Response:
     raise OfflineContractViolation(
-        f"outbound request to {request.url} reached httpx.AsyncHTTPTransport."
-        "handle_async_request. Offline tests must not make real HTTP calls; use "
+        f"outbound request to {request.url} reached {type(self).__module__}."
+        f"{type(self).__name__}.handle_async_request. Offline tests must not make real HTTP calls; use "
         "httpx.MockTransport, an ASGI TestClient, or an injected client double instead."
     )
 
@@ -118,6 +120,14 @@ def _guard_outbound_http(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
         return
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _refuse_sync_request)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _refuse_async_request)
+    # The TypeSafe SDK sends over httpx2, a separate package, which the engine extra installs.
+    with contextlib.suppress(ImportError):
+        import httpx2
+
+        monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", _refuse_sync_request)
+        monkeypatch.setattr(
+            httpx2.AsyncHTTPTransport, "handle_async_request", _refuse_async_request
+        )
     yield
 
 
@@ -357,7 +367,7 @@ def search_settings(monkeypatch: pytest.MonkeyPatch) -> "Callable[..., SearchSet
             )
         search_overrides = {k: v for k, v in overrides.items() if k not in obs_overrides}
         base = config.settings().model_dump(
-            exclude={"capability_version_override", "max_entity_occurrences"}
+            exclude={"capability_version_override", "jev_api_key", "max_entity_occurrences"}
         )
         updated = SearchSettings.model_validate({**base, **search_overrides})
         monkeypatch.setattr(config, "_SETTINGS", updated)

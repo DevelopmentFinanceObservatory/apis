@@ -197,6 +197,7 @@ def _code_index_document(inputs: DfoInputs, base_parties: Mapping[str, dict | No
         party_type_kinds=declarations.party_type_kinds,
         shape_slot_defaults=declarations.shape_slot_defaults,
         partly_stated_values=declarations.partly_stated_values,
+        implied_values=declarations.implied_values,
         measure_classes=declarations.measure_classes,
         variable_aliases=declarations.variable_aliases,
         stat_type_words=declarations.stat_type_words,

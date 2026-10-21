@@ -16,7 +16,7 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import IndexStamp, SourceCodeRow
 from datasets_api.adapter import resolve_definition_members
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.core import resolve_async
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
@@ -218,7 +218,10 @@ class _BindLLM:
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=self.bindings, ask=self.ask
+            chosen_shape_index=0,
+            bindings=self.bindings,
+            ask=self.ask,
+            measuring=[ShapeRating(index=0, rating=1.0)],
         ), None
 
 

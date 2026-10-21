@@ -5,7 +5,9 @@ A resolve refuses bound values that together exclude every member of the shape
 elected shape's door then unbinds a set chosen by `BoundValuesUnrealisable.relaxation` and
 resolves again. A declared default or the elected measure partition gives way first, then
 every value bound as its slot's sole option that some member conflicts on, then a minimal
-set of the values the request named. The engine-chosen and sole-option values go
+set of the values the request named. A single-member slot the unbinding opens takes the
+value its population forces, unless it released that value
+(`_with_forced_values`). The engine-chosen and sole-option values go
 silently, with what the engine derived from them (`ResolveState.forget_bound`), and each
 request-named one is recorded as a code requirement (`region.state.Requirement`) on a property the shape holds, so the answer
 read without it refuses `qualifier_not_bound` with that answer as its flagged match, and
@@ -28,6 +30,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.materialise_step import Departed
+from search.engine.region.phase_election import _settle_sole_options
 from search.engine.region.phase_rank_bind import _resolve_query_qualifiers
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.requirements import record_reading
@@ -113,12 +116,39 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
                     named_only=False,
                 )
             _require(state, requirements)
-    state.bindings = without_values(state.bindings, properties)
+    released: dict[str | None, tuple[str, ...]] = {
+        prop: _bound_values(state.bindings, prop) for prop in properties
+    }
+    state.bindings = _with_forced_values(
+        without_values(state.bindings, properties), state.shape_draft, released
+    )
     state.forget_bound(properties)
     state.admitted_qualifiers = tuple(
         match for match in state.admitted_qualifiers if match.code_system not in properties
     )
     record_reading(state, _resolve_query_qualifiers(state))
+
+
+def _with_forced_values(
+    bindings: list[SlotBindingDraft],
+    shape: ShapeDraft,
+    released: Mapping[str | None, Sequence[str]],
+) -> list[SlotBindingDraft]:
+    """`bindings` with each single-member slot the unbinding left open bound to the value
+    its population forces (`phase_election._settle_sole_options`), so the answer states
+    what the elected shape forces whatever path opened the slot. "Female unemployment rate"
+    over a shape whose one member is male reads `gender=Male`, as it does when the bind
+    reply leaves gender unbound. A slot keeps open when the forced value is one the
+    unbinding released from it, alone or in a set, since no member holds it beside the
+    rest, and each unbinding then releases a value it does not bind again."""
+    forced = _settle_sole_options(bindings, shape)
+    return [
+        claim
+        if claim.kind == "value"
+        and not set(claim.value_dcids) <= set(released.get(claim.property_dcid, ()))
+        else draft
+        for draft, claim in zip(bindings, forced, strict=True)
+    ]
 
 
 def _sole_option_properties(bindings: Iterable[SlotBindingDraft]) -> frozenset[str]:

@@ -378,13 +378,13 @@ def test_the_fixture_index_declares_the_crs_type_of_flow_default():
     assert default.note is None
 
 
-def test_the_fixture_index_declares_non_concessional_as_the_flow_type_s_unexpressed_word():
+def test_the_fixture_index_declares_the_words_no_crs_code_expresses():
     index = load_index(INDEX_FIXTURE)
     assert {
         system: declaration.no_vocabulary_terms
         for system, declaration in index.declarations.items()
         if declaration.no_vocabulary_terms
-    } == {"crsTypeOfFlow": ("non-concessional",)}
+    } == {"crsPurpose": ("climate",), "crsTypeOfFlow": ("non-concessional",)}
 
 
 @pytest.mark.parametrize(

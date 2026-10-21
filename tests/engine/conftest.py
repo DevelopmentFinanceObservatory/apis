@@ -26,8 +26,9 @@ from tests.fixtures import PINNED_DATE
 
 @pytest.fixture(autouse=True)
 def _pin_extract_date():
-    """Pin the prompt date so recorded FakeLLM fixtures keep matching, and the clock a
-    mint's open-ended election ends at (`materialise.window.current_year`) with it."""
+    """Pin the year extract reads, the one its prompt names and relative dates resolve
+    against, and the clock a mint's open-ended election ends at
+    (`materialise.window.current_year`) with it."""
     with (
         patch("search.engine.extract.date") as mock_date,
         patch("materialise.window.date") as election_date,

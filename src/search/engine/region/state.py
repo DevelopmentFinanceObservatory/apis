@@ -24,6 +24,7 @@ from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import UnUnserved
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder, BindResult, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -578,8 +579,8 @@ class UnPool:
     has none to fill a gap with (`None` when it need not), and what the leg's own reads could
     not serve, the UN places they named that the UN front door refuses and their failed UN
     reads (`unserved`), and the reads they swallowed (`lost`). Those reads describe the UN
-    pool alone, so they join the part's records only when the UN pass runs
-    (`pipeline._fill_gap`)."""
+    pool alone, so they join the part's records only when the pool reaches a menu: on the
+    UN pass (`pipeline._fill_gap`), or merged onto ours (`phase_intake._merge_un_pool`)."""
 
     shapes: list[ShapeDraft]
     missed: str | None = None
@@ -651,6 +652,8 @@ class ResolveState:
     resolver: EntityResolver
     admission: Admission
     llm: SupportsLLM
+    # The binder the part's quantity read and bind call go through, on `llm`.
+    binder: Binder = field(default_factory=GeminiBinder)
     sdmx: EngineSdmxClient
     deadline: float | None
     pre_resolved: dict[str, Resolution] | None
@@ -845,6 +848,11 @@ class ResolveState:
     # derivation (`phase_intake._phase_derive_shapes`), `None` on the UN pass and on a part
     # whose scope allows no UN provenance or that ended before derivation.
     un_leg: UnLeg | None = None
+    # The UN leg's pool when our pass took it under `SEARCH_UN_ON_FIRST_MENU`
+    # (`phase_intake._merge_un_pool`): merged onto its menu, or late or failed after the
+    # pass waited for it, which `pipeline._fill_gap` warns on. `None` when the pass left the
+    # leg to the UN pass.
+    un_pool: UnPool | None = None
     # Whether the part posted source mentions, so each answer's identity binds the
     # provenances that served it (`spec_build.build_spec`'s `pin_served_provenance`).
     pin_served_provenance: bool = False
@@ -897,6 +905,9 @@ class ResolveState:
     menu_choices: tuple[QualifierMatch, ...] = ()
     # Bind assigns this before any reader; `cast(None)` avoids an invalid sentinel or Optional checks.
     bind_result: _UniversalBindOutput = field(default=cast(_UniversalBindOutput, None))
+    # The binder's whole answer to the bind call (`binders.BindResult`): its reply before
+    # `split_stray_bindings`, with what the engine reads beside it. `None` before bind.
+    bind_decision: BindResult | None = None
     # Shape selected by the bind call.
     shape_draft: ShapeDraft = field(default=cast(ShapeDraft, None))
     # What each bind menu shape stated of data at the places the part names, in

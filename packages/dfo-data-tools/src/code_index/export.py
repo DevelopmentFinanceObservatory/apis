@@ -28,6 +28,7 @@ from code_index.declarations import (
     CONCEPT_GROUPS,
     DATASETS,
     DECLARED_MEASURE_VALUES,
+    IMPLIED_VALUES,
     MEASURE_AXES,
     MEASURE_CLASSES,
     MEASURE_NOUNS,
@@ -51,6 +52,7 @@ from code_index.tokens import Token, TokenLookup, singular, tokenize
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
+    ImpliedValue,
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
@@ -530,6 +532,15 @@ def _partly_stated_value_to_dict(declared: PartlyStatedValue) -> dict:
     }
 
 
+def _implied_value_to_dict(declared: ImpliedValue) -> dict:
+    return {
+        "population_type": declared.population_type,
+        "measured_property": declared.measured_property,
+        "property": declared.property_dcid,
+        "value": declared.value_dcid,
+    }
+
+
 def _measure_class_to_dict(declaration: MeasureClassDeclaration) -> dict:
     return {
         "class": declaration.measure_class,
@@ -589,6 +600,7 @@ def export_code_system(
         "default": _declared_default_to_dict(config.default),
         "enum_dcid": config.enum_dcid,
         "no_vocabulary_terms": list(config.no_vocabulary_terms),
+        **({"house_case": config.house_case} if config.house_case is not None else {}),
     }
     return declaration, rows
 
@@ -1627,6 +1639,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
             if dataset.party_words
             else {}
         ),
+        **(
+            {"house_default_for": list(dataset.house_default_for)}
+            if dataset.house_default_for
+            else {}
+        ),
     }
 
 
@@ -1672,6 +1689,7 @@ def export_graph_blocks(
     listed: Collection[str] = (),
     shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
     partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
+    implied_values: Sequence[ImpliedValue] = IMPLIED_VALUES,
     measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
     variable_aliases: Mapping[str, str] = VARIABLE_ALIASES,
     stat_type_words: Sequence[StatTypeWordDeclaration] = STAT_TYPE_WORDS,
@@ -1744,6 +1762,7 @@ def export_graph_blocks(
         ],
         "shape_slot_defaults": [_shape_slot_default_to_dict(d) for d in shape_slot_defaults],
         "partly_stated_values": [_partly_stated_value_to_dict(v) for v in partly_stated_values],
+        "implied_values": [_implied_value_to_dict(v) for v in implied_values],
         "measure_classes": [_measure_class_to_dict(d) for d in measure_classes],
         "variable_aliases": dict(variable_aliases),
         "stat_type_words": [_stat_type_word_to_dict(d) for d in stat_type_words],
@@ -1773,6 +1792,7 @@ def export_index(
     party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
     shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
     partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
+    implied_values: Sequence[ImpliedValue] = IMPLIED_VALUES,
     measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
     variable_aliases: Mapping[str, str] = VARIABLE_ALIASES,
     stat_type_words: Sequence[StatTypeWordDeclaration] = STAT_TYPE_WORDS,
@@ -1805,6 +1825,7 @@ def export_index(
         listed=listed_dcids(coverage.provenances, listed_datasets),
         shape_slot_defaults=shape_slot_defaults,
         partly_stated_values=partly_stated_values,
+        implied_values=implied_values,
         measure_classes=measure_classes,
         variable_aliases=variable_aliases,
         stat_type_words=stat_type_words,

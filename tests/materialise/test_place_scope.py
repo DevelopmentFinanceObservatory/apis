@@ -3,8 +3,9 @@ place a StatVar's availability lists that the graph knows, settled once per grap
 else its countries with data.
 
 Each branch of the rule runs against fakes whose reads the test releases, so no assertion depends
-on how long a read takes: the request's wait (`EVERY_PLACE_SECONDS`) is set to zero where a read
-must be cut, and background reads are drained before the memo is checked."""
+on how long a read takes: the request's wait (`EVERY_PLACE_SECONDS`) is as long as a read may run
+(`SETTLE_DEADLINE_SECONDS`) unless a test sets it to zero to cut a read, and background reads are
+drained before the memo is checked."""
 
 from __future__ import annotations
 
@@ -62,7 +63,10 @@ _CALLER: contextvars.ContextVar[str | None] = contextvars.ContextVar("caller", d
 
 
 @pytest.fixture(autouse=True)
-def _fresh_memo() -> Iterator[None]:
+def _fresh_memo(monkeypatch) -> Iterator[None]:
+    # A request waits for its read to end, so a read slowed past the production window by a
+    # loaded machine still answers. A test that cuts a read sets the window to zero.
+    monkeypatch.setattr(place_scope, "EVERY_PLACE_SECONDS", SETTLE_DEADLINE_SECONDS)
     _drain()
     clear_memo()
     yield
@@ -817,8 +821,7 @@ def test_a_request_on_another_backend_starts_its_own_read(monkeypatch):
     assert second.read_stat_vars() == ["D"]
 
 
-def test_a_read_that_ends_inside_the_requests_wait_answers_it(monkeypatch):
-    monkeypatch.setattr(place_scope, "EVERY_PLACE_SECONDS", 30.0)
+def test_a_read_that_ends_inside_the_requests_wait_answers_it():
     release = threading.Event()
     availability = _Availability(data=[("D", _AFRICA)], blocked={"D": release})
     threading.Timer(0.05, release.set).start()
@@ -1369,8 +1372,7 @@ def test_a_deadline_already_past_refuses_before_any_read():
     assert graph.reads == []
 
 
-def test_a_deadline_that_ends_the_wait_refuses_and_the_read_settles(monkeypatch):
-    monkeypatch.setattr(place_scope, "EVERY_PLACE_SECONDS", 30.0)
+def test_a_deadline_that_ends_the_wait_refuses_and_the_read_settles():
     release = threading.Event()
     availability = _Availability(data=[("D", _AFRICA)], blocked={"D": release})
     graph = _Graph()

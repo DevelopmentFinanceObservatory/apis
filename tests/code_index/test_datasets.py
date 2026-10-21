@@ -19,7 +19,7 @@ import pytest
 
 from code_index import CodeIndex, DatasetDeclaration, IndexFormatError, IndexStamp, parse_index
 from code_index.query import row_five_tuple
-from code_index.types import PartlyStatedValue, PartyWord, StatedWord
+from code_index.types import ImpliedValue, PartlyStatedValue, PartyWord, StatedWord
 from entity_resolution.types import KINDS
 from tests.code_index.support import INDEX_FIXTURE, load_index
 
@@ -499,6 +499,12 @@ def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_impute
     }
     assert index.datasets[_CRS_PROVENANCE].label == "OECD Creditor Reporting System (CRS)"
     assert index.datasets[_IMPUTED_PROVENANCE].label == "ONE Imputed Multilateral Sectors"
+    assert index.house_defaults() == {
+        "sector": _CRS_PROVENANCE,
+        "recipient": _DAC2A_PROVENANCE,
+        "donor": _DAC1_PROVENANCE,
+    }
+    assert index.house_case_systems() == {"crsPurpose": "sector"}
 
 
 def test_every_fixture_declared_word_names_an_entity_kind_the_resolver_assigns():
@@ -734,3 +740,114 @@ def test_loader_rejects_a_partly_stated_value_the_rows_do_not_bear_out(
 ):
     with pytest.raises(IndexFormatError):
         parse_index(_debt_statistics(*rows, partly_stated=declared))
+
+
+def _implied(population_type: str, measured_property: str, prop: str, value: str) -> dict:
+    return {
+        "population_type": population_type,
+        "measured_property": measured_property,
+        "property": prop,
+        "value": value,
+    }
+
+
+# A catalogue family the index holds no row of, so only the export checks it against the graph.
+_AT_BIRTH = _implied("Person", "lifeExpectancy", "age", "Years0")
+
+
+def test_loader_parses_implied_values_and_reads_them_by_measure():
+    payload = _fixture()
+    payload["implied_values"] = [
+        _AT_BIRTH,
+        _implied("FinancialFlow", "amount", "crsTypeOfFlow", "CRSTypeOfFlow21"),
+    ]
+    index = parse_index(payload)
+
+    assert index.implied_values[0] == ImpliedValue(
+        population_type="Person",
+        measured_property="lifeExpectancy",
+        property_dcid="age",
+        value_dcid="Years0",
+    )
+    assert index.implied_values_of("Person", "lifeExpectancy") == {"age": "Years0"}
+    assert index.implied_values_of("FinancialFlow", "amount") == {
+        "crsTypeOfFlow": "CRSTypeOfFlow21"
+    }
+    assert index.implied_values_of("Person", "age") == {}
+    assert parse_index(_fixture()).implied_values == ()
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        pytest.param([_AT_BIRTH, _AT_BIRTH], id="duplicate"),
+        pytest.param(
+            [_implied("Person", "lifeExpectancy", "crsTypeOfFlow", "Years0")],
+            id="not-a-code-of-the-property",
+        ),
+        # The index holds rows of the measure, and none states the value.
+        pytest.param(
+            [_implied("FinancialFlow", "amount", "nettingBasis", "NetOfRepayment")],
+            id="no-row-of-the-measure-states-the-value",
+        ),
+    ],
+)
+def test_loader_rejects_an_implied_value_the_index_contradicts(declared: list[dict]):
+    payload = _fixture()
+    payload["implied_values"] = declared
+
+    with pytest.raises(IndexFormatError):
+        parse_index(payload)
+
+
+def test_loader_reads_the_house_default_each_dataset_claims():
+    payload = _with_imputed_dataset()
+    payload["datasets"][0]["house_default_for"] = ["sector", "recipient"]
+    payload["datasets"][1]["house_default_for"] = ["donor"]
+    index = parse_index(payload)
+
+    assert index.datasets[_CRS_PROVENANCE].house_default_for == ("sector", "recipient")
+    assert index.house_defaults() == {
+        "sector": _CRS_PROVENANCE,
+        "recipient": _CRS_PROVENANCE,
+        "donor": _IMPUTED_PROVENANCE,
+    }
+    assert parse_index(_fixture()).house_defaults() == {}
+
+
+@pytest.mark.parametrize(
+    ("crs", "imputed", "refusal"),
+    [
+        pytest.param(["sectors"], [], "house_default_for=\\['sectors'\\]", id="outside-vocabulary"),
+        pytest.param(
+            ["sector"], ["sector"], "both claim house_default_for 'sector'", id="claimed-twice"
+        ),
+    ],
+)
+def test_loader_rejects_a_house_default_outside_the_vocabulary_or_claimed_twice(
+    crs: list[str], imputed: list[str], refusal: str
+):
+    payload = _with_imputed_dataset()
+    payload["datasets"][0]["house_default_for"] = crs
+    payload["datasets"][1]["house_default_for"] = imputed
+
+    with pytest.raises(IndexFormatError, match=refusal):
+        parse_index(payload)
+
+
+def test_loader_reads_the_kind_of_question_a_code_system_declares():
+    payload = _fixture()
+    payload["declarations"][0]["house_case"] = "sector"
+    index = parse_index(payload)
+
+    assert index.declarations[payload["declarations"][0]["code_system"]].house_case == "sector"
+    assert index.house_case_systems() == {payload["declarations"][0]["code_system"]: "sector"}
+    assert parse_index(_fixture()).house_case_systems() == {}
+
+
+def test_loader_rejects_a_house_case_outside_the_vocabulary():
+    payload = _fixture()
+    payload["declarations"][0]["house_case"] = "sectors"
+
+    with pytest.raises(IndexFormatError, match="house_case='sectors'"):
+        parse_index(payload)

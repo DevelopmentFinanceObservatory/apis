@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import _build_part
 from search.engine.extract import DateRequest
@@ -26,6 +26,7 @@ from search.render.plan import render_sentence
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine import test_place_scope_default as place_scope_default
 from tests.engine import test_role_bearing_pipeline_e2e as role_bearing
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -88,9 +89,7 @@ class _BindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=self.also, ask=None
-        ), None
+        return elected_reply(0, also_plausible=self.also), None
 
 
 def _count_arcs(population_type: str) -> dict:
@@ -120,6 +119,7 @@ def _standard_answer(
     person: list[dict],
     date_request: DateRequest,
     *,
+    binder: Binder | None = None,
     household: list[dict] | None = None,
     also: list[int] | None = None,
 ) -> RegionResult:
@@ -156,6 +156,7 @@ def _standard_answer(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_BindLLM(also),
             base_timing={},
             sdmx=FakeSdmxClient(
@@ -203,6 +204,7 @@ def test_a_window_answer_showing_an_alternate_with_data_states_no_year_departure
         _since(2025),
         household=[_facet("fH", range(2000, 2005))],
         also=[1],
+        binder=ReplyBinder(),
     )
     assert result.no_data_reason == "no_observations"
     assert result.gate == "only_alternate_has_data"

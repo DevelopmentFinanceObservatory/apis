@@ -3,6 +3,11 @@
 # under tests/dc_sdmx/ runs offline against recorded wire fixtures, so a change
 # in what the deployment actually puts on the wire is invisible to ci.yml.
 #
+# It also runs tests/code_index/test_implied_values_live.py against the same
+# service's mixer: each code_index.declarations.IMPLIED_VALUES row names a
+# catalogue measure the code index holds no row of, so only the live graph can
+# show that some StatVar of the measure still states the value.
+#
 # Credentials are the pair eval-gate.yml already uses: the repo variable
 # SEARCH_GRAPH_BASE (the service root) and the repo secret SEARCH_GRAPH_TOKEN
 # (the x-graph-token WAF bypass -- runner IPs are datacenter ranges the service
@@ -39,6 +44,9 @@ on:
     paths:
       - packages/dfo-data-tools/src/dc_sdmx/**
       - tests/dc_sdmx/**
+      - packages/dfo-data-tools/src/code_index/declarations.py
+      - tests/code_index/test_implied_values_live.py
+      - tests/code_index/support.py
       - .github/workflows/sdmx-live.yml
       - pyproject.toml
       - uv.lock
@@ -105,3 +113,10 @@ jobs:
           DFO_SDMX_LIVE_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
           DFO_SDMX_LIVE_REQUIRED: "1"
         run: uv run pytest -q tests/dc_sdmx/test_live.py
+
+      - name: Check every implied value against the dev graph
+        env:
+          SEARCH_GRAPH_BASE: ${{ vars.SEARCH_GRAPH_BASE }}
+          SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
+          CODE_INDEX_LIVE_REQUIRED: "1"
+        run: uv run pytest -q -m live tests/code_index/test_implied_values_live.py

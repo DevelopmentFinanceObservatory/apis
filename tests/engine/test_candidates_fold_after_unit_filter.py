@@ -9,12 +9,14 @@ import asyncio
 
 from code_index.shared import get_index
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
+from search.engine.binders import Binder
 from search.engine.clients.graph import Facet
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.state import EngineOptions
 from series_coverage.schema import FacetMetadata, RoleNames
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -150,8 +152,8 @@ class _ElectGrantEquivalentAlsoPlausibleAmountLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -161,7 +163,6 @@ class _ElectGrantEquivalentAlsoPlausibleAmountLLM:
                 )
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 
@@ -202,7 +203,7 @@ def _materialise_clients():
 _ROLE_NAMES = RoleNames(donor=_ROLES[0], recipient=_ROLES[1])
 
 
-def _run(monkeypatch):
+def _run(monkeypatch, *, binder: Binder | None = None):
     _auto_coverage_index_1 = patch_coverage(
         monkeypatch,
         [
@@ -230,6 +231,7 @@ def _run(monkeypatch):
             graph=graph,
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=_SDMX_OBS, availability={}),
+            binder=binder,
             llm=_ElectGrantEquivalentAlsoPlausibleAmountLLM(),
             base_timing={},
             unit_text="USD",
@@ -247,7 +249,7 @@ def test_the_unit_incompatible_survivor_is_dropped_before_the_fold_can_hide_its_
     monkeypatch,
 ):
     """Filter the KES member before folding so the USD amount sibling can answer."""
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     assert result.status == "definite", result
     assert len(result.specs) == 1
     survivor = result.specs[0]
@@ -267,7 +269,7 @@ def _bound_ref(identity, property_dcid: str) -> str | None:
 
 def test_the_excluded_survivor_never_rides_along_as_an_alternative_measure(monkeypatch):
     """The surviving USD spec carries no crsPurpose binding from the excluded KES candidate."""
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     survivor = result.specs[0]
     alternatives = survivor.resolved.alternative_measures or []
     for alt in alternatives:
@@ -279,7 +281,7 @@ def test_the_excluded_survivor_never_rides_along_as_an_alternative_measure(monke
 
 def test_lone_survivor_carries_its_own_member_population(monkeypatch):
     """A lone survivor carries its own exact member population into the result."""
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     assert result.status == "definite", result
     survivor = result.specs[0]
     assert any(sv.ref.ref == _ALT_SV for sv in survivor.resolved.members)

@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from entity_resolution import Admission
+from search.engine.binders import GeminiBinder
 from search.engine.concurrency import scoped_concurrency
 from search.engine.config import settings
 from search.engine.entry import dataset_resubmit
@@ -58,6 +59,7 @@ def _run(regions, *, deadline: float, stream: bool) -> tuple[list[float], list[D
         include_skills=False,
         skills_index=None,
         coverage=empty_coverage_snapshot(),
+        binder=GeminiBinder(),
     )
 
     async def _drain() -> list[DoneEvent]:

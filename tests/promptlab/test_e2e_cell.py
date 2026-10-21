@@ -157,9 +157,14 @@ def test_run_e2e_cell_runs_end_to_end_offline(tmp_path):
 
     scores = out.read_scores()
     assert set(scores["per_seed"]) == {"1", "2"}
-    for seed_scores in scores["per_seed"].values():
-        # Every case accepts the status the offline fixtures answer with.
-        assert seed_scores["disposition_pass_rate"] == 1.0
+    for seed, seed_scores in scores["per_seed"].items():
+        # The rate is the share of that seed's scored disposition checks that passed.
+        verdicts = [
+            r["checks"]["disposition"]["verdict"]
+            for r in records.values()
+            if r["seed"] == int(seed) and r["checks"]["disposition"]["verdict"] in ("pass", "fail")
+        ]
+        assert seed_scores["disposition_pass_rate"] == verdicts.count("pass") / len(verdicts)
     # Both seeds replay the same answer for each system and prompt.
     assert scores["seed_flip_rate"] == 0.0
 

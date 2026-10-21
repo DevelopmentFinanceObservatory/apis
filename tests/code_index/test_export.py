@@ -56,6 +56,7 @@ from code_index.shared import get_index
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
+    ImpliedValue,
     MeasureAxis,
     MeasurePartitionLabel,
     PartlyStatedValue,
@@ -67,7 +68,12 @@ from materialise.graph import (
     GraphReadError,
     SubjectPage,
 )
-from tests.code_index.support import INDEX_FIXTURE, load_index, load_measure_axes
+from tests.code_index.support import (
+    INDEX_FIXTURE,
+    load_index,
+    load_measure_axes,
+    unstated_implied_values,
+)
 
 
 @dataclass
@@ -2343,6 +2349,40 @@ def test_an_export_declaring_a_partly_stated_value_no_row_bears_out_does_not_loa
 
     with pytest.raises(IndexFormatError):
         parse_index(document)
+
+
+_AT_BIRTH = ImpliedValue(
+    population_type="Person",
+    measured_property="lifeExpectancy",
+    property_dcid="age",
+    value_dcid="Years0",
+)
+
+
+@pytest.mark.parametrize(
+    ("arcs", "refused"),
+    [
+        pytest.param(
+            {"populationType": ("Person",), "measuredProperty": ("lifeExpectancy",)},
+            False,
+            id="a-statvar-of-the-measure-states-the-value",
+        ),
+        pytest.param(
+            {"populationType": ("Person",), "measuredProperty": ("count",)},
+            True,
+            id="only-another-measure-states-it",
+        ),
+    ],
+)
+def test_an_implied_value_no_statvar_of_its_measure_states_is_unstated(arcs, refused):
+    """The index holds no row of a catalogue family, so the live check reads the graph: some
+    StatVar of the measure must state the value on the property."""
+    graph = _FakeGraph(forward_arcs={"LifeExpectancy_Person_0Years": {**arcs, "age": ("Years0",)}})
+
+    assert unstated_implied_values(graph, [_AT_BIRTH]) == ([_AT_BIRTH] if refused else [])
+    assert graph.calls == [
+        ("Years0", "age", (("measuredProperty", "lifeExpectancy"), ("populationType", "Person")))
+    ]
 
 
 def test_an_export_with_a_declared_dataset_with_no_row_does_not_load():
