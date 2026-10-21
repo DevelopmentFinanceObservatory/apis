@@ -461,8 +461,8 @@ def binds_each_party(result: RegionResult, named: Sequence[PartyWord]) -> bool:
 
 def _within_source_code(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result`, or the refusal of a part whose series code named its StatVars
-    (`ResolveState.source_code`) and one of whose Specs mints an identity the Datasets mint
-    elects StatVars outside them for, or none it can tell from the index's listed rows
+    (`ResolveState.source_code`) and one of whose Specs mints an identity whose Datasets
+    mint serves StatVars outside them, or ones the code index does not resolve in memory
     (`bound_values.elects_within`). The orchestrator fetches the Spec by its spec_id, so
     such an answer would serve another series than the code's."""
     code = state.source_code
@@ -471,7 +471,7 @@ def _within_source_code(result: RegionResult, state: ResolveState) -> RegionResu
     for spec in result.specs:
         if not elects_within(spec.definition.identity, code.dcids):
             logger.info(
-                "source code %s: spec %s elects no family within its StatVars",
+                "source code %s: spec %s serves StatVars outside the code's",
                 code.code,
                 spec.spec_id,
             )
