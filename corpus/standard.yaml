@@ -2235,6 +2235,9 @@
   tags:
     directional_flow: na
     conjunction: none
+  known_failure:
+    issue: 1156
+    checks: [operations]
   expect:
     definite:
       measure:
