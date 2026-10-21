@@ -40,14 +40,15 @@ def test_stored_answers_give_the_stored_output(path: Path):
 
 
 @pytest.mark.parametrize("path", _PATHS, ids=lambda p: p.stem)
-def test_the_two_requests_ask_the_stored_questions(path: Path):
-    """The bind and quantity requests together ask every stored question except ``topic``
-    and ``within|i``, and only the quantity request asks the ``q|`` questions."""
+def test_the_requests_ask_the_stored_questions(path: Path):
+    """The bind request, the span round its answers call for, and the quantity request
+    together ask every stored question except ``topic`` and ``within|i``, and only the
+    quantity request asks the ``q|`` questions."""
     item = load_item(path)
 
-    bind, quantity = asked_ids(item)
+    bind, spans, quantity = asked_ids(item)
 
-    assert sorted(bind + quantity) == stored_ids(item)
+    assert sorted(bind + spans + quantity) == stored_ids(item)
     assert not [q for q in bind if q.startswith("q|")]
     assert quantity and all(q.startswith("q|") for q in quantity)
 

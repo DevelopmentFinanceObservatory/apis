@@ -1,0 +1,1839 @@
+{
+ "query": "public and publicly guaranteed external debt stocks for Kenya",
+ "variable": "public and publicly guaranteed external debt stocks",
+ "slots": [
+  {
+   "slot": "how:financialPositionType",
+   "label": "financial position type",
+   "values": [
+    {
+     "dcid": "AmountOutstanding",
+     "label": "amount outstanding"
+    },
+    {
+     "dcid": "AmountUndisbursed",
+     "label": "amount undisbursed"
+    },
+    {
+     "dcid": "InterestArrears",
+     "label": "interest arrears"
+    },
+    {
+     "dcid": "PrincipalArrears",
+     "label": "principal arrears"
+    }
+   ]
+  },
+  {
+   "slot": "how:guaranteeStatus",
+   "label": "guarantee status",
+   "values": [
+    {
+     "dcid": "PublicOrPubliclyGuaranteed",
+     "label": "public or publicly guaranteed"
+    },
+    {
+     "dcid": "PubliclyGuaranteedClaim",
+     "label": "publicly guaranteed"
+    },
+    {
+     "dcid": "NotPubliclyGuaranteed",
+     "label": "not publicly guaranteed"
+    }
+   ]
+  },
+  {
+   "slot": "how:interestRateVariability",
+   "label": "interest rate variability",
+   "values": [
+    {
+     "dcid": "VariableInterestRate",
+     "label": "variable interest rate"
+    }
+   ],
+   "offered": [
+    "VariableInterestRate"
+   ]
+  },
+  {
+   "slot": "how:idsCreditorType",
+   "label": "IDS creditor type",
+   "values": [
+    {
+     "dcid": "IDSCreditorTypePBND",
+     "label": "bondholders (IDS creditor type)"
+    },
+    {
+     "dcid": "IDSCreditorTypePCBK",
+     "label": "commercial banks (IDS creditor type)"
+    },
+    {
+     "dcid": "IDSCreditorTypePROP",
+     "label": "other private creditors (IDS creditor type)"
+    },
+    {
+     "dcid": "IDSCreditorTypePRVT",
+     "label": "private creditors (IDS creditor type)"
+    },
+    {
+     "dcid": "IDSCreditorTypeOFFT",
+     "label": "official creditors (IDS creditor type)"
+    },
+    {
+     "dcid": "IDSCreditorTypeBLAT",
+     "label": "bilateral (IDS creditor type)"
+    },
+    {
+     "dcid": "IDSCreditorTypeMLAT",
+     "label": "multilateral (IDS creditor type)"
+    },
+    {
+     "dcid": "IDSCreditorTypePNGC",
+     "label": "commercial banks or other private creditors (IDS creditor type)"
+    }
+   ]
+  },
+  {
+   "slot": "how:idsDebtorType",
+   "label": "IDS debtor type",
+   "values": [
+    {
+     "dcid": "IDSDebtorTypePrivateSector",
+     "label": "private sector (IDS debtor type)"
+    },
+    {
+     "dcid": "IDSDebtorTypePS",
+     "label": "public sector (IDS debtor type)"
+    },
+    {
+     "dcid": "IDSDebtorTypeGG",
+     "label": "general government (IDS debtor type)"
+    },
+    {
+     "dcid": "IDSDebtorTypeCB",
+     "label": "central bank (IDS debtor type)"
+    },
+    {
+     "dcid": "IDSDebtorTypeOPS",
+     "label": "other public sector (IDS debtor type)"
+    }
+   ]
+  },
+  {
+   "slot": "how:maturityBand",
+   "label": "maturity band",
+   "values": [
+    {
+     "dcid": "LongTermMaturity",
+     "label": "long-term maturity"
+    },
+    {
+     "dcid": "ShortTermMaturity",
+     "label": "short-term maturity"
+    }
+   ]
+  },
+  {
+   "slot": "how:financingResource",
+   "label": "financing resource",
+   "values": [
+    {
+     "dcid": "DebtInstrument",
+     "label": "debt instrument"
+    },
+    {
+     "dcid": "Loan",
+     "label": "loan"
+    },
+    {
+     "dcid": "SDRAllocation",
+     "label": "SDR allocation"
+    }
+   ]
+  },
+  {
+   "slot": "how:idsConcessionality",
+   "label": "IDS concessionality",
+   "values": [
+    {
+     "dcid": "IDSConcessional",
+     "label": "concessional (IDS concessionality)"
+    },
+    {
+     "dcid": "IDSNonConcessional",
+     "label": "non-concessional (IDS concessionality)"
+    }
+   ]
+  },
+  {
+   "slot": "how:includesIMFCredit",
+   "label": "includes IMF credit",
+   "values": [
+    {
+     "dcid": "WithoutIMFCredit",
+     "label": "without IMF credit"
+    }
+   ],
+   "offered": [
+    "WithoutIMFCredit"
+   ]
+  }
+ ],
+ "runs": [
+  {
+   "nouls": {
+    "m|0": 0.95,
+    "mq|0": 0.92,
+    "named|0": 0.06,
+    "mv|FinancialObligation": 0.96,
+    "part|how:financialPositionType": 0.34,
+    "n|how:financialPositionType|0": 0.9,
+    "n|how:financialPositionType|1": 0.05,
+    "n|how:financialPositionType|2": 0.02,
+    "n|how:financialPositionType|3": 0.03,
+    "several|how:financialPositionType": 0.67,
+    "part|how:guaranteeStatus": 0.15,
+    "n|how:guaranteeStatus|0": 0.97,
+    "n|how:guaranteeStatus|1": 0.62,
+    "n|how:guaranteeStatus|2": 0.02,
+    "several|how:guaranteeStatus": 0.63,
+    "part|how:interestRateVariability": 0.06,
+    "n|how:interestRateVariability|0": 0.02,
+    "part|how:idsCreditorType": 0.14,
+    "n|how:idsCreditorType|0": 0.02,
+    "n|how:idsCreditorType|1": 0.03,
+    "n|how:idsCreditorType|2": 0.03,
+    "n|how:idsCreditorType|3": 0.04,
+    "n|how:idsCreditorType|4": 0.13,
+    "n|how:idsCreditorType|5": 0.03,
+    "n|how:idsCreditorType|6": 0.03,
+    "n|how:idsCreditorType|7": 0.04,
+    "several|how:idsCreditorType": 0.26,
+    "part|how:idsDebtorType": 0.29,
+    "n|how:idsDebtorType|0": 0.02,
+    "n|how:idsDebtorType|1": 0.78,
+    "n|how:idsDebtorType|2": 0.52,
+    "n|how:idsDebtorType|3": 0.03,
+    "n|how:idsDebtorType|4": 0.13,
+    "several|how:idsDebtorType": 0.72,
+    "part|how:maturityBand": 0.05,
+    "n|how:maturityBand|0": 0.04,
+    "n|how:maturityBand|1": 0.02,
+    "several|how:maturityBand": 0.14,
+    "part|how:financingResource": 0.31,
+    "n|how:financingResource|0": 0.44,
+    "n|how:financingResource|1": 0.17,
+    "n|how:financingResource|2": 0.02,
+    "several|how:financingResource": 0.39,
+    "part|how:idsConcessionality": 0.15,
+    "n|how:idsConcessionality|0": 0.03,
+    "n|how:idsConcessionality|1": 0.04,
+    "several|how:idsConcessionality": 0.12,
+    "part|how:includesIMFCredit": 0.37,
+    "n|how:includesIMFCredit|0": 0.14,
+    "part|how:financialFlowType": 0.33,
+    "n|how:financialFlowType|0": 0.02,
+    "n|how:financialFlowType|1": 0.03,
+    "n|how:financialFlowType|2": 0.02,
+    "n|how:financialFlowType|3": 0.03,
+    "n|how:financialFlowType|4": 0.02,
+    "several|how:financialFlowType": 0.48,
+    "part|how:netOf": 0.3,
+    "n|how:netOf|0": 0.06,
+    "part|how:nettingBasis": 0.27,
+    "n|how:nettingBasis|0": 0.04,
+    "part|how:currencyOfDenomination": 0.07,
+    "n|how:currencyOfDenomination|0": 0.05,
+    "n|how:currencyOfDenomination|1": 0.03,
+    "n|how:currencyOfDenomination|2": 0.01,
+    "n|how:currencyOfDenomination|3": 0.01,
+    "n|how:currencyOfDenomination|4": 0.02,
+    "n|how:currencyOfDenomination|5": 0.01,
+    "n|how:currencyOfDenomination|6": 0.02,
+    "n|how:currencyOfDenomination|7": 0.02,
+    "n|how:currencyOfDenomination|8": 0.02,
+    "n|how:currencyOfDenomination|9": 0.07,
+    "several|how:currencyOfDenomination": 0.06,
+    "part|how:financialObligationType": 0.27,
+    "n|how:financialObligationType|0": 0.07
+   },
+   "choices": {
+    "elect": {
+     "Shape 0": 1.0
+    },
+    "electq": {
+     "Shape 0": 1.0,
+     "none": 0.0
+    },
+    "span|measure": {
+     "public": 0.0,
+     "public and": 0.0,
+     "public and publicly": 0.0,
+     "public and publicly guaranteed": 0.03,
+     "public and publicly guaranteed external": 0.01,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.0,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.01,
+     "publicly guaranteed external debt stocks": 0.01,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.01,
+     "external": 0.0,
+     "external debt": 0.08,
+     "external debt stocks": 0.17,
+     "debt": 0.01,
+     "debt stocks": 0.6,
+     "stocks": 0.06999999999999999,
+     "none": 0.0
+    },
+    "span|how:financialPositionType|AmountOutstanding": {
+     "public": 0.0,
+     "public and": 0.0,
+     "public and publicly": 0.0,
+     "public and publicly guaranteed": 0.0,
+     "public and publicly guaranteed external": 0.0,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.0,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.03,
+     "debt": 0.0,
+     "debt stocks": 0.44,
+     "stocks": 0.53,
+     "none": 0.0
+    },
+    "span|how:guaranteeStatus|PublicOrPubliclyGuaranteed": {
+     "public": 0.01,
+     "public and": 0.01,
+     "public and publicly": 0.06999999999999999,
+     "public and publicly guaranteed": 0.84,
+     "public and publicly guaranteed external": 0.0,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.05,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.02,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.0,
+     "debt": 0.0,
+     "debt stocks": 0.0,
+     "stocks": 0.0,
+     "none": 0.0
+    },
+    "span|how:idsDebtorType|IDSDebtorTypePS": {
+     "public": 0.5700000000000001,
+     "public and": 0.04,
+     "public and publicly": 0.09,
+     "public and publicly guaranteed": 0.26,
+     "public and publicly guaranteed external": 0.02,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.01,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.0,
+     "debt": 0.0,
+     "debt stocks": 0.0,
+     "stocks": 0.0,
+     "none": 0.0
+    }
+   },
+   "recorded_drafts": [
+    {
+     "axis": "how",
+     "property_dcid": "financialPositionType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "guaranteeStatus",
+     "kind": "value",
+     "value_dcids": [
+      "PublicOrPubliclyGuaranteed"
+     ],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "interestRateVariability",
+     "kind": "value",
+     "value_dcids": [
+      "VariableInterestRate"
+     ],
+     "evidence": "sole_option",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsCreditorType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsDebtorType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "maturityBand",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "financingResource",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsConcessionality",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "includesIMFCredit",
+     "kind": "value",
+     "value_dcids": [
+      "WithoutIMFCredit"
+     ],
+     "evidence": "sole_option",
+     "requested_all_phrase": null
+    }
+   ]
+  },
+  {
+   "nouls": {
+    "m|0": 0.95,
+    "mq|0": 0.92,
+    "named|0": 0.06,
+    "mv|FinancialObligation": 0.96,
+    "part|how:financialPositionType": 0.35,
+    "n|how:financialPositionType|0": 0.9,
+    "n|how:financialPositionType|1": 0.06,
+    "n|how:financialPositionType|2": 0.02,
+    "n|how:financialPositionType|3": 0.03,
+    "several|how:financialPositionType": 0.6,
+    "part|how:guaranteeStatus": 0.15,
+    "n|how:guaranteeStatus|0": 0.97,
+    "n|how:guaranteeStatus|1": 0.64,
+    "n|how:guaranteeStatus|2": 0.02,
+    "several|how:guaranteeStatus": 0.65,
+    "part|how:interestRateVariability": 0.06,
+    "n|how:interestRateVariability|0": 0.02,
+    "part|how:idsCreditorType": 0.14,
+    "n|how:idsCreditorType|0": 0.03,
+    "n|how:idsCreditorType|1": 0.03,
+    "n|how:idsCreditorType|2": 0.04,
+    "n|how:idsCreditorType|3": 0.04,
+    "n|how:idsCreditorType|4": 0.11,
+    "n|how:idsCreditorType|5": 0.03,
+    "n|how:idsCreditorType|6": 0.03,
+    "n|how:idsCreditorType|7": 0.04,
+    "several|how:idsCreditorType": 0.28,
+    "part|how:idsDebtorType": 0.3,
+    "n|how:idsDebtorType|0": 0.02,
+    "n|how:idsDebtorType|1": 0.77,
+    "n|how:idsDebtorType|2": 0.49,
+    "n|how:idsDebtorType|3": 0.02,
+    "n|how:idsDebtorType|4": 0.11,
+    "several|how:idsDebtorType": 0.7,
+    "part|how:maturityBand": 0.05,
+    "n|how:maturityBand|0": 0.04,
+    "n|how:maturityBand|1": 0.02,
+    "several|how:maturityBand": 0.13,
+    "part|how:financingResource": 0.27,
+    "n|how:financingResource|0": 0.44,
+    "n|how:financingResource|1": 0.15,
+    "n|how:financingResource|2": 0.02,
+    "several|how:financingResource": 0.31,
+    "part|how:idsConcessionality": 0.16,
+    "n|how:idsConcessionality|0": 0.02,
+    "n|how:idsConcessionality|1": 0.03,
+    "several|how:idsConcessionality": 0.13,
+    "part|how:includesIMFCredit": 0.33,
+    "n|how:includesIMFCredit|0": 0.12,
+    "part|how:financialFlowType": 0.31,
+    "n|how:financialFlowType|0": 0.02,
+    "n|how:financialFlowType|1": 0.03,
+    "n|how:financialFlowType|2": 0.02,
+    "n|how:financialFlowType|3": 0.02,
+    "n|how:financialFlowType|4": 0.02,
+    "several|how:financialFlowType": 0.45,
+    "part|how:netOf": 0.29,
+    "n|how:netOf|0": 0.06,
+    "part|how:nettingBasis": 0.27,
+    "n|how:nettingBasis|0": 0.04,
+    "part|how:currencyOfDenomination": 0.08,
+    "n|how:currencyOfDenomination|0": 0.06,
+    "n|how:currencyOfDenomination|1": 0.04,
+    "n|how:currencyOfDenomination|2": 0.01,
+    "n|how:currencyOfDenomination|3": 0.01,
+    "n|how:currencyOfDenomination|4": 0.02,
+    "n|how:currencyOfDenomination|5": 0.01,
+    "n|how:currencyOfDenomination|6": 0.02,
+    "n|how:currencyOfDenomination|7": 0.02,
+    "n|how:currencyOfDenomination|8": 0.03,
+    "n|how:currencyOfDenomination|9": 0.06,
+    "several|how:currencyOfDenomination": 0.06,
+    "part|how:financialObligationType": 0.28,
+    "n|how:financialObligationType|0": 0.06
+   },
+   "choices": {
+    "elect": {
+     "Shape 0": 1.0
+    },
+    "electq": {
+     "Shape 0": 1.0,
+     "none": 0.0
+    },
+    "span|measure": {
+     "public": 0.0,
+     "public and": 0.01,
+     "public and publicly": 0.0,
+     "public and publicly guaranteed": 0.05,
+     "public and publicly guaranteed external": 0.02,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.01,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.0,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.02,
+     "publicly guaranteed external debt stocks": 0.01,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.01,
+     "guaranteed external debt stocks": 0.01,
+     "external": 0.0,
+     "external debt": 0.08,
+     "external debt stocks": 0.19,
+     "debt": 0.01,
+     "debt stocks": 0.54,
+     "stocks": 0.04,
+     "none": 0.0
+    },
+    "span|how:financialPositionType|AmountOutstanding": {
+     "public": 0.0,
+     "public and": 0.0,
+     "public and publicly": 0.0,
+     "public and publicly guaranteed": 0.0,
+     "public and publicly guaranteed external": 0.0,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.0,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.03,
+     "debt": 0.0,
+     "debt stocks": 0.5,
+     "stocks": 0.47000000000000003,
+     "none": 0.0
+    },
+    "span|how:guaranteeStatus|PublicOrPubliclyGuaranteed": {
+     "public": 0.01,
+     "public and": 0.01,
+     "public and publicly": 0.05,
+     "public and publicly guaranteed": 0.81,
+     "public and publicly guaranteed external": 0.0,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.08,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.03,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.0,
+     "debt": 0.0,
+     "debt stocks": 0.0,
+     "stocks": 0.0,
+     "none": 0.0
+    },
+    "span|how:idsDebtorType|IDSDebtorTypePS": {
+     "public": 0.55,
+     "public and": 0.05,
+     "public and publicly": 0.11,
+     "public and publicly guaranteed": 0.24000000000000002,
+     "public and publicly guaranteed external": 0.02,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.01,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.0,
+     "debt": 0.0,
+     "debt stocks": 0.0,
+     "stocks": 0.0,
+     "none": 0.01
+    }
+   },
+   "recorded_drafts": [
+    {
+     "axis": "how",
+     "property_dcid": "financialPositionType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "guaranteeStatus",
+     "kind": "value",
+     "value_dcids": [
+      "PublicOrPubliclyGuaranteed"
+     ],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "interestRateVariability",
+     "kind": "value",
+     "value_dcids": [
+      "VariableInterestRate"
+     ],
+     "evidence": "sole_option",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsCreditorType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsDebtorType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "maturityBand",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "financingResource",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsConcessionality",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "includesIMFCredit",
+     "kind": "value",
+     "value_dcids": [
+      "WithoutIMFCredit"
+     ],
+     "evidence": "sole_option",
+     "requested_all_phrase": null
+    }
+   ]
+  },
+  {
+   "nouls": {
+    "m|0": 0.96,
+    "mq|0": 0.92,
+    "named|0": 0.06,
+    "mv|FinancialObligation": 0.97,
+    "part|how:financialPositionType": 0.34,
+    "n|how:financialPositionType|0": 0.89,
+    "n|how:financialPositionType|1": 0.05,
+    "n|how:financialPositionType|2": 0.02,
+    "n|how:financialPositionType|3": 0.03,
+    "several|how:financialPositionType": 0.6,
+    "part|how:guaranteeStatus": 0.14,
+    "n|how:guaranteeStatus|0": 0.97,
+    "n|how:guaranteeStatus|1": 0.67,
+    "n|how:guaranteeStatus|2": 0.02,
+    "several|how:guaranteeStatus": 0.63,
+    "part|how:interestRateVariability": 0.06,
+    "n|how:interestRateVariability|0": 0.02,
+    "part|how:idsCreditorType": 0.12,
+    "n|how:idsCreditorType|0": 0.02,
+    "n|how:idsCreditorType|1": 0.03,
+    "n|how:idsCreditorType|2": 0.04,
+    "n|how:idsCreditorType|3": 0.05,
+    "n|how:idsCreditorType|4": 0.11,
+    "n|how:idsCreditorType|5": 0.02,
+    "n|how:idsCreditorType|6": 0.03,
+    "n|how:idsCreditorType|7": 0.04,
+    "several|how:idsCreditorType": 0.21,
+    "part|how:idsDebtorType": 0.3,
+    "n|how:idsDebtorType|0": 0.02,
+    "n|how:idsDebtorType|1": 0.8,
+    "n|how:idsDebtorType|2": 0.54,
+    "n|how:idsDebtorType|3": 0.02,
+    "n|how:idsDebtorType|4": 0.15,
+    "several|how:idsDebtorType": 0.69,
+    "part|how:maturityBand": 0.05,
+    "n|how:maturityBand|0": 0.04,
+    "n|how:maturityBand|1": 0.02,
+    "several|how:maturityBand": 0.13,
+    "part|how:financingResource": 0.26,
+    "n|how:financingResource|0": 0.44,
+    "n|how:financingResource|1": 0.14,
+    "n|how:financingResource|2": 0.02,
+    "several|how:financingResource": 0.34,
+    "part|how:idsConcessionality": 0.16,
+    "n|how:idsConcessionality|0": 0.02,
+    "n|how:idsConcessionality|1": 0.03,
+    "several|how:idsConcessionality": 0.13,
+    "part|how:includesIMFCredit": 0.29,
+    "n|how:includesIMFCredit|0": 0.11,
+    "part|how:financialFlowType": 0.34,
+    "n|how:financialFlowType|0": 0.02,
+    "n|how:financialFlowType|1": 0.03,
+    "n|how:financialFlowType|2": 0.02,
+    "n|how:financialFlowType|3": 0.02,
+    "n|how:financialFlowType|4": 0.01,
+    "several|how:financialFlowType": 0.45,
+    "part|how:netOf": 0.29,
+    "n|how:netOf|0": 0.06,
+    "part|how:nettingBasis": 0.25,
+    "n|how:nettingBasis|0": 0.05,
+    "part|how:currencyOfDenomination": 0.06,
+    "n|how:currencyOfDenomination|0": 0.05,
+    "n|how:currencyOfDenomination|1": 0.04,
+    "n|how:currencyOfDenomination|2": 0.01,
+    "n|how:currencyOfDenomination|3": 0.01,
+    "n|how:currencyOfDenomination|4": 0.02,
+    "n|how:currencyOfDenomination|5": 0.01,
+    "n|how:currencyOfDenomination|6": 0.02,
+    "n|how:currencyOfDenomination|7": 0.01,
+    "n|how:currencyOfDenomination|8": 0.03,
+    "n|how:currencyOfDenomination|9": 0.07,
+    "several|how:currencyOfDenomination": 0.05,
+    "part|how:financialObligationType": 0.27,
+    "n|how:financialObligationType|0": 0.06
+   },
+   "choices": {
+    "elect": {
+     "Shape 0": 1.0
+    },
+    "electq": {
+     "Shape 0": 1.0,
+     "none": 0.0
+    },
+    "span|measure": {
+     "public": 0.0,
+     "public and": 0.01,
+     "public and publicly": 0.0,
+     "public and publicly guaranteed": 0.04,
+     "public and publicly guaranteed external": 0.02,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.01,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.0,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.02,
+     "publicly guaranteed external debt stocks": 0.01,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.01,
+     "guaranteed external debt stocks": 0.01,
+     "external": 0.0,
+     "external debt": 0.09,
+     "external debt stocks": 0.21000000000000002,
+     "debt": 0.01,
+     "debt stocks": 0.51,
+     "stocks": 0.05,
+     "none": 0.0
+    },
+    "span|how:financialPositionType|AmountOutstanding": {
+     "public": 0.0,
+     "public and": 0.0,
+     "public and publicly": 0.0,
+     "public and publicly guaranteed": 0.0,
+     "public and publicly guaranteed external": 0.0,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.0,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.02,
+     "debt": 0.0,
+     "debt stocks": 0.5,
+     "stocks": 0.48,
+     "none": 0.0
+    },
+    "span|how:guaranteeStatus|PublicOrPubliclyGuaranteed": {
+     "public": 0.01,
+     "public and": 0.01,
+     "public and publicly": 0.06,
+     "public and publicly guaranteed": 0.84,
+     "public and publicly guaranteed external": 0.0,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.06,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.02,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.0,
+     "debt": 0.0,
+     "debt stocks": 0.0,
+     "stocks": 0.0,
+     "none": 0.0
+    },
+    "span|how:idsDebtorType|IDSDebtorTypePS": {
+     "public": 0.6,
+     "public and": 0.05,
+     "public and publicly": 0.09,
+     "public and publicly guaranteed": 0.23,
+     "public and publicly guaranteed external": 0.02,
+     "and": 0.0,
+     "and publicly": 0.0,
+     "and publicly guaranteed": 0.0,
+     "and publicly guaranteed external": 0.0,
+     "and publicly guaranteed external debt": 0.0,
+     "publicly": 0.0,
+     "publicly guaranteed": 0.01,
+     "publicly guaranteed external": 0.0,
+     "publicly guaranteed external debt": 0.0,
+     "publicly guaranteed external debt stocks": 0.0,
+     "guaranteed": 0.0,
+     "guaranteed external": 0.0,
+     "guaranteed external debt": 0.0,
+     "guaranteed external debt stocks": 0.0,
+     "external": 0.0,
+     "external debt": 0.0,
+     "external debt stocks": 0.0,
+     "debt": 0.0,
+     "debt stocks": 0.0,
+     "stocks": 0.0,
+     "none": 0.0
+    }
+   },
+   "recorded_drafts": [
+    {
+     "axis": "how",
+     "property_dcid": "financialPositionType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "guaranteeStatus",
+     "kind": "value",
+     "value_dcids": [
+      "PublicOrPubliclyGuaranteed"
+     ],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "interestRateVariability",
+     "kind": "value",
+     "value_dcids": [
+      "VariableInterestRate"
+     ],
+     "evidence": "sole_option",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsCreditorType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsDebtorType",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "maturityBand",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "financingResource",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "idsConcessionality",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "includesIMFCredit",
+     "kind": "value",
+     "value_dcids": [
+      "WithoutIMFCredit"
+     ],
+     "evidence": "sole_option",
+     "requested_all_phrase": null
+    }
+   ]
+  }
+ ],
+ "population": [
+  {
+   "financialPositionType": "AmountOutstanding"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "financingResource": "DebtInstrument",
+   "idsConcessionality": "IDSConcessional"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "financingResource": "DebtInstrument",
+   "idsConcessionality": "IDSNonConcessional"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "financingResource": "DebtInstrument"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsConcessionality": "IDSConcessional"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsConcessionality": "IDSConcessional",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeBLAT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeMLAT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypeOFFT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePBND"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePCBK"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePROP"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsCreditorType": "IDSCreditorTypePRVT"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypeCB"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypeGG"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypeOPS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypePS"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "financingResource": "Loan"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypePS",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypePS",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypePrivateSector",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "idsDebtorType": "IDSDebtorTypePrivateSector",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "includesIMFCredit": "WithoutIMFCredit",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "includesIMFCredit": "WithoutIMFCredit",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "AmountOutstanding"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "NotPubliclyGuaranteed",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "NotPubliclyGuaranteed",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "NotPubliclyGuaranteed",
+   "idsCreditorType": "IDSCreditorTypePNGC",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "NotPubliclyGuaranteed",
+   "idsCreditorType": "IDSCreditorTypePNGC",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "NotPubliclyGuaranteed",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "NotPubliclyGuaranteed",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PublicOrPubliclyGuaranteed"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PublicOrPubliclyGuaranteed"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypeBLAT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypeMLAT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypeOFFT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypePBND",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypePCBK",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypePROP",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsCreditorType": "IDSCreditorTypePRVT",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PubliclyGuaranteedClaim",
+   "idsDebtorType": "IDSDebtorTypePrivateSector"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "financingResource": "SDRAllocation"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "maturityBand": "ShortTermMaturity"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "maturityBand": "ShortTermMaturity"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "interestRateVariability": "VariableInterestRate"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "interestRateVariability": "VariableInterestRate"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PublicOrPubliclyGuaranteed",
+   "interestRateVariability": "VariableInterestRate"
+  },
+  {
+   "financialPositionType": "AmountOutstanding",
+   "guaranteeStatus": "PublicOrPubliclyGuaranteed",
+   "interestRateVariability": "VariableInterestRate"
+  },
+  {
+   "financialPositionType": "AmountUndisbursed",
+   "idsCreditorType": "IDSCreditorTypeOFFT"
+  },
+  {
+   "financialPositionType": "AmountUndisbursed",
+   "idsCreditorType": "IDSCreditorTypeOFFT"
+  },
+  {
+   "financialPositionType": "AmountUndisbursed",
+   "idsCreditorType": "IDSCreditorTypePRVT"
+  },
+  {
+   "financialPositionType": "AmountUndisbursed",
+   "idsCreditorType": "IDSCreditorTypePRVT"
+  },
+  {
+   "financialPositionType": "AmountUndisbursed",
+   "guaranteeStatus": "PublicOrPubliclyGuaranteed"
+  },
+  {
+   "financialPositionType": "AmountUndisbursed",
+   "guaranteeStatus": "PublicOrPubliclyGuaranteed"
+  },
+  {
+   "financialPositionType": "InterestArrears",
+   "idsCreditorType": "IDSCreditorTypeOFFT"
+  },
+  {
+   "financialPositionType": "InterestArrears",
+   "idsCreditorType": "IDSCreditorTypeOFFT"
+  },
+  {
+   "financialPositionType": "InterestArrears",
+   "idsCreditorType": "IDSCreditorTypePRVT"
+  },
+  {
+   "financialPositionType": "InterestArrears",
+   "idsCreditorType": "IDSCreditorTypePRVT"
+  },
+  {
+   "financialPositionType": "InterestArrears",
+   "includesIMFCredit": "WithoutIMFCredit",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "InterestArrears",
+   "includesIMFCredit": "WithoutIMFCredit",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "PrincipalArrears",
+   "idsCreditorType": "IDSCreditorTypeOFFT"
+  },
+  {
+   "financialPositionType": "PrincipalArrears",
+   "idsCreditorType": "IDSCreditorTypeOFFT"
+  },
+  {
+   "financialPositionType": "PrincipalArrears",
+   "idsCreditorType": "IDSCreditorTypePRVT"
+  },
+  {
+   "financialPositionType": "PrincipalArrears",
+   "idsCreditorType": "IDSCreditorTypePRVT"
+  },
+  {
+   "financialPositionType": "PrincipalArrears",
+   "includesIMFCredit": "WithoutIMFCredit",
+   "maturityBand": "LongTermMaturity"
+  },
+  {
+   "financialPositionType": "PrincipalArrears",
+   "includesIMFCredit": "WithoutIMFCredit",
+   "maturityBand": "LongTermMaturity"
+  }
+ ]
+}

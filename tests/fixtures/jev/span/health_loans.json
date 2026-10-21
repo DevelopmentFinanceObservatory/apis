@@ -1,0 +1,1916 @@
+{
+ "query": "health loans",
+ "variable": "health loans",
+ "slots": [
+  {
+   "slot": "how:crsPurpose",
+   "label": "CRS purpose",
+   "values": [
+    {
+     "dcid": "CRSPurposeCode100",
+     "label": "social infrastructure and services"
+    },
+    {
+     "dcid": "CRSPurposeCode200",
+     "label": "economic infrastructure and services"
+    },
+    {
+     "dcid": "CRSPurposeCode300",
+     "label": "productive sector"
+    },
+    {
+     "dcid": "CRSPurposeCode500",
+     "label": "commodity aid and general programme assistance"
+    },
+    {
+     "dcid": "CRSPurposeCode400",
+     "label": "multisector"
+    },
+    {
+     "dcid": "CRSPurposeCode700",
+     "label": "humanitarian aid"
+    },
+    {
+     "dcid": "CRSPurposeCode910",
+     "label": "administrative costs of donors"
+    },
+    {
+     "dcid": "CRSPurposeCode998",
+     "label": "unallocated and unspecified"
+    },
+    {
+     "dcid": "CRSPurposeCode600",
+     "label": "action relating to debt"
+    },
+    {
+     "dcid": "CRSPurposeCode930",
+     "label": "support for refugees and asylum seekers in donor countries"
+    },
+    {
+     "dcid": "CRSPurposeCode120",
+     "label": "health"
+    },
+    {
+     "dcid": "CRSPurposeCode121",
+     "label": "general health"
+    },
+    {
+     "dcid": "CRSPurposeCode122",
+     "label": "basic health"
+    },
+    {
+     "dcid": "CRSPurposeCode123",
+     "label": "noncommunicable disease"
+    }
+   ],
+   "offered": [
+    "CRSPurposeCode100",
+    "CRSPurposeCode200",
+    "CRSPurposeCode300",
+    "CRSPurposeCode500",
+    "CRSPurposeCode400",
+    "CRSPurposeCode700",
+    "CRSPurposeCode910",
+    "CRSPurposeCode998",
+    "CRSPurposeCode930",
+    "CRSPurposeCode120",
+    "CRSPurposeCode121",
+    "CRSPurposeCode122",
+    "CRSPurposeCode123"
+   ]
+  },
+  {
+   "slot": "how:crsTypeOfFinance",
+   "label": "CRS type of finance",
+   "values": [
+    {
+     "dcid": "CRSTypeOfFinance100",
+     "label": "grant"
+    },
+    {
+     "dcid": "CRSTypeOfFinance420",
+     "label": "debt instrument"
+    },
+    {
+     "dcid": "CRSTypeOfFinance430",
+     "label": "mezzanine finance instrument"
+    },
+    {
+     "dcid": "CRSTypeOfFinance500",
+     "label": "equity and share in collective investment vehicle"
+    },
+    {
+     "dcid": "CRSTypeOfFinance600",
+     "label": "debt relief"
+    },
+    {
+     "dcid": "CRSTypeOfFinance1000",
+     "label": "guarantee and other unfunded contingent liability"
+    },
+    {
+     "dcid": "CRSTypeOfFinance1101",
+     "label": "individual loan guarantee"
+    },
+    {
+     "dcid": "CRSTypeOfFinance1102",
+     "label": "loan portfolio guarantee"
+    },
+    {
+     "dcid": "CRSTypeOfFinance421",
+     "label": "standard loan"
+    },
+    {
+     "dcid": "CRSTypeOfFinance431",
+     "label": "subordinated loan"
+    },
+    {
+     "dcid": "CRSTypeOfFinance422",
+     "label": "reimbursable grant"
+    },
+    {
+     "dcid": "CRSTypeOfFinance423",
+     "label": "bond"
+    },
+    {
+     "dcid": "CRSTypeOfFinance424",
+     "label": "asset-backed security"
+    },
+    {
+     "dcid": "CRSTypeOfFinance425",
+     "label": "other debt security"
+    }
+   ]
+  },
+  {
+   "slot": "how:crsTypeOfFlow",
+   "label": "CRS type of flow",
+   "values": [
+    {
+     "dcid": "CRSTypeOfFlow10",
+     "label": "official development assistance"
+    },
+    {
+     "dcid": "CRSTypeOfFlow21",
+     "label": "non-export credit official flow"
+    },
+    {
+     "dcid": "CRSTypeOfFlow30",
+     "label": "private development finance"
+    },
+    {
+     "dcid": "CRSTypeOfFlow60",
+     "label": "private sector instrument"
+    }
+   ]
+  },
+  {
+   "slot": "how:crsCooperationModality",
+   "label": "CRS cooperation modality",
+   "values": [
+    {
+     "dcid": "CRSCooperationModalityA",
+     "label": "budget support"
+    },
+    {
+     "dcid": "CRSCooperationModalityB",
+     "label": "core contribution and pooled programme and fund"
+    },
+    {
+     "dcid": "CRSCooperationModalityC",
+     "label": "project-type intervention (group)"
+    },
+    {
+     "dcid": "CRSCooperationModalityD",
+     "label": "expert and other technical assistance"
+    },
+    {
+     "dcid": "CRSCooperationModalityE",
+     "label": "scholarship and student cost in donor country"
+    },
+    {
+     "dcid": "CRSCooperationModalityF",
+     "label": "debt relief (group)"
+    },
+    {
+     "dcid": "CRSCooperationModalityG",
+     "label": "other administrative cost (group)"
+    },
+    {
+     "dcid": "CRSCooperationModalityH",
+     "label": "other in-donor expenditure"
+    }
+   ]
+  }
+ ],
+ "runs": [
+  {
+   "nouls": {
+    "m|0": 0.61,
+    "mq|0": 0.39,
+    "named|0": 0.02,
+    "mv|grantEquivalent": 0.25,
+    "part|how:crsPurpose": 0.46,
+    "n|how:crsPurpose|0": 0.42,
+    "n|how:crsPurpose|1": 0.13,
+    "n|how:crsPurpose|2": 0.08,
+    "n|how:crsPurpose|3": 0.03,
+    "n|how:crsPurpose|4": 0.11,
+    "n|how:crsPurpose|5": 0.05,
+    "n|how:crsPurpose|6": 0.02,
+    "n|how:crsPurpose|7": 0.05,
+    "n|how:crsPurpose|8": 0.8,
+    "n|how:crsPurpose|9": 0.01,
+    "n|how:crsPurpose|10": 0.76,
+    "n|how:crsPurpose|11": 0.38,
+    "n|how:crsPurpose|12": 0.38,
+    "n|how:crsPurpose|13": 0.03,
+    "several|how:crsPurpose": 0.09,
+    "part|how:crsTypeOfFinance": 0.48,
+    "n|how:crsTypeOfFinance|0": 0.02,
+    "n|how:crsTypeOfFinance|1": 0.72,
+    "n|how:crsTypeOfFinance|2": 0.02,
+    "n|how:crsTypeOfFinance|3": 0.01,
+    "n|how:crsTypeOfFinance|4": 0.05,
+    "n|how:crsTypeOfFinance|5": 0.04,
+    "n|how:crsTypeOfFinance|6": 0.05,
+    "n|how:crsTypeOfFinance|7": 0.04,
+    "n|how:crsTypeOfFinance|8": 0.51,
+    "n|how:crsTypeOfFinance|9": 0.03,
+    "n|how:crsTypeOfFinance|10": 0.02,
+    "n|how:crsTypeOfFinance|11": 0.02,
+    "n|how:crsTypeOfFinance|12": 0.03,
+    "n|how:crsTypeOfFinance|13": 0.07,
+    "several|how:crsTypeOfFinance": 0.08,
+    "part|how:crsTypeOfFlow": 0.41,
+    "n|how:crsTypeOfFlow|0": 0.05,
+    "n|how:crsTypeOfFlow|1": 0.05,
+    "n|how:crsTypeOfFlow|2": 0.07,
+    "n|how:crsTypeOfFlow|3": 0.23,
+    "several|how:crsTypeOfFlow": 0.12,
+    "part|how:crsCooperationModality": 0.34,
+    "n|how:crsCooperationModality|0": 0.03,
+    "n|how:crsCooperationModality|1": 0.02,
+    "n|how:crsCooperationModality|2": 0.03,
+    "n|how:crsCooperationModality|3": 0.02,
+    "n|how:crsCooperationModality|4": 0.02,
+    "n|how:crsCooperationModality|5": 0.06,
+    "n|how:crsCooperationModality|6": 0.03,
+    "n|how:crsCooperationModality|7": 0.04,
+    "several|how:crsCooperationModality": 0.08
+   },
+   "choices": {
+    "elect": {
+     "Shape 0": 0.9
+    },
+    "electq": {
+     "Shape 0": 0.53,
+     "none": 0.33
+    },
+    "span|measure": {
+     "health": 0.07,
+     "health loans": 0.21,
+     "loans": 0.6799999999999999,
+     "none": 0.04
+    },
+    "span|how:crsPurpose|CRSPurposeCode120": {
+     "health": 0.99,
+     "health loans": 0.01,
+     "loans": 0.0,
+     "none": 0.0
+    },
+    "span|how:crsTypeOfFinance|CRSTypeOfFinance420": {
+     "health": 0.0,
+     "health loans": 0.03,
+     "loans": 0.97,
+     "none": 0.0
+    }
+   },
+   "recorded_drafts": [
+    {
+     "axis": "how",
+     "property_dcid": "crsPurpose",
+     "kind": "value",
+     "value_dcids": [
+      "CRSPurposeCode120"
+     ],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "crsTypeOfFinance",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "crsTypeOfFlow",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "crsCooperationModality",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    }
+   ]
+  }
+ ],
+ "population": [
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12330",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB01",
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB01",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance110",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode11110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode11220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode11230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode11320",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode11330",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode11420",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode13020",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode13040",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode14010",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode14015",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode14031",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode14050",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode15110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode15111",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode15112",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode15130",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode15142",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode16010",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode16030",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode16040",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB031",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB031",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB03",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB04",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB04",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12350",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12320",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12350",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode120",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode121",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode122",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance423",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance425",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance425",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow30"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow30"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12350",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance423",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance423",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB031",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB031",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB03",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB04",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityB04",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12350",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12350",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow10"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA01",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityA02",
+   "crsPurpose": "CRSPurposeCode12320",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12310",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12350",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityD02",
+   "crsPurpose": "CRSPurposeCode12281",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode120",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12181",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode121",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12240",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12250",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12261",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12262",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12263",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode12264",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsPurpose": "CRSPurposeCode122",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance423",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance425",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance425",
+   "crsTypeOfFlow": "CRSTypeOfFlow21"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow30"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow30"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12182",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12220",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12230",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12350",
+   "crsTypeOfFinance": "CRSTypeOfFinance421",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12110",
+   "crsTypeOfFinance": "CRSTypeOfFinance423",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  },
+  {
+   "crsCooperationModality": "CRSCooperationModalityC01",
+   "crsPurpose": "CRSPurposeCode12191",
+   "crsTypeOfFinance": "CRSTypeOfFinance423",
+   "crsTypeOfFlow": "CRSTypeOfFlow60"
+  }
+ ]
+}
