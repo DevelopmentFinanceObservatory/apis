@@ -38,7 +38,7 @@ from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions, ResolveState, UnLeg, UnPool
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_scope import SourceScope
-from search.models import Warning
+from search.models import Spec, Warning
 from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -864,27 +864,34 @@ def test_a_deadline_spent_before_the_un_pass_keeps_our_refusal_with_a_warning(ca
     assert "un_pass=skipped:" in _gap_fill_line(caplog)
 
 
-def test_a_gap_filled_answer_states_an_alternate_either_pass_left_unevaluated() -> None:
-    """A pass that left an alternate unevaluated states `alternates_unevaluated`; the
-    answer that stands carries it from whichever pass left it, so it stays out of the
-    cache."""
+def _gap_result(
+    status: str,
+    *,
+    unevaluated: bool = False,
+    alternate: Spec | None = None,
+    usage: int = 0,
+) -> RegionResult:
+    warnings = (
+        (Warning(code="alternates_unevaluated", severity="warn", message="-"),)
+        if unevaluated
+        else ()
+    )
+    return RegionResult(
+        variable_text=_QUERY,
+        status=status,
+        specs=(),
+        no_data_reason="no_observations" if status == "no_data" else None,
+        warnings=warnings,
+        timing_by_step={},
+        alternate_match=alternate,
+        llm_usage={"input_tokens": usage, "output_tokens": usage, "cached_tokens": 0},
+    )
 
-    def result(status: str, *, unevaluated: bool) -> RegionResult:
-        warnings = (
-            (Warning(code="alternates_unevaluated", severity="warn", message="-"),)
-            if unevaluated
-            else ()
-        )
-        return RegionResult(
-            variable_text=_QUERY,
-            status=status,
-            specs=(),
-            no_data_reason="no_observations" if status == "no_data" else None,
-            warnings=warnings,
-            timing_by_step={},
-        )
 
-    async def fill(ours: RegionResult, un: RegionResult) -> RegionResult:
+def _fill(ours: RegionResult, un: RegionResult) -> RegionResult:
+    """`pipeline._fill_gap` over our pass's `ours`, with a UN pass that returns `un`."""
+
+    async def fill() -> RegionResult:
         async def shapes() -> UnPool:
             return UnPool(shapes=[_shape(_UN, population_type=_UN, pool="un_system")])
 
@@ -913,15 +920,39 @@ def test_a_gap_filled_answer_states_an_alternate_either_pass_left_unevaluated() 
                 un_state=lambda _bound: cast(ResolveState, un_state),
             )
 
-    filled = asyncio.run(
-        fill(result("no_data", unevaluated=True), result("definite", unevaluated=False))
-    )
-    kept = asyncio.run(
-        fill(result("no_data", unevaluated=False), result("no_data", unevaluated=True))
-    )
+    return asyncio.run(fill())
+
+
+def test_a_gap_filled_answer_states_an_alternate_either_pass_left_unevaluated() -> None:
+    """A pass that left an alternate unevaluated states `alternates_unevaluated`; the
+    answer that stands carries it from whichever pass left it, so it stays out of the
+    cache."""
+    filled = _fill(_gap_result("no_data", unevaluated=True), _gap_result("definite"))
+    kept = _fill(_gap_result("no_data"), _gap_result("no_data", unevaluated=True))
 
     assert filled.status == "definite" and filled.alternates_left_out
     assert kept.status == "no_data" and kept.alternates_left_out
+
+
+@pytest.mark.parametrize("ours_offers", [False, True], ids=["ours_bare", "ours_offers"])
+def test_a_un_refusal_offering_an_alternate_stands_over_a_bare_refusal_of_ours(
+    ours_offers: bool,
+) -> None:
+    """ "measles immunization coverage in Pakistan": our pass's measure has no data at
+    Pakistan and nominates nothing; the UN pass's pick has none either, and its nominee,
+    with data, rides on its refusal. That refusal stands, carrying both passes' model usage
+    and an alternate our pass left unevaluated. A refusal of ours that offers its own
+    alternate stands."""
+    un_alternate = cast(Spec, object())
+    our_alternate = cast(Spec, object()) if ours_offers else None
+    ours = _gap_result("no_data", unevaluated=True, alternate=our_alternate, usage=1)
+    un = _gap_result("no_data", alternate=un_alternate, usage=2)
+
+    chosen = _fill(ours, un)
+
+    assert chosen.alternate_match is (our_alternate if ours_offers else un_alternate)
+    assert chosen.alternates_left_out
+    assert chosen.llm_usage == {"input_tokens": 3, "output_tokens": 3, "cached_tokens": 0}
 
 
 def _shape(dcid: str, *, population_type: str, pool: Pool) -> ShapeDraft:
