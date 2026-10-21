@@ -19,9 +19,9 @@ is unverifiable, n/a or unreached, since none of those says whether the answer w
 ``disposition`` is a known failure, an answer in a status the case does not accept writes
 no ``answer`` score.
 
-Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``. The nightly also reads the
-graph settings, ``GRAPH_RELEASE_URI`` and ``ORIGIN_CATALOGUE_URI`` the checks score
-against.
+Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``, and ``GRAPH_RELEASE_URI``,
+whose served release the case requests are built against. The nightly also reads the graph
+settings and ``ORIGIN_CATALOGUE_URI`` the checks score against.
 """
 
 from __future__ import annotations
@@ -40,6 +40,8 @@ import httpx
 from langfuse import Evaluation
 from langfuse.api import DatasetStatus
 
+from graph_release.context import bound_served_release
+from graph_release.service import get_release_service
 from search.eval.apis_auth import apis_auth
 from search.eval.cases import (
     CHECK_NAMES,
@@ -332,20 +334,14 @@ def _client() -> Langfuse:
 def _run_nightly(
     by_file: Mapping[str, Sequence[Case]], url: str, schema: Mapping[str, Any], langfuse: Langfuse
 ) -> tuple[list[NightlyCase], dict[str, str | None]]:
-    from graph_release.context import bound_served_release
-    from graph_release.service import get_release_service
     from origin_catalogue import bound_catalogue
     from origin_catalogue.service import get_catalogue_service
     from search.eval.live_clients import score_clients
 
-    # The graph client reads under a bound origin catalogue and the served graph release. The
-    # experiment's tasks and the scoring threads inherit both bindings.
+    # The graph client reads under a bound origin catalogue, and `main` binds the served graph
+    # release. The experiment's tasks and the scoring threads inherit both bindings.
     catalogue = get_catalogue_service().snapshot()
-    with (
-        score_clients() as clients,
-        bound_catalogue(catalogue),
-        bound_served_release(get_release_service()),
-    ):
+    with score_clients() as clients, bound_catalogue(catalogue):
         ctx = ScoreContext(
             schema=WireSchema.from_document(schema),
             graph=clients.graph,
@@ -365,7 +361,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # A crash must not read as an unmarked failure (1) or infrastructure (3), which the
     # nightly workflow can report and pass, so every unexpected error exits 2.
     try:
-        return _main(args)
+        # Building a case's request reads the code index of the bound release, so the sync and
+        # the nightly run both bind the served release once, here.
+        with bound_served_release(get_release_service()):
+            return _main(args)
     except Exception:
         traceback.print_exc()
         return 2
