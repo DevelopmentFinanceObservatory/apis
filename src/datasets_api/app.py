@@ -81,7 +81,7 @@ from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
 from dfo_platform.doors import combine_classifiers, flatten
 from graph_release.context import bound_served_release
-from graph_release.service import ReleaseService, optional_release_service
+from graph_release.service import ReleaseService, get_release_service
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
@@ -145,10 +145,8 @@ def datasets_surface(
 
     A given `code_index` serves every request. Left out, each request reads `get_index()`,
     which can change between requests. The index is read here, under the served release as a
-    request reads it, so a missing or malformed export fails construction. `coverage` defaults
-    to the process-wide service, resolved here, so a missing or unreadable
-    `COVERAGE_ARTIFACT_URI` fails construction. With `GRAPH_RELEASE_COVERAGE` on it is the bound
-    release's coverage (`series_coverage.shared.ReleaseCoverage`), which reads no artifact.
+    request reads it, so a release without one fails construction. `coverage` defaults to the
+    bound release's coverage (`series_coverage.shared.ReleaseCoverage`).
     `rate_cache` defaults to a cache of this surface's own; pass Search's when composing both.
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
@@ -162,13 +160,13 @@ def datasets_surface(
     the lifespan acquires the process-wide graph generation the live graph client keys its
     caches on, and registers the default-scope memo on it.
 
-    With `GRAPH_RELEASE_URI` set, or `release` given, each request also binds the release
-    service's served release, and a swap holds every materialise permit. An unreadable
-    release fails startup.
+    Each request also binds `release`'s served release, and a swap holds every materialise
+    permit. `release` defaults to the process-wide service, so an unset `GRAPH_RELEASE_URI` or
+    an unreadable release fails startup.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
-    _release = release if release is not None else optional_release_service()
+    _release = release if release is not None else get_release_service()
     cell = DepsCell()
     # The doors read the code index as they are built, so they are built under the release a
     # request would bind, and keep none of what they read.

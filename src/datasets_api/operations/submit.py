@@ -5,7 +5,7 @@ for identical identity, origin catalogue build, and rendering. The build is the 
 submitting request. Options stay on the row. Their rendering key sets the id. Different
 renderings get separate operations and isolate rendering-specific failures such as
 `excel_limit`. The coverage stamp the estimate ran against is stored for lineage and stays out
-of the id, so a coverage build never orphans a done operation.
+of the id, so a new graph release never orphans a done operation.
 
 `request_identity` also holds `member_dcids`, the StatVars the submitting door resolved. The
 members are part of the operation id: two submissions share an operation only when their doors

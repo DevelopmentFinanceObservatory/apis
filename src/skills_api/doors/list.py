@@ -15,10 +15,10 @@ from fastapi import APIRouter, Request
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from skills_api.deps import (
+    CACHE_CONTROL,
     INDEX_NOT_BUILT_PROBLEM,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
-    cache_control,
 )
 from skills_api.models import SkillListResponse, skill_summary, split_skill_warnings
 from skills_index import SkillsIndex
@@ -48,7 +48,7 @@ async def list_skills(request: Request, deps: SkillsDepsDep) -> object:
         generation=index,
         key=None,
         request=request,
-        cache_control=cache_control(shared),
+        cache_control=CACHE_CONTROL,
         build_payload=lambda: _build_response(index).model_dump(mode="json"),
     )
 

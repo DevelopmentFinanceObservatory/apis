@@ -25,7 +25,7 @@ from origin_catalogue.artifact import (
     read_un_mirror,
     resident_bytes,
 )
-from origin_catalogue.families import FamilyKey, family_tables
+from origin_catalogue.families import FamilyKey, family_tables, summarise_table
 from origin_catalogue.schema import (
     ARC_TARGETS_FILE,
     BASE_ARCS_FILE,
@@ -879,7 +879,8 @@ def test_the_family_tables_round_trip_and_the_manifest_counts_and_measures_them(
     tmp_path: Path,
 ) -> None:
     """The build holds one summary per family of its arc tables' and UN tables' variables,
-    computed when it is encoded, and the loaded snapshot serves them."""
+    computed when it is encoded, and the loaded snapshot serves them. Loading also summarises
+    the base variables alone, which the snapshot joins to the bound release's."""
     uri = _uri(tmp_path)
     arcs, mirror = sample_arc_tables(), sample_un_mirror()
     manifest = publish_sample(uri, un_mirror=mirror, arcs=arcs).manifest
@@ -893,6 +894,9 @@ def test_the_family_tables_round_trip_and_the_manifest_counts_and_measures_them(
     assert family is not None
     assert len(family.members) == 2
     assert CatalogueManifest.from_json(manifest.to_json()) == manifest
+    base = summarise_table(arcs.base)
+    assert base
+    assert snapshot.base_families == base
 
 
 def _rewrite_families(path: Path, column: str, value: object) -> None:

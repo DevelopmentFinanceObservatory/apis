@@ -2798,7 +2798,7 @@ eval = [
     { name = "pyyaml" },
 ]
 graph = [
-    { name = "dfo-data-tools", extra = ["resolve", "sdmx"] },
+    { name = "dfo-data-tools", extra = ["coverage", "resolve", "sdmx"] },
     { name = "fastapi" },
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
@@ -2831,7 +2831,7 @@ requires-dist = [
     { name = "dfo-data-tools", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["coverage"], marker = "extra == 'coverage'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["formats", "coverage", "sdmx", "graph-release"], marker = "extra == 'datasets'", editable = "packages/dfo-data-tools" },
-    { name = "dfo-data-tools", extras = ["resolve", "sdmx"], marker = "extra == 'graph'", editable = "packages/dfo-data-tools" },
+    { name = "dfo-data-tools", extras = ["resolve", "sdmx", "coverage"], marker = "extra == 'graph'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'sdmx'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["surface", "resolve", "coverage", "sdmx"], marker = "extra == 'engine'", editable = "packages/dfo-data-tools" },
     { name = "dfo-spec-kit", marker = "extra == 'engine'", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fspec-kit&rev=0f1a106d35aed1b11aea90cb2d11040326b58bd6" },

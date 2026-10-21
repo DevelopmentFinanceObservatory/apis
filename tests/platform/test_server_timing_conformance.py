@@ -17,6 +17,7 @@ from entity_resolution import Resolution
 from graph_api.deps import GRAPH_DEPS_SLOT, GraphDeps
 from graph_api.doors.sources import new_provenance_doc_cache
 from graph_generation import UNKNOWN_GENERATION
+from series_coverage.shared import get_coverage_service
 from tests.engine._search_app import with_fake_search_deps
 from tests.fixtures import FakeGraph
 
@@ -90,6 +91,7 @@ def client() -> TestClient:
             provenance_docs=new_provenance_doc_cache(
                 executor=executor, generation=UNKNOWN_GENERATION
             ),
+            coverage=get_coverage_service(),
         ),
     )
     return TestClient(app, raise_server_exceptions=False)

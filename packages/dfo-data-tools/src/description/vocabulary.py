@@ -202,7 +202,8 @@ def vocabulary_revision(
         index_stamp: the code index's `IndexStamp.content_hash`.
         graph_generation: the graph generation token the labels were read at, or `None` when
             unknown.
-        catalogue_build: the origin catalogue build id, or `None` when none is served.
+        catalogue_build: the origin catalogue build id joined to the bound release
+            (`origin_catalogue.context.current_words_build`), or `None` when none is served.
 
     The digest of the packaged word tables (`packaged_words_digest`) and `COMPOSER_VERSION`
     join them, so the same inputs, tables and composer give the same revision, and an edit to
@@ -268,7 +269,8 @@ def build_vocabulary(
         sources: each source's document facts, by provenance or dataset dcid.
         currency_units: unit dcid to ISO 4217 code, as the graph gives it.
         graph_generation: the graph generation token the labels were read at.
-        catalogue_build: the origin catalogue build id.
+        catalogue_build: the origin catalogue build id joined to the bound release
+            (`origin_catalogue.context.current_words_build`).
         definitions: the definitions the caller read, by dcid. A code's or measure value's
             index definition takes precedence (`Vocabulary.definition`).
 

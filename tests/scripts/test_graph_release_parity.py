@@ -17,10 +17,18 @@ from artifact_publication.jobs import Ingestion
 from code_index.loader import default_index_path
 from graph_release.format import open_release
 from graph_release.shadow import PINNED_INDEX_VARIABLES
-from scripts.graph_release_parity import Refused, check_same_import, parity_report
+from scripts.graph_release_parity import (
+    Refused,
+    check_same_import,
+    parity_report,
+)
 from series_coverage.loader import load_coverage, read_table
 from tests.graph_release.recorded import FIXTURES
-from tests.graph_release.support import TEST_EXECUTION, build_view_release, publish_coverage_build
+from tests.graph_release.support import (
+    TEST_EXECUTION,
+    build_view_release,
+    publish_coverage_build,
+)
 from tests.series_coverage.support import build_dir
 
 _PINNED = next(iter(PINNED_INDEX_VARIABLES))

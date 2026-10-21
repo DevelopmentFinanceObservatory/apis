@@ -3,34 +3,45 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import tempfile
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 
+import graph_release.service as service_module
 from artifact_publication.jobs import Ingestion
 from artifact_publication.uri import read_uri_bytes_and_generation
 from code_index.loader import default_index_path
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
+from graph_release.authored import literal_id
 from graph_release.context import bound_release, current_release
 from graph_release.coverage import HORIZON
 from graph_release.declarations import DECLARATIONS
 from graph_release.format import (
+    MASK_EPOCH,
+    MASK_WORDS,
     PART_SCHEMAS,
     Manifest,
     StagedPart,
+    conform_part,
     pointer_uri,
     write_blob_part,
     write_part,
 )
+from graph_release.origin import origin_view
 from graph_release.publish import PublishStatus, hold_release, publish_release
-from graph_release.service import Release
+from graph_release.service import Release, ReleaseService
+from origin_catalogue.arc_reads import DFO_VARIABLE_TYPE
+from origin_catalogue.arc_tables import WireArcs
 from series_coverage.io import (
     write_coverage_table,
     write_current,
@@ -226,6 +237,118 @@ def build_view_release(root_uri: str, *, dc_serving_revision: str = TEST_REVISIO
     )
 
 
+COVERAGE_SLICE = Path(__file__).parents[1] / "fixtures" / "coverage_slice" / "format-3"
+"""The recorded coverage slice: a coverage build of the variables the suite's fixtures and
+corpora name (`scripts/record_coverage_slice.py`)."""
+
+
+def slice_series_tables(slice_dir: Path = COVERAGE_SLICE) -> dict[str, pa.Table]:
+    """The `series`, `edges` and `facets` rows whose coverage view is the coverage build under
+    `slice_dir`, row for row: a series per coverage row, keyed by its donor and recipient as the
+    view's role rule reads them back, its years moved onto the release's mask epoch, each
+    variable's roles as `observationProperties` edges, and each facet's metadata. Columns are
+    plain, not dictionary-encoded."""
+    pointer = json.loads((slice_dir / "current.json").read_text())
+    build = slice_dir / "versions" / pointer["build_id"]
+    manifest = json.loads((build / "manifest.json").read_text())
+    roles = {
+        variable: RoleNames(**names)
+        for variable, names in json.loads((build / "role_names.json").read_text()).items()
+    }
+    shift = manifest["epoch_year"] - date.fromisoformat(MASK_EPOCH).year
+    words = range(manifest["mask_words"])
+    series = []
+    for row in pq.read_table(build / "coverage.parquet").to_pylist():
+        names = roles[row["variable"]]
+        two_roles = names.donor is not None and names.recipient is not None
+        mask = sum(row[f"year_mask_{word}"] << (64 * word) for word in words) << shift
+        series.append(
+            {
+                "variable_measured": row["variable"],
+                "entity1": row["donor"] if names.donor is not None else row["recipient"],
+                "extra_entities_id": row["recipient"] if two_roles else "",
+                "facet_id": row["facet_id"],
+                "entity2": row["recipient"] if two_roles else None,
+                "observation_count": row["n_obs"],
+                "earliest_date": date(row["first_year"], 1, 1),
+                "latest_date": date(row["last_year"], 1, 1),
+                **{
+                    f"period_mask_{word}": _signed((mask >> (64 * word)) & _WORD)
+                    for word in range(MASK_WORDS)
+                },
+            }
+        )
+    edges = [
+        {
+            "subject_id": variable,
+            "predicate": "observationProperties",
+            "object_id": role,
+            "provenance": "provenance/DFOOntology",
+        }
+        for variable, names in roles.items()
+        for role in (names.donor, names.recipient)
+        if role is not None
+    ]
+    facets = [
+        {
+            "facet_id": facet_id,
+            "provenance": facet["provenance_id"],
+            "measurement_method": facet.get("measurement_method"),
+            "observation_period": facet.get("observation_period"),
+            "unit": facet.get("unit"),
+            "scaling_factor": None,
+            "is_dc_aggregate": False,
+        }
+        for facet_id, facet in json.loads((build / "facets.json").read_text()).items()
+    ]
+    return {
+        name: pa.Table.from_pylist(rows, schema=_plain(PART_SCHEMAS[name].schema, rows[0]))
+        for name, rows in (("series", series), ("edges", edges), ("facets", facets))
+    }
+
+
+def build_session_release(root_uri: str) -> Manifest:
+    """Publishes under `root_uri` the release the suite serves (`tests/conftest.py`):
+    `build_view_release`'s parts, its `series` the recorded coverage slice's rows alone and its
+    `edges` and `facets` with the slice's added (`slice_series_tables`). Its coverage view is
+    the slice's coverage, and its origin view holds no DFO variable, since no variable it
+    declares has a series: a test that needs DFO variables binds a release holding them
+    (`origin_release`)."""
+    tables = dict(platform_parts().tables())
+    for name, rows in slice_series_tables().items():
+        base = tables[name] if name != "series" else tables[name].slice(0, 0)
+        tables[name] = conform_part(
+            pa.concat_tables([base.cast(_plain(base.schema)), rows], promote_options="default"),
+            name=name,
+        )
+    return build_test_release(
+        root_uri,
+        tables=tables,
+        blobs={
+            "code_index_blocks": default_index_path().read_bytes(),
+            "declarations": DECLARATIONS.declarations_json(),
+        },
+    )
+
+
+_WORD = (1 << 64) - 1
+
+
+def _signed(word: int) -> int:
+    """An unsigned 64-bit mask word as the signed one the `series` part stores."""
+    return word - (1 << 64) if word >> 63 else word
+
+
+def _plain(schema: pa.Schema, row: Mapping[str, object] | None = None) -> pa.Schema:
+    """`schema` with each dictionary column as its value type, limited to `row`'s columns when
+    given."""
+    return pa.schema(
+        field.with_type(field.type.value_type) if pa.types.is_dictionary(field.type) else field
+        for field in schema
+        if row is None or field.name in row
+    )
+
+
 def publish_coverage_build(
     base: Path, published: dict, *, ingestion: Ingestion | None = None
 ) -> str:
@@ -279,22 +402,136 @@ def publish_coverage_build(
     return base.as_uri()
 
 
+class _OneReleaseService:
+    """A release service that serves `release` and never rechecks or swaps: the calls a surface
+    makes on `ReleaseService`."""
+
+    def __init__(self, release: Release) -> None:
+        self._release = release
+
+    def snapshot(self) -> Release:
+        return self._release
+
+    def serves(self, release: Release) -> bool:
+        return release is self._release
+
+    def register_swap_guard(
+        self, guard: Callable[[], AbstractContextManager[object]]
+    ) -> Callable[[], None]:
+        return lambda: None
+
+    def on_swap(self, callback: Callable[[Release], None]) -> Callable[[], None]:
+        return lambda: None
+
+    def close(self) -> None:
+        pass
+
+
+@contextmanager
+def serving_release(release: Release) -> Iterator[Release]:
+    """Binds `release` for the body of the `with` block, and installs as the process's release
+    service (`graph_release.service.get_release_service`) one that serves it, so a surface built
+    or requested in the block binds `release` as a production request binds its process's
+    release. The session's service is back on exit. A surface built before the block keeps the
+    service it was built with."""
+    service = cast("ReleaseService", _OneReleaseService(release))
+    with service_module._singleton.poisoned_for_test(service), bound_release(release) as bound:
+        yield bound
+
+
 @contextmanager
 def serving_index(
     code_index: CodeIndex, measure_index: MeasureIndex | None = None
 ) -> Iterator[Release]:
-    """Binds the bound release with `code_index`, and `measure_index` when given, as its views'
-    indexes for the body of the `with` block, so `get_index()` and `get_measure_index()` serve
-    them as they serve a release's. The release keeps its parts and its coverage view."""
+    """Serves (`serving_release`) the bound release with `code_index`, and `measure_index` when
+    given, as its views' indexes for the body of the `with` block, so `get_index()` and
+    `get_measure_index()` serve them as they serve a release's. The release keeps its parts and
+    its coverage view, and is served by no service, so it stays served."""
     release = current_release()
-    assert release.views is not None, "the bound release carries no views"
     views = dataclasses.replace(
         release.views,
         code_index=code_index,
         measure_index=measure_index if measure_index is not None else release.views.measure_index,
     )
-    with bound_release(dataclasses.replace(release, views=views)) as bound:
-        yield bound
+    with serving_release(dataclasses.replace(release, views=views, service=None)) as served:
+        yield served
+
+
+def release_at_revision(revision: str) -> Release:
+    """The bound release under the id DC serving revision `revision` gives it, with its parts and
+    views, served by no service, for a test of what keys on the release id."""
+    release = current_release()
+    loaded = dataclasses.replace(
+        release.loaded,
+        manifest=dataclasses.replace(release.loaded.manifest, dc_serving_revision=revision),
+    )
+    return dataclasses.replace(release, loaded=loaded, service=None)
+
+
+_NODE_ROWS = pa.schema(
+    [
+        ("subject_id", pa.string()),
+        ("name", pa.string()),
+        ("types", pa.list_(pa.string())),
+        ("value", pa.string()),
+        ("authored", pa.bool_()),
+    ]
+)
+_ORIGIN_PROVENANCE = "provenance/DFOOntology"
+"""The provenance of an `origin_release` edge whose target names none."""
+
+
+def origin_release(variables: Mapping[str, WireArcs]) -> Release:
+    """The bound release with an origin view holding `variables`, each with its `->*` arcs as
+    a test graph answers them, in place of its own, under an id of its own, served by no
+    service. Its `edges` and `nodes` rows are those DFO's Spanner holds for such a variable
+    (`graph_release.origin`): an edge per target, a `Node` row per variable and per typed
+    target, a literal row per value, and an `authored` row naming an untyped target by its
+    dcid alone, which drops any name the test graph gives it, so the view answers each variable's arcs as `ArcTablesBuilder` holds the
+    same answer, and its graph reader walks them. Each variable must declare `typeOf
+    StatisticalVariable`, as a release holds only those."""
+    edges: list[dict[str, str]] = []
+    nodes: dict[str, dict[str, object]] = {}
+    for variable, arcs in variables.items():
+        types = [target.get("dcid") for target in arcs.get("typeOf", {}).get("nodes") or ()]
+        assert DFO_VARIABLE_TYPE in types, f"{variable} declares no typeOf {DFO_VARIABLE_TYPE}"
+        names = [target.get("value") for target in arcs.get("name", {}).get("nodes") or ()]
+        nodes[variable] = _node(next(iter(names), None), types, variable)
+        for prop, answer in arcs.items():
+            for target in answer.get("nodes") or ():
+                if (dcid := target.get("dcid")) is None:
+                    dcid = literal_id(target["value"])
+                    nodes[dcid] = _node("", [], target["value"])
+                elif target.get("types"):
+                    nodes[dcid] = _node(target.get("name"), list(target["types"]), dcid)
+                else:
+                    nodes.setdefault(dcid, _node(None, [], None, authored=True))
+                provenance = target.get("provenanceId") or _ORIGIN_PROVENANCE
+                edges.append(
+                    {
+                        "subject_id": variable,
+                        "predicate": prop,
+                        "object_id": dcid,
+                        "provenance": provenance,
+                    }
+                )
+    origin = origin_view(
+        series=pa.table({"variable_measured": pa.array(list(variables), pa.string())}),
+        edges=pa.Table.from_pylist(edges, schema=_plain(PART_SCHEMAS["edges"].schema)),
+        nodes=pa.Table.from_pylist(
+            [{"subject_id": dcid, **row} for dcid, row in nodes.items()],
+            schema=_NODE_ROWS,
+        ),
+    )
+    digest = hashlib.sha256(repr(sorted(edges, key=repr)).encode()).hexdigest()[:12]
+    release = release_at_revision(f"origin-{digest}")
+    return dataclasses.replace(release, origin=origin)
+
+
+def _node(
+    name: str | None, types: list[str], value: str | None, *, authored: bool = False
+) -> dict[str, object]:
+    return {"name": name, "types": types, "value": value, "authored": authored}
 
 
 def _provenance_files(

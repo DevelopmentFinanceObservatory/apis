@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from code_index import shared as code_index_shared
 from search.engine.concurrency import create_owned_task
 from search.engine.core import resolve_events
 from search.engine.enrichment import _launch_trailing_tasks
@@ -1742,8 +1741,7 @@ def test_parsed_fanout_timeout_cancels_a_completed_sibling_parsed_trailing_tasks
         for task in (*slot_tasks, *obs_tasks):
             assert task.cancelled(), f"trailing task leaked past the failing request: {task}"
 
-    with code_index_shared._singleton.isolated():
-        asyncio.run(_drain())
+    asyncio.run(_drain())
 
 
 @pytest.mark.unrecorded_requests

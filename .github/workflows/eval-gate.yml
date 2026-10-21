@@ -5,9 +5,10 @@ name: Eval gate
 # merge would land on it. The changes job decides whether the PR touches
 # anything the eval reads. The run job is a matrix of EVAL_SHARDS shards on
 # parallel runners. Each shard builds an environment in each tree, stages the
-# deployed coverage and origin catalogue builds (scripts/stage_eval_data.py,
-# read as the eval reader service account), migrates one Postgres database per
-# tree with that tree's dataset_store migrations, serves both trees with the
+# deployed graph release, origin catalogue and coverage builds
+# (scripts/stage_eval_data.py, read as the eval reader service account),
+# migrates one Postgres database per tree with that tree's dataset_store
+# migrations, serves both trees with the
 # eval profile and the Datasets surface on two ports, and runs
 # scripts/eval_paired.py --shard K/N over the
 # eligible cases in corpus/ whose id hashes to K, with at most
@@ -81,7 +82,8 @@ env:
   UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
   UV_NO_SYNC: "1"
   # The deployed artifact roots, owned by the `apis` stack in `infra`. The eval
-  # reader service account reads both buckets and nothing else.
+  # reader service account reads these buckets and nothing else.
+  DEPLOYED_RELEASE_URI: gs://dfo-dev-graph-release-dev-fin-observatory/
   DEPLOYED_COVERAGE_URI: gs://dfo-dev-coverage-dev-fin-observatory/
   DEPLOYED_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
   HEAD_PORT: "8100"
@@ -304,9 +306,10 @@ jobs:
           SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
           HEAD_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-head
           BASE_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-base
-          # The eval profile: every request reaches the engine and the LLM, and
-          # the staged coverage serves without the code index check, since the
-          # base tree's code index can differ from the build both apps read.
+          # The eval profile: every request reaches the engine and the LLM. A
+          # tree that serves coverage from the staged coverage build reads it
+          # without the code index check, since that tree's code index can
+          # differ from the build.
           SEARCH_RESPONSE_CACHE_ENABLED: "false"
           SEARCH_LLM_MEMO_MAX_BYTES: "0"
           COVERAGE_INDEX_CHECK: "off"
@@ -339,6 +342,7 @@ jobs:
           rc=0
           staged="$(uv run python scripts/stage_eval_data.py \
             --checkout . --checkout "$BASE_DIR" --dest "$RUNNER_TEMP/eval-data" \
+            --release-uri "$DEPLOYED_RELEASE_URI" \
             --coverage-uri "$DEPLOYED_COVERAGE_URI" \
             --catalogue-uri "$DEPLOYED_CATALOGUE_URI")" || rc=$?
           if [ "$rc" -eq 3 ]; then
@@ -348,7 +352,8 @@ jobs:
           elif [ "$rc" -ne 0 ]; then
             exit "$rc"
           fi
-          # COVERAGE_ARTIFACT_URI and ORIGIN_CATALOGUE_URI, for both apps and the driver.
+          # GRAPH_RELEASE_URI, ORIGIN_CATALOGUE_URI and, when a tree reads it,
+          # COVERAGE_ARTIFACT_URI, for both apps and the driver.
           while IFS="=" read -r name uri; do export "$name=$uri"; done <<< "$staged"
 
           # One database per tree, migrated by that tree's own migrations. The

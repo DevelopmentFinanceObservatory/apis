@@ -1,9 +1,9 @@
-"""Diff the views a graph release serves against the artifacts built from the same import.
+"""Diff the serving views of a graph release against the coverage build and a fresh code index
+export of the same import.
 
-The gate before `GRAPH_RELEASE_COVERAGE` is switched on in an environment. The script opens the
-release the pointer under `--release-uri` names and builds its serving views with
-`graph_release.views`, the functions a serving process opens it with. It then compares them with
-the published coverage build and a fresh code index export of the same import:
+The `coverage` gate opens the release the pointer under `--release-uri` names, builds its
+serving views with `graph_release.views`, the functions a serving process opens it with, and
+compares them:
 
 - the release's `CoverageIndex` against the published coverage build under `--coverage-uri`:
   every row (`graph_release.shadow.row_diff`), each variable's role names and provenances, each
@@ -12,13 +12,14 @@ the published coverage build and a fresh code index export of the same import:
   `scripts/export_code_index.py` runs) over the live mixer at `--graph-base`, joined with that
   same coverage build, every block row by row.
 
-It refuses (exit 2) before comparing anything when the coverage build and the release come from
-different ingestion workflow executions (`import_mismatch`, or `coverage_ingestion_unrecorded`
-for a build that records none), when this checkout's declarations hash differs from the
-release's (`declarations_moved`), since a fresh export would then be built from other
-declarations, or when the DC service serves another revision than the release read, before or
-after the export (`serving_revision_moved`), since the mixer would then answer from another
-import. An export that refuses ends the run too (`export_refused`).
+The gate refuses (exit 2) before comparing anything when the coverage build and the release
+come from different ingestion workflow executions (`import_mismatch`, or
+`coverage_ingestion_unrecorded` for a build that records none), when the DC service serves
+another revision than the release read, before or after the mixer reads
+(`serving_revision_moved`), since the mixer would then answer from another import, when this
+checkout's declarations hash differs from the release's (`declarations_moved`), since a fresh
+export would then be built from other declarations, and when the export refuses
+(`export_refused`).
 
 The JSON report gives, per category, how many items were compared, how many differ and the
 first `--examples` differences. The exit status is 0 when nothing differs, 1 when anything does.
@@ -27,7 +28,7 @@ Reads only: the release and coverage buckets, the mixer, and the Cloud Run Admin
 `run.services.get` on the DC service.
 
 Usage:
-    uv run python scripts/graph_release_parity.py \\
+    uv run python scripts/graph_release_parity.py coverage \\
         --release-uri gs://dfo-dev-graph-release-dev-fin-observatory/ \\
         --coverage-uri gs://dfo-dev-coverage-dev-fin-observatory/ \\
         --graph-base https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app \\
@@ -93,7 +94,7 @@ _DEFAULT_EXAMPLES: Final[int] = 10
 
 
 class Refused(Exception):
-    """A run that cannot compare the release with the old path; `code` names why."""
+    """A run that cannot compare the release with the coverage build; `code` names why."""
 
     def __init__(self, code: str, detail: str) -> None:
         super().__init__(f"{code}: {detail}")
@@ -126,18 +127,19 @@ class Category:
 # ---------------------------------------------------------------- preconditions
 
 
-def check_same_import(release: Manifest, coverage: CoverageManifest) -> None:
-    """Raises `Refused` unless the coverage build records the release's ingestion execution."""
-    if coverage.ingestion is None:
+def check_same_import(release: Manifest, build: CoverageManifest) -> None:
+    """Raises `Refused` unless the coverage build `build` records the release's ingestion
+    execution."""
+    if build.ingestion is None:
         raise Refused(
             "coverage_ingestion_unrecorded",
-            f"coverage build {coverage.build_id} records no ingestion execution",
+            f"coverage build {build.build_id} records no ingestion execution",
         )
-    if coverage.ingestion.workflow_execution_id != release.import_execution_id:
+    if build.ingestion.workflow_execution_id != release.import_execution_id:
         raise Refused(
             "import_mismatch",
-            f"coverage build {coverage.build_id} was built from execution "
-            f"{coverage.ingestion.workflow_execution_id}, release {release.release_id} from "
+            f"coverage build {build.build_id} was built from execution "
+            f"{build.ingestion.workflow_execution_id}, release {release.release_id} from "
             f"{release.import_execution_id}",
         )
 
@@ -212,12 +214,14 @@ def coverage_parity(
 def _mapping_diff(
     ours: Mapping[str, object], theirs: Mapping[str, object], *, examples: int
 ) -> Category:
+    """Each key of `ours` or `theirs` whose values differ, the release's value beside the
+    published build's."""
     keys = sorted(ours.keys() | theirs.keys())
     category = Category(examples, compared=len(keys))
     for key in keys:
-        mine, other = ours.get(key), theirs.get(key)
-        if mine != other:
-            category.add({"key": key, "release": _plain(mine), "published": _plain(other)})
+        mine, found = ours.get(key), theirs.get(key)
+        if mine != found:
+            category.add({"key": key, "release": _plain(mine), "published": _plain(found)})
     return category
 
 
@@ -358,7 +362,7 @@ def _coverage_summary(manifest: CoverageManifest) -> dict[str, object]:
 # ---------------------------------------------------------------- main
 
 
-def _run(args: argparse.Namespace, local_dir: Path) -> dict[str, object]:
+def _run_coverage(args: argparse.Namespace, local_dir: Path) -> dict[str, object]:
     release = open_release(args.release_uri, local_dir=local_dir, parts=_RELEASE_PARTS)
     manifest = release.manifest
     pointer = read_published_pointer(args.coverage_uri)
@@ -402,31 +406,35 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--release-uri", required=True, help="the environment's GRAPH_RELEASE_URI")
-    parser.add_argument(
+    gates = parser.add_subparsers(dest="gate", required=True)
+    coverage = gates.add_parser("coverage", help="the release's views against coverage")
+    coverage.add_argument(
         "--coverage-uri", required=True, help="the environment's COVERAGE_ARTIFACT_URI"
     )
-    parser.add_argument(
+    coverage.add_argument(
+        "--release-uri", required=True, help="the environment's GRAPH_RELEASE_URI"
+    )
+    coverage.add_argument(
         "--graph-base",
         default=os.environ.get("SEARCH_GRAPH_BASE"),
         help="the mixer root, without /core/api (default SEARCH_GRAPH_BASE)",
     )
-    parser.add_argument(
+    coverage.add_argument(
         "--datacommons-service",
         default=os.environ.get("DATACOMMONS_SERVICE_NAME"),
         help="the DC service as projects/<p>/locations/<r>/services/<s> "
         "(default DATACOMMONS_SERVICE_NAME)",
     )
-    parser.add_argument("--local-dir", type=Path, help="where to keep the release's parts")
-    parser.add_argument("--examples", type=int, default=_DEFAULT_EXAMPLES)
-    parser.add_argument("--out", type=Path, required=True)
+    coverage.add_argument("--local-dir", type=Path, help="where to keep the release's parts")
+    coverage.add_argument("--examples", type=int, default=_DEFAULT_EXAMPLES)
+    coverage.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if not args.graph_base or not args.datacommons_service:
         parser.error("--graph-base and --datacommons-service are required")
 
     try:
         with tempfile.TemporaryDirectory(prefix="graph-release-parity-") as scratch:
-            report = _run(args, args.local_dir or Path(scratch))
+            report = _run_coverage(args, args.local_dir or Path(scratch))
     except Refused as exc:
         report = {"outcome": "refused", "refused": {"code": exc.code, "detail": exc.detail}}
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -35,6 +35,7 @@ import search.engine.config as config  # module-attribute access for runtime-res
 from code_index.members import family_query_digest
 from dfo_platform.single_flight_cache import AlreadyInFlight, SingleFlightCache
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
+from graph_release.context import served_origin_key
 from materialise import GraphReader
 from search.engine.options.population import OptionsPopulation, options_population
 from search.engine.retrieval.bound_values import identity_query
@@ -60,11 +61,13 @@ def _population_key(identity: BaseIdentity) -> str:
     digest of its `identity_query` (`family_query_digest`), which carries the role keys,
     the dataset and the source scope the query elects under. These are the fields
     `options_population` reads. It deliberately excludes the entities bound under each role
-    key (see the module docstring)."""
+    key (see the module docstring). It holds the bound release (`served_origin_key`), whose
+    DFO variables a member walk reads."""
     document: dict[str, object] = {
         "shape": identity.shape.model_dump(mode="json", exclude_none=True),
         "slots": [slot.model_dump(mode="json") for slot in identity.slots],
         "query": family_query_digest(identity_query(identity)).hex(),
+        "release": served_origin_key(),
     }
     canonical = rfc8785.dumps(document)
     return hashlib.sha256(canonical).hexdigest()

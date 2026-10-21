@@ -44,7 +44,6 @@ import threading
 from datasets_api.admission import (
     refuse_async_over_ceiling,
     sync_estimate,
-    under_current_coverage,
 )
 from datasets_api.current import DefinitionDeps, serve_current, trace_confirmed_at
 from datasets_api.doors.definition import _resolve_spec_requests, classify_definition_exception
@@ -151,12 +150,10 @@ def run_operation(
     dependencies' `work_deadline`, checked before every write.
 
     Completes or fails the row, or releases it and raises `OperationTransientFailure` for a
-    transient error before the final attempt. Each run reads `current.json` and loads its build
-    before resolving requests. It re-estimates against that snapshot and records the estimate.
-    The fresh estimate sizes `raw_fetch_guard` and checks async row and request limits before
-    fetching. Pointer or build failures are transient. `over_ceiling` is terminal. When a
-    reload replaces the snapshot before the run takes its materialise permit, the run starts
-    again from the pointer read (`admission.under_current_coverage`).
+    transient error before the final attempt. Each run takes its bound release's coverage
+    snapshot before resolving requests. It re-estimates against that snapshot and records the
+    estimate. The fresh estimate sizes `raw_fetch_guard` and checks async row and request limits
+    before fetching. `over_ceiling` is terminal.
 
     The row completes only when the request's rendering is servable (`rendering_servable`).
     Otherwise the run is a transient failure, so a final attempt fails it with `internal_error`.
@@ -223,8 +220,7 @@ def run_operation(
                     progress=row_progress,
                 )
 
-        # The run holds no permit here, as `snapshot_current` requires.
-        manifest = under_current_coverage(deps.coverage.snapshot_current, _run)
+        manifest = _run(deps.coverage.snapshot())
         completed_subject_id = manifest.definition.spec_id
         key = artifact_rendering_key(options, site=deps.settings.site)
         if not rendering_servable(

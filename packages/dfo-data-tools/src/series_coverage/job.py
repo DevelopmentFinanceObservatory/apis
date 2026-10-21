@@ -104,8 +104,8 @@ from artifact_publication.uri import (
     read_uri_bytes_and_generation,
     write_uri_bytes_if_unchanged,
 )
+from code_index.loader import default_index_path, load_index
 from code_index.query import CodeIndex
-from code_index.shared import get_index
 from dc_sdmx import plan_entity_chunks, plan_request_chunks
 from dc_sdmx.client import SdmxClient
 from dc_sdmx.errors import SdmxClientError, SdmxQueryError
@@ -1315,7 +1315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout=settings.sdmx_timeout_seconds,
     )
     try:
-        run(settings, bq=bq, sdmx=sdmx, index=get_index())
+        run(settings, bq=bq, sdmx=sdmx, index=load_index(default_index_path()))
     except (
         CoverageArtifactError,
         CoverageBuildError,

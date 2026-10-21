@@ -82,7 +82,7 @@ class DatasetsBuildSettings(BaseSettings):
 
     # Materialise permits per instance. The frames alive at once across mints, rebuilds, head-hit
     # renders, file renewals and observation reads. A serve holds one from its first SDMX request
-    # to its last artifact write, and a coverage reload holds every one. A publish builds its
+    # to its last artifact write, and a graph release swap holds every one. A publish builds its
     # frame outside them, bounded by `work_max_concurrency`. The service has 4 GiB. The default
     # of 2 stays until a load test measures resident memory per materialisation.
     materialise_max_concurrency: int = Field(default=2, ge=1)

@@ -50,9 +50,9 @@ uv run python scripts/eval_paired.py --head-url http://127.0.0.1:8100 \
     --base-url http://127.0.0.1:8101 --base-ref <sha> --report report.json --summary summary.md
 ```
 
-Scoring reads the graph, SDMX and the coverage index, so the environment needs the graph settings the apps use and `COVERAGE_ARTIFACT_URI`. Exit code 0 means nothing blocks, 1 a blocking verdict, 2 a setup error, 3 an infrastructure failure.
+Scoring reads the graph, SDMX and the graph release's coverage view, so the environment needs the graph settings the apps use and `GRAPH_RELEASE_URI`. Exit code 0 means nothing blocks, 1 a blocking verdict, 2 a setup error, 3 an infrastructure failure.
 
-Run by `just eval-paired` and `just eval-run`, by `.github/workflows/eval-gate.yml` on pull requests, and by `.github/workflows/eval-nightly.yml`.
+Run by `just eval-paired` and `just eval-run`, and by `.github/workflows/eval-gate.yml` on pull requests. The nightly eval (`.github/workflows/eval-nightly.yml`) runs `python -m search.eval.sync --nightly`.
 
 ## `eval_role_direction.py`
 
@@ -81,7 +81,7 @@ Needs `SEARCH_GRAPH_BASE` (and `SEARCH_GRAPH_TOKEN` on a token-gated deployment)
 
 The graph supplies the code rows and StatVar rows. The coverage build supplies each StatVar's `provenances`: `coverage.parquet` maps a variable to its facet ids and `facets.json` maps a facet id to its provenance. The stamp records the build id (`coverage_build`) and the number of StatVars the build holds no series for (`statvars_without_coverage`); such a row carries no provenance and belongs to no dataset.
 
-`LISTED_DATASETS` names the datasets whose StatVars declare no code system, World Bank IDS among them, so no code read reaches them. The coverage build lists their StatVars, which the export reads into a separate `listed_statvars` block with their provenances. No family, dataset election, measure axis or shape reads that block: Search and the Datasets mint elect the members of a family holding a listed row from the index's rows of its five-tuple, in place of a graph walk (`code_index.members.listed_group`). The export therefore reads each five-tuple a listed row has, unsplit, and refuses when the graph holds a StatVar there that is neither an exported nor a listed row; the largest, `FinancialFlow` amount, holds about 14,000 StatVars and reads in about 45 s. When a build assigns a listed dataset a StatVar the index does not list, `python -m series_coverage.verify_index` fails naming them, and a running service keeps the build it serves (`series_coverage.compatibility.index_coverage_differences`).
+`LISTED_DATASETS` names the datasets whose StatVars declare no code system, World Bank IDS among them, so no code read reaches them. The coverage build lists their StatVars, which the export reads into a separate `listed_statvars` block with their provenances. No family, dataset election, measure axis or shape reads that block: Search and the Datasets mint elect the members of a family holding a listed row from the index's rows of its five-tuple, in place of a graph walk (`code_index.members.listed_group`). The export therefore reads each five-tuple a listed row has, unsplit, and refuses when the graph holds a StatVar there that is neither an exported nor a listed row; the largest, `FinancialFlow` amount, holds about 14,000 StatVars and reads in about 45 s. When a build assigns a listed dataset a StatVar the index does not list, `python -m series_coverage.verify_index` fails naming them (`series_coverage.compatibility.index_coverage_differences`).
 
 `CODE_SYSTEMS` in `code_index/declarations.py` supplies each code system's declaration, which the export writes into the index's `declarations` block and `code_index.loader` reads into `CodeSystemDeclaration`:
 
@@ -149,10 +149,10 @@ Run by `.github/workflows/bundle-round-trip.yml`, same trigger as `bundle_round_
 
 ## `graph_release_parity.py`
 
-Diffs what an environment's graph release serves against the artifacts built from the same import, the gate before `GRAPH_RELEASE_COVERAGE` is switched on. It builds the current release's views with `graph_release.views`, then compares its `CoverageIndex` with the published coverage build (every row, role names, variable provenances, facet metadata, horizon and build year) and its `code_index_blocks` document with a fresh `export_index` over the live mixer, joined with that coverage build, every block row by row.
+Diffs the serving views of an environment's graph release against the coverage build and a fresh code index export of the same import. Its one gate, `coverage`, builds the current release's views with `graph_release.views`, then compares its `CoverageIndex` with the published coverage build (every row, role names, variable provenances, facet metadata, horizon and build year) and its `code_index_blocks` document with a fresh `export_index` over the live mixer, joined with that coverage build, every block row by row.
 
 ```bash
-uv run python scripts/graph_release_parity.py \
+uv run python scripts/graph_release_parity.py coverage \
     --release-uri gs://dfo-dev-graph-release-dev-fin-observatory/ \
     --coverage-uri gs://dfo-dev-coverage-dev-fin-observatory/ \
     --graph-base https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app \
@@ -160,9 +160,9 @@ uv run python scripts/graph_release_parity.py \
     --out parity-dev.json
 ```
 
-It refuses with exit 2 and a `refused.code` when the coverage build and the release come from different ingestion executions (`import_mismatch`, `coverage_ingestion_unrecorded`), when the checkout's declarations hash differs from the release's (`declarations_moved`), when the DC service serves another revision than the release read (`serving_revision_moved`), or when the export refuses (`export_refused`). Otherwise the JSON report counts, per category, the items compared and the differences, with the first `--examples` of them; the exit status is 0 when nothing differs and 1 when anything does. On dev it takes about 15 minutes, nearly all of them the export's mixer reads.
+The gate refuses with exit 2 and a `refused.code` when the coverage build and the release come from different ingestion executions (`import_mismatch`, `coverage_ingestion_unrecorded`), when the DC service serves another revision than the release read (`serving_revision_moved`), when the checkout's declarations hash differs from the release's (`declarations_moved`) or when the export refuses (`export_refused`). Otherwise the JSON report counts, per category, the items compared and the differences, with the first `--examples` of them; the exit status is 0 when nothing differs and 1 when anything does. On dev it takes about 15 minutes, nearly all of them the export's mixer reads.
 
-Needs Google credentials that read both buckets and `run.services.get` on the DC service, and `SEARCH_GRAPH_TOKEN` on a token-gated mixer. Run by hand on each environment before its `GRAPH_RELEASE_COVERAGE` flag is switched on.
+Needs Google credentials that read the release and coverage buckets and `run.services.get` on the DC service, and `SEARCH_GRAPH_TOKEN` on a token-gated mixer.
 
 ## `harvest_llm_fixtures.py`
 
@@ -214,11 +214,11 @@ Run by `just ladder-capture`, `just ladder-run <rung>`, `just ladder-report`.
 Runs every case whose `why` states a timing claim through the live engine `--runs` times each and reports which ones exceed the claimed deadline.
 
 ```bash
-COVERAGE_ARTIFACT_URI=file://$PWD/tests/fixtures/coverage_slice \
+GRAPH_RELEASE_URI=gs://dfo-dev-graph-release-dev-fin-observatory/ \
     uv run --env-file .env --extra engine --extra eval python scripts/measure_corpus_latency.py
 ```
 
-Needs `GEMINI_API_KEY` and `COVERAGE_ARTIFACT_URI` (the engine loads coverage at construction time, and this script runs outside pytest, so there is no conftest to default it). No Langfuse credentials.
+Needs `GEMINI_API_KEY` and `GRAPH_RELEASE_URI` (the engine serves the code index and coverage from the bound graph release, and this script runs outside pytest, so there is no conftest to publish one), with Google credentials that can read a `gs://` release. No Langfuse credentials.
 
 By hand, when re-checking the corpus's timing claims against a live deployment.
 
@@ -322,15 +322,16 @@ Run by `just sentence-panel`. Runnable by hand.
 
 ## `stage_eval_data.py`
 
-Stages the deployed coverage and origin catalogue artifacts for the eval apps. For each checkout it asks `series_coverage.schema.FORMAT_ROOT` and `origin_catalogue.schema.FORMAT_ROOT` for the format root, reads each distinct root's current pointer from the deployed bucket, downloads that one version into a local root, and prints the `file://` URIs.
+Stages the deployed graph release, origin catalogue and coverage artifacts for the eval apps. It copies the release the deployed pointer names, with its manifest and parts. For each checkout it asks `origin_catalogue.schema.FORMAT_ROOT` for the format root, and `series_coverage.schema.FORMAT_ROOT` too when the checkout serves coverage from the coverage artifact, reads each distinct root's current pointer from the deployed bucket, downloads that one version into a local root, and prints the `file://` URIs.
 
 ```bash
-uv run python scripts/stage_eval_data.py --checkout <head-checkout> --checkout <base-checkout>
+uv run python scripts/stage_eval_data.py --checkout <head-checkout> --checkout <base-checkout> \
+    --dest staged --release-uri gs://<release bucket>/ --catalogue-uri gs://<catalogue bucket>/
 ```
 
-Needs read access to the deployed coverage and catalogue buckets. Exits 3 when a root is missing from the bucket.
+Needs read access to the deployed release and catalogue buckets, and the coverage bucket for a checkout that reads it. Exits 3 when a root or the release is missing from the bucket.
 
-Run by `.github/workflows/eval-gate.yml` and `.github/workflows/eval-nightly.yml` before the apps start.
+Run by `.github/workflows/eval-gate.yml` before the apps start.
 
 ## `stage_origin_catalogue_fixture.py`
 

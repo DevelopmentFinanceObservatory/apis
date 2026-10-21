@@ -12,6 +12,7 @@ rebuild; `_LoopThreadRecorder` checks that they use one event loop.
 
 from __future__ import annotations
 
+import contextvars
 import sqlite3
 import threading
 import time
@@ -375,7 +376,10 @@ def test_concurrent_mints_never_oversubscribe_the_shared_pool(
             responses[i] = client.post("/api/datasets", json=_mint_body(stat_var=stat_vars[i]))
 
         with client:
-            threads = [threading.Thread(target=_mint, args=(i,)) for i in range(_CONCURRENT_MINTS)]
+            threads = [
+                threading.Thread(target=contextvars.copy_context().run, args=(_mint, i))
+                for i in range(_CONCURRENT_MINTS)
+            ]
             for thread in threads:
                 thread.start()
             for thread in threads:

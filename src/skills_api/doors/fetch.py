@@ -11,11 +11,11 @@ from fastapi import APIRouter, Request
 
 from dfo_platform.doors import DoorContribution
 from skills_api.deps import (
+    CACHE_CONTROL,
     SkillIdTooLong,
     SkillNotFound,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
-    cache_control,
     classify_skill_lookup_exception,
 )
 from skills_api.models import SkillBody, skill_body, split_skill_warnings
@@ -46,7 +46,7 @@ async def get_skill(skill_id: str, request: Request, deps: SkillsDepsDep) -> obj
         generation=index,
         key=skill_id,
         request=request,
-        cache_control=cache_control(shared),
+        cache_control=CACHE_CONTROL,
         build_payload=lambda: _build_response(index, skill_id).model_dump(mode="json"),
     )
 
