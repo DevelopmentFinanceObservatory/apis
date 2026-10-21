@@ -383,36 +383,42 @@ def test_a_call_that_never_took_a_slot_fails_as_slot_wait_and_leaves_the_breaker
     assert len(jev.requests) == 1
 
 
-def test_a_call_admitted_late_and_cut_by_the_ceiling_fails_as_slot_wait(jev: _Jev) -> None:
-    """Each call queues for most of its ceiling, then sends a request that stalls: the
-    ceiling cuts the request before its own timer ran out, so the call fails as
-    ``slot_wait`` and the breaker stays shut."""
-    stalls = [BREAKER_FAILURES]
+def test_a_call_admitted_late_and_cut_by_the_ceiling_fails_as_timeout(jev: _Jev) -> None:
+    """The call queues for most of its ceiling, then sends a request that stalls: the
+    ceiling cuts a request that was sent, so the call fails as ``timeout``."""
 
-    async def stall_then_answer(request: httpx2.Request) -> httpx2.Response:
-        if stalls[0]:
-            stalls[0] -= 1
-            await asyncio.sleep(30)
+    async def stall(request: httpx2.Request) -> httpx2.Response:
+        await asyncio.sleep(30)
         return _answers(request)
 
-    jev.serve(stall_then_answer, jev_max_concurrency=1, jev_ceiling_s=0.2)
+    jev.serve(stall, jev_max_concurrency=1, jev_ceiling_s=0.2)
 
-    async def late(semaphore: asyncio.Semaphore) -> BaseException | JevResponse:
+    async def run() -> BaseException | JevResponse:
+        semaphore = jev_client._SEMAPHORES.get(lambda: asyncio.Semaphore(1))
         await semaphore.acquire()
         call = asyncio.create_task(ask(_STATE, _QUESTIONS, settings=jev.settings))
         await asyncio.sleep(0.15)
         semaphore.release()
         return (await asyncio.gather(call, return_exceptions=True))[0]
 
-    async def run() -> list[BaseException | JevResponse]:
-        semaphore = jev_client._SEMAPHORES.get(lambda: asyncio.Semaphore(1))
-        waits = [await late(semaphore) for _ in range(BREAKER_FAILURES)]
-        return [*waits, await ask(_STATE, _QUESTIONS, settings=jev.settings)]
+    outcome = asyncio.run(run())
+    assert getattr(outcome, "kind", outcome) == "timeout"
+    assert len(jev.requests) == 1
 
-    *waits, answered = asyncio.run(run())
-    assert [getattr(w, "kind", w) for w in waits] == ["slot_wait"] * BREAKER_FAILURES
-    assert isinstance(answered, JevResponse)
-    assert len(jev.requests) == BREAKER_FAILURES + 1
+
+def test_a_request_that_finishes_after_the_ceiling_fails_as_timeout(jev: _Jev) -> None:
+    """A loop stalled past the ceiling runs the request's answer in the step before the
+    ceiling's timer, so the request ends without being cancelled; the call still sent it."""
+
+    async def stalled(request: httpx2.Request) -> httpx2.Response:
+        time.sleep(0.3)
+        return _answers(request)
+
+    jev.serve(stalled, jev_ceiling_s=0.2)
+    with pytest.raises(JevError) as raised:
+        jev.ask()
+    assert (raised.value.status, raised.value.kind) == (None, "timeout")
+    assert len(jev.requests) == 1
 
 
 def test_only_one_probe_runs_while_the_breaker_is_half_open() -> None:
@@ -475,11 +481,12 @@ def test_chunks_share_one_deadline_and_count_against_the_semaphore(jev: _Jev) ->
         return _answers(request)
 
     # Four or more chunks two at a time take at least 0.3 s, past the 0.25 s ceiling. The
-    # ceiling cuts the chunks that queued behind the first two, so the call fails as a wait.
+    # ceiling cuts the chunks that queued behind the first two, which sent after the first
+    # two ended, so the call fails as a timeout.
     jev.serve(slow, jev_max_concurrency=2, jev_ceiling_s=0.25)
     with pytest.raises(JevError) as raised:
         jev.ask(_large_questions())
-    assert raised.value.kind == "slot_wait"
+    assert raised.value.kind == "timeout"
     assert peak == 2
 
 

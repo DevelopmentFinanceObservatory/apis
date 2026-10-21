@@ -336,9 +336,11 @@ def test_a_defect_after_the_house_policies_ran_breaks_the_contract_not_bound_twi
     assert (step.calls, gemini.requests) == (1, [])
 
 
-def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone():
+def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone(caplog):
     """The quantity read of part 0 pays Jev's ceiling once. Its bind call goes straight to
-    Gemini under the same cause, while part 1 still asks Jev."""
+    Gemini under the same cause, while part 1 still asks Jev. Only the failed request logs
+    a ``jev_error``; the call that inherits the failure logs ``fallback=inherited``."""
+    caplog.set_level(logging.INFO, logger="search.engine.binders.part_log")
     ask = FakeAsk(fail=JevError(None, "timeout"))
     gemini = _GeminiDouble(_ELECTS_FIRST)
     binder = FallbackBinder(primary=JevBinder(ask=ask), fallback=gemini)
@@ -359,6 +361,17 @@ def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone()
     assert len(ask.requests) == 2
     assert (first.binder, other.binder) == ("gemini", "gemini")
     assert record.reasons == ["timeout"] * 3
+    assert [line.split(" ")[1:6] for line in _binder_parts(caplog)] == [
+        [
+            "call=quantity",
+            "binder=jev",
+            "served_by=gemini",
+            "fallback=timeout",
+            "jev_error=timeout",
+        ],
+        ["call=bind", "binder=jev", "served_by=gemini", "fallback=inherited", "jev_error=-"],
+        ["call=bind", "binder=jev", "served_by=gemini", "fallback=timeout", "jev_error=timeout"],
+    ]
 
 
 def test_the_fallback_hands_the_jev_binder_a_policy_step_that_takes_ratings(monkeypatch):

@@ -5,9 +5,8 @@ first use and shared by every call in the process. A request too large to send w
 as concurrent chunks (`jev_split.split_questions`) whose answers merge into one response.
 One `asyncio.timeout` at `Settings.jev_ceiling_s` bounds the whole call: the wait for a
 concurrency slot, every chunk, and the one retry. Every failure leaves as `JevError`. A call
-the ceiling cuts fails as ``timeout`` when it cut a request that took its slot without
-waiting, whose own timer ran the full ceiling, and as ``slot_wait`` when every request it cut
-had queued for its slot, or none had taken one.
+the ceiling cuts fails as ``timeout`` when any of its requests took a slot and started, and
+as ``slot_wait`` when none did.
 
 A circuit breaker shared by the process opens after `BREAKER_FAILURES` consecutive calls
 inside `BREAKER_WINDOW_S` that failed in a way that says Jev is unhealthy (`_HEALTH_KINDS`:
@@ -281,12 +280,11 @@ async def _send(
     *,
     deadline: float,
     semaphore: asyncio.Semaphore,
-    cut_on_time: asyncio.Event,
+    sent: asyncio.Event,
 ) -> SystemOneResponse:
     """One request, retried once on a rate limit or server error when the delay before the
-    retry, a `Retry-After` included, ends before `deadline` (loop time). `cut_on_time` is set
-    when the request is cancelled after it took its slot without waiting."""
-    queued = semaphore.locked()
+    retry, a `Retry-After` included, ends before `deadline` (loop time). `sent` is set once
+    the request holds its slot and starts."""
     async with semaphore:
         budget = deadline - asyncio.get_running_loop().time()
         if budget <= 0:
@@ -299,14 +297,11 @@ async def _send(
             api_timeout_error=False,
             timeout=budget,
         )
+        sent.set()
         try:
             return await client.system_one(state, questions, retry=retry)
         except TypeSafeError as exc:
             raise _jev_error(exc) from exc
-        except asyncio.CancelledError:
-            if not queued:
-                cut_on_time.set()
-            raise
 
 
 async def _ask_chunks(
@@ -317,11 +312,10 @@ async def _ask_chunks(
 ) -> list[SystemOneResponse]:
     """Every chunk's response, sent concurrently under one deadline. The first failed
     chunk cancels the rest and fails the call. A passed deadline fails it as ``timeout``
-    when it cut a request that took its slot without waiting, and as ``slot_wait``
-    otherwise."""
+    when any request started, and as ``slot_wait`` when none did."""
     client = _client(settings)
     semaphore = _SEMAPHORES.get(lambda: asyncio.Semaphore(settings.jev_max_concurrency))
-    cut_on_time = asyncio.Event()
+    sent = asyncio.Event()
     deadline = asyncio.get_running_loop().time() + settings.jev_ceiling_s
     try:
         async with asyncio.timeout_at(deadline):
@@ -334,13 +328,13 @@ async def _ask_chunks(
                             chunk,
                             deadline=deadline,
                             semaphore=semaphore,
-                            cut_on_time=cut_on_time,
+                            sent=sent,
                         )
                     )
                     for chunk in chunks
                 ]
     except TimeoutError as exc:
-        raise JevError(None, "timeout" if cut_on_time.is_set() else "slot_wait") from exc
+        raise JevError(None, "timeout" if sent.is_set() else "slot_wait") from exc
     except ExceptionGroup as group:
         first = group.exceptions[0]
         if isinstance(first, JevError):
