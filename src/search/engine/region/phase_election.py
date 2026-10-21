@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 
 from code_index.shared import get_index, get_measure_index
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
     apply_declared_defaults,
     apply_shape_slot_defaults,
@@ -43,7 +43,6 @@ from search.engine.region.phase_rank_bind import (
     _unchosen_matches,
     _unheld_bound_codes,
     _unread_qualifier_phrases,
-    _validate_requested_all_bindings,
     _withheld_qualifiers,
     judge_value_requirements,
     operation_slot_phrases,
@@ -249,7 +248,9 @@ def _settle_bindings(
     reading the shape keeps of each two-reading span
     (`reading_for_shape`), which admission read.
 
-    The source drafts leave and invalid ``requested_all`` claims are demoted. Each slot
+    The source drafts leave and invalid ``requested_all`` claims are demoted
+    (`bind.validate_requested_all_bindings`). The binder already applied it to its pick's
+    drafts, and this pass keeps a claim only on a slot of the elected shape. Each slot
     whose taxonomy holds one value and that the reply left unbound is claimed as that
     ``sole_option`` value (`_claim_single_member_slots`). A
     ``sole_option`` claim on a value the shape's population shows the slot a reading
@@ -264,16 +265,12 @@ def _settle_bindings(
     """
     bind_result = state.bind_result
     bind_result.bindings = without_dataset_drafts(bind_result.bindings)
-    bind_result.bindings, state.applied_dropped_qualifier_phrases = (
-        _validate_requested_all_bindings(
-            bind_result.bindings,
-            state.dropped_qualifier_phrases,
-            slot_properties=frozenset(
-                slot.property_dcid
-                for slot in shape_draft.slot_keys
-                if slot.property_dcid is not None
-            ),
-        )
+    bind_result.bindings, state.applied_dropped_qualifier_phrases = validate_requested_all_bindings(
+        bind_result.bindings,
+        state.dropped_qualifier_phrases,
+        slot_properties=frozenset(
+            slot.property_dcid for slot in shape_draft.slot_keys if slot.property_dcid is not None
+        ),
     )
     bind_result.bindings = _settle_sole_options(bind_result.bindings, shape_draft)
     bind_result.bindings = _unbind_implied_values(bind_result.bindings, shape_draft)

@@ -692,7 +692,7 @@ def test_a_request_without_a_query_asks_no_query_question():
 
 def test_the_all_question_s_examples_each_name_a_slot_by_its_plain_name():
     """A ``requested_all`` claim stands only on a phrase naming the slot's plain name
-    (`_validate_requested_all_bindings`), so each example the question gives names one."""
+    (`bind.validate_requested_all_bindings`), so each example the question gives names one."""
     plain_names = {d.plain_name for d in get_index().declarations.values()}
     _state, questions = bind_request(jev_menu(_request([_SECTORS], dropped=("in total",))))
     instructions = str(questions[f"all|{_SECTOR}|0"].get("instructions"))
@@ -765,22 +765,55 @@ def test_the_frame_states_a_form_only_when_the_question_names_one():
 
 _GE = _shape(0, population="FinancialFlow", measured="grantEquivalent", qualifier="Nominal")
 _AMOUNT = _shape(1, population="FinancialFlow", measured="amount", qualifier="Nominal")
+# The grant-equivalent family lists a modality the amount family lacks.
+_MODALITY = "crsCooperationModality"
+_GE_MODALITIES = replace(
+    _GE,
+    slot_keys=(SlotKeyDraft(axis="how", property_dcid=_MODALITY, label=_MODALITY),),
+    slot_taxonomy={f"how:{_MODALITY}": ["CRSCooperationModalityB021", "CRSCooperationModalityB05"]},
+)
+_AMOUNT_MODALITIES = replace(
+    _AMOUNT,
+    slot_keys=_GE_MODALITIES.slot_keys,
+    slot_taxonomy={f"how:{_MODALITY}": ["CRSCooperationModalityB021"]},
+)
+_EVERY_MODALITY = {"mv|grantEquivalent": 0.58, f"all|how:{_MODALITY}|0": 0.9}
 
 
 @pytest.mark.parametrize(
-    ("shapes", "nouls", "elected", "pool", "rules"),
+    ("shapes", "nouls", "dropped", "elected", "pool", "rules"),
     [
         pytest.param(
             [_GE, _AMOUNT],
             {"mv|grantEquivalent": 0.58},
+            (),
             1,
             [0, 1],
             ["house: amount_vs_ge"],
             id="convention-variant-to-the-policy",
         ),
         pytest.param(
+            [_GE_MODALITIES, _AMOUNT_MODALITIES],
+            _EVERY_MODALITY,
+            ("total",),
+            1,
+            [0, 1],
+            ["house: amount_vs_ge"],
+            id="total-names-no-slot-so-the-policy-still-reaches-it",
+        ),
+        pytest.param(
+            [_GE_MODALITIES, _AMOUNT_MODALITIES],
+            _EVERY_MODALITY,
+            ("across all modalities",),
+            0,
+            [0, 1],
+            [],
+            id="every-modality-sets-the-variant-aside",
+        ),
+        pytest.param(
             [_GE, _AMOUNT],
             {"mv|grantEquivalent": 0.95},
+            (),
             0,
             [0],
             ["named: measuredProperty"],
@@ -789,26 +822,41 @@ _AMOUNT = _shape(1, population="FinancialFlow", measured="amount", qualifier="No
         pytest.param(
             [_GE, replace(_AMOUNT, datasets=("provenance/OtherDataset",))],
             {"mv|grantEquivalent": 0.58},
+            (),
             0,
             [0],
             [],
             id="another-dataset-s-variant-stays-out",
         ),
         pytest.param(
-            [_shape(0), _shape(1, population="Place")], {}, 0, [0], [], id="other-reading-stays-out"
+            [_shape(0), _shape(1, population="Place")],
+            {},
+            (),
+            0,
+            [0],
+            [],
+            id="other-reading-stays-out",
         ),
     ],
 )
 def test_the_pool_holds_a_convention_variant_the_election_sets_aside(
-    shapes: list[ShapeDraft], nouls: dict[str, float], elected: int, pool: list[int], rules: list
+    shapes: list[ShapeDraft],
+    nouls: dict[str, float],
+    dropped: tuple[str, ...],
+    elected: int,
+    pool: list[int],
+    rules: list,
 ):
     """ "education grants" with no start year: Jev elects grant equivalent 0.92 to 0.075, and
     the amount shape, measuring the phrase within `near`, still reaches `amount_vs_ge`,
-    which keeps the amount. A shape of another reading, or of the same reading in another
+    which keeps the amount. "Total" names no slot, so Jev's claim that it asks for every
+    modality is demoted before the holds check, and the amount shape still reaches the
+    policy. "Across all modalities" asks for the one the amount shape lacks, so the policy
+    keeps grant equivalent. A shape of another reading, or of the same reading in another
     dataset, that the election sets aside stays out."""
     answers = _answers({"m|0": 0.86, "m|1": 0.81, **nouls}, elect={0: 0.92, 1: 0.075})
 
-    output, conf = _assemble(_request(shapes), answers)
+    output, conf = _assemble(_request(shapes, dropped=dropped), answers)
 
     assert output.chosen_shape_index == elected
     assert conf.pool is not None and sorted(conf.pool.measuring) == pool

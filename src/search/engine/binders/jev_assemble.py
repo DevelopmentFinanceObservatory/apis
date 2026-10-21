@@ -24,6 +24,7 @@ from search.engine.bind import (
     _UniversalBindOutput,
     ground_bind_output,
     stated_reading,
+    validate_requested_all_bindings,
 )
 from search.engine.binders.base import BindResult
 from search.engine.binders.gemini import (
@@ -236,7 +237,7 @@ def assemble(
             chosen_shape_index=0, ask=ASK_TEXT, nearest_refused_index=nearest
         )
         return output, conf
-    bindings = [_bind_slot(menu, answers, e, prop, conf, t) for prop in menu.listed[e]]
+    bindings = _shape_drafts(menu, answers, e, conf, t)
     also = _alternates(shapes, e, conf, t, stated_form)
     output = _UniversalBindOutput(
         chosen_shape_index=e, bindings=bindings, also_plausible=also or None
@@ -470,7 +471,8 @@ def _holds(
 ) -> dict[int, bool]:
     """Whether each `pool` shape holds the constraints Jev recognised on `pick`, as
     `pick`'s slots bind them at the thresholds (`_bind_slot`): the value and set drafts the
-    phrase names (`gemini.mentioned_drafts`), and the slots it asks for in full.
+    phrase names (`gemini.mentioned_drafts`), and the slots it validly asks for in full
+    (`_shape_drafts`).
 
     A shape holds a named value when it holds it on its own slot as `pick` does
     (`gemini.holds_drafted_values`), or in exchange for a value Jev recognises on a slot of
@@ -484,7 +486,7 @@ def _holds(
     shapes = menu.request.shapes
 
     def drafts(s: int) -> list[SlotBindingDraft]:
-        return [_bind_slot(menu, answers, s, prop, Confidence(), t) for prop in menu.listed[s]]
+        return _shape_drafts(menu, answers, s, Confidence(), t)
 
     on_pick = drafts(pick)
     named = mentioned_drafts(on_pick)
@@ -520,6 +522,20 @@ def _alternates(
     for k in out:
         conf.alternates[k] = "elected alike"
     return sorted(out, key=lambda k: -conf.measures[k])
+
+
+def _shape_drafts(
+    menu: JevMenu, answers: JevAnswers, s: int, conf: Confidence, t: Thresholds
+) -> list[SlotBindingDraft]:
+    """The drafts of shape `s`'s listed slots (`_bind_slot`), with each ``requested_all``
+    claim validated on `s` (`bind.validate_requested_all_bindings`), so a "total" that names
+    no slot claims none."""
+    drafts = [_bind_slot(menu, answers, s, prop, conf, t) for prop in menu.listed[s]]
+    slots = {slot.property_dcid for slot in menu.request.shapes[s].slot_keys}
+    validated, _applied = validate_requested_all_bindings(
+        drafts, menu.request.dropped_qualifier_phrases, slot_properties=slots
+    )
+    return validated
 
 
 def _draft(

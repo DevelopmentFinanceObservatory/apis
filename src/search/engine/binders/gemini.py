@@ -15,6 +15,7 @@ from search.engine.bind import (
     covered_leaves,
     reads_bound_values_alike,
     stated_reading,
+    validate_requested_all_bindings,
 )
 from search.engine.bind_repair import _label_named_in_text
 from search.engine.binders.base import (
@@ -57,7 +58,9 @@ class GeminiBinder:
     near the best and the pick's twins (`rated_pool`), over which all six policies run with
     the ratings. Each pool shape holds the pick's constraints when it holds each value the
     reply drafted as named and every value of each slot the reply asks for in full
-    (`holds_mentioned_values`), which the pool reads as it admits each shape. A nomination in `also_plausible` stands only when the reply
+    (`holds_mentioned_values`), which the pool reads as it admits each shape, once the
+    reply's ``requested_all`` claims are validated (`with_valid_requested_all`). A
+    nomination in `also_plausible` stands only when the reply
     rates it near its best rating, whatever its denominator (`nominated_near_best`).
 
     A reply that rates neither its pick nor a twin of it in `measuring`, an empty one
@@ -100,6 +103,9 @@ class GeminiBinder:
         if output.ask or not 0 <= output.chosen_shape_index < len(request.shapes):
             return BindResult(output=output, binder=self.name), usage
         shapes = request.shapes
+        output = with_valid_requested_all(
+            output, shapes[output.chosen_shape_index], request.dropped_qualifier_phrases
+        )
         ratings = shape_ratings(output, len(shapes))
         if pick_rating(shapes, output, ratings) < DECLINE_FLOOR:
             return BindResult(output=declined(output), binder=self.name), usage
@@ -132,6 +138,18 @@ def declined(output: _UniversalBindOutput) -> _UniversalBindOutput:
             "unplaced": [],
         }
     )
+
+
+def with_valid_requested_all(
+    output: _UniversalBindOutput, pick: ShapeDraft, dropped_qualifier_phrases: Sequence[str]
+) -> _UniversalBindOutput:
+    """`output` with its ``requested_all`` claims validated on its `pick`
+    (`bind.validate_requested_all_bindings`), before the pool and `reelect` read them, so
+    a "total" that names no slot keeps no shape out."""
+    bindings, _applied = validate_requested_all_bindings(
+        output.bindings, dropped_qualifier_phrases, slot_properties=_slot_property_dcids(pick)
+    )
+    return output.model_copy(update={"bindings": bindings})
 
 
 def shape_ratings(output: _UniversalBindOutput, size: int) -> dict[int, float]:
