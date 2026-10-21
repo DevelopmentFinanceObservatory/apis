@@ -2872,6 +2872,29 @@ def _coverage_records(
     return [*unsupported, *records]
 
 
+def model_only_values(
+    state: ResolveState, prop: str, values: Sequence[str], labels: Mapping[str, str]
+) -> tuple[str, ...]:
+    """The `values` bound on `prop` that no recorded term of the request supports, so only
+    the bind model read them from the words. A term supports every value on `prop` when it
+    is an admitted qualifier match on `prop` or a query record a binding on it covers, and
+    supports one value when the value's name in `labels` is a run of the variable's words,
+    as `value_requirements` reads a value the words name. A value with no name is the
+    model's. An answer that cannot apply a supported value refuses `qualifier_not_bound`
+    on it, and one that cannot apply a model-only value discloses it
+    (`unrealisable.unbind_unrealisable`, `_stray_requirements`)."""
+    if any(match.code_system == prop for match in state.admitted_qualifiers) or any(
+        record.slot == prop and record.disposition == "bound" for record in state.query_qualifiers
+    ):
+        return ()
+    tokens = tokenize(state.variable)
+    return tuple(
+        value
+        for value in values
+        if (label := labels.get(value)) is None or not _token_occurrences(tokens, label)
+    )
+
+
 def value_requirements(
     state: ResolveState, recorded: Sequence[ResolvedQualifier]
 ) -> tuple[Requirement, ...]:
@@ -3271,9 +3294,10 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        ``"uncovered"``, and every other exclusion or comparison phrase
        (`_coverage_records`). In log mode election vetting logs them instead
        (`phase_election._repair_bindings`) and the answer reads without them.
-    10. Each value the bind drafted on a property the elected shape has no slot for
-       (`ResolveState.stray_requirements`), ``unbound`` with evidence ``"model"``, in
-       every coverage mode, unless a record above already names that text.
+    10. Each value the bind drafted on a property the elected shape has no slot for and a
+       recorded term supports (`ResolveState.stray_requirements`), ``unbound`` with
+       evidence ``"model"``, in every coverage mode, unless a record above already names
+       that text.
 
     The words naming a value a shape on the bind menu holds are no record here: election
     vetting records them as value requirements (`value_requirements`), which each final
@@ -3426,7 +3450,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     resolved.extend(
         requirement.term
         for requirement in state.stray_requirements
-        if _normalize(requirement.term.text) not in already_recorded
+        if requirement.refuses and _normalize(requirement.term.text) not in already_recorded
     )
     return resolved
 
@@ -3704,9 +3728,10 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     value) refuses ``variable_not_resolved`` with the call's usage and warns
     ``degenerate_binding_detected``. A value or set draft on a property the elected shape
     has no slot for leaves the output (`split_stray_bindings`), and its value is recorded
-    in the ledger as a requirement (`_stray_requirements`) every answer is held to: the
-    part answers from the readings that apply it, and refuses ``qualifier_not_bound`` on it,
-    with the elected reading flagged, when none does.
+    in the ledger as a requirement (`_stray_requirements`). Every answer is held to a value
+    a recorded term supports: the part answers from the readings that apply it, and refuses
+    ``qualifier_not_bound`` on it, with the elected reading flagged, when none does. An
+    answer that leaves a value only the model read unapplied stands and discloses it.
 
     A model that asks declines every admissible reading. When it names the nearest refused
     reading, that reading stands in as the elected shape (`_stand_in_declined`), so the
@@ -3875,8 +3900,11 @@ async def _stray_requirements(
     state: ResolveState, stray: Sequence[SlotBindingDraft]
 ) -> tuple[Requirement, ...]:
     """One requirement per property `stray` binds values on: the values the bind drafted on
-    properties the elected shape has no slot for (`split_stray_bindings`). The values on
-    one property are a set the request names (`ValueRule`), applied by membership: an
+    properties the elected shape has no slot for (`split_stray_bindings`). A value no
+    recorded term supports (`model_only_values`) is a requirement of its own that does not
+    refuse (`Requirement.refuses`): an answer that leaves it unapplied stands and departs
+    `measure_not_applied` under the value's name. The other values on one property are a
+    set the request names (`ValueRule`), applied by membership: an
     answer that binds one of them, or every member of which holds one, applies it, and the
     elected answer, which drops the draft, leaves it unmet unless every member holds one.
     Its term is ``unbound`` with evidence ``"model"``, named by the values' labels joined
@@ -3917,7 +3945,29 @@ async def _stray_requirements(
     for prop, value in values:
         by_prop.setdefault(prop, []).append(value)
     requirements: list[Requirement] = []
-    for prop, drafted in by_prop.items():
+    for prop, values_on in by_prop.items():
+        model = model_only_values(state, prop, values_on, labels)
+        requirements.extend(
+            Requirement(
+                term=ResolvedQualifier(
+                    text=labels[value],
+                    named=[GraphRef(ref=value, label=labels[value])],
+                    slot=None,
+                    disposition="unbound",
+                    evidence="model",
+                ),
+                origin="stray",
+                rule=ValueRule(values=frozenset({(prop, value)})),
+                departure=unapplied_departure(
+                    labels[value], asked=labels[value], property_dcid=prop
+                ),
+                refuses=False,
+            )
+            for value in model
+        )
+        drafted = [value for value in values_on if value not in model]
+        if not drafted:
+            continue
         named = [GraphRef(ref=value, label=labels[value]) for value in drafted]
         label = " and ".join(ref.label for ref in named)
         requirements.append(

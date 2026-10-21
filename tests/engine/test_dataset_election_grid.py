@@ -1806,8 +1806,8 @@ def test_unbinding_a_default_and_the_measure_partition_takes_back_what_they_stat
 def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
     index, monkeypatch, drafted_by, unbound, refused_on
 ):
-    """Flow F1 is bound as a sole option and sector A is named. One member conflicts on
-    the sector alone and another on both. A value the engine wrote under that evidence,
+    """Flow F1 is bound as a sole option and sector A is named by the words. One member
+    conflicts on the sector alone and another on both. A value the engine wrote under that evidence,
     as recall's partition value or a series code's shared value is, claims nothing of
     every member: the minimal set goes, the named sector, which the part then refuses on,
     and the flow stays. The bind reply's own claim is refuted by the member conflicting on
@@ -1827,6 +1827,7 @@ def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
         ),
     ]
     state.text_recognized_properties = frozenset({"sector"})
+    state.variable = "sector A aid"
     state.graph = cast(EngineGraphClient, FakeGraph(nodes={}, obs={}, detect={}, resolve={}))
     monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
 
@@ -3501,11 +3502,18 @@ def test_a_part_whose_keys_select_another_family_refuses_naming_its_codes(monkey
 
 def _record_stray_female(state: ResolveState) -> None:
     """Record in `state`'s ledger the requirement bind records for `gender` Female drafted
-    on a slot the elected shape lacks (`_stray_requirements`)."""
+    on a slot the elected shape lacks (`_stray_requirements`), which the word "female"
+    names."""
     stray = SlotBindingDraft(
         axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
     )
-    labels = SimpleNamespace(capped_shapes=[], label_dcids=lambda values: values)
+    labels = SimpleNamespace(
+        capped_shapes=[],
+        label_dcids=lambda values: values,
+        admitted_qualifiers=(),
+        query_qualifiers=[],
+        variable="female",
+    )
     for requirement in asyncio.run(_stray_requirements(cast(ResolveState, labels), [stray])):
         state.requirements = with_requirement(state.requirements, requirement)
 

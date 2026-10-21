@@ -737,13 +737,12 @@ class TestUnrealisableValuesUnbound:
 
         assert _refusal(region) == ("qualifier_not_bound", [("Urban", "residence")])
 
-    @pytest.mark.parametrize(
-        ("bound", "named"), [("Urban", "Urban"), (_UNNAMED_RESIDENCE, _UNNAMED_RESIDENCE)]
-    )
-    def test_a_request_keeps_the_value_a_member_holds(self, bound, named):
+    @pytest.mark.parametrize("bound", ["Urban", _UNNAMED_RESIDENCE], ids=["named", "nameless"])
+    def test_a_request_keeps_the_value_a_member_holds(self, bound):
         """The reviewer's case: male and urban over male-rural and female-rural. Only
-        urban is unbound, so the part refuses on urban and flags male-rural. A bound value
-        nothing names refuses the same way, named by its dcid."""
+        urban is unbound. "urban" names it, so the part refuses on urban and flags
+        male-rural. A bound value with no name no word can name, so it is the bind
+        model's alone: male-rural answers and departs under the residence slot's name."""
         result = _resolve_unemployment(
             _gender_binding("value", "Male"),
             also=(_residence_binding(bound),),
@@ -756,9 +755,16 @@ class TestUnrealisableValuesUnbound:
             query="male urban unemployment rate",
         )
 
-        assert _refusal(result) == ("qualifier_not_bound", [(named, "residence")])
-        assert _flagged_served(result) == [_MALE_RURAL_SV]
-        assert _departures(result) == []
+        if bound == "Urban":
+            assert _refusal(result) == ("qualifier_not_bound", [("Urban", "residence")])
+            assert _flagged_served(result) == [_MALE_RURAL_SV]
+            assert _departures(result) == []
+        else:
+            assert result.status == "definite"
+            assert _served(result) == [_MALE_RURAL_SV]
+            assert [
+                (fact.binding_ref, fact.values) for fact in result.departure_facts.values()
+            ] == [("how:residence", ("a requested residence value",))]
 
     def test_a_default_a_member_holds_is_kept_when_a_named_value_goes(self, monkeypatch):
         """Female is named and Rural defaulted, over male-rural and male-urban. Dropping

@@ -638,11 +638,11 @@ def test_no_member_asserts_bound_property_reports_no_matching_slice_zero_probes(
     assert any(w.code == PLACE_SCOPE_DEFAULTED for w in result.warnings)
 
 
-def test_a_value_bound_on_an_aggregate_without_its_slot_refuses_naming_it():
+def test_a_value_bound_on_an_aggregate_without_its_slot_is_disclosed():
     """Recall builds only the bare aggregate, which has no `testSex` slot, and the bind
-    model binds `testSex=Female` on it. The stray value is dropped, so the aggregate
-    answers no narrower question, and the part refuses `qualifier_not_bound` with the
-    aggregate flagged, naming Female."""
+    model binds `testSex=Female` on it, which no word of the question names. The stray
+    value is dropped and the aggregate answers, departing `measure_not_applied` under
+    Female."""
     obs = {
         f"{_BOUND_SV}|country/A1": [
             {
@@ -675,11 +675,10 @@ def test_a_value_bound_on_an_aggregate_without_its_slot_refuses_naming_it():
         )
     )
 
-    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
-    assert result.flagged_match is not None
-    (flagged,) = result.flagged_match
-    assert [m.ref.ref for m in flagged.resolved.members] == [_BOUND_SV]
-    assert [[ref.ref for ref in term.named] for term in result.unbound_qualifiers] == [["Female"]]
+    assert result.status == "definite"
+    (spec,) = result.specs
+    assert [m.ref.ref for m in spec.resolved.members] == [_BOUND_SV]
+    assert [fact.asked for fact in result.departure_facts.values()] == ["Female"]
 
 
 # ---------------------------------------------------------------------------

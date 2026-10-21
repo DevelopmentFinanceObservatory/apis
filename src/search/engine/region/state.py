@@ -470,7 +470,9 @@ class Requirement:
     phrase without the others, for when some of them need no disclosure. `generic` is a
     departure naming no phrase in particular ("A requested gender value was not applied."),
     true of any of its requirements left unapplied, so it discloses those of its phrases
-    that need it whatever the others."""
+    that need it whatever the others. `refuses` is `False` for a value only the bind model
+    read (`phase_rank_bind.model_only_values`): an answer is judged on it, and one leaving
+    it unapplied discloses it and is never refused on it."""
 
     term: ResolvedQualifier
     origin: RequirementOrigin
@@ -478,6 +480,7 @@ class Requirement:
     departure: Departed | None = None
     alone: Departed | None = None
     generic: Departed | None = None
+    refuses: bool = True
 
     @property
     def phrase(self) -> str:
@@ -494,11 +497,12 @@ def code_requirement(
     origin: RequirementOrigin,
     alone: Departed | None = None,
     generic: Departed | None = None,
+    refuses: bool = True,
 ) -> Requirement:
     """A requirement that an answer apply `codes` on `property_dcid` (`CodeRule`), named by
     `asked`, the request's words, and `named`, the code rows they read as. A value no name
-    exists for (`asked` `None`) is named by its dcid. `departure`, `alone` and `generic`
-    are the `Requirement`'s."""
+    exists for (`asked` `None`) is named by its dcid. `departure`, `alone`, `generic` and
+    `refuses` are the `Requirement`'s."""
     if asked is None:
         term = ResolvedQualifier(
             text=" and ".join(codes),
@@ -517,6 +521,7 @@ def code_requirement(
         departure=departure,
         alone=alone,
         generic=generic,
+        refuses=refuses,
     )
 
 
@@ -926,10 +931,11 @@ class ResolveState:
     # One requirement per value the bind drafted on a property the elected shape has no
     # slot for, judged as a value the request names and named by its label
     # (`phase_rank_bind._stray_requirements`). The drafts leave the bind output, bind
-    # records these in the ledger, and `_resolve_query_qualifiers` records their terms. A
-    # part whose answer leaves one unapplied refuses `qualifier_not_bound` naming it, and a
-    # `qualifier_not_bound` refusal of settlement, which judges no answer, names it too
-    # (`requirements.settle_unanswered`).
+    # records these in the ledger, and `_resolve_query_qualifiers` records the terms of
+    # those that refuse. A part whose answer leaves one a recorded term supports unapplied
+    # refuses `qualifier_not_bound` naming it, and a `qualifier_not_bound` refusal of
+    # settlement, which judges no answer, names it too (`requirements.settle_unanswered`).
+    # One only the model read departs instead (`Requirement.refuses`).
     stray_requirements: tuple[Requirement, ...] = ()
     # Open constraint axes the elected measure's members do not declare; added to
     # `inapplicable_slots` because they are absent from the shape's slot keys.

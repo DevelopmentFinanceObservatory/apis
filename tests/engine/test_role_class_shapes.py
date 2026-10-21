@@ -976,10 +976,11 @@ def _run(
     llm=None,
     nodes: dict = _DEBT_NODES,
     options: EngineOptions | None = None,
+    value_nodes: dict | None = None,
 ):
     members = list(nodes)
     graph = FakeGraph(
-        nodes={**_PLACES, **nodes},
+        nodes={**_PLACES, **(value_nodes or {}), **nodes},
         detect={query: {"svs": members, "cosine_scores": [0.9, 0.88, 0.87, 0.86]}},
         resolve={"Kenya": "country/KEN", "China": "country/CHN"},
         obs=obs,
@@ -2618,13 +2619,14 @@ def test_sole_option_drafts_no_member_holds_together_give_way_and_the_named_valu
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])
-def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_refused_on(walked):
+def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_disclosed(walked):
     """The request names bonds and the reply drafts the guarantee as a sole option. The
     guaranteed member would answer by dropping the named instrument, and the bonds member
     by dropping the draft, so the draft goes and the bonds member answers. With both
-    values named, one must go: the first member's conflict is unbound, and the part refuses
-    `qualifier_not_bound` on that value, flagging the read made without it. The order is
-    the same where the walk exposes the conflict and where the read does."""
+    values named, one must go: the first member's conflict is unbound. No word of the
+    question names that guarantee, which has no name, so the bonds member answers and
+    departs `measure_not_applied` under the guarantee slot's name. The order is the same
+    where the walk exposes the conflict and where the read does."""
     pair = {
         _RELAX_GUARANTEED: _RELAX_NODES[_RELAX_GUARANTEED],
         _RELAX_BONDS: _RELAX_NODES[_RELAX_BONDS],
@@ -2650,15 +2652,80 @@ def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_refus
 
     assert _relax_outcome(drafted) == ("definite", None, [_RELAX_BONDS], {"instrument": "Bond"}, [])
     assert _relax_outcome(named) == (
-        "no_data",
-        "qualifier_not_bound",
+        "definite",
+        None,
         [_RELAX_BONDS],
         {"instrument": "Bond"},
-        [],
+        ["measure_not_applied"],
     )
-    assert [(term.slot, term.disposition) for term in named.unbound_qualifiers] == [
-        ("guarantee", "unbound")
-    ]
+    assert [fact.binding_ref for fact in named.departure_facts.values()] == ["how:guarantee"]
+
+
+_PPG = "Debt_Ppg"
+_PUBLIC_SECTOR = "Debt_PublicSector"
+_PPG_NODES = {
+    _PPG: _node(
+        "Public and publicly guaranteed external debt stocks",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        guaranteeStatus="PublicOrPubliclyGuaranteed",
+        idsDebtorType="IDSDebtorTypeGG",
+    ),
+    _PUBLIC_SECTOR: _node(
+        "Private nonguaranteed external debt stocks of the public sector",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        guaranteeStatus="PrivateNonguaranteed",
+        idsDebtorType="IDSDebtorTypePS",
+    ),
+}
+_PPG_VALUE_NODES = {
+    "PublicOrPubliclyGuaranteed": {"label": "public and publicly guaranteed", "type": "Thing"},
+    "PrivateNonguaranteed": {"label": "private nonguaranteed", "type": "Thing"},
+    "IDSDebtorTypePS": {"label": "public sector", "type": "Thing"},
+    "IDSDebtorTypeGG": {"label": "general government", "type": "Thing"},
+}
+
+
+@pytest.mark.parametrize(
+    ("query", "refuses"),
+    [
+        ("public and publicly guaranteed debt of Kenya", False),
+        ("public and publicly guaranteed public sector debt of Kenya", True),
+    ],
+    ids=["model-only", "words-name-it"],
+)
+def test_a_debtor_type_no_member_holds_with_the_guarantee_refuses_only_when_words_name_it(
+    query, refuses
+):
+    """The bind binds the guarantee status the words name and a public-sector debtor type,
+    and no member holds both, so the debtor type is unbound and the guaranteed series read.
+    No recorded term supports the debtor type when the words do not name it, so the series
+    answers and departs `measure_not_applied` under its name. When the words name it, the
+    part refuses `qualifier_not_bound` on it, flagging the same series."""
+    result = _run(
+        entities=["Kenya"],
+        obs={f"{dcid}|country/KEN": _OBS for dcid in _PPG_NODES},
+        query=query,
+        nodes=_PPG_NODES,
+        value_nodes=_PPG_VALUE_NODES,
+        llm=_relax_llm(
+            guaranteeStatus=("PublicOrPubliclyGuaranteed", "mentioned"),
+            idsDebtorType=("IDSDebtorTypePS", "mentioned"),
+        ),
+    )
+
+    (spec,) = result.specs or result.flagged_match or (None,)
+    assert spec is not None
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_PPG]
+    if refuses:
+        assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+        assert [term.slot for term in result.unbound_qualifiers] == ["idsDebtorType"]
+    else:
+        assert result.status == "definite"
+        assert [
+            (fact.code, fact.binding_ref, fact.asked) for fact in result.departure_facts.values()
+        ] == [("measure_not_applied", "how:idsDebtorType", "public sector")]
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])

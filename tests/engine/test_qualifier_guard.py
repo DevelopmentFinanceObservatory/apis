@@ -1946,20 +1946,24 @@ _NAMELESS_TOO = "GenderUnnamedToo"
                 _BOTH,
                 [(_VALUE_LITERACY_BY_GENDER, []), (_VALUE_LITERACY_BY_GENDER, [])],
                 False,
-                [("Female and Male", "how:gender")],
+                [(other, "how:gender"), (named, "how:gender")],
             )
-            for variable in _EITHER
+            for variable, named, other in (
+                ("female literacy rate", "Female", "Male"),
+                ("male literacy rate", "Male", "Female"),
+            )
         ),
         *(
             (
-                variable,
+                f"{word} literacy rate",
                 values,
                 [(_VALUE_LITERACY, []), (_VALUE_YOUTH_LITERACY, [])],
                 False,
-                [(" and ".join(values), "how:gender")],
+                [(word, None)]
+                + [(value, "how:gender") for value in values if value.casefold() != word],
             )
             for values in (_BOTH, ["Male", "Female"], ["Female", "Male", "Other"])
-            for variable in _EITHER
+            for word in ("female", "male")
         ),
         ("female literacy rate", _BOTH, [(_VALUE_LITERACY, [])], True, [("Male", "how:gender")]),
         ("male literacy rate", _BOTH, [(_VALUE_LITERACY, [])], True, [("Female", "how:gender")]),
@@ -1985,7 +1989,7 @@ _NAMELESS_TOO = "GenderUnnamedToo"
                 departed,
             )
             for applied, departed in (
-                ([], [("Female and Male", "how:gender"), (None, "how:gender")]),
+                ([], [("Male", "how:gender"), (None, "how:gender"), ("Female", "how:gender")]),
                 (_BOTH, [(None, "how:gender")]),
                 (["Female"], [("Male", "how:gender"), (None, "how:gender")]),
             )
@@ -2035,17 +2039,17 @@ _NAMELESS_TOO = "GenderUnnamedToo"
 def test_a_phrase_sharing_a_departure_departs_once(
     search_settings, variable, values, answers, definite, departed
 ):
-    """Bind sets gender to `values` with no query term and the request names one of them
-    by its graph label. Unbinding drops them under one joined departure, which also
-    discloses the named value, so a set leaving every value unapplied departs it once,
-    whichever value the request names and whether or not its answers hold gender. Each
-    answer binds the gender values its row names. Where the joined departure would also
-    disclose a value the answer applies or the refusal names, each other value departs on
-    its own: a definite answer without gender refuses on the named value and departs the
-    other, and a set applying Female departs Male alone. A value with no name departs
-    under its slot's name on its own, beside the joined departure of the named values, and
-    no departure's text names its dcid. Two such values share that departure, which still
-    departs when an answer applies one of them and not the other."""
+    """Bind sets gender to `values` with no recorded term, and the request's words name
+    one of them by its graph label. Unbinding requires the named value and records each
+    other value as the bind model's alone (`model_only_values`), which an answer leaving
+    it unapplied departs and is never refused on. Each answer binds the gender values its
+    row names. Every phrase departs once: the named value under the words' value
+    requirement when the answers lack gender, else under its own name, and each
+    model-only value under its own name unless every answer applies it. A definite answer
+    without gender refuses on the named value and departs the others. A value with no
+    name departs under its slot's name, and no departure's text names its dcid. Two such
+    values share that departure, which still departs when an answer applies one of them
+    and not the other."""
     search_settings(qualifier_coverage="refuse")
     state = _state(
         variable=variable,

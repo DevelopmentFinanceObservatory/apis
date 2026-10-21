@@ -694,32 +694,34 @@ def _value(prop: str, value: str) -> SlotBindingDraft:
     ],
     ids=["one-stray-value", "every-draft-stray"],
 )
-def test_a_value_bound_on_a_slot_the_elected_shape_lacks_refuses_naming_it(drafts):
+def test_a_value_bound_on_a_slot_the_elected_shape_lacks_is_disclosed(drafts):
     """The bind elects the population shape, which has no slots, and binds values on
-    properties it lacks. Each stray value is dropped and named as a term the answer
-    leaves unapplied, so the part refuses `qualifier_not_bound` with the population
-    reading flagged, never definite. The refusal names exactly the terms the flagged
-    reading's trace records, and none of them departs beside it."""
+    properties it lacks that no word of "population" names. Each stray value is the
+    model's alone (`model_only_values`), so the population reading answers and departs
+    `measure_not_applied` under each value's name, and the trace records none of them."""
     result = _resolve_population(_ForeignSlotLLM(drafts))
 
-    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
-    assert result.flagged_match is not None
-    (flagged,) = result.flagged_match
-    assert [m.ref.ref for m in flagged.resolved.members] == [_RESOLVE_SV]
-    assert [
-        (term.disposition, term.evidence, [ref.ref for ref in term.named])
-        for term in result.unbound_qualifiers or ()
-    ] == [("unbound", "model", draft.value_dcids) for draft in drafts]
-    assert list(flagged.resolved.trace.query_qualifiers) == list(result.unbound_qualifiers or ())
-    assert result.departure_facts == {}
+    assert result.status == "definite"
+    (spec,) = result.specs
+    assert [m.ref.ref for m in spec.resolved.members] == [_RESOLVE_SV]
+    assert [fact.asked for fact in result.departure_facts.values()] == [
+        value for draft in drafts for value in draft.value_dcids
+    ]
+    assert spec.resolved.trace.query_qualifiers == []
 
 
 def test_a_stray_value_is_met_by_an_answer_that_binds_it():
-    """A value the bind drafted on a slot the elected shape lacks is judged as a value the
-    request names (`_stray_requirements`): the elected population answer leaves "Female"
-    unmet, and an answer by sex that binds it meets it."""
+    """A value the bind drafted on a slot the elected shape lacks and the words name is
+    judged as a value the request names (`_stray_requirements`): the elected population
+    answer leaves "Female" unmet, and an answer by sex that binds it meets it."""
     population, by_sex = _shape("population"), _shape("by_sex", slot_keys=(_GENDER_SLOT,))
-    state = SimpleNamespace(capped_shapes=[population], label_dcids=lambda values: values)
+    state = SimpleNamespace(
+        capped_shapes=[population],
+        label_dcids=lambda values: values,
+        admitted_qualifiers=(),
+        query_qualifiers=[],
+        variable="female population",
+    )
     stray = [_value("gender", "Female")]
 
     requirements = _run(_stray_requirements(state, stray))
