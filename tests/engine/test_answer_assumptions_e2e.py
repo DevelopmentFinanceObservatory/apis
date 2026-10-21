@@ -589,11 +589,11 @@ def _in_2020(identity: BaseIdentity) -> BaseIdentity:
     )
 
 
-def _edited_set(
+def _post_edited(
     identities: list[BaseIdentity], echoes: list[list[Assumption] | None]
-) -> tuple[CandidatesPart, str]:
-    """The candidates part, and its response's sentence, a dataset_resubmit answers with
-    when it posts each of ``identities`` edited to 2020 with its echo."""
+) -> ResolveResponse:
+    """The response a dataset_resubmit answers with when it posts each of ``identities``
+    edited to 2020 with its echo, as one candidates entry."""
     response = _post(
         ResubmitCandidatesEntry(
             variable_text="aid flows",
@@ -605,9 +605,18 @@ def _edited_set(
             ],
         )
     )
+    assert response.rendered_sentence is not None
+    return response
+
+
+def _edited_set(
+    identities: list[BaseIdentity], echoes: list[list[Assumption] | None]
+) -> tuple[CandidatesPart, str]:
+    """The candidates part, and its response's sentence, a dataset_resubmit answers with
+    when it posts each of ``identities`` edited to 2020 with its echo."""
+    response = _post_edited(identities, echoes)
     part = response.parts[0]
     assert isinstance(part, CandidatesPart)
-    assert response.rendered_sentence is not None
     return part, response.rendered_sentence
 
 
@@ -636,6 +645,16 @@ def _edited_set(
             _ASSUMED_LOAN_ROLES,
             id="aid-posted-twice",
         ),
+        # With no loan reading posted, the two aid candidates rebuild to one reading, so the
+        # part is that reading's definite answer, stated with the first candidate's echo.
+        pytest.param(
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            [[]],
+            None,
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            None,
+            id="aid-posted-twice-alone",
+        ),
     ],
 )
 def test_an_edited_candidates_set_restates_each_reading_s_echo(
@@ -643,16 +662,28 @@ def test_an_edited_candidates_set_restates_each_reading_s_echo(
     reposts: list[list[Assumption] | None],
     loan_echo: list[Assumption] | None,
     aid: list[Assumption],
-    loans: list[Assumption],
+    loans: list[Assumption] | None,
 ):
     """A year edit of the aid-or-loans set keeps the official development assistance
     default on the aid reading that echoes it, each reading read with its own echo. The
-    aid reading is posted again after the first with each of ``reposts`` as its echo."""
+    aid reading is posted again after the first with each of ``reposts`` as its echo, and
+    the loan reading is posted last unless ``loans`` is None."""
     aid_identity = _first_answer().spec.definition.identity
-    part, sentence = _edited_set(
-        [aid_identity, *(aid_identity for _ in reposts), _loan_identity()],
-        [aid_echo, *reposts, loan_echo],
-    )
+    identities = [aid_identity, *(aid_identity for _ in reposts)]
+    echoes = [aid_echo, *reposts]
+    if loans is None:
+        response = _post_edited(identities, echoes)
+        (part,) = response.parts
+        assert isinstance(part, DefinitePart)
+        assert part.assumptions == aid
+        assert response.rendered_sentence.endswith(_ASSUMED_CLAUSE)
+        (warning,) = (w for w in part.warnings if w.code == "candidates_collapsed_definite")
+        assert warning.message == (
+            "2 candidates were posted and all rebuild to 1 reading, so the part is reported "
+            "as that answer and not as the posted candidate set."
+        )
+        return
+    part, sentence = _edited_set([*identities, _loan_identity()], [*echoes, loan_echo])
     aid_spec, loan_spec = part.candidates.specs
     assert part.reading_assumptions == {aid_spec.spec_id: aid, loan_spec.spec_id: loans}
     assert part.assumptions == []

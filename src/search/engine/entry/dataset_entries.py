@@ -86,12 +86,22 @@ def _merge_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
     return merged
 
 
-def _candidates_collapsed_warning(*, posted: int, survivors: int) -> Warning:
+def _candidates_collapsed_warning(*, posted: int, resolved: int, survivors: int) -> Warning:
     """Report a collapsed candidate set with posted and surviving counts.
 
-    One survivor yields `candidates_collapsed_definite`. Zero yields
-    `candidates_collapsed_no_data`.
+    One survivor yields `candidates_collapsed_definite`. Its message says the candidates
+    rebuild to one reading when every posted candidate resolved, and says how many still
+    resolve otherwise. Zero yields `candidates_collapsed_no_data`.
     """
+    if survivors == 1 and resolved == posted:
+        return Warning(
+            code="candidates_collapsed_definite",
+            severity="warn",
+            message=(
+                f"{posted} candidates were posted and all rebuild to 1 reading, so the "
+                "part is reported as that answer and not as the posted candidate set."
+            ),
+        )
     if survivors == 1:
         return Warning(
             code="candidates_collapsed_definite",
@@ -167,7 +177,11 @@ def _build_candidates_region(
             variable_text=entry.variable_text,
             warnings=(
                 *only.warnings,
-                _candidates_collapsed_warning(posted=len(promoted), survivors=1),
+                _candidates_collapsed_warning(
+                    posted=len(promoted),
+                    resolved=sum(r.status == "definite" for r in promoted),
+                    survivors=1,
+                ),
             ),
             timing_by_step=timing_by_step,
             earliest_index=index,
@@ -191,7 +205,7 @@ def _build_candidates_region(
         unsupported=None,
         warnings=(
             *first.warnings,
-            _candidates_collapsed_warning(posted=len(promoted), survivors=0),
+            _candidates_collapsed_warning(posted=len(promoted), resolved=0, survivors=0),
         ),
         timing_by_step=timing_by_step,
         earliest_index=index,

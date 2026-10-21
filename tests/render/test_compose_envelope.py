@@ -1729,6 +1729,7 @@ def test_leads_with_one_label_for_two_entities_are_each_stated():
 
 _ASSUMED_ODA = Assumption(kind="declared_default", binding_ref="how:crsTypeOfFlow", text="ODA")
 _ASSUMED_PROVIDERS = Assumption(kind="open_role", binding_ref="origin:", text="every provider")
+_ASSUMED_COUNTRIES = Assumption(kind="place_scope", binding_ref="where:", text="every country")
 
 
 def _assuming(part: DefinitePart, *assumptions: Assumption) -> DefinitePart:
@@ -1737,6 +1738,16 @@ def _assuming(part: DefinitePart, *assumptions: Assumption) -> DefinitePart:
 
 def _clause_tokens(plan: list[SentenceToken]) -> list[tuple[str, int | None]]:
     return [(t.text, t.part_index) for t in plan if t.segment == "assumption"]
+
+
+def _clause(
+    items: list[tuple[str, int]], *, owner: int | None = None
+) -> list[tuple[str, int | None]]:
+    """The clause tokens stating ``items``, its lead, separators and stop owned by ``owner``."""
+    tokens: list[tuple[str, int | None]] = [(" ", owner), ("Assumed: ", owner)]
+    for position, item in enumerate(items):
+        tokens.extend([("; ", owner), item] if position else [item])
+    return [*tokens, (".", owner)]
 
 
 def test_a_joined_sentence_closes_with_one_clause_naming_each_part_item():
@@ -1851,18 +1862,32 @@ def test_a_part_others_fold_into_states_its_clause_for_all_of_them(
 @pytest.mark.parametrize(
     "after", [pytest.param([], id="joined"), pytest.param([_unresolved("GDP")], id="per-part")]
 )
+@pytest.mark.parametrize(
+    "separate_first", [pytest.param(False, id="separate-last"), pytest.param(True, id="first")]
+)
 def test_a_folded_part_keeps_its_items_beside_a_separate_part_of_the_same_spec(
-    after: list[NoDataPart],
+    separate_first: bool, after: list[NoDataPart]
 ):
-    """A separate part can carry the Spec a part folded into. The folded part's own item
-    stays in the clause of the part it folded into."""
+    """A separate part can carry the Spec a part folded into, before or after it. The
+    folded part's own item stays in the clause of the part it folded into, after that
+    part's own item, and the separate part states its own item under its own index."""
     representative = _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA)
-    folded = _assuming(representative, _ASSUMED_ODA, _ASSUMED_PROVIDERS).model_copy(
+    folded = _assuming(representative, _ASSUMED_PROVIDERS).model_copy(
         update={"warnings": [Warning(code="binding_folded", severity="info", message="folded")]}
     )
-    compared = representative.model_copy(update={"separate": True})
-    _rendered, plan = compose_envelope_sentence([representative, folded, compared, *after])
-    assert ("every provider", 1) in _clause_tokens(plan)
+    compared = _assuming(representative, _ASSUMED_COUNTRIES).model_copy(update={"separate": True})
+    parts = (
+        [compared, representative, folded] if separate_first else [representative, folded, compared]
+    )
+    _rendered, plan = compose_envelope_sentence([*parts, *after])
+    group = [("ODA", parts.index(representative)), ("every provider", parts.index(folded))]
+    own = [("every country", parts.index(compared))]
+    if after:
+        clauses = [_clause(group), _clause(own, owner=parts.index(compared))]
+        expected = [token for clause in clauses[:: -1 if separate_first else 1] for token in clause]
+    else:
+        expected = _clause(own + group if separate_first else group + own)
+    assert _clause_tokens(plan) == expected
 
 
 @pytest.mark.parametrize(

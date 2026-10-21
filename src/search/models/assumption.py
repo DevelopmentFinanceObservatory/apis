@@ -12,8 +12,9 @@ from .vocab import AssumptionKind
 _MAX_REF_CHARS = 1024
 # A declared default fixes one code (`DeclaredDefault.code`, `ShapeSlotDefault.value_dcid`).
 _MAX_REFS = 1
-# A binding ref is an axis, a colon and a property dcid, and "destination:" is the longest
-# prefix.
+# A binding ref is "how:" and a property dcid, or a role's "origin:" or "where:". The bound
+# is a dcid after the longest role-key prefix, "destination:", a cap above every ref the
+# server emits that clients validate against.
 _MAX_BINDING_REF_CHARS = len("destination:") + _MAX_REF_CHARS
 # The words for a declared default are one code's full label. The longest label in the
 # packaged index runs 126 characters, within the bound of a variable text

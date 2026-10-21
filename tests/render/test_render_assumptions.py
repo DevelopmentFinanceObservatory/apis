@@ -178,6 +178,28 @@ def test_a_place_the_destination_s_where_slot_binds_is_the_asked_recipient():
     assert _open_roles(assumptions_for(spec)) == [_EVERY_PROVIDER]
 
 
+def test_a_destination_scope_default_beside_a_where_slot_place_keeps_its_scope_reading():
+    """mls-004 read with Kenya on the where slot and the recipients filled by a scope
+    default: the scope, not Kenya, is what the data reads across, so the heading counts the
+    recipients, from the recorded role axis fact, and states them as assumed."""
+    spec = _kenya_on_the_where_slot(_panel_spec("mls-004"))
+    scope = ResolvedScope(
+        axis="destination",
+        members=[
+            ResolvedEntity(ref=ref, role="destination", entity_type="Country")
+            for ref in ("country/TZA", "country/UGA")
+        ],
+    )
+    scoped = spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"scope": scope})})
+    destination = heading_for(scoped).heading.roles[0]
+    assert (destination.axis, destination.text, destination.entity_dcids) == (
+        "destination",
+        "249 recipients",
+        (),
+    )
+    assert _open_roles(assumptions_for(scoped)) == [_EVERY_RECIPIENT, _EVERY_PROVIDER]
+
+
 def test_a_role_an_operation_runs_over_is_no_assumption():
     """A rank over the recipients of mls-004 asks every one of them."""
     rank = Operation(verb="rank", phrase="top 5 recipients", over="destination")

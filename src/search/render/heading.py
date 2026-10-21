@@ -782,9 +782,14 @@ def _role_phrases(
     A role with entities names them (`_entities_text`). An open role reads its count or
     "all" (`_open_role_reading`). The destination carries the where slot, which it shares
     with the subject, so a destination with no entities of its own that the heading states
-    names the places that slot binds, the subject entities.
+    names the places that slot binds, the subject entities. A destination the role scope
+    default filled (`scope` on the destination) keeps its scope reading.
     """
-    subject = [entity for entity in norm_entities if entity.axis is None]
+    subject = (
+        []
+        if scope is not None and scope.axis == "destination"
+        else [entity for entity in norm_entities if entity.axis is None]
+    )
     phrases: dict[RoleAxis, RolePhrase] = {}
     for axis in _ROLE_ORDER:
         noun = wording.noun(axis)
