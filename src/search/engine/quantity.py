@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from search.engine.function_words import FUNCTION_WORDS
+from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.retrieval.facts import _dcids_for, read_name
 from search.engine.shape import ShapeDraft, measures_count
 from search.models import GraphRef, QuantityForm
@@ -441,6 +442,14 @@ class NamedDenominator:
 type DenominatorCheck = Literal["matches", "unverified", "refused"]
 
 
+def _same_denominator(named: str, stated: str) -> bool:
+    """Whether two denominator dcids are one StatVar or twins in one equivalence cluster."""
+    if named == stated:
+        return True
+    cluster = CLUSTER_BY_MEMBER.get(named)
+    return cluster is not None and stated in cluster.members
+
+
 def check_denominator(shape: ShapeDraft, named: NamedDenominator) -> DenominatorCheck:
     """Hold `shape` to the denominator the question names.
 
@@ -454,12 +463,16 @@ def check_denominator(shape: ShapeDraft, named: NamedDenominator) -> Denominator
     arc and classes as `other`, as UN and WHO ratio series do, states its base only in its
     name, so it passes `unverified`. Any other shape with no arc, such as a level, divides
     by nothing and is `refused`: the question's grounded words name a base.
+
+    Two denominators match when they are one dcid or members of one registered equivalence
+    cluster (`CLUSTER_BY_MEMBER`): a ratio is unit-free, so the cluster's currency does not
+    matter. Only this check reads the cluster; the elections compare denominators by dcid.
     """
     denominator = stated_denominator(shape)
     if denominator is not None:
         if named.ref is None:
             return "unverified"
-        return "matches" if named.ref.ref == denominator else "refused"
+        return "matches" if _same_denominator(named.ref.ref, denominator) else "refused"
     if shape.meas_denom_unresolved:
         return "unverified"
     return "unverified" if normalisation_class(shape) == "other" else "refused"
