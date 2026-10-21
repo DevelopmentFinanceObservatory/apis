@@ -1,5 +1,7 @@
 """Fakes for the BigQuery reader and the GCS client that `artifact_publication` jobs read
-and write through."""
+and write through. It imports no pytest, so a release published outside pytest
+(`tests.graph_release.support`) can use them; the `gs_bucket` fixture lives in
+`tests.artifact_publication.fixtures`."""
 
 from __future__ import annotations
 
@@ -9,7 +11,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import pytest
 from google.api_core.exceptions import NotFound, PreconditionFailed
 
 BUCKET = "test-artifact-bucket"
@@ -77,7 +78,7 @@ def import_key_responses(
 
 
 @dataclass
-class _StoredObject:
+class StoredObject:
     data: bytes
     generation: int
     time_created: datetime
@@ -94,7 +95,7 @@ class FakeBlob:
     """
 
     def __init__(
-        self, objects: dict[str, _StoredObject], name: str, generation: int | None = None
+        self, objects: dict[str, StoredObject], name: str, generation: int | None = None
     ) -> None:
         self._objects = objects
         self.name = name
@@ -122,7 +123,7 @@ class FakeBlob:
             if current_generation != if_generation_match:
                 raise PreconditionFailed(f"generation mismatch for {self.name}")
         next_generation = (current.generation if current is not None else 0) + 1
-        self._objects[self.name] = _StoredObject(
+        self._objects[self.name] = StoredObject(
             data=data, generation=next_generation, time_created=datetime.now(UTC)
         )
 
@@ -134,7 +135,7 @@ class FakeBlob:
 
 
 class _FakeBucket:
-    def __init__(self, objects: dict[str, _StoredObject]) -> None:
+    def __init__(self, objects: dict[str, StoredObject]) -> None:
         self._objects = objects
 
     def blob(self, name: str) -> FakeBlob:
@@ -142,7 +143,7 @@ class _FakeBucket:
 
 
 class FakeStorageClient:
-    def __init__(self, buckets: dict[str, dict[str, _StoredObject]]) -> None:
+    def __init__(self, buckets: dict[str, dict[str, StoredObject]]) -> None:
         self._buckets = buckets
 
     def bucket(self, name: str) -> _FakeBucket:
@@ -155,17 +156,3 @@ class FakeStorageClient:
             for name in objects
             if name.startswith(prefix)
         ]
-
-
-@pytest.fixture
-def gs_bucket(monkeypatch) -> dict[str, _StoredObject]:
-    """Monkeypatches `google.cloud.storage.Client` so every `storage
-    .Client()` call inside `artifact_publication.uri`'s `gs://` helpers reads and
-    writes the same in-memory bucket, real `NotFound`/`PreconditionFailed`
-    exceptions included. Returns `BUCKET`'s own object store, keyed by
-    object name, for a test that needs to inspect or mutate it directly
-    (simulating a concurrent write or delete).
-    """
-    buckets: dict[str, dict[str, _StoredObject]] = {}
-    monkeypatch.setattr("google.cloud.storage.Client", lambda: FakeStorageClient(buckets))
-    return buckets.setdefault(BUCKET, {})

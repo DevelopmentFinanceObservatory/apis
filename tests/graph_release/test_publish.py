@@ -48,7 +48,8 @@ from graph_release.publish import (
     prune_releases,
     publish_release,
 )
-from tests.artifact_publication.support import BUCKET, FakeBlob, gs_bucket  # noqa: F401
+from tests.artifact_publication.fixtures import gs_bucket  # noqa: F401
+from tests.artifact_publication.support import BUCKET, FakeBlob
 from tests.artifact_publication.test_jobs import _conditional_delete
 from tests.graph_release.support import build_test_release, sample_tables
 
