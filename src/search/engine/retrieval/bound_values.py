@@ -1885,33 +1885,67 @@ def _identity_family(identity: BaseIdentity) -> DatasetFamily | None:
         return None
 
 
-def listed_family(identity: BaseIdentity) -> frozenset[str] | None:
-    """The StatVars the Datasets mint elects for `identity` from the index's listed rows
-    (`code_index.members.listed_group` over its `identity_query`), before antichain
-    reduction. `None` for a pinned identity and when no listed row is among them, so the
-    graph walk decides them. Raises the election's own refusal (`MemberEnumerationTooLarge`,
-    `MemberRoleDisagreement`, `MemberDegenerateObservationProperties`) when it refuses."""
+def _index_served_rows(family: DatasetFamily) -> tuple[StatVarRow, ...] | None:
+    """The rows the Datasets mint serves from `family`, the family the code index resolves
+    for an identity it decides: its antichain-minimal rows. `None` when the family holds no
+    row or its role election ties (`DatasetFamily.tied`), which the mint refuses."""
+    if family.tied:
+        return None
+    return antichain_minimal_rows(get_index(), family.rows) or None
+
+
+def served_members(identity: BaseIdentity) -> frozenset[str] | None:
+    """The StatVars a Datasets mint of `identity` serves, when the code index resolves them
+    in memory as the mint does (`datasets_api.adapter.resolve_definition_members`).
+
+    An identity the index decides serves the antichain-minimal rows of the family the index
+    resolves (`_index_served_rows`). Any other serves the members the index's listed rows
+    elect (`code_index.members.listed_group`), the antichain-minimal members the graph walk
+    would elect. `None` for a pinned identity, for one the graph walk decides, and wherever the mint refuses:
+    a provenance outside the five-tuple's publishers (`SourceNotInFamily`), a tied or empty
+    family, an `observationAbout` member, an empty or truncated group, or candidates the
+    group leaves undismissed. Raises the listed election's own refusal
+    (`MemberEnumerationTooLarge`, `MemberRoleDisagreement`,
+    `MemberDegenerateObservationProperties`) when it refuses."""
     if not isinstance(identity.shape, IdentityShapeSchema):
         return None
-    group = listed_group(
-        get_index(), identity_query(identity), member_cap=shared_enumerator().member_cap
-    )
-    return None if group is None else frozenset(group.family)
+    index = get_index()
+    query = identity_query(identity)
+    try:
+        family = _resolved_family(index, query)
+    except SourceNotInFamily:
+        return None
+    if family is not None:
+        rows = _index_served_rows(family)
+        if rows is None or any(
+            "observationAbout" in (row.observation_properties or ()) for row in rows
+        ):
+            return None
+        return frozenset(row.dcid for row in rows)
+    group = listed_group(index, query, member_cap=shared_enumerator().member_cap)
+    if (
+        group is None
+        or not group.members
+        or group.undismissed_candidates
+        or (group.truncated and not group.proven_complete)
+    ):
+        return None
+    return frozenset(member.stat_var for member in group.members)
 
 
 def elects_within(identity: BaseIdentity, dcids: Collection[str]) -> bool:
-    """Whether the StatVars the Datasets mint elects for `identity` (`listed_family`) are
-    known and all among `dcids`. False for a family the graph walk decides and for an
-    election that refuses, so a mint of `identity` may serve a StatVar outside `dcids`."""
+    """Whether the StatVars a Datasets mint of `identity` serves (`served_members`) are
+    known and all among `dcids`. False for members the graph walk decides and for a mint
+    that refuses, so a mint of `identity` may serve a StatVar outside `dcids`."""
     try:
-        family = listed_family(identity)
+        served = served_members(identity)
     except (
         MemberEnumerationTooLarge,
         MemberRoleDisagreement,
         MemberDegenerateObservationProperties,
     ):
         return False
-    return family is not None and family <= set(dcids)
+    return served is not None and served <= set(dcids)
 
 
 def refuse_source_outside_family(identity: BaseIdentity, *, pointer: str) -> None:
@@ -2190,11 +2224,10 @@ def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> Stat
     pinned identity (`check_described_arm`)."""
     if index_decides_membership(identity):
         family = _identity_family(identity)
-        if family is None or not family.rows or family.tied:
+        if family is None or (served := _index_served_rows(family)) is None:
             return None
         return StatedMembers(
-            served_count=len(antichain_minimal_rows(get_index(), family.rows)),
-            digest=member_digest(row.dcid for row in family.rows),
+            served_count=len(served), digest=member_digest(row.dcid for row in family.rows)
         )
     if (
         walked is None

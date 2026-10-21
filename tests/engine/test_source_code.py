@@ -22,7 +22,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import ResolveState
-from search.engine.retrieval.bound_values import bind_member_values
+from search.engine.retrieval.bound_values import bind_member_values, served_members
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.source_code import (
@@ -43,6 +43,8 @@ from tests.engine._fake_coverage import FakeCoverageService, build_coverage_inde
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
+from tests.origin_catalogue.support import build_arc_tables
 
 _IDS = "provenance/WorldBankInternationalDebtStatistics"
 _CRS = "provenance/OECDCreditorReportingSystem"
@@ -72,13 +74,41 @@ _GG = {
     "idsDebtorType": "IDSDebtorTypeGG",
 }
 _ALL_DEBTORS = {"financialFlowType": "ServicingPayment"}
+# DT.TDS.DECB.CD's aggregate, the central bank's debt service beside the general government's.
+_CENTRAL_BANK = "Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeCB_Nominal"
+_CB = {"financialFlowType": "ServicingPayment", "idsDebtorType": "IDSDebtorTypeCB"}
+# Two debtor types, each with its own code, so a mint serves a StatVar of each.
+_TWO_DEBTOR_TYPES = {**_ALL_DEBTORS, "idsDebtorType": ["IDSDebtorTypeGG", "IDSDebtorTypeCB"]}
+# DT.DOD.DPPG.CD's StatVars: the public or publicly guaranteed debt stock and its by-creditor
+# twin. DT.DOD.VPPG.CD's variable-rate PPG stock declares the interest rate variability
+# beside them, so a PPG stock identity leaves that slot open, and its family holds the
+# variable-rate stock while the mint serves the aggregate, which dominates it, alone.
+_DPPG = "DT.DOD.DPPG.CD"
+_PPG_STOCK = "Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_Nominal"
+_PPG_STOCK_BY_CREDITOR = (
+    "Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_ByCreditor_Nominal"
+)
+_VARIABLE_PPG_STOCK = (
+    "Amount_FinancialPosition_AmountOutstanding_VariableInterestRate_PublicOrPubliclyGuaranteed_"
+    "Nominal"
+)
+_PPG = {
+    "financialPositionType": "AmountOutstanding",
+    "guaranteeStatus": "PublicOrPubliclyGuaranteed",
+}
 
 
-def _arcs(name: str, roles: list[str], constraints: dict[str, str], code: str) -> dict:
+def _arcs(
+    name: str,
+    roles: list[str],
+    constraints: dict[str, str],
+    code: str,
+    population: str = "FinancialFlow",
+) -> dict:
     return {
         "name": {"nodes": [{"value": name}]},
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-        "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
+        "populationType": {"nodes": [{"dcid": population}]},
         "measuredProperty": {"nodes": [{"dcid": "amount"}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},
         "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
@@ -97,7 +127,7 @@ def _graph(recalled: Sequence[str] = ()) -> FakeGraph:
     """A graph whose embedding resolve recalls `recalled` for "debt service", so only a code
     supplies candidates when it recalls nothing. It holds DT.TDS.DECT.CD's StatVars beside
     DT.TDS.DEGG.CD's, so an identity that leaves the code's shared values open elects the
-    total over every debtor."""
+    total over every debtor, and DT.DOD.DPPG.CD's debt stocks."""
     facet = {"earliestDate": "2020", "latestDate": "2022", "obsCount": 3}
     return FakeGraph(
         nodes={
@@ -117,6 +147,34 @@ def _graph(recalled: Sequence[str] = ()) -> FakeGraph:
                 "label": "Debt service by creditor",
                 "arcs": _arcs(
                     "Debt service by creditor", _PROVIDER_RECIPIENT, _ALL_DEBTORS, "DT.TDS.DECT.CD"
+                ),
+            },
+            _CENTRAL_BANK: {
+                "label": "Central bank debt service",
+                "arcs": _arcs("Central bank debt service", _RECIPIENT, _CB, "DT.TDS.DECB.CD"),
+            },
+            _PPG_STOCK: {
+                "label": "PPG debt stock",
+                "arcs": _arcs("PPG debt stock", _RECIPIENT, _PPG, _DPPG, "FinancialPosition"),
+            },
+            _PPG_STOCK_BY_CREDITOR: {
+                "label": "PPG debt stock by creditor",
+                "arcs": _arcs(
+                    "PPG debt stock by creditor",
+                    _PROVIDER_RECIPIENT,
+                    _PPG,
+                    _DPPG,
+                    "FinancialPosition",
+                ),
+            },
+            _VARIABLE_PPG_STOCK: {
+                "label": "Variable-rate PPG debt stock",
+                "arcs": _arcs(
+                    "Variable-rate PPG debt stock",
+                    _RECIPIENT,
+                    {**_PPG, "interestRateVariability": "VariableInterestRate"},
+                    "DT.DOD.VPPG.CD",
+                    "FinancialPosition",
                 ),
             },
             _NET_FLOW: {
@@ -142,6 +200,10 @@ _COVERAGE_ROWS = [
     (_TOTAL, "f_tot", "", _KEN, _YEARS),
     (_TOTAL_BY_CREDITOR, "f_tot_cr", "country/CHN", _KEN, _YEARS),
     (_NET_FLOW, "f_net", "country/CHN", _KEN, _YEARS),
+    (_CENTRAL_BANK, "f_cb", "", _KEN, _YEARS),
+    (_PPG_STOCK, "f_ppg", "", _KEN, _YEARS),
+    (_PPG_STOCK_BY_CREDITOR, "f_ppg_cr", "country/CHN", _KEN, _YEARS),
+    (_VARIABLE_PPG_STOCK, "f_vppg", "", _KEN, _YEARS),
 ]
 _ROLE_NAMES = {
     _AGGREGATE: RoleNames(donor=None, recipient="financingRecipient"),
@@ -149,6 +211,10 @@ _ROLE_NAMES = {
     _TOTAL: RoleNames(donor=None, recipient="financingRecipient"),
     _TOTAL_BY_CREDITOR: RoleNames(donor="financingProvider", recipient="financingRecipient"),
     _NET_FLOW: RoleNames(donor="financingProvider", recipient="financingRecipient"),
+    _CENTRAL_BANK: RoleNames(donor=None, recipient="financingRecipient"),
+    _PPG_STOCK: RoleNames(donor=None, recipient="financingRecipient"),
+    _PPG_STOCK_BY_CREDITOR: RoleNames(donor="financingProvider", recipient="financingRecipient"),
+    _VARIABLE_PPG_STOCK: RoleNames(donor=None, recipient="financingRecipient"),
 }
 
 
@@ -311,10 +377,15 @@ def test_the_parsed_door_answers_a_code_from_its_statvars(
         assert answer.no_data.source_terms == [source_code]
 
 
-def _mentioned(values: dict[str, str]) -> list[SlotBindingDraft]:
+def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
+    """The bind model's drafts naming `values`: a value for a string, a set for a list."""
     return [
         SlotBindingDraft(
-            axis="how", property_dcid=prop, kind="value", value_dcids=[value], evidence="mentioned"
+            axis="how",
+            property_dcid=prop,
+            kind="set" if isinstance(value, list) else "value",
+            value_dcids=value if isinstance(value, list) else [value],
+            evidence="mentioned",
         )
         for prop, value in values.items()
     ]
@@ -325,7 +396,15 @@ def _mentioned(values: dict[str, str]) -> list[SlotBindingDraft]:
     [
         (_DEGG, (), {}, None, {_DEGG: True}),
         (None, (_AGGREGATE, _BY_CREDITOR), _GG, None, {_DEGG: True}),
-        (None, (_AGGREGATE, _TOTAL), _ALL_DEBTORS, None, {"DT.TDS.DECT.CD": False}),
+        (None, (_AGGREGATE, _TOTAL), _ALL_DEBTORS, None, {"DT.TDS.DECT.CD": True}),
+        (_DPPG, (), {}, None, {_DPPG: True}),
+        (
+            None,
+            (_AGGREGATE, _CENTRAL_BANK),
+            _TWO_DEBTOR_TYPES,
+            None,
+            {_DEGG: False, "DT.TDS.DECB.CD": False},
+        ),
         (
             None,
             (_NET_FLOW,),
@@ -334,16 +413,31 @@ def _mentioned(values: dict[str, str]) -> list[SlotBindingDraft]:
             {"DT.NFL.IMFC.CD": False, "DT.NFL.MIDA.CD": False},
         ),
     ],
-    ids=["code-search", "one-unshared-code", "family-wider-than-the-code", "shared-variable"],
+    ids=[
+        "code-search",
+        "one-unshared-code",
+        "total-over-every-debtor",
+        "family-wider-than-the-served-members",
+        "served-across-two-codes",
+        "shared-variable",
+    ],
 )
 def test_a_served_code_is_exact_where_a_search_for_it_accepts_the_spec(
-    source_code, recalled, bound, open_roles, exact, monkeypatch
+    source_code, recalled, bound, open_roles, exact, monkeypatch, bind_catalogue
 ):
     """A Spec lists the codes of the StatVars it serves, and marks one exact only where a
-    part naming that code answers with the same Spec: the family its identity elects sits
-    within the code's StatVars, and no other code names them. The total over every debtor,
-    found by its words, leaves the debtor type open, so its identity elects each debtor
-    type's series beside DT.TDS.DECT.CD's."""
+    part naming that code answers with the same Spec: the members a Datasets mint of its
+    identity serves sit within the code's StatVars, and no other code names them. The total
+    over every debtor, found by its words, leaves the debtor type open, and its total
+    dominates each debtor type's series, so the mint serves DT.TDS.DECT.CD's StatVar alone.
+    DT.DOD.DPPG.CD's family holds a variable-rate PPG stock outside the code, which its
+    aggregate dominates, so the code part answers. Two debtor types, each its own code,
+    serve a StatVar of each, so neither code is exact."""
+    # The catalogue holds the PPG stock family, as the deployed one does, so a PPG stock
+    # shape declares every slot of its family and its identity leaves the variable rate open.
+    stocks = (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR, _VARIABLE_PPG_STOCK)
+    held = {dcid: _graph().node_arcs(dcid) for dcid in stocks}
+    bind_catalogue(FakeCatalogue(arcs=build_arc_tables(dfo={}, base=held, schema={})))
     part = ParsedPart(
         variable_text="debt service",
         entities=[ParsedEntity(text="Kenya", role_text="to")],
@@ -354,6 +448,7 @@ def test_a_served_code_is_exact_where_a_search_for_it_accepts_the_spec(
     answer = _answer(part, monkeypatch, _BindLLM(bindings=_mentioned(bound)), recalled=recalled)
 
     assert answer.status == "definite", answer
+    assert served_members(answer.spec.definition.identity) == _minted_members(answer)
     resolved = answer.spec.resolved
     assert resolved.facets["provenance"].ref == _IDS
     assert {(c.provenance, c.code): c.exact for c in resolved.stat_vars.source_codes} == {
@@ -377,15 +472,27 @@ def test_a_code_is_not_exact_for_a_spec_reading_another_provenance(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("served", "exact"),
-    [((_AGGREGATE,), True), ((_AGGREGATE, _TOTAL), False)],
-    ids=["the-codes-statvars", "a-statvar-outside-the-code"],
+    ("source_code", "recalled", "bound", "served", "exact"),
+    [
+        (_DEGG, (), {}, (_AGGREGATE,), True),
+        (_DEGG, (), {}, (_AGGREGATE, _TOTAL), False),
+        (None, (_AGGREGATE, _CENTRAL_BANK), _TWO_DEBTOR_TYPES, (_AGGREGATE,), False),
+    ],
+    ids=["the-codes-statvars", "a-statvar-outside-the-code", "a-mint-serving-another-code"],
 )
-def test_a_code_is_not_exact_for_a_spec_serving_a_statvar_outside_it(served, exact, monkeypatch):
+def test_a_code_is_not_exact_for_a_spec_serving_a_statvar_outside_it(
+    source_code, recalled, bound, served, exact, monkeypatch
+):
+    """The last identity binds two debtor types, so a mint of it serves DT.TDS.DECB.CD's
+    aggregate beside DT.TDS.DEGG.CD's, and the code is not exact even for served StatVars
+    that are all its own (`bound_values.elects_within`)."""
     part = ParsedPart(
-        variable_text="debt service", entities=[ParsedEntity(text="Kenya")], source_code=_DEGG
+        variable_text="debt service",
+        entities=[ParsedEntity(text="Kenya", role_text="to")],
+        source_code=source_code,
     )
-    identity = _answer(part, monkeypatch).spec.definition.identity
+    llm = _BindLLM(bindings=_mentioned(bound))
+    identity = _answer(part, monkeypatch, llm, recalled=recalled).spec.definition.identity
 
     stands = stands_for_code(
         _DEGG, provenance=_IDS, identity=identity, served=served, read=_IDS, index=get_index()
