@@ -31,12 +31,7 @@ from series_coverage.schema import (
 if TYPE_CHECKING:
     from series_coverage.index import CoverageIndex
     from series_coverage.loader import CoverageArtifactError, LoadedCoverage, load_coverage
-    from series_coverage.shared import (
-        CoverageArtifactUriMissingError,
-        CoverageService,
-        get_coverage_service,
-        reset_coverage_service,
-    )
+    from series_coverage.shared import get_coverage_service
 
 # Export names resolved on first access.
 _LAZY: dict[str, tuple[str, str]] = {
@@ -44,13 +39,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "CoverageArtifactError": ("series_coverage.loader", "CoverageArtifactError"),
     "LoadedCoverage": ("series_coverage.loader", "LoadedCoverage"),
     "load_coverage": ("series_coverage.loader", "load_coverage"),
-    "CoverageArtifactUriMissingError": (
-        "series_coverage.shared",
-        "CoverageArtifactUriMissingError",
-    ),
-    "CoverageService": ("series_coverage.shared", "CoverageService"),
     "get_coverage_service": ("series_coverage.shared", "get_coverage_service"),
-    "reset_coverage_service": ("series_coverage.shared", "reset_coverage_service"),
 }
 
 
@@ -72,11 +61,9 @@ __all__ = [
     "VERSIONS_PREFIX",
     "BoundRoles",
     "CoverageArtifactError",
-    "CoverageArtifactUriMissingError",
     "CoverageIndex",
     "CoverageManifest",
     "CoveragePointer",
-    "CoverageService",
     "Estimate",
     "FacetCandidate",
     "FacetCoverage",
@@ -92,5 +79,4 @@ __all__ = [
     "get_coverage_service",
     "load_coverage",
     "rank_candidates",
-    "reset_coverage_service",
 ]

@@ -67,7 +67,9 @@ name: Deploy
 # The coverage and origin catalogue jobs are pointed at the new image on
 # every deploy but built only when no compatible artifact is published for
 # the image's format (see their steps below). The graph release job is
-# pointed at the new image and left to its Scheduler. The search catalogue
+# pointed at the new image and left to its Scheduler; the deploy first checks
+# that the new image opens the published release and builds one when it does
+# not (see its step). The search catalogue
 # job is pointed at the new image and, once the apis service has moved, one
 # execution of it is started without waiting for it (see their steps). A
 # failed step stops the job before any step after it runs, so a failed
@@ -295,14 +297,9 @@ jobs:
             --quiet
 
       # The coverage job moves onto the new image on every deploy so its
-      # scheduled runs (every 15 minutes) use the new code. The deploy itself
-      # only needs the guarantee the service has at startup:
-      # `search_surface()`/`datasets_surface()` construction loads the
-      # coverage artifact (`series_coverage.shared.get_coverage_service()`)
-      # and fails readiness when none can be loaded. The scheduled job owns
-      # freshness, and a running service reloads a newer artifact within
-      # COVERAGE_RECHECK_SECONDS, so a deploy does not rebuild an artifact
-      # that is already published.
+      # scheduled runs (every 15 minutes) use the new code. The scheduled job
+      # owns freshness, so a deploy does not rebuild an artifact that is
+      # already published.
       #
       # The two checks below run as executions of this job, and an execution
       # overrides the job's args and env but not its image, so the job moves
@@ -323,9 +320,7 @@ jobs:
 
       # `python -m series_coverage.verify` calls `series_coverage.loader
       # .load_coverage` against COVERAGE_ARTIFACT_URI directly and exits
-      # non-zero unless a compatible artifact actually loads -- the same
-      # call `get_coverage_service()` makes at surface-construction time, so
-      # this can never drift from what startup itself would do. It runs as
+      # non-zero unless a compatible artifact actually loads. It runs as
       # an execution of the coverage Job with its args overridden (`--args`;
       # the job's own container `command` is already `python`), so it
       # inherits that Job's Terraform-provisioned COVERAGE_ARTIFACT_URI
@@ -369,9 +364,7 @@ jobs:
       # needs re-exporting (scripts/export_code_index.py) against the current
       # build, and it stops the deploy before traffic moves. `--record` writes
       # the index's compatibility pointer (compatible/<content_hash>.json)
-      # naming the build it checked, so the new revision has a compatible
-      # build to load even after a later publish that its index does not
-      # match.
+      # naming the build it checked.
       - name: Check the code index against the coverage build
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -444,7 +437,7 @@ jobs:
 
       # The graph release job moves onto the new image on every deploy so its
       # scheduled ticks (Cloud Scheduler, every 2 minutes) build with the new
-      # code. The deploy does not execute it. deploy/graph-release.md covers the job.
+      # code. deploy/graph-release.md covers the job.
       - name: Point the graph release job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -455,10 +448,46 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
+      # `python -m graph_release.verify` opens the release GRAPH_RELEASE_URI's
+      # pointer names for the new image's format through
+      # `graph_release.service.ReleaseService`, building the serving views and
+      # the origin view, and exits non-zero unless they build. It runs as an
+      # execution of the graph release job with its args overridden, so it reads
+      # the job's GRAPH_RELEASE_URI.
+      #
+      # Every serving process fails startup without a release it can open, so
+      # the step runs on every deploy. Verify runs first. A format bump
+      # has no pointer in the new format, and a release the new view code
+      # refuses fails too, so the build job (`python -m graph_release.job`)
+      # runs once on the new image and a second verify checks what it
+      # published. A tick exits 0 on a gate finding, an unavailable dependency
+      # or a scheduled tick holding the lease, so the second verify decides. A
+      # build failure, or a second verify failure, fails the step and stops the
+      # deploy with both services on their current image.
+      - name: Ensure a compatible graph release is published
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          verify() {
+            gcloud run jobs execute "${{ vars.JOB_GRAPH_RELEASE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait \
+              --args=-m,graph_release.verify
+          }
+          if ! verify; then
+            gcloud run jobs execute "${{ vars.JOB_GRAPH_RELEASE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait
+            verify
+          fi
+
       # The search catalogue job (`python -m search.catalogue.job`) builds the
       # example sentences GET /api/search/catalogue serves. It moves onto the
-      # new image here, after the coverage and origin catalogue steps, because
-      # it reads both artifacts in the new image's formats. The apis service
+      # new image here, after the origin catalogue and graph release steps,
+      # because it reads the catalogue and the release in the new image's
+      # formats. The apis service
       # starts without a catalogue, and only that route answers 503 until one
       # loads. The build key includes the image's commit, so every deploy
       # needs a new build. The step after the apis service moves starts it.
@@ -476,7 +505,7 @@ jobs:
       # .datasets_worker) runs the same image as the apis service, and moves
       # onto the new one before the apis step below does, because an
       # in-flight or newly-enqueued operation must run against the schema and
-      # coverage artifact this deploy just brought current. Image-only
+      # graph release this deploy just brought current. Image-only
       # update, same shape as the apis service step below. `infra` owns the
       # service's own scaling/secrets/runtime-service-account config via
       # lifecycle.ignore_changes on the container image.

@@ -25,6 +25,7 @@ from google.auth.exceptions import RefreshError
 from artifact_publication import POINTER_FILE
 from artifact_publication.uri import join_uri, write_uri_bytes
 from dc_graph import GraphClient
+from dc_graph.client import SubjectPage
 from dc_graph.errors import GraphReadError
 from dc_graph.visible_arcs import IMPORT_ADDED_CONSTRAINT_PROPERTIES
 from dc_sdmx.errors import SdmxQueryError, SdmxTransportError
@@ -37,16 +38,20 @@ from graph_release.format import StagedPart, conform_part
 from graph_release.gate import (
     Dependency,
     GateResult,
+    check_blind_spots,
     check_dfo_rebuild,
     check_invariants,
     check_mixer,
     check_sdmx,
+    check_size,
     check_views,
     merge,
     read_back,
     refused,
     run_gate,
+    visible_edges,
 )
+from graph_release.origin import ReleaseOrigin, origin_view
 from graph_release.platform import PlatformParts, PlatformRefusal, stage_platform_parts
 from graph_release.shadow import (
     PINNED_ARC_PROPERTY,
@@ -984,3 +989,174 @@ def test_run_gate_refuses_a_release_whose_view_does_not_build(tmp_path):
     )
 
     assert "code_index_unloadable" in _codes(result)
+
+
+def _origin(parts: PlatformParts) -> ReleaseOrigin:
+    return origin_view(series=parts.series, edges=parts.edges, nodes=parts.nodes)
+
+
+def _malformed_target(parts: PlatformParts) -> PlatformParts:
+    """A DFO variable's target whose `Node` row is neither an entity nor a literal: typed, with
+    a value other than its id."""
+    variable = min(_origin(parts).arcs)
+    targets = {row["object_id"] for row in parts.edges.to_pylist() if row["subject_id"] == variable}
+    rows = parts.nodes.to_pylist()
+    row = next(
+        row for row in rows if row["subject_id"] in targets and row["types"] and not row["authored"]
+    )
+    row["value"] = "not-its-id"
+    return _replace(parts, nodes=pa.Table.from_pylist(rows))
+
+
+def test_an_origin_view_the_service_cannot_build_fails_the_gate(tmp_path):
+    parts, staged = _staged_release(tmp_path)
+
+    assert _codes(check_views(_malformed_target(parts), staged=staged)) == ["origin_view_refused"]
+
+
+# ---------------------------------------------------------------- blind spots
+
+
+class _ReverseReads:
+    """A `FamilyReader` over `edges`' visible arcs and the arcs of the `extra` variables. Its
+    reverse reads stop at the ceiling when `truncated`, and every read raises `error`."""
+
+    def __init__(
+        self,
+        edges: pa.Table,
+        *,
+        extra: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+        truncated: bool = False,
+        error: Exception | None = None,
+    ) -> None:
+        self.arcs: dict[str, dict[str, list[str]]] = {}
+        for row in visible_edges(edges).to_pylist():
+            self.arcs.setdefault(row["subject_id"], {}).setdefault(row["predicate"], []).append(
+                row["object_id"]
+            )
+        for variable, arcs in (extra or {}).items():
+            self.arcs[variable] = {prop: list(values) for prop, values in arcs.items()}
+        self.truncated = truncated
+        self.error = error
+
+    def node_subjects(self, dcid, *, property, filters=None, max_results):
+        if self.error is not None:
+            raise self.error
+        subjects = self._holding(property, dcid)
+        for name, value in (filters or {}).items():
+            subjects &= self._holding(name, value)
+        return SubjectPage(dcids=tuple(sorted(subjects)), truncated=self.truncated)
+
+    def node_arcs_many(self, dcids, *, properties):
+        if self.error is not None:
+            raise self.error
+        return {
+            dcid: {prop: tuple(self.arcs[dcid].get(prop, ())) for prop in properties}
+            if dcid in self.arcs
+            else None
+            for dcid in dcids
+        }
+
+    def _holding(self, prop: str, value: str) -> set[str]:
+        return {subject for subject, arcs in self.arcs.items() if value in arcs.get(prop, ())}
+
+
+def _copy_of(parts: PlatformParts, variable: str, *, as_variable: str) -> PlatformParts:
+    """`parts` with every edge of `variable` copied to `as_variable`, which has no series."""
+    edges = parts.edges.cast(pa.schema([(name, pa.string()) for name in parts.edges.column_names]))
+    rows = edges.filter(pc.equal(edges["subject_id"], variable)).to_pylist()
+    added = pa.Table.from_pylist(
+        [{**row, "subject_id": as_variable} for row in rows], schema=edges.schema
+    )
+    return _replace(parts, edges=pa.concat_tables([edges, added]))
+
+
+def test_blind_spots_outside_the_release_families_are_reported_and_pass(parts):
+    result = check_blind_spots(_origin(parts), parts=parts, graph=_ReverseReads(parts.edges))
+
+    assert result.passed, result.summary()
+    report = result.reports["blind_spots"]
+    assert report["five_tuples"] == 6
+    assert report["shared"] == 0
+    assert result.notices == ()
+    assert report["unobserved"] == {
+        "count": 1,
+        "in_release_families": 0,
+        "outside_examples": [
+            "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption"
+            "_CyclicallyAdjusted_RealValue"
+        ],
+    }
+
+
+@pytest.mark.parametrize("blind_spot", ["unobserved", "unread"])
+def test_a_blind_spot_in_a_release_family_fails_the_gate(parts, blind_spot):
+    origin = _origin(parts)
+    graph = _ReverseReads(parts.edges)
+    if blind_spot == "unobserved":
+        parts = _copy_of(parts, min(origin.arcs), as_variable="Unobserved_Copy")
+    else:
+        graph.truncated = True
+
+    result = check_blind_spots(origin, parts=parts, graph=graph)
+
+    assert _codes(result) == ["release_family_blind_spot"]
+    assert result.notices == ()
+    report = result.reports["blind_spots"]
+    assert (report["unobserved"]["in_release_families"], report["unread"]) == {
+        "unobserved": (1, 0),
+        "unread": (0, 6),
+    }[blind_spot]
+    if blind_spot == "unobserved":
+        assert result.findings[0].examples == ("Unobserved_Copy",)
+
+
+def test_a_mixer_variable_sharing_a_release_five_tuple_is_reported_and_passes(parts):
+    origin = _origin(parts)
+    arcs = _ReverseReads(parts.edges).arcs[min(origin.arcs)]
+    graph = _ReverseReads(parts.edges, extra={"Base_Copy": arcs})
+
+    result = check_blind_spots(origin, parts=parts, graph=graph)
+
+    assert result.passed, result.summary()
+    assert _codes(result.notices) == ["release_family_shared_with_base"]
+    assert result.notices[0].examples == ("Base_Copy",)
+    assert result.reports["blind_spots"]["shared"] == 1
+
+
+def test_a_blind_spot_read_error_is_unavailable(parts):
+    graph = _ReverseReads(parts.edges, error=GraphReadError("connection reset"))
+
+    result = check_blind_spots(_origin(parts), parts=parts, graph=graph)
+
+    assert result.findings == ()
+    assert [u.dependency for u in result.unavailable] == [Dependency.MIXER]
+
+
+# ---------------------------------------------------------------- size
+
+
+def test_a_release_past_the_size_ceiling_fails_the_gate(tmp_path):
+    _, staged = _staged_release(tmp_path)
+    total = sum(part.ref.bytes for part in staged)
+
+    assert check_size(staged, max_part_bytes=total) == ()
+    assert _codes(check_size(staged, max_part_bytes=total - 1)) == ["release_over_size_ceiling"]
+
+    class Failing:
+        def node_arcs_many(self, dcids, *, properties):
+            raise GraphReadError("connection reset")
+
+    def drop(*_):
+        raise SdmxTransportError("connection reset")
+
+    result = run_gate(
+        staged,
+        declarations=SLICE_DECLARATIONS,
+        previous=None,
+        graph=Failing(),
+        sdmx=_Sdmx(drop),
+        seed=_SEED,
+        max_part_bytes=total - 1,
+    )
+    assert _codes(result) == ["release_over_size_ceiling"]

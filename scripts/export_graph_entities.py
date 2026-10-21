@@ -24,8 +24,8 @@ from pathlib import Path
 
 import httpx
 
+from code_index.loader import default_index_path, load_index
 from code_index.query import CodeIndex
-from code_index.shared import get_index
 from dc_graph import GraphClient
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -153,7 +153,7 @@ def export_entities(
     truncated.
     """
     origin_total_labels, grouped_totals = _origin_total_labels(
-        get_index() if index is None else index
+        load_index(default_index_path()) if index is None else index
     )
     dcids_by_type: dict[str, tuple[str, ...]] = {}
     for graph_type in _KIND_BY_TYPE:

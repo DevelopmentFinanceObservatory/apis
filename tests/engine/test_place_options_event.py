@@ -7,6 +7,7 @@ child, and Africa as an Earth child. Earth supports children but not peers.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import threading
 import time
@@ -357,7 +358,10 @@ class TestPlaceOptionsPoolMechanics:
                 return super().node_subjects(*args, **kwargs)
 
         owner_reader = _BlockingReader(arcs=_ARCS, subjects=_SUBJECTS, facets=_PLACE_FACETS)
-        owner_thread = threading.Thread(target=lambda: memo.get_or_derive(identity, owner_reader))
+        owner_thread = threading.Thread(
+            target=contextvars.copy_context().run,
+            args=(lambda: memo.get_or_derive(identity, owner_reader),),
+        )
         owner_thread.start()
         assert owner_started.wait(timeout=5), "owner never reached the fake reader"
 

@@ -105,16 +105,10 @@ class TestEndpoint:
         assert again.status_code == 304
 
 
-def _with_deps(
-    generation: FakeGeneration, coverage_build: str | None, *, coverage_load_failed: bool = False
-):
+def _with_deps(generation: FakeGeneration, coverage_build: str):
     """A surface whose published deps carry this generation and coverage build."""
     app = make_app()
-    coverage = (
-        None
-        if coverage_build is None
-        else SimpleNamespace(manifest=SimpleNamespace(build_id=coverage_build))
-    )
+    coverage = SimpleNamespace(manifest=SimpleNamespace(build_id=coverage_build))
     GRAPH_DEPS_SLOT.set(
         app,
         GraphDeps(
@@ -124,7 +118,6 @@ def _with_deps(
             generation=generation,
             provenance_docs=None,
             coverage=coverage,
-            coverage_load_failed=coverage_load_failed,
         ),
     )
     return TestClient(app)
@@ -154,24 +147,15 @@ class TestDataBuilds:
         assert body["data_builds"]["origin_catalogue"] == "catalogue-1"
 
     def test_a_transient_gap_in_a_build_is_not_cached(self):
-        client = _with_deps(FakeGeneration(token="rev-1"), None, coverage_load_failed=True)
         unknown_generation = _with_deps(FakeGeneration(), "coverage-1")
 
         responses = [
             make_client().get("/api/graph/capabilities"),
-            client.get("/api/graph/capabilities"),
             unknown_generation.get("/api/graph/capabilities"),
         ]
 
-        assert [r.headers["cache-control"] for r in responses] == ["no-store"] * 3
+        assert [r.headers["cache-control"] for r in responses] == ["no-store"] * 2
         assert all("etag" not in r.headers for r in responses)
-
-    def test_unconfigured_coverage_is_a_permanent_null_and_is_cached(self):
-        resp = _with_deps(FakeGeneration(token="rev-1"), None).get("/api/graph/capabilities")
-
-        assert resp.json()["data_builds"]["coverage_index"] is None
-        assert resp.headers["cache-control"] == "public, max-age=300"
-        assert resp.headers["etag"]
 
     def test_a_build_change_moves_the_etag_and_leaves_the_token(self):
         generation = FakeGeneration(token="rev-1")

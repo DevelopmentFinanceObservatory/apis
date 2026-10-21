@@ -6,7 +6,6 @@ import pytest
 
 from dfo_platform.problem import ProblemDetails
 from skills_api.routing import SKILL_ID_MAX_LENGTH
-from skills_index.config import SKILLS_INDEX_REFRESH_SECONDS
 from skills_index.manifest import skill_file
 from skills_index.types import SkillIssue
 
@@ -137,28 +136,12 @@ def test_any_id_outside_the_catalogue_refuses_skill_not_found(skill_id: str):
 
 
 def test_unbuilt_index_refuses_service_unavailable():
-    """`seconds_until_next_rebuild=None` on the double raises if the door
-    ever calls it, so this proves the door checks `index` and refuses 503
-    first.
-    """
-    with client_for(None, seconds_until_next_rebuild=None) as client:
+    with client_for(None) as client:
         resp = client.get("/api/skills/oda-concepts")
 
     assert resp.status_code == 503
     problem = ProblemDetails.model_validate(resp.json())
     assert problem.code == "service_unavailable"
-
-
-def test_a_response_served_later_in_a_generation_carries_a_smaller_max_age():
-    index = index_of(skill_entry())
-
-    with client_for(index, seconds_until_next_rebuild=SKILLS_INDEX_REFRESH_SECONDS) as client:
-        early = client.get("/api/skills/oda-concepts")
-    with client_for(index, seconds_until_next_rebuild=1.0) as client:
-        late = client.get("/api/skills/oda-concepts")
-
-    assert early.headers["cache-control"] == f"public, max-age={int(SKILLS_INDEX_REFRESH_SECONDS)}"
-    assert late.headers["cache-control"] == "public, max-age=1"
 
 
 def test_skill_id_at_the_ceiling_reaches_the_lookup():

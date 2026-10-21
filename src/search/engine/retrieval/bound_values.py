@@ -88,6 +88,7 @@ from code_index.types import (
 )
 from dc_graph import GraphDeadlineExceededError, GraphReadError, parse_arcs
 from dfo_platform.named import cut, named_capped
+from graph_release.context import served_origin_key
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
 from origin_catalogue import current_catalogue
 from origin_catalogue.families import FamilyKey
@@ -2460,28 +2461,28 @@ class _HeldMembers:
     Guarded by `_held_lock`."""
 
 
-# One request's held-family members (`_held_members`), keyed by catalogue build and
-# family, bound by `held_family_memo` for the request's life. A plain answer reads its
-# population three times, and option coverage and repair read each held shape of the menu
-# again. On the recorded dev build the largest held families are three BLS families of
-# 8,248 members, whose arcs take 196 to 236 ms and 45 to 46 MB to read (5.5 KB a member),
-# and the UNHCR family of 8,182. A process memo holding four such families would pin about
-# 185 MB in a container whose loaded build leaves about 1.7 GiB for everything else, and a
-# smaller one evicts a family a menu reads beside another. A request holds each family it
-# reads until it ends, and requests share one decode through `_held_decodes`, so six
-# concurrent BLS questions hold one copy of each family where they would otherwise hold six,
-# about 830 MB. A family no request holds is freed.
-_held_family_memo: ContextVar[dict[tuple[str, FamilyKey], _HeldMembers] | None] = ContextVar(
+type _HeldKey = tuple[str, str, FamilyKey]
+"""A held family's key: the catalogue build, the release whose DFO members the catalogue
+joins (`served_origin_key`), and the family."""
+
+# One request's held-family members (`_held_members`), keyed by `_HeldKey`, bound by
+# `held_family_memo` for the request's life. A plain answer reads its population three times,
+# and option coverage and repair read each held shape of the menu again. On the recorded dev
+# build the largest held families are three BLS families of 8,248 members, whose arcs take 196
+# to 236 ms and 45 to 46 MB to read (5.5 KB a member), and the UNHCR family of 8,182. A process
+# memo holding four such families would pin about 185 MB in a container whose loaded build
+# leaves about 1.7 GiB for everything else, and a smaller one evicts a family a menu reads
+# beside another. A request holds each family it reads until it ends, and requests share one
+# decode through `_held_decodes`, so six concurrent BLS questions hold one copy of each family
+# where they would otherwise hold six, about 830 MB. A family no request holds is freed.
+_held_family_memo: ContextVar[dict[_HeldKey, _HeldMembers] | None] = ContextVar(
     "search_held_family_memo", default=None
 )
 
 _held_lock = threading.Lock()
-_held_decodes: weakref.WeakValueDictionary[tuple[str, FamilyKey], _HeldMembers] = (
-    weakref.WeakValueDictionary()
-)
-"""Each held family some request still holds, by catalogue build and family. Guarded by
-`_held_lock`."""
-_held_flights: dict[tuple[str, FamilyKey], Future[_HeldMembers]] = {}
+_held_decodes: weakref.WeakValueDictionary[_HeldKey, _HeldMembers] = weakref.WeakValueDictionary()
+"""Each held family some request still holds, by `_HeldKey`. Guarded by `_held_lock`."""
+_held_flights: dict[_HeldKey, Future[_HeldMembers]] = {}
 """Each held family being decoded, so a second reader waits for the first decode. Guarded by
 `_held_lock`."""
 
@@ -2593,11 +2594,12 @@ async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
     if memo is None:
         return
     build_id = current_catalogue().build_id
+    origin = served_origin_key()
     keys = list(
         dict.fromkeys(
             shape.held_family
             for shape in shapes
-            if shape.held_family is not None and (build_id, shape.held_family) not in memo
+            if shape.held_family is not None and (build_id, origin, shape.held_family) not in memo
         )
     )
     if keys:
@@ -2612,7 +2614,7 @@ def _held_members(key: FamilyKey) -> _HeldMembers:
     member."""
     catalogue = current_catalogue()
     memo = _held_family_memo.get()
-    memo_key = (catalogue.build_id, key)
+    memo_key = (catalogue.build_id, served_origin_key(), key)
     if memo is not None and (cached := memo.get(memo_key)) is not None:
         return cached
     held = _shared_held_members(memo_key, catalogue)
@@ -2621,7 +2623,7 @@ def _held_members(key: FamilyKey) -> _HeldMembers:
     return held
 
 
-def _shared_held_members(memo_key: tuple[str, FamilyKey], catalogue: Catalogue) -> _HeldMembers:
+def _shared_held_members(memo_key: _HeldKey, catalogue: Catalogue) -> _HeldMembers:
     """The decode of `memo_key`'s family some request holds, else one decode: the first
     reader decodes and every reader arriving meanwhile waits for it."""
     with _held_lock:
@@ -2636,7 +2638,7 @@ def _shared_held_members(memo_key: tuple[str, FamilyKey], catalogue: Catalogue) 
     if not decoding:
         return flight.result()
     try:
-        held = _decode_held_members(memo_key[1], catalogue)
+        held = _decode_held_members(memo_key[2], catalogue)
     except BaseException as exc:
         with _held_lock:
             del _held_flights[memo_key]
@@ -3053,8 +3055,8 @@ class _HeldRefusal(NamedTuple):
 def _held_family_group(key: FamilyKey, query: FamilyQuery) -> MemberGroup | _HeldRefusal:
     """The group the mint's walk resolves for `query` over family `key`, whose five-tuple
     the catalogue's tables hold whole (`_tables_hold_five_tuple`), elected from the tables'
-    arcs with no graph read (`_elect_held_family`). Elected once per catalogue build, family and walk
-    key, and shared with every request holding the family's decode
+    arcs with no graph read (`_elect_held_family`). Elected once per held family (`_HeldKey`)
+    and walk key, and shared with every request holding the family's decode
     (`_HeldMembers.groups`): the first reader elects and every reader arriving meanwhile
     waits for it. On the recorded eval build the largest family, UNHCR's 8,182 members,
     elects in about 0.23 s, so the phases call it off the event loop.

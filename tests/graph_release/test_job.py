@@ -20,6 +20,7 @@ from pathlib import Path
 
 import httpx
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 from google.api_core.exceptions import ServiceUnavailable
 from google.auth.exceptions import RefreshError
@@ -32,11 +33,13 @@ from artifact_publication.uri import (
     read_uri_bytes_and_generation,
     write_uri_bytes,
 )
+from dc_graph.client import SubjectPage
 from dc_graph.errors import GraphReadError
 from dc_sdmx.results import SdmxDataResult, SdmxObservation
 from graph_release import job
 from graph_release.format import Manifest, manifest_uri, pointer_uri, read_pointer
 from graph_release.gate import (
+    MAX_PART_BYTES,
     Dependency,
     GateCode,
     GateFinding,
@@ -46,6 +49,7 @@ from graph_release.gate import (
     visible_edges,
 )
 from graph_release.hold import main as hold_main
+from graph_release.origin import origin_view
 from graph_release.publish import clear_hold, hold_release
 from graph_release.serving_revision import CloudRunAdmin, ServingRevisionError
 from graph_release.shadow import ComparatorBuild
@@ -165,7 +169,8 @@ _PARTIES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
 
 class FakeMixer:
     """Answers the slice's parties and each variable's arcs as the release holds them, and no
-    node for the dcids in `missing`. Its `->*` reads serve the release's own arcs."""
+    node for the dcids in `missing`. Its `->*` and reverse reads serve the release's own
+    arcs, and its arc and reverse reads the arcs of the `extra` variables too."""
 
     def __init__(self) -> None:
         parts = platform_parts()
@@ -173,6 +178,7 @@ class FakeMixer:
         self._nodes = parts.nodes
         self.error: Exception | None = None
         self.missing: set[str] = set()
+        self.extra: dict[str, dict[str, tuple[str, ...]]] = {}
 
     def node_arcs_many(self, dcids: Sequence[str], *, properties: Sequence[str]):
         if self.error is not None:
@@ -180,15 +186,36 @@ class FakeMixer:
         arcs = release_arcs(self._edges, self._nodes, list(dcids))
         answers: dict[str, dict[str, tuple[str, ...]] | None] = {}
         for dcid in dcids:
-            found = _PARTIES.get(dcid) or {
-                prop: tuple(sorted(names)) for prop, names in arcs.get(dcid, {}).items()
-            }
+            found = (
+                _PARTIES.get(dcid)
+                or self.extra.get(dcid)
+                or {prop: tuple(sorted(names)) for prop, names in arcs.get(dcid, {}).items()}
+            )
             answers[dcid] = (
                 {prop: tuple(found.get(prop, ())) for prop in properties}
                 if found and dcid not in self.missing
                 else None
             )
         return answers
+
+    def node_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+    ) -> SubjectPage:
+        if self.error is not None:
+            raise self.error
+        subjects = self._holding(property, dcid)
+        for name, value in (filters or {}).items():
+            subjects &= self._holding(name, value)
+        return SubjectPage(dcids=tuple(sorted(subjects)), truncated=False)
+
+    def _holding(self, predicate: str, target: str) -> set[str]:
+        extra = {dcid for dcid, arcs in self.extra.items() if target in arcs.get(predicate, ())}
+        return set(_subjects(self._edges, predicate, target)) | extra
 
     def node_arcs_batch(self, dcids: list[str]) -> dict[str, dict | None]:
         if self.error is not None:
@@ -203,6 +230,13 @@ class FakeMixer:
             else None
             for dcid in dcids
         }
+
+
+def _subjects(edges: pa.Table, predicate: str, target: str) -> list[str]:
+    rows = edges.filter(
+        pc.and_(pc.equal(edges["predicate"], predicate), pc.equal(edges["object_id"], target))
+    )
+    return rows["subject_id"].to_pylist()
 
 
 class FakeSdmx:
@@ -251,6 +285,7 @@ class Builder:
     coverage_build_id: str = "coverage-1"
     comparator_error: GateUnavailable | None = None
     catalogue_job: str = ""
+    max_part_bytes: int = MAX_PART_BYTES
 
     def comparators(self) -> tuple[ComparatorBuild, ...] | GateUnavailable:
         """The comparators' published builds: those in `behind` hold an earlier import."""
@@ -279,6 +314,7 @@ class Builder:
             coverage_uri="file:///coverage" if self.shadow else "",
             origin_uri="file:///origin" if self.shadow else "",
             search_catalogue_job=self.catalogue_job,
+            max_part_bytes=self.max_part_bytes,
         )
 
     def run(self) -> None:
@@ -659,6 +695,34 @@ def test_a_finding_records_the_failed_inputs_and_the_next_tick_skips_them(builde
 
     assert _outcome(events) == "inputs_failed"
     assert len(builder.database.snapshots) == 3
+
+
+def test_a_variable_sharing_a_release_five_tuple_publishes_with_a_notice(builder):
+    parts = platform_parts()
+    variable = min(origin_view(series=parts.series, edges=parts.edges, nodes=parts.nodes).arcs)
+    arcs = release_arcs(visible_edges(parts.edges), parts.nodes, [variable])[variable]
+    builder.mixer.extra = {
+        "Base_Copy": {prop: tuple(sorted(names)) for prop, names in arcs.items()}
+    }
+
+    events = builder.tick()
+
+    assert _outcome(events) == "published"
+    (published,) = _named(events, "graph_release_published")
+    assert [n["code"] for n in published["notices"]] == ["release_family_shared_with_base"]
+    assert published["notices"][0]["examples"] == ["Base_Copy"]
+    assert published["blind_spots"]["shared"] == 1
+
+
+def test_a_release_past_the_size_ceiling_fails_the_gate(builder):
+    builder.max_part_bytes = 1
+
+    events = builder.tick()
+
+    assert _outcome(events) == "gate_failed"
+    (failed,) = _named(events, "graph_release_gate_failed")
+    assert [f["code"] for f in failed["findings"]] == ["release_over_size_ceiling"]
+    assert read_pointer(builder.root) is None
 
 
 def _inconsistent_facets(builder: Builder, monkeypatch: pytest.MonkeyPatch) -> None:

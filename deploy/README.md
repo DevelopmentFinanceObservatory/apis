@@ -39,7 +39,8 @@ Related guides:
 
 - [deploy/postgres.md](postgres.md) covers database connectivity, IAM authentication, migrator roles, and schema migrations.
 - [deploy/graph.md](graph.md) covers Graph API surface mounting, DCP authentication, and ResolveKit SQLite cache composition.
-- [deploy/coverage.md](coverage.md) covers the coverage artifact: its layout, the job that builds it, and the deploy-order dependency the service has on it.
+- [deploy/coverage.md](coverage.md) covers the coverage artifact: its layout, the job that builds it, and its deploy steps.
+- [deploy/graph-release.md](graph-release.md) covers the graph release every serving process serves from: its layout, the builder job, its deploy check, and the rollback floor.
 - [deploy/origin-catalogue.md](origin-catalogue.md) covers the origin catalogue: its layout, the job that builds it, its refusals, and the deploy-order dependency the services have on it.
 - [deploy/search-catalogue.md](search-catalogue.md) covers the search catalogue: its layout, the job that builds and checks it, its events, and how `GET /api/search/catalogue` reads it.
 
@@ -74,7 +75,7 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
 1. Executes `JOB_COVERAGE` with `-m series_coverage.verify_index --record`, checking the image's code index against the published coverage build and recording its compatibility pointer. A difference stops the run before either service moves onto the new image.
 1. Points `JOB_ORIGIN_CATALOGUE` at the new image, so scheduled runs use the new code (see [deploy/origin-catalogue.md](origin-catalogue.md)).
 1. Executes `JOB_ORIGIN_CATALOGUE` with its args overridden to `-m origin_catalogue.verify`, confirming a compatible catalogue is published in the new image's format root. Only when verify fails, executes the build job (`python -m origin_catalogue.job`) and verifies again; a second failure stops the run before either service moves onto the new image (see [deploy/origin-catalogue.md](origin-catalogue.md)'s "Deploy order" section).
-1. Points `JOB_GRAPH_RELEASE` at the new image without executing it, so its scheduled ticks build with the new code (see [deploy/graph-release.md](graph-release.md)).
+1. Points `JOB_GRAPH_RELEASE` at the new image, so its scheduled ticks build with the new code, and executes it with its args overridden to `-m graph_release.verify`, confirming the new image opens the release the pointer names and builds its views. Only when verify fails, executes one build and verifies again; a second failure stops the run before either service moves onto the new image (see [deploy/graph-release.md](graph-release.md)).
 1. Points `JOB_SEARCH_CATALOGUE` at the new image. The apis service starts without a search catalogue and answers 503 on `GET /api/search/catalogue` until one loads.
 1. Updates the datasets worker service revision (`SERVICE_WORKER`, the async operations worker) using `gcloud run services update`.
 1. Updates the apis service revision (`SERVICE_APIS`) using `gcloud run services update`.
@@ -89,7 +90,7 @@ Manual deployments trigger via `workflow_dispatch` in GitHub Actions and always 
 dispatched commit, whether or not it's already live, since dispatch exists to force a redeploy
 (to re-run the migration jobs, for instance, or to roll back). Roll back by dispatching the older
 commit rather than by moving traffic in the Cloud Run console: dispatch also points the
-coverage, origin catalogue and search catalogue jobs at that commit's image, so the scheduled runs keep its format roots current (see [deploy/coverage.md](coverage.md), [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/search-catalogue.md](search-catalogue.md)).
+coverage, origin catalogue and search catalogue jobs at that commit's image, so the scheduled runs keep its format roots current (see [deploy/coverage.md](coverage.md), [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/search-catalogue.md](search-catalogue.md)). An image older than `4be674b7d` cannot open a graph release; [deploy/graph-release.md](graph-release.md) gives the rollback floor and the environment older images read.
 
 ## Workload Identity Federation & Authentication
 

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from artifact_publication.uri import join_uri, read_uri_bytes_and_generation
 from origin_catalogue import BASE, DFO, UN_SYSTEM, CatalogueTables, ScanLevel
@@ -14,14 +15,17 @@ from origin_catalogue.artifact import EncodedBuild, encode_build, publish_build
 from origin_catalogue.catalogue import (
     BaseVariable,
     CardFacts,
+    CatalogueSnapshot,
     DatasetRef,
     Licence,
+    ProvenanceRow,
     SourceDocumentation,
 )
+from origin_catalogue.families import FamilyKey, FamilySummary, ReleaseFamilies
 from origin_catalogue.graph import _wire
 from origin_catalogue.schema import FORMAT_ROOT, UnAgencyCounts
 from origin_catalogue.un_mirror import UnArc, UnMirror, UnVariable
-from tests.origin_catalogue.fake_catalogue import provenance_row
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 
 def named_labels(*tables: Mapping[str, tuple[UnArc, ...]]) -> dict[str, str | None]:
@@ -58,6 +62,42 @@ def build_arc_tables(
         for node, arcs in answers.items():
             builder.add(name, node, arcs)
     return build_labelled(builder, labels=labels)
+
+
+def listing_base_variables(
+    base: Mapping[str, WireArcs], *, provenances: Mapping[str, ProvenanceRow] | None = None
+) -> FakeCatalogue:
+    """A `FakeCatalogue` listing `provenances` whose base arc table lists each variable of
+    `base` with its `->*` arcs, as a catalogue build lists every base variable. A family the
+    bound release holds as DFO that also holds one of them is then walked on the graph whole
+    (`graph_release.origin.ReleaseOrigin.holds_family`)."""
+    return FakeCatalogue(
+        provenances=provenances or {}, arcs=build_arc_tables(dfo={}, base=base, schema={})
+    )
+
+
+class JobTables:
+    """`snapshot` answering each node's arcs and each family from its own tables, its DFO
+    table included, as the catalogue job wrote them, in place of the bound release's DFO
+    half, and everything else as it does. For a test whose subject is the job's DFO half."""
+
+    def __init__(self, snapshot: CatalogueSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._snapshot, name)
+
+    def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
+        return self._snapshot.arcs.arcs(dcid)
+
+    def held_family(self, key: FamilyKey) -> FamilySummary | None:
+        # The build's own joined DFO and base summaries stand in for the release's part.
+        families = self._snapshot.families
+        return families.family(
+            key,
+            un_system_enabled=self._snapshot.un_system_enabled,
+            release=ReleaseFamilies(dfo=families.arcs, base={}),
+        )
 
 
 def held_wire_arcs(tables: ArcTables, dcid: str) -> dict | None:

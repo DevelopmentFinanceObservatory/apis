@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import threading
 from dataclasses import replace
@@ -880,9 +881,12 @@ class TestNodesBatch:
         with client:
             batch_response: list = []
             batch_thread = threading.Thread(
-                target=lambda: batch_response.append(
-                    client.post("/api/graph/nodes", json={"dcids": list(_BATCH_NODES)})
-                )
+                target=contextvars.copy_context().run,
+                args=(
+                    lambda: batch_response.append(
+                        client.post("/api/graph/nodes", json={"dcids": list(_BATCH_NODES)})
+                    ),
+                ),
             )
             batch_thread.start()
             assert graph.entered.wait(timeout=5.0), "the batch never reached the blocking read"
@@ -992,17 +996,19 @@ class TestNodesBatchCache:
 
         assert generation.registered_names() == ()
 
-    def test_an_entry_with_a_transient_gap_is_not_stored(self):
-        """A coverage index that failed to load leaves the variable's availability with a
-        transient gap, so the next batch reads the variable again and serves the other node from
-        the cache."""
+    def test_an_entry_with_a_transient_gap_is_not_stored(self, monkeypatch):
+        """An availability read that leaves the variable unread gives it a transient gap, so
+        the next batch reads the variable again and serves the other node from the cache."""
+
+        async def unread(*_args, **_kwargs):
+            return node_door._Availability()
+
+        monkeypatch.setattr(node_door, "_availability", unread)
         graph = _RecordingGraphNodeReader(nodes=_BATCH_NODES)
         client = make_client(graph=graph)
         dcids = ["dc/base/BilateralFlow_Grants", "dc/base/Foo"]
 
         with client:
-            deps = client.app.state.graph_deps
-            client.app.state.graph_deps = replace(deps, coverage_load_failed=True)
             first = client.post("/api/graph/nodes", json={"dcids": dcids})
             graph.reads.clear()
             client.post("/api/graph/nodes", json={"dcids": dcids})

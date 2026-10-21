@@ -87,7 +87,8 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
     # The client shares one portal loop and leaves the door lifespan inactive.
     with client:
         first_thread = threading.Thread(
-            target=lambda: first_response.append(client.get("/api/datasets/spec_a/cv1"))
+            target=contextvars.copy_context().run,
+            args=(lambda: first_response.append(client.get("/api/datasets/spec_a/cv1")),),
         )
         first_thread.start()
         # The first request holds the sole executor slot and backpressure permit.

@@ -268,9 +268,14 @@ class SkillsIndex:
     `may_omit_published_skills` is true when `index_may_omit_published_skills`
     holds for the build. Search uses the flag for its
     `skills_index_incomplete` warning. Callers provide the flag explicitly to
-    state whether completeness is known."""
+    state whether completeness is known.
+
+    `failed_reads` counts the graph reads of the build that raised. Each left a skill out,
+    excluded or with a rejected resource, so a build reading the same graph again can
+    serve more."""
 
     skills: dict[str, SkillEntry]
     node_to_skills: dict[str, tuple[SkillMatch, ...]]
     issues: tuple[SkillIssue, ...]
     may_omit_published_skills: bool
+    failed_reads: int = 0

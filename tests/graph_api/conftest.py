@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -235,10 +236,10 @@ def send_past_a_full_pool(
     def send_into(slot: int) -> None:
         responses[slot] = send()
 
-    first = threading.Thread(target=send_into, args=(0,))
+    first = threading.Thread(target=contextvars.copy_context().run, args=(send_into, 0))
     first.start()
     assert entered.wait(timeout=5.0), "the first request never reached the blocking read"
-    second = threading.Thread(target=send_into, args=(1,))
+    second = threading.Thread(target=contextvars.copy_context().run, args=(send_into, 1))
     second.start()
     wait_until(lambda: queued_dcp_reads(client) == 1 or responses[1] is not None)
     release.set()

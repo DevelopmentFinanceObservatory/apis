@@ -38,18 +38,3 @@ def test_score_clients_yields_the_reads_and_closes_them_when_the_block_raises(mo
 
     assert graph.closed
     assert sdmx.closed
-
-
-def test_score_clients_closes_the_clients_when_the_coverage_service_fails(monkeypatch, opened):
-    def _missing_uri():
-        raise RuntimeError("COVERAGE_ARTIFACT_URI is unset")
-
-    monkeypatch.setattr(live_clients, "get_coverage_service", _missing_uri)
-
-    with (
-        pytest.raises(RuntimeError, match="COVERAGE_ARTIFACT_URI"),
-        live_clients.score_clients(),
-    ):
-        pass
-
-    assert all(client.closed for client in opened)
