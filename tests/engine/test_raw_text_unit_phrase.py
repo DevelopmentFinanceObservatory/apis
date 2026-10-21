@@ -15,7 +15,12 @@ import pytest
 from entity_resolution import Admission
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import raw_text
-from search.engine.extract import Extraction, ExtractionResult
+from search.engine.extract import (
+    _EXTRACTION_SYSTEM_PROMPT,
+    Extraction,
+    ExtractionResult,
+    extract,
+)
 from search.engine.unit.bind import BoundUnitRequest, UnitDefaultPolicy, bind_unit_text
 from search.models import RawTextInput
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -25,6 +30,7 @@ from tests.engine.test_raw_text_handle_close_order import (
     _stub_region,
 )
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
+from tests.fixtures.keys import fixture_key
 
 _POLICY = UnitDefaultPolicy(currency="USD", base_year=lambda: 2023)
 
@@ -56,6 +62,27 @@ def test_a_typed_currency_phrase_binds_as_the_unit_text(phrase, currency, prices
     outcome = bind_unit_text(phrase, policy=_POLICY)
     assert isinstance(outcome, BoundUnitRequest)
     assert (outcome.currency, outcome.prices, outcome.base_year) == (currency, prices, base_year)
+
+
+def test_a_unit_phrase_inside_the_variable_binds_as_the_unit_text():
+    query = "GDP of Kenya in euros"
+    llm = FakeLLM(
+        responses={
+            fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query): {
+                "kind": "resolution",
+                "variables": ["GDP in euros"],
+                "entities": [{"text": "Kenya", "span": "Kenya"}],
+                "dates": [],
+            }
+        }
+    )
+    result, _ = asyncio.run(extract(query, llm=llm))
+
+    prep = raw_text._prepare_extraction(result.extraction, result, query=query)
+
+    assert prep.unique == ["GDP"]
+    assert prep.unit_text == "in euros"
+    assert prep.dropped_qualifier_phrases == []
 
 
 def test_a_phrase_that_cannot_bind_stays_dropped_with_its_departure():

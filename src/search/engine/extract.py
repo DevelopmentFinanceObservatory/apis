@@ -39,6 +39,7 @@ from search.engine.function_words import (
     FUNCTION_WORDS,
     JOINING_PREPOSITIONS,
     JOINING_WORDS,
+    RATIO_WORDS,
     RESTRICTING_PREPOSITIONS,
 )
 from search.engine.qualifier_match import (
@@ -54,6 +55,7 @@ from search.engine.qualifier_match import (
 )
 from search.engine.role_text import role_axis_for_text
 from search.engine.time_bind import parse_time_text
+from search.engine.unit.bind import names_unit_request
 from search.engine.unit.lexicon import MIN_YEAR
 from search.models import (
     MAX_FORECAST_TARGET_YEAR,
@@ -1177,6 +1179,84 @@ def _restore_query_word_order(query: str, extraction: Extraction) -> Extraction:
     return extraction.model_copy(update={"variables": restored})
 
 
+# A unit phrase opens with one of these: "in euros", "at constant prices". A currency or
+# price-basis word elsewhere names the measure ("current account balance", "real interest
+# rate", "exchange rate of the euro"), and the measure-qualifier reading reads a bare price
+# basis ("real GDP") from the variable and the query.
+_UNIT_PHRASE_OPENERS = frozenset({"in", "at"})
+
+_VARIABLE_WORD_RE = re.compile(r"\S+")
+
+
+def _peeled_variable(variable: str) -> tuple[str, list[str]]:
+    """`variable` without the unit phrases it holds, and those phrases in order.
+
+    A unit phrase is the longest run of words from an opener (`_UNIT_PHRASE_OPENERS`) to the
+    variable's end or a function word that the unit binder reads as one request
+    (`unit.bind.names_unit_request`): "GDP in euros per capita" is "GDP per capita" and "in
+    euros", and "aid in real terms" is "aid" and "in real terms". A run cut short of a word
+    the binder cannot read ("in current US$") is no unit phrase. The phrase's price basis
+    still reaches the measure collapse, which reads the query text as well as the variable.
+
+    A variable left with only function words keeps its phrases, so every variable keeps a
+    measure. A variable naming a ratio (`RATIO_WORDS`) holds no unit phrase: a share is in
+    no currency, so the currency in "share of public debt denominated in US dollars" names
+    the debt it counts.
+    """
+    if any(word in RATIO_WORDS for word in _words(variable)):
+        return variable, []
+    words = list(_VARIABLE_WORD_RE.finditer(variable))
+
+    def text(start: int, end: int) -> str:
+        return variable[words[start].start() : words[end - 1].end()]
+
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i < len(words):
+        if words[i].group().casefold() in _UNIT_PHRASE_OPENERS:
+            end = next(
+                (
+                    j
+                    for j in range(len(words), i + 1, -1)
+                    if (j == len(words) or words[j].group().casefold() in FUNCTION_WORDS)
+                    and names_unit_request(text(i, j))
+                ),
+                None,
+            )
+            if end is not None:
+                spans.append((i, end))
+                i = end
+                continue
+        i += 1
+    removed = {k for start, end in spans for k in range(start, end)}
+    kept = [word.group() for k, word in enumerate(words) if k not in removed]
+    if all(word.casefold() in FUNCTION_WORDS for word in kept):
+        return variable, []
+    return " ".join(kept), [text(start, end) for start, end in spans]
+
+
+def _peel_unit_phrases(extraction: Extraction) -> Extraction:
+    """Move the unit phrases each variable holds (`_peeled_variable`) to
+    `dropped_qualifiers`, where the raw-text door binds them as the part's unit text, as it
+    binds a phrase the model dropped itself.
+
+    The model folds a qualifier into its variable, so "GDP of Kenya in euros" can read as
+    the variable "GDP in euros": recall then reads "euros" as part of the measure and the
+    unit binder never sees it. Operations, coded qualifiers and the variable cap all key
+    on variable text, so this runs before them.
+    """
+    peeled = [_peeled_variable(variable) for variable in extraction.variables]
+    phrases = [phrase for _, variable_phrases in peeled for phrase in variable_phrases]
+    if not phrases:
+        return extraction
+    return extraction.model_copy(
+        update={
+            "variables": [variable for variable, _ in peeled],
+            "dropped_qualifiers": [*extraction.dropped_qualifiers, *phrases],
+        }
+    )
+
+
 def _folded(text: str) -> str:
     """`text` in the one form `_occurs_in` compares a phrase and a query in: NFKC, then
     casefolded. Halfwidth katakana, fullwidth Latin and fullwidth digits fold to their
@@ -1758,17 +1838,17 @@ async def extract(
 
     `result.extraction` has its relative dates resolved against the current year
     (`_resolve_relative_dates`), its kind enforced, the query's word order restored in
-    reordered variables, its entities bounded, its operations admitted (a forecast over a past
-    year returns the year to `dates`), each admitted forecast's target year set on it
-    (`_target_forecasts`) and then removed from its variable's dates (`dates`, or
-    `result.dates_by_variable` when another variable keeps them), and its role spans
-    validated against the variables the cap admits. A reading that repeats a variable then
-    lists the query words it lost as dropped qualifiers (`_disclose_lost_words`). The words
-    an admitted operation
-    accounts for are then cut from its dropped
-    qualifiers, crediting only the role spans of roles that passed validation
-    (`_applied_phrases`), before the qualifier cap counts them. It is then bounded, reattached, clamped, and display-truncated in
-    that order. Qualifier checks use full phrases and variables before caps can change
+    reordered variables, the unit phrases its variables hold moved to its dropped
+    qualifiers (`_peel_unit_phrases`), its entities bounded, its operations admitted (a
+    forecast over a past year returns the year to `dates`), each admitted forecast's target
+    year set on it (`_target_forecasts`) and then removed from its variable's dates
+    (`dates`, or `result.dates_by_variable` when another variable keeps them), and its role
+    spans validated against the variables the cap admits. A reading that repeats a variable
+    then lists the query words it lost as dropped qualifiers (`_disclose_lost_words`). The
+    words an admitted operation accounts for are then cut from its dropped qualifiers,
+    crediting only the role spans of roles that passed validation (`_applied_phrases`),
+    before the qualifier cap counts them. It is then bounded, reattached, clamped, and
+    display-truncated in that order. Qualifier checks use full phrases and variables before caps can change
     their meaning. Usage is `None` when the client does not provide it. The stage
     wrapper applies extract-specific settings. An extraction store on the LLM serves a
     repeated query the reading it stored (`_model_extraction`).
@@ -1780,7 +1860,9 @@ async def extract(
     extraction, date_warnings, date_wording = _resolve_relative_dates(
         extraction, current_year=today_year
     )
-    extraction = _bound_entities(_restore_query_word_order(query, _enforce_kind(extraction)))
+    extraction = _bound_entities(
+        _peel_unit_phrases(_restore_query_word_order(query, _enforce_kind(extraction)))
+    )
     extraction, operations = _admit_operations(query, extraction, today_year=today_year)
     operations = _target_forecasts(extraction, operations, today_year=today_year)
     extraction, dates_by_variable = _drop_forecast_years(

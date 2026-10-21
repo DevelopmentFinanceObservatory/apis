@@ -103,6 +103,7 @@ def _state(
     variable: str,
     shapes_found: list[ShapeDraft],
     dropped_qualifier_phrases: list[str] | None = None,
+    unit_text: str | None = None,
 ) -> ResolveState:
     """Build a minimal state for ranking and election.
 
@@ -128,7 +129,7 @@ def _state(
         stream_slot_options=False,
         include_observations=False,
         stream_observations=False,
-        unit_text=None,
+        unit_text=unit_text,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},
@@ -391,6 +392,25 @@ def test_real_gdp_of_zambia_warns_only_when_the_unindexed_shape_lacks_the_readin
     dropped = [w for w in state.warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert bool(dropped) is warned
     assert ("real" in state.satisfied_measure_phrases) is not warned
+
+
+@pytest.mark.parametrize(
+    ("unit_text", "warned"), [(None, True), ("in real terms", False), ("in euros", True)]
+)
+def test_a_price_basis_the_unit_text_holds_is_the_unit_requests_to_disclose(
+    unit_text: str | None, warned: bool
+):
+    # The unit request converts to the basis or departs for its own phrase, so the measure
+    # reading of the same words warns nothing beside it.
+    state = _state(
+        variable="GDP of Zambia in real terms",
+        shapes_found=[_gdp_shape("Nominal")],
+        unit_text=unit_text,
+    )
+    _run_prune_and_elect(state)
+
+    dropped = [w for w in state.warnings if w.code == QUERY_QUALIFIER_DROPPED]
+    assert bool(dropped) is warned
 
 
 # "PPP" names CRS purpose 25010 and the PPP price basis. The elected shape keeps the reading

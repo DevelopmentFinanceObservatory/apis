@@ -2859,6 +2859,59 @@ def test_extract_keys_operations_on_the_restored_variable():
     assert list(result.operations) == ["rate of extreme poverty"]
 
 
+# The unit phrase a variable holds
+
+
+@pytest.mark.parametrize(
+    ("query", "variable", "expected", "dropped"),
+    [
+        ("GDP of Kenya in euros", "GDP in euros", "GDP", ["in euros"]),
+        ("GDP in yen", "GDP in yen", "GDP", ["in yen"]),
+        # A phrase inside the variable ends at a function word.
+        ("GDP per capita in euros", "GDP in euros per capita", "GDP per capita", ["in euros"]),
+        (
+            "GDP of Kenya in constant 2015 US dollars",
+            "GDP in constant 2015 US dollars",
+            "GDP",
+            ["in constant 2015 US dollars"],
+        ),
+        (
+            "ODA to Kenya in current US dollars",
+            "ODA in current US dollars",
+            "ODA",
+            ["in current US dollars"],
+        ),
+        ("aid to Kenya in real terms", "aid in real terms", "aid", ["in real terms"]),
+        ("GDP at constant prices", "GDP at constant prices", "GDP", ["at constant prices"]),
+        # A bare price basis is the measure qualifier's to read, from the variable and query.
+        ("real GDP of Kenya", "real GDP", None, []),
+        ("nominal GDP of Kenya", "nominal GDP", None, []),
+        ("real GDP growth in Kenya", "real GDP growth", None, []),
+        # Currency and price-basis words that name the measure.
+        ("current account balance of Kenya", "current account balance", None, []),
+        ("real interest rate in Kenya", "real interest rate", None, []),
+        ("euro exchange rate", "euro exchange rate", None, []),
+        ("exchange rate of the euro", "exchange rate of the euro", None, []),
+        (
+            "share of Kenya's public debt denominated in US dollars",
+            "public debt denominated in US dollars as share of total public debt",
+            None,
+            [],
+        ),
+        # A run the binder cannot read to its end, and a phrase that leaves no measure.
+        ("GDP in current US$", "GDP in current US$", None, []),
+        ("in euros", "in euros", None, []),
+    ],
+)
+def test_extract_moves_a_unit_phrase_from_the_variable_to_the_dropped_qualifiers(
+    query, variable, expected, dropped
+):
+    llm = _stub_for(query, {"variables": [variable], "entities": [], "dates": []})
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.variables == [expected or variable]
+    assert result.extraction.dropped_qualifiers == dropped
+
+
 def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
     """Variable text is no evidence the answer applied a qualifier: the region decides,
     and reports it when bind asks instead of electing."""
