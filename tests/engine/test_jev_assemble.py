@@ -35,6 +35,7 @@ from search.engine.binders.jev_request import (
 from search.engine.frame import Frame, FrameNormalisation, Stated, StatedBy, door_frame
 from search.engine.qualifier_match import QualifierMatch, QualifierTie, names_plain_name
 from search.engine.region.phase_rank_bind import _HousePolicyStep
+from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import Axis, GraphRef
 
@@ -67,12 +68,12 @@ def _shape(
     )
 
 
-def _frame() -> Frame:
+def _frame(*, donors: Sequence[str] = ()) -> Frame:
     return door_frame(
         door="parsed",
         variable="aid",
-        entities=[],
-        entity_roles={},
+        entities=list(donors),
+        entity_roles={name: [DoorRole(axis="origin", span=name)] for name in donors},
         member_entities=frozenset(),
         pins={},
         date_request=None,
@@ -89,11 +90,17 @@ def _request(
     variable: str = "aid",
     dropped: tuple[str, ...] = (),
     ties: Sequence[tuple[QualifierTie, ...]] = (),
+    availability: Sequence[bool | None] = (),
+    donors: Sequence[str] = (),
     apply_policies: ApplyPolicies | None = None,
 ) -> BindRequest:
-    frame = _frame()
+    frame = _frame(donors=donors)
     step = _HousePolicyStep(
-        shapes=shapes, frame=frame, admitted_qualifiers=(), availability=(), code_index=get_index()
+        shapes=shapes,
+        frame=frame,
+        admitted_qualifiers=(),
+        availability=availability,
+        code_index=get_index(),
     )
     return BindRequest(
         variable=variable,
@@ -186,10 +193,9 @@ def _alternates(shapes: list[ShapeDraft], elect: Mapping[int, float], best: floa
     return read
 
 
-def _elected_alike(nouls: Mapping[str, float]) -> object:
-    """The alternates of two shapes measuring the phrase equally well, shape 0 elected at
-    0.8, which no structural branch relates."""
-    answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 0.8, 1: nouls["elect|1"]})
+def _near_alt(nouls: Mapping[str, float]) -> object:
+    p = nouls["elect|1"]
+    answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 1.0 - p, 1: p})
     output, _conf = _assemble(_request([_shape(0), _shape(1, population="Place")]), answers)
     return output.also_plausible
 
@@ -200,6 +206,12 @@ def _elected(shapes: list[ShapeDraft], elect: Mapping[int, float], base: Mapping
         return output.chosen_shape_index, conf.rules
 
     return read
+
+
+def _declined(nouls: Mapping[str, float]) -> object:
+    answers = _answers(nouls, elect={0: 1.0}, choices={"electq": {"Shape 0": 0.3, "none": 0.7}})
+    output, _conf = _assemble(_request([_shape(0)]), answers)
+    return output.ask is not None
 
 
 def _gate(nouls: Mapping[str, float]) -> object:
@@ -218,13 +230,14 @@ _AMOUNT_AND_GE = [
 
 _CUTS = {
     "ask": _Cut(_ask, "m|0", 0.15, 0.16, True, False),
+    "decline": _Cut(_declined, "m|0", 0.3, 0.31, True, False),
     "measures": _Cut(
-        _alternates(_PLAIN_AND_DIVIDED, {0: 1.0}, 0.55),
+        _pool(lambda n: _answers({"m|0": 0.6, **n}, elect={0: 1.0}), [_VALUE_ADDED, _OUTPUT]),
         "m|1",
         0.5,
         0.51,
-        None,
-        [1],
+        [0],
+        [0, 1],
     ),
     "near": _Cut(
         _pool(lambda n: _answers({"m|0": 0.9, **n}), [_shape(0), _shape(1, population="Place")]),
@@ -244,15 +257,14 @@ _CUTS = {
         [0, 1],
     ),
     "alt_floor": _Cut(
-        _alternates([_shape(0), _shape(1, population="Place")], {0: 0.5, 1: 0.48}, 0.32),
+        _alternates([_shape(0), _shape(1, population="Place")], {0: 0.5, 1: 0.5}, 0.32),
         "m|1",
         0.3,
         0.31,
         None,
         [1],
     ),
-    # Gemini's rated-pool bar: at least 0.9 of the top election.
-    "elected_alike": _Cut(_elected_alike, "elect|1", 0.71, 0.72, None, [1]),
+    "near_alt": _Cut(_near_alt, "elect|1", 0.33, 0.34, None, [1]),
     "measure_value": _Cut(
         _elected(_PERSON_AND_PLACE, {0: 0.6, 1: 0.4}, {"m|0": 0.9, "m|1": 0.9}),
         "mv|Place",
@@ -568,7 +580,7 @@ def test_an_alternate_stands_only_near_the_best_measure_score(measure: float, al
     """An alternate scoring under 0.9 of the best measure score is a weaker reading, the
     bar a Gemini nomination clears on its rating (`gemini.nominated_near_best`)."""
     shapes = [_shape(0), _shape(1, population="Place")]
-    answers = _answers({"m|0": 0.9, "m|1": measure}, elect={0: 0.6, 1: 0.55})
+    answers = _answers({"m|0": 0.9, "m|1": measure}, elect={0: 0.6, 1: 0.4})
 
     result, _conf = bind_result(jev_menu(_request(shapes)), answers, stated_form=None)
 
@@ -696,7 +708,7 @@ def test_a_request_without_a_query_asks_no_query_question():
 
 def test_the_all_question_s_examples_each_name_a_slot_by_its_plain_name():
     """A ``requested_all`` claim stands only on a phrase naming the slot's plain name
-    (`_validate_requested_all_bindings`), so each example the question gives names one."""
+    (`bind.validate_requested_all_bindings`), so each example the question gives names one."""
     plain_names = {d.plain_name for d in get_index().declarations.values()}
     _state, questions = bind_request(jev_menu(_request([_SECTORS], dropped=("in total",))))
     instructions = str(questions[f"all|{_SECTOR}|0"].get("instructions"))
@@ -1341,3 +1353,178 @@ def test_a_value_the_matcher_fixed_keeps_its_words_whatever_jev_weighs(shape, st
     output, _conf = assemble(jev_menu(request), answers, stated_form=None)
 
     assert _bound(output) == bound
+
+
+_GE = _shape(0, population="FinancialFlow", measured="grantEquivalent", qualifier="Nominal")
+_AMOUNT = _shape(1, population="FinancialFlow", measured="amount", qualifier="Nominal")
+# The grant-equivalent family lists a modality the amount family lacks.
+_MODALITY = "crsCooperationModality"
+_GE_MODALITIES = replace(
+    _GE,
+    slot_keys=(SlotKeyDraft(axis="how", property_dcid=_MODALITY, label=_MODALITY),),
+    slot_taxonomy={f"how:{_MODALITY}": ["CRSCooperationModalityB021", "CRSCooperationModalityB05"]},
+)
+_AMOUNT_MODALITIES = replace(
+    _AMOUNT,
+    slot_keys=_GE_MODALITIES.slot_keys,
+    slot_taxonomy={f"how:{_MODALITY}": ["CRSCooperationModalityB021"]},
+)
+_EVERY_MODALITY = {"mv|grantEquivalent": 0.58, f"all|how:{_MODALITY}|0": 0.9}
+# An imputed multilateral flow, its own dataset, and the amount of the donor house default.
+_IMPUTED = replace(
+    _shape(0, population="FinancialFlow", measured="attributedAmount", qualifier="Nominal"),
+    datasets=("provenance/ONEImputedMultilateralSectors",),
+)
+_DONOR_DEFAULT_AMOUNT = replace(_AMOUNT, datasets=("provenance/OECDDAC1",))
+# Two measures, the second with data where the first has none.
+_LIFE = replace(_shape(0, measured="lifeExpectancy"), datasets=("provenance/WHO",))
+_HEALTHY_LIFE = replace(_shape(1, measured="healthyLifeExpectancy"), datasets=("provenance/WHO",))
+
+
+@pytest.mark.parametrize(
+    ("shapes", "nouls", "dropped", "availability", "donors", "elected", "pool", "rules"),
+    [
+        pytest.param(
+            [_GE, _AMOUNT],
+            {"mv|grantEquivalent": 0.58},
+            (),
+            (),
+            (),
+            1,
+            [0, 1],
+            ["house: amount_vs_ge"],
+            id="convention-variant-to-the-policy",
+        ),
+        pytest.param(
+            [_GE_MODALITIES, _AMOUNT_MODALITIES],
+            _EVERY_MODALITY,
+            ("total",),
+            (),
+            (),
+            1,
+            [0, 1],
+            ["house: amount_vs_ge"],
+            id="total-names-no-slot-so-the-policy-still-reaches-it",
+        ),
+        pytest.param(
+            [_GE_MODALITIES, _AMOUNT_MODALITIES],
+            _EVERY_MODALITY,
+            ("across all modalities",),
+            (),
+            (),
+            0,
+            [0, 1],
+            [],
+            id="every-modality-sets-the-variant-aside",
+        ),
+        pytest.param(
+            [_GE, _AMOUNT],
+            {"mv|grantEquivalent": 0.95},
+            (),
+            (),
+            (),
+            0,
+            [0],
+            ["named: measuredProperty"],
+            id="named-value-keeps-it",
+        ),
+        pytest.param(
+            [_shape(0), _shape(1, population="Place")],
+            {},
+            (),
+            (),
+            (),
+            0,
+            [0],
+            [],
+            id="other-reading-stays-out",
+        ),
+        pytest.param(
+            [_LIFE, _HEALTHY_LIFE],
+            {},
+            (),
+            (False, True),
+            (),
+            0,
+            [0],
+            [],
+            id="a-measure-the-election-sets-aside-stays-out-for-having-data",
+        ),
+        pytest.param(
+            [_IMPUTED, _DONOR_DEFAULT_AMOUNT],
+            {},
+            (),
+            (),
+            ("France",),
+            0,
+            [0],
+            [],
+            id="the-house-default-s-amount-stays-out-beside-an-imputed-lead",
+        ),
+    ],
+)
+def test_the_pool_holds_a_convention_variant_the_election_sets_aside(
+    shapes: list[ShapeDraft],
+    nouls: dict[str, float],
+    dropped: tuple[str, ...],
+    availability: tuple[bool, ...],
+    donors: tuple[str, ...],
+    elected: int,
+    pool: list[int],
+    rules: list,
+):
+    """ "education grants" with no start year: Jev elects grant equivalent 0.92 to 0.075, and
+    the amount shape, measuring the phrase within `near`, still reaches `amount_vs_ge`,
+    which keeps the amount. "Total" names no slot, so Jev's claim that it asks for every
+    modality is demoted before the holds check, and the amount shape still reaches the
+    policy. "Across all modalities" asks for the one the amount shape lacks, so the policy
+    keeps grant equivalent. A shape of another reading that the election sets aside stays
+    out, and so does another measure that has data where the lead has none, or that the
+    house default dataset of a donor question publishes beside an imputed lead, since data
+    at the places and the house default are no convention between measures."""
+    answers = _answers({"m|0": 0.86, "m|1": 0.81, **nouls}, elect={0: 0.92, 1: 0.075})
+
+    output, conf = _assemble(
+        _request(shapes, dropped=dropped, availability=availability, donors=donors), answers
+    )
+
+    assert output.chosen_shape_index == elected
+    assert conf.pool is not None and sorted(conf.pool.measuring) == pool
+    assert conf.rules == rules
+
+
+@pytest.mark.parametrize(("none", "asks"), [(0.35, False), (0.36, True)])
+def test_the_part_asks_when_electq_puts_none_above_every_shape(none: float, asks: bool):
+    shapes = [_shape(0), _shape(1, population="Place")]
+    electq = {"Shape 0": 0.3, "Shape 1": 0.7 - none, "none": none}
+    answers = _answers({"m|0": 0.3, "m|1": 0.3}, elect={0: 0.5, 1: 0.5}, choices={"electq": electq})
+
+    output, conf = _assemble(_request(shapes), answers)
+
+    assert (output.ask is not None) is asks
+    assert ("ask: none of the shapes gives what the query asks for" in conf.rules) is asks
+
+
+@pytest.mark.parametrize(("form", "elected", "also"), [(None, 0, [1]), ("per_person", 1, None)])
+def test_a_reading_of_another_base_is_an_alternate_only_when_the_phrase_states_no_form(
+    form: str | None, elected: int, also: list[int] | None
+):
+    answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 0.45, 1: 0.55})
+
+    output, _conf = _assemble(_request(_PLAIN_AND_DIVIDED), answers, form=form)
+
+    assert output.chosen_shape_index == elected
+    assert output.also_plausible == also
+
+
+def test_the_bind_result_carries_each_shape_s_scores():
+    shapes = [_shape(0), _shape(1, population="Place")]
+    answers = _answers(
+        {"m|0": 0.9, "m|1": 0.8},
+        elect={0: 0.6, 1: 0.4},
+        choices={"electq": {"Shape 0": 0.5, "Shape 1": 0.1, "none": 0.4}},
+    )
+
+    result, _conf = bind_result(jev_menu(_request(shapes)), answers, stated_form=None)
+
+    assert result.scores == {"measure": [0.9, 0.8], "election": [0.55, 0.25], "none": 0.4}

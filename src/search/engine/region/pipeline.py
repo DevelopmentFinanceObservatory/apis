@@ -535,8 +535,11 @@ async def _fill_gap(
     without observations: a superseded variable stands in our pass as the UN variable the
     UN resolve may recall too. It waits for the leg no longer than
     `SEARCH_UN_FIRST_PASS_WAIT_S` from the start of our derivation, and ends
-    `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands only when it is `definite`
-    or `candidates`; otherwise `result` stands with its reason. A `result` holding an
+    `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands when it is `definite` or
+    `candidates`, or when it is `no_data` carrying an `alternate_match` and `result`
+    carries none. Of two refusals, the one offering a reading with data at the place
+    stands, as status rule 1 has a nominee ride on a refusal. Otherwise `result` stands
+    with its reason. A `result` holding an
     `alternate_match`, a reading the model nominated from our pool with data at the place,
     also stands when the UN pass's elected shape matches the phrase only weakly
     (`_representative_score_is_weak`): such an answer has no better claim to the question
@@ -625,9 +628,14 @@ async def _fill_gap(
     displaces_alternate = result.alternate_match is None or not _representative_score_is_weak(
         None if un_elected is None else un_elected.measured_score
     )
-    chosen = (
-        second if second.status in ("definite", "candidates") and displaces_alternate else result
+    answers = second.status in ("definite", "candidates") and displaces_alternate
+    # Of two refusals, the one carrying a nominee with data stands (status rule 1).
+    offers_alternate = (
+        second.status == "no_data"
+        and second.alternate_match is not None
+        and result.alternate_match is None
     )
+    chosen = second if answers or offers_alternate else result
     timing = dict(result.timing_by_step)
     for step, ms in second.timing_by_step.items():
         timing[step] = timing.get(step, 0) + ms

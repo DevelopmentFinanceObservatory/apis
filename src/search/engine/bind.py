@@ -24,6 +24,7 @@ from search.engine.clients.llm import (
     for_stage,
     generate_structured_async,
 )
+from search.engine.qualifier_match import _normalize, names_plain_name
 from search.engine.quantity import (
     DenominatorKind,
     denominator_meaning,
@@ -1111,6 +1112,49 @@ def ground_bind_output(
         chosen = shapes[output.chosen_shape_index]
         bindings = _without_partly_stated_values(_grounded_in_taxonomy(bindings, chosen), chosen)
     return output.model_copy(update={"bindings": bindings})
+
+
+def validate_requested_all_bindings(
+    bindings: Sequence[SlotBindingDraft],
+    dropped_qualifier_phrases: Sequence[str],
+    *,
+    slot_properties: Collection[str | None],
+) -> tuple[list[SlotBindingDraft], frozenset[str]]:
+    """Validate a binder's ``requested_all`` claims before any holds check, default or
+    warning suppression uses them.
+
+    A claim must be unbound, name a property in `slot_properties` (the elected shape's),
+    and reproduce a dropped phrase exactly. A claim on a code system the index declares
+    must also name that slot by its declared plain name (`names_plain_name`), the noun the
+    part shows for it and the slot a declared default narrows. "Across all flows" asks for
+    every flow, while "total" names no slot, so the flow default still binds. Demote
+    invalid claims to ``mentioned`` and clear their phrase. Return bindings in order plus
+    normalised phrases from valid claims only. Validated bindings validate to themselves,
+    so each binder applies this to its pick's drafts and the election again to the
+    elected shape's.
+    """
+    declarations = get_index().declarations
+    applied: set[str] = set()
+    validated: list[SlotBindingDraft] = []
+    for binding in bindings:
+        if binding.evidence == "requested_all":
+            phrase = binding.requested_all_phrase
+            declaration = declarations.get(binding.property_dcid or "")
+            if (
+                binding.kind == "unbound"
+                and binding.property_dcid in slot_properties
+                and phrase is not None
+                and phrase in dropped_qualifier_phrases
+                and (declaration is None or names_plain_name(phrase, declaration.plain_name))
+            ):
+                applied.add(_normalize(phrase))
+                validated.append(binding)
+                continue
+            binding = binding.model_copy(
+                update={"evidence": "mentioned", "requested_all_phrase": None}
+            )
+        validated.append(binding)
+    return validated, frozenset(applied)
 
 
 def _without_partly_stated_values(

@@ -131,6 +131,23 @@ _BY_DATASET = (
             1,
             id="data-at-the-named-places",
         ),
+        # commit_vs_disb runs before default_dataset, so a donor's loan disbursements in
+        # one dataset win over the commitments the donor default dataset publishes.
+        pytest.param(
+            (
+                _facts(
+                    0,
+                    population_type="FinancialObligation",
+                    flow_types=("Commitment",),
+                    datasets=(_WANTED["donor"],),
+                ),
+                _facts(1, flow_types=("Disbursement",), datasets=(_WANTED["recipient"],)),
+            ),
+            _ctx(case="donor"),
+            0,
+            1,
+            id="disbursement-before-the-default-dataset-s-commitment",
+        ),
         pytest.param((_GE,), _ctx(pre_ge=True), 0, 0, id="single-candidate"),
         # amount_vs_ge runs first, so grant equivalent wins over a gross amount.
         pytest.param((_GE, _AMOUNT), _ctx(), 0, 0, id="grant-equivalent-before-gross"),
@@ -551,3 +568,63 @@ def test_each_policy_keeps_the_shapes_the_label_audit_kept(case: dict):
     kept = apply_policy(policy, facts, context)
 
     assert [f.index for f in kept] == case["expected"]
+
+
+_SDG_SERIES = _facts(
+    2, population_type="undata/sdg/SERIES-DC_FIN_CLIMT", measured_property="value", qualifier=None
+)
+
+
+@pytest.mark.parametrize(
+    ("policy", "facts", "context", "expected"),
+    [
+        pytest.param(
+            "amount_vs_ge",
+            (_facts(0, measured_property="attributedAmount"), _AMOUNT, _GE),
+            _ctx(pre_ge=True),
+            [0, 1],
+            id="imputed-flow-beside-amount-and-ge",
+        ),
+        pytest.param(
+            "amount_vs_ge",
+            (_GE, _AMOUNT, _SDG_SERIES),
+            _ctx(),
+            [0, 2],
+            id="sdg-series-beside-flows",
+        ),
+        pytest.param(
+            "net_vs_gross",
+            (_facts(0), _facts(1, netting=("Net",)), _facts(2, netting=("Gross", "Net"))),
+            _ctx(),
+            [0, 2],
+            id="no-netting-slot",
+        ),
+        pytest.param(
+            "commit_vs_disb",
+            (
+                _facts(0, population_type="FinancialObligation"),
+                _facts(1, flow_types=("Disbursement",)),
+                _SDG_SERIES,
+            ),
+            _ctx(),
+            [1, 2],
+            id="sdg-series-beside-commitment",
+        ),
+        pytest.param(
+            "nominal_vs_va",
+            (_OUTPUT, _VALUE_ADDED, _SDG_SERIES),
+            _ctx(),
+            [0, 2],
+            id="sdg-series-beside-output",
+        ),
+    ],
+)
+def test_a_policy_keeps_every_shape_outside_the_pair_it_compares(
+    policy: PolicyName, facts: tuple[ShapeFacts, ...], context: Context, expected: list[int]
+):
+    """A policy judges only the shapes its convention compares and keeps every other one,
+    so `amount_vs_ge` keeps an imputed multilateral flow beside the amount it prefers to
+    grant equivalent."""
+    kept = apply_policy(policy, facts, context)
+
+    assert [f.index for f in kept] == expected

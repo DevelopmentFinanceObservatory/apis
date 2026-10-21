@@ -61,7 +61,7 @@ from search.models import (
 )
 from tests.engine._binders import FakeAsk, FixedBinder, answer_all, keep_the_pick
 from tests.engine._builders import sv_arcs
-from tests.engine._jev_golden import GOLDEN, golden_paths, load_item
+from tests.engine._jev_golden import GOLDEN, GoldenItem, golden_paths, load_item
 from tests.graph_release.support import serving_index
 from tests.statvar_members.role_grid import synthetic_index
 
@@ -275,9 +275,19 @@ def test_the_jev_quantity_read_is_its_own_request():
     assert output == assemble_quantity(_GOLDEN.answers, _GOLDEN.denominators)
 
 
-# "World Bank loans": its first answers draft a CRS purpose and a type of finance, so its
-# bind asks a span round.
-_SPANNED = load_item(GOLDEN / "synthetic-74b382efc5_p0.json")
+def _electing(item: GoldenItem) -> GoldenItem:
+    """`item` with no ``none`` share in ``electq``, so a part whose stored share declines
+    (`jev_assemble._declines`) elects."""
+    electq = item.stored["electq"]
+    probabilities = {k: p for k, p in electq["probabilities"].items() if k != "none"}
+    choice = max(probabilities, key=probabilities.__getitem__)
+    stored = {**item.stored, "electq": {**electq, "choice": choice, "probabilities": probabilities}}
+    return dataclasses.replace(item, stored=stored)
+
+
+# "World Bank loans", electing: its first answers draft a CRS purpose and a type of
+# finance, so its bind asks a span round.
+_SPANNED = _electing(load_item(GOLDEN / "synthetic-74b382efc5_p0.json"))
 
 
 def _spanned_answers() -> dict[str, dict]:
@@ -536,9 +546,12 @@ def test_a_defect_after_the_house_policies_ran_breaks_the_contract_not_bound_twi
     assert (step.calls, gemini.requests) == (1, [])
 
 
-def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone():
+def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone(caplog):
     """The quantity read of part 0 pays Jev's ceiling once. Its bind call goes straight to
-    Gemini under the same cause, while part 1 still asks Jev."""
+    Gemini under the same cause, while part 1 still asks Jev. Only the failed request logs
+    a ``jev_error`` and its Jev counts; the call that inherits the failure logs
+    ``fallback=inherited`` and no counts."""
+    caplog.set_level(logging.INFO, logger="search.engine.binders.part_log")
     ask = FakeAsk(fail=JevError(None, "timeout"))
     gemini = _GeminiDouble(_ELECTS_FIRST)
     binder = FallbackBinder(primary=JevBinder(ask=ask), fallback=gemini)
@@ -559,6 +572,28 @@ def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone()
     assert len(ask.requests) == 2
     assert (first.binder, other.binder) == ("gemini", "gemini")
     assert record.reasons == ["timeout"] * 3
+    assert [line.split(" ")[1:6] for line in _binder_parts(caplog)] == [
+        [
+            "call=quantity",
+            "binder=jev",
+            "served_by=gemini",
+            "fallback=timeout",
+            "jev_error=timeout",
+        ],
+        ["call=bind", "binder=jev", "served_by=gemini", "fallback=inherited", "jev_error=-"],
+        ["call=bind", "binder=jev", "served_by=gemini", "fallback=timeout", "jev_error=timeout"],
+    ]
+    failed, inherited, _other = (line.split(" ")[7:] for line in _binder_parts(caplog))
+    assert failed[0] != "jev_ms=-"
+    assert inherited == [
+        "jev_ms=-",
+        "questions=-",
+        "chunks=-",
+        "jev_input_tokens=-",
+        "jev_output_tokens=-",
+        "span_questions=-",
+        "inferred=-",
+    ]
 
 
 def test_the_fallback_hands_the_jev_binder_a_policy_step_that_takes_ratings(monkeypatch):

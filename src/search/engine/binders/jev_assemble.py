@@ -36,17 +36,22 @@ from search.engine.bind import (
     _UniversalBindOutput,
     ground_bind_output,
     stated_reading,
+    validate_requested_all_bindings,
 )
 from search.engine.binders.base import BindResult
 from search.engine.binders.gemini import (
-    RATED_POOL_FRACTION,
     holds_drafted_values,
     holds_requested_slots,
     mentioned_drafts,
-    near_best,
     nominated_near_best,
 )
-from search.engine.binders.house_policy import PolicyChoice, PolicyPool
+from search.engine.binders.house_policy import (
+    CONVENTION_POLICIES,
+    POLICY_ORDER,
+    PolicyChoice,
+    PolicyName,
+    PolicyPool,
+)
 from search.engine.binders.jev_client import JevQuestion
 from search.engine.binders.jev_menu import (
     AXIS_FIELDS,
@@ -92,19 +97,22 @@ class Thresholds:
 
     `w_m`, `w_mq`, `w_elect` and `w_electq` weigh the two means. A shape's measure score
     above `ask` keeps it electable, and the part asks when none is, as a Gemini reply
-    rating its pick under `gemini.DECLINE_FLOOR` declines; above `measures` it
-    counts as measuring the phrase for alternates, nominal output and the nearest refused
-    reading. Without an election answer the pool keeps shapes within `near` of the best
-    measure score; with one, the products of election and measure score at least
-    ``1 - near_elect`` of the best. An alternate is "elected alike" when its election is at
-    least 0.9 of the top, the bar Gemini's rated pool uses (`gemini.near_best` with
-    `gemini.RATED_POOL_FRACTION`), and its measure score above `alt_floor`. A nominal
-    output shape joins the pool within `widen` of the best measure score. ``mv`` above
-    `measure_value` names a measure-axis value, and above `policy_value` one of two a house
-    policy chooses between (`_names_value`); ``named`` above `named` names the dataset, ``n``
-    above `value` a slot value. ``part`` at or under `part` asks for no particular value,
-    and a value then needs ``n`` above `part_n`. ``several`` above `several` binds a set,
-    and ``all`` above `requested_all` an explicit "every value".
+    rating its pick under `gemini.DECLINE_FLOOR` declines. It also asks when ``electq``
+    gives ``none`` more than any shape and no measure score is above `decline`. Above
+    `measures` a shape counts as measuring the phrase for nominal output and the nearest
+    refused reading. A shape is plausible when its election is at least ``1 - near_alt``
+    of the top among electable shapes, or, without an election answer, when its measure
+    score is within `near` of the best. The pool keeps the shapes stating the denominator
+    of the plausible shape the election leads with: those whose product of election and
+    measure score is at least ``1 - near_elect`` of the best product, each convention
+    variant of the lead within `near` of the best measure score (`_convention_variant`),
+    and each nominal output shape within `widen` of it (`_with_nominal_output`). A
+    plausible shape is an alternate when its measure score is above `alt_floor`. ``mv``
+    above `measure_value` names a measure-axis value, and above `policy_value` one of two a
+    house policy chooses between (`_names_value`); ``named`` above `named` names the
+    dataset, ``n`` above `value` a slot value. ``part`` at or under `part` asks for no
+    particular value, and a value then needs ``n`` above `part_n`. ``several`` above
+    `several` binds a set, and ``all`` above `requested_all` an explicit "every value".
     """
 
     w_m: float = 1.0
@@ -115,8 +123,23 @@ class Thresholds:
     # On recorded answers, five wrong picks of the eval corpus score 0.135 or less, and
     # every pick that answers it correctly 0.305 or more.
     ask: float = 0.15
+    # Over the 1,405 stored dev answers and their labels, ``none`` above every shape with
+    # no measure score over 0.3 asks on 57 parts the `ask` bar answers: 44 the labels mark
+    # as asks, 8 with a correct definite pick, 2 with a wrong one and 3 candidates. At 0.4
+    # it asks on 77, 56 of them asks and 14 correct definite picks. The lone shape of
+    # a labelled lone-shape part measures 0.31 to 0.375 across draws and answers; an FDI
+    # part at 0.155 declines.
+    decline: float = 0.3
+    # On the same answers, with the decline off, the pool this bar admits convention
+    # variants to changes 12 picks against dev: 7 to a better pick, 3 to a worse one and 2
+    # on parts whose labels accept no shape. 0.1, 0.2 and 0.3 change the same picks.
     near: float = 0.15
     near_elect: float = 0.8
+    # The election is the mean of two distributions, so two readings Jev cannot tell
+    # apart split it about evenly. At 0.5, 40 of the 1,405 parts list alternates, 3 of the
+    # 60 the labels mark as candidates among them. At 0.95, 285 list them, 12 of the 60
+    # among them.
+    near_alt: float = 0.5
     alt_floor: float = 0.3
     widen: float = 0.2
     part: float = 0.15
@@ -165,8 +188,9 @@ class JevAnswers:
 
 @dataclass(slots=True)
 class Confidence:
-    """What each decision read: `measures`, `election` and `named` per shape, `refused` per
-    reading a pinned part refused, `alternates` the rule that listed each alternate,
+    """What each decision read: `measures`, `election` and `named` per shape, the shapes the
+    election finds `plausible`, `refused` per reading a pinned part refused, `alternates`
+    the rule that listed each alternate, ``elected alike`` for every one (`_alternates`),
     `slots` the probability behind each bound slot, `inferred` the values each slot drafted
     that the span rule left unbound (`_span_owned`), `rules` the election rules that
     applied in order, and the house policies' `pool` and `choice`, None when the part
@@ -175,6 +199,7 @@ class Confidence:
     measures: dict[int, float] = field(default_factory=dict)
     election: dict[int, float] = field(default_factory=dict)
     named: dict[int, float] = field(default_factory=dict)
+    plausible: list[int] = field(default_factory=list)
     refused: dict[int, float] = field(default_factory=dict)
     alternates: dict[int, str] = field(default_factory=dict)
     slots: dict[str, float] = field(default_factory=dict)
@@ -312,7 +337,7 @@ def assemble(
         )
         return output, conf
     bindings = _shape_drafts(menu, answers, e, conf, t, populations.get(e))
-    also = _alternates(menu, e, conf, t, answers, stated_form)
+    also = _alternates(shapes, e, conf, t, stated_form)
     output = _UniversalBindOutput(
         chosen_shape_index=e, bindings=bindings, also_plausible=also or None
     )
@@ -330,15 +355,22 @@ def bind_result(
     populations: Mapping[int, Population] | None = None,
 ) -> tuple[BindResult, Confidence]:
     """`assemble` over `menu`, with the engine's rules applied to the drafts
-    (`bind.ground_bind_output`)."""
+    (`bind.ground_bind_output`), and each shape's measure and election scores and the
+    ``none`` share of ``electq`` as the result's scores."""
     output, conf = assemble(
         menu, answers, stated_form=stated_form, thresholds=thresholds, populations=populations
     )
+    shapes = range(len(menu.request.shapes))
     result = BindResult(
         output=ground_bind_output(output, menu.request.shapes),
         binder="jev",
         policy_pool=conf.pool,
         policy_choice=conf.choice,
+        scores={
+            "measure": [round(conf.measures[i], 3) for i in shapes],
+            "election": [round(conf.election.get(i, 0.0), 3) for i in shapes],
+            "none": round(float(answers.choices.get("electq", {}).get(NONE, 0.0)), 3),
+        },
     )
     return result, conf
 
@@ -385,6 +417,15 @@ def _measure_scores(answers: JevAnswers, n: int, t: Thresholds) -> dict[int, flo
     return out
 
 
+def _declines(answers: JevAnswers, best: float, t: Thresholds) -> bool:
+    """Whether Jev answers that no menu measure gives the user what the query asks for:
+    ``electq`` gives ``none`` more than any shape, and no shape's measure score is above
+    `decline`."""
+    probabilities = answers.choices.get("electq", {})
+    shares = [p for key, p in probabilities.items() if key != NONE]
+    return best <= t.decline and probabilities.get(NONE, 0.0) > max(shares, default=0.0)
+
+
 def _with_nominal_output(
     shapes: Sequence[ShapeDraft], pool: list[int], conf: Confidence, t: Thresholds
 ) -> list[int]:
@@ -413,6 +454,24 @@ def _with_nominal_output(
             and conf.measures[i] >= best - t.widen
         )
     ]
+
+
+def _convention_variant(menu: JevMenu, lead: int, k: int) -> bool:
+    """Whether shape `k` states the reading of `lead` but for values a house convention
+    chooses between: the same population and statistic type, and on each measure axis
+    where the two differ, and on one at least, a convention policy
+    (`house_policy.CONVENTION_POLICIES`) run over the pair would choose, as on amount
+    against grant equivalent of one flow. Data at the places and the house default
+    dataset choose by the part's situation, so a measure the election set aside never
+    replaces the lead for having data, and an imputed multilateral flow the election chose
+    is never traded for the house default's amount."""
+    a, b = menu.request.shapes[lead], menu.request.shapes[k]
+    if (a.pop_type_dcid, a.stat_type_dcid) != (b.pop_type_dcid, b.stat_type_dcid):
+        return False
+    differing = [axis for axis, f in AXIS_FIELDS.items() if getattr(a, f) != getattr(b, f)]
+    return bool(differing) and all(
+        _policy_chooses(menu, (lead, k), axis, policies=CONVENTION_POLICIES) for axis in differing
+    )
 
 
 def _elect(
@@ -456,27 +515,56 @@ def _pool(
     form: str | None,
 ) -> list[int] | None:
     """The shapes the election leaves for the house policies, None to ask. Each step
-    narrows the pool and records its rule in `conf.rules` when it does."""
+    narrows the pool and records its rule in `conf.rules` when it does.
+
+    The election says which readings are plausible (`conf.plausible`) and which one it
+    leads with, and so fixes the denominator, since the measure questions ignore form and
+    base. The pool the house policies see holds the shapes stating that denominator that
+    the election puts near its lead, and each variant of the lead on values a house policy
+    chooses between that measures the phrase near the best, so the policies settle a
+    convention the phrase leaves open."""
     shapes = menu.request.shapes
     best = max(conf.measures.values(), default=0.0)
     if best <= t.ask:
         conf.rules.append("ask: no shape measures the phrase")
         return None
+    if _declines(answers, best, t):
+        conf.rules.append("ask: none of the shapes gives what the query asks for")
+        return None
     # Only a shape measuring the phrase above `ask` is electable, on every path.
     electable = [i for i in range(len(shapes)) if conf.measures[i] > t.ask]
     if conf.election:
-        score = {i: conf.election.get(i, 0.0) * conf.measures[i] for i in electable}
+        top = max(conf.election.get(i, 0.0) for i in electable)
+        conf.plausible = [
+            i for i in electable if conf.election.get(i, 0.0) >= (1 - t.near_alt) * top
+        ]
+        lead = max(conf.plausible, key=lambda i: conf.election.get(i, 0.0))
+    else:
+        conf.plausible = [i for i in electable if conf.measures[i] >= best - t.near]
+        lead = max(conf.plausible, key=conf.measures.__getitem__)
+    # A phrase that states no form asks for the plain measure, not a share of a base.
+    if form is None and stated_reading(shapes[lead]).denominator is not None:
+        plain = [i for i in conf.plausible if stated_reading(shapes[i]).denominator is None]
+        if plain:
+            conf.rules.append("form: phrase states none, shapes with a denominator set aside")
+            lead = max(plain, key=lambda i: (conf.election.get(i, 0.0), conf.measures[i]))
+    denominator = stated_reading(shapes[lead]).denominator
+    stating = [i for i in electable if stated_reading(shapes[i]).denominator == denominator]
+    best_stating = max(conf.measures[i] for i in stating)
+    near = [i for i in stating if conf.measures[i] >= best_stating - t.near]
+    if conf.election:
+        score = {i: conf.election.get(i, 0.0) * conf.measures[i] for i in stating}
         top = max(score.values())
-        pool = [i for i in electable if score[i] >= (1 - t.near_elect) * top]
+        pool = [
+            i
+            for i in stating
+            if i == lead
+            or score[i] >= (1 - t.near_elect) * top
+            or (i in near and _convention_variant(menu, lead, i))
+        ]
         pool = _with_nominal_output(shapes, pool, conf, t)
     else:
-        pool = [i for i in electable if conf.measures[i] >= best - t.near]
-    # A phrase that states no form asks for the plain measure, not a share of a base.
-    if form is None:
-        plain = [i for i in pool if stated_reading(shapes[i]).denominator is None]
-        if plain and len(plain) < len(pool):
-            conf.rules.append("form: phrase states none, shapes with a denominator set aside")
-            pool = plain
+        pool = near
     # A measure value or a dataset the phrase names keeps the shapes that hold it.
     for axis, field_name in AXIS_FIELDS.items():
         owned = _policy_chooses(menu, pool, axis)
@@ -493,11 +581,17 @@ def _pool(
     return pool
 
 
-def _policy_chooses(menu: JevMenu, indices: Sequence[int], axis: str) -> bool:
-    """Whether a house policy would choose on measure axis `axis` among the menu shapes at
-    `indices` (`BindRequest.policy_chooses_on`), False when no policy reads the menu."""
+def _policy_chooses(
+    menu: JevMenu,
+    indices: Sequence[int],
+    axis: str,
+    *,
+    policies: Sequence[PolicyName] = POLICY_ORDER,
+) -> bool:
+    """Whether one of `policies` would choose on measure axis `axis` among the menu shapes
+    at `indices` (`BindRequest.policy_chooses_on`), False when no policy reads the menu."""
     chooses = menu.request.policy_chooses_on
-    return chooses is not None and chooses(indices, axis)
+    return chooses is not None and chooses(indices, axis, policies=policies)
 
 
 def _names_value(answers: JevAnswers, t: Thresholds, value: str | None, *, owned: bool) -> bool:
@@ -523,7 +617,7 @@ def _holds(
     """Whether each `pool` shape holds the constraints Jev recognised on `pick`, as
     `pick`'s slots bind them at the thresholds once the span rule has run
     (`_shape_drafts`), the drafts `assemble` binds: the value and set drafts the phrase
-    names (`gemini.mentioned_drafts`), and the slots it asks for in full.
+    names (`gemini.mentioned_drafts`), and the slots it validly asks for in full.
 
     A shape holds a named value when it holds it on its own slot as `pick` does
     (`gemini.holds_drafted_values`), or in exchange for a value Jev recognises on a slot of
@@ -554,90 +648,25 @@ def _holds(
 
 
 def _alternates(
-    menu: JevMenu,
-    e: int,
-    conf: Confidence,
-    t: Thresholds,
-    answers: JevAnswers,
-    form: str | None,
+    shapes: Sequence[ShapeDraft], e: int, conf: Confidence, t: Thresholds, form: str | None
 ) -> list[int]:
-    """The shapes measuring the phrase's quantity whose five-tuple states a genuine
-    alternate reading of `e`, by measure score, highest first."""
-    shapes = menu.request.shapes
-    index = get_measure_index()
-    family = next((a.prefer for a in index.axes if a.axis == "populationType"), ())
-
-    def named(k: int, axis: str, a: str | None, b: str | None) -> bool:
-        """Whether the phrase names either of the values `e` and shape `k` hold on `axis`."""
-        owned = _policy_chooses(menu, (e, k), axis)
-        return any(_names_value(answers, t, v, owned=owned) for v in (a, b))
-
-    elected = stated_reading(shapes[e])
-    out: list[tuple[float, int]] = []
-    top = max(conf.election.values(), default=0.0)
-    for k in range(len(shapes)):
-        # A house policy settled the reading a set-aside shape offers.
-        if k in conf.policy_dropped:
-            continue
-        # A shape the election rates nearly as high as the elected one, and that measures
-        # the phrase, is a reading the words do not choose between.
-        if (
-            k != e
-            and top
-            and conf.measures[k] > t.alt_floor
-            and near_best(conf.election.get(k, 0.0), top, RATED_POOL_FRACTION)
-        ):
-            conf.alternates[k] = "elected alike"
-            out.append((conf.measures[k], k))
-            continue
-        if k == e or conf.measures[k] <= t.measures:
-            continue
-        other = stated_reading(shapes[k])
-        if other.denominator != elected.denominator:
-            # A denominator variant of the identical measure, when the phrase states no
-            # form, and never a per-area one.
-            if (
-                form is not None
-                or "per area" in (other.denominator, elected.denominator)
-                or (other.population_type, other.measured_property, other.qualifier)
-                != (elected.population_type, elected.measured_property, elected.qualifier)
-            ):
-                continue
-            conf.alternates[k] = "denominator variant"
-        elif (
-            elected.population_type in family
-            and other.population_type in family
-            and (other.population_type, other.measured_property, other.qualifier)
-            != (elected.population_type, elected.measured_property, elected.qualifier)
-        ):
-            # The measure family's declared axes are its interpretations, unless the phrase
-            # names a value on an axis where the two differ.
-            differing = [
-                (axis, a, b)
-                for axis, a, b in (
-                    ("populationType", elected.population_type, other.population_type),
-                    ("measuredProperty", elected.measured_property, other.measured_property),
-                    ("measurementQualifier", elected.qualifier, other.qualifier),
-                )
-                if a != b
-            ]
-            if any(named(k, axis, a, b) for axis, a, b in differing):
-                continue
-            conf.alternates[k] = "measure family variant"
-        elif (other.population_type, other.measured_property) != (
-            elected.population_type,
-            elected.measured_property,
-        ):
-            continue
-        elif other.qualifier != elected.qualifier:
-            if named(k, "measurementQualifier", elected.qualifier, other.qualifier):
-                continue
-            conf.alternates[k] = "qualifier variant"
-        else:
-            # Another dataset's copy of the elected reading is settled by data and rank.
-            continue
-        out.append((conf.measures[k], k))
-    return [k for _p, k in sorted(out, key=lambda pk: -pk[0])]
+    """The shapes the election finds as plausible as `e` (`conf.plausible`) that measure
+    the phrase above `alt_floor`, by measure score, highest first: readings the words do
+    not choose between. A shape a house policy set aside offers a reading it settled, and
+    where the phrase states a form, a shape dividing by another base than `e` offers
+    another quantity."""
+    denominator = stated_reading(shapes[e]).denominator
+    out = [
+        k
+        for k in conf.plausible
+        if k != e
+        and k not in conf.policy_dropped
+        and conf.measures[k] > t.alt_floor
+        and (form is None or stated_reading(shapes[k]).denominator == denominator)
+    ]
+    for k in out:
+        conf.alternates[k] = "elected alike"
+    return sorted(out, key=lambda k: -conf.measures[k])
 
 
 def _draft(
@@ -682,8 +711,14 @@ def _shape_drafts(
     population: Population | None,
 ) -> list[SlotBindingDraft]:
     """The drafts of shape `s`'s listed slots: each slot's own (`_bind_slot`), then the
-    span rule over them (`_span_owned`)."""
-    return _span_owned(menu, answers, _slot_drafts(menu, answers, s, conf, t), conf, population)
+    span rule over them (`_span_owned`), with each ``requested_all`` claim validated on `s`
+    (`bind.validate_requested_all_bindings`), so a "total" that names no slot claims none."""
+    drafts = _span_owned(menu, answers, _slot_drafts(menu, answers, s, conf, t), conf, population)
+    slots = {slot.property_dcid for slot in menu.request.shapes[s].slot_keys}
+    validated, _applied = validate_requested_all_bindings(
+        drafts, menu.request.dropped_qualifier_phrases, slot_properties=slots
+    )
+    return validated
 
 
 def _slot_drafts(

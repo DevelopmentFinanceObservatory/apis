@@ -1,9 +1,10 @@
-"""Golden replay of the Jev binder: stored Jev answers reproduce each item's expected output.
+"""Golden replay of the Jev binder: stored Jev answers give each item's expected output.
 
 Each item (`_jev_golden`) holds the answers Jev gave on one dev item and the bind output,
 quantity read and election rules the assembler builds from them under the house policies in
-`binders/house_policy.py`. The port's requests ask exactly the questions those answers
-answer, and its assembly gives that output.
+`binders/house_policy.py`. Each expected output is the assembler's own, judged against the
+item's agreed label of the evaluation set, so a change to an expectation is a judged change
+of behaviour. The requests ask exactly the questions those answers answer.
 """
 
 from __future__ import annotations
@@ -24,11 +25,6 @@ from tests.engine._jev_golden import (
 
 _PATHS = golden_paths()
 
-# The items whose stored first round calls for a span round no recording answers: each
-# replays as a bind whose span questions Jev did not answer, so its drafts stand. A live
-# "World Bank loans", asked with its query text, drafts one property and asks none.
-_SPAN_ROUND_UNRECORDED = frozenset({"synthetic-74b382efc5_p0"})
-
 
 def test_the_golden_set_is_present():
     assert len(_PATHS) == 36
@@ -47,16 +43,11 @@ def test_stored_answers_give_the_stored_output(path: Path):
 def test_the_requests_ask_the_stored_questions(path: Path):
     """The bind request, the span round its answers call for, and the quantity request
     together ask every stored question except ``topic`` and ``within|i``, and only the
-    quantity request asks the ``q|`` questions. An item in `_SPAN_ROUND_UNRECORDED` calls
-    for a span round and stores none of it."""
+    quantity request asks the ``q|`` questions."""
     item = load_item(path)
 
     bind, spans, quantity = asked_ids(item)
 
-    if path.stem in _SPAN_ROUND_UNRECORDED:
-        assert spans
-        assert not [q for q in item.stored if q.startswith("span|")]
-        spans = []
     assert sorted(bind + spans + quantity) == stored_ids(item)
     assert not [q for q in bind if q.startswith("q|")]
     assert quantity and all(q.startswith("q|") for q in quantity)
@@ -73,14 +64,18 @@ def test_the_house_policies_run_once_on_an_election_and_never_on_an_ask(path: Pa
 
 def test_a_house_policy_moves_the_loan_to_the_taxonomy_that_states_it():
     """ "World Bank loans" to Tanzania, with Jev's support for the CRS purpose "action
-    relating to debt" at 0.01 in place of the stored 0.67: the loan is then the one
-    constraint Jev recognised on its CRS pick, DAC2a, the recipient default, states it as
-    non-grant finance in its own taxonomy, and the policy moves the part there. With the
-    stored answers DAC2a has no slot for the purpose, and the CRS shape stays (the golden
-    item)."""
+    relating to debt" at 0.01 in place of the stored 0.67, and no ``none`` share in
+    ``electq`` in place of the stored 0.95, under which the part asks (the golden item):
+    the loan is then the one constraint Jev recognised on its CRS pick, DAC2a, the
+    recipient default, states it as non-grant finance in its own taxonomy, and the policy
+    moves the part there."""
     item = load_item(GOLDEN / "synthetic-74b382efc5_p0.json")
     stored = item.answers
-    answers = JevAnswers(nouls={**stored.nouls, "n|how:crsPurpose|8": 0.01}, choices=stored.choices)
+    electq = {k: p for k, p in stored.choices["electq"].items() if k != "none"}
+    answers = JevAnswers(
+        nouls={**stored.nouls, "n|how:crsPurpose|8": 0.01},
+        choices={**stored.choices, "electq": electq},
+    )
 
     out, _conf = replay(item, answers=answers)
 

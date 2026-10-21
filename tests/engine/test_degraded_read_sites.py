@@ -96,14 +96,23 @@ def _relaxed_suggestion(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _stray_value_labels() -> None:
     """A stray value no menu shape or code index labels, named in words from its dcid when
-    the graph's label read fails, so no dcid reaches the refusal's prose."""
+    the graph's label read fails, so no dcid reaches the prose that discloses it."""
     stray = SlotBindingDraft(
         axis="how", property_dcid="gender", kind="value", value_dcids=["dc/g/SexFemale"]
     )
-    state = SimpleNamespace(capped_shapes=[], label_dcids=_raise_graph_failure)
+    state = SimpleNamespace(
+        capped_shapes=[],
+        label_dcids=_raise_graph_failure,
+        admitted_qualifiers=(),
+        query_qualifiers=[],
+        variable="population",
+        query_text=None,
+        dropped_qualifier_phrases=(),
+    )
     (requirement,) = asyncio.run(_stray_requirements(cast(ResolveState, state), [stray]))
     assert requirement.term.text == "sex female"
-    assert [ref.label for ref in requirement.term.named] == ["sex female"]
+    assert requirement.departure is not None
+    assert requirement.departure[1].asked == "sex female"
 
 
 @pytest.mark.parametrize(
