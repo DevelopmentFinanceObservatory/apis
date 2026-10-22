@@ -179,6 +179,69 @@ def test_an_ambiguous_source_offers_each_candidate_and_each_option_resolves_it(
         _assert_options_settle(client, no_data)
 
 
+@pytest.mark.parametrize("excluded_kind", ["provenance", "source"])
+def test_source_choices_omit_a_candidate_removed_by_existing_exclusions(excluded_kind):
+    words = "Shared Tables"
+    rows = [
+        ProvenanceRow(
+            id=f"dc/base/{publisher}Tables",
+            data_commons=DFO,
+            source=SourceRef(ref=f"dc/s/{publisher}", label=publisher),
+            name=words,
+            url="https://example.org",
+        )
+        for publisher in ("Alpha", "Beta")
+    ]
+    excluded = rows[0].id if excluded_kind == "provenance" else rows[0].source.ref
+    service = fake_catalogue_service(FakeCatalogue(provenances={row.id: row for row in rows}))
+    with catalogue_service_module._singleton.poisoned_for_test(service):
+        client = _fertility_client(_ShapeZeroLLM())
+        no_data = _no_data(
+            client,
+            {
+                "variable_text": _FERTILITY,
+                "entities": [{"text": "Kenya"}],
+                "sources": [{"text": words}, {"ref": excluded, "polarity": "exclude"}],
+            },
+        )
+        assert no_data["reason"] == "source_ambiguous"
+        (option,) = no_data["options"]
+        assert option["data_query"]["parts"][0]["sources"] == [
+            {"text": words, "ref": rows[1].id, "polarity": "include"},
+            {"ref": excluded, "polarity": "exclude"},
+        ]
+        _assert_options_settle(client, no_data)
+
+
+def test_source_choices_omit_every_empty_mixed_polarity_choice():
+    words = "Shared Tables"
+    rows = [
+        ProvenanceRow(
+            id=f"dc/base/{publisher}Tables",
+            data_commons=DFO,
+            source=SourceRef(ref=f"dc/s/{publisher}", label=publisher),
+            name=words,
+            url="https://example.org",
+        )
+        for publisher in ("Alpha", "Beta")
+    ]
+    service = fake_catalogue_service(FakeCatalogue(provenances={row.id: row for row in rows}))
+    with catalogue_service_module._singleton.poisoned_for_test(service):
+        no_data = _no_data(
+            _fertility_client(_ShapeZeroLLM()),
+            {
+                "variable_text": _FERTILITY,
+                "entities": [{"text": "Kenya"}],
+                "sources": [
+                    {"text": words, "polarity": "include"},
+                    {"text": words, "polarity": "exclude"},
+                ],
+            },
+        )
+        assert no_data["reason"] == "source_ambiguous"
+        assert not no_data.get("options")
+
+
 @pytest.mark.parametrize(
     ("unit_text", "posted"),
     [
