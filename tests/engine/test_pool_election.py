@@ -898,14 +898,26 @@ def _fill(
     party_words_off: bool = True,
     elected: ShapeDraft | None = None,
     missed: str | None = None,
+    merged: bool = False,
+    trailing: dict[str, bool] | None = None,
 ) -> tuple[RegionResult, list[ShapeDraft] | None]:
     """`pipeline._fill_gap` over our pass's `ours`, elected on `elected`, with a UN pass
     that returns `un`, and the shapes the UN pass ran over, None when it did not run.
     `ours_doubted` and `un_doubted` say each pass's binder rated "none of the shapes"
-    first (`BindResult.none_first`), and `missed` is why the UN leg's pool is missing."""
+    first (`BindResult.none_first`), `missed` is why the UN leg's pool is missing, and
+    `merged` puts the UN pool on our pass's menu (`ResolveState.un_pool`). Given
+    `trailing`, each pass's result holds a pending observations task, and `trailing` maps
+    "ours" and "un" to whether `_fill_gap` cancelled it."""
     ran: list[list[ShapeDraft]] = []
 
     async def fill() -> RegionResult:
+        nonlocal ours, un
+        tasks: dict[str, asyncio.Task[None]] = {}
+        if trailing is not None:
+            tasks = {side: asyncio.create_task(asyncio.sleep(60)) for side in ("ours", "un")}
+            ours = dataclasses.replace(ours, observations_task=tasks["ours"])
+            un = dataclasses.replace(un, observations_task=tasks["un"])
+
         async def shapes() -> UnPool:
             if missed is not None:
                 return UnPool(shapes=[], missed=missed)
@@ -922,7 +934,11 @@ def _fill(
             bind_decision=SimpleNamespace(none_first=ours_doubted),
             party_words_off=party_words_off,
             un_leg=UnLeg(task=asyncio.create_task(shapes()), ends=time.monotonic() + 1),
-            un_pool=None,
+            un_pool=(
+                UnPool(shapes=[_shape(_UN, population_type=_UN, pool="un_system")])
+                if merged
+                else None
+            ),
         )
         un_state = SimpleNamespace(
             rcl=None,
@@ -937,12 +953,15 @@ def _fill(
 
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(pipeline, "_run_phases", run)
-            return await pipeline._fill_gap(
+            result = await pipeline._fill_gap(
                 ours,
                 first=cast(ResolveState, first),
                 deadline=None,
                 un_state=lambda _bound: cast(ResolveState, un_state),
             )
+        if trailing is not None:
+            trailing.update({side: task.cancelled() for side, task in tasks.items()})
+        return result
 
     result = asyncio.run(fill())
     return result, ran[0] if ran else None
@@ -1080,6 +1099,10 @@ def test_a_doubted_answer_whose_un_leg_missed_states_it() -> None:
         # '"climate" is not a distinction this data records' over a UN series with no data.
         ("qualifier_not_bound", "no_observations", False),
         ("no_observations", "qualifier_not_bound", False),
+        # The UN pass mints these on its elected shape's places, so it matched a variable,
+        # though `NO_DATA_RESOLUTION_ORDER` ranks both before `variable_not_resolved`.
+        ("variable_not_resolved", "entity_set_too_large", True),
+        ("variable_not_resolved", "entity_role_not_admitted", True),
     ],
 )
 def test_a_un_refusal_on_a_matched_variable_stands_over_ours_matching_none(
@@ -1093,6 +1116,52 @@ def test_a_un_refusal_on_a_matched_variable_stands_over_ours_matching_none(
     chosen, _ = _fill(ours, un)
 
     assert chosen.no_data_reason == (un_reason if un_stands else ours_reason)
+
+
+@pytest.mark.parametrize(
+    ("ours", "un", "ours_doubted", "un_doubted", "dropped"),
+    [
+        # Our doubted answer gives way to the UN answer.
+        ("definite", "definite", True, False, "ours"),
+        # Both binders doubt, so the UN answer is dropped.
+        ("definite", "definite", True, True, "un"),
+        ("no_data", "definite", False, False, "ours"),
+    ],
+    ids=["ours-replaced", "both-doubted", "gap-filled"],
+)
+def test_the_dropped_answer_of_a_gap_fill_cancels_its_trailing_tasks(
+    ours: str, un: str, ours_doubted: bool, un_doubted: bool, dropped: str
+) -> None:
+    """Both passes stream their trailing reads, and the answer that does not stand names a
+    Spec the response never shows, so its reads are cancelled and the standing one's run."""
+    trailing: dict[str, bool] = {}
+
+    _fill(
+        _gap_result(ours),
+        _gap_result(un),
+        ours_doubted=ours_doubted,
+        un_doubted=un_doubted,
+        trailing=trailing,
+    )
+
+    assert trailing == {"ours": dropped == "ours", "un": dropped == "un"}
+
+
+def test_a_doubted_answer_on_a_merged_menu_runs_no_un_pass(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A menu holding the UN pool already offered the binder the UN shapes it rated "none"
+    above, so a UN pass would elect again among them; a merged `no_data` part still runs
+    one."""
+    ours = _gap_result("definite")
+
+    with caplog.at_level(logging.INFO, logger=pipeline.__name__):
+        chosen, ran = _fill(ours, _gap_result("definite"), ours_doubted=True, merged=True)
+    _, refused_ran = _fill(_gap_result("no_data"), _gap_result("definite"), merged=True)
+
+    assert ran is None and chosen is ours
+    assert "un_pass=skipped:merged " in _gap_fill_line(caplog)
+    assert refused_ran is not None
 
 
 def _shape(dcid: str, *, population_type: str, pool: Pool) -> ShapeDraft:

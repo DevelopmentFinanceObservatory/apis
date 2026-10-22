@@ -381,6 +381,7 @@ class CacheScope:
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
         source_codes: Sequence[str | None] = (),
+        unit_texts: Sequence[str | None] = (),
         separate: Sequence[bool] = (),
         extraction_warnings: Sequence[Warning] = (),
         llm_usage: dict[str, int] | None = None,
@@ -389,7 +390,9 @@ class CacheScope:
 
         `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
         and `sources` are required to build a complete key. `source_codes` runs parallel to
-        `variables` and holds the series code the query writes for each. `separate` runs parallel to
+        `variables` and holds the series code the query writes for each. `unit_texts` runs
+        parallel to `variables` and holds the unit text extraction peeled from each
+        (`ExtractionResult.unit_texts`). `separate` runs parallel to
         `variables` and marks each one the raw query compares with another.
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
         serves as stored. This lookup
@@ -415,6 +418,7 @@ class CacheScope:
             operations=operations,
             sources=sources,
             source_codes=source_codes,
+            unit_texts=unit_texts,
             role_contradictions=signals.role_contradictions,
             query_text_qualifier_matches=signals.query_text_qualifier_matches,
             query_text_qualifier_ties=signals.query_text_qualifier_ties,

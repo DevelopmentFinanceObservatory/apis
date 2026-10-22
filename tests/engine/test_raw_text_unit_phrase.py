@@ -81,7 +81,7 @@ def test_a_unit_phrase_inside_the_variable_binds_as_the_unit_text():
     prep = raw_text._prepare_extraction(result.extraction, result, query=query)
 
     assert prep.unique == ["GDP"]
-    assert prep.unit_text == "in euros"
+    assert prep.per_variable_unit_texts == ["in euros"]
     assert prep.dropped_qualifier_phrases == []
 
 
@@ -107,12 +107,13 @@ def test_a_second_phrase_that_conflicts_with_the_first_stays_dropped():
 
 
 async def _legs_unit_texts(
-    extraction: Extraction,
+    extraction: Extraction, *, unit_texts: dict[str, str] | None = None
 ) -> list[tuple[str, str | None, bool, list[str]]]:
     legs: list[tuple[str, str | None, bool, list[str]]] = []
 
     async def _extract(query, *, llm):
-        return ExtractionResult(extraction=extraction, qualifiers={}), None
+        result = ExtractionResult(extraction=extraction, qualifiers={}, unit_texts=unit_texts or {})
+        return result, None
 
     async def _resolve_variable(variable, **kwargs):
         legs.append(
@@ -156,3 +157,44 @@ def test_every_variable_leg_receives_the_unit_text(variables):
 
     # A typed phrase is best effort, so data that cannot convert answers without it.
     assert legs == [(variable, "in euros", True, []) for variable in sorted(variables)]
+
+
+@pytest.mark.parametrize(
+    ("variables", "dropped", "unit_texts", "expected"),
+    [
+        pytest.param(
+            ["GDP", "population"],
+            [],
+            {"GDP": "in euros"},
+            {"GDP": "in euros", "population": None},
+            id="own-phrase-stays-on-its-part",
+        ),
+        pytest.param(
+            ["GDP", "debt"],
+            [],
+            {"GDP": "in euros", "debt": "in dollars"},
+            {"GDP": "in euros", "debt": "in dollars"},
+            id="each-part-its-own-currency",
+        ),
+        pytest.param(
+            ["GDP", "debt"],
+            ["at constant prices"],
+            {"GDP": "in euros"},
+            {"GDP": "in euros at constant prices", "debt": "at constant prices"},
+            id="own-phrase-joins-the-request-wide-one",
+        ),
+        pytest.param(
+            ["GDP", "debt"],
+            ["in yen"],
+            {"GDP": "in euros"},
+            {"GDP": "in euros", "debt": "in yen"},
+            id="own-phrase-wins-a-conflict",
+        ),
+    ],
+)
+def test_a_peeled_unit_text_reaches_only_its_own_part(variables, dropped, unit_texts, expected):
+    extraction = Extraction(kind="resolution", variables=variables, dropped_qualifiers=dropped)
+
+    legs = asyncio.run(_legs_unit_texts(extraction, unit_texts=unit_texts))
+
+    assert {variable: unit_text for variable, unit_text, _, _ in legs} == expected

@@ -306,8 +306,8 @@ class SearchSettings(BaseSettings):
 
     # How long a part waits for the UN leg, its resolve and the derivation of its shapes,
     # from the start of derivation, in seconds. The UN derivation runs beside ours, and only
-    # a part whose own pass ends no_data waits for it, or with un_on_first_menu one whose
-    # best shape is weak. Past it that part keeps our answer and carries
+    # a part whose own pass ends no_data or answers on a pick its binder doubted waits for
+    # it, or with un_on_first_menu one whose best shape is weak. Past it that part keeps our answer and carries
     # un_system_unavailable. Run
     # beside ours against the live UN deployment, ten queries' UN legs finished 0.89 to
     # 1.57 s after derivation began; a 1.0 s wait missed one of the ten. The `un_derive` log

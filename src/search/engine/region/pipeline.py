@@ -22,6 +22,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import NESTED_SHAPE_STEPS
+from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
     DegradedReads,
     note_degraded_read,
@@ -220,7 +221,8 @@ async def resolve_variable(
     strong shape of its own waits for the UN leg and its menu also holds the UN pool's
     shapes (`phase_intake._merge_un_pool`); when the leg failed or was late, the part
     carries `un_system_unavailable` whatever its status. A part with a strong shape never takes the
-    UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass.
+    UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass, and a
+    doubted answer on a merged pass does not.
 
     Returns a `RegionResult` with status `definite`, `candidates`, `no_data`, or `unsupported`.
     When the pipeline's UN System Data Commons reads named places the UN front door refuses,
@@ -548,7 +550,8 @@ async def _fill_gap(
     also stands when the UN pass's elected shape matches the phrase only weakly
     (`_representative_score_is_weak`): such an answer has no better claim to the question
     than the alternate. The answer carries both passes' step timings and model usage, and
-    states `alternates_unevaluated` when either pass left an alternate unevaluated.
+    states `alternates_unevaluated` when either pass left an alternate unevaluated. The
+    dropped answer's trailing tasks are cancelled (`deadline._cancel_trailing_tasks`).
 
     A UN leg that failed, or was not in by its wait, and a UN pass that fails upstream
     (`_UPSTREAM_FAILURES`) or has no time to start, leave `result` standing with
@@ -644,7 +647,11 @@ async def _fill_gap(
     offers_alternate = (
         refused and second.alternate_match is not None and result.alternate_match is None
     )
-    # A UN refusal that matched a variable says more than ours that matched none.
+    # A UN refusal that matched a variable says more than ours that matched none. Every UN
+    # reason but `variable_not_resolved` is reached after election: the pass shares our
+    # pass's sources and entities, which got ours as far as election, and mints
+    # `entity_set_too_large` and `entity_role_not_admitted` only on its elected shape's
+    # places, though `NO_DATA_RESOLUTION_ORDER` ranks both before the variable.
     matched_further = (
         refused
         and result.no_data_reason == "variable_not_resolved"
@@ -655,6 +662,8 @@ async def _fill_gap(
     for step, ms in second.timing_by_step.items():
         timing[step] = timing.get(step, 0) + ms
     other = result if chosen is second else second
+    # The dropped answer's trailing reads serve a Spec the response never names.
+    await _cancel_trailing_tasks([other])
     carried = (
         ()
         if chosen.alternates_left_out
@@ -687,7 +696,9 @@ def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     """Why the UN pass does not run after our pass's `result`, or `None` when it runs.
 
     Only a `no_data` answer has a gap to fill, and an answer its binder doubted
-    (`_doubted`) one the UN pool may fill better. A refusal about the request's entities or a
+    (`_doubted`) one the UN pool may fill better, unless our pass's menu already held the
+    UN pool (`ResolveState.un_pool`): the binder rated "none" above those shapes too, and a
+    UN pass would only elect again among them. A refusal about the request's entities or a
     `source_ambiguous` one stands, since the UN pool resolves neither. So does the answer of
     a part whose series code named its StatVars (`ResolveState.source_code`), which answers
     from those alone, and that of a part whose
@@ -698,8 +709,11 @@ def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     publishers out. A part that names a source and refuses on its scope is not settled by
     the refusal; whether its UN pass runs is `allows_un_system`'s to say, so a part naming a
     UN System Data Commons source still reaches it."""
-    if result.status != "no_data" and not _doubted(result, first):
-        return "answered"
+    if result.status != "no_data":
+        if not _doubted(result, first):
+            return "answered"
+        if first.un_pool is not None:
+            return "merged"
     if result.no_data_reason in _ENTITY_TERMINALS:
         return "entity"
     if result.no_data_reason == "source_ambiguous":

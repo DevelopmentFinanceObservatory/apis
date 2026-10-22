@@ -258,6 +258,7 @@ def layer2_key(
     query_text_negated_stated_words: Sequence[str] = (),
     query_text_value_source: str | None = None,
     source_codes: Sequence[str | None] = (),
+    unit_texts: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
     extraction_warnings: Sequence[Warning] = (),
@@ -274,7 +275,10 @@ def layer2_key(
     the part echoes them, so "aid to Kenya" and "aid to Kenya excluding the CRS" keep
     separate entries. `source_codes` runs parallel to `variables` when given and holds the
     series code the query writes for each (`source_code.scan_source_codes`). The key states
-    them and adds nothing when none is written.
+    them and adds nothing when none is written. `unit_texts` runs parallel to `variables`
+    when given and holds the unit text extraction peeled from each
+    (`ExtractionResult.unit_texts`), the part's own unit request beside the request-wide
+    one `dropped_qualifiers` holds. The key states them and adds nothing when none is peeled.
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
     positions and adds nothing when none is marked.
@@ -318,6 +322,8 @@ def layer2_key(
         document["query_text_value_source"] = " ".join(query_text_value_source.split())
     if any(code is not None for code in source_codes):
         document["source_codes"] = list(source_codes)
+    if any(text is not None for text in unit_texts):
+        document["unit_texts"] = list(unit_texts)
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):
