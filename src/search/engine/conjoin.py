@@ -332,7 +332,8 @@ def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
 def _source_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
     """One option per ambiguous source wording and candidate, setting the candidate's ref on
     every ref-less mention with that wording; a wording mentioned twice gives its options
-    once, from its first group. A label names an excluded source as excluded."""
+    once, from its first group. Choices the source compiler found empty are omitted.
+    A label names an excluded source as excluded."""
     groups: dict[str, AmbiguousSource] = {}
     for group in region.ambiguous_sources:
         groups.setdefault(group.text, group)
@@ -341,6 +342,8 @@ def _source_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
         mentions = [m for m in part.sources if m.ref is None and m.text == text]
         excluded = bool(mentions) and mentions[0].polarity == "exclude"
         for candidate in group.candidates:
+            if candidate.ref in group.blocked_choices:
+                continue
             sources = [
                 m.model_copy(update={"ref": candidate.ref}) if m in mentions else m
                 for m in part.sources

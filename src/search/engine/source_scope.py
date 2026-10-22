@@ -31,7 +31,7 @@ import logging
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from code_index.query import CodeIndex
@@ -93,10 +93,15 @@ class SourceScope:
 
 @dataclass(frozen=True, slots=True)
 class AmbiguousSource:
-    """A mention's words that match two or more unrelated references."""
+    """A mention's words that match two or more unrelated references.
+
+    `blocked_choices` holds candidates that would empty the source scope when
+    every ref-less mention of these words is pinned to that candidate.
+    """
 
     text: str
     candidates: tuple[SourceReference, ...]
+    blocked_choices: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,6 +332,49 @@ def _pinned_reference(dictionary: SourceDictionary, ref: str, *, pointer: str) -
     )
 
 
+def _source_choices(
+    mentions: Sequence[SourceMention],
+    resolved: Sequence[NamedSource | None],
+    ambiguous: Sequence[AmbiguousSource],
+    dictionary: SourceDictionary,
+) -> tuple[AmbiguousSource, ...]:
+    """Mark choices that would leave no source after the existing exclusions.
+
+    Other ambiguous wordings keep a repost in source resolution, so its final scope
+    cannot yet be checked. Use the same catalogue expansions as normal compilation,
+    including Dataset and Source exclusions, without adding reads to response assembly.
+    """
+    if len({group.text for group in ambiguous}) != 1 or not any(
+        mention.polarity == "exclude" for mention in mentions
+    ):
+        return tuple(ambiguous)
+    group = ambiguous[0]
+    blocked: set[str] = set()
+    for candidate in group.candidates:
+        references = [
+            candidate if mention.ref is None and mention.text == group.text else reference
+            for mention, reference in zip(mentions, resolved, strict=True)
+        ]
+        expansions = [
+            frozenset()
+            if reference is None
+            else _expand(dictionary, reference, include=mention.polarity == "include")
+            for mention, reference in zip(mentions, references, strict=True)
+        ]
+        included = [
+            expansion
+            for mention, expansion in zip(mentions, expansions, strict=True)
+            if mention.polarity == "include"
+        ]
+        allowed = frozenset().union(*included) if included else dictionary.every
+        for mention, expansion in zip(mentions, expansions, strict=True):
+            if mention.polarity == "exclude":
+                allowed -= expansion
+        if not allowed:
+            blocked.add(candidate.ref)
+    return tuple(replace(item, blocked_choices=frozenset(blocked)) for item in ambiguous)
+
+
 def compile_sources(
     mentions: Sequence[SourceMention],
     *,
@@ -383,7 +431,7 @@ def compile_sources(
         return SourceRefusal(
             reason="source_ambiguous",
             terms=tuple(group.text for group in ambiguous),
-            ambiguous=tuple(ambiguous),
+            ambiguous=_source_choices(mentions, resolved, ambiguous, dictionary),
             mentions=pinned,
         )
 
