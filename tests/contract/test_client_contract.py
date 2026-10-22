@@ -1,4 +1,4 @@
-"""The composed app serves every exchange the client contract records.
+"""Recorded client exchanges fit the composed app's schemas and code registry.
 
 `dfo_client_contract` ships the scenarios the DFO Python and TypeScript clients replay, the
 response members they act on (`strict-fields.json`) and the caller's next step for each refusal

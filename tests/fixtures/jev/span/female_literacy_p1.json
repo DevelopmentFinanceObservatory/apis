@@ -1,0 +1,259 @@
+{
+ "query": "female literacy rate",
+ "variable": "female literacy rate",
+ "slots": [
+  {
+   "slot": "how:undataAge",
+   "label": "Age",
+   "values": [
+    {
+     "dcid": "unresolved:undataAge:0",
+     "label": "15 years old and over"
+    },
+    {
+     "dcid": "unresolved:undataAge:1",
+     "label": "25 to 64 years old"
+    },
+    {
+     "dcid": "unresolved:undataAge:2",
+     "label": "15 to 24 years old"
+    },
+    {
+     "dcid": "unresolved:undataAge:3",
+     "label": "65 years old and over"
+    }
+   ]
+  },
+  {
+   "slot": "how:undataSex",
+   "label": "Sex",
+   "values": [
+    {
+     "dcid": "undata/SEX-F",
+     "label": "Female"
+    },
+    {
+     "dcid": "unresolved:undataSex:1",
+     "label": "Male"
+    }
+   ]
+  },
+  {
+   "slot": "how:undataNativity",
+   "label": "Nativity",
+   "values": [
+    {
+     "dcid": "unresolved:undataNativity:0",
+     "label": "Native-born"
+    },
+    {
+     "dcid": "unresolved:undataNativity:1",
+     "label": "Foreign-born"
+    }
+   ]
+  },
+  {
+   "slot": "how:undataUnfpaRace",
+   "label": "UNFPA race",
+   "values": [
+    {
+     "dcid": "unresolved:undataUnfpaRace:0",
+     "label": "Asian (Brazil census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:1",
+     "label": "Black (Brazil census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:2",
+     "label": "Brown (Brazil) (Brazil census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:3",
+     "label": "Indigenous (Brazil census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:4",
+     "label": "White (Brazil census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:5",
+     "label": "Black (Colombia census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:6",
+     "label": "Indigenous (Colombia census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:7",
+     "label": "Other (Colombia census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:8",
+     "label": "White (Colombia census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:9",
+     "label": "Asian (Costa Rica census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:10",
+     "label": "Black (Costa Rica census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:11",
+     "label": "Chinese (Costa Rica census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:12",
+     "label": "Indigenous (Costa Rica census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:13",
+     "label": "Mulatto (Black and White) (Costa Rica census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:14",
+     "label": "Other (Costa Rica census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:15",
+     "label": "White (Costa Rica census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:16",
+     "label": "Afro-Ecuadorian (Ecuador census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:17",
+     "label": "Black (Ecuador census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:18",
+     "label": "Indigenous (Ecuador census category)"
+    },
+    {
+     "dcid": "unresolved:undataUnfpaRace:19",
+     "label": "Mestizo (Indigenous and White) (Ecuador census category)"
+    }
+   ]
+  },
+  {
+   "slot": "how:undataUrbanization",
+   "label": "Urbanization",
+   "values": [
+    {
+     "dcid": "unresolved:undataUrbanization:0",
+     "label": "Urban"
+    },
+    {
+     "dcid": "unresolved:undataUrbanization:1",
+     "label": "Rural"
+    }
+   ]
+  }
+ ],
+ "runs": [
+  {
+   "nouls": {
+    "m|0": 0.9,
+    "mq|0": 0.86,
+    "named|0": 0.02,
+    "part|how:undataAge": 0.24,
+    "n|how:undataAge|0": 0.23,
+    "n|how:undataAge|1": 0.03,
+    "n|how:undataAge|2": 0.03,
+    "n|how:undataAge|3": 0.02,
+    "several|how:undataAge": 0.03,
+    "part|how:undataNativity": 0.62,
+    "n|how:undataNativity|0": 0.02,
+    "n|how:undataNativity|1": 0.02,
+    "several|how:undataNativity": 0.03,
+    "part|how:undataUrbanization": 0.34,
+    "n|how:undataUrbanization|0": 0.02,
+    "n|how:undataUrbanization|1": 0.02,
+    "several|how:undataUrbanization": 0.02,
+    "part|how:undataUnfpaRace": 0.36,
+    "n|how:undataUnfpaRace|0": 0.01,
+    "n|how:undataUnfpaRace|1": 0.01,
+    "n|how:undataUnfpaRace|2": 0.01,
+    "n|how:undataUnfpaRace|3": 0.01,
+    "n|how:undataUnfpaRace|4": 0.01,
+    "n|how:undataUnfpaRace|5": 0.01,
+    "n|how:undataUnfpaRace|6": 0.01,
+    "n|how:undataUnfpaRace|7": 0.01,
+    "n|how:undataUnfpaRace|8": 0.01,
+    "n|how:undataUnfpaRace|9": 0.01,
+    "n|how:undataUnfpaRace|10": 0.01,
+    "n|how:undataUnfpaRace|11": 0.01,
+    "n|how:undataUnfpaRace|12": 0.01,
+    "n|how:undataUnfpaRace|13": 0.01,
+    "n|how:undataUnfpaRace|14": 0.01,
+    "n|how:undataUnfpaRace|15": 0.01,
+    "n|how:undataUnfpaRace|16": 0.01,
+    "n|how:undataUnfpaRace|17": 0.01,
+    "n|how:undataUnfpaRace|18": 0.01,
+    "n|how:undataUnfpaRace|19": 0.01,
+    "several|how:undataUnfpaRace": 0.04,
+    "part|how:undataSex": 0.54,
+    "n|how:undataSex|0": 0.99,
+    "n|how:undataSex|1": 0.01,
+    "several|how:undataSex": 0.03
+   },
+   "choices": {
+    "elect": {
+     "Shape 0": 0.83
+    },
+    "electq": {
+     "Shape 0": 0.86,
+     "none": 0.04
+    }
+   },
+   "recorded_drafts": [
+    {
+     "axis": "how",
+     "property_dcid": "undataAge",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "undataSex",
+     "kind": "value",
+     "value_dcids": [
+      "undata/SEX-F"
+     ],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "undataNativity",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "undataUnfpaRace",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    },
+    {
+     "axis": "how",
+     "property_dcid": "undataUrbanization",
+     "kind": "unbound",
+     "value_dcids": [],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    }
+   ]
+  }
+ ],
+ "population": null
+}

@@ -2555,6 +2555,20 @@ def shape_population_arcs(shape: ShapeDraft) -> dict[str, dict]:
     }
 
 
+def held_family_arcs(shape: ShapeDraft) -> dict[str, dict]:
+    """The arcs of every member of the family the catalogue holds for `shape`
+    (`ShapeDraft.held_family`) beside the shape's own members, of every role class: unlike
+    `shape_population_arcs`, no role-class election narrows them (`ShapeDraft.held_roles`).
+    The shape's own members alone for a shape holding no family. Reads no graph."""
+    own = shape.sv_arc_facts or {}
+    if shape.held_family is None:
+        return dict(own)
+    return {
+        **own,
+        **{sv: arcs for sv, arcs in _held_members(shape.held_family).arcs.items() if sv not in own},
+    }
+
+
 def narrowed_to(shape: ShapeDraft, members: dict[str, dict]) -> ShapeDraft:
     """`shape` standing for `members` alone, some of the members it stands for
     (`shape_population_arcs`). It holds no catalogue family (`ShapeDraft.held_family`). A

@@ -6,6 +6,9 @@ both requests, and the expected output (`expected`). Values the JSON cannot hold
 tag (`decode`): ``$tuple``, ``$frozenset``, ``$dataclass``, ``$namedtuple``, ``$pydantic``
 and ``$dict``, each naming its class by module and qualified name.
 
+An item's answers are both rounds' of its bind (`jev_assemble.span_round`) when its first
+round calls for a second.
+
 `replay` runs an item through the Jev request builders and `jev_assemble`, then through the
 steps the engine applies after a binder returns (`bind.split_stray_bindings`, the menu-rank
 election among the house policies' survivors `phase_rank_bind._elected_index`, and the
@@ -37,6 +40,7 @@ from search.engine.binders.jev_assemble import (
     JevAnswers,
     assemble_quantity,
     bind_result,
+    span_round,
 )
 from search.engine.binders.jev_menu import jev_menu
 from search.engine.binders.jev_request import bind_request, quantity_request
@@ -179,16 +183,24 @@ def ground(output: QuantityOutput, variable: str, shapes: Sequence[ShapeDraft]) 
     return output.model_copy(update={"denominator_index": None, "stated_form": stated_form})
 
 
-def asked_ids(item: GoldenItem) -> tuple[list[str], list[str]]:
-    """The question ids of the bind request and of the quantity request."""
-    _state, bind = bind_request(jev_menu(item.request))
+def asked_ids(item: GoldenItem) -> tuple[list[str], list[str], list[str]]:
+    """The question ids of the bind request, of the span round its stored answers call for,
+    and of the quantity request."""
+    menu = jev_menu(item.request)
+    _state, bind = bind_request(menu)
     _qstate, quantity = quantity_request(
         item.quantity_variable,
         item.denominators,
         bind_variable=item.request.variable,
         query=item.request.query_text,
     )
-    return list(bind), list(quantity)
+    stated_form = ground(
+        assemble_quantity(item.answers, item.denominators),
+        item.quantity_variable,
+        item.request.shapes,
+    ).stated_form
+    spans = span_round(menu, item.answers, stated_form=stated_form)
+    return list(bind), list(spans.questions), list(quantity)
 
 
 def stored_ids(item: GoldenItem) -> list[str]:

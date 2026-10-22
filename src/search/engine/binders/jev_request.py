@@ -8,6 +8,10 @@ denominators; shapes appear only inside question text.
 
 Question ids are positional: ``m|i`` names menu shape i, and ``n|P|j`` value j of slot P's
 union (`jev_menu.asked_values`). The quantity read's ids start ``q|``.
+
+A bind whose answers draft values the phrase names on two or more slots of one shape asks a
+second request over the same state (`span_questions`): which words name each such value,
+``span|P|dcid``, and which name the measure, ``span|measure``.
 """
 
 from __future__ import annotations
@@ -17,9 +21,11 @@ from collections.abc import Sequence
 
 from typesafe_sdk import ChoiceModel, JSONContent, NoulModel
 
+from search.engine.bind import stated_reading
 from search.engine.binders.jev_client import JevQuestion
 from search.engine.binders.jev_menu import (
     JevMenu,
+    Prop,
     asked_values,
     describe,
     measure_values,
@@ -33,6 +39,7 @@ type JevRequest = tuple[dict[str, JSONContent], dict[str, JevQuestion]]
 _FORM_WORDS = "a per-person, per-area, percentage, share or ratio form, or the base it divides by"
 
 QUANTITY_PREFIX = "q|"
+SPAN_MEASURE = "span|measure"
 NONE = "none"
 NONE_OF_THESE = "none of these"
 _MAX_SPAN_WORDS = 5
@@ -201,6 +208,50 @@ def _bind_questions(menu: JevMenu, *, query: bool) -> dict[str, JevQuestion]:
     return q
 
 
+def span_id(prop: Prop, value: str) -> str:
+    """The ``span|`` question id of `value` on slot `prop`."""
+    return f"span|{prop_id(prop)}|{value}"
+
+
+def span_questions(
+    menu: JevMenu, values: Sequence[tuple[Prop, str]], *, measure: int
+) -> dict[str, JevQuestion]:
+    """The span questions on `values`, each a slot and a value of it, and on the measure of
+    menu shape `measure`: which words of the variable phrase name each. The options are the
+    phrase's spans (`spans`) and `NONE`."""
+    request = menu.request
+    options: dict[str, str | None] = {
+        **dict.fromkeys(spans(request.variable)),
+        NONE: "No words of the phrase name it.",
+    }
+    shape = request.shapes[measure]
+    reading = stated_reading(shape)
+    q: dict[str, JevQuestion] = {
+        SPAN_MEASURE: ChoiceModel(
+            type="choice",
+            instructions=(
+                "Which words of `variable_phrase` name the quantity the measure "
+                f"{describe(shape, menu.menus[measure].fixed)} counts, "
+                f"{reading.measured_property} of {reading.population_type}, leaving out "
+                "words that narrow it to one part? Choose the shortest span that names it."
+            ),
+            criteria=options,
+        )
+    }
+    for prop, value in values:
+        label = menu.properties[prop][0]
+        shown = menu.labels.get(value, value)
+        q[span_id(prop, value)] = ChoiceModel(
+            type="choice",
+            instructions=(
+                f"Which words of `variable_phrase` name the {label} '{shown}'? Choose the "
+                "shortest span that names it."
+            ),
+            criteria=options,
+        )
+    return q
+
+
 def spans(variable: str) -> list[str]:
     """Every run of one to five words of `variable`, as it spells them, words split at
     whitespace, hyphens and slashes so "GDP" is a span of "debt-to-GDP", at most one fewer
@@ -211,6 +262,29 @@ def spans(variable: str) -> list[str]:
         for j in range(i, min(i + _MAX_SPAN_WORDS, len(words))):
             found[variable[words[i].start() : words[j].end()]] = None
     return list(found)[: _CHOICE_CAP - 1]
+
+
+def span_occurrences(variable: str, span: str) -> tuple[frozenset[int], ...]:
+    """Each occurrence of `span` in `variable`, as the positions of the words it covers,
+    words split as `spans` splits them, in phrase order. Empty when `span` is no span of
+    `variable`."""
+    words = list(_WORD_RE.finditer(variable))
+    return tuple(
+        frozenset(range(i, j + 1))
+        for i in range(len(words))
+        for j in range(i, min(i + _MAX_SPAN_WORDS, len(words)))
+        if variable[words[i].start() : words[j].end()] == span
+    )
+
+
+def word_positions(variable: str, start: int, end: int) -> frozenset[int]:
+    """The positions of the words of `variable`, split as `spans` splits them, that the
+    characters `start` to `end` touch."""
+    return frozenset(
+        k
+        for k, word in enumerate(_WORD_RE.finditer(variable))
+        if word.start() < end and start < word.end()
+    )
 
 
 def denominator_key(index: int, ref: GraphRef) -> str:

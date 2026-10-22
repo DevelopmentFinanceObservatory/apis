@@ -24,17 +24,22 @@ from search.engine.binders import (
     QuantityRequest,
     ShadowBinder,
     configured_binder,
+    jev_assemble,
     recording_fallbacks,
     routes_to_jev,
 )
 from search.engine.binders import jev as jev_module
 from search.engine.binders.base import PolicyContractError
 from search.engine.binders.house_policy import PolicyPool
-from search.engine.binders.jev import JevCall
+from search.engine.binders.jev import JevCall, member_population, member_populations
 from search.engine.binders.jev_assemble import (
+    Confidence,
+    JevAnswers,
+    assemble,
     assemble_quantity,
     bind_result,
     frame_stated_form,
+    span_round,
 )
 from search.engine.binders.jev_client import JevError
 from search.engine.binders.jev_menu import jev_menu
@@ -49,13 +54,17 @@ from search.engine.quantity_read import (
     QuantityOutput,
     build_quantity_prompt,
 )
+from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import (
     DatasetResubmitInput,
     GraphRef,
     ResubmitPlaceholderEntry,
 )
-from tests.engine._binders import FakeAsk, FixedBinder, keep_the_pick
-from tests.engine._jev_golden import golden_paths, load_item
+from tests.engine._binders import FakeAsk, FixedBinder, answer_all, keep_the_pick
+from tests.engine._builders import sv_arcs
+from tests.engine._jev_golden import GOLDEN, GoldenItem, golden_paths, load_item
+from tests.graph_release.support import serving_index
+from tests.statvar_members.role_grid import synthetic_index
 
 _GOLDEN = load_item(golden_paths()[0])
 _DENOMINATORS = [GraphRef(ref="Amount_EconomicActivity_GrossDomesticProduction", label="GDP")]
@@ -101,8 +110,8 @@ class _CountingStep:
         return keep_the_pick(pool)
 
 
-def _golden_request(step: _CountingStep) -> BindRequest:
-    request = _GOLDEN.request
+def _golden_request(step: _CountingStep, golden=_GOLDEN) -> BindRequest:
+    request = golden.request
     return BindRequest(
         variable=request.variable,
         shapes=request.shapes,
@@ -126,6 +135,11 @@ def _with_settings(monkeypatch: pytest.MonkeyPatch, **update: object) -> None:
 
 def _binder_parts(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.getMessage().startswith("binder_part")]
+
+
+def _fields(line: str) -> dict[str, str]:
+    """The ``key=value`` fields of a ``binder_part`` line."""
+    return dict(field.split("=", 1) for field in line.split(" ")[1:])
 
 
 # -- routing -----------------------------------------------------------------------------
@@ -262,6 +276,224 @@ def test_the_jev_quantity_read_is_its_own_request():
     assert output == assemble_quantity(_GOLDEN.answers, _GOLDEN.denominators)
 
 
+def _electing(item: GoldenItem) -> GoldenItem:
+    """`item` with no ``none`` share in ``electq``, so a part whose stored share declines
+    (`jev_assemble._declines`) elects."""
+    electq = item.stored["electq"]
+    probabilities = {k: p for k, p in electq["probabilities"].items() if k != "none"}
+    choice = max(probabilities, key=probabilities.__getitem__)
+    stored = {**item.stored, "electq": {**electq, "choice": choice, "probabilities": probabilities}}
+    return dataclasses.replace(item, stored=stored)
+
+
+# "World Bank loans", electing: its first answers draft a CRS purpose and a type of
+# finance, so its bind asks a span round.
+_SPANNED = _electing(load_item(GOLDEN / "synthetic-74b382efc5_p0.json"))
+
+
+def _spanned_answers() -> dict[str, dict]:
+    """The item's stored answers, with every span question of its second round answered
+    (`answer_all`)."""
+    menu = jev_menu(_SPANNED.request)
+    spans = span_round(
+        menu, _SPANNED.answers, stated_form=frame_stated_form(_SPANNED.request.frame)
+    )
+    asked = {qid: dict(question) for qid, question in spans.questions.items()}
+    return {**answer_all(asked), **_SPANNED.stored}
+
+
+class _FailsSecondRequest(FakeAsk):
+    """`FakeAsk` timing out on its second request alone."""
+
+    async def __call__(self, state, questions, *, settings):
+        if self.requests:
+            self.requests.append((state, dict(questions)))
+            raise JevError(None, "timeout")
+        return await super().__call__(state, questions, settings=settings)
+
+
+def test_a_bind_whose_answers_name_two_slots_asks_a_span_round(caplog):
+    """The second request asks the span round of the first's answers over the same state,
+    and the bind assembles both rounds' answers. The ``binder_part`` line reports both
+    requests, the span round's questions and the values the span rule left unbound."""
+    stored = _spanned_answers()
+    ask = FakeAsk(stored)
+    request = _golden_request(_CountingStep(), _SPANNED)
+    binder = FallbackBinder(primary=JevBinder(ask=ask), fallback=_GeminiDouble(_ELECTS_FIRST))
+    caplog.set_level(logging.INFO, logger="search.engine.binders.part_log")
+
+    result, usage = asyncio.run(binder.bind(request, llm=None))
+
+    (first_state, first), (second_state, second) = ask.requests
+    menu = jev_menu(request)
+    form = frame_stated_form(request.frame)
+    assert (first_state, first) == bind_request(menu)
+    spans = span_round(menu, _SPANNED.answers, stated_form=form)
+    assert second_state == first_state
+    assert second == spans.questions
+    assert spans.questions
+    merged = JevAnswers(
+        nouls={k: v["noul"] for k, v in stored.items() if v["type"] == "noul"},
+        choices={k: v["probabilities"] for k, v in stored.items() if v["type"] == "choice"},
+    )
+    expected, conf = bind_result(
+        jev_menu(_golden_request(_CountingStep(), _SPANNED)),
+        merged,
+        stated_form=form,
+        populations=member_populations(request.shapes, spans.shapes),
+    )
+    assert result.output == expected.output
+    assert usage is not None
+    assert (usage["jev_input_tokens"], usage["jev_output_tokens"]) == (240, 8)
+    (line,) = _binder_parts(caplog)
+    fields = _fields(line)
+    inferred = [
+        f"{pid.partition(':')[2]}={value}"
+        for pid, values in conf.inferred.items()
+        for value in values
+    ]
+    assert inferred
+    assert (fields["questions"], fields["span_questions"]) == (
+        str(len(first) + len(second)),
+        str(len(second)),
+    )
+    assert fields["inferred"].split(",") == inferred
+
+
+def test_a_failed_span_round_falls_back_to_gemini(caplog):
+    """A span round that gives no answer serves the bind from Gemini, and the
+    ``binder_part`` line counts both requests' questions."""
+    gemini = _GeminiDouble(_ELECTS_FIRST)
+    ask = _FailsSecondRequest(_spanned_answers())
+    binder = FallbackBinder(primary=JevBinder(ask=ask), fallback=gemini)
+    step = _CountingStep()
+    caplog.set_level(logging.INFO, logger="search.engine.binders.part_log")
+
+    with recording_fallbacks() as record:
+        result, _usage = asyncio.run(binder.bind(_golden_request(step, _SPANNED), llm=None))
+
+    assert result.binder == "gemini"
+    assert record.reasons == ["timeout"]
+    assert step.calls == 1
+    (_first, first), (_second, second) = ask.requests
+    fields = _fields(*_binder_parts(caplog))
+    assert (fields["questions"], fields["span_questions"], fields["inferred"]) == (
+        str(len(first) + len(second)),
+        str(len(second)),
+        "-",
+    )
+
+
+def test_a_span_rule_past_its_search_budget_falls_back_to_gemini(monkeypatch, caplog):
+    """A span rule that passes `SPAN_SEARCH_BUDGET` serves the bind from Gemini under
+    ``span_budget``, before Jev's house policies run, so the policies run once, on
+    Gemini's election."""
+    monkeypatch.setattr(jev_assemble, "SPAN_SEARCH_BUDGET", 1)
+    ask = FakeAsk(_spanned_answers())
+    binder = FallbackBinder(primary=JevBinder(ask=ask), fallback=_GeminiDouble(_ELECTS_FIRST))
+    step = _CountingStep()
+    caplog.set_level(logging.INFO, logger="search.engine.binders.part_log")
+
+    with recording_fallbacks() as record:
+        result, _usage = asyncio.run(binder.bind(_golden_request(step, _SPANNED), llm=None))
+
+    assert result.binder == "gemini"
+    assert record.reasons == ["span_budget"]
+    assert step.calls == 1
+    assert len(ask.requests) == 2
+    fields = _fields(*_binder_parts(caplog))
+    assert (fields["fallback"], fields["jev_error"]) == ("span_budget", "span_budget")
+
+
+def _unicorns(*, complete: bool) -> ShapeDraft:
+    arcs = sv_arcs(
+        pop_type="Unicorn", meas_prop="count", stat_type="measuredValue", label="", gender="Female"
+    )
+    return ShapeDraft(
+        shape_id="unicorns",
+        label="Unicorns",
+        pop_type_dcid="Unicorn",
+        meas_prop_dcid="count",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(SlotKeyDraft(axis="how", property_dcid="gender", label="gender"),),
+        sv_arc_facts={"sv1": arcs},
+        sv_arc_facts_complete=complete,
+    )
+
+
+@pytest.mark.parametrize(
+    ("complete", "population"),
+    [
+        pytest.param(True, ({"gender": "Female"},), id="exact-set"),
+        pytest.param(False, None, id="recall-sample"),
+    ],
+)
+def test_a_member_population_is_read_only_where_it_is_complete(complete, population):
+    """An exact elected set is the population. A recall sample of a five-tuple the index
+    and the catalogue do not hold is none, so no draft is dropped over it."""
+    assert member_population(_unicorns(complete=complete)) == population
+
+
+def _flows() -> ShapeDraft:
+    """A flow shape over the role grid's totals with untwinned two-role rows, whose public
+    arrears row belongs to the two-role class an unbound query does not elect."""
+    return ShapeDraft(
+        shape_id="flows",
+        label="Flows",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(
+            SlotKeyDraft(axis="how", property_dcid="flowType", label="flow type"),
+            SlotKeyDraft(axis="how", property_dcid="guarantee", label="guarantee"),
+        ),
+        slot_taxonomy={
+            "how:flowType": ["Service", "Disbursement", "Arrears"],
+            "how:guarantee": ["Public", "Private"],
+        },
+        sv_arc_facts_complete=False,
+    )
+
+
+def test_a_member_population_holds_every_role_class_a_later_binding_can_elect():
+    """Binding public arrears elects the two-role row; the population read before any
+    binding holds it, and the bind keeps both values the phrase names."""
+    shape = _flows()
+    menu_request = BindRequest(
+        variable="public arrears",
+        shapes=[shape],
+        query_text="public arrears",
+        apply_policies=keep_the_pick,
+    )
+    answers = JevAnswers(
+        nouls={"m|0": 0.95, "n|how:flowType|2": 0.95, "n|how:guarantee|0": 0.95},
+        choices={
+            "elect": {"Shape 0": 1.0},
+            "span|how:flowType|Arrears": {"arrears": 1.0},
+            "span|how:guarantee|Public": {"public": 1.0},
+            "span|measure": {"public arrears": 1.0},
+        },
+    )
+
+    with serving_index(synthetic_index("totals with untwinned two-role rows")):
+        population = member_population(shape)
+        output, _conf = assemble(
+            jev_menu(menu_request),
+            answers,
+            stated_form=None,
+            populations={0: population} if population is not None else None,
+        )
+
+    assert population is not None
+    assert {"flowType": "Arrears", "guarantee": "Public"} in population
+    bound = {b.property_dcid: b.value_dcids for b in output.bindings if b.kind == "value"}
+    assert bound == {"flowType": ["Arrears"], "guarantee": ["Public"]}
+
+
 # -- the fallback ------------------------------------------------------------------------
 
 _ELECTS_FIRST = _UniversalBindOutput(chosen_shape_index=0)
@@ -381,6 +613,8 @@ def test_a_part_whose_jev_call_fell_back_sends_its_later_calls_to_gemini_alone(c
         "chunks=-",
         "jev_input_tokens=-",
         "jev_output_tokens=-",
+        "span_questions=-",
+        "inferred=-",
     ]
 
 
@@ -389,7 +623,7 @@ def test_the_fallback_hands_the_jev_binder_a_policy_step_that_takes_ratings(monk
 
     def assemble_with_ratings(menu, answers, *, stated_form, **_kwargs):
         choice = menu.request.apply_policies(PolicyPool(measuring=(0,)), ratings=ratings)
-        return BindResult(output=_ELECTS_FIRST, binder="jev", policy_choice=choice), None
+        return BindResult(output=_ELECTS_FIRST, binder="jev", policy_choice=choice), Confidence()
 
     monkeypatch.setattr(jev_module, "bind_result", assemble_with_ratings)
     gemini = _GeminiDouble(_ELECTS_FIRST)
@@ -429,6 +663,7 @@ def test_a_jev_answer_is_served_without_the_fallback(caplog):
     (line,) = _binder_parts(caplog)
     assert "served_by=jev fallback=- " in line
     assert "jev_input_tokens=120 jev_output_tokens=4" in line
+    assert (_fields(line)["span_questions"], _fields(line)["inferred"]) == ("-", "-")
 
 
 # -- the shadow --------------------------------------------------------------------------

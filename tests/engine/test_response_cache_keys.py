@@ -124,6 +124,7 @@ def _layer2_key(
     query_text_value_source: str | None = None,
     scope: dict | None = None,
     source_codes: list[str | None] | None = None,
+    unit_texts: list[str | None] | None = None,
     separate: list[bool] | None = None,
     written_variable_phrases: list[str | None] | None = None,
 ) -> str:
@@ -170,6 +171,7 @@ def _layer2_key(
         ),
         query_text_value_source=query_text_value_source,
         source_codes=source_codes if source_codes is not None else (),
+        unit_texts=unit_texts if unit_texts is not None else (),
         separate=separate if separate is not None else (),
         written_variable_phrases=(
             written_variable_phrases if written_variable_phrases is not None else ()
@@ -622,6 +624,20 @@ def test_a_series_code_changes_layer2_key() -> None:
     second = _layer2_key(variables=variables, source_codes=[None, "DT.TDS.DEGG.CD"])
     assert len({plain, first, second}) == 3
     assert plain == _layer2_key(variables=variables, source_codes=[None, None])
+
+
+def test_a_peeled_unit_text_changes_layer2_key() -> None:
+    """ "GDP in euros and population" peels "in euros" onto GDP alone, and a phrase the model
+    dropped reaches both parts, so the two key apart, as does the phrase on the other
+    variable. Peeling none keys as an extraction without the field."""
+    variables = ["GDP", "population"]
+    shared = _layer2_key(variables=variables, dropped_qualifiers=["in euros"])
+    first = _layer2_key(variables=variables, unit_texts=["in euros", None])
+    second = _layer2_key(variables=variables, unit_texts=[None, "in euros"])
+    assert len({shared, first, second, _layer2_key(variables=variables)}) == 4
+    assert _layer2_key(variables=variables) == _layer2_key(
+        variables=variables, unit_texts=[None, None]
+    )
 
 
 def test_the_written_stretch_of_a_variable_changes_layer2_key() -> None:
