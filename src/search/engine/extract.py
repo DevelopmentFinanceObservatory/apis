@@ -420,25 +420,25 @@ not state.
 
 A named organisation that lends, gives or receives the flow, such as the IMF, the World
 Bank, IDA or the Global Fund, is an entity like a place wherever the query names it, and
-its name stays out of the variable. Named in front of the measure, it reads like a
-possessive, so its direction follows the measure: "IMF credit outstanding Argentina" has
-the variable "credit outstanding" and the entities "IMF", origin with role_span "IMF"
-(its own span, as "French" is in "French aid"), and "Argentina". An organisation named
+its name stays out of the variable. Named in front of a measure it lends or gives, it is
+the origin and its own name is the role_span: "IMF credit outstanding Argentina" has
+the variable "credit outstanding" and the entities "IMF", origin with role_span "IMF",
+and "Argentina". A country's own name is never its role_span. An organisation named
 beside a measure it does not lend, give or receive is the source of the numbers and no
 entity: "GDP of Kenya according to the IMF" and "Kenya GDP IMF" name only Kenya.
 When two names stand together for one body, the entity is the narrower one alone:
 "World Bank IDA concessional flows" names the entity "IDA".
 
-A measure the query already names by an indicator's own name or acronym keeps the
-query's word for it: "aid", "ODA", "OOF" and "GDP" stay as written in the variable, never
-spelt out or replaced by another name.
+A measure the query already names by a common word or acronym keeps the query's word
+for it: "aid", "ODA", "OOF" and "GDP" stay as written in the variable, never spelt out or
+replaced by another name.
 
 A word in a measure's phrase that narrows it to what one kind of provider gives, or to
 one kind of terms, such as "bilateral", "multilateral" or "concessional", stays in that
 variable and is also listed in `measure_qualifiers`, copied exactly as written, with that
 variable's index: "total bilateral and imputed multilateral aid to Ethiopia" has the
-variables "bilateral aid" and "imputed multilateral aid" and lists "bilateral" for
-variable 0. A word that is part of a longer name the measure goes by, such as "imputed
+variables "bilateral aid" and "imputed multilateral aid", the operation aggregate
+"total" on each, and lists "bilateral" for variable 0. A word that is part of a longer name the measure goes by, such as "imputed
 multilateral", is not listed.
 
 Example — "health ODA grants from USA to Ethiopia":
