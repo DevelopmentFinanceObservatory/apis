@@ -21,6 +21,7 @@ from typing import Final, cast
 from code_index import declarations as code_index_declarations
 from code_index.declarations import CodeSystemConfig, KindOverride, TotalGroup
 from code_index.types import (
+    BroadReading,
     DatasetDeclaration,
     ImpliedValue,
     MeasureAxis,
@@ -62,6 +63,7 @@ class Declarations:
     measure_partition_labels: Sequence[MeasurePartitionLabel]
     measure_nouns: Sequence[MeasurePartitionLabel]
     shape_slot_defaults: Sequence[ShapeSlotDefault]
+    broad_readings: Sequence[BroadReading]
     partly_stated_values: Sequence[PartlyStatedValue]
     implied_values: Sequence[ImpliedValue]
     measure_classes: Sequence[MeasureClassDeclaration]
@@ -131,6 +133,7 @@ DECLARATIONS: Final[Declarations] = Declarations(
     measure_partition_labels=code_index_declarations.MEASURE_PARTITION_LABELS,
     measure_nouns=code_index_declarations.MEASURE_NOUNS,
     shape_slot_defaults=code_index_declarations.SHAPE_SLOT_DEFAULTS,
+    broad_readings=code_index_declarations.BROAD_READINGS,
     partly_stated_values=code_index_declarations.PARTLY_STATED_VALUES,
     implied_values=code_index_declarations.IMPLIED_VALUES,
     measure_classes=code_index_declarations.MEASURE_CLASSES,

@@ -247,14 +247,15 @@ def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() ->
     assert refused.value.code == "code_index_export_refused"
 
 
-def test_dfo_parts_carry_whose_base_a_ratio_divides_by_and_the_shape_slot_defaults() -> None:
-    """The code index the release serves reads both declarations back, and a dataset that
+def test_dfo_parts_carry_the_ratio_base_shape_slot_defaults_and_broad_readings() -> None:
+    """The code index the release serves reads the declarations back, and a dataset that
     declares no ratio base writes no key, as a release exported before the field did."""
     crs, imputed = SLICE_DECLARATIONS.datasets
     declarations = dataclasses.replace(
         SLICE_DECLARATIONS,
         datasets=(dataclasses.replace(crs, ratio_base_axis="destination"), imputed),
         shape_slot_defaults=code_index_declarations.SHAPE_SLOT_DEFAULTS,
+        broad_readings=code_index_declarations.BROAD_READINGS,
     )
 
     built = build_dfo_parts(dfo_inputs(slice_platform_parts(), declarations), SLICE_BASE_PARTIES)
@@ -266,6 +267,7 @@ def test_dfo_parts_carry_whose_base_a_ratio_divides_by_and_the_shape_slot_defaul
     assert index.datasets[crs.provenance].ratio_base_axis == "destination"
     assert index.datasets[imputed.provenance].ratio_base_axis is None
     assert index.shape_slot_defaults == code_index_declarations.SHAPE_SLOT_DEFAULTS
+    assert index.broad_readings == code_index_declarations.BROAD_READINGS
     assert built.declarations == declarations.declarations_json()
 
 

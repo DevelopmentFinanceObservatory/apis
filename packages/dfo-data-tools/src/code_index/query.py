@@ -17,6 +17,7 @@ from code_index.types import (
     AbsentObservation,
     Bound,
     BoundSet,
+    BroadReading,
     CodeRow,
     CodeSystemDeclaration,
     ConstraintQuery,
@@ -372,6 +373,7 @@ class CodeIndex:
         "_source_codes_by_dcid",
         "_statvars_by_dcid",
         "_words_by_code",
+        "broad_readings",
         "codes",
         "codes_by_system",
         "dataset_pins",
@@ -411,6 +413,7 @@ class CodeIndex:
         parties: Iterable[PartyRow] = (),
         listed_statvars: Iterable[StatVarRow] = (),
         shape_slot_defaults: Iterable[ShapeSlotDefault] = (),
+        broad_readings: Iterable[BroadReading] = (),
         partly_stated_values: Iterable[PartlyStatedValue] = (),
         implied_values: Iterable[ImpliedValue] = (),
         measure_classes: Iterable[MeasureClassDeclaration] = (),
@@ -423,6 +426,9 @@ class CodeIndex:
         self.shape_slot_defaults = tuple(shape_slot_defaults)
         """The open-slot defaults declared per `populationType` for properties outside the
         code systems, in declaration order."""
+        self.broad_readings = tuple(broad_readings)
+        """The constraint values a question's words read as a broader value unless it names
+        a value on another property (`BroadReading`), in declaration order."""
         self.partly_stated_values = tuple(partly_stated_values)
         """The constraint values a dataset states on only some of its series
         (`PartlyStatedValue`), in declaration order."""

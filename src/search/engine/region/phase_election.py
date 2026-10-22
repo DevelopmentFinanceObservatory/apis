@@ -10,6 +10,7 @@ from contextlib import suppress
 from code_index.shared import get_index, get_measure_index
 from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
+    apply_broad_readings,
     apply_declared_defaults,
     apply_shape_slot_defaults,
     defaulted_slot_notes,
@@ -721,8 +722,9 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
     """Repair bindings and apply measure elections and defaults.
 
     In order, bind the values an unexported family shares, force open measure axes, apply
-    declared defaults (none on a slot an invariant of the dataset the part names fixes), apply
-    the shape's slot defaults, bind each open slot that partitions the served members to
+    declared defaults (none on a slot an invariant of the dataset the part names fixes), read
+    each bound value the code index reads more broadly as that value (`apply_broad_readings`),
+    apply the shape's slot defaults, bind each open slot that partitions the served members to
     the value of the one member the variable phrase names (`bind_named_member_values`) and
     each that partitions a standard family to the one value its scored members state
     (`bind_partition_values`), then put the bindings in
@@ -835,6 +837,18 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
             )
             for prop, pairs in named.items()
         }
+
+    # A bound value the code index reads more broadly unless the query names a value on
+    # another slot binds the broader value ("publicly guaranteed" reads public and publicly
+    # guaranteed debt), before the measure vote reads the bindings. Its note is kept under
+    # its property, so unbinding the slot takes it back.
+    bindings, broad_readings = apply_broad_readings(bindings, state.shape_draft, index=get_index())
+    if broad_readings:
+        state.bindings = bindings
+        for reading in broad_readings:
+            warning = Warning(code=SLOT_DEFAULTED, severity="warn", message=reading.note)
+            state.warnings.append(warning)
+            state.slot_defaults[reading.property_dcid] = SlotDefaultDisclosure(warnings=(warning,))
 
     # Force measure axes left open after query matches and declared defaults. Run after draft
     # repair, which judges realizability against a capped recall sample.

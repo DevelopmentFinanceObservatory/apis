@@ -11,6 +11,7 @@ from code_index.query import CodeIndex, DuplicateDcid, partly_stated_five_tuples
 from code_index.types import (
     PARTY_KINDS,
     AbsentObservation,
+    BroadReading,
     CodeRow,
     CodeSystemDeclaration,
     DatasetDeclaration,
@@ -63,7 +64,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     are optional: an index without the first two declares no party kind, one without the third
     lists no StatVar outside its code systems (`CodeIndex.listed_statvars`), one without the
     fourth holds no series code, and one without the fifth no value parent. So are
-    `shape_slot_defaults`, `partly_stated_values`, `implied_values`, `measure_classes`,
+    `shape_slot_defaults`, `broad_readings`, `partly_stated_values`, `implied_values`, `measure_classes`,
     `variable_aliases` and `stat_type_words`, each reading as empty where absent; a measure class or stat-type
     pattern that does not compile, or a variable alias or a `no_vocabulary_terms` entry that
     is not a non-empty lowercase string, raises `IndexFormatError`. A value that two
@@ -87,6 +88,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         shape_slot_defaults = [
             _parse_shape_slot_default(row) for row in payload.get("shape_slot_defaults", ())
         ]
+        broad_readings = [_parse_broad_reading(row) for row in payload.get("broad_readings", ())]
         partly_stated_values = [
             _parse_partly_stated_value(row) for row in payload.get("partly_stated_values", ())
         ]
@@ -113,6 +115,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         parties=parties,
         listed_statvars=listed_statvars,
         shape_slot_defaults=shape_slot_defaults,
+        broad_readings=broad_readings,
         partly_stated_values=partly_stated_values,
         implied_values=implied_values,
         measure_classes=measure_classes,
@@ -128,6 +131,17 @@ def _parse_shape_slot_default(row: Mapping) -> ShapeSlotDefault:
         population_type=row["population_type"],
         property_dcid=row["property"],
         value_dcid=row["value"],
+    )
+
+
+def _parse_broad_reading(row: Mapping) -> BroadReading:
+    return BroadReading(
+        property_dcid=row["property"],
+        value_dcid=row["value"],
+        reads_as=row["reads_as"],
+        unless_bound=row["unless_bound"],
+        held_with=row["held_with"],
+        note=row["note"],
     )
 
 
