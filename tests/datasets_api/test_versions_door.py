@@ -20,7 +20,7 @@ from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.versions import VERSIONS_PAGE_MAX
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
-from datasets_api.versions import ArtifactRecord, VersionRecord
+from datasets_api.versions import ArtifactRecord, VersionRecord, VersionsPageKey
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
 from tests.artifact_store.conftest import FakeGCSClient
 
@@ -345,6 +345,35 @@ def test_versions_list_pages_with_a_cursor_until_complete(rig: _Rig) -> None:
         ([_cv(3), _cv(2)], False),
         ([_cv(1)], True),
     ]
+
+
+def test_one_subject_pages_the_same_through_the_keyset_and_the_grouped_query(
+    rig: _Rig,
+) -> None:
+    """One subject reads its page with a keyset query and several read it grouped by
+    content version. An extra id with no rows sends the same rows through the grouped query,
+    and both list the same pages: newest first, `content_version` ordering a tie in
+    `recorded_at`, revoked versions and versions on a revoked base left out."""
+    for n in range(1, 7):
+        if n == 4:
+            rig.now -= timedelta(hours=1)  # records cv 4 at cv 3's instant
+        rig.record_version(content_version=_cv(n), base_content_version=_cv(2) if n == 6 else None)
+    rig.revoke(content_version=_cv(2))
+    lister = LiveVersionLister(store=rig.store)
+
+    def pages(subject_ids: list[str]) -> list[list[str]]:
+        listed: list[list[str]] = []
+        after = None
+        while page := lister.list_servable_versions(subject_ids, after=after, limit=2):
+            listed.append([version.content_version for version in page])
+            after = VersionsPageKey(
+                recorded_at=page[-1].recorded_at, content_version=page[-1].content_version
+            )
+        return listed
+
+    expected = [[_cv(5), _cv(4)], [_cv(3), _cv(1)]]
+    assert pages(["spec_a"]) == expected
+    assert pages(["spec_a", "spec_unbound"]) == expected
 
 
 def test_a_page_that_ends_the_list_exactly_is_complete(rig: _Rig) -> None:

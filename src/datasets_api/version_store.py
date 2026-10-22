@@ -596,6 +596,53 @@ def _listed_versions(
     ]
 
 
+def _servable_page_query(
+    subjects: Sequence[str], *, after: VersionsPageKey | None, limit: int
+) -> tuple[str, tuple[object, ...]]:
+    """The statement and parameters reading the page of `subjects`' unrevoked versions after
+    `after`, newest first, with `content_version` ordering versions recorded at one instant.
+
+    One subject reads its rows through `version_record_recency` (migration 0037): the primary
+    key makes `content_version` unique within a subject, so no grouping is needed, and the row
+    comparison bounds the index scan at the cursor and ends it at `limit`. Several subjects
+    group their rows by `content_version` first, so a version recorded under two of them lists
+    once, at its latest `recorded_at`."""
+    in_subjects = _placeholders(len(subjects))
+    revocation = (
+        "NOT EXISTS (SELECT 1 FROM datasets.version_revocation r "
+        f"WHERE r.subject_id IN ({in_subjects}) "
+        "AND (r.content_version = vr.content_version "
+        "OR r.content_version = vr.base_content_version))"
+    )
+    keyset_params = () if after is None else (after.recorded_at, after.content_version)
+    if len(subjects) == 1:
+        keyset = "" if after is None else "AND (vr.recorded_at, vr.content_version) < (%s, %s) "
+        return (
+            "SELECT vr.content_version, vr.base_content_version, vr.recorded_at "
+            "FROM datasets.version_record vr "
+            f"WHERE vr.subject_id = %s AND {revocation} "
+            f"{keyset}"
+            "ORDER BY vr.recorded_at DESC, vr.content_version DESC LIMIT %s",
+            (*subjects, *subjects, *keyset_params, limit),
+        )
+    keyset = (
+        "" if after is None else "WHERE (listed.recorded_at, listed.content_version) < (%s, %s) "
+    )
+    return (
+        "SELECT listed.content_version, listed.base_content_version, "
+        "listed.recorded_at FROM ("
+        "SELECT vr.content_version AS content_version, "
+        "MAX(vr.base_content_version) AS base_content_version, "
+        "MAX(vr.recorded_at) AS recorded_at "
+        "FROM datasets.version_record vr "
+        f"WHERE vr.subject_id IN ({in_subjects}) AND {revocation} "
+        "GROUP BY vr.content_version) listed "
+        f"{keyset}"
+        "ORDER BY listed.recorded_at DESC, listed.content_version DESC LIMIT %s",
+        (*subjects, *subjects, *keyset_params, limit),
+    )
+
+
 class LiveVersionLister:
     def __init__(self, *, store: DatasetStore) -> None:
         self._store = store
@@ -635,41 +682,13 @@ class LiveVersionLister:
         the rows, so a revocation that statement sees removes the version from the page."""
         subjects = list(dict.fromkeys(subject_ids))
         in_subjects = _placeholders(len(subjects))
-        keyset = (
-            "WHERE listed.recorded_at < %s "
-            "OR (listed.recorded_at = %s AND listed.content_version < %s) "
-            if after is not None
-            else ""
-        )
-        keyset_params = (
-            (after.recorded_at, after.recorded_at, after.content_version)
-            if after is not None
-            else ()
-        )
         failure: str | None = None
         sqlstate: str | None = None
         rows: list[Mapping[str, object]] = []
         linked: list[Mapping[str, object]] = []
         try:
             with self._store.transaction() as tx:
-                rows = tx.fetch_all(
-                    "SELECT listed.content_version, listed.base_content_version, "
-                    "listed.recorded_at FROM ("
-                    "SELECT vr.content_version AS content_version, "
-                    "MAX(vr.base_content_version) AS base_content_version, "
-                    "MAX(vr.recorded_at) AS recorded_at "
-                    "FROM datasets.version_record vr "
-                    f"WHERE vr.subject_id IN ({in_subjects}) "
-                    "AND NOT EXISTS (SELECT 1 FROM datasets.version_revocation r "
-                    f"WHERE r.subject_id IN ({in_subjects}) "
-                    "AND (r.content_version = vr.content_version "
-                    "OR r.content_version = vr.base_content_version)) "
-                    "GROUP BY vr.content_version) listed "
-                    f"{keyset}"
-                    # `content_version` orders versions recorded at one instant.
-                    "ORDER BY listed.recorded_at DESC, listed.content_version DESC LIMIT %s",
-                    (*subjects, *subjects, *keyset_params, limit),
-                )
+                rows = tx.fetch_all(*_servable_page_query(subjects, after=after, limit=limit))
                 page = [cast(str, row["content_version"]) for row in rows]
                 if page:
                     linked = tx.fetch_all(
