@@ -318,7 +318,8 @@ class SearchSettings(BaseSettings):
     # and its own pool's floor (`phase_intake._merge_un_pool`). Only a part whose best shape
     # scores below `phase_intake.UN_MERGE_WEAK_SCORE` takes them, waiting for the UN leg up
     # to un_first_pass_wait_s. The UN shapes take the seats ours leave (`seating.seat_menu`).
-    # A part whose merged pass ends no_data still runs the UN pass.
+    # A part whose merged pass ends no_data still runs the UN pass, and one whose binder
+    # doubted its answer runs it over the UN shapes that took no seat on the menu.
     un_on_first_menu: bool = False
 
     # Timeout in seconds for a definite answer's related-measures reads (`related`), which

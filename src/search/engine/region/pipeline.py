@@ -79,7 +79,7 @@ from search.engine.region.weak_score import _representative_score_is_weak
 from search.engine.region.withheld import elected_series, with_withheld_warning
 from search.engine.retrieval.bound_values import RoleClassWalks, elects_within, held_family_memo
 from search.engine.role_text import DoorRole
-from search.engine.shape import Pool
+from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
 from search.models import EntryPath, Operation, RoleAxis, Warning
@@ -222,7 +222,7 @@ async def resolve_variable(
     shapes (`phase_intake._merge_un_pool`); when the leg failed or was late, the part
     carries `un_system_unavailable` whatever its status. A part with a strong shape never
     takes the UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass,
-    and a doubted answer on a merged pass does not.
+    and a doubted answer on a merged pass runs it over the UN shapes our menu left unseated.
 
     Returns a `RegionResult` with status `definite`, `candidates`, `no_data`, or `unsupported`.
     When the pipeline's UN System Data Commons reads named places the UN front door refuses,
@@ -543,8 +543,9 @@ async def _fill_gap(
     when it is `definite` or `candidates`, unless both binders doubted their picks, or when
     both passes refuse and it carries an `alternate_match` and `result` carries none. Of
     two refusals, the one offering a reading with data at the place stands, as status rule
-    1 has a nominee ride on a refusal, and so does a UN refusal on a variable it matched
-    other than weakly (`_representative_score_is_weak`) over ours `variable_not_resolved`:
+    1 has a nominee ride on a refusal, and so does a UN refusal on a shape it elected with a
+    measured score that is not weak (`_representative_score_is_weak`) over ours
+    `variable_not_resolved`:
     "no data for Japan" says more than "could not match". Otherwise `result` stands with its reason. A `result` holding an
     `alternate_match`, a reading the model nominated from our pool with data at the place,
     also stands when the UN pass's elected shape matches the phrase only weakly
@@ -559,7 +560,9 @@ async def _fill_gap(
     `no_data` one or a doubted one. A leg our pass waited for and missed
     (`ResolveState.un_pool`) is the exception: the menu lacked the pool, so every answer
     carries the warning and no UN pass runs. A pool merged onto our pass's menu is the UN
-    pass's pool when ours ends `no_data`. What the leg's reads could not serve
+    pass's pool when ours ends `no_data`; after a doubted answer the UN pass runs over the
+    merged shapes that took no seat on our menu (`_unseated_un_shapes`), since the binder
+    rated "none" above only the ones it saw. What the leg's reads could not serve
     (`UnPool.unserved`, `UnPool.lost`) joins the part's records only when the pool reaches
     a menu, so an answer our pass serves without it carries none of it. A declared-default refusal
     (`DeclaredDefaultUnsupportedError`), an index-sourced shape meeting a default scope
@@ -583,9 +586,9 @@ async def _fill_gap(
     if pool.missed is not None:
         _log_gap_fill(first, result, un_pass="skipped:un_unavailable")
         return _with_un_search_warning(result, pool.missed)
-    shapes = pool.shapes
-    elected = first.shape_draft
     doubted = _doubted(result, first)
+    shapes = _unseated_un_shapes(first) if merged is not None and doubted else pool.shapes
+    elected = first.shape_draft
     if (result.no_data_reason == "no_observations" or doubted) and elected is not None:
         read = set(elected.sv_arc_facts or {})
         shapes = [
@@ -633,10 +636,9 @@ async def _fill_gap(
         un_pass=f"ran:{second.status}/{second.no_data_reason}",
         un_ms=now_ms() - t0,
     )
-    un_weak = _representative_score_is_weak(
-        None if un_elected is None else un_elected.measured_score
-    )
-    displaces_alternate = result.alternate_match is None or not un_weak
+    un_score = None if un_elected is None else un_elected.measured_score
+    un_weak = _representative_score_is_weak(un_score)
+    displaces_alternate = result.alternate_match is None or (un_elected is not None and not un_weak)
     un_doubted = state.bind_decision is not None and state.bind_decision.none_first
     answers = (
         second.status in ("definite", "candidates")
@@ -648,16 +650,16 @@ async def _fill_gap(
     offers_alternate = (
         refused and second.alternate_match is not None and result.alternate_match is None
     )
-    # A UN refusal that matched a variable says more than ours that matched none. Every UN
-    # reason but `variable_not_resolved` is reached after election: the pass shares our
-    # pass's sources and entities, which got ours as far as election, and mints
-    # `entity_set_too_large` and `entity_role_not_admitted` only on its elected shape's
-    # places, though `NO_DATA_RESOLUTION_ORDER` ranks both before the variable. A weak
-    # match says no more than ours: "measles incidence rate" is no burden-of-disease rate.
+    # A UN refusal that matched a variable says more than ours that matched none, and the
+    # shape it elected is the evidence of the match. Its reason is none: the UN pass can
+    # refuse `denominator_not_available` before it elects any shape, as on a count recalled
+    # for a rate. A shape with no measured score, or a weak one, says no more than ours:
+    # "measles incidence rate" is no burden-of-disease rate.
     matched_further = (
         refused
         and result.no_data_reason == "variable_not_resolved"
         and second.no_data_reason != "variable_not_resolved"
+        and un_score is not None
         and not un_weak
     )
     chosen = second if answers or offers_alternate or matched_further else result
@@ -699,9 +701,10 @@ def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     """Why the UN pass does not run after our pass's `result`, or `None` when it runs.
 
     Only a `no_data` answer has a gap to fill, and an answer its binder doubted
-    (`_doubted`) one the UN pool may fill better, unless our pass's menu already held the
-    UN pool (`ResolveState.un_pool`): the binder rated "none" above those shapes too, and a
-    UN pass would only elect again among them. A refusal about the request's entities or a
+    (`_doubted`) one the UN pool may fill better, unless our pass's menu seated every shape
+    of the UN pool merged onto it (`ResolveState.un_pool`, `_unseated_un_shapes`): the
+    binder rated "none" above those shapes too, and a UN pass would only elect again among
+    them. A refusal about the request's entities or a
     `source_ambiguous` one stands, since the UN pool resolves neither. So does the answer of
     a part whose series code named its StatVars (`ResolveState.source_code`), which answers
     from those alone, and that of a part whose
@@ -715,7 +718,7 @@ def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     if result.status != "no_data":
         if not _doubted(result, first):
             return "answered"
-        if first.un_pool is not None:
+        if first.un_pool is not None and not _unseated_un_shapes(first):
             return "merged"
     if result.no_data_reason in _ENTITY_TERMINALS:
         return "entity"
@@ -726,6 +729,18 @@ def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     if first.scope_settled or not allows_un_system(first.scope):
         return "source_scope"
     return None
+
+
+def _unseated_un_shapes(first: ResolveState) -> list[ShapeDraft]:
+    """The shapes of the UN pool merged onto our pass's menu (`ResolveState.un_pool`) that
+    took no seat on it (`ResolveState.capped_shapes`): our shapes are seated first
+    (`seating.seat_menu`), so a menu of `bind_top_k` shapes of ours shows the binder none
+    of them."""
+    merged = first.un_pool
+    if merged is None:
+        return []
+    seated = {shape.shape_id for shape in first.capped_shapes}
+    return [shape for shape in merged.shapes if shape.shape_id not in seated]
 
 
 def _with_un_search_warning(result: RegionResult, message: str) -> RegionResult:
