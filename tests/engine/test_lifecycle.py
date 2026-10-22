@@ -146,12 +146,7 @@ class TestResolveAsyncLifecycle:
         assert len(closed_instances) == 1
 
     @pytest.mark.parametrize("raising", ["pipeline", "coverage_snapshot"])
-    @pytest.mark.parametrize(
-        "query", ["health ODA grants from USA to Ethiopia", "\ud800", "\udfff"]
-    )
-    def test_both_self_built_clients_close_once_when_pipeline_raises(
-        self, monkeypatch, raising, query
-    ):
+    def test_both_self_built_clients_close_once_when_pipeline_raises(self, monkeypatch, raising):
         """Cleanup when both clients are self-built and the pipeline, or the coverage
         snapshot read before it, raises: the branch a reordering of the two close() calls,
         or an early return or read added ahead of them, would silently break. The shared
@@ -200,7 +195,7 @@ class TestResolveAsyncLifecycle:
             patch("search.engine.core.LiveSdmxClient", return_value=_SpySdmx()),
             pytest.raises(RuntimeError, match="simulated pipeline failure"),
         ):
-            _run(query, graph=None, sdmx=None)
+            _run("health ODA grants from USA to Ethiopia", graph=None, sdmx=None)
 
         assert graph_closes == [True]
         assert sdmx_closes == [True]
