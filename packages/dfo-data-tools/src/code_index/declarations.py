@@ -1,7 +1,7 @@
 """The authored declarations the code index export reads.
 
 Code systems, datasets, party kinds and total groups, measure axes, labels and nouns,
-synonyms, concept groups, shape slot defaults, implied values, measure classes and variable
+synonyms, concept groups, shape slot defaults, broad readings, implied values, measure classes and variable
 aliases. The export
 (`code_index.export`) reads them beside the graph. Nothing here reads the graph or imports a
 script, so a build that has no graph client can load them.
@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from code_index.types import (
+    BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
     HouseDefaultCase,
@@ -1255,6 +1256,26 @@ SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
         population_type="FinancialPosition",
         property_dcid="financialPositionType",
         value_dcid="AmountOutstanding",
+    ),
+)
+
+# The World Bank's "publicly guaranteed" debt is the private-sector debt a public body
+# guarantees, but the words alone ask for public and publicly guaranteed debt, the aggregate.
+# Every IDS series of the guaranteed claim is the private-sector debtor's, so a question names
+# the narrow category exactly when it names a debtor ("publicly guaranteed private-sector
+# debt").
+BROAD_READINGS: tuple[BroadReading, ...] = (
+    BroadReading(
+        property_dcid="guaranteeStatus",
+        value_dcid="PubliclyGuaranteedClaim",
+        reads_as="PublicOrPubliclyGuaranteed",
+        unless_bound="idsDebtorType",
+        held_with="IDSDebtorTypePrivateSector",
+        note=(
+            "Publicly guaranteed was read as public and publicly guaranteed debt. For "
+            "private-sector debt under a public guarantee, ask for publicly guaranteed "
+            "private-sector debt."
+        ),
     ),
 )
 

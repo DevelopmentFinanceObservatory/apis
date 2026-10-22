@@ -100,6 +100,7 @@ SLICE_DECLARATIONS = dataclasses.replace(
     measure_partition_labels=(),
     measure_nouns=(),
     shape_slot_defaults=(),
+    broad_readings=(),
     partly_stated_values=(),
 )
 

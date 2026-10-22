@@ -19,7 +19,13 @@ import pytest
 
 from code_index import CodeIndex, DatasetDeclaration, IndexFormatError, IndexStamp, parse_index
 from code_index.query import row_five_tuple
-from code_index.types import ImpliedValue, PartlyStatedValue, PartyWord, StatedWord
+from code_index.types import (
+    BroadReading,
+    ImpliedValue,
+    PartlyStatedValue,
+    PartyWord,
+    StatedWord,
+)
 from entity_resolution.types import KINDS
 from tests.code_index.support import INDEX_FIXTURE, load_index
 
@@ -827,6 +833,35 @@ def test_loader_reads_whose_base_a_ratio_divides_by_and_an_absent_key_declares_n
 
     assert index.datasets[_CRS_PROVENANCE].ratio_base_axis == "destination"
     assert index.datasets[_IMPUTED_PROVENANCE].ratio_base_axis is None
+
+
+def test_loader_reads_the_broad_readings_and_an_index_without_the_block_declares_none():
+    """A release exported before broad readings were declared has no `broad_readings` block
+    and reads as declaring none."""
+    payload = _fixture()
+    assert "broad_readings" not in payload
+    assert parse_index(payload).broad_readings == ()
+
+    payload["broad_readings"] = [
+        {
+            "property": "guaranteeStatus",
+            "value": "PubliclyGuaranteedClaim",
+            "reads_as": "PublicOrPubliclyGuaranteed",
+            "unless_bound": "idsDebtorType",
+            "held_with": "IDSDebtorTypePrivateSector",
+            "note": "Read broadly.",
+        }
+    ]
+    assert parse_index(payload).broad_readings == (
+        BroadReading(
+            property_dcid="guaranteeStatus",
+            value_dcid="PubliclyGuaranteedClaim",
+            reads_as="PublicOrPubliclyGuaranteed",
+            unless_bound="idsDebtorType",
+            held_with="IDSDebtorTypePrivateSector",
+            note="Read broadly.",
+        ),
+    )
 
 
 @pytest.mark.parametrize(

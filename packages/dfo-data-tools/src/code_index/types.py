@@ -173,6 +173,29 @@ class ShapeSlotDefault:
 
 
 @dataclass(frozen=True, slots=True)
+class BroadReading:
+    """A constraint value a question's words read as a broader value of the same property,
+    unless the question also names a value on another property.
+
+    A binding holding `value_dcid` on `property_dcid` holds `reads_as` in its place unless a
+    binding on `unless_bound` holds `held_with`. Every series holding `value_dcid` holds
+    `unless_bound=held_with`, which the export checks, so a question names the narrow value
+    exactly when it names that value on `unless_bound`. The World Bank's "publicly
+    guaranteed" debt is private-sector debt under a public guarantee, and the words alone
+    read as public and publicly guaranteed debt.
+
+    `note` is the sentence an answer states whenever the reading fires.
+    """
+
+    property_dcid: str
+    value_dcid: str
+    reads_as: str
+    unless_bound: str
+    held_with: str
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
 class ImpliedValue:
     """A constraint value the headline series of one measure already means.
 

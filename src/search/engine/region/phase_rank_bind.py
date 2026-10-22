@@ -2953,7 +2953,9 @@ def value_requirements(
     the reading of purpose 120 alone. A requirement keeps the code systems of the code
     terms its words overlap, read in every code system, for the judge. A value a negated or
     excluded occurrence names (`_label_has_negated_occurrence`) is left to the exclusion
-    readers.
+    readers. A value whose words lie strictly inside the words of another value of its
+    property is no requirement (`_outside_wider_names`): "public or publicly guaranteed"
+    names that value, and not also Publicly guaranteed.
     """
     index = get_index()
     variable = state.variable
@@ -3004,6 +3006,7 @@ def value_requirements(
         if occurrences and not _label_has_negated_occurrence(label, variable):
             for occurrence in occurrences:
                 named[occurrence] |= values
+    named = _outside_wider_names(named)
     return tuple(
         Requirement(
             term=ResolvedQualifier(
@@ -3031,6 +3034,31 @@ def value_requirements(
         )
         for (start, end), values in sorted(named.items())
     )
+
+
+def _outside_wider_names(
+    named: Mapping[tuple[int, int], set[tuple[str, str]]],
+) -> dict[tuple[int, int], set[tuple[str, str]]]:
+    """`named` without each value whose run lies strictly inside the run of another value
+    of the same property: the words of "public or publicly guaranteed" name that value
+    alone, and the "publicly guaranteed" inside them name no second one. The run names a
+    value of another property still. Runs that end empty are dropped."""
+
+    def inside(run: tuple[int, int], wider: tuple[int, int]) -> bool:
+        return run != wider and wider[0] <= run[0] and run[1] <= wider[1]
+
+    kept: dict[tuple[int, int], set[tuple[str, str]]] = {}
+    for run, values in named.items():
+        wider_props = {
+            prop
+            for other, other_values in named.items()
+            if inside(run, other)
+            for prop, _value in other_values
+        }
+        own = {(prop, value) for prop, value in values if prop not in wider_props}
+        if own:
+            kept[run] = own
+    return kept
 
 
 def _family_constraints(shape: ShapeDraft) -> list[dict[str, str]] | None:
