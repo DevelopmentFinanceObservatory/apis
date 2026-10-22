@@ -228,15 +228,18 @@ def _notes(answer) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("variable", "bound", "guarantee", "notes", "departed"),
+    ("variable", "bound", "guarantee", "notes", "departed", "named"),
     [
-        ("publicly guaranteed debt", {"guaranteeStatus": _CLAIM}, [_PPG], [_NOTE], []),
+        ("publicly guaranteed debt", {"guaranteeStatus": _CLAIM}, [_PPG], [_NOTE], [], True),
+        # No series name holds the words, so only the fired reading meets the phrase.
+        ("publicly guaranteed debt", {"guaranteeStatus": _CLAIM}, [_PPG], [_NOTE], [], False),
         (
             "publicly guaranteed private-sector debt",
             {"guaranteeStatus": _CLAIM, "idsDebtorType": _PRIVATE},
             [_CLAIM],
             [],
             [],
+            True,
         ),
         (
             "publicly guaranteed government debt",
@@ -244,23 +247,25 @@ def _notes(answer) -> list[str]:
             [_PPG],
             [_NOTE],
             ["how:idsDebtorType"],
+            True,
         ),
-        ("public or publicly guaranteed debt", {"guaranteeStatus": _PPG}, [_PPG], [], []),
+        ("public or publicly guaranteed debt", {"guaranteeStatus": _PPG}, [_PPG], [], [], True),
     ],
     ids=[
         "bare-reads-ppg",
+        "bare-reads-ppg-unnamed-series",
         "private-sector-keeps-the-claim",
         "another-debtor-reads-ppg",
         "ppg-unchanged",
     ],
 )
 def test_publicly_guaranteed_debt_reads_ppg_unless_the_private_sector_is_named(
-    variable, bound, guarantee, notes, departed, monkeypatch
+    variable, bound, guarantee, notes, departed, named, monkeypatch
 ):
     """Only the private-sector debtor names the narrow category. A government debtor names
     no guaranteed claim, so the part reads PPG, and IDS publishes no PPG stock by debtor, so
     the debtor departs."""
-    answer = _answer(variable, bound, monkeypatch)
+    answer = _answer(variable, bound, monkeypatch, named=named)
 
     assert answer.status == "definite", answer
     assert _bound(answer)["guaranteeStatus"] == guarantee

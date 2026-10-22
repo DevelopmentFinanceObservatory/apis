@@ -40,6 +40,7 @@ from code_index.declarations import (
     PARTY_KIND_OVERRIDES,
     PARTY_TYPE_KINDS,
     SHAPE_SLOT_DEFAULTS,
+    SLOT_PLAIN_NAMES,
     STAT_TYPE_WORDS,
     TOTAL_GROUPS,
     VARIABLE_ALIASES,
@@ -1807,6 +1808,7 @@ def export_graph_blocks(
         "implied_values": [_implied_value_to_dict(v) for v in implied_values],
         "measure_classes": [_measure_class_to_dict(d) for d in measure_classes],
         "variable_aliases": dict(variable_aliases),
+        "slot_plain_names": dict(SLOT_PLAIN_NAMES),
         "stat_type_words": [_stat_type_word_to_dict(d) for d in stat_type_words],
     }
 

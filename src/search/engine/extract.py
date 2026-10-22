@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
+from entity_resolution.pack import is_organisation_name
 from search.engine.clients.llm import (
     LLM,
     MEMO_HIT_USAGE,
@@ -769,9 +770,12 @@ def _role_cue_check(
     Other invalid occurrences report a missing genuine cue.
 
     If every cue occurrence overlaps the entity span, accept it only when the span is
-    followed by a variable word after whitespace, with no pairing: a national adjective
-    (`French` in "French aid") or a name (`China` in "China loans", `IMF` in "IMF
-    credit") modifying the measure, found without a lexicon.
+    followed by a variable word after whitespace, with no pairing, and is a derived
+    surface or an organisation's name (`entity_resolution.pack.is_organisation_name`): a
+    national adjective (`French`
+    in "French aid") or an organisation (`IMF` in "IMF credit") modifying the measure. A
+    place's own name before the measure states no direction ("Kenya aid" is usually aid to
+    Kenya, "US aid" aid from the US), so it fails.
 
     A span modifying another noun, or none, fails the check. Possessives such as `'s`
     qualify through direct span abutment.
@@ -781,8 +785,11 @@ def _role_cue_check(
         return "role_span not found in query", None
     own_ranges = _all_normalized_text_ranges(entity.span, normalized_query) if entity.span else []
     if own_ranges and all(any(_ranges_overlap(r, own) for own in own_ranges) for r in raw_ranges):
-        if _modifies_measure_word(own_ranges, normalized_query, variables):
-            # A name or adjective modifying the measure is its own cue.
+        own_name = _normalize(entity.span or "") == _normalize(entity.text)
+        if (not own_name or is_organisation_name(entity.text)) and _modifies_measure_word(
+            own_ranges, normalized_query, variables
+        ):
+            # An adjective or an organisation's name modifying the measure is its own cue.
             return None, None
         return "role_span overlaps this entity's own span", None
     role_ranges = _genuine_role_ranges(entity.role_span or "", normalized_query, own_ranges)
@@ -822,7 +829,8 @@ def _validate_role_spans(
     """Downgrade invalid roles to `unspecified`. Keep unspecified entities unchanged.
 
     A missing or blank `role_span` fails. Other cues are checked against the query.
-    `variables` supports the check of a name or adjective that is its own cue.
+    `variables` supports the check of an adjective or an organisation's name that is its
+    own cue.
 
     Warning logs include the reason and trace id. Query-derived text appears only
     in the matching debug log.

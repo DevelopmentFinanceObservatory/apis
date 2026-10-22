@@ -82,7 +82,7 @@ from search.engine.qualifier_match import (
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
-from search.engine.region.phase_rank_bind import _value_names
+from search.engine.region.phase_rank_bind import names_value
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
 from search.engine.region.sentence_events import answer_events
@@ -601,21 +601,16 @@ class _ExtractionPrep:
         return with_entity_words(with_departure_facts(region, facts), self.entity_words)
 
 
-_WORD_RE = re.compile(r"\w+")
-
-
 def _binds_value_named(phrase: str, spec: Spec) -> bool:
-    """Whether `spec` binds a value one of whose names holds every word of `phrase`. A
-    value's names are its graph label and what the qualifier matcher reads for it
-    (`phase_rank_bind._value_names`): "bilateral" names DAC1 "bilateral ODA" and IDS
-    creditor type "Bilateral", and no name of DAC2a "official development assistance"."""
-    words = {match.casefold() for match in _WORD_RE.findall(phrase)}
+    """Whether `spec` binds a value `phrase` names (`phase_rank_bind.names_value`):
+    "bilateral" names DAC1 "bilateral ODA" and IDS creditor type "Bilateral", and no name
+    of DAC2a "official development assistance"; "concessional" names no "official
+    non-concessional flow"."""
     return any(
-        words <= {match.casefold() for match in _WORD_RE.findall(name)}
+        names_value(phrase, prop=slot.key.property.ref, value=ref.ref, label=ref.label)
         for slot in spec.resolved.trace.slot_filters
         if slot.key.property is not None
         for ref in slot.refs
-        for name in _value_names(slot.key.property.ref, ref.ref, ref.label)
     )
 
 

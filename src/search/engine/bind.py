@@ -25,7 +25,6 @@ from search.engine.clients.llm import (
     for_stage,
     generate_structured_async,
 )
-from search.engine.function_words import FUNCTION_WORDS
 from search.engine.qualifier_match import _normalize, names_plain_name
 from search.engine.quantity import (
     DenominatorKind,
@@ -1148,22 +1147,24 @@ def slot_label(slot_key_draft: SlotKeyDraft) -> str:
     return _humanize_ref(prop, slot_key_draft.label)
 
 
-def _names_slot(phrase: str, slot_key_draft: SlotKeyDraft) -> bool:
-    """Whether `phrase` names the slot `slot_key_draft` keys (`names_plain_name`).
+def _slot_name(slot_key_draft: SlotKeyDraft) -> str:
+    """The noun a question names the slot `slot_key_draft` keys by: the plain name the
+    index declares for its property outside the code systems
+    (`CodeIndex.slot_plain_names`), else its label (`slot_label`)."""
+    prop = slot_key_draft.property_dcid
+    declared = get_index().slot_plain_names.get(prop) if prop is not None else None
+    return declared or slot_label(slot_key_draft)
 
-    A code system the index declares is named by its whole plain name: "across all flows"
-    names the flow slot, while "total" and "total aid" name no slot, so a declared default
-    still binds. Any other slot is named by a word of its label (`slot_label`) other than
-    a function word: "held in different currencies" names "currency of denomination", and
-    "bilateral" names nothing of "DAC type of finance".
+
+def _names_slot(phrase: str, slot_key_draft: SlotKeyDraft) -> bool:
+    """Whether `phrase` names the slot `slot_key_draft` keys by its whole name
+    (`_slot_name`), singular or plural (`names_plain_name`).
+
+    "Across all flows" names the flow slot and "across all types of finance" the DAC type
+    of finance, while "total", "total aid" and "all DAC donors" name no slot, so a declared
+    default still binds and the phrase stays disclosed.
     """
-    if slot_key_draft.property_dcid in get_index().declarations:
-        return names_plain_name(phrase, slot_label(slot_key_draft))
-    return any(
-        names_plain_name(phrase, word)
-        for word in slot_label(slot_key_draft).split()
-        if word.casefold() not in FUNCTION_WORDS
-    )
+    return names_plain_name(phrase, _slot_name(slot_key_draft))
 
 
 def validate_requested_all_bindings(

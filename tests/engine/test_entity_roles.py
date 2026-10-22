@@ -761,3 +761,22 @@ def _assert_binds_china_as_creditor(
         (_KEN, "destination"),
     }
     assert spec.definition.identity.entities == {"origin": [_CHN], "destination": [_KEN]}
+
+
+def test_a_country_before_the_measure_takes_the_end_the_other_place_leaves(monkeypatch):
+    """ "China loans to Kenya": China's own name before "loans" states no direction, so
+    validation leaves it unspecified, and Kenya's cue makes Kenya the debtor. A by-creditor
+    series places China on the end Kenya leaves open."""
+    query = "China loans to Kenya"
+    extracted = _validate_role_spans(
+        query,
+        [
+            ExtractedEntity(text="China", span="China", flow_role="origin", role_span="China"),
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to"),
+        ],
+        ["loans"],
+    )
+    assert [entity.flow_role for entity in extracted] == ["unspecified", "destination"]
+    door_roles = _entity_roles(extracted, query=query, measures=["loans"])
+
+    _assert_binds_china_as_creditor(monkeypatch, query, door_roles)

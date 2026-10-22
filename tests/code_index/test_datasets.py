@@ -457,6 +457,19 @@ def test_a_codeindex_built_with_no_datasets_at_all_reads_unknown():
     assert index.stamp.coverage_build is None
 
 
+def test_every_constraint_property_of_the_fixture_index_has_a_plain_name():
+    """A slot is named by its plain name (`search.engine.bind.slot_label`), so every
+    constraint property of a StatVar row declares one, as a code system or a slot."""
+    index = load_index(INDEX_FIXTURE)
+    properties = {
+        prop
+        for row in (*index.statvars, *index.listed_statvars)
+        for prop in row.constraint_properties
+    }
+
+    assert properties - index.declarations.keys() - index.slot_plain_names.keys() == set()
+
+
 def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_imputed_dataset():
     index = load_index(INDEX_FIXTURE)
 

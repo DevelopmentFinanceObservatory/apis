@@ -838,15 +838,18 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
 
     # A bound value the code index reads more broadly unless the query names a value on
     # another slot binds the broader value ("publicly guaranteed" reads public and publicly
-    # guaranteed debt), before the measure vote reads the bindings. Its note is kept under
-    # its property, so unbinding the slot takes it back.
+    # guaranteed debt), before the measure vote reads the bindings. Its note and the reading
+    # itself, which applies the narrow value's words, are kept under its property, so
+    # unbinding the slot takes both back.
     bindings, broad_readings = apply_broad_readings(bindings, state.shape_draft, index=get_index())
     if broad_readings:
         state.bindings = bindings
         for reading in broad_readings:
             warning = Warning(code=SLOT_DEFAULTED, severity="warn", message=reading.note)
             state.warnings.append(warning)
-            state.slot_defaults[reading.property_dcid] = SlotDefaultDisclosure(warnings=(warning,))
+            state.slot_defaults[reading.property_dcid] = SlotDefaultDisclosure(
+                warnings=(warning,), reading=reading
+            )
 
     # Force measure axes left open after query matches and declared defaults. Run after draft
     # repair, which judges realizability against a capped recall sample.

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from code_index.members import FamilyQuery
 from code_index.shared import get_index
+from code_index.types import BroadReading
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import Cause
 from entity_resolution import Admission, EntityResolver, Resolution
@@ -619,11 +620,14 @@ class UnLeg:
 @dataclass(frozen=True, slots=True)
 class SlotDefaultDisclosure:
     """What one declared default that fired states (`phase_election._repair_bindings`): its
-    `slot_defaulted` warnings, and the normalised dropped phrases it answers, whose
-    entry-level warning those replace."""
+    `slot_defaulted` warnings, the normalised dropped phrases it answers, whose
+    entry-level warning those replace, and the broad reading it is, if any
+    (`bind_repair.apply_broad_readings`), whose broader value applies the words of its
+    narrow one (`phase_rank_bind.judge_value_requirements`)."""
 
     warnings: tuple[Warning, ...] = ()
     phrases: frozenset[str] = frozenset()
+    reading: BroadReading | None = None
 
 
 @dataclass(slots=True, kw_only=True)

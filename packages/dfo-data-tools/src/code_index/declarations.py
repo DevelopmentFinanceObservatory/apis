@@ -1,9 +1,9 @@
 """The authored declarations the code index export reads.
 
 Code systems, datasets, party kinds and total groups, measure axes, labels and nouns,
-synonyms, concept groups, shape slot defaults, broad readings, implied values, measure classes and variable
-aliases. The export
-(`code_index.export`) reads them beside the graph. Nothing here reads the graph or imports a
+synonyms, concept groups, slot plain names, shape slot defaults, broad readings, implied
+values, measure classes and variable aliases. The export (`code_index.export`) reads them
+beside the graph. Nothing here reads the graph or imports a
 script, so a build that has no graph client can load them.
 """
 
@@ -1278,6 +1278,30 @@ BROAD_READINGS: tuple[BroadReading, ...] = (
         ),
     ),
 )
+
+# The noun naming each constraint property of the index's StatVars that no code system declares,
+# singular, as a question names its slot ("across all types of finance", "held in different
+# currencies"). A code system's own noun is its `CodeSystemConfig.plain_name`. A graph label
+# carries its publisher's prefix ("DAC type of finance", "IDS creditor type"), and a single word
+# of it names no slot, so a slot without a noun here is named by its whole label.
+SLOT_PLAIN_NAMES: Mapping[str, str] = {
+    "currencyOfDenomination": "currency",
+    "dacTypeOfFinance": "type of finance",
+    "financialFlowType": "flow type",
+    "financialObligationType": "obligation type",
+    "financialPositionType": "position type",
+    "financingForm": "financing form",
+    "financingResource": "financing resource",
+    "guaranteeStatus": "guarantee status",
+    "idsConcessionality": "concessionality",
+    "idsCreditorType": "creditor type",
+    "idsDebtorType": "debtor type",
+    "includesIMFCredit": "IMF credit",
+    "interestRateVariability": "interest rate variability",
+    "maturityBand": "maturity",
+    "netOf": "netted flow",
+    "nettingBasis": "netting basis",
+}
 
 # Life expectancy is life expectancy at birth, and gross domestic product is the product of
 # all economic activities. The headline series of each states nothing on the property, and

@@ -1718,6 +1718,7 @@ _DAC2A_GNI_SHARE = (
     "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
 )
 _DAC2A_AMOUNT = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
+_DAC2A_PER_CAPITA = f"{_DAC2A_AMOUNT}_AsAFractionOf_Count_Person"
 
 
 @pytest.mark.parametrize(
@@ -1732,6 +1733,10 @@ _DAC2A_AMOUNT = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
             _DAC1_GNI_SHARE, ("destination",), True, True, id="donor-share-for-a-recipient"
         ),
         pytest.param(_DAC2A_GNI_SHARE, ("origin", "destination"), True, False, id="both-ends"),
+        # "ODA per capita from Norway": DAC2a divides by the recipient's population.
+        pytest.param(
+            _DAC2A_PER_CAPITA, ("origin",), True, True, id="recipient-per-capita-for-a-donor"
+        ),
         pytest.param(_DAC2A_GNI_SHARE, ("origin",), False, False, id="undeclared"),
         pytest.param(_DAC2A_AMOUNT, ("origin",), True, False, id="no-ratio"),
     ],

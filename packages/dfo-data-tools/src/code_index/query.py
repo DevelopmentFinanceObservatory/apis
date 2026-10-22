@@ -390,6 +390,7 @@ class CodeIndex:
         "partly_stated_values",
         "party_types",
         "shape_slot_defaults",
+        "slot_plain_names",
         "source_code_provenances",
         "source_codes",
         "stamp",
@@ -418,6 +419,7 @@ class CodeIndex:
         implied_values: Iterable[ImpliedValue] = (),
         measure_classes: Iterable[MeasureClassDeclaration] = (),
         variable_aliases: Mapping[str, str] | None = None,
+        slot_plain_names: Mapping[str, str] | None = None,
         stat_type_words: Iterable[StatTypeWordDeclaration] = (),
         source_codes: Iterable[SourceCodeRow] = (),
         value_parents: Mapping[str, str] | None = None,
@@ -448,6 +450,9 @@ class CodeIndex:
         self.variable_aliases: dict[str, str] = dict(variable_aliases or {})
         """Lowercase words recall reads as the full term each stands for, applied to the
         variable query alone."""
+        self.slot_plain_names: dict[str, str] = dict(slot_plain_names or {})
+        """The noun naming each constraint property no code system declares, as a question
+        names its slot (`code_index.declarations.SLOT_PLAIN_NAMES`)."""
         self.stat_type_words = tuple(stat_type_words)
         """The patterns naming a statType other than `measuredValue`, in declaration order;
         the frame reads the first that matches (`search.engine.frame`)."""

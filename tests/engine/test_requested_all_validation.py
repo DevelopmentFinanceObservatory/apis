@@ -141,7 +141,8 @@ def test_requested_all_whose_phrase_names_another_slot_or_none_is_demoted(
     assert applied == frozenset()
 
 
-# Slots on code systems the index does not declare, labelled as the graph labels them.
+# Slots on properties no code system declares, labelled as the graph labels them; the index
+# declares each a slot plain name.
 _UNDECLARED_SLOTS = (
     SlotKeyDraft(axis="how", property_dcid="dacTypeOfFinance", label="DAC type of finance"),
     SlotKeyDraft(
@@ -153,19 +154,22 @@ _UNDECLARED_SLOTS = (
 @pytest.mark.parametrize(
     ("property_dcid", "phrase", "stands"),
     [
-        # "net bilateral ODA to Kenya": "bilateral" names no word of the slot's label, so the
-        # phrase stays a dropped qualifier no answer binds.
+        # "net bilateral ODA to Kenya": "bilateral" does not name the slot, so the phrase
+        # stays a dropped qualifier no answer binds.
         ("dacTypeOfFinance", "bilateral", False),
         ("dacTypeOfFinance", "of", False),
+        # A word of the graph label names no slot: "DAC" names donors, "type" any type.
+        ("dacTypeOfFinance", "all DAC donors", False),
+        ("dacTypeOfFinance", "across all aid types", False),
         ("dacTypeOfFinance", "across all types of finance", True),
         ("currencyOfDenomination", "held in different currencies", True),
     ],
 )
-def test_requested_all_on_an_undeclared_system_must_name_a_word_of_its_label(
+def test_requested_all_on_a_slot_outside_the_code_systems_must_name_its_plain_name(
     property_dcid: str, phrase: str, stands: bool
 ):
-    """A claim on a code system the index does not declare stands only when its phrase
-    names a word of the slot's label other than a function word."""
+    """A claim on a property no code system declares stands only when its phrase names the
+    slot's declared plain name, singular or plural."""
     binding = _unbound(property_dcid, evidence="requested_all", requested_all_phrase=phrase)
 
     validated, applied = validate_requested_all_bindings(

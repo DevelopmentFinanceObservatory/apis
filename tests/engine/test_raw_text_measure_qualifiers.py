@@ -39,14 +39,17 @@ def _spec(prop: str, *refs: GraphRef) -> SimpleNamespace:
             True,
         ),
         ("bilateral", "dac2aAidType", [_ref("DAC2aAidType206")], False),
+        # "Official non-concessional flow" is the opposite of what was asked.
+        ("concessional", "dac2bAidType", [_ref("DAC2bAidType296")], False),
         ("multilateral", "dac1AidType", [_ref("DAC1AidType1015")], False),
         ("bilateral", "dac2aAidType", [], False),
     ],
 )
 def test_a_narrowing_word_is_applied_by_a_bound_value_that_names_it(phrase, prop, refs, applied):
-    """Every word must sit in one name of a bound value, its graph label or a code's label
-    or synonym: DAC2a "official development assistance" names no "bilateral", and DAC1
-    "bilateral ODA" no "multilateral"."""
+    """The words must run whole in one name of a bound value, its graph label or a code's
+    label or synonym: DAC2a "official development assistance" names no "bilateral", DAC1
+    "bilateral ODA" no "multilateral", and DAC2b "official non-concessional flow" no
+    "concessional"."""
     spec = _spec(prop, *refs)
     # A stand-in for the Spec, which carries far more than the slot filters read here.
     assert _binds_value_named(phrase, spec) is applied  # ty: ignore[invalid-argument-type]

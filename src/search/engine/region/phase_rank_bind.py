@@ -2905,6 +2905,16 @@ def model_only_values(
     )
 
 
+def names_value(phrase: str, *, prop: str, value: str, label: str | None) -> bool:
+    """Whether `phrase` names `value` on `prop`: one of the value's names (`_value_names`)
+    holds the phrase's words as a run, read as a code label reads a query span
+    (`_token_occurrences`). "bilateral" names DAC1 "bilateral ODA", and "concessional"
+    names no "official non-concessional flow", whose hyphenated word is one token."""
+    return any(
+        _token_occurrences(tokenize(name), phrase) for name in _value_names(prop, value, label)
+    )
+
+
 def _value_names(prop: str, value: str, label: str | None) -> tuple[str, ...]:
     """Every name the qualifier matcher reads for `value` on `prop`, and its graph `label`:
     the code index's label and synonyms of the code, and the label and synonyms of each
@@ -3113,7 +3123,10 @@ def judge_value_requirements(
     unmet: "female" when the answering literacy rate has no gender slot. A word the
     answer's datasets state of the rows the part reads (`_dataset_stated_words`) is stated
     too: "bilateral", the creditor type of a debt series on the menu, is met by a CRS
-    answer. A resubmit gives no `state` and reads none.
+    answer. A broad reading that fired on the part (`SlotDefaultDisclosure.reading`) applies
+    its narrow value wherever the bindings hold its broader one: "publicly guaranteed" is
+    applied by public and publicly guaranteed debt, which the part's note says it read. A
+    resubmit gives no `state` and reads none.
     """
     if not requirements:
         return ()
@@ -3128,13 +3141,21 @@ def judge_value_requirements(
     constraints = [read_constraints(arcs) for arcs in selected]
     names = [_casefolded_words(read_name(arcs) or "") for arcs in selected]
     stated = _series_words(shape) | _dataset_stated_words(shape, get_index(), state)
+    read_broadly = {
+        (reading.property_dcid, reading.value_dcid)
+        for disclosure in (state.slot_defaults.values() if state is not None else ())
+        if (reading := disclosure.reading) is not None
+        and (reading.property_dcid, reading.reads_as) in bound
+    }
 
     def applied(prop: str, value: str) -> bool:
-        return any(
-            bound_prop == prop and applies_value(value, held) for bound_prop, held in bound
-        ) or (
-            bool(constraints)
-            and all(applies_value(value, member.get(prop)) for member in constraints)
+        return (
+            (prop, value) in read_broadly
+            or any(bound_prop == prop and applies_value(value, held) for bound_prop, held in bound)
+            or (
+                bool(constraints)
+                and all(applies_value(value, member.get(prop)) for member in constraints)
+            )
         )
 
     def applied_as_a_set(values: frozenset[tuple[str, str]]) -> bool:

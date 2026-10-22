@@ -300,16 +300,32 @@ def test_validate_role_spans_downgrades_an_overlapping_role_span(caplog):
     ("query", "text", "span", "variable"),
     [
         ("French aid to Senegal", "France", "French", "aid"),
-        ("China loans to Kenya", "China", "China", "loans"),
         ("IMF credit outstanding Argentina", "IMF", "IMF", "credit outstanding"),
     ],
 )
 def test_validate_role_spans_keeps_a_surface_modifying_a_measure(query, text, span, variable):
-    """A national adjective or a name directly before the measure is its own cue."""
+    """A national adjective or an organisation's name directly before the measure is its
+    own cue."""
     entities = [_entity(text, span=span, flow_role="origin", role_span=span)]
     validated = _validate_role_spans(query, entities, [variable])
     assert validated[0].flow_role == "origin"
     assert validated[0].role_span == span
+
+
+@pytest.mark.parametrize(
+    ("query", "text", "variable"),
+    [
+        ("Kenya aid", "Kenya", "aid"),
+        ("China loans to Kenya", "China", "loans"),
+    ],
+)
+def test_validate_role_spans_downgrades_a_place_named_before_a_measure(query, text, variable):
+    """A place's own name before the measure states no direction: "Kenya aid" is usually
+    aid to Kenya, and "US aid" aid from the US."""
+    entities = [_entity(text, span=text, flow_role="origin", role_span=text)]
+    validated = _validate_role_spans(query, entities, [variable])
+    assert validated[0].flow_role == "unspecified"
+    assert validated[0].role_span is None
 
 
 def test_validate_role_spans_downgrades_an_adjectival_surface_with_no_measure_to_modify():
