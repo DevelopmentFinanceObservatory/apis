@@ -13,36 +13,33 @@ def test_raw_model_output_scores_exactly_as_recorded_in_the_readme():
     assert result["entity_count"] == 88
     assert result["unspecified_count"] == 23
     correct = sum(1 for v in result["verdicts"] if v["correct"])
-    assert correct == 83
+    assert correct == 85
     assert result["accuracy"] == correct / 88
-    assert result["false_confident_rate"] == 2 / 23
+    assert result["false_confident_rate"] == 0.0
     assert result["confidently_wrong_count"] == 1
 
     wrong = [v for v in result["verdicts"] if not v["correct"]]
     assert [(v["case_id"], v["surface"]) for v in wrong] == [
         ("dir-three-plus-list-01", "the United States"),
         ("dir-leading-unevidenced-02", "the United States"),
-        ("dir-worldknowledge-06", "Japan"),
-        ("dir-worldknowledge-06", "Bangladesh"),
         ("dir-possessive-03", "Kenya"),
     ]
 
 
 def test_guarded_extraction_scores_exactly_as_recorded_in_the_readme():
     """`guarded_extraction` applies `_validate_role_spans` to the same
-    recorded entities `raw_extraction` scores unmodified. Two of the five
-    wrong labels here are the guard's own cost: it downgrades
-    dir-leading-unevidenced-01 (Kenya) and dir-leading-unevidenced-02 (Ethiopia),
-    whose `role_span` is the place's own name, from correct to `"unspecified"`,
-    and for the same reason corrects both dir-worldknowledge-06 labels (see
-    corpus/direction/README.md). The other three wrong labels were already wrong
-    in the raw model output and the guard leaves them alone."""
+    recorded entities `raw_extraction` scores unmodified. One of the four
+    wrong labels here is the guard's own cost: it downgrades
+    dir-leading-unevidenced-01 (Kenya, no `role_span` to cite) from correct to
+    `"unspecified"` (see corpus/direction/README.md).
+    The other three wrong labels were already wrong in the raw model output and
+    the guard leaves them alone."""
     result = score(load_cases(), guarded_extraction)
 
     assert result["entity_count"] == 88
     assert result["unspecified_count"] == 23
     correct = sum(1 for v in result["verdicts"] if v["correct"])
-    assert correct == 83
+    assert correct == 84
     assert result["accuracy"] == correct / 88
     assert result["false_confident_rate"] == 0.0
     assert result["confidently_wrong_count"] == 1
@@ -51,7 +48,6 @@ def test_guarded_extraction_scores_exactly_as_recorded_in_the_readme():
     assert [(v["case_id"], v["surface"]) for v in wrong] == [
         ("dir-three-plus-list-01", "the United States"),
         ("dir-leading-unevidenced-01", "Kenya"),
-        ("dir-leading-unevidenced-02", "Ethiopia"),
         ("dir-leading-unevidenced-02", "the United States"),
         ("dir-possessive-03", "Kenya"),
     ]

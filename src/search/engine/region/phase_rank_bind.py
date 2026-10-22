@@ -2920,12 +2920,17 @@ def model_only_values(
 
 def names_value(phrase: str, *, prop: str, value: str, label: str | None) -> bool:
     """Whether `phrase` names `value` on `prop`: one of the value's names (`_value_names`)
-    holds the phrase's words as a run, read as a code label reads a query span
-    (`_token_occurrences`). "bilateral" names DAC1 "bilateral ODA", and "concessional"
-    names no "official non-concessional flow", whose hyphenated word is one token."""
-    return any(
-        _token_occurrences(tokenize(name), phrase) for name in _value_names(prop, value, label)
-    )
+    holds the phrase's words (`holds_words`). "bilateral" names DAC1 "bilateral ODA", and
+    "concessional" names no "official non-concessional flow"."""
+    return any(holds_words(name, phrase) for name in _value_names(prop, value, label))
+
+
+def holds_words(text: str, phrase: str) -> bool:
+    """Whether `text` holds `phrase`'s words as a run, read as a code label reads a query
+    span (`_token_occurrences`): "imputed multilateral aid" holds "multilateral", and
+    "non-concessional flows" holds no "concessional", since a hyphenated word is one
+    token."""
+    return bool(_token_occurrences(tokenize(text), phrase))
 
 
 def _value_names(prop: str, value: str, label: str | None) -> tuple[str, ...]:

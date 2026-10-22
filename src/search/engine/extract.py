@@ -209,26 +209,12 @@ class ExtractedOperation(BaseModel):
     )
 
 
-class ExtractedMeasureQualifier(BaseModel):
-    """A word of one measure's phrase that narrows the measure, which the answer is judged
-    against on that measure's part alone.
-
-    The word also stays in the variable, so recall still reads it. The part warns
-    `query_qualifier_dropped` for it unless its answer applies it.
-    """
-
-    variable: int = Field(
-        description="Zero-based index into `variables` of the measure the word narrows."
-    )
-    phrase: str = Field(description="The query's own word or words, copied verbatim.")
-
-
 class Extraction(BaseModel):
     """Structured extraction of a natural-language query.
 
     This is a data schema only; imported by bind, core, and tests. Gemini
     generates fields in declaration order, so `kind` is decided before the
-    measures and `operations` and `measure_qualifiers` follow the `variables` they index.
+    measures and `operations` follows the `variables` it indexes.
     """
 
     kind: ExtractionKind = Field(
@@ -275,14 +261,6 @@ class Extraction(BaseModel):
         description=(
             "One entry per phrase that asks for something done with a measure beyond "
             "showing it, by the deletion test in the instructions. Empty for most queries."
-        ),
-    )
-    measure_qualifiers: list[ExtractedMeasureQualifier] = Field(
-        default_factory=list,
-        description=(
-            "One entry per word in a measure's phrase that narrows it to what one kind of "
-            "provider gives or to one kind of terms, by the rule in the instructions. Empty "
-            "for most queries."
         ),
     )
     dropped_qualifiers: list[str] = Field(
@@ -419,29 +397,6 @@ entity "Africa" with `members` true, where "Africa" alone has it false. The clas
 is never a role_span: "African countries" takes its flow_role and role_span from the
 words around it, exactly as "Africa" would. Do not infer qualifiers that the query did
 not state.
-
-A named organisation that lends, gives or receives the flow, such as the IMF, the World
-Bank, IDA or the Global Fund, is an entity like a place wherever the query names it, and
-its name stays out of the variable. Named in front of a measure it lends or gives, it is
-the origin and its own name is the role_span: "IMF credit outstanding Argentina" has
-the variable "credit outstanding" and the entities "IMF", origin with role_span "IMF",
-and "Argentina". A country's own name is never its role_span. An organisation named
-beside a measure it does not lend, give or receive is the source of the numbers and no
-entity: "GDP of Kenya according to the IMF" and "Kenya GDP IMF" name only Kenya.
-When two names stand together for one body, the entity is the narrower one alone:
-"World Bank IDA concessional flows" names the entity "IDA".
-
-A measure the query already names by a common word or acronym keeps the query's word
-for it: "aid", "ODA", "OOF" and "GDP" stay as written in the variable, never spelt out or
-replaced by another name.
-
-A word in a measure's phrase that narrows it to what one kind of provider gives, or to
-one kind of terms, such as "bilateral", "multilateral" or "concessional", stays in that
-variable and is also listed in `measure_qualifiers`, copied exactly as written, with that
-variable's index: "total bilateral and imputed multilateral aid to Ethiopia" has the
-variables "bilateral aid" and "imputed multilateral aid", the operation aggregate
-"total" on each, and lists "bilateral" for variable 0. A word that is part of a longer name the measure goes by, such as "imputed
-multilateral", is not listed.
 
 Example — "health ODA grants from USA to Ethiopia":
 {"variables": ["health ODA grants"], "entities": ["USA", "Ethiopia"], "dates": []}
@@ -717,7 +672,7 @@ def _modifies_measure_word(
 ) -> bool:
     """Whether a span is followed, after whitespace only, by a variable word.
 
-    This admits a national adjective or a name modifying a measure without a lexicon.
+    This admits national adjectives modifying a measure without an adjective lexicon.
     Any variable word qualifies. Words of one character or less are skipped.
     """
     measure_words = {
@@ -771,26 +726,22 @@ def _role_cue_check(
     An own-span overlap gets its own reason only when every occurrence overlaps.
     Other invalid occurrences report a missing genuine cue.
 
-    If every cue occurrence overlaps the entity span, accept it only when the span is
-    followed by a variable word after whitespace, with no pairing, and is a derived
-    surface or an organisation's name (`entity_resolution.pack.is_organisation_name`). That
-    admits a national adjective (`French` in "French aid") or an organisation (`IMF` in
-    "IMF credit") modifying the measure. A place's own name before the measure states no
-    direction ("Kenya aid" is usually aid to Kenya, "US aid" aid from the US), so it fails.
+    If every cue occurrence overlaps the entity span, accept only a derived
+    surface (such as `French` for `France`) followed by a variable word after
+    whitespace, with no pairing. This identifies national adjectives modifying
+    measures without a lexicon.
 
-    A span modifying another noun, or none, fails the check. Possessives such as `'s`
-    qualify through direct span abutment.
+    Same-name spans or surfaces modifying another noun fail the check. Possessives such as `'s` qualify through direct span abutment.
     """
     raw_ranges = _all_normalized_text_ranges(entity.role_span or "", normalized_query)
     if not raw_ranges:
         return "role_span not found in query", None
     own_ranges = _all_normalized_text_ranges(entity.span, normalized_query) if entity.span else []
     if own_ranges and all(any(_ranges_overlap(r, own) for own in own_ranges) for r in raw_ranges):
-        own_name = _normalize(entity.span or "") == _normalize(entity.text)
-        if (not own_name or is_organisation_name(entity.text)) and _modifies_measure_word(
+        if _normalize(entity.span or "") != _normalize(entity.text) and _modifies_measure_word(
             own_ranges, normalized_query, variables
         ):
-            # An adjective or an organisation's name modifying the measure is its own cue.
+            # A national adjective can occupy both spans. Validate its surface and measure here.
             return None, None
         return "role_span overlaps this entity's own span", None
     role_ranges = _genuine_role_ranges(entity.role_span or "", normalized_query, own_ranges)
@@ -817,7 +768,7 @@ def role_cue_pairing(
 
     `None` when the entity has no role span, its role span fails validation, or
     validation pairs no cue occurrence with a span occurrence (the span is missing from
-    the query, or the cue is the span itself, a name or adjective modifying the measure).
+    the query, or the cue is the span itself, a national adjective).
     """
     if entity.flow_role == "unspecified" or not (entity.role_span or "").strip():
         return None
@@ -827,11 +778,14 @@ def role_cue_pairing(
 def _validate_role_spans(
     query: str, entities: list[ExtractedEntity], variables: list[str]
 ) -> list[ExtractedEntity]:
-    """Downgrade invalid roles to `unspecified`. Keep unspecified entities unchanged.
+    """Downgrade invalid roles to `unspecified`, then read a lender named before the measure
+    as the origin.
 
     A missing or blank `role_span` fails. Other cues are checked against the query.
-    `variables` supports the check of an adjective or an organisation's name that is its
-    own cue.
+    `variables` supports the national-adjective measure check and the lender rule
+    (`_lends_the_measure`): an organisation whose own words stand straight before a measure
+    word, as "IMF" in "IMF credit outstanding Argentina", is the origin with its own words
+    as cue, whatever role the model gave it.
 
     Warning logs include the reason and trace id. Query-derived text appears only
     in the matching debug log.
@@ -839,6 +793,10 @@ def _validate_role_spans(
     normalized_query = _normalize(query)
     validated: list[ExtractedEntity] = []
     for entity in entities:
+        if _lends_the_measure(normalized_query, entity, variables):
+            span = (entity.span or entity.text).strip()
+            validated.append(entity.model_copy(update={"flow_role": "origin", "role_span": span}))
+            continue
         if entity.flow_role == "unspecified":
             validated.append(entity)
             continue
@@ -864,6 +822,20 @@ def _validate_role_spans(
         )
         validated.append(entity.model_copy(update={"flow_role": "unspecified", "role_span": None}))
     return validated
+
+
+def _lends_the_measure(
+    normalized_query: str, entity: ExtractedEntity, variables: list[str]
+) -> bool:
+    """Whether `entity` is an organisation (`entity_resolution.pack.is_organisation_name`)
+    whose words in the query stand straight before a measure word (`_modifies_measure_word`):
+    "IMF credit outstanding", "World Bank IDA concessional flows". A country's name there
+    states no direction ("Kenya aid" is usually aid to Kenya), so only an organisation
+    qualifies."""
+    if not is_organisation_name(entity.text):
+        return False
+    ranges = _all_normalized_text_ranges((entity.span or entity.text).strip(), normalized_query)
+    return bool(ranges) and _modifies_measure_word(ranges, normalized_query, variables)
 
 
 # Keep caps offline so Gemini receives the unchanged schema. Bound output before scans.
@@ -1563,30 +1535,6 @@ def _admit_operations(
     )
 
 
-def _admit_measure_qualifiers(query: str, extraction: Extraction) -> Mapping[str, tuple[str, ...]]:
-    """Each admitted variable's narrowing words (`Extraction.measure_qualifiers`), keyed on
-    its stripped text as the operation sidecar is.
-
-    A word is discarded when its index is outside `variables`, its variable falls past the
-    variable cap, or it does not occur in the query (`_occurs_in`). Each variable keeps a
-    word once, first mention first, and at most `max_dropped_qualifiers` of them.
-    """
-    variables = extraction.variables
-    admitted = _admitted_variables(variables)
-    sidecar: dict[str, dict[str, str]] = {}
-    for qualifier in extraction.measure_qualifiers:
-        phrase = qualifier.phrase.strip()
-        if not phrase or not 0 <= qualifier.variable < len(variables):
-            continue
-        variable = variables[qualifier.variable].strip()
-        if variable not in admitted or not _occurs_in(phrase, query):
-            continue
-        bucket = sidecar.setdefault(variable, {})
-        if len(bucket) < settings().max_dropped_qualifiers:
-            bucket.setdefault(phrase.casefold(), phrase)
-    return {variable: tuple(bucket.values()) for variable, bucket in sidecar.items()}
-
-
 def _applied_phrases(
     extraction: Extraction, *, date_wording: Sequence[str]
 ) -> frozenset[tuple[str, ...]]:
@@ -1935,8 +1883,6 @@ class ExtractionResult:
 
     `operations` holds the wire form of each variable's operations, keyed the same
     way, a forecast carrying its `target_year`; a missing key means none.
-    `measure_qualifiers` holds each variable's narrowing words
-    (`_admit_measure_qualifiers`), keyed the same way; a missing key means none.
     `dates_by_variable` holds a variable's own dates where they differ from
     `extraction.dates`, keyed the same way: a forecasting variable in a query whose
     other variables keep a future year. `unit_texts` holds the unit phrases
@@ -1958,7 +1904,6 @@ class ExtractionResult:
     dates_by_variable: Mapping[str, list[ExtractedDate]] = field(default_factory=dict)
     unit_texts: Mapping[str, str] = field(default_factory=dict)
     warnings: tuple[Warning, ...] = ()
-    measure_qualifiers: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 async def _model_extraction(
@@ -2001,17 +1946,16 @@ async def extract(
     (`_resolve_relative_dates`), its kind enforced, the query's word order restored in
     reordered variables, the unit phrases its variables hold moved out of them to
     `result.unit_texts` (`_peel_unit_phrases`), its entities bounded, its operations admitted (a
-    forecast over a past year returns the year to `dates`), its narrowing words admitted
-    (`result.measure_qualifiers`), each admitted forecast's target year set on it
-    (`_target_forecasts`) and then removed from its variable's dates (`dates`, or
-    `result.dates_by_variable` when another variable keeps them), and its role spans
-    validated against the variables the cap admits. A reading that repeats a variable then
-    lists the query words it lost as dropped qualifiers (`_disclose_lost_words`). The words
-    an admitted operation accounts for are then cut from its dropped qualifiers, crediting
-    only the role spans of roles that passed validation (`_applied_phrases`), before the
-    qualifier cap counts them. It is then bounded, reattached, clamped, and display-truncated
-    in that order. Qualifier checks use full phrases and variables before caps can change
-    their meaning. Usage is `None` when the client does not provide it. The stage
+    forecast over a past year returns the year to `dates`), each admitted forecast's target
+    year set on it (`_target_forecasts`) and then removed from its variable's dates
+    (`dates`, or `result.dates_by_variable` when another variable keeps them), and its role
+    spans validated against the variables the cap admits. A reading that repeats a variable
+    then lists the query words it lost as dropped qualifiers (`_disclose_lost_words`). The
+    words an admitted operation accounts for are then cut from its dropped qualifiers,
+    crediting only the role spans of roles that passed validation (`_applied_phrases`),
+    before the qualifier cap counts them. It is then bounded, reattached, clamped, and
+    display-truncated in that order. Qualifier checks use full phrases and variables before
+    caps can change their meaning. Usage is `None` when the client does not provide it. The stage
     wrapper applies extract-specific settings. An extraction store on the LLM serves a
     repeated query the reading it stored (`_model_extraction`).
     """
@@ -2027,7 +1971,6 @@ async def extract(
     )
     extraction = _bound_entities(extraction)
     extraction, operations = _admit_operations(query, extraction, today_year=today_year)
-    measure_qualifiers = _admit_measure_qualifiers(query, extraction)
     operations = _target_forecasts(extraction, operations, today_year=today_year)
     extraction, dates_by_variable = _drop_forecast_years(
         extraction, operations, today_year=today_year
@@ -2057,7 +2000,6 @@ async def extract(
             dates_by_variable=dates_by_variable,
             unit_texts={v: text for v, text in unit_texts.items() if v in admitted_variables},
             warnings=date_warnings,
-            measure_qualifiers=measure_qualifiers,
         ),
         usage,
     )

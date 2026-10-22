@@ -18,11 +18,9 @@ from search.engine.extract import (
     MAX_OPERATIONS,
     ExtractedDate,
     ExtractedEntity,
-    ExtractedMeasureQualifier,
     ExtractedOperation,
     Extraction,
     ExtractionResult,
-    _admit_measure_qualifiers,
     _admit_operations,
     _drop_forecast_years,
     _occurs_in,
@@ -326,6 +324,32 @@ def test_validate_role_spans_downgrades_a_place_named_before_a_measure(query, te
     validated = _validate_role_spans(query, entities, [variable])
     assert validated[0].flow_role == "unspecified"
     assert validated[0].role_span is None
+
+
+@pytest.mark.parametrize(
+    ("query", "flow_role", "role_span", "variable", "expected"),
+    [
+        ("IMF credit outstanding Argentina", "unspecified", None, "credit outstanding", "origin"),
+        (
+            "IMF credit outstanding Argentina",
+            "destination",
+            "Argentina",
+            "credit outstanding",
+            "origin",
+        ),
+        # Named after the measure, the IMF is the source of the numbers.
+        ("Kenya GDP IMF", "unspecified", None, "GDP", "unspecified"),
+    ],
+)
+def test_validate_role_spans_reads_an_organisation_before_the_measure_as_lender(
+    query, flow_role, role_span, variable, expected
+):
+    """An organisation named straight before a measure word is the origin, with its own name
+    as cue, whatever role the model gave it."""
+    entities = [_entity("IMF", span="IMF", flow_role=flow_role, role_span=role_span)]
+    validated = _validate_role_spans(query, entities, [variable])
+    assert validated[0].flow_role == expected
+    assert validated[0].role_span == ("IMF" if expected == "origin" else None)
 
 
 def test_validate_role_spans_downgrades_an_adjectival_surface_with_no_measure_to_modify():
@@ -2143,25 +2167,6 @@ def test_admit_operations_keeps_a_forecast_naming_no_dated_year_alone(query, phr
     assert targeted == {
         "education aid": (Operation(verb="forecast", phrase=phrase, target_year=target),)
     }
-
-
-def test_admit_measure_qualifiers_keys_each_word_on_its_own_variable():
-    """A narrowing word reaches the variable its index names, once. A word the query does
-    not write, an index outside `variables`, and a blank word are discarded."""
-    query = "total bilateral and imputed multilateral aid to Ethiopia"
-    extraction = Extraction(
-        kind="resolution",
-        variables=["bilateral aid", "imputed multilateral aid"],
-        measure_qualifiers=[
-            ExtractedMeasureQualifier(variable=0, phrase=" bilateral "),
-            ExtractedMeasureQualifier(variable=0, phrase="Bilateral"),
-            ExtractedMeasureQualifier(variable=1, phrase="concessional"),
-            ExtractedMeasureQualifier(variable=2, phrase="imputed"),
-            ExtractedMeasureQualifier(variable=1, phrase=" "),
-        ],
-    )
-
-    assert _admit_measure_qualifiers(query, extraction) == {"bilateral aid": ("bilateral",)}
 
 
 def test_extract_binds_the_year_of_a_past_forecast():

@@ -15,7 +15,7 @@ import asyncio
 import pytest
 
 from search.engine.bind import SlotBindingDraft
-from search.engine.extract import ExtractedEntity, ExtractedMeasureQualifier, Extraction
+from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
@@ -243,20 +243,19 @@ class _TwoLegLLM:
     def __init__(
         self,
         dropped_qualifiers: tuple[str, ...] = (_BREADTH_PHRASE,),
-        measure_qualifiers: tuple[ExtractedMeasureQualifier, ...] = (),
+        second: str = _RESOLVE_DETECT_QUERY,
     ) -> None:
         self.prompts_by_variable: dict[str, str] = {}
         self._dropped = list(dropped_qualifiers)
-        self._measure = list(measure_qualifiers)
+        self._second = second
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "Extraction":
             return Extraction(
                 kind="resolution",
-                variables=[_QUERY, _RESOLVE_DETECT_QUERY],
+                variables=[_QUERY, self._second],
                 entities=[ExtractedEntity(text="Kenya")],
                 dates=[],
-                measure_qualifiers=self._measure,
                 dropped_qualifiers=self._dropped,
             ), None
         if schema is QuantityOutput:
@@ -287,12 +286,12 @@ class _TwoLegLLM:
         return elected_reply(0, bindings=[], also_plausible=[]), None
 
 
-def _two_leg_graph() -> FakeGraph:
+def _two_leg_graph(second: str = _RESOLVE_DETECT_QUERY) -> FakeGraph:
     return FakeGraph(
         nodes={**_E2E_NODES, **_RESOLVE_NODES},
         detect={
             _QUERY: {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]},
-            _RESOLVE_DETECT_QUERY: {"svs": [_RESOLVE_SV], "entities": []},
+            second: {"svs": [_RESOLVE_SV], "entities": []},
         },
         resolve=_RESOLVE_RESOLVE,
         obs=_E2E_OBS,
@@ -340,26 +339,35 @@ def test_two_variable_query_broadcasts_dropped_qualifiers_to_every_leg():
     assert flow_filters[0].provenance != "declared_default"
 
 
-def test_a_measure_qualifier_reaches_its_own_leg_and_warns_on_its_part_alone():
-    """A word narrowing the second measure reaches that leg's bind alone, and the part that
-    leaves it unapplied warns. The other part and the envelope do not."""
-    llm = _TwoLegLLM(
-        dropped_qualifiers=(),
-        measure_qualifiers=(ExtractedMeasureQualifier(variable=1, phrase="grants"),),
-    )
+@pytest.mark.parametrize(
+    ("dropped", "in_bind", "warned"),
+    [
+        # Dropped, and held by the second variable alone: that leg's bind reads it and its
+        # part warns, though the part has no answer.
+        (("multilateral",), True, True),
+        # Held by the variable only: the bind reads it in the variable already, and a part
+        # with no answer leaves it unjudged, since its refusal states why nothing is shown.
+        ((), False, False),
+    ],
+)
+def test_a_narrowing_word_is_judged_on_the_part_whose_variable_holds_it(dropped, in_bind, warned):
+    """A narrowing word the second variable holds reaches that part alone: the first part
+    and the envelope never warn for it."""
+    second = "multilateral population"
+    llm = _TwoLegLLM(dropped_qualifiers=dropped, second=second)
     response = offline_resolve(
-        make_request("standard grants and population"),
-        graph=_two_leg_graph(),
+        make_request(f"standard grants and {second}"),
+        graph=_two_leg_graph(second),
         llm=llm,
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
 
     assert "DROPPED QUALIFIERS" not in llm.prompts_by_variable[_QUERY]
-    assert "grants" in llm.prompts_by_variable[_RESOLVE_DETECT_QUERY].split("DROPPED QUALIFIERS")[1]
-    dropped = 'The requested qualifier "grants" was not applied.'
-    assert [w.message for w in response.parts[1].warnings if w.code == QUERY_QUALIFIER_DROPPED] == [
-        dropped
-    ]
+    assert ("DROPPED QUALIFIERS" in llm.prompts_by_variable[second]) is in_bind
+    dropped_warning = 'The requested qualifier "multilateral" was not applied.'
+    assert [w.message for w in response.parts[1].warnings if w.code == QUERY_QUALIFIER_DROPPED] == (
+        [dropped_warning] if warned else []
+    )
     assert not [w for w in response.parts[0].warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert not [w for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED]
 
