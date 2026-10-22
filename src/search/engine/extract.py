@@ -1216,12 +1216,12 @@ def _peeled_variable(variable: str) -> tuple[str, list[str]]:
     (`unit.bind.names_unit_request`): "GDP in euros per capita" is "GDP per capita" and "in
     euros", and "aid in real terms" is "aid" and "in real terms". A run cut short of a word
     the binder cannot read ("in current US$") is no unit phrase. The phrase's price basis
-    still reaches the measure collapse, which reads the query text as well as the variable.
+    also reaches the measure collapse, which reads the query text as well as the variable.
 
     A run after a denomination word (`_DENOMINATION_WORDS`) names the amount it counts, and
     a run beside a conjunction ("in dollars and euros", "in real terms and in euros") is
     part of a longer phrase, which peeling would leave as "remittances and euros" or "ODA
-    and"; neither is a unit phrase. A variable keeps every phrase when only function words
+    and". Neither is a unit phrase. A variable keeps every phrase when only function words
     are left, so every variable keeps a measure, and when its phrases together bind as no
     one request. A variable that divides (`_DIVIDING_FORMS`) holds no unit phrase: a share
     or a rate is in no currency, so the currency in "share of public debt denominated in US
@@ -1900,8 +1900,8 @@ async def extract(
     words an admitted operation accounts for are then cut from its dropped qualifiers,
     crediting only the role spans of roles that passed validation (`_applied_phrases`),
     before the qualifier cap counts them. It is then bounded, reattached, clamped, and
-    display-truncated in that order. Qualifier checks use full phrases and variables before caps can change
-    their meaning. Usage is `None` when the client does not provide it. The stage
+    display-truncated in that order. Qualifier checks use full phrases and variables before
+    caps can change their meaning. Usage is `None` when the client does not provide it. The stage
     wrapper applies extract-specific settings. An extraction store on the LLM serves a
     repeated query the reading it stored (`_model_extraction`).
     """

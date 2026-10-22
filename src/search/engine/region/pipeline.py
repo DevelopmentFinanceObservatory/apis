@@ -220,9 +220,9 @@ async def resolve_variable(
     response out of the response cache. With `SEARCH_UN_ON_FIRST_MENU`, a part holding no
     strong shape of its own waits for the UN leg and its menu also holds the UN pool's
     shapes (`phase_intake._merge_un_pool`); when the leg failed or was late, the part
-    carries `un_system_unavailable` whatever its status. A part with a strong shape never takes the
-    UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass, and a
-    doubted answer on a merged pass does not.
+    carries `un_system_unavailable` whatever its status. A part with a strong shape never
+    takes the UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass,
+    and a doubted answer on a merged pass does not.
 
     Returns a `RegionResult` with status `definite`, `candidates`, `no_data`, or `unsupported`.
     When the pipeline's UN System Data Commons reads named places the UN front door refuses,

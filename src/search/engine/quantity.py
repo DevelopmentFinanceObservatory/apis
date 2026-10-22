@@ -466,7 +466,7 @@ def check_denominator(shape: ShapeDraft, named: NamedDenominator) -> Denominator
 
     Two denominators match when they are one dcid or members of one registered equivalence
     cluster (`CLUSTER_BY_MEMBER`): a ratio is unit-free, so the cluster's currency does not
-    matter. Only this check reads the cluster; the elections compare denominators by dcid.
+    matter. Only this check reads the cluster. The elections compare denominators by dcid.
     """
     denominator = stated_denominator(shape)
     if denominator is not None:
