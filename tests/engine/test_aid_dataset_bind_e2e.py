@@ -1214,66 +1214,120 @@ def test_the_un_pass_reads_without_the_party_word(monkeypatch: pytest.MonkeyPatc
     assert graph.party_type_reads == 1
 
 
-@pytest.mark.parametrize(
-    ("variable", "un_pass"),
-    [
-        pytest.param(
-            "multilateral ODA", "answers-then-a-step-fails", id="failing-after-the-un-pass"
-        ),
-        pytest.param("multilateral aid", "refuses", id="the-un-pass-refuses"),
-    ],
-)
 def test_a_withdrawn_party_reading_reports_the_usage_of_its_un_pass(
-    monkeypatch: pytest.MonkeyPatch, variable, un_pass
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """A party reading withdrawn after its UN pass made model calls reports them with the
-    rest, one token per call made, when a later step fails. When the UN pass itself refuses
-    the request, as on a UN series declaring a default unit, the party reading is withdrawn
-    and the reading without party words is read. Neither the CRS nor the UN series states
-    "multilateral", as the binder rates it, so that reading refuses on it, runs its own UN
-    pass, and the declared default refuses the whole request (`pipeline._fill_gap`)."""
+    rest, one token per call made, when a later step fails."""
     _party_coverage(monkeypatch, from_the_party=False)
-    without_word = variable.removeprefix("multilateral ")
-    recalled = _party_graph(variable, without_word)
-    un = _graph(variable, without_word, members=(), un_members=(_UN_ODA,))
-    default_unit = FacetDefaultPolicy(
-        resolved_ref="USD", policy_node="p", policy_version="1", selection_reason="r"
-    )
+    recalled = _party_graph("multilateral ODA", "ODA")
+    un = _graph("multilateral ODA", "ODA", members=(), un_members=(_UN_ODA,))
     graph = FakeGraph(
         nodes={**recalled._nodes, **un._nodes},
         detect=recalled._detect,
         un_detect=un._un_detect,
         resolve={"Kenya": _KEN},
         obs=un._obs,
-        facet_policies={(f"dcid:{_UN_ODA}", "unit"): default_unit}
-        if un_pass == "refuses"
-        else None,
     )
-    if un_pass == "answers-then-a-step-fails":
-        warn = pipeline_module.with_un_unavailable_warning
-        calls = 0
+    warn = pipeline_module.with_un_unavailable_warning
+    calls = 0
 
-        def failing_once(result, blocked):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise ValueError("defect after the UN pass")
-            return warn(result, blocked)
+    def failing_once(result, blocked):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("defect after the UN pass")
+        return warn(result, blocked)
 
-        monkeypatch.setattr(pipeline_module, "with_un_unavailable_warning", failing_once)
-    llm = _CountingLLM(variable)
+    monkeypatch.setattr(pipeline_module, "with_un_unavailable_warning", failing_once)
+    llm = _CountingLLM("multilateral ODA")
     binder = RatingBinder(GeminiBinder(), {"multilateral": 0.0})
 
-    if un_pass == "refuses":
+    response = _resolve_scripted("multilateral ODA to Kenya", llm, graph=graph, binder=binder)
+
+    usage = response.diagnostics.llm_usage
+    assert usage is not None
+    assert usage["input_tokens"] == sum(llm.calls.values())
+
+
+class _PoolRatingBinder(RatingBinder):
+    """`RatingBinder` rating each word from `stated_by_pool` under the pool the request
+    reads, 1.0 where the pool's ratings hold no word."""
+
+    def __init__(self, binder: Binder, stated_by_pool: Mapping[str, Mapping[str, float]]):
+        super().__init__(binder)
+        self.stated_by_pool = stated_by_pool
+
+    async def rate_words_stated(self, request, *, llm):
+        self.requests.append(request)
+        stated = self.stated_by_pool.get(request.pool, {})
+        return {word: stated.get(word, 1.0) for word in request.words}, None
+
+
+@pytest.mark.parametrize(
+    ("pool", "states_the_word"),
+    [
+        pytest.param("un_system", False, id="unread-on-the-un-series"),
+        pytest.param("un_system", True, id="stated-by-the-un-series"),
+        pytest.param("ours", False, id="unread-on-our-series"),
+        pytest.param("ours", True, id="stated-by-our-series"),
+    ],
+)
+def test_a_declared_default_refuses_the_request_only_on_a_series_the_part_answers_on(
+    monkeypatch: pytest.MonkeyPatch, pool, states_the_word
+):
+    """The series `pool` elects for "multilateral aid" declares a default unit: the UN
+    total-ODA series, or the CRS series our pass elects. A UN pass reads the part without
+    the party word, so the party reading's UN pass rates the word as the reading without
+    party words does. Where the defaulted series leaves the word unread, as the binder
+    rates it, its pass answers nothing on it and refuses `qualifier_not_bound` before the
+    default can refuse the request (`pipeline._run_phases`), and the reading without party
+    words refuses on the word. With the UN series defaulted, our pass refuses on the word
+    too, and of the two refusals ours stands (`pipeline._fill_gap`). Where the defaulted
+    series states the word, its pass answers on it and the declared default refuses the
+    whole request."""
+    _party_coverage(monkeypatch, from_the_party=False)
+    unread = {"multilateral": 0.0}
+    stated_by_pool = {"ours": unread, "un_system": unread, pool: {} if states_the_word else unread}
+
+    def resolve(*, declares_default: bool) -> ResolveResponse:
+        recalled = _party_graph("multilateral aid", "aid")
+        un_members = (_UN_ODA,) if pool == "un_system" else ()
+        un = _graph("multilateral aid", "aid", members=(), un_members=un_members)
+        defaulted = _UN_ODA if pool == "un_system" else _CRS_MEMBER
+        default_unit = FacetDefaultPolicy(
+            resolved_ref="USD", policy_node="p", policy_version="1", selection_reason="r"
+        )
+        graph = FakeGraph(
+            nodes={**recalled._nodes, **un._nodes},
+            detect=recalled._detect,
+            un_detect=un._un_detect,
+            resolve={"Kenya": _KEN},
+            obs=un._obs,
+            facet_policies={(f"dcid:{defaulted}", "unit"): default_unit}
+            if declares_default
+            else None,
+        )
+        return _resolve_scripted(
+            "multilateral aid to Kenya",
+            _ScriptedLLM("multilateral aid"),
+            graph=graph,
+            binder=_PoolRatingBinder(GeminiBinder(), stated_by_pool),
+        )
+
+    if states_the_word:
         with pytest.raises(DeclaredDefaultUnsupportedError):
-            _resolve_scripted(f"{variable} to Kenya", llm, graph=graph, binder=binder)
-        # The party reading's UN pass, then the reading without party words and its UN pass.
-        assert [request.pool for request in binder.requests] == ["un_system", "ours", "un_system"]
-    else:
-        response = _resolve_scripted(f"{variable} to Kenya", llm, graph=graph, binder=binder)
-        usage = response.diagnostics.llm_usage
-        assert usage is not None
-        assert usage["input_tokens"] == sum(llm.calls.values())
+            resolve(declares_default=True)
+        return
+    (part,) = resolve(declares_default=True).parts
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [term.text for term in part.no_data.unbound_qualifiers] == ["multilateral"]
+    # The refusal flags the series the part refuses on where no series declares a default.
+    (undefaulted,) = resolve(declares_default=False).parts
+    assert isinstance(undefaulted, NoDataPart)
+    assert undefaulted.no_data.reason == "qualifier_not_bound"
+    assert _held_spec(part).spec_id == _held_spec(undefaulted).spec_id
 
 
 def _stream(query: str, variable: str) -> list[dict]:

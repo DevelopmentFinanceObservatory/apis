@@ -1844,12 +1844,7 @@ async def _declined_refusal(state: ResolveState) -> RegionResult:
     members declare a role on (`_declined_open_roles`), as its definite answer would."""
     declined = state.declined
     assert declined is not None
-    # The flagged match names the members the settled bindings select, not the family.
-    holding = _members_holding_bound_values(
-        state.shape_draft, bound_values_from_bindings(state.bindings)
-    )
-    members = list(holding)
-    open_roles = _declined_open_roles(state, holding)
+    members, open_roles = _unread_answer_members(state)
     if declined.pinned_failure != "pinned_code":
         return await _denominator_refusal(state, None, members=members, open_roles=open_roles)
     flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
@@ -1860,6 +1855,34 @@ async def _declined_refusal(state: ResolveState) -> RegionResult:
         unbound_qualifiers=settle_answer(state, state.shape_draft, state.bindings),
         llm_usage=state.var_usage,
     )
+
+
+async def refuse_unread_answer(state: ResolveState) -> RegionResult:
+    """Refuse ``qualifier_not_bound`` on the elected answer, `state.shape_draft` read under
+    `state.bindings`, when a read raised a refusal of the whole request before the answer
+    was served (`pipeline._run_phases`). The elected answer leaves terms unmet, so the
+    part answers nothing on that series and the series refuses no request. The refusal
+    stands in for definite assembly's (`phase_answer._assemble_carve_outs`): it flags the
+    elected answer with its bindings and places settled, as `_declined_refusal` does, and
+    names the terms its trace leaves unmet (`requirements.settle_answer`)."""
+    members, open_roles = _unread_answer_members(state)
+    flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
+    return state.no_data(
+        "qualifier_not_bound",
+        flagged_match=(flagged,),
+        unbound_qualifiers=settle_answer(state, state.shape_draft, state.bindings),
+        llm_usage=state.var_usage,
+    )
+
+
+def _unread_answer_members(state: ResolveState) -> tuple[list[str], tuple[RoleAxis, ...]]:
+    """The members a flagged match of the elected answer names when no read served it: those
+    the settled bindings select, not the family (`_members_holding_bound_values`), with the
+    open axes they declare a role on (`_declined_open_roles`)."""
+    holding = _members_holding_bound_values(
+        state.shape_draft, bound_values_from_bindings(state.bindings)
+    )
+    return list(holding), _declined_open_roles(state, holding)
 
 
 def _declined_open_roles(state: ResolveState, members: Mapping[str, dict]) -> tuple[RoleAxis, ...]:
