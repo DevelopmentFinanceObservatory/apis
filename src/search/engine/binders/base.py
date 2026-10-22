@@ -115,7 +115,10 @@ class BindResult:
     `policy_choice` what they chose, both None on a reply that elects no shape. `binder`
     names the binder that answered. `scores` holds the scores the binder's decisions read,
     each a per-shape list in menu order or one number for the part, as the
-    ``bind_decision`` line logs them; empty when the binder states none.
+    ``bind_decision`` line logs them; empty when the binder states none. `none_first` says
+    the binder elected a shape though it rated "none of the shapes" above every one, so the
+    UN System Data Commons' pass may replace the answer (`region.pipeline._fill_gap`); a
+    binder that offers no such rating leaves it False.
     """
 
     output: _UniversalBindOutput
@@ -123,6 +126,7 @@ class BindResult:
     policy_pool: PolicyPool | None = None
     policy_choice: PolicyChoice | None = None
     scores: Mapping[str, Sequence[float] | float] = field(default_factory=dict)
+    none_first: bool = False
 
 
 class Binder(Protocol):

@@ -53,9 +53,11 @@ from search.engine.qualifier_match import (
     names_plain_name,
     slot_noun_named,
 )
+from search.engine.quantity import query_normalisation
 from search.engine.role_text import role_axis_for_text
 from search.engine.time_bind import parse_time_text
-from search.engine.unit.lexicon import MIN_YEAR
+from search.engine.unit.bind import names_price_basis, names_unit_request
+from search.engine.unit.lexicon import MAX_YEAR, MIN_YEAR
 from search.models import (
     MAX_FORECAST_TARGET_YEAR,
     Operation,
@@ -1093,7 +1095,11 @@ def _enforce_kind(extraction: Extraction) -> Extraction:
 
 
 def _disclose_lost_words(
-    query: str, extraction: Extraction, *, date_wording: Sequence[str]
+    query: str,
+    extraction: Extraction,
+    *,
+    date_wording: Sequence[str],
+    unit_texts: Iterable[str],
 ) -> Extraction:
     """Add to `dropped_qualifiers` the query words a reading with a repeated variable lost.
 
@@ -1101,11 +1107,12 @@ def _disclose_lost_words(
     the words that told them apart are gone: "aid to Kenya and Uganda for health and
     education" read as `["aid", "aid"]` loses "health and education". A run is a maximal
     stretch of query words that no variable, place, role cue, operation phrase, dropped
-    qualifier, date bound or applied relative-date wording (`date_wording`, from
-    `_resolve_relative_dates`) holds. A measure's qualifier attaches to it, so a run
-    qualifies one from its first preposition on ("get for health and education"), or whole
-    when it follows a variable's word ("aid disbursements to Kenya"); the request's own
-    words ("Show me", "How much") attach to nothing and stay out. That part, with function
+    qualifier, date bound, applied relative-date wording (`date_wording`, from
+    `_resolve_relative_dates`) or unit text peeled from a variable (`unit_texts`) holds. A
+    measure's qualifier attaches to it, so a run qualifies one from its first preposition on
+    ("get for health and education"), or whole when it follows a variable's word ("aid
+    disbursements to Kenya"); the request's own words ("Show me", "How much") attach to
+    nothing and stay out. That part, with function
     words trimmed from its ends, is added when it keeps a word other than a function word
     or a number. A qualifier before the measure is lost to this rule; the prompt folds it
     into the variable. A reading with no repeated variable is returned unchanged.
@@ -1120,6 +1127,7 @@ def _disclose_lost_words(
         *extraction.dropped_qualifiers,
         *(year for d in extraction.dates for year in (d.start, d.end) if year),
         *date_wording,
+        *unit_texts,
     ]
     covered = {word for text in held for word in _words(text)}
     variable_words = {word for text in extraction.variables for word in _words(text)}
@@ -1226,6 +1234,158 @@ def _restore_query_word_order(query: str, extraction: Extraction) -> Extraction:
     if restored == extraction.variables:
         return extraction
     return extraction.model_copy(update={"variables": restored})
+
+
+# A unit phrase opens with one of these: "in euros", "at constant prices". A currency or
+# price-basis word elsewhere names the measure ("current account balance", "real interest
+# rate", "exchange rate of the euro"), and the measure-qualifier reading reads a bare price
+# basis ("real GDP") from the variable and the query.
+_UNIT_PHRASE_OPENERS = frozenset({"in", "at"})
+
+# Words that say what an amount is denominated, issued, held or borrowed in: the currency
+# after them picks the amount ("debt denominated in euros", "bonds issued in euros"), and
+# converting the total would answer a different measure.
+_DENOMINATION_WORDS = frozenset(
+    {"denominated", "issued", "held", "borrowed", "owed", "lent", "payable"}
+)
+
+# Words that join a phrase to more of the measure: "remittances in dollars and euros".
+_CONJUNCTIONS = frozenset({"and", "or"})
+
+# The quantity forms (`quantity.query_normalisation`) of a measure that divides one
+# quantity by another, which no unit request converts.
+_DIVIDING_FORMS = frozenset({"rate", "share"})
+
+_VARIABLE_WORD_RE = re.compile(r"\S+")
+
+# Separators beside a word of a variable: "euros," before a year, "(2020)".
+_YEAR_EDGE_PUNCTUATION = ",;:()"
+
+
+def _peeled_variable(variable: str) -> tuple[str, list[str]]:
+    """`variable` without the unit phrases it holds, and those phrases in order.
+
+    A unit phrase is the longest run of words from an opener (`_UNIT_PHRASE_OPENERS`) to the
+    variable's end, the next opener or a function word that the unit binder reads as one
+    request (`unit.bind.names_unit_request`): "GDP in euros per capita" is "GDP per capita"
+    and "in euros", and "aid in real terms" is "aid" and "in real terms". A run cut short
+    of a word the binder cannot read ("in current US$") is no unit phrase. A run holds one
+    opener, so each phrase binds on its own: in "GDP in euros in 2020" the phrase is "in
+    euros", and the binder never reads the observation year as the base year of a
+    constant-price euro. "at 2015 prices in euros" is two phrases that bind as one request.
+    A run also ends before a year, and the function words before it, when the words before
+    the year already bind and name no price basis (`unit.bind.names_price_basis`): "in
+    euros 2020", "in euros, 2020" and "in euros for 2020" are the phrase "in euros" and a
+    year the variable keeps, while "in 2020 euros", "in constant 2015 US dollars", "at 2015
+    prices" and "in euros, constant 2015" each keep their year as the base year. A phrase
+    drops the separator a cut leaves at its end. The phrase's price basis also reaches the
+    measure collapse, which reads the query text as well as the variable.
+
+    A run after a denomination word (`_DENOMINATION_WORDS`) names the amount it counts, and
+    a run beside a conjunction ("in dollars and euros", "in real terms and in euros") is
+    part of a longer phrase, which peeling would leave as "remittances and euros" or "ODA
+    and". Neither is a unit phrase. A variable keeps every phrase when only function words
+    are left, so every variable keeps a measure, and when its phrases together bind as no
+    one request. A variable that divides (`_DIVIDING_FORMS`) holds no unit phrase: a share
+    or a rate is in no currency, so the currency in "share of public debt denominated in US
+    dollars" names the debt it counts and the one in "exchange rate in euros" names the
+    rate.
+    """
+    if query_normalisation(variable, strong=True) & _DIVIDING_FORMS:
+        return variable, []
+    words = list(_VARIABLE_WORD_RE.finditer(variable))
+    folded = [word.group().casefold() for word in words]
+
+    def text(start: int, end: int) -> str:
+        return variable[words[start].start() : words[end - 1].end()]
+
+    def ends_before_year(start: int, k: int) -> bool:
+        year = folded[k].strip(_YEAR_EDGE_PUNCTUATION)
+        return (
+            len(year) == 4
+            and year.isdigit()
+            and MIN_YEAR <= int(year) <= MAX_YEAR
+            and names_unit_request(text(start, k))
+            and not names_price_basis(text(start, k))
+        )
+
+    def stands_alone(start: int, end: int) -> bool:
+        before = folded[start - 1] if start else None
+        after = folded[end] if end < len(words) else None
+        return before not in _DENOMINATION_WORDS | _CONJUNCTIONS and after not in _CONJUNCTIONS
+
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i < len(words):
+        if folded[i] in _UNIT_PHRASE_OPENERS:
+            next_opener = next(
+                (j for j in range(i + 1, len(words)) if folded[j] in _UNIT_PHRASE_OPENERS),
+                len(words),
+            )
+            cut = next(
+                (k for k in range(i + 1, next_opener) if ends_before_year(i, k)), next_opener
+            )
+            while cut - 1 > i and folded[cut - 1] in FUNCTION_WORDS:
+                cut -= 1
+            end = next(
+                (
+                    j
+                    for j in range(cut, i + 1, -1)
+                    if (j in (cut, len(words)) or folded[j] in FUNCTION_WORDS)
+                    and names_unit_request(text(i, j))
+                ),
+                None,
+            )
+            if end is not None and stands_alone(i, end):
+                spans.append((i, end))
+                i = end
+                continue
+        i += 1
+    removed = {k for start, end in spans for k in range(start, end)}
+    kept = [word.group() for k, word in enumerate(words) if k not in removed]
+    phrases = [text(start, end).rstrip(_YEAR_EDGE_PUNCTUATION) for start, end in spans]
+    if (
+        not phrases
+        or all(word.casefold() in FUNCTION_WORDS for word in kept)
+        or not names_unit_request(" ".join(phrases))
+    ):
+        return variable, []
+    return " ".join(kept), phrases
+
+
+def _peel_unit_phrases(extraction: Extraction) -> tuple[Extraction, dict[str, str]]:
+    """Move the unit phrases each variable holds (`_peeled_variable`) out of it, and return
+    each peeled variable's unit text, its phrases joined, keyed on its stripped text. The
+    raw-text door binds that text as the variable's own part's unit request.
+
+    The model folds a qualifier into its variable, so "GDP of Kenya in euros" can read as
+    the variable "GDP in euros": recall then reads "euros" as part of the measure and the
+    unit binder never sees it. A variable keeps its phrases when the peeled text would equal
+    another variable's ("GDP in euros and GDP in dollars"), since the two would then be one
+    measure. Operations, coded qualifiers and the variable cap all key on variable text, so
+    this runs before them.
+    """
+    peeled = [_peeled_variable(variable) for variable in extraction.variables]
+    while True:
+        owners: dict[str, set[str]] = {}
+        for variable, (text, _) in zip(extraction.variables, peeled, strict=True):
+            owners.setdefault(text.strip().casefold(), set()).add(variable.strip())
+        merged = [
+            k
+            for k, (text, phrases) in enumerate(peeled)
+            if phrases and len(owners[text.strip().casefold()]) > 1
+        ]
+        if not merged:
+            break
+        for k in merged:
+            peeled[k] = (extraction.variables[k], [])
+    unit_texts = {text.strip(): " ".join(phrases) for text, phrases in peeled if phrases}
+    if not unit_texts:
+        return extraction, {}
+    return (
+        extraction.model_copy(update={"variables": [text for text, _ in peeled]}),
+        unit_texts,
+    )
 
 
 def _folded(text: str) -> str:
@@ -1779,7 +1939,9 @@ class ExtractionResult:
     (`_admit_measure_qualifiers`), keyed the same way; a missing key means none.
     `dates_by_variable` holds a variable's own dates where they differ from
     `extraction.dates`, keyed the same way: a forecasting variable in a query whose
-    other variables keep a future year. `extraction.kind` is the enforced kind.
+    other variables keep a future year. `unit_texts` holds the unit phrases
+    `_peel_unit_phrases` moved out of a variable, joined, keyed the same way; a missing key
+    means the variable held none. `extraction.kind` is the enforced kind.
 
     `raw_variable_count` counts distinct stripped measures before the cap, for the
     clamp warning. `raw_dropped_qualifier_count` records the model's phrase count
@@ -1794,6 +1956,7 @@ class ExtractionResult:
     raw_dropped_qualifier_count: int = 0
     operations: Mapping[str, tuple[Operation, ...]] = field(default_factory=dict)
     dates_by_variable: Mapping[str, list[ExtractedDate]] = field(default_factory=dict)
+    unit_texts: Mapping[str, str] = field(default_factory=dict)
     warnings: tuple[Warning, ...] = ()
     measure_qualifiers: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
@@ -1836,18 +1999,18 @@ async def extract(
 
     `result.extraction` has its relative dates resolved against the current year
     (`_resolve_relative_dates`), its kind enforced, the query's word order restored in
-    reordered variables, its entities bounded, its operations admitted (a forecast over a past
-    year returns the year to `dates`), its narrowing words admitted
+    reordered variables, the unit phrases its variables hold moved out of them to
+    `result.unit_texts` (`_peel_unit_phrases`), its entities bounded, its operations admitted (a
+    forecast over a past year returns the year to `dates`), its narrowing words admitted
     (`result.measure_qualifiers`), each admitted forecast's target year set on it
     (`_target_forecasts`) and then removed from its variable's dates (`dates`, or
     `result.dates_by_variable` when another variable keeps them), and its role spans
     validated against the variables the cap admits. A reading that repeats a variable then
     lists the query words it lost as dropped qualifiers (`_disclose_lost_words`). The words
-    an admitted operation
-    accounts for are then cut from its dropped
-    qualifiers, crediting only the role spans of roles that passed validation
-    (`_applied_phrases`), before the qualifier cap counts them. It is then bounded, reattached, clamped, and display-truncated in
-    that order. Qualifier checks use full phrases and variables before caps can change
+    an admitted operation accounts for are then cut from its dropped qualifiers, crediting
+    only the role spans of roles that passed validation (`_applied_phrases`), before the
+    qualifier cap counts them. It is then bounded, reattached, clamped, and display-truncated
+    in that order. Qualifier checks use full phrases and variables before caps can change
     their meaning. Usage is `None` when the client does not provide it. The stage
     wrapper applies extract-specific settings. An extraction store on the LLM serves a
     repeated query the reading it stored (`_model_extraction`).
@@ -1859,7 +2022,10 @@ async def extract(
     extraction, date_warnings, date_wording = _resolve_relative_dates(
         extraction, current_year=today_year
     )
-    extraction = _bound_entities(_restore_query_word_order(query, _enforce_kind(extraction)))
+    extraction, unit_texts = _peel_unit_phrases(
+        _restore_query_word_order(query, _enforce_kind(extraction))
+    )
+    extraction = _bound_entities(extraction)
     extraction, operations = _admit_operations(query, extraction, today_year=today_year)
     measure_qualifiers = _admit_measure_qualifiers(query, extraction)
     operations = _target_forecasts(extraction, operations, today_year=today_year)
@@ -1871,7 +2037,9 @@ async def extract(
     extraction = extraction.model_copy(
         update={"entities": _validate_role_spans(query, extraction.entities, clamped_variables)}
     )
-    extraction = _disclose_lost_words(query, extraction, date_wording=date_wording)
+    extraction = _disclose_lost_words(
+        query, extraction, date_wording=date_wording, unit_texts=unit_texts.values()
+    )
     extraction = _trim_qualifiers_to_what_operations_leave(extraction, date_wording=date_wording)
     extraction, raw_variable_count, raw_dropped_qualifier_count, admitted_variables = (
         _bound_extraction(extraction)
@@ -1887,6 +2055,7 @@ async def extract(
             raw_dropped_qualifier_count=raw_dropped_qualifier_count,
             operations=operations,
             dates_by_variable=dates_by_variable,
+            unit_texts={v: text for v, text in unit_texts.items() if v in admitted_variables},
             warnings=date_warnings,
             measure_qualifiers=measure_qualifiers,
         ),

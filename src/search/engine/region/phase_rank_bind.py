@@ -660,7 +660,9 @@ def _read_offer(
         matches=query_qualifiers.matches,
         ties=query_qualifiers.ties,
         # Dropped-qualifier warnings cover matches, ties and two-reading spans alike.
-        matched_phrases=query_qualifiers.phrases | reading_owned_phrases,
+        matched_phrases=_outside_unit_text(
+            query_qualifiers.phrases | reading_owned_phrases, state.unit_text
+        ),
         measure_matches=measure_query_matches,
         measure_conflict_phrases=measure_qualifier_conflict_phrases,
         unread_price_basis=unread_price_basis,
@@ -670,6 +672,17 @@ def _read_offer(
         eligible_shapes=eligible_shapes,
     )
     return offer, collapsed
+
+
+def _outside_unit_text(phrases: frozenset[str], unit_text: str | None) -> frozenset[str]:
+    """`phrases` without those `unit_text` holds. The unit request owns its words, as
+    raw-text entry owns a dropped phrase's: it converts the answer to the price basis it
+    names ("in real terms"), or departs for its phrase when the answer cannot take it
+    (`phase_shared.withdraw_typed_unit`), so no measure-value warning repeats them."""
+    if unit_text is None:
+        return phrases
+    unit = f" {_normalize(unit_text)} "
+    return frozenset(phrase for phrase in phrases if f" {phrase} " not in unit)
 
 
 async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:

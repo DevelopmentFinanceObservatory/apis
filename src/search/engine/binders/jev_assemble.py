@@ -370,7 +370,9 @@ def bind_result(
 ) -> tuple[BindResult, Confidence]:
     """`assemble` over `menu`, with the engine's rules applied to the drafts
     (`bind.ground_bind_output`), and each shape's measure and election scores and the
-    ``none`` share of ``electq`` as the result's scores."""
+    ``none`` share of ``electq`` as the result's scores. The result is `none_first` when
+    it elects a shape though ``electq`` gives ``none`` more than any shape (`_none_first`),
+    which the decline rule lets through when a shape measures the phrase above `decline`."""
     output, conf = assemble(
         menu, answers, stated_form=stated_form, thresholds=thresholds, populations=populations
     )
@@ -385,6 +387,7 @@ def bind_result(
             "election": [round(conf.election.get(i, 0.0), 3) for i in shapes],
             "none": round(float(answers.choices.get("electq", {}).get(NONE, 0.0)), 3),
         },
+        none_first=output.ask is None and _none_first(answers),
     )
     return result, conf
 
@@ -433,11 +436,16 @@ def _measure_scores(answers: JevAnswers, n: int, t: Thresholds) -> dict[int, flo
 
 def _declines(answers: JevAnswers, best: float, t: Thresholds) -> bool:
     """Whether Jev answers that no menu measure gives the user what the query asks for:
-    ``electq`` gives ``none`` more than any shape, and no shape's measure score is above
-    `decline`."""
+    ``electq`` gives ``none`` more than any shape (`_none_first`), and no shape's measure
+    score is above `decline`."""
+    return best <= t.decline and _none_first(answers)
+
+
+def _none_first(answers: JevAnswers) -> bool:
+    """Whether ``electq`` gives ``none`` more than any shape."""
     probabilities = answers.choices.get("electq", {})
     shares = [p for key, p in probabilities.items() if key != NONE]
-    return best <= t.decline and probabilities.get(NONE, 0.0) > max(shares, default=0.0)
+    return probabilities.get(NONE, 0.0) > max(shares, default=0.0)
 
 
 def _with_nominal_output(
