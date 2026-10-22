@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from origin_catalogue import current_catalogue
 from search.engine.assemble import (
     build_candidates_part,
     build_definite_part,
@@ -24,6 +25,7 @@ from search.engine.assemble import (
 )
 from search.engine.departures import surviving_facts
 from search.engine.envelope import make_diagnostics, make_query_echo, make_response, now_ms
+from search.engine.errors import EngineInputError
 from search.engine.region.source_choice import scope_records
 from search.engine.role_text import (
     parsed_directions_contradicted,
@@ -31,6 +33,7 @@ from search.engine.role_text import (
     role_text_for_axis,
 )
 from search.engine.same_shape import FacetOptionsReader, collapse_same_shape, fold_key
+from search.engine.source_scope import compile_part_sources
 from search.engine.unit.bind import unit_text_naming
 from search.engine.unit.conversion import conversion_unavailable_warning
 from search.models import (
@@ -276,14 +279,21 @@ def _unbound_terms(
 
 
 def _option(mentions: Sequence[str], label: str, part: ParsedPart) -> NoDataOption | None:
-    """One option posting `part`, or `None` when `part` breaks the `ParsedPart` bounds or
-    states a direction its own wording contradicts, which the parsed door refuses."""
+    """One option posting `part`, or `None` when the parsed door would refuse it: `part`
+    breaks the `ParsedPart` bounds, states a direction its own wording contradicts, or
+    names sources that leave it none (`source_scope.compile_part_sources`, which reads the
+    bound catalogue's cached dictionary)."""
     try:
         posted = ParsedPart.model_validate(part.model_dump())
     except ValidationError:
         return None
     if parsed_directions_contradicted(posted):
         return None
+    if posted.sources:
+        try:
+            compile_part_sources(posted, catalogue=current_catalogue(), pointer_prefix="")
+        except EngineInputError:
+            return None
     return NoDataOption(
         mentions=list(mentions), label=label, data_query=ParsedInput(parts=[posted])
     )
@@ -332,8 +342,7 @@ def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
 def _source_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
     """One option per ambiguous source wording and candidate, setting the candidate's ref on
     every ref-less mention with that wording; a wording mentioned twice gives its options
-    once, from its first group. Choices the source compiler found empty are omitted.
-    A label names an excluded source as excluded."""
+    once, from its first group. A label names an excluded source as excluded."""
     groups: dict[str, AmbiguousSource] = {}
     for group in region.ambiguous_sources:
         groups.setdefault(group.text, group)
@@ -342,8 +351,6 @@ def _source_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
         mentions = [m for m in part.sources if m.ref is None and m.text == text]
         excluded = bool(mentions) and mentions[0].polarity == "exclude"
         for candidate in group.candidates:
-            if candidate.ref in group.blocked_choices:
-                continue
             sources = [
                 m.model_copy(update={"ref": candidate.ref}) if m in mentions else m
                 for m in part.sources
@@ -456,8 +463,8 @@ _OPTION_BUILDERS: dict[
 def _options(region: RegionResult) -> list[NoDataOption]:
     """The ready requests of a refusal that asks for a choice, each a one-part parsed input
     built from the region's parsed form. Empty for every other reason, when the region has
-    no parsed form (its inputs exceed the `ParsedPart` bounds), and for an option whose part
-    breaks those bounds or contradicts its own wording."""
+    no parsed form (its inputs exceed the `ParsedPart` bounds), and for an option the parsed
+    door would refuse (`_option`)."""
     build = _OPTION_BUILDERS.get(region.no_data_reason) if region.no_data_reason else None
     if build is None or region.parsed_form is None:
         return []

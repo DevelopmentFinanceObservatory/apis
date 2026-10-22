@@ -31,7 +31,7 @@ import logging
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal
 
 from code_index.query import CodeIndex
@@ -93,15 +93,10 @@ class SourceScope:
 
 @dataclass(frozen=True, slots=True)
 class AmbiguousSource:
-    """A mention's words that match two or more unrelated references.
-
-    `blocked_choices` holds candidates that would empty the source scope when
-    every ref-less mention of these words is pinned to that candidate.
-    """
+    """A mention's words that match two or more unrelated references."""
 
     text: str
     candidates: tuple[SourceReference, ...]
-    blocked_choices: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,47 +327,43 @@ def _pinned_reference(dictionary: SourceDictionary, ref: str, *, pointer: str) -
     )
 
 
-def _source_choices(
+def _refuse_every_reading_empty(
     mentions: Sequence[SourceMention],
-    resolved: Sequence[NamedSource | None],
-    ambiguous: Sequence[AmbiguousSource],
-    dictionary: SourceDictionary,
-) -> tuple[AmbiguousSource, ...]:
-    """Mark choices that would leave no source after the existing exclusions.
-
-    Other ambiguous wordings keep a repost in source resolution, so its final scope
-    cannot yet be checked. Use the same catalogue expansions as normal compilation,
-    including Dataset and Source exclusions, without adding reads to response assembly.
-    """
-    if len({group.text for group in ambiguous}) != 1 or not any(
-        mention.polarity == "exclude" for mention in mentions
-    ):
-        return tuple(ambiguous)
-    group = ambiguous[0]
-    blocked: set[str] = set()
-    for candidate in group.candidates:
-        references = [
-            candidate if mention.ref is None and mention.text == group.text else reference
-            for mention, reference in zip(mentions, resolved, strict=True)
+    group: AmbiguousSource,
+    *,
+    catalogue: Catalogue,
+    pointers: Sequence[str],
+) -> None:
+    """Raise `request_invalid` when every candidate of `group`'s words leaves the part no
+    source. Each reading pins every ref-less mention of the words to one candidate and
+    compiles once without `refuse_empty`. A reading that leaves another wording ambiguous
+    counts as viable, so a contradiction spread over two wordings answers
+    `source_ambiguous` until the caller has chosen all but one of them, and the cost stays
+    one compile per candidate. The refusal points at the excluded mention that empties the
+    first candidate's reading, which compiles once more with `refuse_empty` to find it."""
+    readings = [
+        [
+            mention.model_copy(update={"ref": candidate.ref})
+            if mention.ref is None and mention.text == group.text
+            else mention
+            for mention in mentions
         ]
-        expansions = [
-            frozenset()
-            if reference is None
-            else _expand(dictionary, reference, include=mention.polarity == "include")
-            for mention, reference in zip(mentions, references, strict=True)
-        ]
-        included = [
-            expansion
-            for mention, expansion in zip(mentions, expansions, strict=True)
-            if mention.polarity == "include"
-        ]
-        allowed = frozenset().union(*included) if included else dictionary.every
-        for mention, expansion in zip(mentions, expansions, strict=True):
-            if mention.polarity == "exclude":
-                allowed -= expansion
-        if not allowed:
-            blocked.add(candidate.ref)
-    return tuple(replace(item, blocked_choices=frozenset(blocked)) for item in ambiguous)
+        for candidate in group.candidates
+    ]
+    for reading in readings:
+        compiled = compile_sources(
+            reading, catalogue=catalogue, pointers=pointers, refuse_empty=False
+        )
+        if not isinstance(compiled, SourceScope) or compiled.allowed:
+            return
+    try:
+        compile_sources(readings[0], catalogue=catalogue, pointers=pointers)
+    except EngineInputError as empty:
+        raise EngineInputError(
+            f"every source {group.text!r} may name leaves this part no source to answer from",
+            code="request_invalid",
+            pointer=empty.pointer,
+        ) from None
 
 
 def compile_sources(
@@ -389,9 +380,11 @@ def compile_sources(
     unrelated ones, else the scope. Excluded words that match no source resolve to no
     reference and remove nothing. Raises `request_invalid` at a mention whose ref is not
     admitted, and, when `refuse_empty`, at the excluded mention that leaves the scope
-    empty. Without `refuse_empty` such a scope compiles allowing nothing, and its part
-    answers `qualifier_not_bound` (`region.result.empty_scope_result`), since the raw-text
-    door reads mentions an extraction model wrote, which the caller cannot correct."""
+    empty, or that does so under every reading of ambiguous words
+    (`_refuse_every_reading_empty`). Without `refuse_empty` such a scope compiles allowing
+    nothing, and its part answers `qualifier_not_bound` (`region.result.empty_scope_result`),
+    since the raw-text door reads mentions an extraction model wrote, which the caller
+    cannot correct."""
     if not mentions:
         return None
     dictionary = source_dictionary(catalogue)
@@ -428,10 +421,14 @@ def compile_sources(
             reason="source_not_resolved", terms=tuple(unmatched), ambiguous=(), mentions=pinned
         )
     if ambiguous:
+        if refuse_empty:
+            _refuse_every_reading_empty(
+                mentions, ambiguous[0], catalogue=catalogue, pointers=pointers
+            )
         return SourceRefusal(
             reason="source_ambiguous",
             terms=tuple(group.text for group in ambiguous),
-            ambiguous=_source_choices(mentions, resolved, ambiguous, dictionary),
+            ambiguous=tuple(ambiguous),
             mentions=pinned,
         )
 
