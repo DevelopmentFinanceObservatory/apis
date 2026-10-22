@@ -1638,3 +1638,29 @@ def test_the_bind_result_carries_each_shape_s_scores():
     result, _conf = bind_result(jev_menu(_request(shapes)), answers, stated_form=None)
 
     assert result.scores == {"measure": [0.9, 0.8], "election": [0.55, 0.25], "none": 0.4}
+
+
+@pytest.mark.parametrize(
+    ("measure", "none", "none_first"),
+    [
+        pytest.param(0.9, 0.5, True, id="elected-under-none"),
+        pytest.param(0.9, 0.2, False, id="elected-over-none"),
+        pytest.param(0.3, 0.5, False, id="asks"),
+    ],
+)
+def test_the_bind_result_is_none_first_when_it_elects_under_none(
+    measure: float, none: float, none_first: bool
+):
+    """A shape measuring the phrase above `decline` is elected though ``electq`` puts
+    ``none`` above it, and the result says so; a part that asks elects nothing to doubt."""
+    shapes = [_shape(0), _shape(1, population="Place")]
+    answers = _answers(
+        {"m|0": measure, "m|1": measure - 0.1},
+        elect={0: 0.6, 1: 0.4},
+        choices={"electq": {"Shape 0": 0.6 - none, "Shape 1": 0.4, "none": none}},
+    )
+
+    result, _conf = bind_result(jev_menu(_request(shapes)), answers, stated_form=None)
+
+    assert (result.output.ask is not None) is (measure < 0.5)
+    assert result.none_first is none_first

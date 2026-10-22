@@ -212,13 +212,14 @@ async def resolve_variable(
 
     Recall runs once. Our pass elects over our candidates first, while the UN System Data
     Commons' resolve and shape derivation run beside it (`ResolveState.un_leg`). When our
-    pass ends `no_data`, a UN pass elects over the UN pool's shapes (`_fill_gap`). A part
-    answered on our pass never waits for the UN leg. A part whose UN leg failed or was late
-    and that ends `no_data` carries `un_system_unavailable`, which keeps the response out of
-    the response cache. With `SEARCH_UN_ON_FIRST_MENU`, a part holding no strong shape of
-    its own waits for the UN leg and its menu also holds the UN pool's shapes
-    (`phase_intake._merge_un_pool`); when the leg failed or was late, the part carries
-    `un_system_unavailable` whatever its status. A part with a strong shape never takes the
+    pass ends `no_data`, or answers on a pick its binder rated "none of the shapes" above,
+    a UN pass elects over the UN pool's shapes (`_fill_gap`). Any other part answered on
+    our pass never waits for the UN leg. A part whose UN leg failed or was late and that
+    the UN pass could have changed carries `un_system_unavailable`, which keeps the
+    response out of the response cache. With `SEARCH_UN_ON_FIRST_MENU`, a part holding no
+    strong shape of its own waits for the UN leg and its menu also holds the UN pool's
+    shapes (`phase_intake._merge_un_pool`); when the leg failed or was late, the part
+    carries `un_system_unavailable` whatever its status. A part with a strong shape never takes the
     UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass.
 
     Returns a `RegionResult` with status `definite`, `candidates`, `no_data`, or `unsupported`.
@@ -527,19 +528,22 @@ async def _fill_gap(
     deadline: float | None,
     un_state: Callable[[float | None], ResolveState],
 ) -> RegionResult:
-    """`result`, our pass's answer, or the UN pass's answer when `result` is `no_data` and
-    the UN System Data Commons may fill the gap (`_un_pass_skip`).
+    """`result`, our pass's answer, or the UN pass's answer when the UN System Data Commons
+    may fill a gap in it (`_un_pass_skip`): `result` is `no_data`, or it answers on a pick
+    its binder rated "none of the shapes" above (`_doubted`).
 
     The UN pass runs the phases again over the shapes the UN leg derived beside our pass
-    (`ResolveState.un_leg`), sharing recall, less the shape our pass elected and found
-    without observations: a superseded variable stands in our pass as the UN variable the
-    UN resolve may recall too. It waits for the leg no longer than
-    `SEARCH_UN_FIRST_PASS_WAIT_S` from the start of our derivation, and ends
-    `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands when it is `definite` or
-    `candidates`, or when it is `no_data` carrying an `alternate_match` and `result`
-    carries none. Of two refusals, the one offering a reading with data at the place
-    stands, as status rule 1 has a nominee ride on a refusal. Otherwise `result` stands
-    with its reason. A `result` holding an
+    (`ResolveState.un_leg`), sharing recall, less the shape our pass elected when it found
+    it without observations or answered on it doubted: a superseded variable stands in our
+    pass as the UN variable the UN resolve may recall too, and the UN pass would elect it
+    again. It waits for the leg no longer than `SEARCH_UN_FIRST_PASS_WAIT_S` from the start
+    of our derivation, and ends `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands
+    when it is `definite` or `candidates`, unless both binders doubted their picks, or when
+    both passes refuse and it carries an `alternate_match` and `result` carries none. Of
+    two refusals, the one offering a reading with data at the place stands, as status rule
+    1 has a nominee ride on a refusal, and so does a UN refusal on a variable it matched
+    over ours `variable_not_resolved`: "no data for Japan" says more than "could not
+    match". Otherwise `result` stands with its reason. A `result` holding an
     `alternate_match`, a reading the model nominated from our pool with data at the place,
     also stands when the UN pass's elected shape matches the phrase only weakly
     (`_representative_score_is_weak`): such an answer has no better claim to the question
@@ -548,8 +552,8 @@ async def _fill_gap(
 
     A UN leg that failed, or was not in by its wait, and a UN pass that fails upstream
     (`_UPSTREAM_FAILURES`) or has no time to start, leave `result` standing with
-    `un_system_unavailable`, only ever on a `no_data` answer, the one case where the UN
-    pool could have changed it. A leg our pass waited for and missed
+    `un_system_unavailable`, only ever on an answer the UN pool could have changed: a
+    `no_data` one or a doubted one. A leg our pass waited for and missed
     (`ResolveState.un_pool`) is the exception: the menu lacked the pool, so every answer
     carries the warning and no UN pass runs. A pool merged onto our pass's menu is the UN
     pass's pool when ours ends `no_data`. What the leg's reads could not serve
@@ -578,7 +582,8 @@ async def _fill_gap(
         return _with_un_search_warning(result, pool.missed)
     shapes = pool.shapes
     elected = first.shape_draft
-    if result.no_data_reason == "no_observations" and elected is not None:
+    doubted = _doubted(result, first)
+    if (result.no_data_reason == "no_observations" or doubted) and elected is not None:
         read = set(elected.sv_arc_facts or {})
         shapes = [
             shape
@@ -628,14 +633,24 @@ async def _fill_gap(
     displaces_alternate = result.alternate_match is None or not _representative_score_is_weak(
         None if un_elected is None else un_elected.measured_score
     )
-    answers = second.status in ("definite", "candidates") and displaces_alternate
+    un_doubted = state.bind_decision is not None and state.bind_decision.none_first
+    answers = (
+        second.status in ("definite", "candidates")
+        and displaces_alternate
+        and not (doubted and un_doubted)
+    )
+    refused = result.status == "no_data" and second.status == "no_data"
     # Of two refusals, the one carrying a nominee with data stands (status rule 1).
     offers_alternate = (
-        second.status == "no_data"
-        and second.alternate_match is not None
-        and result.alternate_match is None
+        refused and second.alternate_match is not None and result.alternate_match is None
     )
-    chosen = second if answers or offers_alternate else result
+    # A UN refusal that matched a variable says more than ours that matched none.
+    matched_further = (
+        refused
+        and result.no_data_reason == "variable_not_resolved"
+        and second.no_data_reason != "variable_not_resolved"
+    )
+    chosen = second if answers or offers_alternate or matched_further else result
     timing = dict(result.timing_by_step)
     for step, ms in second.timing_by_step.items():
         timing[step] = timing.get(step, 0) + ms
@@ -654,10 +669,25 @@ async def _fill_gap(
     )
 
 
+def _doubted(result: RegionResult, first: ResolveState) -> bool:
+    """Whether our pass's `result` answers on a pick its binder rated "none of the shapes"
+    above (`BindResult.none_first`), on the resolution without party words
+    (`ResolveState.party_words_off`). A UN answer binds no party, so on the resolution with
+    them it could only fail `binds_each_party` and send the part to the other one."""
+    decision = first.bind_decision
+    return (
+        result.status in ("definite", "candidates")
+        and first.party_words_off
+        and decision is not None
+        and decision.none_first
+    )
+
+
 def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     """Why the UN pass does not run after our pass's `result`, or `None` when it runs.
 
-    Only a `no_data` answer has a gap to fill. A refusal about the request's entities or a
+    Only a `no_data` answer has a gap to fill, and an answer its binder doubted
+    (`_doubted`) one the UN pool may fill better. A refusal about the request's entities or a
     `source_ambiguous` one stands, since the UN pool resolves neither. So does the answer of
     a part whose series code named its StatVars (`ResolveState.source_code`), which answers
     from those alone, and that of a part whose
@@ -668,7 +698,7 @@ def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     publishers out. A part that names a source and refuses on its scope is not settled by
     the refusal; whether its UN pass runs is `allows_un_system`'s to say, so a part naming a
     UN System Data Commons source still reaches it."""
-    if result.status != "no_data":
+    if result.status != "no_data" and not _doubted(result, first):
         return "answered"
     if result.no_data_reason in _ENTITY_TERMINALS:
         return "entity"
@@ -693,13 +723,15 @@ def _log_gap_fill(
     (`ShapeDraft.pool`, `-` when it elected none), what the UN pass did (why it was
     skipped, or the status it reached and its time), whether our pass's bind asked
     (`_UniversalBindOutput.ask`), which its status alone does not show once a declined
-    reading or a source-named term refuses in its place, and whether our pass's menu held
-    the UN pool (`ResolveState.un_pool`)."""
+    reading or a source-named term refuses in its place, whether our pass's menu held
+    the UN pool (`ResolveState.un_pool`), and whether its binder doubted its answer
+    (`_doubted`), which runs the UN pass on an answered part."""
     elected = first.shape_draft
     bind = first.bind_result
     merged = first.un_pool
     logger.info(
-        "gap_fill part=%d status=%s/%s pool=%s un_pass=%s un_ms=%d bind_asked=%s un_merged=%s",
+        "gap_fill part=%d status=%s/%s pool=%s un_pass=%s un_ms=%d bind_asked=%s un_merged=%s "
+        "doubted=%s",
         first.variable_index,
         result.status,
         result.no_data_reason,
@@ -708,6 +740,7 @@ def _log_gap_fill(
         un_ms,
         "true" if bind is not None and bind.ask is not None else "false",
         "true" if merged is not None and merged.missed is None else "false",
+        "true" if _doubted(result, first) else "false",
     )
 
 
