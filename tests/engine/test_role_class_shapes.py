@@ -85,6 +85,7 @@ from search.engine.shape import (
     ShapeDraft,
     required_role_names,
 )
+from search.engine.stated_words_read import StatedWordsOutput
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     BaseIdentity,
@@ -117,7 +118,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine.test_bind_slot_reserve import _state as _prune_state
 from tests.engine.test_two_ended_menu import _index_row_node
 from tests.fixtures import FakeGraph, make_resolver
@@ -255,6 +256,8 @@ def test_a_question_naming_no_place_offers_a_one_role_shape_to_the_election():
 
     class _RecordingLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             offered.append(
@@ -947,6 +950,8 @@ _OBS = [{"earliestDate": "2015", "latestDate": "2022", "obsCount": 8}]
 
 class _BindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
@@ -957,6 +962,8 @@ class _AskNearestLLM:
     """Declines the empty menu and names the first not-electable reading as nearest."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
@@ -1772,6 +1779,8 @@ def test_a_candidate_of_another_role_class_binds_its_place_in_its_own_role():
 
     class _TwoReadingsLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             return elected_reply(1, also_plausible=[0]), None
@@ -1956,6 +1965,8 @@ def test_a_role_bearing_candidate_beside_a_subject_only_election_answers_its_own
 
     class _SubjectFirstLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             return elected_reply(0, also_plausible=[1]), None
@@ -2362,6 +2373,8 @@ class _ElectFirstLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         return elected_reply(0, also_plausible=self._also_plausible), None
@@ -2524,6 +2537,8 @@ def _relax_llm(**drafts: tuple[str, str]):
 
     class _DraftLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             return elected_reply(

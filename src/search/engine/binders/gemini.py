@@ -1,4 +1,5 @@
-"""The Gemini binder: the engine's own quantity read and choose-and-bind call."""
+"""The Gemini binder: the engine's own quantity read, choose-and-bind call and stated-words
+read."""
 
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ from search.engine.binders.base import (
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.config import settings
 from search.engine.quantity_read import read_stated_quantity
+from search.engine.stated_words_read import read_stated_words
 
 if TYPE_CHECKING:
     from search.engine.clients.llm import SupportsLLM
@@ -50,10 +52,11 @@ _BOUND_SLACK = 1e-9
 
 
 class GeminiBinder:
-    """Reads the quantity with `quantity_read.read_stated_quantity` and elects and binds with
-    `bind.bind_universal`, on the injected LLM client. A reply that elects a shape goes
-    through the house policies over its pool, and a moved election takes the reply's drafts
-    onto the shape the policies elect (`reelect`).
+    """Reads the quantity with `quantity_read.read_stated_quantity`, elects and binds with
+    `bind.bind_universal`, and rates the words the coverage rule leaves unread with
+    `stated_words_read.read_stated_words`, on the injected LLM client. A reply that elects a
+    shape goes through the house policies over its pool, and a moved election takes the
+    reply's drafts onto the shape the policies elect (`reelect`).
 
     The reply rates each shape that measures the phrase, and the pool is the shapes it rates
     near the best and the pick's twins (`rated_pool`), over which all six policies run with
@@ -88,8 +91,10 @@ class GeminiBinder:
     async def rate_words_stated(
         self, request: StatedWordsRequest, *, llm: SupportsLLM
     ) -> tuple[Mapping[str, float], dict | None]:
-        """No rating and no call: each word counts as stated."""
-        return {}, None
+        """The rating of each word from one call of its own (`read_stated_words`), whose
+        fixed schema leaves the bind schema as it is. Raises `LLMInfraError` for a read
+        that failed."""
+        return await read_stated_words(request.variable, request.shape, request.words, llm=llm)
 
     async def bind(
         self, request: BindRequest, *, llm: SupportsLLM

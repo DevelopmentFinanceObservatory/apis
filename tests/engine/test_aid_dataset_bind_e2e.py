@@ -52,6 +52,7 @@ from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import identity_dataset, identity_query
 from search.engine.spec_id import mint_identity
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     CandidatesPart,
     DefinitePart,
@@ -85,7 +86,7 @@ from tests.engine._binders import ReplyBinder, nominee_ratings
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events, offline_resolve
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine._source_scopes import part_scope
 from tests.fixtures import FakeGraph, FakeLLM
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -1151,6 +1152,8 @@ class _ScriptedLLM:
                 dropped_qualifiers=self._dropped,
                 operations=self._operations,
             ), None
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         self.bind_prompts.append(prompt)

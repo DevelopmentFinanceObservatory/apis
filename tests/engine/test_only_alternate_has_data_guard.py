@@ -21,6 +21,7 @@ from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, ONLY_ALTERNATE_HAS
 from search.engine.region.state import _elected_stat_vars
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import GraphRef
 from series_coverage.schema import RoleNames
 from tests.engine._binders import ReplyBinder, nominee_ratings
@@ -31,7 +32,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _ELECTED_SV = "Count_Person_HighAltitude"
@@ -85,6 +86,8 @@ class _GuardBindLLM:
         self._bindings = list(bindings)
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"

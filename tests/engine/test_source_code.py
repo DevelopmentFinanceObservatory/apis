@@ -34,6 +34,7 @@ from search.engine.source_code import (
     without_code_words,
 )
 from search.engine.source_scope import SourceReference, SourceScope
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import ParsedEntity, ParsedInput, ParsedPart, ResolveRequest, SourceMention
 from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import MemberEnumerator
@@ -41,7 +42,7 @@ from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 from tests.origin_catalogue.support import build_arc_tables
@@ -279,6 +280,8 @@ class _BindLLM:
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"

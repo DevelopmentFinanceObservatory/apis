@@ -35,6 +35,7 @@ from search.engine.region.codes import (
 )
 from search.engine.region.facets import _resolved_facets
 from search.engine.region.state import EngineOptions
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import IdentityUnitRequest, TimeWindow
 from search.observations import (
     OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED,
@@ -54,7 +55,7 @@ from tests.engine._harness import (
     sdmx_double,
     unit_check_planned,
 )
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
@@ -612,6 +613,8 @@ _EARTH_CHILDREN = {"Earth": {"Country": _COUNTRIES}}
 
 class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
@@ -870,6 +873,8 @@ class _CandidatesUnitBindLLM:
     """Elect the first shape and mark the second plausible."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"

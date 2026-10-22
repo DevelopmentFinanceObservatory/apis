@@ -24,10 +24,12 @@ from search.engine.region import resolve_variable
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.role_text import DoorRole
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import CoverageBare, NoDataPart
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_RATING
 from tests.fixtures import FakeGraph, _load_json, make_resolver
 
 _QUERY = "GDP per capita of Vietnam"
@@ -57,6 +59,8 @@ class _ElectSingleShapeLLM:
     read finds no form and no denominator."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return QuantityOutput(), None
         assert schema.__name__ == "_UniversalBindOutput"
@@ -513,6 +517,8 @@ class _ReadingLLM(_MenuLLM):
         self.nearest = nearest
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             self.quantity_prompts.append(prompt)
             return QuantityOutput(
@@ -1098,6 +1104,8 @@ class _QuantityReadFailsLLM(_ReadingLLM):
     an output that fails validation does."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             raise LLMInfraError("LLM output failed schema validation")
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)

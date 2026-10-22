@@ -19,13 +19,14 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import FAMILY_TOTAL_ABSENT, ONLY_ALTERNATE_HAS_DATA
 from search.engine.retrieval import standard
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import TimeWindow
 from tests.engine import test_equivalent_readings_divert as twins
 from tests.engine import test_zero_observation_election as reelection
 from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _KEN = "country/KEN"
@@ -49,6 +50,8 @@ class _BindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"

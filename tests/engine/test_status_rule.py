@@ -34,13 +34,14 @@ from search.engine.region.status_rule import (
     plan_status,
 )
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import TimeWindow
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
 from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _GDP = "GrossDomesticProduction"
@@ -392,6 +393,8 @@ class _FixedBindLLM:
         self._chosen = chosen
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         return _UniversalBindOutput(
