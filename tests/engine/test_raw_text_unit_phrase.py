@@ -64,15 +64,33 @@ def test_a_typed_currency_phrase_binds_as_the_unit_text(phrase, currency, prices
     assert (outcome.currency, outcome.prices, outcome.base_year) == (currency, prices, base_year)
 
 
-def test_a_unit_phrase_inside_the_variable_binds_as_the_unit_text():
-    query = "GDP of Kenya in euros"
+@pytest.mark.parametrize(
+    ("query", "variable", "dates", "measure"),
+    [
+        ("GDP of Kenya in euros", "GDP in euros", [], "GDP"),
+        # The year extraction reads as the date stays the observation year.
+        (
+            "GDP of Kenya in euros in 2020",
+            "GDP in euros in 2020",
+            [{"kind": "point", "start": "2020"}],
+            "GDP in 2020",
+        ),
+        (
+            "GDP of Kenya in euros 2020",
+            "GDP in euros 2020",
+            [{"kind": "point", "start": "2020"}],
+            "GDP 2020",
+        ),
+    ],
+)
+def test_a_unit_phrase_inside_the_variable_binds_as_the_unit_text(query, variable, dates, measure):
     llm = FakeLLM(
         responses={
             fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query): {
                 "kind": "resolution",
-                "variables": ["GDP in euros"],
+                "variables": [variable],
                 "entities": [{"text": "Kenya", "span": "Kenya"}],
-                "dates": [],
+                "dates": dates,
             }
         }
     )
@@ -80,9 +98,12 @@ def test_a_unit_phrase_inside_the_variable_binds_as_the_unit_text():
 
     prep = raw_text._prepare_extraction(result.extraction, result, query=query)
 
-    assert prep.unique == ["GDP"]
+    assert prep.unique == [measure]
     assert prep.per_variable_unit_texts == ["in euros"]
     assert prep.dropped_qualifier_phrases == []
+    outcome = bind_unit_text(prep.per_variable_unit_texts[0], policy=_POLICY)
+    assert isinstance(outcome, BoundUnitRequest)
+    assert (outcome.currency, outcome.prices, outcome.base_year) == ("EUR", "current", None)
 
 
 def test_a_phrase_that_cannot_bind_stays_dropped_with_its_departure():
@@ -99,11 +120,19 @@ def test_a_phrase_that_cannot_bind_stays_dropped_with_its_departure():
     ]
 
 
-def test_a_second_phrase_that_conflicts_with_the_first_stays_dropped():
-    prep = _prep("in euros", "in yen", "at constant prices")
+@pytest.mark.parametrize(
+    ("dropped", "unit_text", "left"),
+    [
+        (("in euros", "in yen", "at constant prices"), "in euros at constant prices", ["in yen"]),
+        # A bare year binds as no phrase, so it never becomes a base year beside a currency.
+        (("in euros", "in 2020"), "in euros", ["in 2020"]),
+    ],
+)
+def test_a_phrase_that_binds_as_no_request_with_the_first_stays_dropped(dropped, unit_text, left):
+    prep = _prep(*dropped)
 
-    assert prep.unit_text == "in euros at constant prices"
-    assert prep.dropped_qualifier_phrases == ["in yen"]
+    assert prep.unit_text == unit_text
+    assert prep.dropped_qualifier_phrases == left
 
 
 async def _legs_unit_texts(

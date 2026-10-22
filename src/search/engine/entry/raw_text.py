@@ -576,13 +576,15 @@ class _ExtractionPrep:
 def _split_unit_phrases(phrases: Sequence[str]) -> tuple[str | None, list[str]]:
     """The unit text the dropped `phrases` bind as, and the phrases left over.
 
-    A phrase joins the unit text when the text so far plus the phrase still binds
-    (`unit.bind.names_unit_request`), so a second phrase that conflicts with the first
-    ("in euros", "in yen") stays dropped. Phrases are taken in query order."""
+    A phrase joins the unit text when it binds on its own and the text so far plus the
+    phrase still binds (`unit.bind.names_unit_request`), so a second phrase that conflicts
+    with the first ("in euros", "in yen") stays dropped, and a bare year ("in 2020") never
+    becomes the base year of a currency another phrase names. Phrases are taken in query
+    order."""
     claimed: list[str] = []
     rest: list[str] = []
     for phrase in phrases:
-        if names_unit_request(" ".join([*claimed, phrase])):
+        if names_unit_request(phrase) and names_unit_request(" ".join([*claimed, phrase])):
             claimed.append(phrase)
         else:
             rest.append(phrase)

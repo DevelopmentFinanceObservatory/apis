@@ -2883,6 +2883,26 @@ def test_extract_keys_operations_on_the_restored_variable():
         ),
         ("aid to Kenya in real terms", "aid in real terms", "aid", "in real terms"),
         ("GDP at constant prices", "GDP at constant prices", "GDP", "at constant prices"),
+        # A phrase holds one opener, so an observation year binds as no base year.
+        ("GDP in euros in 2020", "GDP in euros in 2020", "GDP in 2020", "in euros"),
+        (
+            "GDP at 2015 prices in euros",
+            "GDP at 2015 prices in euros",
+            "GDP",
+            "at 2015 prices in euros",
+        ),
+        # A run ends before a year once its words bind and name no price basis.
+        ("GDP in euros for 2020", "GDP in euros for 2020", "GDP for 2020", "in euros"),
+        ("GDP in euros, 2020", "GDP in euros, 2020", "GDP 2020", "in euros"),
+        ("GDP in euros 2020", "GDP in euros 2020", "GDP 2020", "in euros"),
+        ("GDP in 2020 euros", "GDP in 2020 euros", "GDP", "in 2020 euros"),
+        ("GDP at 2015 prices", "GDP at 2015 prices", "GDP", "at 2015 prices"),
+        (
+            "GDP in euros, constant 2015",
+            "GDP in euros, constant 2015",
+            "GDP",
+            "in euros, constant 2015",
+        ),
         # A ratio written without a ratio word divides by an amount the currency names no
         # part of; the binder departs for it on the ratio it answers.
         (

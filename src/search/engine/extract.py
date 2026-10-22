@@ -55,8 +55,8 @@ from search.engine.qualifier_match import (
 from search.engine.quantity import query_normalisation
 from search.engine.role_text import role_axis_for_text
 from search.engine.time_bind import parse_time_text
-from search.engine.unit.bind import names_unit_request
-from search.engine.unit.lexicon import MIN_YEAR
+from search.engine.unit.bind import names_price_basis, names_unit_request
+from search.engine.unit.lexicon import MAX_YEAR, MIN_YEAR
 from search.models import (
     MAX_FORECAST_TARGET_YEAR,
     Operation,
@@ -1207,16 +1207,28 @@ _DIVIDING_FORMS = frozenset({"rate", "share"})
 
 _VARIABLE_WORD_RE = re.compile(r"\S+")
 
+# Separators beside a word of a variable: "euros," before a year, "(2020)".
+_YEAR_EDGE_PUNCTUATION = ",;:()"
+
 
 def _peeled_variable(variable: str) -> tuple[str, list[str]]:
     """`variable` without the unit phrases it holds, and those phrases in order.
 
     A unit phrase is the longest run of words from an opener (`_UNIT_PHRASE_OPENERS`) to the
-    variable's end or a function word that the unit binder reads as one request
-    (`unit.bind.names_unit_request`): "GDP in euros per capita" is "GDP per capita" and "in
-    euros", and "aid in real terms" is "aid" and "in real terms". A run cut short of a word
-    the binder cannot read ("in current US$") is no unit phrase. The phrase's price basis
-    also reaches the measure collapse, which reads the query text as well as the variable.
+    variable's end, the next opener or a function word that the unit binder reads as one
+    request (`unit.bind.names_unit_request`): "GDP in euros per capita" is "GDP per capita"
+    and "in euros", and "aid in real terms" is "aid" and "in real terms". A run cut short
+    of a word the binder cannot read ("in current US$") is no unit phrase. A run holds one
+    opener, so each phrase binds on its own: in "GDP in euros in 2020" the phrase is "in
+    euros", and the binder never reads the observation year as the base year of a
+    constant-price euro. "at 2015 prices in euros" is two phrases that bind as one request.
+    A run also ends before a year, and the function words before it, when the words before
+    the year already bind and name no price basis (`unit.bind.names_price_basis`): "in
+    euros 2020", "in euros, 2020" and "in euros for 2020" are the phrase "in euros" and a
+    year the variable keeps, while "in 2020 euros", "in constant 2015 US dollars", "at 2015
+    prices" and "in euros, constant 2015" each keep their year as the base year. A phrase
+    drops the separator a cut leaves at its end. The phrase's price basis also reaches the
+    measure collapse, which reads the query text as well as the variable.
 
     A run after a denomination word (`_DENOMINATION_WORDS`) names the amount it counts, and
     a run beside a conjunction ("in dollars and euros", "in real terms and in euros") is
@@ -1236,6 +1248,16 @@ def _peeled_variable(variable: str) -> tuple[str, list[str]]:
     def text(start: int, end: int) -> str:
         return variable[words[start].start() : words[end - 1].end()]
 
+    def ends_before_year(start: int, k: int) -> bool:
+        year = folded[k].strip(_YEAR_EDGE_PUNCTUATION)
+        return (
+            len(year) == 4
+            and year.isdigit()
+            and MIN_YEAR <= int(year) <= MAX_YEAR
+            and names_unit_request(text(start, k))
+            and not names_price_basis(text(start, k))
+        )
+
     def stands_alone(start: int, end: int) -> bool:
         before = folded[start - 1] if start else None
         after = folded[end] if end < len(words) else None
@@ -1245,11 +1267,20 @@ def _peeled_variable(variable: str) -> tuple[str, list[str]]:
     i = 0
     while i < len(words):
         if folded[i] in _UNIT_PHRASE_OPENERS:
+            next_opener = next(
+                (j for j in range(i + 1, len(words)) if folded[j] in _UNIT_PHRASE_OPENERS),
+                len(words),
+            )
+            cut = next(
+                (k for k in range(i + 1, next_opener) if ends_before_year(i, k)), next_opener
+            )
+            while cut - 1 > i and folded[cut - 1] in FUNCTION_WORDS:
+                cut -= 1
             end = next(
                 (
                     j
-                    for j in range(len(words), i + 1, -1)
-                    if (j == len(words) or folded[j] in FUNCTION_WORDS)
+                    for j in range(cut, i + 1, -1)
+                    if (j in (cut, len(words)) or folded[j] in FUNCTION_WORDS)
                     and names_unit_request(text(i, j))
                 ),
                 None,
@@ -1261,7 +1292,7 @@ def _peeled_variable(variable: str) -> tuple[str, list[str]]:
         i += 1
     removed = {k for start, end in spans for k in range(start, end)}
     kept = [word.group() for k, word in enumerate(words) if k not in removed]
-    phrases = [text(start, end) for start, end in spans]
+    phrases = [text(start, end).rstrip(_YEAR_EDGE_PUNCTUATION) for start, end in spans]
     if (
         not phrases
         or all(word.casefold() in FUNCTION_WORDS for word in kept)
