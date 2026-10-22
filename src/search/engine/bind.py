@@ -25,6 +25,7 @@ from search.engine.clients.llm import (
     for_stage,
     generate_structured_async,
 )
+from search.engine.function_words import FUNCTION_WORDS
 from search.engine.qualifier_match import _normalize, names_plain_name
 from search.engine.quantity import (
     DenominatorKind,
@@ -40,6 +41,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.shape import STANDARD_SHAPE_LABEL, _declared_role_names, is_un_shape
 from search.models import Axis, RoleAxis
+from search.render.labels import _humanize_ref
 
 if TYPE_CHECKING:
     from code_index.types import CodeRow
@@ -1133,38 +1135,68 @@ def ground_bind_output(
     return output.model_copy(update={"bindings": bindings})
 
 
+def slot_label(slot_key_draft: SlotKeyDraft) -> str:
+    """The label a slot carries for people: an indexed code system's declared plain_name,
+    else the draft's graph label with a dcid echo humanised. The draft keeps the graph's
+    label for binding."""
+    prop = slot_key_draft.property_dcid
+    if prop is None:
+        return slot_key_draft.label
+    declaration = get_index().declarations.get(prop)
+    if declaration is not None:
+        return declaration.plain_name
+    return _humanize_ref(prop, slot_key_draft.label)
+
+
+def _names_slot(phrase: str, slot_key_draft: SlotKeyDraft) -> bool:
+    """Whether `phrase` names the slot `slot_key_draft` keys (`names_plain_name`).
+
+    A code system the index declares is named by its whole plain name: "across all flows"
+    names the flow slot, while "total" and "total aid" name no slot, so a declared default
+    still binds. Any other slot is named by a word of its label (`slot_label`) other than
+    a function word: "held in different currencies" names "currency of denomination", and
+    "bilateral" names nothing of "DAC type of finance".
+    """
+    if slot_key_draft.property_dcid in get_index().declarations:
+        return names_plain_name(phrase, slot_label(slot_key_draft))
+    return any(
+        names_plain_name(phrase, word)
+        for word in slot_label(slot_key_draft).split()
+        if word.casefold() not in FUNCTION_WORDS
+    )
+
+
 def validate_requested_all_bindings(
     bindings: Sequence[SlotBindingDraft],
     dropped_qualifier_phrases: Sequence[str],
     *,
-    slot_properties: Collection[str | None],
+    slot_keys: Collection[SlotKeyDraft],
 ) -> tuple[list[SlotBindingDraft], frozenset[str]]:
     """Validate a binder's ``requested_all`` claims before any holds check, default or
     warning suppression uses them.
 
-    A claim must be unbound, name a property in `slot_properties` (the elected shape's),
-    and reproduce a dropped phrase exactly. A claim on a code system the index declares
-    must also name that slot by its declared plain name (`names_plain_name`), the noun the
-    part shows for it and the slot a declared default narrows. "Across all flows" asks for
-    every flow, while "total" names no slot, so the flow default still binds. Demote
-    invalid claims to ``mentioned`` and clear their phrase. Return bindings in order plus
-    normalised phrases from valid claims only. Validated bindings validate to themselves,
-    so each binder applies this to its pick's drafts and the election again to the
-    elected shape's.
+    A claim must be unbound, name a property among `slot_keys` (the elected shape's),
+    reproduce a dropped phrase exactly, and name that slot (`_names_slot`): a phrase the
+    claim does not name a slot with ("total", "bilateral") says nothing about which values
+    the slot spans. Demote invalid claims to ``mentioned`` and clear their phrase. Return
+    bindings in order plus normalised phrases from valid claims only, so a dropped phrase
+    no answer binds stays disclosed. Validated bindings validate to themselves, so each
+    binder applies this to its pick's drafts and the election again to the elected
+    shape's.
     """
-    declarations = get_index().declarations
+    keys = {key.property_dcid: key for key in slot_keys if key.property_dcid is not None}
     applied: set[str] = set()
     validated: list[SlotBindingDraft] = []
     for binding in bindings:
         if binding.evidence == "requested_all":
             phrase = binding.requested_all_phrase
-            declaration = declarations.get(binding.property_dcid or "")
+            key = keys.get(binding.property_dcid or "")
             if (
                 binding.kind == "unbound"
-                and binding.property_dcid in slot_properties
+                and key is not None
                 and phrase is not None
                 and phrase in dropped_qualifier_phrases
-                and (declaration is None or names_plain_name(phrase, declaration.plain_name))
+                and _names_slot(phrase, key)
             ):
                 applied.add(_normalize(phrase))
                 validated.append(binding)

@@ -11,8 +11,11 @@ from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import Operation
 
 _PHRASE = "across all flows"
-# The elected shape's constraint-slot properties: both CRS axes the tests bind.
-_SLOTS = frozenset({"crsTypeOfFlow", "crsTypeOfFinance"})
+# The elected shape's constraint slots: both CRS axes the tests bind.
+_SLOTS = (
+    SlotKeyDraft(axis="how", property_dcid="crsTypeOfFlow", label="flow type"),
+    SlotKeyDraft(axis="how", property_dcid="crsTypeOfFinance", label="finance type"),
+)
 
 
 def _unbound(property_dcid: str = "crsTypeOfFlow", **kwargs) -> SlotBindingDraft:
@@ -34,7 +37,7 @@ def test_evidence_not_requested_all_passes_through_untouched_even_with_a_phrase_
     )
 
     validated, applied = validate_requested_all_bindings(
-        [mentioned_unbound, value_binding], [_PHRASE], slot_properties=_SLOTS
+        [mentioned_unbound, value_binding], [_PHRASE], slot_keys=_SLOTS
     )
 
     assert validated == [mentioned_unbound, value_binding]
@@ -45,9 +48,7 @@ def test_requested_all_with_no_phrase_is_demoted():
     """A missing phrase demotes a `requested_all` claim to `mentioned`."""
     binding = _unbound(evidence="requested_all", requested_all_phrase=None)
 
-    validated, applied = validate_requested_all_bindings(
-        [binding], [_PHRASE], slot_properties=_SLOTS
-    )
+    validated, applied = validate_requested_all_bindings([binding], [_PHRASE], slot_keys=_SLOTS)
 
     assert len(validated) == 1
     assert validated[0].evidence == "mentioned"
@@ -60,9 +61,7 @@ def test_requested_all_with_a_non_verbatim_phrase_is_demoted():
     """A phrase absent from the query's dropped qualifiers is demoted."""
     binding = _unbound(evidence="requested_all", requested_all_phrase="a phrase never offered")
 
-    validated, applied = validate_requested_all_bindings(
-        [binding], [_PHRASE], slot_properties=_SLOTS
-    )
+    validated, applied = validate_requested_all_bindings([binding], [_PHRASE], slot_keys=_SLOTS)
 
     assert len(validated) == 1
     assert validated[0].evidence == "mentioned"
@@ -81,9 +80,7 @@ def test_requested_all_on_a_value_or_set_binding_is_demoted():
         requested_all_phrase=_PHRASE,
     )
 
-    validated, applied = validate_requested_all_bindings(
-        [binding], [_PHRASE], slot_properties=_SLOTS
-    )
+    validated, applied = validate_requested_all_bindings([binding], [_PHRASE], slot_keys=_SLOTS)
 
     assert validated[0].evidence == "mentioned"
     assert validated[0].requested_all_phrase is None
@@ -94,9 +91,7 @@ def test_requested_all_with_a_verbatim_phrase_validates():
     """A verbatim phrase on an unbound slot validates and is reported applied."""
     binding = _unbound(evidence="requested_all", requested_all_phrase=_PHRASE)
 
-    validated, applied = validate_requested_all_bindings(
-        [binding], [_PHRASE], slot_properties=_SLOTS
-    )
+    validated, applied = validate_requested_all_bindings([binding], [_PHRASE], slot_keys=_SLOTS)
 
     assert validated == [binding]
     assert applied == frozenset({_PHRASE})
@@ -114,7 +109,7 @@ def test_a_mixed_batch_only_demotes_the_invalid_claim():
     )
 
     validated, applied = validate_requested_all_bindings(
-        [valid, invalid], [_PHRASE], slot_properties=_SLOTS
+        [valid, invalid], [_PHRASE], slot_keys=_SLOTS
     )
 
     assert validated[0] == valid
@@ -139,13 +134,46 @@ def test_requested_all_whose_phrase_names_another_slot_or_none_is_demoted(
     demoted, so a declared default still binds the slot."""
     binding = _unbound(property_dcid, evidence="requested_all", requested_all_phrase=phrase)
 
-    validated, applied = validate_requested_all_bindings(
-        [binding], [phrase], slot_properties=_SLOTS
-    )
+    validated, applied = validate_requested_all_bindings([binding], [phrase], slot_keys=_SLOTS)
 
     assert validated[0].evidence == "mentioned"
     assert validated[0].requested_all_phrase is None
     assert applied == frozenset()
+
+
+# Slots on code systems the index does not declare, labelled as the graph labels them.
+_UNDECLARED_SLOTS = (
+    SlotKeyDraft(axis="how", property_dcid="dacTypeOfFinance", label="DAC type of finance"),
+    SlotKeyDraft(
+        axis="how", property_dcid="currencyOfDenomination", label="currency of denomination"
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("property_dcid", "phrase", "stands"),
+    [
+        # "net bilateral ODA to Kenya": "bilateral" names no word of the slot's label, so the
+        # phrase stays a dropped qualifier no answer binds.
+        ("dacTypeOfFinance", "bilateral", False),
+        ("dacTypeOfFinance", "of", False),
+        ("dacTypeOfFinance", "across all types of finance", True),
+        ("currencyOfDenomination", "held in different currencies", True),
+    ],
+)
+def test_requested_all_on_an_undeclared_system_must_name_a_word_of_its_label(
+    property_dcid: str, phrase: str, stands: bool
+):
+    """A claim on a code system the index does not declare stands only when its phrase
+    names a word of the slot's label other than a function word."""
+    binding = _unbound(property_dcid, evidence="requested_all", requested_all_phrase=phrase)
+
+    validated, applied = validate_requested_all_bindings(
+        [binding], [phrase], slot_keys=_UNDECLARED_SLOTS
+    )
+
+    assert (validated[0].evidence == "requested_all") is stands
+    assert applied == (frozenset({phrase}) if stands else frozenset())
 
 
 def test_requested_all_on_a_property_the_elected_shape_lacks_is_demoted():
@@ -156,9 +184,7 @@ def test_requested_all_on_a_property_the_elected_shape_lacks_is_demoted():
         requested_all_phrase=_PHRASE,
     )
 
-    validated, applied = validate_requested_all_bindings(
-        [binding], [_PHRASE], slot_properties=_SLOTS
-    )
+    validated, applied = validate_requested_all_bindings([binding], [_PHRASE], slot_keys=_SLOTS)
 
     assert validated[0].evidence == "mentioned"
     assert validated[0].requested_all_phrase is None

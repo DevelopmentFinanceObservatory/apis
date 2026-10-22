@@ -276,9 +276,7 @@ def _settle_bindings(
     bind_result.bindings, state.applied_dropped_qualifier_phrases = validate_requested_all_bindings(
         bind_result.bindings,
         state.dropped_qualifier_phrases,
-        slot_properties=frozenset(
-            slot.property_dcid for slot in shape_draft.slot_keys if slot.property_dcid is not None
-        ),
+        slot_keys=shape_draft.slot_keys,
     )
     bind_result.bindings = _settle_sole_options(bind_result.bindings, shape_draft)
     bind_result.bindings = _unbind_implied_values(bind_result.bindings, shape_draft)

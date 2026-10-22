@@ -735,9 +735,8 @@ def _shape_drafts(
     span rule over them (`_span_owned`), with each ``requested_all`` claim validated on `s`
     (`bind.validate_requested_all_bindings`), so a "total" that names no slot claims none."""
     drafts = _span_owned(menu, answers, _slot_drafts(menu, answers, s, conf, t), conf, population)
-    slots = {slot.property_dcid for slot in menu.request.shapes[s].slot_keys}
     validated, _applied = validate_requested_all_bindings(
-        drafts, menu.request.dropped_qualifier_phrases, slot_properties=slots
+        drafts, menu.request.dropped_qualifier_phrases, slot_keys=menu.request.shapes[s].slot_keys
     )
     return validated
 
