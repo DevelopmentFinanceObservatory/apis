@@ -26,7 +26,7 @@ rather than re-derived, since it is already the exact fact
 `_directional_options_set`'s own coverage lookup filters by.
 
 The caller passes one `CoverageSnapshot` to the cache key and response
-builder. Its stamp ensures a republished coverage artifact cannot reuse
+builder. Its stamp ensures a newer release's coverage view cannot reuse
 results built against earlier donor or recipient membership. The key also holds the
 build id and UN System setting of the origin catalogue the request bound, which decide
 what provenances the options admit and which places the UN front door refuses. A

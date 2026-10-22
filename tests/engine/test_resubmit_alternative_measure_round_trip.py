@@ -29,7 +29,7 @@ _KEN = "country/KEN"
 
 
 def _arcs_for_row(row) -> dict:
-    """Build a role-bearing StatVar's arcs from its packaged-index row."""
+    """Build a role-bearing StatVar's arcs from its fixture-index row."""
     return {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
         "name": {"nodes": [{"value": row.dcid}]},
@@ -48,7 +48,7 @@ def _arcs_for_row(row) -> dict:
 
 
 def _real_nominal_family() -> list:
-    """Return packaged `grantEquivalent`/`Nominal` rows for the CRS purpose and flow type."""
+    """Return fixture index `grantEquivalent`/`Nominal` rows for the CRS purpose and flow type."""
     index = get_index()
     return [
         row

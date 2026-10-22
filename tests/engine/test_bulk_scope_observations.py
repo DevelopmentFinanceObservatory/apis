@@ -17,7 +17,6 @@ from dc_graph import GraphReadError
 from dc_sdmx import SdmxCapExceededError, SdmxObservation
 from materialise.facets import FacetSelection, UnitRequest
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.clients.sdmx import LiveSdmxClient
 from search.engine.config import settings
@@ -43,6 +42,7 @@ from search.observations import (
     OBSERVATIONS_WINDOWED_SCOPE_UNSUPPORTED,
     observation_settings,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -615,9 +615,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=None), None
 
 
 def _run_pipeline(
@@ -875,9 +873,7 @@ class _CandidatesUnitBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=[1]), None
 
 
 def test_placeless_candidates_with_bound_unit_never_hits_per_pair_ceiling():

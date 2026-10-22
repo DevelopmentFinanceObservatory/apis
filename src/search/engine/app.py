@@ -28,7 +28,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -106,6 +106,7 @@ from search.engine.errors import (
     LLMInfraError,
 )
 from search.engine.events import DoneEvent, ErrorEvent, Event, serialize_sse
+from search.engine.extraction_store import build_extraction_store
 from search.engine.options.options_response_cache import (
     ComputedOptions,
     OptionsResponseCache,
@@ -394,6 +395,27 @@ _RESOLVE_RESPONSES: dict[int | str, dict[str, object]] = {
 }
 
 
+class _PipelineDeps(TypedDict):
+    """The keywords `resolve` passes `resolve_events` and `resolve_async` from the
+    app's dependencies and the request. The binder is left to `Settings.binder`."""
+
+    graph: EngineGraphClient
+    resolver: EntityResolver
+    admission: Admission | None
+    llm: SupportsLLM
+    sdmx: EngineSdmxClient
+    materialise_graph: GraphReader | None
+    materialise_sdmx: MaterialiseSdmxClient | None
+    rate_cache: RateTableCache | None
+    population_memo: OptionsPopulationMemo | None
+    place_options_pool: PlaceOptionsPool | None
+    shared_skills_index: SharedSkillsIndex | None
+    response_cache: ResponseCache | None
+    part_memo: PartMemo | None
+    generation: GenerationProvider
+    caller: str | None
+
+
 async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
     # Share the unimplemented-door set with capabilities so liveness and refusals agree.
     if body.input.kind in SEARCH_UNIMPLEMENTED_DOORS:
@@ -419,7 +441,7 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
     # Refresh before every generation-keyed cache lookup.
     await deps.generation.refresh_if_stale()
 
-    pipeline_deps = {
+    pipeline_deps: _PipelineDeps = {
         "graph": deps.graph,
         "resolver": deps.resolver,
         "admission": deps.admission,
@@ -893,18 +915,23 @@ async def _open_search_deps(
         logger.info("SharedSkillsIndex started")
 
     if llm is None:
-        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo.
+        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo,
+        # and `SEARCH_EXTRACT_STORE=off` the extraction store.
         try:
             _llm_mod.warm()
         except LLMInfraError:
             logger.critical("LLM warm-up failed; check GEMINI_API_KEY", exc_info=True)
             raise
-        llm = LLM(memo=build_memo())
+        llm = LLM(
+            memo=build_memo(),
+            extraction_store=build_extraction_store(settings().extract_store),
+        )
         logger.info(
-            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f)",
+            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f), extraction store %s",
             settings().llm_memo_max_bytes,
             settings().llm_memo_max_entry_bytes,
             settings().llm_memo_ttl_s,
+            settings().extract_store,
         )
 
     variable_breadth: VariableBreadthReader | None = None
@@ -1060,6 +1087,14 @@ async def _release_skills_index(skills_index: SharedSkillsIndex) -> None:
     logger.info("SharedSkillsIndex released")
 
 
+def _require_jev_key() -> None:
+    """Refuse to serve when `Settings.binder` is ``jev`` or ``shadow`` and no TypeSafe key
+    is set, since every call routed to Jev would then fall back to Gemini."""
+    config = settings()
+    if config.binder in ("jev", "shadow") and not config.jev_api_key.get_secret_value():
+        raise RuntimeError(f"SEARCH_BINDER={config.binder} needs TYPESAFE_API_KEY; it is unset")
+
+
 def search_surface(
     *,
     graph: EngineGraphClient | None = None,
@@ -1088,7 +1123,12 @@ def search_surface(
     catalogue's and the conversion catalogue's loaded snapshots for its whole run, and the
     release service's served release. An injected `conversion_catalogue` is served as loaded;
     without one the lifespan loads a new one.
+
+    Raises:
+        RuntimeError: `Settings.binder` sends calls to Jev and ``TYPESAFE_API_KEY`` is
+            unset (`_require_jev_key`).
     """
+    _require_jev_key()
     # Fail during construction when an artifact or the graph release is missing or unreadable.
     catalogue = get_catalogue_service()
     release = get_release_service()

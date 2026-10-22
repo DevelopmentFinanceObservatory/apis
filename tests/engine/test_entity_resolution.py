@@ -11,7 +11,6 @@ import pytest
 import dc_graph
 from entity_resolution import Group, Resolution, Resolved
 from entity_resolution.membership import MembershipPolicy
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.core import resolve_async
 from search.engine.degraded_reads import recording_degraded_reads
@@ -32,6 +31,7 @@ from search.models import (
     SourceMention,
 )
 from search.render.no_data import no_data_phrase
+from tests.engine._binders import elected_reply
 from tests.engine._builders import bound_place_context, subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -52,12 +52,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=None,
-            ask=None,
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=None), None
 
 
 def _resolve(query: str, graph: FakeGraph | None = None) -> ResolveResponse:

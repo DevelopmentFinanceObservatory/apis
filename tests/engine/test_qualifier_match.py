@@ -1,4 +1,4 @@
-"""Test text and code matching against the packaged code index.
+"""Test text and code matching against the fixture code index.
 
 Synthetic indexes cover code collisions and token cases absent from the CRS
 corpus. The smaller test index lacks synonyms needed by the grant cases.
@@ -39,7 +39,7 @@ from search.engine.qualifier_match import (
 from tests.engine._index_slots import crs_vocabulary, read_text
 
 # ---------------------------------------------------------------------------
-# The packaged, committed index -- the same file any real caller parses.
+# The fixture index, the code index the session release serves.
 # ---------------------------------------------------------------------------
 
 _REAL_INDEX = get_index()

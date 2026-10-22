@@ -21,6 +21,7 @@ from search.engine.retrieval.retrieve import (
 )
 from search.engine.shape import ShapeDraft
 from search.models import CoverageBare, TimeWindow
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
@@ -454,7 +455,6 @@ def _resolve_unemployment(
     dropped."""
     import asyncio
 
-    from search.engine.bind import _UniversalBindOutput
     from search.engine.region import phase_election, resolve_variable
 
     detect_query = "unemployment rate"
@@ -465,9 +465,7 @@ def _resolve_unemployment(
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[binding, *also], also_plausible=None, ask=None
-            ), None
+            return elected_reply(0, bindings=[binding, *also], also_plausible=None), None
 
     if default is not None:
 
@@ -739,13 +737,12 @@ class TestUnrealisableValuesUnbound:
 
         assert _refusal(region) == ("qualifier_not_bound", [("Urban", "residence")])
 
-    @pytest.mark.parametrize(
-        ("bound", "named"), [("Urban", "Urban"), (_UNNAMED_RESIDENCE, _UNNAMED_RESIDENCE)]
-    )
-    def test_a_request_keeps_the_value_a_member_holds(self, bound, named):
+    @pytest.mark.parametrize("bound", ["Urban", _UNNAMED_RESIDENCE], ids=["named", "nameless"])
+    def test_a_request_keeps_the_value_a_member_holds(self, bound):
         """The reviewer's case: male and urban over male-rural and female-rural. Only
-        urban is unbound, so the part refuses on urban and flags male-rural. A bound value
-        nothing names refuses the same way, named by its dcid."""
+        urban is unbound. "urban" names it, so the part refuses on urban and flags
+        male-rural. A bound value with no name no word can name, so it is the bind
+        model's alone: male-rural answers and departs under the residence slot's name."""
         result = _resolve_unemployment(
             _gender_binding("value", "Male"),
             also=(_residence_binding(bound),),
@@ -758,9 +755,16 @@ class TestUnrealisableValuesUnbound:
             query="male urban unemployment rate",
         )
 
-        assert _refusal(result) == ("qualifier_not_bound", [(named, "residence")])
-        assert _flagged_served(result) == [_MALE_RURAL_SV]
-        assert _departures(result) == []
+        if bound == "Urban":
+            assert _refusal(result) == ("qualifier_not_bound", [("Urban", "residence")])
+            assert _flagged_served(result) == [_MALE_RURAL_SV]
+            assert _departures(result) == []
+        else:
+            assert result.status == "definite"
+            assert _served(result) == [_MALE_RURAL_SV]
+            assert [
+                (fact.binding_ref, fact.values) for fact in result.departure_facts.values()
+            ] == [("how:residence", ("a requested residence value",))]
 
     def test_a_default_a_member_holds_is_kept_when_a_named_value_goes(self, monkeypatch):
         """Female is named and Rural defaulted, over male-rural and male-urban. Dropping
@@ -1888,7 +1892,6 @@ class TestFamilyTotalAbsentWarning:
         names no sex value."""
         import asyncio
 
-        from search.engine.bind import _UniversalBindOutput
         from search.engine.region import resolve_spec_resubmit, resolve_variable
         from search.engine.region.codes import FAMILY_TOTAL_ABSENT
         from search.engine.region.state import EngineOptions
@@ -1933,9 +1936,7 @@ class TestFamilyTotalAbsentWarning:
             async def generate_structured(self, *, prompt, system, schema):
                 if schema is QuantityOutput:
                     return NO_QUANTITY
-                return _UniversalBindOutput(
-                    chosen_shape_index=0, bindings=bindings, also_plausible=None, ask=None
-                ), None
+                return elected_reply(0, bindings=bindings, also_plausible=None), None
 
         first = asyncio.run(
             resolve_variable(
@@ -2060,7 +2061,6 @@ def _resolve_child_mortality_in_chad(members: dict[str, dict], *, with_data: tup
     """Resolve "child mortality rate" in Chad with age and sex left unbound."""
     import asyncio
 
-    from search.engine.bind import _UniversalBindOutput
     from search.engine.region import resolve_variable
 
     detect_query = "child mortality rate"
@@ -2071,11 +2071,8 @@ def _resolve_child_mortality_in_chad(members: dict[str, dict], *, with_data: tup
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[_unbound("undataAge"), _unbound("undataSex")],
-                also_plausible=None,
-                ask=None,
+            return elected_reply(
+                0, bindings=[_unbound("undataAge"), _unbound("undataSex")], also_plausible=None
             ), None
 
     return asyncio.run(
@@ -3100,7 +3097,6 @@ def _resolve_gdp(
     member alone by default."""
     import asyncio
 
-    from search.engine.bind import _UniversalBindOutput
     from search.engine.region import resolve_variable
 
     _hold_activity_family(bind_catalogue, arcs)
@@ -3111,9 +3107,7 @@ def _resolve_gdp(
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[binding], also_plausible=None, ask=None
-            ), None
+            return elected_reply(0, bindings=[binding], also_plausible=None), None
 
     return asyncio.run(
         resolve_variable(

@@ -19,7 +19,7 @@ _DAC2A = "provenance/OECDDAC2A"
 _CRS = "provenance/OECDCreditorReportingSystem"
 
 _derive = functools.partial(derive_output_options, parties=get_index().parties, datasets=())
-"""`derive_output_options` over the packaged index's parties, for a definition whose read
+"""`derive_output_options` over the fixture index's parties, for a definition whose read
 selected no provenance."""
 
 

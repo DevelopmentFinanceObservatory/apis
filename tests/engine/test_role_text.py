@@ -9,6 +9,7 @@ from search.engine.entry.parsed import _role_query_for_part
 from search.engine.role_text import (
     contradicts,
     debt_axes,
+    receipt_axes,
     role_axis_for_text,
 )
 from search.models import ParsedEntity, ParsedPart, RoleAxis
@@ -304,6 +305,31 @@ class TestDebtAxes:
                 ("Zambia", "IMF"),
                 ("destination", "origin"),
             ),
+            # An active "owe": the subject owes the object.
+            (
+                "how much does China owe India",
+                "external debt",
+                ("China", "India"),
+                ("destination", "origin"),
+            ),
+            (
+                "what does Zambia owe the IMF",
+                "IMF debt",
+                ("Zambia", "IMF"),
+                ("destination", "origin"),
+            ),
+            (
+                "how much does Kenya owe China",
+                "external debt",
+                ("Kenya", "China"),
+                ("destination", "origin"),
+            ),
+            (
+                "how much does Kenya owe to China",
+                "external debt",
+                ("Kenya", "China"),
+                ("destination", "origin"),
+            ),
         ],
     )
     def test_cues_on_both_places_set_both_parties(
@@ -320,7 +346,7 @@ class TestDebtAxes:
         ("query", "measure", "cued", "uncued", "expected"),
         [
             (
-                "how much does Kenya owe to China",
+                "Kenya debt owed to China",
                 "debt",
                 "China",
                 "Kenya",
@@ -459,3 +485,48 @@ class TestDebtAxes:
         assert axes == {"Kenya": "destination", "China": "origin"}
         for span, axis in axes.items():
             assert contradicts(query, span=span, axis=axis) is False
+
+    def test_an_owe_whose_object_is_not_the_place_reads_only_the_debtor(self) -> None:
+        """ "Ghana's creditors" is the object, so Ghana is no party and nothing is set."""
+        axes = debt_axes(
+            "how much does Kenya owe Ghana's creditors",
+            measures=["external debt"],
+            places=_places("Kenya", "Ghana"),
+            directed={},
+        )
+        assert axes == {}
+
+
+class TestReceiptAxes:
+    """A place the query names as receiving takes the destination axis."""
+
+    @pytest.mark.parametrize(
+        ("query", "places", "expected"),
+        [
+            ("net ODA received by Ethiopia in 1965", ("Ethiopia",), {"Ethiopia": "destination"}),
+            ("food aid received by the Gambia", ("Gambia",), {"Gambia": "destination"}),
+            (
+                "By what percentage did the total ODA Ghana received from all donors change",
+                ("Ghana",),
+                {"Ghana": "destination"},
+            ),
+            (
+                "How much ODA did Tanzania receive from Germany",
+                ("Tanzania", "Germany"),
+                {"Tanzania": "destination"},
+            ),
+            # A place a preposition opens heads its own phrase: Norway does not receive.
+            (
+                "aid from Norway received by Kenya",
+                ("Norway", "Kenya"),
+                {"Kenya": "destination"},
+            ),
+            # "received" with no agent "by" names no recipient.
+            ("aid received in Kenya", ("Kenya",), {}),
+            ("ODA from Japan to Kenya", ("Japan", "Kenya"), {}),
+        ],
+    )
+    def test_receipt_wording_names_the_recipient(
+        self, query: str, places: tuple[str, ...], expected: dict[str, RoleAxis]
+    ) -> None:
+        assert receipt_axes(query, places=_places(*places)) == expected

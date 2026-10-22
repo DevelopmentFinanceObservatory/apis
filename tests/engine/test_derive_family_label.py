@@ -11,12 +11,13 @@ import pytest
 
 from code_index.shared import get_index
 from origin_catalogue import UN_SYSTEM
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.derive import derive_shapes
 from search.models import ResubmitIdentityPayload
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
@@ -182,7 +183,7 @@ def test_base_family_keeps_its_recalled_member_name():
 
 
 def _index_member(dcid: str, name: str) -> dict:
-    """A graph node for the packaged index row `dcid`, named `name`."""
+    """A graph node for the fixture index row `dcid`, named `name`."""
     row = next(row for row in get_index().statvars if row.dcid == dcid)
     arcs: dict = {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
@@ -276,7 +277,7 @@ class _BindSexLLM:
             kind="value" if len(self._sexes) == 1 else "set",
             value_dcids=self._sexes,
         )
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[sex], ask=None), None
+        return elected_reply(0, bindings=[sex]), None
 
 
 @pytest.mark.parametrize(

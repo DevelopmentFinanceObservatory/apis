@@ -38,28 +38,31 @@ eval = [
 # themselves, so the whole repo resolves to one fastapi version.
 api = ["fastapi>=0.138", "starlette", "uvicorn[standard]"]
 # dc_sdmx's and materialise's own dependency (httpx, pyarrow), with none of
-# engine's other dependencies -- code-index-live.yml and sdmx-live.yml sync
-# with this extra and `coverage` (no `api`/`engine`) so that dc_sdmx's and
-# materialise.graph's own imports work without pulling in FastAPI or the
-# Search engine, which tests/dc_sdmx/test_independence.py asserts stays
-# true.
+# engine's other dependencies -- sdmx-live.yml syncs with this extra and
+# `coverage` (no `api`/`engine`) so that dc_sdmx's and materialise.graph's own
+# imports work without pulling in FastAPI or the Search engine, which
+# tests/dc_sdmx/test_independence.py asserts stays true.
 sdmx = ["dfo-data-tools[sdmx]"]
 # series_coverage's own dependencies (numpy, google-cloud-storage,
 # google-cloud-bigquery, and sdmx's), with no FastAPI. tests/conftest.py
-# installs the session coverage service through series_coverage.shared, so
-# every job that runs pytest under tests/ needs numpy; engine and datasets
-# carry it already, and code-index-live.yml and sdmx-live.yml sync this extra.
+# binds the session release through graph_release.service, so every job that
+# runs pytest under tests/ needs numpy; engine and datasets carry it already,
+# and sdmx-live.yml syncs this extra.
 coverage = ["dfo-data-tools[coverage]"]
 engine = [
     "google-genai>=2.6.0",
     "httpx>=0.28.1",
+    # binders/jev_client.py's System One client. Pinned exactly: the SDK's 0.6.0 and 0.7.0
+    # releases broke its API. `zstd` brings backports-zstd, without which the SDK sends
+    # request bodies uncompressed below Python 3.14.
+    "typesafe-sdk[zstd]==0.7.5",
     "search[api]",
     "pydantic>=2.13",
     # `resolve` pulls in entity_resolution's resolvekit dependency -- the
     # engine builds the shared resolver alongside its other clients.
     # `coverage` is the series_coverage package's own extra (numpy,
-    # google-cloud-storage) that the coverage artifact search_surface()
-    # loads at construction (series_coverage.shared.get_coverage_service)
+    # google-cloud-storage) that the release's coverage view, which
+    # search_surface() reads through series_coverage.shared.get_coverage_service,
     # needs; same fail-at-startup discipline as code_index.shared.get_index().
     # `sdmx` is materialise's and dc_sdmx's own dependency (httpx, pyarrow):
     # search.engine imports both directly (dc_sdmx clients, materialise's

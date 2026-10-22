@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 
 from code_index.shared import get_index, get_measure_index
-from search.engine.bind import SlotBindingDraft, rank_elected
+from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
     apply_declared_defaults,
     apply_shape_slot_defaults,
@@ -33,6 +33,7 @@ from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches_against_elected_shape,
     _bound_code_records,
     _coverage_records,
+    _elected_index,
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
     _menu_choices,
@@ -42,7 +43,6 @@ from search.engine.region.phase_rank_bind import (
     _unchosen_matches,
     _unheld_bound_codes,
     _unread_qualifier_phrases,
-    _validate_requested_all_bindings,
     _withheld_qualifiers,
     judge_value_requirements,
     operation_slot_phrases,
@@ -83,7 +83,7 @@ from search.engine.retrieval.bound_values import (
     shape_query,
     sole_shared_value,
 )
-from search.engine.retrieval.member_facts import MemberFacts
+from search.engine.retrieval.member_facts import MemberFacts, asserted_constraint_properties
 from search.engine.retrieval.standard import (
     bind_named_member_values,
     bind_partition_values,
@@ -238,20 +238,6 @@ def _vet_election(state: ResolveState) -> RegionResult | None:
     return None
 
 
-def _elected_index(state: ResolveState) -> int:
-    """The menu index of the elected reading: the first shape the bind menu states as the
-    reading the model chose, in the rank that orders the menu (`bind.rank_elected`), and
-    the model's own choice where the menu tells every higher-ranked shape apart from it.
-    The model's bindings and nominations stand as drafted: the bindings read the elected
-    shape unchanged, and a nominated shape that is elected here is no alternative to
-    itself (`phase_place_materialise._plan_status`). A reading the model declined every
-    menu shape for stands in as it is (`phase_rank_bind._stand_in_declined`)."""
-    bind_result = state.bind_result
-    if state.declined is not None:
-        return bind_result.chosen_shape_index
-    return rank_elected(state.capped_shapes, bind_result, availability=state.menu_availability)
-
-
 def _settle_bindings(
     state: ResolveState, shape_draft: ShapeDraft
 ) -> tuple[list[tuple[str, str, str | None]], dict[QualifierReadings, QualifierMatch | None]]:
@@ -262,9 +248,16 @@ def _settle_bindings(
     reading the shape keeps of each two-reading span
     (`reading_for_shape`), which admission read.
 
-    The source drafts leave and invalid ``requested_all`` claims are demoted. A
+    The source drafts leave and invalid ``requested_all`` claims are demoted
+    (`bind.validate_requested_all_bindings`). The binder applies it to its pick's drafts,
+    and this pass keeps a claim only on a slot of the elected shape. Each slot
+    whose taxonomy holds one value and that the reply left unbound is claimed as that
+    ``sole_option`` value (`_claim_single_member_slots`). A
     ``sole_option`` claim on a value the shape's population shows the slot a reading
-    without leaves the slot unbound (`_validate_sole_option_bindings`). An operation
+    without leaves the slot unbound (`_validate_sole_option_bindings`), as does a value the
+    measure's headline series already means (`_unbind_implied_values`). One value drafted
+    on two properties no member holds together keeps the property a measure noun pins
+    (`_keep_the_noun_pinned_property`). An operation
     over a category slot opens that slot. Model tie choices are
     vetted against the model's own bindings, and the query's qualifier matches the elected
     shape admits, with the codes the model chose from a phrase's candidate menu, are
@@ -272,18 +265,16 @@ def _settle_bindings(
     """
     bind_result = state.bind_result
     bind_result.bindings = without_dataset_drafts(bind_result.bindings)
-    bind_result.bindings, state.applied_dropped_qualifier_phrases = (
-        _validate_requested_all_bindings(
-            bind_result.bindings,
-            state.dropped_qualifier_phrases,
-            slot_properties=frozenset(
-                slot.property_dcid
-                for slot in shape_draft.slot_keys
-                if slot.property_dcid is not None
-            ),
-        )
+    bind_result.bindings, state.applied_dropped_qualifier_phrases = validate_requested_all_bindings(
+        bind_result.bindings,
+        state.dropped_qualifier_phrases,
+        slot_properties=frozenset(
+            slot.property_dcid for slot in shape_draft.slot_keys if slot.property_dcid is not None
+        ),
     )
-    bind_result.bindings = _validate_sole_option_bindings(bind_result.bindings, shape_draft)
+    bind_result.bindings = _settle_sole_options(bind_result.bindings, shape_draft)
+    bind_result.bindings = _unbind_implied_values(bind_result.bindings, shape_draft)
+    bind_result.bindings = _keep_the_noun_pinned_property(bind_result.bindings, shape_draft)
     bind_result.bindings = _open_operation_slots(
         bind_result.bindings, state.operations, shape_draft
     )
@@ -368,6 +359,57 @@ def _settle_bindings(
     return unresolved, readings
 
 
+def _settle_sole_options(
+    bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """`bindings` with each single-member slot the reply left unbound claimed
+    (`_claim_single_member_slots`) and every ``sole_option`` claim validated
+    (`_validate_sole_option_bindings`). A claim the validator demotes leaves its slot as
+    the reply drafted it."""
+    claimed = _claim_single_member_slots(bindings, shape_draft)
+    validated = _validate_sole_option_bindings(claimed, shape_draft)
+    return [
+        draft if claim is not draft and kept.kind == "unbound" else kept
+        for draft, claim, kept in zip(bindings, claimed, validated, strict=True)
+    ]
+
+
+def _claim_single_member_slots(
+    bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """`bindings` with each ``unbound`` draft on a slot whose taxonomy holds one value
+    (`ShapeDraft.slot_taxonomy`) drafted as that value with evidence ``sole_option``.
+
+    The bind prompt asks the reply to bind a single-member slot that way, and a reply can
+    leave it unbound. The recorded reply to "infant mortality rate" leaves ``age`` unbound
+    where the taxonomy holds only ``Years0``. The claim is the one the prompt asks of the
+    reply, so it is stamped as the reply's (`SlotBindingDraft.drafted_by`) and every reader
+    of the reply's claims judges it. A taxonomy read from a recall sample can show one value
+    the family's total does not hold (a population shape whose sample holds one gender),
+    which `_validate_sole_option_bindings` refutes. A ``requested_all`` draft asks for the
+    slot in full and stays."""
+    taxonomy = shape_draft.slot_taxonomy or {}
+    claimed: list[SlotBindingDraft] = []
+    for draft in bindings:
+        values = taxonomy.get(f"{draft.axis}:{draft.property_dcid}", [])
+        if (
+            draft.kind == "unbound"
+            and draft.evidence != "requested_all"
+            and draft.property_dcid is not None
+            and len(values) == 1
+        ):
+            draft = draft.model_copy(
+                update={
+                    "kind": "value",
+                    "value_dcids": list(values),
+                    "evidence": "sole_option",
+                    "drafted_by": "reply",
+                }
+            )
+        claimed.append(draft)
+    return claimed
+
+
 def _validate_sole_option_bindings(
     bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
 ) -> list[SlotBindingDraft]:
@@ -426,6 +468,131 @@ def _validate_sole_option_bindings(
                 )
         validated.append(binding)
     return validated
+
+
+def _unbind_implied_values(
+    bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """Unbind each value the bind reply drafted that the shape's measure already implies.
+
+    The code index declares the value an open slot of the measure means
+    (`CodeIndex.implied_values_of`): life expectancy is life expectancy at age 0. The
+    headline series states nothing on the property, so a member stating the value is
+    never the family's total and the binding elects a narrower series in its place. The
+    binding is released where the family has totals under the other bindings
+    (`family_totals`) and none of them asserts the property, so the total answers. A
+    family with no total keeps the value, as does one whose totals assert the property or
+    have unknown constraints: there the value may separate readings the family holds. The population is the one
+    `_validate_sole_option_bindings` reads (`five_tuple_member_facts`).
+
+    The draft's evidence does not matter: the recorded bind reply to "life expectancy"
+    drafts ``age=Years0`` as the slot's ``sole_option``, and a reply naming the age as
+    ``mentioned`` is released the same way.
+    """
+    implied = get_index().implied_values_of(shape_draft.pop_type_dcid, shape_draft.meas_prop_dcid)
+    if not implied:
+        return bindings
+    population, _ = five_tuple_member_facts(shape_draft)
+    settled = list(bindings)
+    for i, binding in enumerate(settled):
+        prop = binding.property_dcid
+        if (
+            binding.kind != "value"
+            or binding.drafted_by != "reply"
+            or prop is None
+            or binding.value_dcids != [implied.get(prop)]
+        ):
+            continue
+        totals = family_totals(population, _collapse_bindings(settled[:i] + settled[i + 1 :]))
+        asserted = [asserted_constraint_properties(population[sv]) for sv in totals]
+        if totals and all(props is not None and prop not in props for props in asserted):
+            settled[i] = binding.model_copy(
+                update={"kind": "unbound", "value_dcids": [], "evidence": "mentioned"}
+            )
+    return settled
+
+
+def _keep_the_noun_pinned_property(
+    bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """Keep one of two reply-drafted ``mentioned`` bindings of one value on two properties
+    that no member of the shape's population holds together, and leave the other unbound.
+
+    "External debt service" names ``ServicingPayment`` as the flow type, and the debt
+    statistics also hold it as what net transfers are net of. The bind reply to an external
+    debt service question drafts ``financialFlowType=ServicingPayment`` and
+    ``netOf=ServicingPayment``, both ``mentioned``. No member holds both, and the answer
+    resolved without the flow type refuses the term (`unrealisable.unbind_unrealisable`).
+    A net transfers question drafts ``netOf`` alone, beside the flow type ``Disbursement``,
+    and stands. The measure nouns of the code index (`MeasureIndex.nouns`) decide which
+    property the value is read on: the one noun of the shape's measure that names the value
+    on one of the two properties and whose every other constraint pair the drafts leave
+    open or bind to its value. "Net transfers on external debt" names ``netOf`` with the
+    flow type ``Disbursement``, which the draft contradicts, so only "external debt
+    service" survives and the flow type keeps the value. With no such noun, or several,
+    the bindings stand.
+    """
+    properties_by_value: dict[str, list[str]] = {}
+    for b in bindings:
+        if (
+            b.kind == "value"
+            and b.evidence == "mentioned"
+            and b.drafted_by == "reply"
+            and b.property_dcid is not None
+            and len(b.value_dcids) == 1
+        ):
+            properties_by_value.setdefault(b.value_dcids[0], []).append(b.property_dcid)
+    population, _ = five_tuple_member_facts(shape_draft)
+    stated = _collapse_bindings(bindings)
+    released: set[str] = set()
+    for value, drafted in properties_by_value.items():
+        props = set(drafted)
+        if len(drafted) != 2 or len(props) != 2 or not population:
+            continue
+        if any(
+            all(member.read_constraints().get(prop) == value for prop in props)
+            for member in population.values()
+        ):
+            continue
+        pinned = _noun_pinned_properties(shape_draft, stated, props, value)
+        if len(pinned) == 1:
+            released |= props - pinned
+    if not released:
+        return bindings
+    return [
+        b.model_copy(update={"kind": "unbound", "value_dcids": []})
+        if b.property_dcid in released
+        else b
+        for b in bindings
+    ]
+
+
+def _noun_pinned_properties(
+    shape_draft: ShapeDraft, stated: Mapping[str, list[str]], props: set[str], value: str
+) -> set[str]:
+    """The properties among `props` a measure noun of the shape's measure names `value` on,
+    of the nouns whose other constraint pairs `stated` leaves open or binds to the noun's
+    value. A noun that names `value` on several of `props` pins none of them."""
+    shape_axes = {
+        "populationType": shape_draft.pop_type_dcid,
+        "measuredProperty": shape_draft.meas_prop_dcid,
+        "statType": shape_draft.stat_type_dcid,
+        "measurementQualifier": shape_draft.meas_qual_dcid,
+        "measurementDenominator": shape_draft.meas_denom_dcid,
+    }
+    pinned: set[str] = set()
+    for noun in get_measure_index().nouns:
+        named = {prop for prop, v in noun.axis_values if prop in props and v == value}
+        if len(named) != 1:
+            continue
+        if all(
+            shape_axes[axis] == v
+            if axis in shape_axes
+            else axis in named or axis not in stated or v in stated[axis]
+            for axis, v in noun.axis_values
+        ):
+            pinned |= named
+    return pinned
 
 
 def _sample_forces(

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from entity_resolution import Admission
+from search.engine.binders import GeminiBinder
 from search.engine.errors import GraphInfraError
 from search.engine.fanout import _FanOutResult, _RegionDone, _run_variables_streaming
 from search.engine.region import RegionResult
@@ -57,8 +58,8 @@ async def _run_cancellation_scenario() -> tuple[_FanOutResult, asyncio.Task]:
                 timing_by_step={},
                 slot_options_task=live_task,
             )
-        # Leg 1 never finishes -- keeps n_pending > 0 so the generator stays
-        # parked on `queue.get()` rather than reaching its terminal assembly.
+        # Leg 1 does not finish, so n_pending stays above 0 and the generator stays
+        # parked on `queue.get()` without reaching its terminal assembly.
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
@@ -77,6 +78,7 @@ async def _run_cancellation_scenario() -> tuple[_FanOutResult, asyncio.Task]:
             resolver=resolver,
             admission=admission,
             llm=llm,
+            binder=GeminiBinder(),
             sdmx=sdmx,
             base_timing={},
             pre_resolved=None,
@@ -153,6 +155,7 @@ def test_infra_error_cancels_a_completed_siblings_live_task_unread():
                     resolver=resolver,
                     admission=admission,
                     llm=llm,
+                    binder=GeminiBinder(),
                     sdmx=sdmx,
                     base_timing={},
                     pre_resolved=None,

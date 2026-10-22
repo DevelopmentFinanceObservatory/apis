@@ -1,16 +1,16 @@
 """`index_family` and `dataset_declares_roles` decide the role grid as the rule in
 `tests.statvar_members.role_grid` does.
 
-Each population is one dataset's rows of one family. The packaged populations are read
-from the packaged index, and each synthetic one from an index that holds it alone. A
+Each population is one dataset's rows of one family. The fixture populations are read
+from the fixture index, and each synthetic one from an index that holds it alone. A
 cell asks the index twice, naming the dataset and naming none. Each family of
 `role_grid.SHARED` is published by two or three datasets, and a cell asks its index
 naming none and naming each.
 
-The packaged grid keeps every population under every pair of role keys with no slot
+The fixture grid keeps every population under every pair of role keys with no slot
 bound, every slot binding that holds a cell of a moved label, and `_SAMPLED_SLOTS`
 single-value bindings per population drawn with a fixed seed
-(`role_grid.sampled_packaged_cells`).
+(`role_grid.sampled_fixture_cells`).
 """
 
 from __future__ import annotations
@@ -45,9 +45,9 @@ from tests.statvar_members.role_grid import (
     count_by_case,
     count_by_label,
     declares,
-    packaged_index,
-    packaged_populations,
-    sampled_packaged_cells,
+    fixture_index,
+    fixture_populations,
+    sampled_fixture_cells,
     shared_cells,
     shared_index,
     synthetic_cells,
@@ -58,19 +58,19 @@ _DAC1 = "provenance/OECDDAC1"
 _SAMPLED_SLOTS = 12
 
 
-def _sampled_packaged_cells() -> tuple[Cell, ...]:
-    return sampled_packaged_cells(_SAMPLED_SLOTS)
+def _sampled_fixture_cells() -> tuple[Cell, ...]:
+    return sampled_fixture_cells(_SAMPLED_SLOTS)
 
 
-_GRIDS = {"packaged": _sampled_packaged_cells, "synthetic": synthetic_cells}
+_GRIDS = {"fixture": _sampled_fixture_cells, "synthetic": synthetic_cells}
 _GRID_LABELS = {
-    "packaged": (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
+    "fixture": (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
     "synthetic": LABELS,
 }
 
 
 def _index_of(grid: str, population: Population) -> CodeIndex:
-    return packaged_index() if grid == "packaged" else synthetic_index(population.name)
+    return fixture_index() if grid == "fixture" else synthetic_index(population.name)
 
 
 def _query(cell: Cell | SharedCell, source: str | None) -> FamilyQuery:
@@ -257,27 +257,27 @@ def _declared(
     ]
 
 
-def test_each_packaged_dataset_declares_the_keys_the_rule_says():
-    """Some packaged datasets declare a set of keys and others do not, each as the
+def test_each_fixture_dataset_declares_the_keys_the_rule_says():
+    """Some fixture datasets declare a set of keys and others do not, each as the
     rule says."""
     answers = [
         answer
-        for population in packaged_populations(packaged_index())
-        for answer in _declared("packaged", population)
+        for population in fixture_populations(fixture_index())
+        for answer in _declared("fixture", population)
     ]
 
     assert {ruled for _declared_, ruled, _keys in answers} == {True, False}
     assert not [keys for declared, ruled, keys in answers if declared != ruled]
 
 
-def test_no_packaged_dac1_family_declares_a_recipient():
+def test_no_fixture_dac1_family_declares_a_recipient():
     """OECD DAC1 publishes provider totals, two of them flows to one recipient. Both
     `dataset_declares_roles` and the rule say it declares no recipient in any family."""
     answers = [
         (declared, ruled)
-        for population in packaged_populations(packaged_index())
+        for population in fixture_populations(fixture_index())
         if population.dataset == _DAC1
-        for declared, ruled, _keys in _declared("packaged", population, ({DESTINATION},))
+        for declared, ruled, _keys in _declared("fixture", population, ({DESTINATION},))
     ]
 
     assert answers

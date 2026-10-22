@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.models import (
     CandidatesPart,
     DefinitePart,
     NoDataPart,
 )
+from tests.engine._binders import FixedBindReplyLLM, nominee_ratings
 from tests.engine._harness import make_request as _req
 from tests.engine._harness import offline_resolve
 from tests.fixtures import FakeGraph
@@ -102,31 +104,19 @@ class TestStd02GDPIndia:
 
 
 class TestStd03BirthRateEthiopia:
-    """The bare query keeps crude birth rate and fertility rate as candidates for Ethiopia."""
+    """The bare query answers the crude birth rate for Ethiopia. The recorded reply rates the
+    fertility rate it nominates at 0.8 of its pick, below the nomination bar, so the
+    nomination is no rival."""
 
     _QUERY = "birth rate Ethiopia"
 
-    def test_status_is_candidates(self):
-        assert offline_resolve(_req(self._QUERY)).status == "candidates"
-
-    def test_invariants(self):
-        _check_invariants(_candidates(self._QUERY), query=self._QUERY, max_count=2)
-
-    def test_svs_are_birth_rate_and_fertility_rate(self):
-        resp = _candidates(self._QUERY)
-        sv_dcids = {sv.ref.ref for spec in resp.candidates.specs for sv in spec.resolved.members}
-        assert sv_dcids == {
-            "Count_BirthEvent_LiveBirth_AsFractionOf_Count_Person",
-            "FertilityRate_Person_Female",
-        }
-
-    def test_entity_is_ethiopia_in_every_spec(self):
-        resp = _candidates(self._QUERY)
-        for spec in resp.candidates.specs:
-            assert [e.ref for e in spec.resolved.entities] == ["country/ETH"], (
-                f"expected country/ETH in std-03 spec {spec.spec_id!r}, "
-                f"got {[e.ref for e in spec.resolved.entities]}"
-            )
+    def test_the_crude_birth_rate_answers_for_ethiopia(self):
+        inner = offline_resolve(_req(self._QUERY)).parts[0]
+        assert isinstance(inner, DefinitePart)
+        assert [sv.ref.ref for sv in inner.spec.resolved.members] == [
+            "Count_BirthEvent_LiveBirth_AsFractionOf_Count_Person"
+        ]
+        assert [e.ref for e in inner.spec.resolved.entities] == ["country/ETH"]
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +139,33 @@ class TestStd04bBirthsEthiopia:
 
     def test_the_live_birth_count_is_elected_with_the_per_capita_shape_as_alternate(self):
         """The gate leaves `flagged_match` empty, so only the message names the elected
-        variable."""
-        result = offline_resolve(_req(self._QUERY))
+        variable. The bind reply electing the live-birth count and nominating the birth
+        count and the per-capita shape is held fixed."""
+        llm = FixedBindReplyLLM(
+            _UniversalBindOutput(
+                chosen_shape_index=2,
+                bindings=[
+                    SlotBindingDraft(
+                        axis="how",
+                        property_dcid="medicalStatus",
+                        kind="value",
+                        value_dcids=["LiveBirth"],
+                        evidence="sole_option",
+                    )
+                ],
+                also_plausible=[0, 1],
+                measuring=[
+                    ShapeRating(index=2, rating=1.0),
+                    ShapeRating(index=0, rating=1.0),
+                    *nominee_ratings([0, 1], rated=(0, 2)),
+                ],
+            )
+        )
+        result = offline_resolve(_req(self._QUERY), llm=llm)
+
+        (prompt,) = llm.bind_prompts
+        assert "Shape 1:\n  label: Count of Birth Event (Per capita)\n" in prompt
+        assert "Shape 2:\n  label: Total number of reported live births\n" in prompt
         inner = result.parts[0]
         assert isinstance(inner, NoDataPart)
         assert inner.no_data.gate == "only_alternate_has_data"
@@ -171,25 +186,16 @@ class TestStd04bBirthsEthiopia:
 
 class TestStd05Under5ChildMortality:
     """std-05: 'under-5 child mortality rate', no place. Bind elects the under-five mortality
-    rate and nominates the under-five death count, which holds data, so the count is a
-    nominated rival (status rule 2(b)) offered after the rate."""
+    rate and nominates the under-five death count at 0.8 of its pick, below the nomination
+    bar, so the rate answers alone."""
 
     _QUERY = "under-5 child mortality rate"
 
-    def test_the_rate_comes_first_and_the_nominated_count_beside_it(self):
-        resp = _candidates(self._QUERY)
-        assert [spec.resolved.shape.label for spec in resp.candidates.specs] == [
-            "Under-five mortality rate [under 5 years old]",
-            "Under-five deaths [under 5 years old]",
-        ]
-        assert [spec.resolved.basis for spec in resp.candidates.specs] == [None, "nominated"]
-
-    def test_invariants(self):
-        _check_invariants(_candidates(self._QUERY), query=self._QUERY)
-
-    def test_no_entities_in_specs(self):
-        for spec in _candidates(self._QUERY).candidates.specs:
-            assert spec.resolved.entities == []
+    def test_the_rate_answers_without_the_count(self):
+        inner = offline_resolve(_req(self._QUERY)).parts[0]
+        assert isinstance(inner, DefinitePart)
+        assert inner.spec.resolved.shape.label == "Under-five mortality rate [under 5 years old]"
+        assert inner.spec.resolved.entities == []
 
 
 # ---------------------------------------------------------------------------

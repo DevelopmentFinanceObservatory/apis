@@ -480,9 +480,9 @@ jobs:
           fi
 
       # A separate venv from the bare install above, since the sdmx extra
-      # is what code-index-live.yml and sdmx-live.yml install alone -- this
-      # is the one place that shape gets a positive import check, rather
-      # than only the negative "absent without it" checks above.
+      # is what sdmx-live.yml installs alone -- this is the one place that
+      # shape gets a positive import check, rather than only the negative
+      # "absent without it" checks above.
       - name: Create a second fresh venv for the sdmx extra
         run: uv venv .venv-sdmx
 

@@ -191,7 +191,7 @@ def _index_five_tuples(index: CodeIndex) -> frozenset[FiveTuple]:
 # A key is a 32-byte digest of the deciding query (`family_query_digest`), so an entry costs its
 # rows plus a constant, whatever the query binds.
 # Each entry holds a tuple of references to rows the index owns, 8 bytes a row, so the row
-# bound caps the memo near 8 MiB: about 80 copies of the packaged index's largest family
+# bound caps the memo near 8 MiB: about 80 copies of the dev release's code index's largest family
 # (12,771 of its 22,208 rows), where the entry bound alone allowed 4,096 copies (400 MiB).
 _FAMILY_CACHE_SIZE = 4096
 _FAMILY_CACHE_ROWS = 1 << 20
@@ -1575,7 +1575,7 @@ def bound_values_from_bindings(bindings: Sequence[SlotBindingDraft]) -> dict[str
     realizability check, so all three compute "what was bound" the same way.
 
     Each property's value list is then widened to every bound value's own
-    descendants, via the packaged code index's descendant walk (see
+    descendants, via the release's code index's descendant walk (see
     _expand_values). This is the resolver's whole expansion step: a value
     bound on a dimension the index declares ``hierarchical`` resolves to that
     node and its descendants that carry members, and every caller of this
@@ -1857,7 +1857,7 @@ def entity_role_keys(
 
 
 def index_decides_membership(identity: BaseIdentity) -> bool:
-    """Whether the packaged code index decides which StatVars `identity` denotes.
+    """Whether the release's code index decides which StatVars `identity` denotes.
 
     The test is the Datasets mint's: a described identity whose deciding slot keys hold
     every constraint property of at least one index row of its five-tuple
@@ -1885,33 +1885,67 @@ def _identity_family(identity: BaseIdentity) -> DatasetFamily | None:
         return None
 
 
-def listed_family(identity: BaseIdentity) -> frozenset[str] | None:
-    """The StatVars the Datasets mint elects for `identity` from the index's listed rows
-    (`code_index.members.listed_group` over its `identity_query`), before antichain
-    reduction. `None` for a pinned identity and when no listed row is among them, so the
-    graph walk decides them. Raises the election's own refusal (`MemberEnumerationTooLarge`,
-    `MemberRoleDisagreement`, `MemberDegenerateObservationProperties`) when it refuses."""
+def _index_served_rows(family: DatasetFamily) -> tuple[StatVarRow, ...] | None:
+    """The rows the Datasets mint serves from `family`, the family the code index resolves
+    for an identity it decides: its antichain-minimal rows. `None` when the family holds no
+    row or its role election ties (`DatasetFamily.tied`), which the mint refuses."""
+    if family.tied:
+        return None
+    return antichain_minimal_rows(get_index(), family.rows) or None
+
+
+def served_members(identity: BaseIdentity) -> frozenset[str] | None:
+    """The StatVars a Datasets mint of `identity` serves, when the code index resolves them
+    in memory as the mint does (`datasets_api.adapter.resolve_definition_members`).
+
+    An identity the index decides serves the antichain-minimal rows of the family the index
+    resolves (`_index_served_rows`). Any other serves the members the index's listed rows
+    elect (`code_index.members.listed_group`), the antichain-minimal members the graph walk
+    would elect. `None` for a pinned identity, for one the graph walk decides, and wherever the mint refuses:
+    a provenance outside the five-tuple's publishers (`SourceNotInFamily`), a tied or empty
+    family, an `observationAbout` member, an empty or truncated group, or candidates the
+    group leaves undismissed. Raises the listed election's own refusal
+    (`MemberEnumerationTooLarge`, `MemberRoleDisagreement`,
+    `MemberDegenerateObservationProperties`) when it refuses."""
     if not isinstance(identity.shape, IdentityShapeSchema):
         return None
-    group = listed_group(
-        get_index(), identity_query(identity), member_cap=shared_enumerator().member_cap
-    )
-    return None if group is None else frozenset(group.family)
+    index = get_index()
+    query = identity_query(identity)
+    try:
+        family = _resolved_family(index, query)
+    except SourceNotInFamily:
+        return None
+    if family is not None:
+        rows = _index_served_rows(family)
+        if rows is None or any(
+            "observationAbout" in (row.observation_properties or ()) for row in rows
+        ):
+            return None
+        return frozenset(row.dcid for row in rows)
+    group = listed_group(index, query, member_cap=shared_enumerator().member_cap)
+    if (
+        group is None
+        or not group.members
+        or group.undismissed_candidates
+        or (group.truncated and not group.proven_complete)
+    ):
+        return None
+    return frozenset(member.stat_var for member in group.members)
 
 
 def elects_within(identity: BaseIdentity, dcids: Collection[str]) -> bool:
-    """Whether the StatVars the Datasets mint elects for `identity` (`listed_family`) are
-    known and all among `dcids`. False for a family the graph walk decides and for an
-    election that refuses, so a mint of `identity` may serve a StatVar outside `dcids`."""
+    """Whether the StatVars a Datasets mint of `identity` serves (`served_members`) are
+    known and all among `dcids`. False for members the graph walk decides and for a mint
+    that refuses, so a mint of `identity` may serve a StatVar outside `dcids`."""
     try:
-        family = listed_family(identity)
+        served = served_members(identity)
     except (
         MemberEnumerationTooLarge,
         MemberRoleDisagreement,
         MemberDegenerateObservationProperties,
     ):
         return False
-    return family is not None and family <= set(dcids)
+    return served is not None and served <= set(dcids)
 
 
 def refuse_source_outside_family(identity: BaseIdentity, *, pointer: str) -> None:
@@ -2190,11 +2224,10 @@ def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> Stat
     pinned identity (`check_described_arm`)."""
     if index_decides_membership(identity):
         family = _identity_family(identity)
-        if family is None or not family.rows or family.tied:
+        if family is None or (served := _index_served_rows(family)) is None:
             return None
         return StatedMembers(
-            served_count=len(antichain_minimal_rows(get_index(), family.rows)),
-            digest=member_digest(row.dcid for row in family.rows),
+            served_count=len(served), digest=member_digest(row.dcid for row in family.rows)
         )
     if (
         walked is None
@@ -2206,7 +2239,7 @@ def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> Stat
 
 
 def declaration_version(bindings: Sequence[SlotBindingDraft], identity: BaseIdentity) -> str | None:
-    """The packaged code index's ``content_hash``, for a caller stating
+    """The release's code index's ``content_hash``, for a caller stating
     ``ResolvedSpec.declaration_version`` (``apply_declaration_version``).
 
     The hash covers the code-system and dataset declarations, so the version
@@ -2519,6 +2552,20 @@ def shape_population_arcs(shape: ShapeDraft) -> dict[str, dict]:
             for sv, arcs in held.arcs.items()
             if sv not in own and (shape.held_roles is None or held.roles[sv] == shape.held_roles)
         },
+    }
+
+
+def held_family_arcs(shape: ShapeDraft) -> dict[str, dict]:
+    """The arcs of every member of the family the catalogue holds for `shape`
+    (`ShapeDraft.held_family`) beside the shape's own members, of every role class: unlike
+    `shape_population_arcs`, no role-class election narrows them (`ShapeDraft.held_roles`).
+    The shape's own members alone for a shape holding no family. Reads no graph."""
+    own = shape.sv_arc_facts or {}
+    if shape.held_family is None:
+        return dict(own)
+    return {
+        **own,
+        **{sv: arcs for sv, arcs in _held_members(shape.held_family).arcs.items() if sv not in own},
     }
 
 
@@ -3583,10 +3630,10 @@ def five_tuple_families(
 
 
 def prepare_index_views() -> None:
-    """Loads the packaged code index and measure index and builds the views of the index
+    """Loads the release's code index and measure index and builds the views of the index
     that search reads on every resolve: its five-tuples (`index_carries_five_tuple`) and
     the member views (`code_index.members.prepare_member_views`). Each is otherwise built
-    by the first request that reads it, about 135 ms on the packaged index."""
+    by the first request that reads it, about 135 ms on the dev release's code index."""
     index = get_index()
     get_measure_index()
     _index_five_tuples(index)
@@ -3594,12 +3641,12 @@ def prepare_index_views() -> None:
 
 
 def index_carries_five_tuple(five_tuple: FiveTuple, index: CodeIndex | None = None) -> bool:
-    """Whether the packaged code index holds a row of `five_tuple`."""
+    """Whether the release's code index holds a row of `five_tuple`."""
     return five_tuple in _index_five_tuples(index or get_index())
 
 
 def index_carries_shape(shape: ShapeDraft, index: CodeIndex | None = None) -> bool:
-    """Whether the packaged code index carries `shape`: rows of its five-tuple, and, for
+    """Whether the release's code index carries `shape`: rows of its five-tuple, and, for
     a shape with recalled members, the one family those members belong to
     (`shape_family`). `five_tuple_member_facts` gates on it. It says the index describes the
     shape's slot values.

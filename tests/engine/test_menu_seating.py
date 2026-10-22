@@ -206,6 +206,19 @@ def test_a_root_seats_every_leaf_or_none(ranked, menu):
             ["first", "leaf0", "scored_leaf"],
             id="a-shape-with-a-score-and-a-root-is-seated-as-a-scored-shape",
         ),
+        pytest.param(
+            # The UN resolver scores on its own scale, so its shapes take the seats ours
+            # leave, and its scores cap no root of ours.
+            [
+                dataclasses.replace(_scored("un_first", 0.95), pool="un_system"),
+                dataclasses.replace(_scored("un_second", 0.90), pool="un_system"),
+                _scored("ours", 0.68),
+                *_leaves("leaf", 1, _AID_ROOT, 0.80, rank=0.6799),
+            ],
+            3,
+            ["ours", "leaf0", "un_first"],
+            id="the-un-pool-fills-the-seats-ours-leaves",
+        ),
     ],
 )
 def test_the_seat_count_bounds_the_menu(ranked, seats, menu):

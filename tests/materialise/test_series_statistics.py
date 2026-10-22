@@ -698,7 +698,7 @@ def _figures(*chunks: list[dict[str, object]]) -> SeriesFigures:
     return sink.finish().figures
 
 
-def test_every_packaged_method_names_a_status_class():
+def test_every_fixture_method_names_a_status_class():
     classes = method_status_classes()
 
     assert classes

@@ -1,6 +1,7 @@
 """Suite-wide fixtures: response contracts, offline clients, coverage, catalogue, graph
 release, resolvekit."""
 
+import contextlib
 import importlib
 import os
 import shutil
@@ -61,11 +62,11 @@ _session_release: Release | None = None
 def pytest_configure(config: pytest.Config) -> None:
     """Publishes the session release (`build_session_release`), opens it through
     `get_release_service()` as a surface does, and binds the release that service serves: the
-    packaged code index, the recorded coverage slice and the recorded DFO variables."""
+    fixture code index, the recorded coverage slice and the recorded DFO variables."""
     config.addinivalue_line(
         "markers",
         "unbound_release: runs with no graph release bound, opting out of "
-        "`_bound_packaged_index_release`",
+        "`_bound_fixture_index_release`",
     )
     _session_services.enter_context(
         catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service())
@@ -90,7 +91,8 @@ class OfflineContractViolation(RuntimeError):
 
 def _refuse_sync_request(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
     raise OfflineContractViolation(
-        f"outbound request to {request.url} reached httpx.HTTPTransport.handle_request. "
+        f"outbound request to {request.url} reached {type(self).__module__}."
+        f"{type(self).__name__}.handle_request. "
         "Offline tests must not make real HTTP calls; use httpx.MockTransport, an ASGI "
         "TestClient, or an injected client double instead."
     )
@@ -100,8 +102,8 @@ async def _refuse_async_request(
     self: httpx.AsyncHTTPTransport, request: httpx.Request
 ) -> httpx.Response:
     raise OfflineContractViolation(
-        f"outbound request to {request.url} reached httpx.AsyncHTTPTransport."
-        "handle_async_request. Offline tests must not make real HTTP calls; use "
+        f"outbound request to {request.url} reached {type(self).__module__}."
+        f"{type(self).__name__}.handle_async_request. Offline tests must not make real HTTP calls; use "
         "httpx.MockTransport, an ASGI TestClient, or an injected client double instead."
     )
 
@@ -118,6 +120,14 @@ def _guard_outbound_http(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
         return
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _refuse_sync_request)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _refuse_async_request)
+    # The TypeSafe SDK sends over httpx2, a separate package, which the engine extra installs.
+    with contextlib.suppress(ImportError):
+        import httpx2
+
+        monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", _refuse_sync_request)
+        monkeypatch.setattr(
+            httpx2.AsyncHTTPTransport, "handle_async_request", _refuse_async_request
+        )
     yield
 
 
@@ -278,16 +288,16 @@ def _bound_fake_catalogue() -> Iterator[None]:
 
 
 @pytest.fixture(scope="session")
-def _packaged_index_release() -> Release:
+def _fixture_index_release() -> Release:
     """The session's served graph release (`pytest_configure`), whose code index is the
-    packaged `index.json.gz` document."""
+    recorded index document (`tests.code_index.support.INDEX_FIXTURE`)."""
     assert _session_release is not None
     return _session_release
 
 
 @pytest.fixture(autouse=True)
-def _bound_packaged_index_release(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Bind `_packaged_index_release` for every test not marked `unbound_release`, as a
+def _bound_fixture_index_release(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Bind `_fixture_index_release` for every test not marked `unbound_release`, as a
     request binds its served release, and bind none for a test that is. A surface's own
     request scope binds over it."""
     if request.node.get_closest_marker("unbound_release"):
@@ -297,7 +307,7 @@ def _bound_packaged_index_release(request: pytest.FixtureRequest) -> Iterator[No
         finally:
             release_context_module._BOUND.reset(token)
         return
-    with bound_release(request.getfixturevalue("_packaged_index_release")):
+    with bound_release(request.getfixturevalue("_fixture_index_release")):
         yield
 
 
@@ -357,7 +367,7 @@ def search_settings(monkeypatch: pytest.MonkeyPatch) -> "Callable[..., SearchSet
             )
         search_overrides = {k: v for k, v in overrides.items() if k not in obs_overrides}
         base = config.settings().model_dump(
-            exclude={"capability_version_override", "max_entity_occurrences"}
+            exclude={"capability_version_override", "jev_api_key", "max_entity_occurrences"}
         )
         updated = SearchSettings.model_validate({**base, **search_overrides})
         monkeypatch.setattr(config, "_SETTINGS", updated)

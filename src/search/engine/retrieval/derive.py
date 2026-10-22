@@ -2,7 +2,7 @@
 membership authority.
 
 A five-tuple's subject-only members and its role-bearing members are separate shapes,
-since no election orders one against the other. Members whose family the packaged code
+since no election orders one against the other. Members whose family the release's code
 index decides and members whose family the graph walk decides are separate shapes too
 (`bound_values.member_family`), so a shape never holds members whose membership two
 authorities decide, and members of two index families of one five-tuple, such as CRS and
@@ -611,7 +611,7 @@ def _shape_draft_for_group(
 def member_group_class(
     dcid: str, five_tuple: FiveTuple, arcs: dict
 ) -> tuple[bool, IndexFamily | None]:
-    """Return member `dcid`'s group class: whether it declares a role, and the packaged code
+    """Return member `dcid`'s group class: whether it declares a role, and the release's code
     index family it belongs to (`bound_values.member_family`), or None when the graph walk
     decides its family.
 
@@ -628,7 +628,7 @@ def group_shape_id(five_tuple: FiveTuple, *, role_bearing: bool, family: IndexFa
 
     The id reads the group alone, so it is the same whatever else a derivation or a
     resubmit holds. The five-tuple's primary class keeps its slug: the role-bearing members
-    of its first index family (CRS flows) when the packaged code index carries the
+    of its first index family (CRS flows) when the release's code index carries the
     five-tuple, and the subject-only members otherwise. Every other class takes its suffix
     (`_GROUP_ID_SUFFIX`), and the members of any other index family of the five-tuple
     (DAC1 flows beside CRS flows) take a tag of that family's properties too, so the groups
@@ -981,7 +981,7 @@ def derive_shapes(
     graph (`_probe_place_availability`). `None` reads every candidate from the graph.
 
     Return one shape per group: the members of one five-tuple that are subject-only or
-    role-bearing, and whose family the packaged code index decides or does not
+    role-bearing, and whose family the release's code index decides or does not
     (`bound_values.member_family`). A role-bearing shape declares every role its
     members declare (`facts.group_roles`), and marks optional the roles some member does
     not declare. Its label, slot keys and family all come from that one group.

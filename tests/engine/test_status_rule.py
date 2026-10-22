@@ -18,7 +18,8 @@ import dataclasses
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import ShapeRating, _UniversalBindOutput
+from search.engine.binders import GeminiBinder
 from search.engine.config import settings
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
@@ -36,6 +37,7 @@ from search.engine.shape import ShapeDraft
 from search.models import TimeWindow
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
+from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -241,6 +243,32 @@ def test_rule_two_offers_only_open_axes_and_nominations(elected, menu, named, ri
     assert _plan(elected, menu, **named).rivals == rivals
 
 
+@pytest.mark.parametrize(
+    ("elected", "reading", "basis"),
+    [
+        pytest.param(_MORTALITY, _UNRELATED, "nominated", id="another-measure"),
+        pytest.param(_NOMINAL_GDP, _REAL_GDP, None, id="same-measure-on-a-closed-axis"),
+        pytest.param(
+            _EDUCATION_SHARE_OF_GDP,
+            _EDUCATION_SHARE_OF_SPENDING,
+            "structural",
+            id="same-measure-on-an-open-axis",
+        ),
+    ],
+)
+def test_a_nomination_enters_r_on_its_axes(elected, reading, basis):
+    """Rule 2(b): a nominated reading of another measure is a rival, and one of the same
+    measure enters R only on an open axis."""
+    menu = [MenuReading(index=1, shape=reading, has_data=True, nominated=True)]
+    expected = (Alternative(index=1, basis=basis),) if basis else ()
+    assert _plan(elected, menu).rivals == expected
+
+
+def test_a_nominated_registry_twin_is_no_rival():
+    menu = [MenuReading(index=1, shape=_IMF_GDP, has_data=True, nominated=True, registry_twin=True)]
+    assert _plan(_NOMINAL_GDP, menu).rivals == ()
+
+
 def test_rule_one_tries_equivalents_then_qualifier_siblings_then_riders():
     """Beside an elected reading with no data, its five-tuple's other reading is an
     equivalent, a price-basis sibling a stand-in, and a nomination of another measure, a
@@ -287,7 +315,7 @@ def test_a_qualifier_sibling_is_planned_where_its_walk_may_share_the_role_class(
     elected, sibling, planned
 ):
     """A role-bearing sibling of a subject-only reading is planned, since its walk may elect
-    the subject-only family of its five-tuple; a subject-only sibling of a role-bearing
+    the subject-only family of its five-tuple. A subject-only sibling of a role-bearing
     reading differs from it by a role and is not."""
     plan = _plan(elected, _menu((sibling, True, False, False)))
     assert plan.stand_ins == ((1,) if planned else ())
@@ -357,7 +385,7 @@ _NODES: dict = {
 
 class _FixedBindLLM:
     """Elects the shape at `chosen`, the first by default, with a caller-supplied
-    `also_plausible`."""
+    `also_plausible`, rating its pick at 1."""
 
     def __init__(self, also_plausible: list[int] | None = None, *, chosen: int = 0) -> None:
         self._also_plausible = also_plausible
@@ -371,11 +399,18 @@ class _FixedBindLLM:
             bindings=[],
             also_plausible=self._also_plausible,
             ask=None,
+            measuring=[
+                ShapeRating(index=self._chosen, rating=1.0),
+                *nominee_ratings(self._also_plausible, rated=(self._chosen,)),
+            ],
         ), None
 
 
 def _run(
-    variable: str, *, scores: list[float], also_plausible: list[int] | None = None
+    variable: str,
+    *,
+    scores: list[float],
+    also_plausible: list[int] | None = None,
 ) -> RegionResult:
     svs = [_SV_FOREST, _SV_POPULATION]
     graph = FakeGraph(
@@ -398,6 +433,7 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(also_plausible),
+            binder=GeminiBinder(),
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -632,7 +668,7 @@ def test_the_rank_elects_between_two_shapes_the_menu_states_alike(variable, also
     """ "GDP per capita" in Brazil holds one label twice: a series dividing by the
     ProvisionalNode `PerCapita`, ranked first, and one dividing by `Count_Person`. The menu
     prints both as per person, and the model elects the second. The first is elected in
-    its place, whether or not the model also nominated it, and the second is no rival: it
+    its place, whether or not the model also nominated it, and the second is no rival. It
     is the same reading, on a denominator "GDP per capita" closes and "living standard",
     which names no form, leaves open. The nominated income series is offered beside it."""
     svs = [_GDP_PER_CAPITA_SV, _GDP_PER_HEAD_SV, _INCOME_PER_CAPITA_SV]
