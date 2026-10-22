@@ -94,7 +94,9 @@ class GeminiBinder:
         """The rating of each word from one call of its own (`read_stated_words`), whose
         fixed schema leaves the bind schema as it is. Raises `LLMInfraError` for a read
         that failed."""
-        return await read_stated_words(request.variable, request.shape, request.words, llm=llm)
+        return await read_stated_words(
+            request.variable, request.shape, request.words, bindings=request.bindings, llm=llm
+        )
 
     async def bind(
         self, request: BindRequest, *, llm: SupportsLLM

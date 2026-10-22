@@ -8,10 +8,11 @@ from dataclasses import replace
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import GeminiBinder, StatedWordsRequest
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import LLMInfraError
+from search.engine.shape import SlotKeyDraft
 from search.engine.stated_words_read import (
     STATED_WORDS_SYSTEM_PROMPT,
     StatedWord,
@@ -32,17 +33,64 @@ _PERSONS = replace(
 )
 
 
-def test_the_prompt_states_the_series_then_numbers_the_words():
-    """`StatedWord.index` indexes the WORDS list, in the order the request holds them."""
+_SEX = SlotKeyDraft(axis="how", property_dcid="undataSex", label="Sex")
+_AGE = SlotKeyDraft(axis="how", property_dcid="undataAge", label="Age")
+_COMPLETION = replace(
+    _PERSONS,
+    label="School completion rate",
+    slot_keys=(_SEX, _AGE),
+    value_labels={
+        "undata/SEX-F": "Female (Sex)",
+        "undataSex": "Sex",
+        "undata/AGE-Y15T19": "15 to 19 years",
+        "undata/AGE-Y20T24": "20 to 24 years",
+    },
+)
+_FEMALE = SlotBindingDraft(
+    axis="how", property_dcid="undataSex", kind="value", value_dcids=["undata/SEX-F"]
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "bindings", "restricted"),
+    [
+        (_PERSONS, (), ""),
+        (
+            _COMPLETION,
+            (_FEMALE, SlotBindingDraft(axis="how", property_dcid="undataAge", kind="unbound")),
+            "  restricted to: Sex=Female\n",
+        ),
+        (
+            _COMPLETION,
+            (
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="undataAge",
+                    kind="set",
+                    value_dcids=["undata/AGE-Y15T19", "undata/AGE-Y20T24"],
+                ),
+                _FEMALE,
+            ),
+            "  restricted to: Age=15 to 19 years or 20 to 24 years; Sex=Female\n",
+        ),
+    ],
+    ids=["no-binding", "bound-female", "set-and-value"],
+)
+def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, restricted):
+    """`StatedWord.index` indexes the WORDS list, in the order the request holds them. The
+    series lists the values its value and set bindings restrict it to, each by its graph
+    label less its property's name, so the read can answer that a series bound to Sex=Female
+    states "girls"."""
     assert build_stated_words_prompt(
-        "stateless refugee population", _PERSONS, ("stateless", "refugee")
+        "stateless refugee population", shape, ("stateless", "refugee"), bindings=bindings
     ) == (
         "Variable phrase: stateless refugee population\n"
         "\n"
         "SERIES:\n"
-        "  label: Total population\n"
+        f"  label: {shape.label}\n"
         "  family: standard Data Commons\n"
         "  five_tuple: populationType=Person, measuredProperty=count, statType=measuredValue\n"
+        f"{restricted}"
         "\n"
         "WORDS (words of the variable phrase):\n"
         "  0: stateless\n"
@@ -101,9 +149,10 @@ class _StatedLLM:
 def _request(words: tuple[str, ...]) -> StatedWordsRequest:
     return StatedWordsRequest(
         variable="stateless refugee population",
-        shape=_PERSONS,
+        shape=_COMPLETION,
         shape_index=0,
         words=words,
+        bindings=(_FEMALE,),
         decision=None,
     )
 
@@ -119,7 +168,10 @@ def test_gemini_rates_the_words_in_one_call_of_its_own():
     assert llm.calls == [
         (
             build_stated_words_prompt(
-                "stateless refugee population", _PERSONS, ("stateless", "refugee")
+                "stateless refugee population",
+                _COMPLETION,
+                ("stateless", "refugee"),
+                bindings=(_FEMALE,),
             ),
             STATED_WORDS_SYSTEM_PROMPT,
             StatedWordsOutput,

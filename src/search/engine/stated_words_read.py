@@ -2,9 +2,10 @@
 of the variable the coverage readers leave unread on it.
 
 The call sees the variable phrase, the elected shape's reading as the bind menu states it
-(`bind.stated_reading`), and the numbered words. It answers, per word number, whether the
-series states what the word names (`StatedWordsOutput`): the total population does not state
-"refugee", and total revenue does not state "tax". Its schema is fixed whatever the menu
+(`bind.stated_reading`) with the values the final bindings restrict it to, and the numbered
+words. It answers, per word number, whether the series states what the word names
+(`StatedWordsOutput`): the total population does not state "refugee", total revenue does not
+state "tax", and a completion rate bound to Sex=Female states "girls". Its schema is fixed whatever the menu
 and the word count, so a recorded answer is keyed by the prompt text alone, and bind's
 schema never carries the rating. `GeminiBinder.rate_words_stated` makes the call.
 """
@@ -16,10 +17,14 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from code_index.labels import without_property_suffix
+from code_index.shared import get_index
 from search.engine.bind import stated_reading
 from search.engine.clients.llm import SupportsLLM, for_stage, generate_structured_async
+from search.render.labels import _humanize_ref
 
 if TYPE_CHECKING:
+    from search.engine.bind import SlotBindingDraft
     from search.engine.shape import ShapeDraft
 
 
@@ -66,9 +71,16 @@ Answer each word once, by its number in the WORDS list.
 WORDS_HEADER = "WORDS (words of the variable phrase):"
 
 
-def build_stated_words_prompt(variable: str, shape: ShapeDraft, words: Sequence[str]) -> str:
+def build_stated_words_prompt(
+    variable: str,
+    shape: ShapeDraft,
+    words: Sequence[str],
+    *,
+    bindings: Sequence[SlotBindingDraft],
+) -> str:
     """The user prompt: the variable phrase, the series as the bind menu states the shape's
-    reading (`bind.stated_reading`), then the numbered WORDS list."""
+    reading (`bind.stated_reading`) and the values `bindings` restrict it to
+    (`_restricted_values`), then the numbered WORDS list."""
     stated = stated_reading(shape)
     lines = [
         f"Variable phrase: {variable}",
@@ -87,10 +99,38 @@ def build_stated_words_prompt(variable: str, shape: ShapeDraft, words: Sequence[
             f"    measurementQualifier={stated.qualifier or '(none)'}, "
             f"measurementDenominator={stated.denominator or '(none)'}"
         )
+    if restricted := _restricted_values(shape, bindings):
+        lines.append(f"  restricted to: {restricted}")
     lines.extend(["", WORDS_HEADER])
     lines.extend(f"  {number}: {word}" for number, word in enumerate(words))
     lines.append("")
     return "\n".join(lines)
+
+
+def _restricted_values(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> str:
+    """Each slot a value or set binding of `bindings` binds, as ``Property=Value``, a set's
+    values joined by "or": "Sex=Female; Age=15 to 24 years". A value reads by its code
+    row's label, else by its graph label (`ShapeDraft.value_labels`) less the trailing name
+    of its property (`without_property_suffix`), else by its dcid split into words. A slot
+    reads by its slot key's label. Empty when no binding binds a value."""
+    index = get_index()
+    labels = shape.value_labels or {}
+    slot_labels = {key.property_dcid: key.label for key in shape.slot_keys}
+
+    def value_label(prop: str, dcid: str) -> str:
+        if (row := index.code_by_dcid(dcid)) is not None:
+            return row.label
+        return without_property_suffix(_humanize_ref(dcid, labels.get(dcid)), labels.get(prop))
+
+    restricted = [
+        f"{_humanize_ref(prop, slot_labels.get(prop))}="
+        + " or ".join(value_label(prop, dcid) for dcid in binding.value_dcids)
+        for binding in bindings
+        if binding.kind in ("value", "set")
+        and (prop := binding.property_dcid) is not None
+        and binding.value_dcids
+    ]
+    return "; ".join(restricted)
 
 
 def word_ratings(output: StatedWordsOutput, words: Sequence[str]) -> dict[str, float]:
@@ -108,16 +148,21 @@ def word_ratings(output: StatedWordsOutput, words: Sequence[str]) -> dict[str, f
 
 
 async def read_stated_words(
-    variable: str, shape: ShapeDraft, words: Sequence[str], *, llm: SupportsLLM
+    variable: str,
+    shape: ShapeDraft,
+    words: Sequence[str],
+    *,
+    bindings: Sequence[SlotBindingDraft],
+    llm: SupportsLLM,
 ) -> tuple[dict[str, float], dict | None]:
-    """Rate whether `shape`'s series states each of `words` (`word_ratings`), and the call's
-    usage. The call runs with minimal thinking. A call that fails or whose output fails
+    """Rate whether `shape`'s series, restricted to the values `bindings` bind, states each
+    of `words` (`word_ratings`), and the call's usage. The call runs with minimal thinking. A call that fails or whose output fails
     validation raises `LLMInfraError`, which the caller reads as no rating. The prompt
     holds only the variable phrase, the shape's graph-sourced reading and the phrase's own
     words."""
     output, usage = await generate_structured_async(
         for_stage(llm, "stated_words"),
-        prompt=build_stated_words_prompt(variable, shape, words),
+        prompt=build_stated_words_prompt(variable, shape, words, bindings=bindings),
         system=STATED_WORDS_SYSTEM_PROMPT,
         schema=StatedWordsOutput,
     )

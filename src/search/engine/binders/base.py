@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from search.engine.bind import CandidateMenu, _UniversalBindOutput
+    from search.engine.bind import CandidateMenu, SlotBindingDraft, _UniversalBindOutput
     from search.engine.binders.house_policy import PolicyChoice, PolicyName, PolicyPool
     from search.engine.clients.llm import SupportsLLM
     from search.engine.frame import Frame
@@ -147,13 +147,14 @@ class StatedWordsRequest:
     elected shape over the final bindings (`phase_rank_bind._unrated_words`): the variable
     phrase, the elected shape and its index in the bind menu (None for a refused reading
     standing in for a declined menu), the casefolded words, each among the shape's
-    `BindRequest.nominated_words`, and the bind call's result. `part` and `pool` join a
-    binder's log lines to the part's, as on `QuantityRequest`."""
+    `BindRequest.nominated_words`, the final bindings, and the bind call's result. `part`
+    and `pool` join a binder's log lines to the part's, as on `QuantityRequest`."""
 
     variable: str
     shape: ShapeDraft
     shape_index: int | None
     words: tuple[str, ...]
+    bindings: tuple[SlotBindingDraft, ...]
     decision: BindResult | None
     part: int | None = None
     pool: Pool | None = None

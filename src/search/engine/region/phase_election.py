@@ -1013,6 +1013,7 @@ async def _rate_unread_words(state: ResolveState) -> None:
             None,
         ),
         words=words,
+        bindings=tuple(state.bindings),
         decision=state.bind_decision,
         part=state.variable_index,
         pool=state.pool,

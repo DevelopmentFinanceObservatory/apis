@@ -439,6 +439,20 @@ _READER_DEBT_BY_CREDITOR = replace(
             [("refugee", "unrated"), ("population", "measure")],
         ),
         ("refugees", _READER_REFUGEES, None, None, [("refugees", "measure")]),
+        # A decimal number is one word, so the binder rates the poverty line "2.15" whole.
+        (
+            "population at $2.15 per day",
+            _READER_PERSONS,
+            None,
+            None,
+            [
+                ("population", "measure"),
+                ("at", "conversational"),
+                ("2.15", "unrated"),
+                ("per", "conversational"),
+                ("day", "unrated"),
+            ],
+        ),
         (
             "number of refugees",
             _READER_REFUGEES,
@@ -608,6 +622,7 @@ _READER_DEBT_BY_CREDITOR = replace(
     ids=[
         "count-of-persons-leaves-refugee",
         "refugee-population",
+        "decimal-number",
         "count-noun",
         "count-shape-number",
         "count-shape-population",
