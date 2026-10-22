@@ -515,8 +515,8 @@ class StatedReading(NamedTuple):
 def stated_reading(shape: ShapeDraft) -> StatedReading:
     """The reading the bind menu states for `shape`: its label, its origin, its family
     (standard, or the roles its series declare), its five-tuple, and its denominator by
-    meaning and the party whose total it is (`menu_denominator`). The prompt prints these fields and `rank_elected`
-    compares them, so two shapes the menu states alike are equal here. The sample member
+    meaning and the party whose total it is (`menu_denominator`). The prompt prints these
+    fields and `rank_elected` compares them, so two shapes the menu states alike are equal here. The sample member
     dcids a block also prints are examples of its members and state no reading."""
     roles = _declared_role_names(shape)
     return StatedReading(
@@ -1177,7 +1177,7 @@ def validate_requested_all_bindings(
     warning suppression uses them.
 
     A claim must be unbound, name a property among `slot_keys` (the elected shape's),
-    reproduce a dropped phrase exactly, and name that slot (`_names_slot`): a phrase the
+    reproduce a dropped phrase exactly, and name that slot (`_names_slot`). A phrase the
     claim does not name a slot with ("total", "bilateral") says nothing about which values
     the slot spans. Demote invalid claims to ``mentioned`` and clear their phrase. Return
     bindings in order plus normalised phrases from valid claims only, so a dropped phrase

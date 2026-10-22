@@ -342,7 +342,7 @@ def test_two_variable_query_broadcasts_dropped_qualifiers_to_every_leg():
 
 def test_a_measure_qualifier_reaches_its_own_leg_and_warns_on_its_part_alone():
     """A word narrowing the second measure reaches that leg's bind alone, and the part that
-    leaves it unapplied warns; the other part and the envelope do not."""
+    leaves it unapplied warns. The other part and the envelope do not."""
     llm = _TwoLegLLM(
         dropped_qualifiers=(),
         measure_qualifiers=(ExtractedMeasureQualifier(variable=1, phrase="grants"),),

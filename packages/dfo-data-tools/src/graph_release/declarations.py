@@ -4,8 +4,8 @@
 code-index declarations `code_index.export` takes as arguments, `ROLE_AXES` and the authored
 rows. `declarations_json` serialises them with the tables `code_index.export` and
 `dc_graph.visible_arcs` read from their own modules (the synonym tables, short names, concept
-groups, measure value texts, slot plain names and `IMPORT_ADDED_CONSTRAINT_PROPERTIES`), so the declarations hash
-moves when any input of the DFO layer does.
+groups, measure value texts, slot plain names and `IMPORT_ADDED_CONSTRAINT_PROPERTIES`), so
+the declarations hash moves when any input of the DFO layer does.
 """
 
 from __future__ import annotations

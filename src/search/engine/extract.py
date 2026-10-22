@@ -771,11 +771,10 @@ def _role_cue_check(
 
     If every cue occurrence overlaps the entity span, accept it only when the span is
     followed by a variable word after whitespace, with no pairing, and is a derived
-    surface or an organisation's name (`entity_resolution.pack.is_organisation_name`): a
-    national adjective (`French`
-    in "French aid") or an organisation (`IMF` in "IMF credit") modifying the measure. A
-    place's own name before the measure states no direction ("Kenya aid" is usually aid to
-    Kenya, "US aid" aid from the US), so it fails.
+    surface or an organisation's name (`entity_resolution.pack.is_organisation_name`). That
+    admits a national adjective (`French` in "French aid") or an organisation (`IMF` in
+    "IMF credit") modifying the measure. A place's own name before the measure states no
+    direction ("Kenya aid" is usually aid to Kenya, "US aid" aid from the US), so it fails.
 
     A span modifying another noun, or none, fails the check. Possessives such as `'s`
     qualify through direct span abutment.

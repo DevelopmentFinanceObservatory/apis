@@ -3,9 +3,10 @@
 ``apply_declared_defaults`` binds an open slot to its declared default code when the
 variable, the raw query or another binding triggers it, ``apply_shape_slot_defaults``
 binds the code index's default for a slot of a population type, and ``apply_broad_readings``
-reads a bound value as the broader value the code index declares for it. The helpers that match a
-value's label as a whole word outside a negation or exclusion serve the bind phase too, and
-so does the test of whether a part states a word a dataset declares (`word_stated`).
+reads a bound value as the broader value the code index declares for it. The helpers that
+match a value's label as a whole word outside a negation or exclusion serve the bind phase
+too, and so does the test of whether a part states a word a dataset declares
+(`word_stated`).
 """
 
 from __future__ import annotations
@@ -351,7 +352,8 @@ def apply_broad_readings(
     ``BroadReading.unless_bound`` the query mentions holds ``BroadReading.held_with``, the
     value every series of the narrow value holds, and when the slot's taxonomy holds the
     broader value. Another value on ``unless_bound`` ("publicly guaranteed government debt")
-    names no narrow series, so the reading fires. A set that collapses to one value becomes a ``value`` binding.
+    names no narrow series, so the reading fires. A set that collapses to one value becomes a
+    ``value`` binding.
 
     Returns the repaired bindings and the readings that fired, in declaration order.
     """

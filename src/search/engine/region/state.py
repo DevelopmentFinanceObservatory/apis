@@ -463,8 +463,8 @@ type RequirementOrigin = Literal[
 ]
 
 # How an answer is judged on a requirement: by its codes (`CodeRule`), by the measure value
-# its words name (`MeasureRule`), by the values its words name (`ValueRule`), as unmet on every answer ("unbound", a query record of the
-# elected reading no binding covers), or on none (`None`, a term no one slot clears, which
+# its words name (`MeasureRule`), by the values its words name (`ValueRule`), as unmet on
+# every answer ("unbound", a query record of the elected reading no binding covers), or on none (`None`, a term no one slot clears, which
 # departs unless a refusal names it).
 type RequirementRule = CodeRule | MeasureRule | ValueRule | Literal["unbound"] | None
 

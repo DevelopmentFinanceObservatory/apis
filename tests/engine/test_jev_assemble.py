@@ -1652,7 +1652,7 @@ def test_a_reading_of_another_base_is_no_alternate(
     form: str | None, elected: int, also: list[int] | None
 ):
     """A phrase stating a form elects the shape dividing by its base and offers no other
-    base; one stating none elects the plain measure and offers no ratio."""
+    base. A phrase stating none elects the plain measure and offers no ratio."""
     answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 0.45, 1: 0.55})
 
     output, _conf = _assemble(_request(_PLAIN_AND_DIVIDED), answers, form=form)

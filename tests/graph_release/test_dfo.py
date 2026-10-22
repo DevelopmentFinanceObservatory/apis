@@ -249,7 +249,7 @@ def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() ->
 
 def test_dfo_parts_carry_the_ratio_base_shape_slot_defaults_and_broad_readings() -> None:
     """The code index the release serves reads the declarations back, and a dataset that
-    declares no ratio base writes no key, as a release exported before the field did."""
+    declares no ratio base writes no key."""
     crs, imputed = SLICE_DECLARATIONS.datasets
     declarations = dataclasses.replace(
         SLICE_DECLARATIONS,

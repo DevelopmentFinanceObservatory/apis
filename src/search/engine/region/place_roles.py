@@ -176,8 +176,8 @@ def _undirected_place_axis(
     GNI and as the recipient on DAC2a's share of the recipient's, where Norway holds no
     data, so the menu shows that reading has none (`availability.series_at_places`) and the
     answer states the base the question named. This holds for the elected shape and every
-    alternate alike. Otherwise an alternate takes the axis the elected shape (`state.shape_draft`) assigned the place to,
-    when it declares a role on that axis: an alternate reads the variable another way, not
+    alternate alike. Otherwise an alternate takes the axis the elected shape
+    (`state.shape_draft`) assigned the place to, when it declares a role on that axis: an alternate reads the variable another way, not
     the place, so a debt total's recipient stays the recipient of a by-creditor alternate,
     and a place the elected shape reads on the one direction with data
     (`phase_place_materialise._settle_direction`) keeps that direction on every alternate
@@ -311,11 +311,11 @@ def lacks_query_axis(state: ResolveState, shape: ShapeDraft) -> bool:
     role-bearing shape that declares no role on it (`_declares_axes`), such as a
     provider-only shape for "aid to Kenya" or "top recipients of US aid", or a one-way
     subject-only series whose declared side (`series_declarations.declared_side`) is not
-    among the query's axes, such as climate finance provided for "climate finance to
-    Bangladesh". A ratio whose datasets declare the axis whose party's own total it divides
-    by (`bound_values.ratio_base_axis`) lacks the query's axes when that axis is not among
-    them: DAC2a's ODA as a share of the recipient's GNI for "ODA as a share of GNI from
-    Norway", which asks for Norway's own. It could not place the query's places, or its
+    among the query's axes, such as the series of climate finance provided for "climate
+    finance to Bangladesh". A ratio whose datasets declare the axis whose party's own total
+    it divides by (`bound_values.ratio_base_axis`) lacks the query's axes when that axis is
+    not among them, as DAC2a's ODA as a share of the recipient's GNI does for "ODA as a
+    share of GNI from Norway", which asks for Norway's own. It could not place the query's places, or its
     answer could not run the operation, so admissibility refuses it `role_incompatible`
     (`admissibility.judge_measure_and_roles`). Any other subject-only shape lacks no axis:
     it binds a directed place as its subject."""

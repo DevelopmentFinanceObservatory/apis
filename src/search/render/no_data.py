@@ -739,8 +739,8 @@ def no_data_sentence_plan(
     ``departures`` follow as departure-segment tokens. On the place-availability gate, a
     ``direction_discarded`` departure leads in place of the checked heading and the verdict
     follows it ("You named Bangladesh as a recipient, but this measure has no recipients, so
-    this checked Bangladesh itself. No data was found there."): the heading's "No data for
-    Bangladesh's ..." would read as a gap in that place's data.
+    this checked Bangladesh itself. No data was found there."), since the heading's "No data
+    for Bangladesh's ..." would read as a gap in that place's data.
     """
     discarded = next((d for d in departures if d.code == "direction_discarded"), None)
     if gate == "no_member_has_data_at_place" and flagged_match is not None and discarded:

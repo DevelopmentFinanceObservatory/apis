@@ -584,7 +584,8 @@ class _ExtractionPrep:
 
         The answer applies a narrowing word when the region admitted it as a qualifier
         phrase, or when every Spec it answers with binds a value named by it
-        (`_binds_value_named`): "concessional" on a part that binds IDS Concessional."""
+        (`_binds_value_named`), such as "concessional" on a part that binds IDS
+        Concessional."""
         unapplied = [
             phrase
             for phrase in self.per_variable_measure_qualifiers[i]

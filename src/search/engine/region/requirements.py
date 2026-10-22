@@ -2,8 +2,7 @@
 
 Each term the request names is recorded once in the part's ledger
 (`state.ResolveState.requirements`): a code term the bindings leave unapplied, a measure
-value the elected shape does not carry, a value the
-request names by its graph label, a query record of the elected reading no binding covers,
+value the elected shape does not carry, a value the request names by its graph label, a query record of the elected reading no binding covers,
 a value the bind drafted on a slot the elected reading lacks, a value unbinding drops and a
 value a resubmit posts (`state.Requirement`). Nothing departs when a requirement is
 recorded. Once the final answer is known, `judge` judges each final answer, the one answer,
@@ -231,8 +230,8 @@ def _met_only_by_an_answer(rule: RequirementRule) -> bool:
 
 def _specificity(rule: RequirementRule) -> int:
     """How specifically a requirement of `rule` names its phrase: a code or measure value on
-    a slot, then a query record of the elected reading, then a value named by its graph label, then a term
-    no answer is judged on."""
+    a slot, then a query record of the elected reading, then a value named by its graph
+    label, then a term no answer is judged on."""
     if isinstance(rule, CodeRule | MeasureRule):
         return 3
     if rule == "unbound":

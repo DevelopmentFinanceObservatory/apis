@@ -279,9 +279,9 @@ class Alias(_Model):
 
 class Registry(_Model):
     """Every admitted upstream source and the other names of any source. Duplicate
-    sources, provenances, segments, exclusions, series declarations, refs within an alias and alias names
-    (ignoring case and extra whitespace) are refused, and a UN supersession names a
-    registered agency."""
+    sources, provenances, segments, exclusions, series declarations, refs within an alias and
+    alias names (ignoring case and extra whitespace) are refused, and a UN supersession names
+    a registered agency."""
 
     base: tuple[BaseSource, ...]
     un_system: tuple[UnAgency, ...]

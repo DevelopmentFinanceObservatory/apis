@@ -3,8 +3,8 @@
 Code systems, datasets, party kinds and total groups, measure axes, labels and nouns,
 synonyms, concept groups, slot plain names, shape slot defaults, broad readings, implied
 values, measure classes and variable aliases. The export (`code_index.export`) reads them
-beside the graph. Nothing here reads the graph or imports a
-script, so a build that has no graph client can load them.
+beside the graph. Nothing here reads the graph or imports a script, so a build that has no
+graph client can load them.
 """
 
 from __future__ import annotations

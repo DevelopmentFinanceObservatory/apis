@@ -423,7 +423,7 @@ def test_the_raw_text_door_refuses_a_code_shaped_token_the_index_does_not_hold(
     query, variable, place, code, monkeypatch
 ):
     """A query writing a World Bank code the index does not hold refuses naming it, where
-    the rest of the phrase would otherwise answer without it; a held code still answers."""
+    the rest of the phrase would otherwise answer without it. A held code still answers."""
     answer = _answer(RawTextInput(query=query), monkeypatch, _ExtractLLM(variable, place))
 
     if code is None:

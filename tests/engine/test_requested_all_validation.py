@@ -141,7 +141,7 @@ def test_requested_all_whose_phrase_names_another_slot_or_none_is_demoted(
     assert applied == frozenset()
 
 
-# Slots on properties no code system declares, labelled as the graph labels them; the index
+# Slots on properties no code system declares, labelled as the graph labels them. The index
 # declares each a slot plain name.
 _UNDECLARED_SLOTS = (
     SlotKeyDraft(axis="how", property_dcid="dacTypeOfFinance", label="DAC type of finance"),

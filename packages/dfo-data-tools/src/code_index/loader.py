@@ -68,8 +68,8 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     `measure_classes`, `variable_aliases`, `slot_plain_names` and `stat_type_words`, each
     reading as empty where absent. A measure class or stat-type pattern that does not compile,
     a variable alias or a `no_vocabulary_terms` entry that is not a non-empty lowercase string,
-    or a slot plain name that is not a non-empty string raises `IndexFormatError`. A value that two
-    `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
+    or a slot plain name that is not a non-empty string raises `IndexFormatError`. A value
+    that two `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
     `CyclicParent`. A `source_codes` row the StatVar rows contradict raises `IndexFormatError`
     (`_check_source_codes`), as does a `partly_stated_values` row they contradict
     (`_check_partly_stated_values`), and an `implied_values` row the code or StatVar rows

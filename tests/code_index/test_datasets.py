@@ -849,8 +849,8 @@ def test_loader_reads_whose_base_a_ratio_divides_by_and_an_absent_key_declares_n
 
 
 def test_loader_reads_the_broad_readings_and_an_index_without_the_block_declares_none():
-    """A release exported before broad readings were declared has no `broad_readings` block
-    and reads as declaring none."""
+    """A release exported without broad readings has no `broad_readings` block and reads as
+    declaring none."""
     payload = _fixture()
     assert "broad_readings" not in payload
     assert parse_index(payload).broad_readings == ()

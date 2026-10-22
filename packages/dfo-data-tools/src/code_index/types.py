@@ -404,8 +404,8 @@ class DatasetDeclaration:
 
     `ratio_base_axis` names the flow axis whose party's own total a ratio of the table
     divides by: DAC1 states ODA as a share of the donor's GNI (`origin`), DAC2a as a share
-    of the recipient's GNI (`destination`). `None` declares nothing, the reading of a
-    release exported before the field existed.
+    of the recipient's GNI (`destination`). `None` declares nothing, as in a
+    release exported without the field.
     """
 
     provenance: str
