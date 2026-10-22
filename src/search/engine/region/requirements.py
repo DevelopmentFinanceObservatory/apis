@@ -1,7 +1,8 @@
 """The request's requirements, judged against the part's final answers.
 
 Each term the request names is recorded once in the part's ledger
-(`state.ResolveState.requirements`): a code term the bindings leave unapplied, a value the
+(`state.ResolveState.requirements`): a code term the bindings leave unapplied, a measure
+value the elected shape does not carry, a value the
 request names by its graph label, a query record of the elected reading no binding covers,
 a value the bind drafted on a slot the elected reading lacks, a value unbinding drops and a
 value a resubmit posts (`state.Requirement`). Nothing departs when a requirement is
@@ -32,9 +33,11 @@ from search.engine.departures import (
 from search.engine.qualifier_match import _normalize
 from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_rank_bind import judge_value_requirements
+from search.engine.region.qualifier_readings import answer_reads_measure
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
     CodeRule,
+    MeasureRule,
     Requirement,
     RequirementRule,
     ResolveState,
@@ -86,6 +89,21 @@ class Judgement:
             for phrase, held in by_phrase.items()
         }
 
+    def met_phrases(self) -> frozenset[str]:
+        """The phrases every judged answer meets, empty when no answer was judged."""
+        if not self.outcomes:
+            return frozenset()
+        return frozenset.intersection(
+            *(
+                frozenset(
+                    phrase
+                    for phrase, outcome in self._phrase_outcomes(i).items()
+                    if outcome == "met"
+                )
+                for i in range(len(self.outcomes))
+            )
+        )
+
     def terms(self, answer: int) -> tuple[ResolvedQualifier, ...]:
         """The phrases answer `answer` leaves unmet, in ledger order, each named by the term
         of its most specific requirement the answer leaves unmet."""
@@ -122,18 +140,7 @@ class Judgement:
         With no answer, what the bindings leave unapplied departs: every requirement but a
         query record of the elected reading and a value that refuses, which are unmet only
         against an answer."""
-        settled = {_normalize(term.text) for term in self.refused}
-        if self.outcomes:
-            settled |= set.intersection(
-                *(
-                    {
-                        phrase
-                        for phrase, outcome in self._phrase_outcomes(i).items()
-                        if outcome == "met"
-                    }
-                    for i in range(len(self.outcomes))
-                )
-            )
+        settled = {_normalize(term.text) for term in self.refused} | self.met_phrases()
         needing = {
             requirement.phrase
             for requirement in self.requirements
@@ -223,10 +230,10 @@ def _met_only_by_an_answer(rule: RequirementRule) -> bool:
 
 
 def _specificity(rule: RequirementRule) -> int:
-    """How specifically a requirement of `rule` names its phrase: a code on a slot, then a
-    query record of the elected reading, then a value named by its graph label, then a term
+    """How specifically a requirement of `rule` names its phrase: a code or measure value on
+    a slot, then a query record of the elected reading, then a value named by its graph label, then a term
     no answer is judged on."""
-    if isinstance(rule, CodeRule):
+    if isinstance(rule, CodeRule | MeasureRule):
         return 3
     if rule == "unbound":
         return 2
@@ -243,7 +250,9 @@ def judge(
 
     A `CodeRule` is met when the answer's bindings bind one of its codes or a descendant on
     its property, unmet when the answer's shape holds the property and binds none of them,
-    and outside an answer whose shape lacks it. A `ValueRule` is met or unmet as
+    and outside an answer whose shape lacks it. A `MeasureRule` is met when the answer's
+    shape or a value its bindings bind carries the measure value (`answer_reads_measure`),
+    else judged as its `CodeRule`. A `ValueRule` is met or unmet as
     `phase_rank_bind.judge_value_requirements` decides, and an answer leaving it unmet
     names it by its slot when its shape has one (`_value_term`). A value of a drafted set
     (origin ``set_value``) is met when the answer's bindings or some selected member hold
@@ -278,6 +287,12 @@ def judge(
             rule = requirement.rule
             if isinstance(rule, CodeRule):
                 answer.append(_code_outcome(rule, held, bound))
+            elif isinstance(rule, MeasureRule):
+                answer.append(
+                    "met"
+                    if answer_reads_measure(shape, rule.match, bindings)
+                    else _code_outcome(rule.code, held, bound)
+                )
             elif isinstance(rule, ValueRule) and requirement.origin == "set_value":
                 # A value of a drafted set: met when the answer applies it or leaves the
                 # whole set unmet, which the refusal names; else disclosed, never refused.
@@ -488,7 +503,9 @@ def record_reading(state: ResolveState, records: Sequence[ResolvedQualifier]) ->
     `measure_not_applied` cleared by the slot of the one property its rows name."""
     state.query_qualifiers = list(records)
     requirements = tuple(r for r in state.requirements if r.rule != "unbound")
-    judged = {r.phrase for r in requirements if isinstance(r.rule, CodeRule | ValueRule)}
+    judged = {
+        r.phrase for r in requirements if isinstance(r.rule, CodeRule | MeasureRule | ValueRule)
+    }
     for record in state.query_qualifiers:
         if record.disposition == "bound" or _normalize(record.text) in judged:
             continue
@@ -543,6 +560,16 @@ def meets_stray_values(
     every member of which applies one of them (`bound_values.applies_one_of`), which is the
     alternate guard's rule for a member (`AlternateJudge._stray_refusal`)."""
     return not judge_value_requirements(_strays(requirements), shape, bindings)
+
+
+def met_measure_phrases(judgement: Judgement | None) -> frozenset[str]:
+    """The phrases of the measure values every final answer `judgement` judged carries
+    (`MeasureRule`), which binding repair can bind after election. The part admits them, so
+    no raw-text warning names a measure value its answer applies."""
+    if judgement is None:
+        return frozenset()
+    measures = {r.phrase for r in judgement.requirements if isinstance(r.rule, MeasureRule)}
+    return judgement.met_phrases() & measures
 
 
 def unbinding_phrases(requirements: Iterable[Requirement]) -> frozenset[str]:
