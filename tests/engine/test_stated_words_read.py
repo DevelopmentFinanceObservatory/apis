@@ -59,7 +59,7 @@ _FEMALE = SlotBindingDraft(
         (
             _COMPLETION,
             (_FEMALE, SlotBindingDraft(axis="how", property_dcid="undataAge", kind="unbound")),
-            "  restricted to: Sex=Female\n",
+            "  restricted to, on its breakdowns: Sex=Female\n",
         ),
         (
             _COMPLETION,
@@ -72,7 +72,7 @@ _FEMALE = SlotBindingDraft(
                 ),
                 _FEMALE,
             ),
-            "  restricted to: Age=15 to 19 years or 20 to 24 years; Sex=Female\n",
+            "  restricted to, on its breakdowns: Age=15 to 19 years or 20 to 24 years; Sex=Female\n",
         ),
         (
             _COMPLETION,
@@ -85,7 +85,7 @@ _FEMALE = SlotBindingDraft(
                 ),
                 _FEMALE,
             ),
-            "  restricted to: Sex=Female\n",
+            "  restricted to, on its breakdowns: Sex=Female\n",
         ),
     ],
     ids=["no-binding", "bound-female", "set-and-value", "source-binding"],

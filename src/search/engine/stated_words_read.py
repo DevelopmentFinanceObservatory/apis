@@ -99,8 +99,11 @@ def build_stated_words_prompt(
             f"    measurementQualifier={stated.qualifier or '(none)'}, "
             f"measurementDenominator={stated.denominator or '(none)'}"
         )
+    # The line says where the values sit: a bare "restricted to" reads to the model as all
+    # the series singles out, so a word naming whom the series is defined over reads as
+    # narrower than it.
     if restricted := _restricted_values(shape, bindings):
-        lines.append(f"  restricted to: {restricted}")
+        lines.append(f"  restricted to, on its breakdowns: {restricted}")
     lines.extend(["", WORDS_HEADER])
     lines.extend(f"  {number}: {word}" for number, word in enumerate(words))
     lines.append("")
