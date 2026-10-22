@@ -20196,5 +20196,13 @@
         "stated": true
       }
     ]
+  },
+  "StatedWordsOutput@e3e465c89a54:02dfe91cbc3c02963b33efe262b944aa966329fe": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
   }
 }

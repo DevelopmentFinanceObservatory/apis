@@ -996,7 +996,10 @@ async def _rate_unread_words(state: ResolveState) -> None:
     `ResolveState.stated_word_ratings`, with the read's usage added to the part's. The
     binder is asked once per pass, and only when such a word remains. A read that fails
     (`LLMInfraError`) rates no word, so each counts as stated, and is noted as lost
-    (`note_degraded_read`), so the response cache stores no answer read without it."""
+    (`note_degraded_read`), so the response cache stores no answer read without it. A read
+    that leaves a word unrated is noted the same way, once: Jev leaving its question
+    unanswered or holding none for a shape outside the menu, or Gemini answering no index
+    for the word or answering it both ways."""
     words = _unrated_words(state)
     if not words:
         return
@@ -1026,6 +1029,8 @@ async def _rate_unread_words(state: ResolveState) -> None:
         return
     state.stated_word_ratings = {word: ratings[word] for word in words if word in ratings}
     state.var_usage = _sum_usage(state.var_usage, usage)
+    if len(state.stated_word_ratings) < len(words):
+        note_degraded_read("stated words unrated")
 
 
 def log_would_refuse(state: ResolveState, result: RegionResult) -> None:

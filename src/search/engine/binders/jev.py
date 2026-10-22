@@ -41,7 +41,7 @@ from search.engine.binders.jev_assemble import (
     span_round,
 )
 from search.engine.binders.jev_client import JevError, JevQuestion, JevResponse, ask
-from search.engine.binders.jev_menu import jev_menu, restricting
+from search.engine.binders.jev_menu import jev_menu
 from search.engine.binders.jev_request import (
     bind_request,
     quantity_request,
@@ -59,6 +59,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.facts import read_constraints
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import restricting
 
 if TYPE_CHECKING:
     from search.engine.clients.llm import SupportsLLM
@@ -210,7 +211,7 @@ class JevBinder:
         """Each word of `request` the bind's answers rate on the elected shape
         (`stated_words`), with the words rated below `SearchSettings.stated_word_bar` rated
         again in one request (`jev_request.restated_request`) when the final bindings
-        restrict the shape to a value (`jev_menu.restricting`), and the request, None when
+        restrict the shape to a value (`stated_words_read.restricting`), and the request, None when
         none was sent.
 
         The bind asked before any value was bound, so it quoted the shape as parts

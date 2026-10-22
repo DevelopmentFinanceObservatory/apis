@@ -26,7 +26,7 @@ from search.engine.bind import (
 from search.engine.binders.base import BindRequest
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.shape import ShapeDraft
-from search.engine.stated_words_read import bound_value_label
+from search.engine.stated_words_read import bound_value_label, restricting
 from search.models import Axis
 
 type Prop = tuple[Axis, str]
@@ -164,20 +164,6 @@ def describe(
     if slots:
         parts.append("parts selectable by " + ", ".join(dict.fromkeys(slots)))
     return f"'{reading.label}' ({'; '.join(parts)})"
-
-
-def restricting(bindings: Sequence[SlotBindingDraft]) -> dict[str, tuple[str, ...]]:
-    """The values each value or set binding of `bindings` restricts its slot to, by property
-    dcid. A source binding restricts nothing, since it picks where the series comes from
-    and not what it counts, and neither does a binding with no property or no value."""
-    return {
-        prop: tuple(binding.value_dcids)
-        for binding in bindings
-        if binding.kind in ("value", "set")
-        and binding.axis != "source"
-        and (prop := binding.property_dcid) is not None
-        and binding.value_dcids
-    }
 
 
 def measure_values(shapes: Sequence[ShapeDraft]) -> list[MeasureValueRow]:

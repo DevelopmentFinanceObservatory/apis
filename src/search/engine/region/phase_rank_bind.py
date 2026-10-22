@@ -60,7 +60,6 @@ from search.engine.function_words import (
     DATA_WORDS,
     FLOW_VERBS,
     FUNCTION_WORDS,
-    INDEX_WORDS,
     RATIO_WORDS,
 )
 from search.engine.interpretation import Interpretation, InterpretationSet
@@ -3099,18 +3098,15 @@ def _free_readers(
 
 def _measure_reader(words: AbstractSet[str]) -> Callable[[str], bool]:
     """Whether a casefolded word is one of the folded name words `words`
-    (`_member_measure_words`), folded as the code index folds words (`fold_word`), a
-    hyphenated word each of whose parts is, or an index noun (`INDEX_WORDS`) when `words`
-    hold one. Only equal folded words read each other, so "literacy" stays unread on a
-    series named "Population: Literate" and the binder rates it (`_coverage_reading`):
+    (`_member_measure_words`), folded as the code index folds words (`fold_word`), or a
+    hyphenated word each of whose parts is. Only equal folded words read each other, so
+    "literacy" stays unread on a series named "Population: Literate", and "coefficient" on
+    one named "Gini index", and the binder rates each (`_coverage_reading`):
     a reader that reads too much hides a restriction the series drops, and one that reads
     too little costs a rating."""
 
     def measure(word: str) -> bool:
-        folded = fold_word(word)
-        if folded in INDEX_WORDS and words & INDEX_WORDS:
-            return True
-        return folded in words or (
+        return fold_word(word) in words or (
             "-" in word and all(fold_word(part) in words for part in word.split("-"))
         )
 

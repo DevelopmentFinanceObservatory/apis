@@ -108,20 +108,30 @@ def build_stated_words_prompt(
 
 
 def _restricted_values(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> str:
-    """Each slot a value or set binding of `bindings` binds, as ``Property=Value``, a set's
-    values joined by "or": "Sex=Female; Age=15 to 24 years". A value reads by
-    `bound_value_label`, and a slot by its slot key's label. Empty when no binding binds a
-    value."""
+    """Each slot `bindings` restrict to values (`restricting`), as ``Property=Value``, a
+    set's values joined by "or": "Sex=Female; Age=15 to 24 years". A value reads by
+    `bound_value_label`, and a slot by its slot key's label. Empty when no binding
+    restricts a slot."""
     slot_labels = {key.property_dcid: key.label for key in shape.slot_keys}
-    restricted = [
+    return "; ".join(
         f"{_humanize_ref(prop, slot_labels.get(prop))}="
-        + " or ".join(bound_value_label(shape, prop, dcid) for dcid in binding.value_dcids)
+        + " or ".join(bound_value_label(shape, prop, dcid) for dcid in values)
+        for prop, values in restricting(bindings).items()
+    )
+
+
+def restricting(bindings: Sequence[SlotBindingDraft]) -> dict[str, tuple[str, ...]]:
+    """The values each value or set binding of `bindings` restricts its slot to, by property
+    dcid. A source binding restricts nothing, since it picks where the series comes from
+    and not what it counts, and neither does a binding with no property or no value."""
+    return {
+        prop: tuple(binding.value_dcids)
         for binding in bindings
         if binding.kind in ("value", "set")
+        and binding.axis != "source"
         and (prop := binding.property_dcid) is not None
         and binding.value_dcids
-    ]
-    return "; ".join(restricted)
+    }
 
 
 def bound_value_label(shape: ShapeDraft, prop: str, dcid: str) -> str:

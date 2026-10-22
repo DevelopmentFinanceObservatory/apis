@@ -600,7 +600,7 @@ _READER_DEBT_BY_CREDITOR = replace(
             None,
             [
                 ("Gini", "measure"),
-                ("coefficient", "measure"),
+                ("coefficient", "unrated"),
             ],
         ),
         (
@@ -637,7 +637,7 @@ _READER_DEBT_BY_CREDITOR = replace(
         "role-noun-on-a-subject-only-shape",
         "word-forms",
         "word-forms-running-on",
-        "index-nouns",
+        "coefficient-on-an-index",
         "index-noun-off-the-name",
     ],
 )

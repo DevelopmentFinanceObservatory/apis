@@ -9,7 +9,7 @@ from dataclasses import replace
 import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import GeminiBinder, StatedWordsRequest
+from search.engine.binders import BindResult, GeminiBinder, JevBinder, StatedWordsRequest
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import LLMInfraError
 from search.engine.shape import SlotKeyDraft
@@ -20,6 +20,7 @@ from search.engine.stated_words_read import (
     build_stated_words_prompt,
     word_ratings,
 )
+from tests.engine._binders import FakeAsk
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine.test_bind import _shape
 from tests.engine.test_qualifier_guard import _READER_PERSONS, _run, _state
@@ -73,8 +74,21 @@ _FEMALE = SlotBindingDraft(
             ),
             "  restricted to: Age=15 to 19 years or 20 to 24 years; Sex=Female\n",
         ),
+        (
+            _COMPLETION,
+            (
+                SlotBindingDraft(
+                    axis="source",
+                    property_dcid="provenance",
+                    kind="value",
+                    value_dcids=["dc/base/UNESCO"],
+                ),
+                _FEMALE,
+            ),
+            "  restricted to: Sex=Female\n",
+        ),
     ],
-    ids=["no-binding", "bound-female", "set-and-value"],
+    ids=["no-binding", "bound-female", "set-and-value", "source-binding"],
 )
 def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, restricted):
     """`StatedWord.index` indexes the WORDS list, in the order the request holds them. The
@@ -184,7 +198,7 @@ def test_gemini_rates_the_words_in_one_call_of_its_own():
     [
         ([(0, False)], None, ["refugee"], {"refugee": 0.0}, _USAGE, []),
         ([(0, True)], None, [], {"refugee": 1.0}, _USAGE, []),
-        ([], None, [], {}, _USAGE, []),
+        ([], None, [], {}, _USAGE, ["stated words unrated"]),
         ([], LLMInfraError("read failed"), [], {}, None, ["stated words read"]),
     ],
     ids=["not-stated", "stated", "unanswered", "failed-read"],
@@ -194,8 +208,9 @@ def test_binding_repair_reads_gemini_s_rating(
 ):
     """Binding repair asks Gemini once for "refugee" on the count of all persons and keeps
     its rating: not stated is a record, stated or unanswered is read. The read's usage
-    joins the part's. A failed read raises out of the binder, so it rates nothing and
-    `phase_election._rate_unread_words` notes it as lost once."""
+    joins the part's. A failed read raises out of the binder, so it rates nothing, and
+    `phase_election._rate_unread_words` notes it as lost once, as it notes a read that
+    leaves the word unrated."""
     search_settings(qualifier_coverage="refuse")
     state = _state(
         variable="refugee population", shape_draft=_READER_PERSONS, bindings=[], unplaced=[]
@@ -211,6 +226,41 @@ def test_binding_repair_reads_gemini_s_rating(
     assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
     assert state.stated_word_ratings == ratings
     assert state.var_usage == usage
+    assert lost.reads == degraded
+
+
+@pytest.mark.parametrize(
+    ("rated", "menu", "records", "degraded"),
+    [
+        ({"refugee": 0.1}, [_READER_PERSONS], ["refugee"], []),
+        ({"refugee": 0.9}, [_READER_PERSONS], [], []),
+        ({}, [_READER_PERSONS], [], ["stated words unrated"]),
+        ({"refugee": 0.1}, [], [], ["stated words unrated"]),
+    ],
+    ids=["not-stated", "stated", "unanswered", "off-menu"],
+)
+def test_binding_repair_reads_jev_s_rating(search_settings, rated, menu, records, degraded):
+    """Binding repair reads Jev's bind rating of "refugee" on the count of all persons,
+    sending no request while no binding restricts the shape. A bind that left the word's
+    question unanswered, or an elected shape outside the menu, leaves it unrated: it reads
+    as stated and the read is noted as lost once."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="refugee population", shape_draft=_READER_PERSONS, bindings=[], unplaced=[]
+    )
+    state.capped_shapes = menu
+    state.binder = JevBinder(ask=(ask := FakeAsk({})))
+    state.bind_decision = BindResult(
+        output=_UniversalBindOutput(chosen_shape_index=0),
+        binder="jev",
+        stated_words={(0, word): rating for word, rating in rated.items()},
+    )
+    with recording_degraded_reads() as lost:
+        qualifiers = _run(state)
+
+    assert ask.requests == []
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
+    assert state.stated_word_ratings == (rated if menu else {})
     assert lost.reads == degraded
 
 

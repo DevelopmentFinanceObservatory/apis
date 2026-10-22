@@ -4,8 +4,7 @@ Extraction reads them when it restores a variable's word order and when it judge
 dropped qualifier, and the qualifier coverage rule (`phase_rank_bind._coverage_records`)
 reads `FUNCTION_WORDS`, `AMOUNT_WORDS`, `DATA_WORDS` and `FLOW_VERBS` as words no
 reader needs to cover, `RATIO_WORDS` on a shape that divides by a denominator,
-`COUNT_WORDS` on a shape that measures a count, and `INDEX_WORDS` on a shape whose name
-holds one of them.
+and `COUNT_WORDS` on a shape that measures a count.
 """
 
 from __future__ import annotations
@@ -81,7 +80,3 @@ RATIO_WORDS = frozenset({"share", "ratio", "percent", "percentage", "proportion"
 # Nouns that say a measure counts what it names: "refugee population" is the number of
 # refugees, "number of refugees" their population. A shape measuring a count states them.
 COUNT_WORDS = frozenset({"number", "numbers", "population", "populations", "people", "persons"})
-
-# Nouns naming a computed score, each standing for the other: the Gini coefficient is the
-# Gini index. A shape whose name holds one reads the other.
-INDEX_WORDS = frozenset({"index", "coefficient"})
