@@ -212,7 +212,7 @@ def apply_declared_defaults(
 ) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
     """Apply declared defaults to open slots when query evidence triggers them.
 
-    The packaged code index defines each default and its ``when_bound_under`` scopes or
+    The release's code index defines each default and its ``when_bound_under`` scopes or
     ``when_named`` words. ``query_text`` is the raw query only for a single-variable
     extraction, when trigger words can be attributed to this variable. Both it and the
     extracted ``variable`` can trigger a default.

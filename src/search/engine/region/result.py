@@ -257,9 +257,10 @@ class RegionResult:
     # `[]` means the task ran without an observationAbout place. `None` marks
     # an unscheduled task.
     place_options_task: asyncio.Task[list[PlaceOptionsEvent]] | None = None
-    # Relaunch under a merged spec id. The eligibility gate preserves the
-    # identity. The closure captures the same graph and materialise clients.
-    place_options_relaunch: Callable[[str], asyncio.Task[list[PlaceOptionsEvent]]] | None = None
+    # Launch for the region's current Spec, a merged one included; the task reads that
+    # Spec's identity (`place_options.place_options_task`). The closure captures the same
+    # graph and materialise clients.
+    place_options_relaunch: Callable[[Spec], asyncio.Task[list[PlaceOptionsEvent]]] | None = None
     # What a resubmitted definite part's three relaunch closures read, apart from the
     # request's clients (`promote_relaunch.bind_relaunches`). The response cache's memo
     # stores the region without closures and binds them again for the request it serves.

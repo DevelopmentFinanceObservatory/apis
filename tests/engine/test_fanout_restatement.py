@@ -18,15 +18,13 @@ from search.models import (
     ResolveRequest,
     ResubmitPlaceholderEntry,
 )
-from tests.engine._harness import PINNED_DATE, make_request, offline_resolve
+from tests.engine._harness import make_request, offline_resolve
 from tests.fixtures import FakeLLM, _load_json
 from tests.fixtures.keys import fixture_key
 
-_EXTRACT_SYS = _EXTRACTION_SYSTEM_PROMPT.replace("[[TODAY]]", PINNED_DATE.isoformat())
-
 
 def _extract_key(query: str) -> str:
-    return fixture_key(Extraction, _EXTRACT_SYS, query)
+    return fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
 
 
 def _llm_with_extraction(query: str, *, variables: list[str], entities: list[dict]) -> FakeLLM:

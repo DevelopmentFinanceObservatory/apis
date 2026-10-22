@@ -20,6 +20,12 @@ at the first that refuses it, so a shape refused on a pinned part passed every o
    part naming a source binds first, and its code check runs once the bindings are final
    (`phase_rank_bind._unavailable_qualifiers`), so the refusal flags the elected identity.
 
+The steps around the rules run in a fixed order too: measure and roles; the quantity read;
+the form rule; pinned codes; the refusals written to the part's interpretations;
+open-axis preference, family election and collapse; seating; the availability read; bind.
+The form rule runs before seating, so a shape it refuses holds no seat, and a menu it
+empties ends in a refusal because the refusals are already recorded.
+
 Dataset candidacy under the part's source scope runs before these, and the score floor
 bounds the menu before them; five-tuple family election, the axes rules and the
 measure-family collapse narrow the admissible shapes afterwards

@@ -1,6 +1,6 @@
 """Resolve a part's publisher series code (`ParsedPart.source_code`) to the StatVars it names.
 
-The packaged code index records each series code the StatVars it lists carry on their
+The release's code index records each series code the StatVars it lists carry on their
 `sourceIndicatorCode` arcs, with the StatVars that carry it under each provenance holding it
 (`CodeIndex.source_code_members`). A code's members replace recall's embedding resolve
 (`interpret.recall`), and shape derivation, the twin election and bind run on them as on a
@@ -147,7 +147,7 @@ def stands_for_code(
     The Spec reads `provenance` alone, where a part naming it reads only it. `provenance`
     gives none of the code's StatVars another code, as `compile_part_code` requires. Each of
     `served` is one of the code's, as recall from the code's StatVars leaves them. The
-    StatVars the Datasets mint elects for `identity` are known and all the code's
+    StatVars a Datasets mint of `identity` serves are known and all the code's
     (`bound_values.elects_within`), as the part's pipeline requires
     (`region.pipeline._within_source_code`). The election runs last, and for one code of a
     Spec at most, since two unshared codes hold no StatVar in common."""

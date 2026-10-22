@@ -4,16 +4,11 @@ The capability document answers `public, max-age=300` with a strong `ETag` over 
 body and honours `If-None-Match` with 304. It carries the data builds this process
 serves, so its body and `ETag` move with them while `capability_version` stays put.
 Before the surface lifespan publishes its dependencies, or while the graph generation is
-unknown or the coverage index has failed to load, the document serves those builds null and
-answers `no-store` (`gapped_public_json`). The first two gaps clear on a later read; a
-coverage index that failed to load stays null until the process restarts, since the surface
-loads it once at startup. A deployment with no coverage index configured serves
-`coverage_index: null` as a permanent state.
+unknown, the document serves those builds null and answers `no-store` (`gapped_public_json`).
+Both gaps clear on a later read.
 """
 
 from __future__ import annotations
-
-import functools
 
 from fastapi import APIRouter, Request, Response
 
@@ -37,16 +32,10 @@ async def healthz() -> HealthResponse:
     return health_response(capability_version=GRAPH_CAPABILITY_VERSION)
 
 
-@functools.cache
-def _code_index_build() -> str:
-    """The packaged code index export's content hash, fixed for the process."""
-    return get_index().stamp.content_hash
-
-
 def _data_builds(request: Request) -> tuple[DataBuilds, bool]:
     """Read each build without I/O from the request's catalogue and the surface's deps, and
-    say whether a null among them is transient: the deps are unpublished, the graph generation
-    is unknown, or the coverage index failed to load."""
+    say whether a null among them is transient: the deps are unpublished or the graph
+    generation is unknown."""
     try:
         deps = GRAPH_DEPS_SLOT(request)
     except GraphDepsNotSet:
@@ -54,14 +43,10 @@ def _data_builds(request: Request) -> tuple[DataBuilds, bool]:
     builds = DataBuilds(
         graph_generation=deps.generation.stamp().token if deps is not None else None,
         origin_catalogue=current_catalogue().build_id,
-        coverage_index=(
-            deps.coverage.manifest.build_id
-            if deps is not None and deps.coverage is not None
-            else None
-        ),
-        code_index=_code_index_build(),
+        coverage_index=deps.coverage.manifest.build_id if deps is not None else None,
+        code_index=get_index().stamp.content_hash,
     )
-    transient = deps is None or builds.graph_generation is None or deps.coverage_load_failed
+    transient = deps is None or builds.graph_generation is None
     return builds, transient
 
 
@@ -79,8 +64,6 @@ async def capabilities(request: Request) -> Response:
 
 
 def build_health_door() -> DoorContribution:
-    # Load the code index now, so the first capabilities request does not parse it.
-    _code_index_build()
     router = APIRouter()
     router.add_api_route(
         "/api/graph/healthz", healthz, methods=["GET"], response_model=HealthResponse

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import dataclasses
 import time
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
+from unittest import mock
 
 import pytest
 
-from code_index import default_index_path, load_index
 from code_index.query import CodeIndex
 from code_index.types import DatasetDeclaration, IndexStamp, StatVarRow
 from datasets_api.adapter import (
@@ -26,6 +28,7 @@ from datasets_api.codes_materialise import (
 from datasets_api.kinds.spec_id import _resolve_members
 from datasets_api.mint_models import Scope
 from datasets_api.shape import StatVarShape
+from graph_release.dfo import ReleaseGraphReader
 from materialise.errors import FacetNotAvailableError
 from materialise.facets import ElectedDataset
 from materialise.graph import Facet
@@ -43,6 +46,7 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
     imputed_education_aid_identity,
 )
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from ._graph_doubles import FakeMintGraphReader
 from ._member_bounds import mint_bounds
@@ -51,6 +55,32 @@ _DAC1_PROVENANCE = "provenance/OECDDAC1"
 _IDS_PROVENANCE = "provenance/WorldBankInternationalDebtStatistics"
 
 _SPEC_ID = "spec_test"
+
+_RELEASE_READS = ("node_subjects", "node_arcs_many", "node_arcs_batch")
+"""The `ReleaseGraphReader` reads a member walk of a family the bound release holds makes in
+place of the caller's graph (`statvar_members.cache._served_walk`)."""
+
+
+@contextmanager
+def _walk_reads(graph: FakeMintGraphReader) -> Iterator[Callable[[], int]]:
+    """Counts, for the body of the `with` block, every read a member walk can make: `graph`'s
+    and the bound release's graph reader's. Yields the function that returns the total."""
+    release_reads: list[str] = []
+
+    def counted(name: str) -> Callable[..., object]:
+        read = getattr(ReleaseGraphReader, name)
+
+        def _read(self: ReleaseGraphReader, *args, **kwargs) -> object:
+            release_reads.append(name)
+            return read(self, *args, **kwargs)
+
+        return _read
+
+    with ExitStack() as stack:
+        for name in _RELEASE_READS:
+            stack.enter_context(mock.patch.object(ReleaseGraphReader, name, counted(name)))
+        yield lambda: sum(graph.calls.values()) + len(release_reads)
+
 
 _STAMP = IndexStamp(
     graph_endpoint="test",
@@ -113,18 +143,19 @@ def test_a_count_past_the_old_member_cap_resolves_without_refusing():
     code_index = _over_cap_index(_OVER_OLD_CAP_COUNT)
     graph = FakeMintGraphReader(arcs={})
 
-    shapes = resolve_definition_members(
-        _over_cap_identity(),
-        spec_id=_SPEC_ID,
-        graph=graph,
-        enumerator=MemberEnumerator(),
-        code_index=code_index,
-        bounds=mint_bounds(),
-    ).shapes
+    with _walk_reads(graph) as reads:
+        shapes = resolve_definition_members(
+            _over_cap_identity(),
+            spec_id=_SPEC_ID,
+            graph=graph,
+            enumerator=MemberEnumerator(),
+            code_index=code_index,
+            bounds=mint_bounds(),
+        ).shapes
 
     assert len(shapes) == _OVER_OLD_CAP_COUNT
-    # A zero call count proves the index path skipped graph enumeration.
-    assert sum(graph.calls.values()) == 0
+    # A zero read count proves the index path skipped graph enumeration.
+    assert reads() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -229,15 +260,16 @@ def test_under_cap_indexed_spec_derives_members_equal_to_the_walk():
     assert sum(walked_graph.calls.values()) > 0
 
     indexed_graph = FakeMintGraphReader(arcs={})
-    indexed = resolve_definition_members(
-        identity,
-        spec_id=_SPEC_ID,
-        graph=indexed_graph,
-        enumerator=MemberEnumerator(),
-        code_index=_person_family_index(),
-        bounds=mint_bounds(),
-    )
-    assert sum(indexed_graph.calls.values()) == 0
+    with _walk_reads(indexed_graph) as reads:
+        indexed = resolve_definition_members(
+            identity,
+            spec_id=_SPEC_ID,
+            graph=indexed_graph,
+            enumerator=MemberEnumerator(),
+            code_index=_person_family_index(),
+            bounds=mint_bounds(),
+        )
+    assert reads() == 0
 
     # An indexed shape carries the dataset elected for its family, which a walk does not read.
     assert frozenset(
@@ -296,7 +328,7 @@ def test_indexed_spec_refuses_a_row_naming_observation_about_in_observation_prop
     code_index = _degenerate_observation_properties_index()
     graph = FakeMintGraphReader(arcs={})
 
-    with pytest.raises(MemberNotResolvable) as excinfo:
+    with _walk_reads(graph) as reads, pytest.raises(MemberNotResolvable) as excinfo:
         resolve_definition_members(
             _degenerate_identity(),
             spec_id=_SPEC_ID,
@@ -307,7 +339,7 @@ def test_indexed_spec_refuses_a_row_naming_observation_about_in_observation_prop
         )
 
     assert excinfo.value.members == (_SPEC_ID,)
-    assert sum(graph.calls.values()) == 0
+    assert reads() == 0
 
 
 def test_non_indexed_five_tuple_still_walks():
@@ -348,16 +380,17 @@ def test_a_listed_family_resolves_the_walks_members_without_reading_the_graph():
     )
     graph = FakeMintGraphReader(arcs={})
 
-    listed = resolve_definition_members(
-        identity,
-        spec_id=_SPEC_ID,
-        graph=graph,
-        enumerator=MemberEnumerator(),
-        code_index=listed_index,
-        bounds=mint_bounds(),
-    )
+    with _walk_reads(graph) as reads:
+        listed = resolve_definition_members(
+            identity,
+            spec_id=_SPEC_ID,
+            graph=graph,
+            enumerator=MemberEnumerator(),
+            code_index=listed_index,
+            bounds=mint_bounds(),
+        )
 
-    assert sum(graph.calls.values()) == 0
+    assert reads() == 0
     assert listed == walked
 
 
@@ -388,22 +421,23 @@ def test_the_mint_style_resolve_then_adapt_chain_sets_index_sourced_on_the_reque
 
 
 # ---------------------------------------------------------------------------
-# The education-aid identity against the packaged index: a family is one
+# The education-aid identity against the fixture index: a family is one
 # dataset's members.
 # ---------------------------------------------------------------------------
 
 
 def _education_aid_members(identity: dict, code_index: CodeIndex) -> ResolvedMembers:
     graph = FakeMintGraphReader(arcs={})
-    resolved = resolve_definition_members(
-        identity,
-        spec_id=EDUCATION_AID_SPEC_ID,
-        graph=graph,
-        enumerator=MemberEnumerator(),
-        code_index=code_index,
-        bounds=mint_bounds(),
-    )
-    assert sum(graph.calls.values()) == 0
+    with _walk_reads(graph) as reads:
+        resolved = resolve_definition_members(
+            identity,
+            spec_id=EDUCATION_AID_SPEC_ID,
+            graph=graph,
+            enumerator=MemberEnumerator(),
+            code_index=code_index,
+            bounds=mint_bounds(),
+        )
+    assert reads() == 0
     return resolved
 
 
@@ -413,7 +447,7 @@ def _provenances(shapes: tuple[StatVarShape, ...], code_index: CodeIndex) -> set
 
 
 def test_the_plain_aid_identity_resolves_the_crs_members():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     resolved = _education_aid_members(education_aid_identity(), code_index)
 
@@ -424,7 +458,7 @@ def test_the_plain_aid_identity_resolves_the_crs_members():
 
 
 def test_the_plain_aid_identity_keeps_its_members_without_a_modality():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     shapes = _education_aid_members(education_aid_identity(), code_index).shapes
 
@@ -433,7 +467,7 @@ def test_the_plain_aid_identity_keeps_its_members_without_a_modality():
 
 
 def test_the_imputed_identity_resolves_the_imputed_members():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     shapes = _education_aid_members(imputed_education_aid_identity(), code_index).shapes
 
@@ -443,7 +477,7 @@ def test_the_imputed_identity_resolves_the_imputed_members():
 
 
 def test_naming_the_imputed_provenance_on_its_own_five_tuple_changes_no_member():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     named = _education_aid_members(
         imputed_education_aid_identity(source=IMPUTED_PROVENANCE), code_index
@@ -457,7 +491,7 @@ def test_naming_the_imputed_provenance_on_its_own_five_tuple_changes_no_member()
 def test_a_named_identity_resolves_with_an_unbound_slot_its_dataset_does_not_carry():
     """Search states a property the graph members carry and the index rows do not as an
     unbound slot. The identity naming its dataset mints the dataset's members with it."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
     identity["slots"].append({"property": "crsCooperationModality", "binding": _UNBOUND})
 
@@ -470,7 +504,7 @@ def test_a_named_identity_resolves_with_an_unbound_slot_its_dataset_does_not_car
 def test_a_stored_identity_binding_the_imputed_aid_type_on_amount_refuses():
     """An identity that binds the imputed aid type on the `amount` five-tuple enumerates no
     member and refuses. The mint does not translate it to `attributedAmount`."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     with pytest.raises(SpecNotExportable):
         _education_aid_members(education_aid_identity(aid_type=IMPUTED_MULTILATERAL), code_index)
@@ -531,33 +565,34 @@ def test_an_identity_that_leaves_a_pinned_slot_unbound_resolves_the_bound_identi
     """Every imputed row holds one aid type, so the election implies it. The identity that
     leaves it unbound resolves, from the index and without a graph read, the members of the
     identity that binds it."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = _aid_type_unbound(imputed_education_aid_identity())
     graph = _imputed_member_graph(code_index)
 
-    unbound = resolve_definition_members(
-        identity,
-        spec_id=_SPEC_ID,
-        graph=graph,
-        enumerator=MemberEnumerator(),
-        code_index=code_index,
-        bounds=mint_bounds(),
-    )
+    with _walk_reads(graph) as reads:
+        unbound = resolve_definition_members(
+            identity,
+            spec_id=_SPEC_ID,
+            graph=graph,
+            enumerator=MemberEnumerator(),
+            code_index=code_index,
+            bounds=mint_bounds(),
+        )
 
-    assert sum(graph.calls.values()) == 0
+    assert reads() == 0
     assert unbound == _education_aid_members(imputed_education_aid_identity(), code_index)
 
 
 def test_an_identity_that_omits_a_pinned_slot_refuses():
-    """The identity that omits the aid type covers no index row, so the graph walks, and
-    every imputed member asserts the aid type the identity does not key, so the walk
-    confirms none."""
-    code_index = load_index(default_index_path())
+    """The identity that omits the aid type covers no index row, so the bound release's graph
+    reader walks the family it holds, and every imputed member asserts the aid type the
+    identity does not key, so the walk confirms none."""
+    code_index = load_index(INDEX_FIXTURE)
     identity = imputed_education_aid_identity()
     identity["slots"] = [slot for slot in identity["slots"] if slot["property"] != AID_TYPE]
     graph = _imputed_member_graph(code_index)
 
-    with pytest.raises(SpecNotExportable):
+    with _walk_reads(graph) as reads, pytest.raises(SpecNotExportable):
         resolve_definition_members(
             identity,
             spec_id=_SPEC_ID,
@@ -567,7 +602,7 @@ def test_an_identity_that_omits_a_pinned_slot_refuses():
             bounds=mint_bounds(),
         )
 
-    assert graph.calls["node_subjects"] > 0
+    assert reads() > 0
 
 
 @pytest.mark.parametrize(
@@ -615,7 +650,7 @@ def test_a_provenance_that_publishes_no_member_refuses_facet_not_available(
     refusal reads the five-tuple alone, so it holds when no row matches the slots either.
     DAC1 publishes the `amount` five-tuple under slots of its own, so it refuses under the
     CRS slots, whichever of them the identity binds."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     with pytest.raises(FacetNotAvailableError) as refusal:
         _education_aid_members(identity, code_index)
@@ -626,7 +661,7 @@ def test_a_provenance_that_publishes_no_member_refuses_facet_not_available(
 
 
 def test_a_scope_naming_another_datasets_provenance_refuses():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     graph = FakeMintGraphReader(arcs={})
     resolve = {
         "spec_id": EDUCATION_AID_SPEC_ID,
@@ -695,7 +730,7 @@ def test_a_pin_on_a_listed_provenance_resolves_the_unpinned_members():
     """A provenance the index does not declare as a dataset names no dataset: the pin
     scopes the reads alone, so members resolve as for the identity that pins nothing,
     though declared datasets publish the five-tuple."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     assert _IDS_PROVENANCE not in code_index.datasets
     graph = FakeMintGraphReader(arcs={})
     resolve = {
@@ -706,16 +741,18 @@ def test_a_pin_on_a_listed_provenance_resolves_the_unpinned_members():
         "bounds": mint_bounds(),
     }
 
-    unpinned = resolve_definition_members(_debt_service_identity(), **resolve)
-    pinned = resolve_definition_members(
-        _debt_service_identity(provenance={"state": "value", "ref": _IDS_PROVENANCE}), **resolve
-    )
+    with _walk_reads(graph) as reads:
+        unpinned = resolve_definition_members(_debt_service_identity(), **resolve)
+        pinned = resolve_definition_members(
+            _debt_service_identity(provenance={"state": "value", "ref": _IDS_PROVENANCE}),
+            **resolve,
+        )
 
     assert pinned == unpinned
     assert {shape.stat_var for shape in pinned.shapes} == {
         "dcid:Amount_FinancialFlow_ServicingPayment_Nominal"
     }
-    assert sum(graph.calls.values()) == 0
+    assert reads() == 0
 
 
 def _source_facet(shape: StatVarShape, code_index: CodeIndex) -> Facet:
@@ -749,7 +786,7 @@ def _selected_provenance(
 
 
 def test_group_facet_selection_on_the_plain_family_picks_the_crs_provenance():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
     shapes = _education_aid_members(identity, code_index).shapes
 
@@ -768,7 +805,7 @@ def test_group_facet_selection_on_the_plain_family_picks_the_crs_provenance():
 def test_every_request_of_an_index_family_carries_the_elected_dataset(
     identity: dict, provenance: str
 ):
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     shapes = _education_aid_members(identity, code_index).shapes
 
     requests = [
@@ -784,7 +821,7 @@ def test_a_member_held_by_another_dataset_alone_does_not_refuse_the_plain_family
     """One member, recorded under both datasets, holds observations at the bound entities
     under the imputed dataset alone. The family's provenance is the elected one, read before
     the members' candidates are compared, so that member is unpopulated."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
     shapes = _education_aid_members(identity, code_index).shapes
     requests = [
@@ -816,7 +853,7 @@ def test_a_member_held_by_another_dataset_alone_does_not_refuse_the_plain_family
 
 def test_group_facet_selection_refuses_a_family_spanning_both_datasets():
     """The members the mint resolved before the election: every row of both datasets."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
     spanning = (
         *_education_aid_members(identity, code_index).shapes,
@@ -957,29 +994,30 @@ def test_an_identity_naming_the_line_resolves_from_the_index():
     graph = FakeMintGraphReader(arcs={})
     identity = _person_identity((_LINE, {"state": "value", "ref": "PopulationLine"}))
 
-    shapes = resolve_definition_members(
-        identity,
-        spec_id=_SPEC_ID,
-        graph=graph,
-        enumerator=MemberEnumerator(),
-        code_index=code_index,
-        bounds=mint_bounds(),
-    ).shapes
+    with _walk_reads(graph) as reads:
+        shapes = resolve_definition_members(
+            identity,
+            spec_id=_SPEC_ID,
+            graph=graph,
+            enumerator=MemberEnumerator(),
+            code_index=code_index,
+            bounds=mint_bounds(),
+        ).shapes
 
     assert [shape.stat_var for shape in shapes] == ["dcid:Lines_Population"]
-    assert sum(graph.calls.values()) == 0
+    assert reads() == 0
     request = to_materialisation_request(identity, shape=shapes[0], code_index=code_index)
     assert request.index_sourced is True
 
 
 def test_a_wrong_value_on_covered_slot_keys_refuses_on_the_index_path():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
     purpose = next(slot for slot in identity["slots"] if slot["property"] == "crsPurpose")
     purpose["binding"] = {"state": "value", "ref": "NoSuchPurposeCode"}
     graph = FakeMintGraphReader(arcs={})
 
-    with pytest.raises(SpecNotExportable):
+    with _walk_reads(graph) as reads, pytest.raises(SpecNotExportable):
         resolve_definition_members(
             identity,
             spec_id=_SPEC_ID,
@@ -989,4 +1027,4 @@ def test_a_wrong_value_on_covered_slot_keys_refuses_on_the_index_path():
             bounds=mint_bounds(),
         )
 
-    assert sum(graph.calls.values()) == 0
+    assert reads() == 0

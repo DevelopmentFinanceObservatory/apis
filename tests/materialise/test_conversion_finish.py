@@ -244,7 +244,7 @@ def test_member_converted_trace_and_content_version_shape():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -283,7 +283,7 @@ def test_content_version_stays_when_only_the_native_unit_dcid_changes():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage_usd,
     )
@@ -316,7 +316,7 @@ def test_content_version_stays_when_only_the_native_unit_dcid_changes():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage_gbp,
     )
@@ -345,7 +345,7 @@ def test_ref_form_spec_carries_no_conversion():
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         coverage=coverage,
     )
 
@@ -394,7 +394,7 @@ def _constant_price_member() -> MaterialisationResult:
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -441,7 +441,7 @@ def test_group_with_two_converted_members_carries_one_conversion_entry_naming_bo
         graph=_graph(arcs),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs), parties={}),
+        enrichment=EnrichmentLookup(_graph(arcs), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -489,7 +489,7 @@ def test_us_dollar_group_members_trace_their_facet_unit_like_the_member_path():
             graph=_graph(arcs),
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(_graph(arcs), parties={}),
+            enrichment=EnrichmentLookup(_graph(arcs), parties=lambda: {}),
             rate_cache=RateTableCache(),
             coverage=_coverage_for(entries, unit="USDollar"),
         )
@@ -610,7 +610,7 @@ def _deflator_gap_member(deflator_years: tuple[str, ...]) -> MaterialisationResu
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -662,7 +662,7 @@ def test_projected_terms_are_counted_in_the_trace_and_raise_no_warning_on_member
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -700,7 +700,7 @@ def test_projected_terms_are_counted_in_the_trace_and_raise_no_warning_on_group(
         graph=_graph(arcs),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs), parties={}),
+        enrichment=EnrichmentLookup(_graph(arcs), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -828,7 +828,7 @@ def _destination_currency_result(
         "graph": _graph(inputs.arcs),
         "materialiser_build": "test-build",
         "capability_version": "v1",
-        "enrichment": EnrichmentLookup(_graph(inputs.arcs), parties={}),
+        "enrichment": EnrichmentLookup(_graph(inputs.arcs), parties=lambda: {}),
         "rate_cache": RateTableCache(),
         "coverage": inputs.coverage,
     }
@@ -1018,7 +1018,7 @@ def _destination_latest(
             graph=graph,
             materialiser_build="test-build",
             capability_version="v1",
-            enrichment=EnrichmentLookup(graph, parties={}),
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
             rate_cache=RateTableCache(),
             coverage=coverage,
         )
@@ -1279,7 +1279,7 @@ def _converted_preview_and_mint(*, native_unit: str = "CurrencyUSD"):
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=coverage,
     )
@@ -1393,7 +1393,7 @@ def _current_price_member() -> MaterialisationResult:
         graph=_graph(),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=_coverage_for([(_BARE_STAT_VAR, "country/KEN")]),
     )
@@ -1430,7 +1430,7 @@ def test_converted_group_token_recomputes_from_its_frame_bytes_alone():
         graph=_graph(arcs),
         materialiser_build="test-build",
         capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs), parties={}),
+        enrichment=EnrichmentLookup(_graph(arcs), parties=lambda: {}),
         rate_cache=RateTableCache(),
         coverage=_coverage_for(
             [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")]

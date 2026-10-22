@@ -3,8 +3,8 @@
 `open_deps` builds one `Deps` for the surface's lifespan, and every door reads it through the
 surface's `DepsCell`. Doors build no client and no store. The bundle holds one graph client, one
 SDMX client, one artifact store, the stores over one `dataset_store` pool borrow, the task client,
-the coverage service, rate cache and code index, the whole-variable breadth reader, one
-materialise semaphore, and two executors.
+the coverage service and rate cache, the source of the code index each request reads, the
+whole-variable breadth reader, one materialise semaphore, and two executors.
 
 The read executor runs snapshot, description, observations, operations polls, members, pin, register,
 recipe, and head-hit reads. The work executor runs mints, definition rebuilds, frame refreshes,
@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactStore, Tier
 from code_index.query import CodeIndex
+from code_index.shared import get_index
 from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader
@@ -55,13 +56,14 @@ from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVer
 from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.build import build_commit
+from graph_release.service import ReleaseService
 from materialise import EnrichmentLookup
 from materialise.facets import VariableBreadthReader
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue.graph import build_graph_client
 from origin_catalogue.service import CatalogueService
-from series_coverage.shared import CoverageService
+from series_coverage.shared import ServedCoverage
 from spec_registry import LiveSpecRegistry, SpecRegistry
 from spec_registry.reader import LiveSpecReader, SpecReader
 
@@ -90,10 +92,13 @@ class Deps:
     sdmx: SdmxClient
     artifact_store: ArtifactStore
     task_client: TaskClient
-    coverage: CoverageService
+    coverage: ServedCoverage
     rate_cache: RateTableCache
-    code_index: CodeIndex
-    # Wraps `graph` and caches country-code and label lookups for the lifespan.
+    # The code index a request reads (`code_index`): the caller's when it supplied one, else
+    # `get_index()`, which can change between requests.
+    code_index_source: Callable[[], CodeIndex]
+    # Wraps `graph` and caches country-code and label lookups for the lifespan. Party kinds
+    # come from `code_index_source` on every lookup.
     enrichment: EnrichmentLookup
     materialiser_build: str
     now: Clock
@@ -103,7 +108,7 @@ class Deps:
     variable_breadth: VariableBreadthReader | None
     # Bounds the frames alive at once across mints, rebuilds, head renders, file renewals and
     # observation reads. Each holds one permit for as long as its frame's work runs
-    # (`admission.bounded_materialise_slot`), and a coverage reload holds every permit. An
+    # (`admission.bounded_materialise_slot`), and a release swap holds every permit. An
     # error's traceback can keep a frame until the door has answered the error. A publish
     # builds its frame outside the permits.
     materialise_semaphore: MaterialisePermits
@@ -111,6 +116,11 @@ class Deps:
     rebuilds: RebuildFlights
     read_executor: DoorExecutor
     work_executor: DoorExecutor
+
+    @property
+    def code_index(self) -> CodeIndex:
+        """The code index this request reads. A request's dependency views take it once."""
+        return self.code_index_source()
 
 
 class DepsCell:
@@ -137,13 +147,15 @@ class DepsCell:
 class DepsOverrides:
     """Dependencies the caller supplies in place of live ones. `None` builds the live one.
 
-    `coverage`, `rate_cache`, and `code_index` are process-wide services the surface resolves
-    when it is built, so a missing coverage artifact fails construction.
+    `coverage` and `rate_cache` are process-wide services the surface resolves when it is
+    built. A given `code_index` serves every request, and `None` reads `get_index()` per
+    request. `release` is the process's graph release service.
     """
 
-    coverage: CoverageService
+    coverage: ServedCoverage
     rate_cache: RateTableCache
-    code_index: CodeIndex
+    release: ReleaseService
+    code_index: CodeIndex | None = None
     registry: SpecRegistry | None = None
     spec_reader: SpecReader | None = None
     snapshot_reader: SnapshotReader | None = None
@@ -182,6 +194,10 @@ class DepsOverrides:
 
 def _given_or[T](given: T | None, build: Callable[[], T]) -> T:
     return given if given is not None else build()
+
+
+def _index_source(given: CodeIndex | None) -> Callable[[], CodeIndex]:
+    return get_index if given is None else lambda: given
 
 
 def build_executors(settings: DatasetsBuildSettings) -> tuple[DoorExecutor, DoorExecutor]:
@@ -281,19 +297,20 @@ async def open_deps(
             )
 
         materialise_semaphore = MaterialisePermits(settings.materialise_max_concurrency)
-        # A coverage reload holds every permit, so it loads the new index beside no frame a
-        # permit covers. A request that holds a permit confirmed at admission that its
-        # coverage snapshot is the served one (`admission.under_current_coverage`), so it
-        # builds its frame beside the one index the service serves. A request waiting for a
-        # permit or a rebuild turn releases a replaced index within one wait slice of the
-        # reload (`admission.STALE_CHECK_SECONDS`). Before it waits, a request can hold a
-        # replaced index for as long as its head checks, its graph reads, member resolution,
-        # the estimate and the budget decision take, beside the frames other requests build.
-        # A publish holds no permit, so its frame can be resident during a reload.
-        stack.callback(overrides.coverage.register_load_guard(materialise_semaphore.every_permit))
+        # A release swap holds every permit, so it loads the new release's views beside no
+        # frame a permit covers. A request that holds a permit confirmed at admission that the
+        # service still serves its bound release (`admission.bounded_materialise_slot`), so it
+        # builds its frame beside the one release the service serves. A request waiting for a
+        # permit or a rebuild turn refuses within one wait slice of the swap
+        # (`admission.STALE_CHECK_SECONDS`). Before it waits, a request can hold a replaced
+        # release for as long as its head checks, its graph reads, member resolution, the
+        # estimate and the budget decision take, beside the frames other requests build. A
+        # publish holds no permit, so its frame can be resident during a swap.
+        stack.callback(overrides.release.register_swap_guard(materialise_semaphore.every_permit))
 
         read_executor, work_executor = build_executors(settings)
         budget = ShutdownBudget()
+        code_index_source = _index_source(overrides.code_index)
 
         async def _drain() -> None:
             for executor in (work_executor, read_executor):
@@ -336,11 +353,8 @@ async def open_deps(
             task_client=task_client,
             coverage=overrides.coverage,
             rate_cache=overrides.rate_cache,
-            code_index=overrides.code_index,
-            enrichment=EnrichmentLookup(
-                graph,
-                parties=overrides.code_index.parties,
-            ),
+            code_index_source=code_index_source,
+            enrichment=EnrichmentLookup(graph, parties=lambda: code_index_source().parties),
             materialiser_build=build_commit(),
             now=overrides.now,
             variable_breadth=variable_breadth,

@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -33,6 +34,7 @@ from search.engine.assemble import (
     skills_index_incomplete_warning,
     skills_index_unavailable_warning,
 )
+from search.engine.binders import Binder, Fallbacks, configured_binder, recording_fallbacks
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import LLM, SupportsLLM
@@ -40,11 +42,17 @@ from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import dataset_resubmit, parsed, raw_text
 from search.engine.entry.params import EntryParams
-from search.engine.envelope import _terminal_events, make_diagnostics, make_response, now_ms
+from search.engine.envelope import (
+    _terminal_events,
+    make_diagnostics,
+    make_response,
+    now_ms,
+    with_step_timing,
+)
 from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
-from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope, PartMemoScope
 from search.engine.response_cache_memo import PartMemo
@@ -56,6 +64,7 @@ from search.models import (
     QueryEcho,
     RawTextInput,
     Resolution,
+    ResolveInput,
     ResolveRequest,
     ResolveResponse,
     Warning,
@@ -206,6 +215,7 @@ async def resolve_events(
     generation: GenerationProvider = UNKNOWN_GENERATION,
     caller: str | None = None,
     budget: RequestBudget | None = None,
+    binder: Binder | None = None,
 ) -> AsyncIterator[Event]:
     """Stream typed events for one resolve request.
 
@@ -232,12 +242,13 @@ async def resolve_events(
     those tasks. A missing skills snapshot emits ``skills_index_unavailable``
     when requested.
 
-    ``response_cache=None`` disables caching. Raw-text and parsed requests whose
-    transport streams no trailing events use its per-request ``CacheScope``, built
-    after ``max_candidates`` and PAC are resolved. ``part_memo=None`` disables the
-    part memo a ``dataset_resubmit`` request's identity entries read through
-    ``PartMemoScope``. ``generation`` supplies each scope's one graph stamp. The
-    default stamp has key ``unknown`` and a short lifetime.
+    ``response_cache=None`` disables caching. Raw-text and parsed requests use its
+    per-request ``CacheScope``, built after ``max_candidates`` and PAC are resolved. It
+    stores the event bundle of a request that streams trailing events and the response
+    of any other. ``part_memo=None`` disables the part memo a ``dataset_resubmit``
+    request's identity entries read through ``PartMemoScope``. ``generation`` supplies
+    each scope's one graph stamp. The default stamp has key ``unknown`` and a short
+    lifetime.
 
     The request reads rate tables through one ``RateTableCache.for_request``
     view, so every spec it converts cites one version of each table.
@@ -249,6 +260,9 @@ async def resolve_events(
 
     ``budget`` is the route's ``request_budget``, so the pipeline's soft deadline and the
     route's hard cap share one start. Without one the request starts here.
+
+    ``binder`` reads the quantity and binds every part. ``None`` takes the one the request
+    routes to (``binders.configured_binder``). The cache key reads it.
     """
     if budget is None:
         budget = request_budget(kind=request.input.kind)
@@ -266,7 +280,7 @@ async def resolve_events(
     else:
         _shared_resolvekit = acquire_shared()
         _resolver = EntityResolver(
-            graph=_graph, shared=_shared_resolvekit, generation=generation, code_index=get_index()
+            graph=_graph, shared=_shared_resolvekit, generation=generation, code_index=get_index
         )
     _admission = (
         admission if admission is not None else Admission(graph=_graph, generation=generation)
@@ -277,10 +291,13 @@ async def resolve_events(
         # snapshot, the process's code index and each cache scope's one generation stamp.
         # Separate coverage reads could straddle an artifact swap and mismatch its index and
         # stamp. Both reads sit inside the `try`, so the clients are released whatever raises.
+        # The snapshot's time is a once-per-request step on the envelope's timing.
+        coverage_t0 = now_ms()
         coverage = get_coverage_service().snapshot()
+        coverage_ms = now_ms() - coverage_t0
         checks = CatalogueSettings()
         async with scoped_concurrency():
-            with held_family_memo():
+            with held_family_memo(), recording_fallbacks() as fallbacks:
                 async for event in _resolve_pipeline_events(
                     request,
                     graph=_graph,
@@ -288,6 +305,7 @@ async def resolve_events(
                     admission=_admission,
                     llm=_llm,
                     sdmx=_sdmx,
+                    binder=binder,
                     start_ms=start_ms,
                     deadline=budget.soft,
                     stream_slot_options=stream_slot_options,
@@ -303,8 +321,11 @@ async def resolve_events(
                     coverage_snapshot=coverage,
                     warn_index_drift=checks.warn_index_drift,
                     record=record,
+                    fallbacks=fallbacks,
                 ):
-                    event = _with_stale_catalogue_warning(event)
+                    event = _with_request_step(
+                        _with_stale_catalogue_warning(event), step="coverage", ms=coverage_ms
+                    )
                     if isinstance(event, ResponseEvent):
                         event = _with_response_warning(
                             event,
@@ -327,6 +348,38 @@ async def resolve_events(
             _sdmx.close()  # ty: ignore[call-non-callable]  # hasattr
         if _shared_resolvekit is not None:
             release_shared(_shared_resolvekit)
+
+
+def _with_request_step(event: Event, *, step: str, ms: int) -> Event:
+    """A response event whose envelope `timing_ms.by_step` starts with `step` at `ms`, for a
+    step that runs once per request before the pipeline. It runs after the response cache, so
+    a cached answer reports this request's time. Any other event passes through unchanged."""
+    if not isinstance(event, ResponseEvent):
+        return event
+    diagnostics = event.response.diagnostics
+    timing = diagnostics.timing_ms
+    if timing is None:
+        return event
+    stepped = timing.model_copy(update={"by_step": {step: ms, **(timing.by_step or {})}})
+    return ResponseEvent(
+        response=event.response.model_copy(
+            update={"diagnostics": diagnostics.model_copy(update={"timing_ms": stepped})}
+        )
+    )
+
+
+def _routing_text(inp: ResolveInput) -> str:
+    """The text a request is routed to its binder on, which is what resolution reads: a
+    raw-text request's query, else the canonical JSON of a parsed or resubmitted request's
+    input less `raw_query`, which is for echo only."""
+    if isinstance(inp, RawTextInput):
+        return inp.query
+    return json.dumps(
+        inp.model_dump(mode="json", exclude={"raw_query"}),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def _with_response_warning(event: ResponseEvent, warning: Warning | None) -> ResponseEvent:
@@ -383,6 +436,7 @@ async def _resolve_pipeline_events(
     admission: Admission,
     llm: SupportsLLM,
     sdmx: EngineSdmxClient,
+    binder: Binder | None,
     start_ms: int,
     deadline: float,
     stream_slot_options: bool = False,
@@ -398,6 +452,7 @@ async def _resolve_pipeline_events(
     coverage_snapshot: CoverageSnapshot,
     warn_index_drift: bool,
     record: _ResolveRecord,
+    fallbacks: Fallbacks,
 ) -> AsyncIterator[Event]:
     """Compute shared request settings, then dispatch by input kind.
 
@@ -416,6 +471,12 @@ async def _resolve_pipeline_events(
     ``deadline``, the request's soft deadline, governs every pipeline stage and thread hop.
     ``coverage_snapshot`` is the request's one coverage snapshot, shared by the cache key and every
     reader. ``warn_index_drift`` is `CatalogueSettings.warn_index_drift`.
+
+    The request takes one binder here: ``binder`` when the caller injects one, else the one
+    it routes to on what resolution reads of it (`_routing_text`, `binders.configured_binder`).
+    Every door's parts read their quantity and bind through it. The response cache keys on
+    it, and ``fallbacks`` records each call it served from its fallback, which keeps the
+    response out of the cache.
     """
     inp = request.input
 
@@ -451,15 +512,21 @@ async def _resolve_pipeline_events(
 
     today = datetime.now(UTC).date().isoformat()
 
+    # The request's binder: the caller's when it injects one, else the one the request
+    # routes to. The cache key reads it and every part binds with it (`EntryParams.binder`).
+    binder = binder if binder is not None else configured_binder(_routing_text(inp))
+
     # The cache key includes the resolved candidate cap and PAC setting. A transport that
-    # streams trailing events stores nothing, since its response event lacks them.
+    # streams trailing events stores the events from `response` to `done`, since the
+    # response event lacks the trailing ones.
     scope = CacheScope(
         response_cache,
         request=request,
         start_ms=start_ms,
         deadline=deadline,
         build_commit=build_commit(),
-        model=config.settings().engine_model,
+        binder=binder,
+        fallbacks=fallbacks,
         seed=config.settings().llm_seed,
         today=today,
         max_candidates=_max_cand,
@@ -480,6 +547,7 @@ async def _resolve_pipeline_events(
         include_skills=include_skills,
         skills_index=skills_index,
         coverage=coverage_snapshot,
+        binder=binder,
     )
 
     if inp.kind == "dataset_resubmit":
@@ -528,16 +596,32 @@ async def _resolve_pipeline_events(
             yield ev
         return
 
+    lookup_ms: int | None = None
     if isinstance(inp, RawTextInput):
         # Key the first lookup by raw query string. A hit skips extraction and binding.
+        lookup_t0 = now_ms()
         cached = await scope.lookup_raw(inp.query)
+        lookup_ms = now_ms() - lookup_t0
         if cached is not None:
             record.cache = scope.outcome
-            response_event, done_event = _terminal_events(
-                cached, start_ms=start_ms, timed_out=scope.served_timed_out
-            )
-            yield response_event
-            yield done_event
+            async with aclosing(
+                scope.hit_events(
+                    cached,
+                    start_ms=start_ms,
+                    place_options=replayed_place_options(
+                        stream=params.stream_option_coverage,
+                        graph=graph,
+                        sdmx=sdmx,
+                        materialise_graph=materialise_graph,
+                        materialise_sdmx=materialise_sdmx,
+                        pool=place_options_pool,
+                        coverage=coverage_snapshot,
+                        population_memo=population_memo,
+                    ),
+                )
+            ) as hit:
+                async for ev in hit:
+                    yield ev
             return
         events = raw_text.handle(
             inp,
@@ -574,13 +658,16 @@ async def _resolve_pipeline_events(
             place_options_pool=place_options_pool,
             scope=scope,
         )
-    # Cache the ResponseEvent. CacheScope decides whether it is storable.
+    # CacheScope.observe stores the answer and decides whether it is storable.
     # finally releases any unpublished lease if the request raises.
     try:
         async for ev in events:
             ev = _with_index_drift_warning(ev, warn=warn_index_drift)
-            if isinstance(ev, ResponseEvent):
-                await scope.store(ev.response)
+            await scope.observe(ev)
+            if isinstance(ev, ResponseEvent) and scope.active and lookup_ms is not None:
+                ev = ResponseEvent(
+                    response=with_step_timing(ev.response, "cache_lookup", lookup_ms)
+                )
             elif isinstance(ev, DoneEvent) and scope.degraded_leg:
                 ev = ev.model_copy(update={"degraded_leg": True})
             yield ev
@@ -609,6 +696,7 @@ async def resolve_async(
     health: ResolveHealth | None = None,
     caller: str | None = None,
     budget: RequestBudget | None = None,
+    binder: Binder | None = None,
 ) -> ResolveResponse:
     """Drain ``resolve_events`` into one buffered response.
 
@@ -617,7 +705,8 @@ async def resolve_async(
     when given, receives ``done.degraded_leg``, which the body omits. Client
     injection and lifetimes match ``resolve_events``. The buffered path emits
     no trailing SSE events, so ``place_options_pool`` launches no tasks.
-    ``caller`` reaches the ``resolve`` log line, and ``budget`` reaches ``resolve_events``.
+    ``caller`` reaches the ``resolve`` log line, and ``budget`` and ``binder`` reach
+    ``resolve_events``.
 
     Returns a ``ResolveResponse``: a ``Resolution`` carries one part per requested
     variable.
@@ -641,6 +730,7 @@ async def resolve_async(
         part_memo=part_memo,
         generation=generation,
         caller=caller,
+        binder=binder,
         budget=budget,
     ):
         if isinstance(event, ResponseEvent):

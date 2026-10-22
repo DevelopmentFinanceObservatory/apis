@@ -13,14 +13,14 @@ It is the GET with no rendering: a rebuild records the version and advances the 
 answer is the `OptionsEnvelope` of its manifest. Resolve refusals and `over_ceiling` match
 retrieval behaviour. `POST /options` carries the spec's canonical definition
 (`DefinitionOptionsRequest`), so it also answers for a spec no mint or register call has stored.
-That definition is admitted as a mint admits a sidecar and materialised as a prewrite: nothing is
-registered or recorded, since there is no subject to head.
+That definition is admitted and registered as a mint registers a sidecar, then served as a
+registered id is, so the rebuild records the version and advances the head the next mint reads.
 
 `POST /api/datasets/{id}/members` takes a `spec_` id and resolves the members a mint of it serves
 without materialising a frame (`MembersEnvelope`): each member's ref, label, roles and
 constraints, their count, and the family's count and digest. Its optional body carries the
-canonical definition an unregistered id needs, admitted as on the options route. It refuses as
-member resolution does.
+canonical definition an unregistered id needs, admitted as a mint admits a sidecar, and nothing
+is written. It refuses as member resolution does.
 
 Retrieval delegates shared materialisation, registry, and snapshot errors to their classifiers.
 This door adds registry-miss, backpressure, and stored-data errors. A refusal a rebuild's
@@ -67,15 +67,9 @@ from datasets_api import routing  # noqa: F401
 from datasets_api.adapter import (
     admitted_family,
     member_read_bounds,
-    pinned_provenance_scope,
     rehydrate_definition,
     to_materialisation_request,
     verify_sidecar_definition,
-)
-from datasets_api.admission import (
-    bounded_materialise_slot,
-    refuse_inline_over_ceiling,
-    sync_estimate,
 )
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_materialise import (
@@ -97,7 +91,6 @@ from datasets_api.current import (
     Trigger,
     serve_current,
     serve_fresh_head,
-    stamp_trace,
     without_pointers,
 )
 from datasets_api.deps import MATERIALISE_RAW_FETCH_GUARD_ROWS, Deps, DepsCell
@@ -106,7 +99,11 @@ from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_excep
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.doors.register import classify_register_exception
 from datasets_api.headers import no_store_headers
-from datasets_api.kinds.spec_id import admit_sidecar, resolve_served_definition
+from datasets_api.kinds.spec_id import (
+    admit_sidecar,
+    register_sidecar,
+    resolve_served_definition,
+)
 from datasets_api.manifest_models import Manifest, OptionsEnvelope
 from datasets_api.mint_models import (
     DefinitionMembersRequest,
@@ -126,12 +123,9 @@ from datasets_api.query_options import (
 )
 from datasets_api.render import check_options_supported, linked_under
 from datasets_api.schema import MembersEnvelope, OperationResource, ServedMember
-from datasets_api.serve import (
-    prewrite_definition,
-)
 from datasets_api.shape import StatVarShape
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from datasets_api.timings import PhaseTimings, door_call, label, phase, run_with_timings
+from datasets_api.timings import PhaseTimings, door_call, phase, run_with_timings
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dc_sdmx import (
     SdmxCapExceededError,
@@ -152,7 +146,6 @@ from dfo_platform.request_deadline import request_deadline
 from dfo_platform.trace import get_trace_id
 from materialise import (
     MaterialisationRequest,
-    probe_collection_facets,
 )
 from materialise.errors import (
     CollectionProbeCeilingExceededError,
@@ -180,7 +173,7 @@ from materialise.reshape import (
     PivotOverColumnCapError,
     RollupNotSummableError,
 )
-from spec_registry import SpecIdMismatch
+from spec_registry import SpecIdMismatch, SpecRegistryUnavailable
 from spec_registry.errors import IdentityCollision, IdentityQuarantined
 from spec_registry.reader import StoredDefinition
 from statvar_members import MemberReadDeadline, shared_enumerator
@@ -320,32 +313,28 @@ def _verify_posted_definition(*, spec_id: str, definition: CanonicalDefinition) 
         raise SpecIdMismatch(supplied=definition.spec_id, computed=spec_id)
 
 
-def _admit_posted_definition(
-    *, spec_id: str, body: DefinitionOptionsRequest, deps: DefinitionDeps
+def _register_posted_definition(
+    *, spec_id: str, body: DefinitionOptionsRequest, deps: DefinitionDeps, trace_id: str | None
 ) -> tuple[StoredDefinition, Sequence[MaterialisationRequest]]:
-    """Admit the definition `POST /options` carries for the unregistered `spec_id` as a mint
-    admits a sidecar (`admit_sidecar`), writing nothing.
+    """Register the definition `POST /options` carries for the unregistered `spec_id` as a
+    `spec_id` mint registers a sidecar (`kinds.spec_id.register_sidecar`). Returns its served
+    definition (`resolve_served_definition`) and the requests its admitted members build.
 
-    `_verify_posted_definition` has already checked the body against `spec_id`. The result is
-    the `StoredDefinition` a registration of it would read back, so its materialisation and
-    envelope are the ones a registered id gets. Member refusals keep the GET route's
-    pointer-free form.
+    `_verify_posted_definition` has already checked the body against `spec_id`. Admission
+    refusals leave no registry row. Member refusals keep the GET route's pointer-free form.
     """
     try:
-        recomputed, shapes = admit_sidecar(body.definition, spec_id=spec_id, scope=None, deps=deps)
+        registered, shapes = register_sidecar(
+            body.definition, spec_id=spec_id, scope=None, deps=deps, trace_id=trace_id
+        )
     except MemberNotResolvable as exc:
         raise DefinitionMemberNotResolvable(members=exc.members, truncated=exc.truncated) from exc
-    identity = recomputed.identity
-    requests = tuple(
-        to_materialisation_request(identity, shape=shape, code_index=deps.code_index)
-        for shape in shapes
+    stored = resolve_served_definition(
+        registered, code_index=deps.code_index, registry=deps.registry, trace_id=trace_id
     )
-    stored = StoredDefinition(
-        spec_id=spec_id,
-        schema_version=body.definition.schema_version,
-        identity=identity,
-        identity_bytes=recomputed.identity_bytes,
-        identity_digest=recomputed.identity_digest,
+    requests = tuple(
+        to_materialisation_request(stored.identity, shape=shape, code_index=deps.code_index)
+        for shape in shapes
     )
     return stored, requests
 
@@ -360,14 +349,18 @@ def _serve_spec(
     load_head: HeadLoader | None = None,
     head_read: HeadRead | None = None,
     revoked_under: Sequence[str] = (),
+    requests: Sequence[MaterialisationRequest] | None = None,
 ) -> Manifest:
     """Serve the served definition `stored` through `serve_current`, rehydrating it at most
-    once and only when the head cannot answer. `load_head`, `head_read` and `revoked_under`
-    are `serve_current`'s. A refusal the rebuild's admission or materialisation raises loses
-    its mint-body pointer (`strip_pointer`)."""
+    once and only when the head cannot answer. `requests`, the members a caller has already
+    admitted, replace the rehydration. `load_head`, `head_read` and `revoked_under` are
+    `serve_current`'s. A refusal the rebuild's admission or materialisation raises loses its
+    mint-body pointer (`strip_pointer`)."""
 
     @functools.cache
     def _requests() -> Sequence[MaterialisationRequest]:
+        if requests is not None:
+            return requests
         with phase("resolve"):
             return _rehydrate_stored(stored, deps=deps)
 
@@ -385,78 +378,6 @@ def _serve_spec(
     )
 
 
-def _serve_unregistered_options(
-    *, spec_id: str, body: DefinitionOptionsRequest, deps: DefinitionDeps, trace_id: str | None
-) -> OptionsEnvelope:
-    """The options envelope of a definition no mint or register call has stored, materialised
-    as a prewrite that writes nothing: there is no subject to head.
-
-    The rebuild runs inline under `deps.ceiling`, so `refuse_inline_over_ceiling` refuses an
-    estimate above it before any fetch. One `bounded_materialise_slot` is held from the coverage
-    snapshot and the facet probe to the end of the materialisation. A refusal the admission or materialisation raises
-    loses its mint-body pointer; one from the facet probe before it keeps it.
-    """
-    with phase("resolve"):
-        stored, requests = _admit_posted_definition(spec_id=spec_id, body=body, deps=deps)
-    with bounded_materialise_slot(
-        deps.materialise_semaphore,
-        wait_seconds=deps.settings.materialise_wait_seconds,
-        deadline=deps.deadline,
-    ):
-        # Taken inside the slot, where no reload can replace it.
-        coverage_snapshot = deps.coverage.snapshot()
-        with pinned_provenance_scope(stored.identity), phase("facet_probe"):
-            probe = probe_collection_facets(
-                requests,
-                graph=deps.graph,
-                availability=deps.sdmx,
-                settle=True,
-                coverage=coverage_snapshot.index,
-                deadline=deps.deadline,
-            )
-        try:
-            estimate = sync_estimate(
-                requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
-            )
-            refuse_inline_over_ceiling(estimate, ceiling=deps.ceiling)
-            # Only the manifest is bound, so the frame is freed before the permit is released.
-            manifest = prewrite_definition(
-                stored=stored,
-                requests=requests,
-                sdmx=deps.sdmx,
-                graph=deps.graph,
-                ceiling=deps.ceiling,
-                materialiser_build=deps.materialiser_build,
-                capability_version=deps.capability_version,
-                enrichment=deps.enrichment,
-                code_index=deps.code_index,
-                rate_cache=deps.rate_cache,
-                member_concurrency=deps.member_concurrency,
-                settings=deps.settings,
-                precomputed_probe=probe,
-                coverage_index=coverage_snapshot.index,
-                deadline=deps.deadline,
-                documented=False,
-            ).manifest
-        except (
-            DefaultFacetUndefinedError,
-            FacetNotAvailableError,
-            ExcludedByRegistry,
-        ) as exc:
-            without_pointers(exc)
-            raise
-    label("trigger", "options")
-    label("served_from", "materialise")
-    return _to_options_envelope(
-        stamp_trace(
-            manifest,
-            served_from="materialise",
-            confirmed_at=deps.now(),
-            coverage_stamp=coverage_snapshot.stamp,
-        )
-    )
-
-
 def _serve_spec_options(
     *,
     spec_id: str,
@@ -469,21 +390,24 @@ def _serve_spec_options(
     as a GET does, and the envelope carries the manifest's fields alone.
 
     `head_read` is the head `_serve_spec_options_head` read for the served definition, and
-    `None` when `_serve_spec_options_head` found `spec_id` unregistered with a posted
-    `body`, which `_serve_unregistered_options` answers. The same function has already verified
-    a posted `body` against `spec_id`.
+    `None` when `_serve_spec_options_head` found `spec_id` unregistered with a posted `body`.
+    That function has already verified the body against `spec_id`. The body's definition is
+    then registered (`_register_posted_definition`) and served as a registered id is, from the
+    members its admission resolved, so a later mint or GET of `spec_id` reads the head this
+    call advances.
     """
+    requests: Sequence[MaterialisationRequest] | None = None
     if head_read is not None:
         stored = head_read.stored
     else:
         with phase("resolve"):
             served = _served_or_none(spec_id=spec_id, deps=deps, trace_id=trace_id)
-        if served is None:
-            if body is None:
-                raise SpecNotFound(id=spec_id)
-            return _serve_unregistered_options(
-                spec_id=spec_id, body=body, deps=deps, trace_id=trace_id
-            )
+            if served is None:
+                if body is None:
+                    raise SpecNotFound(id=spec_id)
+                served, requests = _register_posted_definition(
+                    spec_id=spec_id, body=body, deps=deps, trace_id=trace_id
+                )
         stored = served
     manifest = _serve_spec(
         stored=stored,
@@ -493,6 +417,7 @@ def _serve_spec_options(
         trace_id=trace_id,
         head_read=head_read,
         revoked_under=(spec_id,),
+        requests=requests,
     )
     return _to_options_envelope(manifest)
 
@@ -678,7 +603,7 @@ def _serve_spec_options_head(
     """`_serve_spec_options` answered from a current head alone, or the head read. A posted
     `body` is verified against `spec_id` first, since a current head answers without
     resolving; `_serve_spec_options` relies on this check. `None` means `spec_id` is
-    unregistered and a `body` came with it, so the work executor admits it."""
+    unregistered and a `body` came with it, so the work executor registers it."""
     with phase("resolve"):
         if body is not None:
             _verify_posted_definition(spec_id=spec_id, definition=body.definition)
@@ -887,6 +812,9 @@ _ANY_ROUTE_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     IdentityCollision,
     # The spec reader raises it for a quarantined id, which every route reads.
     IdentityQuarantined,
+    # The spec reader, `register_definition` and `register_served_definition` raise it when the
+    # registry pool has no connection free.
+    SpecRegistryUnavailable,
     *_RESOLUTION_EXCEPTION_TYPES,
 )
 
@@ -976,9 +904,8 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
     ) -> JSONResponse:
         """The GET route's envelope for a spec id whose canonical `definition` the body
         carries, registered or not. An unregistered definition is admitted as a mint admits a
-        sidecar and materialised write-free, so browsing a search result registers nothing. A
-        registered one is served as the GET route serves it.
-        Query keys refuse as on the GET route.
+        sidecar, registered, and served as the GET route serves a registered one, so the
+        mint that follows is a head hit. Query keys refuse as on the GET route.
         """
         return await _definition_options_impl(id, request, deps=deps.get(), body=body)
 
@@ -1018,6 +945,7 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
             DefinitionBackpressure(),
             MalformedSidecarIdentity(detail="exemplar", pointer=_DEFINITION_POINTER),
             SpecIdMismatch(supplied="spec_exemplar", computed="spec_exemplar_computed"),
+            SpecRegistryUnavailable("registry write pool exhausted"),
             DefinitionNotReproducible(spec_ids=("spec_exemplar",), detail="exemplar"),
             SpecNotExportable(spec_id="spec_exemplar", detail="exemplar"),
             RoleSignatureIncompatible(

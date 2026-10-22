@@ -1,0 +1,394 @@
+"""`RawInputs` to the five platform parts, and their staging as part files.
+
+The platform parts copy Spanner, less what a live mixer read cannot see, and carry no DFO rule.
+`build_platform_parts` is pure: it applies stage one of `dc_graph.visible_arcs`, the edge
+closure and the authored rows, and refuses a snapshot the release format cannot hold.
+`stage_platform_parts` writes the parts through `graph_release.format.write_part`.
+
+The edge closure has one rule. An edge whose subject is a live variable is kept. A second-hop
+edge, one whose subject is not a live variable, is kept only when its object has a Spanner
+`Node` row or a kept live variable's edge names that object. Every kept edge's subject and
+object must then have a `Node` row, from Spanner or `Authored`.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Final, cast
+
+import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
+
+from dc_graph.visible_arcs import mixer_visible_mask
+from graph_release.authored import AUTHORED_PROVENANCE, Authored
+from graph_release.format import MASK_PERIODS, PLATFORM, StagedPart, conform_part, write_part
+from graph_release.reads import RawInputs
+
+_EXAMPLES: Final[int] = 5
+_OBSERVATION_PROPERTIES: Final[str] = "observationProperties"
+
+
+class PlatformRefusal(Exception):
+    """A snapshot the builder must not release. `code` names the fault with the gate's code for
+    it."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+
+
+@dataclass(frozen=True)
+class PlatformParts:
+    """One table per platform part, each as `graph_release.format.conform_part` gives it: the
+    part's schema, sorted dictionaries, rows in key order."""
+
+    series: pa.Table
+    facets: pa.Table
+    edges: pa.Table
+    nodes: pa.Table
+    imports: pa.Table
+
+    def tables(self) -> Mapping[str, pa.Table]:
+        return {
+            "series": self.series,
+            "facets": self.facets,
+            "edges": self.edges,
+            "nodes": self.nodes,
+            "imports": self.imports,
+        }
+
+
+def build_platform_parts(raw: RawInputs, *, authored: Authored) -> PlatformParts:
+    """The platform parts of `raw`, with `authored`'s rows added to `nodes` and `edges`.
+
+    Raises `PlatformRefusal` with code `unsupported_observation_period` for a facet whose period
+    the mask does not count or a role-bearing series with a year outside the mask,
+    `popcount_mismatch` for a series whose mask words do not set one bit per distinct year inside
+    the mask or a role-bearing series with two observations in one year, `inconsistent_facet` for a facet whose series carry different facet JSON or a facet
+    whose JSON is null or lacks `provenance`, `unknown_facet` for a series whose facet was not
+    read, `authored_mismatch` for an authored node that Spanner holds, and `dangling_edge` for a
+    kept edge whose subject or object has no `Node` row.
+
+    A role-bearing series is one of a variable declaring one or two `observationProperties`
+    roles, the population `graph_release.coverage` counts by the mask. Any other series may
+    carry years outside the mask and several observations in one year: its dates and
+    `observation_count` hold them, its mask does not.
+    """
+    facets = _facets(raw.facets)
+    _check_mask_years(raw.series_summary)
+    series = _series(raw.series_summary)
+    unknown = pc.unique(_dictionary(series["facet_id"]).dictionary_decode())
+    unknown = unknown.filter(pc.invert(pc.is_in(unknown, value_set=facets["facet_id"])))
+    if len(unknown):
+        raise PlatformRefusal(
+            "unknown_facet", f"series name facets the facet read lacks: {_examples(unknown)}"
+        )
+
+    spanner_ids = raw.nodes_raw["subject_id"]
+    authored_nodes = authored.nodes_table()
+    restated = authored_nodes["subject_id"].filter(
+        pc.is_in(authored_nodes["subject_id"], value_set=spanner_ids)
+    )
+    if len(restated):
+        raise PlatformRefusal(
+            "authored_mismatch", f"Spanner now holds authored nodes: {_examples(restated)}"
+        )
+
+    edges = pa.concat_tables([_closure(raw), authored.edges_table()])
+    known = pa.chunked_array([*spanner_ids.chunks, *authored_nodes["subject_id"].chunks])
+    ends = pc.unique(pa.chunked_array([*edges["subject_id"].chunks, *edges["object_id"].chunks]))
+    dangling = ends.filter(pc.invert(pc.is_in(ends, value_set=known)))
+    if len(dangling):
+        raise PlatformRefusal(
+            "dangling_edge", f"edges name nodes with no Node row: {_examples(dangling)}"
+        )
+    _check_role_bearing_years(raw.series_summary, edges)
+
+    return PlatformParts(
+        series=conform_part(series, name="series"),
+        facets=conform_part(facets, name="facets"),
+        edges=conform_part(edges, name="edges"),
+        nodes=conform_part(_nodes(raw, edges, authored_nodes), name="nodes"),
+        imports=conform_part(_imports(raw.imports), name="imports"),
+    )
+
+
+def stage_platform_parts(
+    parts: PlatformParts, *, staging_dir: Path, execution_id: str
+) -> list[StagedPart]:
+    """Writes every part to `staging_dir`: `series` one file set per facet provenance, `edges`
+    one per edge provenance."""
+
+    def write(table: pa.Table, name: str, source: str, provenance: str | None = None) -> None:
+        staged.extend(
+            write_part(
+                table,
+                staging_dir=staging_dir,
+                name=name,
+                layer=PLATFORM,
+                source=source,
+                produced_by_execution=execution_id,
+                provenance=provenance,
+            )
+        )
+
+    staged: list[StagedPart] = []
+    write(parts.facets, "facets", "spanner.timeseries.facet")
+
+    facet_ids = _dictionary(parts.series["facet_id"])
+    facet_provenance = pc.take(
+        _dictionary(parts.facets["provenance"]).dictionary_decode(),
+        pc.index_in(facet_ids.dictionary, value_set=parts.facets["facet_id"]),
+    )
+    for provenance, rows in _groups(parts.series, facet_ids.indices, facet_provenance):
+        write(rows, "series", "spanner.observation.aggregate", provenance)
+
+    edge_provenance = _dictionary(parts.edges["provenance"])
+    for provenance, rows in _groups(
+        parts.edges, edge_provenance.indices, edge_provenance.dictionary
+    ):
+        source = "graph_release.authored" if provenance == AUTHORED_PROVENANCE else "spanner.edge"
+        write(rows, "edges", source, provenance)
+
+    write(parts.nodes, "nodes", "spanner.node")
+    write(parts.imports, "imports", "spanner.importstatus")
+    return staged
+
+
+def _facets(raw: pa.Table) -> pa.Table:
+    columns: dict[str, list[object]] = {
+        name: []
+        for name in (
+            "facet_id",
+            "provenance",
+            "import_name",
+            "measurement_method",
+            "observation_period",
+            "unit",
+            "scaling_factor",
+            "is_dc_aggregate",
+        )
+    }
+    inconsistent, malformed, unsupported = [], [], []
+    for facet_id, low, high in zip(
+        cast("list[str]", raw["facet_id"].to_pylist()),
+        cast("list[str]", raw["facet_min"].to_pylist()),
+        cast("list[str]", raw["facet_max"].to_pylist()),
+        strict=True,
+    ):
+        if low != high:
+            inconsistent.append(facet_id)
+            continue
+        facet = json.loads(low)
+        if not isinstance(facet, dict) or not facet.get("provenance"):
+            malformed.append(facet_id)
+            continue
+        if facet.get("observationPeriod") not in MASK_PERIODS:
+            unsupported.append(f"{facet_id} ({facet.get('observationPeriod')})")
+        scaling = facet.get("scalingFactor")
+        columns["facet_id"].append(facet_id)
+        columns["provenance"].append(facet.get("provenance"))
+        columns["import_name"].append(facet.get("importName"))
+        columns["measurement_method"].append(facet.get("measurementMethod"))
+        columns["observation_period"].append(facet.get("observationPeriod"))
+        columns["unit"].append(facet.get("unit"))
+        columns["scaling_factor"].append(None if scaling is None else str(scaling))
+        columns["is_dc_aggregate"].append(bool(facet.get("isDcAggregate", False)))
+    if inconsistent:
+        raise PlatformRefusal(
+            "inconsistent_facet",
+            f"series of one facet carry different facet JSON: {_examples(inconsistent)}",
+        )
+    if malformed:
+        raise PlatformRefusal(
+            "inconsistent_facet",
+            f"facet JSON is null or lacks provenance: {_examples(malformed)}",
+        )
+    if unsupported:
+        raise PlatformRefusal(
+            "unsupported_observation_period",
+            f"the mask counts {list(MASK_PERIODS)}; facets {_examples(unsupported)}",
+        )
+    return pa.table(
+        {
+            name: pa.array(values, pa.bool_() if name == "is_dc_aggregate" else pa.string())
+            for name, values in columns.items()
+        }
+    )
+
+
+def _series(raw: pa.Table) -> pa.Table:
+    """The summary in the `series` columns: dates parsed, the count unsigned, `entity3` left out
+    when no series has one."""
+    columns = {
+        name: raw[name]
+        for name in ("variable_measured", "entity1", "extra_entities_id", "facet_id", "entity2")
+    }
+    if raw["entity3"].null_count < raw.num_rows:
+        columns["entity3"] = raw["entity3"]
+    columns["observation_count"] = raw["observation_count"].cast(pa.uint32())
+    columns["earliest_date"] = _dates(raw["earliest_date"])
+    columns["latest_date"] = _dates(raw["latest_date"])
+    for name in raw.column_names:
+        if name.startswith("period_mask_"):
+            columns[name] = raw[name]
+    return pa.table(columns)
+
+
+def _check_mask_years(raw: pa.Table) -> None:
+    """Refuses a series whose mask words' popcount differs from `mask_years`, the distinct years
+    inside the mask that Spanner counted."""
+    words = [
+        raw[name].fill_null(pa.scalar(0, pa.int64())).to_numpy().view(np.uint64)
+        for name in raw.column_names
+        if name.startswith("period_mask_")
+    ]
+    counted = sum(np.bitwise_count(word).astype(np.int64) for word in words)
+    wrong = np.flatnonzero(raw["mask_years"].to_numpy() != counted)
+    if len(wrong):
+        raise PlatformRefusal(
+            "popcount_mismatch",
+            f"{len(wrong)} series whose period masks do not set one bit per distinct year: "
+            f"{_examples(_series_labels(raw.take(wrong)))}",
+        )
+
+
+def _check_role_bearing_years(raw: pa.Table, edges: pa.Table) -> None:
+    """Refuses a series whose variable declares one or two `observationProperties` roles in
+    `edges` and whose mask does not hold every observation: one with a year outside the mask
+    (`outside_mask`), then one with two dates in one year (`observation_count` above
+    `mask_years`)."""
+    declared = edges.filter(
+        pc.equal(edges["predicate"].cast(pa.string()), pa.scalar(_OBSERVATION_PROPERTIES))
+    )
+    roles: dict[str, set[str]] = {}
+    for variable, role in zip(
+        cast("list[str]", declared["subject_id"].cast(pa.string()).to_pylist()),
+        cast("list[str]", declared["object_id"].cast(pa.string()).to_pylist()),
+        strict=True,
+    ):
+        roles.setdefault(variable, set()).add(role)
+    bearing = pa.array(
+        sorted(variable for variable, found in roles.items() if len(found) <= 2), pa.string()
+    )
+    raw = raw.filter(pc.is_in(raw["variable_measured"].cast(pa.string()), value_set=bearing))
+    outside = raw.filter(raw["outside_mask"].fill_null(pa.scalar(False)))
+    if outside.num_rows:
+        raise PlatformRefusal(
+            "unsupported_observation_period",
+            f"{outside.num_rows} role-bearing series with a year outside the period mask: "
+            f"{_examples(_series_labels(outside))}",
+        )
+    duplicated = raw.filter(
+        cast("pa.ChunkedArray", pc.not_equal(raw["observation_count"], raw["mask_years"]))
+    )
+    if duplicated.num_rows:
+        raise PlatformRefusal(
+            "popcount_mismatch",
+            f"{duplicated.num_rows} role-bearing series with two observations in one year, "
+            f"which the period mask counts once: {_examples(_series_labels(duplicated))}",
+        )
+
+
+def _series_labels(raw: pa.Table) -> list[str]:
+    return [
+        f"{row['variable_measured']} {row['entity1']} {row['facet_id']}"
+        for row in raw.select(["variable_measured", "entity1", "facet_id"]).to_pylist()
+    ]
+
+
+def _dates(column: pa.ChunkedArray) -> pa.ChunkedArray:
+    """`Observation.date` strings as dates: `YYYY` is 1 January, `YYYY-MM` the first of the
+    month, `YYYY-MM-DD` itself. Raises `PlatformRefusal` for any other form."""
+    parsed = pc.coalesce(
+        *(
+            pc.strptime(column, format=form, unit="s", error_is_null=True)
+            for form in ("%Y", "%Y-%m", "%Y-%m-%d")
+        )
+    )
+    unparsed = column.filter(pc.and_(pc.is_null(parsed), pc.is_valid(column)))
+    if len(unparsed):
+        raise PlatformRefusal(
+            "unsupported_observation_period",
+            f"observation dates of no known form: {_examples(unparsed)}",
+        )
+    return cast("pa.ChunkedArray", parsed.cast(pa.date32()))
+
+
+def _closure(raw: RawInputs) -> pa.Table:
+    """The Spanner edges the parts keep: stage one of the visibility rule, then the closure."""
+    edges = raw.edges_raw
+    edges = edges.filter(mixer_visible_mask(edges["predicate"].combine_chunks()))
+    objects = edges["object_id"].combine_chunks()
+    live = raw.live_variables["variable_measured"].combine_chunks()
+    first_hop = pc.is_in(edges["subject_id"].combine_chunks(), value_set=live)
+    named = pc.unique(objects.filter(first_hop))
+    nodes = raw.nodes_raw["subject_id"].combine_chunks()
+    second_hop = pc.is_in(objects, value_set=pa.concat_arrays([nodes, named]))
+    return edges.filter(cast("pa.BooleanArray", pc.or_(first_hop, second_hop)))
+
+
+def _nodes(raw: RawInputs, edges: pa.Table, authored_nodes: pa.Table) -> pa.Table:
+    """Spanner's rows for every subject and object of `edges` and every live variable, then the
+    authored rows."""
+    referenced = pa.chunked_array(
+        [
+            *edges["subject_id"].chunks,
+            *edges["object_id"].chunks,
+            *raw.live_variables["variable_measured"].chunks,
+        ]
+    )
+    spanner = raw.nodes_raw.filter(pc.is_in(raw.nodes_raw["subject_id"], value_set=referenced))
+    spanner = spanner.select(authored_nodes.column_names[:-1]).append_column(
+        "authored", pa.array([False] * spanner.num_rows, pa.bool_())
+    )
+    return pa.concat_tables([spanner, authored_nodes])
+
+
+def _imports(raw: pa.Table) -> pa.Table:
+    return pa.table(
+        {
+            "import_name": raw["import_name"],
+            "provenance": pa.nulls(raw.num_rows, pa.string()),
+            "version": raw["version"],
+            "state": raw["state"],
+            "data_import_timestamp": raw["data_import_timestamp"],
+        }
+    )
+
+
+def _dictionary(column: pa.ChunkedArray) -> pa.DictionaryArray:
+    return cast("pa.DictionaryArray", column.combine_chunks())
+
+
+def _groups(table: pa.Table, indices: pa.Array, labels: pa.Array) -> list[tuple[str, pa.Table]]:
+    """For each distinct label, sorted, the rows of `table` whose `indices` point at it, in
+    `table`'s order. One stable sort by label, then a slice per label."""
+    names = sorted(set(cast("list[str]", labels.to_pylist())))
+    label_rank = pc.index_in(labels, value_set=pa.array(names, pa.string())).to_numpy()
+    row_rank = label_rank[indices.to_numpy(zero_copy_only=False)]
+    ordered = table.take(pa.array(np.argsort(row_rank, kind="stable")))
+    counts = np.bincount(row_rank, minlength=len(names))
+    starts = np.cumsum(counts) - counts
+    return [
+        (name, ordered.slice(start, count))
+        for name, start, count in zip(names, starts.tolist(), counts.tolist(), strict=True)
+    ]
+
+
+def _examples(values: pa.Array | pa.ChunkedArray | list[str]) -> str:
+    items = sorted(cast("list[str]", values if isinstance(values, list) else values.to_pylist()))
+    more = f" and {len(items) - _EXAMPLES} more" if len(items) > _EXAMPLES else ""
+    return f"{items[:_EXAMPLES]}{more}"
+
+
+__all__ = [
+    "PlatformParts",
+    "PlatformRefusal",
+    "build_platform_parts",
+    "stage_platform_parts",
+]

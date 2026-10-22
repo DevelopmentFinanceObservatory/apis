@@ -85,12 +85,12 @@ Gated by `DFO_SKILLS_SURFACE=true` (or `1`). Serves the published skills catalog
 
 Every response carries a fixed set of platform headers:
 
-| Header                      | Present on                                                                                                                                                                                                       |
-| :-------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `x-dfo-trace-id`            | Every response except one marked shared-cacheable.                                                                                                                                                               |
-| `x-dfo-commit`              | Every response.                                                                                                                                                                                                  |
-| `Server-Timing`             | Every response that is neither an event stream nor shared-cacheable, carrying a `total` metric first, then per-surface phase names where a surface reports them (for example datasets' `render`/`store`/`sign`). |
-| `Strict-Transport-Security` | Every response.                                                                                                                                                                                                  |
+| Header                      | Present on                                                                                                                                                                                                                 |
+| :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `x-dfo-trace-id`            | Every response except one marked shared-cacheable.                                                                                                                                                                         |
+| `x-dfo-commit`              | Every response.                                                                                                                                                                                                            |
+| `Server-Timing`             | Every response that is neither an event stream nor shared-cacheable, carrying a `total` metric first, then per-surface phase names where a surface reports them (for example datasets' `render`/`store_rendering`/`sign`). |
+| `Strict-Transport-Security` | Every response.                                                                                                                                                                                                            |
 
 Every surface's `GET /healthz` body is `{status, build, capability_version}`, with `build` equal to the commit the `x-dfo-commit` header carries. Search's success bodies additionally nest `diagnostics.trace_id` (matching the header) and `diagnostics.timing_ms` (`total` plus a per-step breakdown). A streamed `POST /api/search/resolve` response carries its own total in the terminal `done` event's `elapsed_ms` rather than a `Server-Timing` header, since headers go out before the stream's first byte and the request's total duration is not yet known at that point.
 

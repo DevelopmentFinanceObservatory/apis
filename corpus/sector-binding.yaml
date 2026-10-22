@@ -144,9 +144,6 @@
   query: population policies and reproductive health ODA gross disbursements to Kenya, 2010 to 2024
   why: Extraction splits the ask into "population policies" and "reproductive health ODA gross disbursements"; both sides must stay on CRS and fold into one answer bound to 130. Depends on extraction.
   tags: {theme: health, entity: country, direction: destination_only, unit: default, time: range, operation: union, breakdown: sector, door: raw_text, phrasing: technical, probe: [sector_binding]}
-  # Extraction splits off "population policies" as its own part with no CRS provenance and no ODA
-  # word, so that part resolves outside CRS and refuses on "policies", and the answer is mixed.
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode130}}

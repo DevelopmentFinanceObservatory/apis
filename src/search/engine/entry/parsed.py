@@ -32,7 +32,7 @@ from search.engine.enrichment import _stream_slot_options
 from search.engine.entity_text import ENTITY_LIKE_PHRASING, detect_entity_like_phrasing
 from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
-from search.engine.envelope import _terminal_events, now_ms
+from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError
 from search.engine.events import (
     DoneEvent,
@@ -51,7 +51,7 @@ from search.engine.fanout import (
 )
 from search.engine.interpret import PinnedResolved
 from search.engine.options.population_memo import OptionsPopulationMemo
-from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.refs import confirm_dcids_present
 from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import answer_events
@@ -558,8 +558,24 @@ async def handle(
     if scope is not None:
         cached = await scope.lookup_parsed_input(inp)
         if cached is not None:
-            for ev in _terminal_events(cached, start_ms=start_ms, timed_out=scope.served_timed_out):
-                yield ev
+            async with aclosing(
+                scope.hit_events(
+                    cached,
+                    start_ms=start_ms,
+                    place_options=replayed_place_options(
+                        stream=params.stream_option_coverage,
+                        graph=graph,
+                        sdmx=sdmx,
+                        materialise_graph=materialise_graph,
+                        materialise_sdmx=materialise_sdmx,
+                        pool=place_options_pool,
+                        coverage=params.coverage,
+                        population_memo=population_memo,
+                    ),
+                )
+            ) as hit:
+                async for ev in hit:
+                    yield ev
             return
 
     parts_with_indices = _dedupe_parts_with_indices(inp.parts)
@@ -602,6 +618,7 @@ async def handle(
             resolver=resolver,
             admission=admission,
             llm=llm,
+            binder=params.binder,
             sdmx=sdmx,
             materialise_graph=materialise_graph,
             materialise_sdmx=materialise_sdmx,
@@ -651,15 +668,19 @@ async def handle(
             yield event
         slot_options_warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
+        incomplete: list[str] = []
         async for ev in _stream_slot_options(
             [region],
             deadline=params.deadline,
             warnings_out=slot_options_warnings,
             late_departures_out=late_departures,
+            incomplete_out=incomplete,
             response=response,
             answered=[region],
         ):
             yield ev
+        if scope is not None:
+            scope.note_health(trailing_incomplete=bool(incomplete))
         yield DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=out.timed_out,
@@ -687,6 +708,7 @@ async def handle(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=params.binder,
         sdmx=sdmx,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,

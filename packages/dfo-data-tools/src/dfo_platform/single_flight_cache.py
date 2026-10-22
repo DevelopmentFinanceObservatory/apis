@@ -350,6 +350,30 @@ class SingleFlightCache[K, V]:
                 found[key] = entry[1]
         return found
 
+    def stamp_key(self) -> str:
+        """The current generation stamp's key, for a caller to pass back to `offer`."""
+        return self._generation.stamp().key
+
+    def offer(self, key: K, value: V, *, stamp_key: str) -> bool:
+        """Store `value` under `key` without fetching, joining or waiting on a flight.
+
+        Stores only when the generation stamp's key is still `stamp_key`, read by the caller
+        before it computed `value`, and no live entry holds `key`. Return whether it stored.
+        Counts no hit or miss."""
+        if not self.enabled:
+            return False
+        stamp = self._generation.stamp()
+        if stamp.key != stamp_key:
+            return False
+        full_key = (stamp_key, key)
+        with self._lock:
+            now = self._clock()
+            entry = self._store.get(full_key)
+            if entry is not None and entry[0] > now:
+                return False
+            self._publish_locked(full_key, value, ttl=self._ttl_for_stamp(stamp), now=now)
+        return True
+
     def _claim_sync(
         self, key: K, full_key: tuple[str, K], *, ttl: float
     ) -> tuple[bool, _SyncSlot[K, V] | None, V | _Miss]:

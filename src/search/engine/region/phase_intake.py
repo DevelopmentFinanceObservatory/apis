@@ -11,8 +11,9 @@ from typing import Final, cast
 
 import dc_graph
 from code_index.shared import get_index
+from dfo_platform.timings import PhaseTimings, collecting
 from entity_resolution import Ambiguous, Group, Resolved
-from origin_catalogue import recording_un_blocked_places
+from origin_catalogue import note_un_unserved, recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
@@ -46,6 +47,12 @@ from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_r
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
 # expansion. derive_shapes checks the confirmed count to bound the actual read.
 _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES = 6
+
+# With `SEARCH_UN_ON_FIRST_MENU`, our pass merges the UN leg's shapes, waiting for them,
+# only when no shape of its own has a measured recall score of at least this
+# (`_holds_a_strong_shape`). A pass holding such a shape never takes the UN pool, so its
+# answer does not wait on the leg.
+UN_MERGE_WEAK_SCORE: Final = 0.7
 
 logger = logging.getLogger(__name__)
 
@@ -453,10 +460,30 @@ def not_admitted_entity(place_set: PlaceSet) -> RoleNotAdmittedEntity:
     )
 
 
-async def _derive_pool(state: ResolveState, pool: Sequence[DetectedSV]) -> list[ShapeDraft]:
-    """The shapes `pool`'s candidates derive, off the event loop. Raises
-    `RoleSignatureError` when no candidate group has a consistent entity-role signature."""
+async def _derive_pool(
+    state: ResolveState, pool: Sequence[DetectedSV], *, timings: PhaseTimings
+) -> list[ShapeDraft]:
+    """The shapes `pool`'s candidates derive, off the event loop, with derivation's stages
+    (`derive.derive_shapes`) recorded on `timings`. Raises `RoleSignatureError` when no
+    candidate group has a consistent entity-role signature."""
     pool_svs = [c.dcid for c in pool]
+
+    def derive() -> list[ShapeDraft]:
+        with collecting(timings):
+            return derive_shapes(
+                confirmed_svs=pool_svs,
+                graph=state.graph,
+                sv_scores={c.dcid: c.score for c in pool},
+                sv_types={c.dcid: c.type_of for c in pool},
+                rival_svs=frozenset(c.dcid for c in pool if c.rival),
+                # Use recall's country snapshot. Place sets and Group members stay off the
+                # floor.
+                place_dcids=state.recall_only_place_dcids,
+                full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
+                deadline=state.deadline,
+                coverage=state.coverage.index,
+            )
+
     # Dated observation reads use ``needs_dates=True``. This scope lets the availability
     # probe share that cache key when raw recall has at most 6 candidates. derive_shapes
     # rechecks the limit after confirmation and Topic expansion, bounding the full-history
@@ -464,18 +491,7 @@ async def _derive_pool(state: ResolveState, pool: Sequence[DetectedSV]) -> list[
     with force_full_facets(
         state.date_request is not None and len(pool_svs) <= _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES
     ):
-        return await asyncio.to_thread(
-            derive_shapes,
-            confirmed_svs=pool_svs,
-            graph=state.graph,
-            sv_scores={c.dcid: c.score for c in pool},
-            sv_types={c.dcid: c.type_of for c in pool},
-            rival_svs=frozenset(c.dcid for c in pool if c.rival),
-            # Use recall's country snapshot. Place sets and Group members stay off the floor.
-            place_dcids=state.recall_only_place_dcids,
-            full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
-            deadline=state.deadline,
-        )
+        return await asyncio.to_thread(derive)
 
 
 async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
@@ -497,7 +513,8 @@ async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
         recording_degraded_reads(detached=True) as lost,
     ):
         try:
-            shapes = await _derive_pool(state, candidates)
+            # The leg runs beside our pass, so its stages stay out of the part's timing.
+            shapes = await _derive_pool(state, candidates, timings=PhaseTimings())
         except RoleSignatureError:
             shapes, missed = [], None
         except _UPSTREAM_FAILURES as exc:
@@ -529,6 +546,36 @@ async def un_pool_shapes(leg: UnLeg, *, bound: float | None) -> UnPool:
     return leg.task.result()
 
 
+def _holds_a_strong_shape(shapes: Sequence[ShapeDraft]) -> bool:
+    """Whether a shape of `shapes` has a measured recall score of at least
+    `UN_MERGE_WEAK_SCORE`."""
+    return any(
+        score is not None and score >= UN_MERGE_WEAK_SCORE
+        for score in (shape.measured_score for shape in shapes)
+    )
+
+
+async def _merge_un_pool(state: ResolveState, leg: UnLeg) -> None:
+    """Append the UN leg's shapes to our pass's (`ResolveState.shapes_found`) when our pass
+    holds no strong shape (`_holds_a_strong_shape`), so both pools meet the same admission,
+    each its own score floor, and one menu.
+
+    A part holding a strong shape never takes the pool, whenever the leg finishes, so its
+    answer does not depend on the UN leg's latency; the leg stays for `pipeline._fill_gap`.
+    Any other part waits for the leg (`un_pool_shapes`), and a late or failed leg leaves
+    the pool's reason in `ResolveState.un_pool` for its answer to carry. The reads a merged
+    pool could not serve join the part's records, since the pool reaches its menu."""
+    if _holds_a_strong_shape(state.shapes_found):
+        return
+    state.un_pool = pool = await un_pool_shapes(leg, bound=state.deadline)
+    if pool.missed is not None:
+        return
+    state.shapes_found = [*state.shapes_found, *pool.shapes]
+    note_un_unserved(pool.unserved)
+    for read in pool.lost:
+        note_degraded_read(read)
+
+
 async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     """Confirm the pass's recall candidates and derive role-compatible shapes.
 
@@ -536,15 +583,21 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     and shape derivation as one task beside it (`ResolveState.un_leg`) when the part's
     scope allows a UN provenance (`source_choice.allows_un_system`) and the part names no
     series code, since a code part's answer stands without a UN pass
-    (`pipeline._un_pass_skip`). Our pass never waits
-    for that task; the UN pass, which runs only when ours ends no_data
-    (`pipeline._fill_gap`), takes its shapes, already in `state.shapes_found`. Return
+    (`pipeline._un_pass_skip`). With `SEARCH_UN_ON_FIRST_MENU`, our pass holding no strong
+    shape appends that task's shapes to its own (`_merge_un_pool`). Otherwise our pass never waits for the
+    task; the UN pass, which runs when ours ends no_data (`pipeline._fill_gap`), takes its
+    shapes, already in `state.shapes_found`. Return
     ``role_signature_incompatible`` or ``variable_not_resolved`` when the pass derives no
     shape, and ``entity_role_not_admitted`` when all shapes fail role checks. A part whose
     series code named its candidates (`ResolveState.source_code`) and derives no shape from
     them refuses ``source_code_not_held`` in place of ``variable_not_resolved``
     (`ResolveState.no_data`). Surviving
     shapes proceed to ranking.
+
+    Beside `shape`, `state.timing` gets our pass's derivation stages (`derive.derive_shapes`:
+    `shape_arcs`, `shape_probe` with `shape_probe_coverage` inside it, `shape_labels`,
+    `shape_groups`) and the admission prune,
+    `shape_admission`. The UN leg's derivation runs concurrently and records none of them.
     """
     rcl = cast(Recall, state.rcl)
     t0 = state.shape_t0 = now_ms()
@@ -559,10 +612,15 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
         # hit as it did while its provenance was admitted; derivation reads each as its
         # successor.
         ours = rcl.candidates if rcl.hits is None else rcl.hits
+        derive_timings = PhaseTimings()
         try:
-            state.shapes_found = await _derive_pool(state, ours)
+            state.shapes_found = await _derive_pool(state, ours, timings=derive_timings)
         except RoleSignatureError:
             state.shapes_found, signature_refused = [], True
+        finally:
+            state.timing.update({name: round(ms) for name, ms in derive_timings.snapshot().items()})
+        if state.un_leg is not None and settings().un_on_first_menu:
+            await _merge_un_pool(state, state.un_leg)
     shapes_found = state.shapes_found
 
     # No confirmed StatVar means there is no shape to bind.
@@ -586,7 +644,9 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
         return state.no_data("variable_not_resolved")
 
     # Prune before ranking so every later count sees only compatible shapes.
+    admission_t0 = now_ms()
     shapes_found, never_admitted = await _prune_shapes_by_admission(state, shapes_found)
+    state.timing["shape_admission"] = now_ms() - admission_t0
     state.shapes_found = shapes_found
     if not shapes_found:
         state.timing["shape"] = now_ms() - t0

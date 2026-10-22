@@ -35,7 +35,7 @@ def _index_members(*dcids: str) -> dict[str, IndexMemberFacts]:
 
 def _arcs_from_real_row(dcid: str) -> dict:
     """A node_arcs-shaped dict asserting the same constraints as the real
-    packaged row `dcid`, proving open_constraint_axes reads ArcsMemberFacts
+    fixture row `dcid`, proving open_constraint_axes reads ArcsMemberFacts
     (recall-sourced) identically to IndexMemberFacts (index-sourced), the
     one property the MemberFacts protocol exists to guarantee."""
     row = next(r for r in get_index().statvars if r.dcid == dcid)

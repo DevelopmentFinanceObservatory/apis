@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import _build_part
 from search.engine.extract import DateRequest
@@ -31,6 +31,7 @@ from search.models import (
 )
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     build_coverage_index,
@@ -123,7 +124,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 class _CandidatesBindLLM:
@@ -133,7 +134,7 @@ class _CandidatesBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[1]), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
 def _run(
@@ -679,7 +680,7 @@ class _BindLLMWithConstraint:
             kind="value",
             value_dcids=[_RELAX_VAL_MATCHED],
         )
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[binding]), None
+        return elected_reply(0, bindings=[binding]), None
 
 
 def _relaxed_usa_to_kenya(monkeypatch, date_request: DateRequest | None):

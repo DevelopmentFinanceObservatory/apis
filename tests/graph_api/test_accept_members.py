@@ -15,13 +15,13 @@ import pytest
 from fastapi.testclient import TestClient
 from resolvekit.core.model.result import CandidateSummary
 
-import code_index.shared as code_index_shared
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import CodeRow
 from entity_resolution.resolver import _near_matches
 from graph_api import cursor
 from graph_api.doors.node import NODE_MEMBERSHIP_SLOT
+from tests.graph_release.support import serving_index
 
 from .conftest import FakeGraphNodeReader, make_client, make_resolver
 
@@ -60,7 +60,7 @@ def _assert_refused_at_the_cursor(response: Any) -> None:
 
 @contextmanager
 def _serving_code_index(index: CodeIndex) -> Iterator[None]:
-    with code_index_shared._singleton.poisoned_for_test(index):
+    with serving_index(index):
         yield
 
 

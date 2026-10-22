@@ -31,12 +31,14 @@ class Unwired:
 def fake_deps(**overrides: object) -> Deps:
     """A `Deps` of offline doubles. Writers, the head store and the operation store are the null
     implementations, the task client is a `FakeTaskClient`, and every other client or store is
-    `Unwired` unless `overrides` names it. No breadth reader is bound, `now` defaults to `utc_now`, and the executors and
-    semaphore follow `settings`."""
+    `Unwired` unless `overrides` names it. A `code_index` override serves every read, and without
+    one each read takes `get_index()`. No breadth reader is bound, `now` defaults to `utc_now`,
+    and the executors and semaphore follow `settings`."""
     settings = overrides.pop("settings", None) or DatasetsBuildSettings.from_env()
     assert isinstance(settings, DatasetsBuildSettings)
     read_executor, work_executor = build_executors(settings)
-    code_index = overrides.get("code_index") or get_index()
+    given_index = overrides.pop("code_index", None)
+    index_source = get_index if given_index is None else lambda: given_index
     graph = overrides.get("graph", Unwired("graph"))
     defaults: dict[str, object] = {
         "settings": settings,
@@ -46,8 +48,8 @@ def fake_deps(**overrides: object) -> Deps:
         "task_client": FakeTaskClient(),
         "coverage": get_coverage_service(),
         "rate_cache": RateTableCache(),
-        "code_index": code_index,
-        "enrichment": EnrichmentLookup(graph, parties=code_index.parties),
+        "code_index_source": index_source,
+        "enrichment": EnrichmentLookup(graph, parties=lambda: index_source().parties),
         "materialiser_build": "test-build",
         "now": utc_now,
         "variable_breadth": None,

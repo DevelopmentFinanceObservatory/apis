@@ -20,7 +20,7 @@ is unverifiable, n/a or unreached, since none of those says whether the answer w
 no ``answer`` score.
 
 Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``. The nightly also reads the
-graph settings, ``COVERAGE_ARTIFACT_URI`` and ``ORIGIN_CATALOGUE_URI`` the checks score
+graph settings, ``GRAPH_RELEASE_URI`` and ``ORIGIN_CATALOGUE_URI`` the checks score
 against.
 """
 
@@ -332,14 +332,20 @@ def _client() -> Langfuse:
 def _run_nightly(
     by_file: Mapping[str, Sequence[Case]], url: str, schema: Mapping[str, Any], langfuse: Langfuse
 ) -> tuple[list[NightlyCase], dict[str, str | None]]:
+    from graph_release.context import bound_served_release
+    from graph_release.service import get_release_service
     from origin_catalogue import bound_catalogue
     from origin_catalogue.service import get_catalogue_service
     from search.eval.live_clients import score_clients
 
-    # The graph client reads under a bound origin catalogue; the experiment's tasks and the
-    # scoring threads inherit this binding.
+    # The graph client reads under a bound origin catalogue and the served graph release. The
+    # experiment's tasks and the scoring threads inherit both bindings.
     catalogue = get_catalogue_service().snapshot()
-    with score_clients() as clients, bound_catalogue(catalogue):
+    with (
+        score_clients() as clients,
+        bound_catalogue(catalogue),
+        bound_served_release(get_release_service()),
+    ):
         ctx = ScoreContext(
             schema=WireSchema.from_document(schema),
             graph=clients.graph,

@@ -7,19 +7,43 @@ child, and Africa as an Earth child. Earth supports children but not peers.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import threading
+import time
+from collections.abc import Coroutine
 
 import pytest
 from pydantic import TypeAdapter
 
+from dfo_platform.build import build_commit
+from graph_generation import FakeGeneration
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import SubjectPage
+from origin_catalogue import current_catalogue
 from search.engine.envelope import now_ms
+from search.engine.errors import EngineInfraError
 from search.engine.events import Event, PlaceOptionsEvent, serialize_sse
+from search.engine.options.options_response_cache import (
+    ComputedOptions,
+    OptionsResponseCache,
+    options_response_cache_key,
+)
 from search.engine.options.population_memo import OptionsPopulationMemo
-from search.engine.region.place_options import PlaceOptionsPool, build_place_options_events
-from search.models import BaseIdentity, GraphRef, IdentityWindowAll, SlotOption, SlotValue
+from search.engine.options.resolve import resolve_options_target
+from search.engine.region import place_options
+from search.engine.region.place_options import (
+    PlaceOptionsPool,
+    build_place_options_events,
+)
+from search.models import (
+    BaseIdentity,
+    GraphRef,
+    IdentityWindowAll,
+    OptionsRequest,
+    SlotOption,
+    SlotValue,
+)
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph
@@ -241,7 +265,7 @@ class TestPlaceOptionsPoolMechanics:
             resolve_finished.set()
             return object()
 
-        def _fake_build_options_response(*args, **kwargs):
+        def _fake_compute_options(*args, **kwargs):
             scope_called.set()
             raise AssertionError("the scope stage must never run once cancelled")
 
@@ -250,8 +274,8 @@ class TestPlaceOptionsPoolMechanics:
             _fake_resolve_options_target,
         )
         monkeypatch.setattr(
-            "search.engine.region.place_options.build_options_response",
-            _fake_build_options_response,
+            "search.engine.region.place_options.compute_options",
+            _fake_compute_options,
         )
 
         async def _body():
@@ -334,16 +358,17 @@ class TestPlaceOptionsPoolMechanics:
                 return super().node_subjects(*args, **kwargs)
 
         owner_reader = _BlockingReader(arcs=_ARCS, subjects=_SUBJECTS, facets=_PLACE_FACETS)
-        owner_thread = threading.Thread(target=lambda: memo.get_or_derive(identity, owner_reader))
+        owner_thread = threading.Thread(
+            target=contextvars.copy_context().run,
+            args=(lambda: memo.get_or_derive(identity, owner_reader),),
+        )
         owner_thread.start()
         assert owner_started.wait(timeout=5), "owner never reached the fake reader"
 
         def _fail_if_called(*args, **kwargs):
-            raise AssertionError("build_options_response must never run: the resolve stage dropped")
+            raise AssertionError("compute_options must never run: the resolve stage dropped")
 
-        monkeypatch.setattr(
-            "search.engine.region.place_options.build_options_response", _fail_if_called
-        )
+        monkeypatch.setattr("search.engine.region.place_options.compute_options", _fail_if_called)
 
         pool = PlaceOptionsPool.build(max_workers=2)
         try:
@@ -371,9 +396,13 @@ class TestPlaceOptionsPoolMechanics:
 
         assert events == []
 
-    def test_one_free_permit_at_the_scope_stage_still_runs_both_scopes_in_order(self):
+    @pytest.mark.parametrize("cached", [False, True], ids=["uncached", "cached"])
+    def test_one_free_permit_at_the_scope_stage_still_runs_both_scopes_in_order(self, cached):
         """With one worker, peers and children run sequentially and retain their order."""
-        pool = PlaceOptionsPool.build(max_workers=1)
+        pool = PlaceOptionsPool.build(
+            max_workers=1,
+            options_cache=OptionsResponseCache(enabled=True, max_entries=10) if cached else None,
+        )
         try:
             events = asyncio.run(
                 build_place_options_events(
@@ -396,6 +425,219 @@ class TestPlaceOptionsPoolMechanics:
         assert peer_dcids == {_KENYA, _UGANDA}
         child_dcids = {opt.value.ref.ref for opt in by_scope["children"].options}
         assert child_dcids == {_KENYA_COAST}
+
+
+def _kenya_place_options(
+    pool: PlaceOptionsPool, *, start_ms: int | None = None
+) -> Coroutine[object, object, list[PlaceOptionsEvent]]:
+    return build_place_options_events(
+        "spec-1",
+        _identity({"observationAbout": [_KENYA]}),
+        graph=_graph(),
+        sdmx=FakeSdmxClient(observations={}),
+        materialise_graph=_materialise_graph(),
+        pool=pool,
+        coverage=_COVERAGE,
+        start_ms=now_ms() if start_ms is None else start_ms,
+    )
+
+
+def _run(pool: PlaceOptionsPool, *, start_ms: int | None = None) -> list[PlaceOptionsEvent]:
+    return asyncio.run(_kenya_place_options(pool, start_ms=start_ms))
+
+
+def _kenya_peers_key() -> str:
+    """The options route's cache key for Kenya's peers, which the place-options fill uses."""
+    request = OptionsRequest.model_validate(
+        {
+            "identity": _identity({"observationAbout": [_KENYA]}),
+            "for": {"role": "observationAbout", "scope": "peers"},
+            "include_coverage": True,
+        }
+    )
+    target = resolve_options_target(request, graph=_graph(), materialise_graph=_materialise_graph())
+    return options_response_cache_key(
+        request,
+        target,
+        build_commit=build_commit(),
+        coverage=_COVERAGE,
+        catalogue=current_catalogue(),
+    )
+
+
+_COVERAGE = empty_coverage_snapshot()
+
+
+class _CountingBuild:
+    """`compute_options`, counting its calls."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self._real = place_options.compute_options
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self._real(*args, **kwargs)
+
+
+class TestPlaceOptionsThroughTheOptionsCache:
+    """A pool carrying the options route's cache reads each scope through it."""
+
+    def test_a_miss_fills_the_route_entry_and_a_hit_computes_nothing(self, monkeypatch):
+        build = _CountingBuild()
+        monkeypatch.setattr(place_options, "compute_options", build)
+        cache = OptionsResponseCache(enabled=True, max_entries=10)
+        pool = PlaceOptionsPool.build(max_workers=2, options_cache=cache)
+        try:
+            first = _run(pool)
+            assert build.calls == 2
+            second = _run(pool)
+        finally:
+            pool.shutdown()
+        assert build.calls == 2
+        assert second == first
+        assert [ev.scope for ev in first] == ["peers", "children"]
+
+        # The options route keys the same request the same way and finds the peers entry.
+        def _fail(_deadline: float):
+            raise AssertionError("the route must read the stored entry")
+
+        stored = asyncio.run(
+            cache.get_or_compute(_kenya_peers_key(), _fail, deadline=time.monotonic() + 5)
+        )
+        assert stored.options.items == first[0].options
+
+    def test_a_scope_job_outliving_its_stream_still_fills_the_cache(self, monkeypatch):
+        """The stream's budget cancels the coroutine while its scope jobs run. Each job
+        offers its own result, so the cache holds both scopes once the jobs finish.
+
+        The cancel waits until both jobs run: a job still queued on the executor when its
+        caller is cancelled is cancelled with it and computes nothing."""
+        both_started = threading.Barrier(3)
+        release = threading.Event()
+        real = place_options.compute_options
+
+        def held(*args, **kwargs):
+            both_started.wait(timeout=5)
+            assert release.wait(timeout=5), "test setup: the jobs were never released"
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(place_options, "compute_options", held)
+        cache = OptionsResponseCache(enabled=True, max_entries=10)
+        pool = PlaceOptionsPool.build(max_workers=2, options_cache=cache)
+
+        async def scenario() -> None:
+            task = asyncio.create_task(_kenya_place_options(pool))
+            await asyncio.to_thread(both_started.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            release.set()
+
+        try:
+            asyncio.run(scenario())
+            waited_until = time.monotonic() + 5
+            while cache.stats()["entries"] < 2 and time.monotonic() < waited_until:
+                time.sleep(0.01)
+        finally:
+            pool.shutdown()
+        assert cache.stats()["entries"] == 2
+
+    def test_a_generation_change_during_the_scope_stage_stores_nothing(self, monkeypatch):
+        """Option sets read before the generation moved are dropped, not filed under the
+        new stamp."""
+        generation = FakeGeneration(token="gen-a")
+        real = place_options.compute_options
+
+        def build_then_advance(*args, **kwargs):
+            computed = real(*args, **kwargs)
+            generation.advance("gen-b")
+            return computed
+
+        monkeypatch.setattr(place_options, "compute_options", build_then_advance)
+        cache = OptionsResponseCache(enabled=True, max_entries=10, generation=generation)
+        pool = PlaceOptionsPool.build(max_workers=2, options_cache=cache)
+        try:
+            events = _run(pool)
+        finally:
+            pool.shutdown()
+        assert [ev.scope for ev in events] == ["peers", "children"]
+        assert cache.stats()["entries"] == 0
+
+    def test_a_failing_options_request_in_flight_neither_delays_nor_fails_the_stream(self):
+        """The stream does not join an options POST computing the same key. That failure stays
+        the POST's own, and the stream returns its own result while the POST still runs."""
+        cache = OptionsResponseCache(enabled=True, max_entries=10)
+        key = _kenya_peers_key()
+        release = threading.Event()
+
+        def failing(_deadline: float) -> ComputedOptions:
+            assert release.wait(timeout=5), "test setup: the flight was never released"
+            raise EngineInfraError("the options request's read failed")
+
+        async def scenario() -> tuple[list[PlaceOptionsEvent], bool]:
+            flight = asyncio.create_task(
+                cache.get_or_compute(key, failing, deadline=time.monotonic() + 5)
+            )
+            await asyncio.sleep(0)  # the options request starts its flight
+            pool = PlaceOptionsPool.build(max_workers=2, options_cache=cache)
+            try:
+                events = await _kenya_place_options(pool)
+            finally:
+                pool.shutdown()
+            flight_still_running = not flight.done()
+            release.set()
+            with pytest.raises(EngineInfraError):
+                await flight
+            return events, flight_still_running
+
+        events, flight_still_running = asyncio.run(scenario())
+        assert flight_still_running, "the stream returned without waiting on the flight"
+        assert [ev.scope for ev in events] == ["peers", "children"]
+
+    @pytest.mark.parametrize("warm", [False, True], ids=["miss", "hit"])
+    def test_a_busy_scope_stage_skips_misses_at_once_and_still_serves_hits(self, monkeypatch, warm):
+        """Resolution takes the one permit, and another request takes it back before the scope
+        stage. Misses are skipped without waiting and store nothing. Stored scopes need no
+        permit."""
+        build = _CountingBuild()
+        monkeypatch.setattr(place_options, "compute_options", build)
+        cache = OptionsResponseCache(enabled=True, max_entries=10)
+        warmed = []
+        if warm:
+            pool = PlaceOptionsPool.build(max_workers=2, options_cache=cache)
+            try:
+                warmed = _run(pool)
+            finally:
+                pool.shutdown()
+        calls = build.calls
+
+        admission = _TakenBackAfterResolve()
+        executor = PlaceOptionsPool.build(max_workers=1).executor
+        pool = PlaceOptionsPool(executor=executor, admission=admission, options_cache=cache)
+        began = time.monotonic()
+        try:
+            events = _run(pool)
+        finally:
+            pool.shutdown()
+        assert admission.retaken
+        assert time.monotonic() - began < 5, "a busy pool skips; it never waits for a permit"
+        assert build.calls == calls
+        assert events == warmed
+        assert cache.stats()["entries"] == (2 if warm else 0)
+
+
+class _TakenBackAfterResolve(threading.BoundedSemaphore):
+    """One permit, retaken by another request as soon as the resolution stage frees it."""
+
+    def __init__(self) -> None:
+        super().__init__(1)
+        self.retaken = False
+
+    def release(self, n: int = 1) -> None:
+        super().release(n)
+        if not self.retaken:
+            self.retaken = super().acquire(blocking=False)
 
 
 class TestPlaceOptionsPool:

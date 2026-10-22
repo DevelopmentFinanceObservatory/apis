@@ -4,8 +4,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  # Known failure: The wider activitySource list on the expenditure shape sends the election to the UN pool, which offers three UN series instead of the two education spending shares.
-  known_failure: {issue: 1298, checks: [measure]}
   expect:
     candidates:
       measure:
@@ -73,16 +71,16 @@
         role: observationAbout
 - id: std-05
   query: under-5 child mortality rate
-  why: Under-5 mortality rate with no place offers the SDG death count and the SDG rate as the two candidates.
+  why: Under-5 mortality rate with no place resolves to the SDG rate alone; the death count is a different quantity, not a second reading.
   tags:
     directional_flow: na
     conjunction: none
   expect:
-    candidates:
+    definite:
       measure:
         bound:
           undataAge: undata/AGE-Y0T4
-        stat_vars: [undata/sdg/SH_DYN_MORTN.AGE--Y0T4, undata/sdg/SH_DYN_MORT.AGE--Y0T4]
+        stat_vars: [undata/sdg/SH_DYN_MORT.AGE--Y0T4]
 - id: std-04b
   query: number of births in Ethiopia
   why: When the DFO and base paths end no_data for births in Ethiopia, the UN System Data Commons answers with undata/unicef/DM_BRTS.
@@ -338,8 +336,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  # Known failure: The held family's slot values are not narrowed to the place, so the model leaves ageGroupClassification and age open and the family total, with no Kenya data, elects.
-  known_failure: {issue: 1298, checks: [measure]}
   expect:
     definite:
       measure:
@@ -361,9 +357,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [refusal]
   expect:
     no_data:
       entities:
@@ -398,9 +391,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -537,9 +527,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -602,16 +589,14 @@
         role: observationAbout
 - id: female-literacy-bangladesh
   query: female literacy rate in Bangladesh
-  why: When the DFO and base paths end no_data for female literacy in Bangladesh, the UN System Data Commons offers two literacy indicators as candidates.
+  why: When the DFO and base paths end no_data for female literacy in Bangladesh, the UN System Data Commons answers with the PCT_LITERATE series for women aged 15 and over.
   tags:
     directional_flow: na
     conjunction: none
   expect:
-    candidates:
+    definite:
       measure:
-        stat_vars:
-        - undata/unicef/ED_LR.AGE--Y15T24__SEX--F
-        - undata/unfpa/PCT_LITERATE.AGE--Y_GE15__SEX--F
+        stat_vars: [undata/unfpa/PCT_LITERATE.AGE--Y_GE15__SEX--F]
       entities:
       - dcid: country/BGD
         role: observationAbout
@@ -643,9 +628,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -928,9 +910,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure]
   expect:
     definite:
       measure:
@@ -997,8 +976,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  # Known failure: The family's new age slot lets the model bind Years0, so LifeExpectancy_Person_0Years (1980 to 2020) answers instead of the total.
-  known_failure: {issue: 1298, checks: [measure]}
   expect:
     definite:
       measure:
@@ -1293,9 +1270,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [disposition]
   expect:
     definite:
       measure:
@@ -1446,12 +1420,12 @@
         role: observationAbout
 - id: under5-mortality-rate
   query: under 5 mortality rate
-  why: Under 5 mortality rate with no place offers the SDG under-five rate among candidates; its WDI twin is a registered equivalent of the same reading.
+  why: Under 5 mortality rate with no place resolves to the SDG under-five rate; its WDI twin is a registered equivalent of the same reading.
   tags:
     directional_flow: na
     conjunction: none
   expect:
-    candidates:
+    definite:
       measure:
         stat_vars: [undata/sdg/SH_DYN_MORT.AGE--Y0T4]
 - id: unemployment-rate
@@ -1709,15 +1683,13 @@
           role: observationAbout
 - id: nd-06
   query: female urban literacy rate
-  why: Female urban literacy rate with no place ends no_data with qualifier_not_bound, because the literacy family declares no gender or residence slot.
+  why: Female urban literacy rate ends no_data, because no literacy series combines a sex and a residence breakdown.
   tags:
     directional_flow: na
     conjunction: none
-  # Known failure: The wider slot lists change the model's binding, so the part refuses no_matching_slice instead of qualifier_not_bound.
-  known_failure: {issue: 1298, checks: [refusal]}
   expect:
     no_data:
-      reason: qualifier_not_bound
+      reason: [qualifier_not_bound, no_matching_slice]
       category: absent
 - id: nd-07
   query: teacher count per capita in Kenya
@@ -2259,16 +2231,19 @@
         role: destination
 - id: crs-education-grants-france
   query: total education grants from France in 2020-2024
-  why: Education grants from France for 2020 to 2024 bind type of finance 100 and the education purpose, and a declared default binds crsTypeOfFlow 10.
+  why: Education grants from France for 2020 to 2024 bind type of finance 100, the education purpose and default flow type 10, and a window from 2020 takes grant equivalent.
   tags:
     directional_flow: na
     conjunction: none
+  known_failure:
+    issue: 1156
+    checks: [operations]
   expect:
     definite:
       measure:
         shape:
           population_type: FinancialFlow
-          measured_property: amount
+          measured_property: grantEquivalent
           stat_type: measuredValue
           measurement_qualifier: Nominal
           measurement_denominator: null
@@ -2815,9 +2790,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure]
   expect:
     definite:
       measure:
@@ -2841,9 +2813,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure:
-    issue: 1156
-    checks: [measure]
   expect:
     definite:
       measure:

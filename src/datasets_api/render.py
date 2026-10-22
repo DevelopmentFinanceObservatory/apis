@@ -1394,8 +1394,10 @@ def _store_artifact(
     subject_id: str,
     content_version: str,
     artifact_store: ArtifactStore,
+    phase_name: str,
 ) -> ArtifactEntryModel:
-    with phase("store"):
+    """Store `data` as a working-tier artifact, timing the write under `phase_name`."""
+    with phase(phase_name):
         try:
             stored = artifact_store.put(data, tier=Tier.working)
         except ArtifactRecordConflictError as exc:
@@ -2627,7 +2629,7 @@ def render_and_store(
         )
 
     sources = _sources(provenance_refs, citations)
-    with phase("store"):
+    with phase("store_rendering"):
         try:
             with artifact_store.open_put(tier=Tier.working) as sink:
                 if options.bundle:
@@ -3033,6 +3035,7 @@ def render_and_store_series_statistics(
         subject_id=subject_id,
         content_version=content_version,
         artifact_store=artifact_store,
+        phase_name="store_statistics",
     )
 
 
@@ -3046,9 +3049,9 @@ def render_and_store_canonical_frame(
     """Streams the canonical frame of `frame_chunks` into the store as an unsigned artifact,
     holding at most one row group (`materialise.formats.write_canonical_frame`), whatever the
     frame's size. Readers find it on the version record by `CANONICAL_FRAME_RENDERING`. Encoding
-    runs inside the shared `store` phase, so when it runs beside the requested write that phase
-    sums both threads' time."""
-    with phase("store"):
+    runs inside the `store_frame` phase, which overlaps the requested write's `store_rendering`
+    when the two run side by side."""
+    with phase("store_frame"):
         try:
             with artifact_store.open_put(tier=Tier.working) as sink:
                 written = write_canonical_frame(frame_chunks, sink=sink)

@@ -33,6 +33,9 @@ class _GraphDefaults(BaseSettings):
     # Most source documents the documentation route keeps in its cache at once.
     provenance_doc_cache_size: int = Field(default=512, ge=1)
 
+    # Most built node envelopes the node routes keep at once (`graph_api.node_cache`).
+    node_entry_cache_size: int = Field(default=2048, ge=1)
+
     # HTTP timeout of the UN deployment's SDMX client the node reader uses.
     sdmx_timeout_seconds: int = Field(default=30, ge=1)
 
@@ -46,6 +49,7 @@ GRAPH_NODE_POOL_SIZE: int = _defaults.node_pool_size
 GRAPH_RESOLVE_TIMEOUT_SECONDS: int = _defaults.resolve_timeout_seconds
 GRAPH_NODE_TIMEOUT_SECONDS: int = _defaults.node_timeout_seconds
 GRAPH_PROVENANCE_DOC_CACHE_SIZE: int = _defaults.provenance_doc_cache_size
+GRAPH_NODE_ENTRY_CACHE_SIZE: int = _defaults.node_entry_cache_size
 GRAPH_SDMX_TIMEOUT_SECONDS: int = _defaults.sdmx_timeout_seconds
 
 # A DCP read that waits longer than this for a worker logs at WARNING (`log_queue_wait`).

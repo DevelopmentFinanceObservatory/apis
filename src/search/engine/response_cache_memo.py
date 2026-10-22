@@ -8,12 +8,15 @@ lookup. Stored regions hold no task and no relaunch closure
 The memo keeps the in-memory objects, so private attributes on a Spec survive a hit.
 
 Each entry is weighed once, when it is stored, by the heap its region holds (`region_bytes`),
-and entries expire with the generation stamp they were resolved under. The store runs on the
-event loop only.
+and entries expire with the generation stamp they were resolved under. Requests call `get` and
+`put` on the event loop, and the generation provider calls `stats` on its refresh thread.
+`TLRUCache.__len__` and `currsize` expire entries, so reading the size mutates the store; one
+lock covers every operation on the store and the counters.
 """
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -97,6 +100,7 @@ class PartMemo:
         self._hits = 0
         self._misses = 0
         self._oversized = 0
+        self._lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -104,32 +108,36 @@ class PartMemo:
 
     def get(self, stamp_key: str, key: str) -> RegionResult | None:
         """Return the live region under `key` or `None`. A hit becomes most recently used."""
-        entry = self._store.get((stamp_key, key))
-        if entry is None:
-            self._misses += 1
-            return None
-        self._hits += 1
-        return entry.region
+        with self._lock:
+            entry = self._store.get((stamp_key, key))
+            if entry is None:
+                self._misses += 1
+                return None
+            self._hits += 1
+            return entry.region
 
     def put(self, stamp_key: str, key: str, region: RegionResult) -> None:
         """Store `region`, weighed once by `region_bytes`, unless it exceeds the per-entry
         cap."""
         size = region_bytes(region, limit=self._max_entry_bytes)
-        if size > self._max_entry_bytes:
-            self._oversized += 1
-            return
-        self._store[(stamp_key, key)] = _Entry(region=region, size=size)
+        with self._lock:
+            if size > self._max_entry_bytes:
+                self._oversized += 1
+                return
+            self._store[(stamp_key, key)] = _Entry(region=region, size=size)
 
     def stats(self) -> Mapping[str, int]:
         """Hit, miss and oversized counts, the entry count and the bytes held."""
-        return {
-            "hits": self._hits,
-            "misses": self._misses,
-            "oversized": self._oversized,
-            "entries": len(self._store),
-            "bytes": int(self._store.currsize),
-        }
+        with self._lock:
+            return {
+                "hits": self._hits,
+                "misses": self._misses,
+                "oversized": self._oversized,
+                "entries": len(self._store),
+                "bytes": int(self._store.currsize),
+            }
 
     def clear(self) -> None:
         """Drop every entry. Run on the event loop, where a refresh thread schedules it."""
-        self._store.clear()
+        with self._lock:
+            self._store.clear()

@@ -4,13 +4,14 @@ The node, sources, and resolve doors share the graph reader and the bounded
 DCP-read executor, which refuses a read when every worker is busy instead of
 queueing it. Resolve also uses the resolver and generation provider.
 Resolvekit owns a separate single-worker executor. The sources door reads
-currency from the coverage service when one is configured, and keeps the
+currency from the bound release's coverage, and keeps the
 source documents it reads in `provenance_docs`. A variable's facet
 profile comes from the process's shared `FacetProfileCache` for its source
 (`materialise.shared_profiles`), whose flights run on an executor no request
 runs on. The national currencies and node facts a
 variable's availability reads beside its profile (`CardReadCaches`) run their
-flights on the DCP-read executor.
+flights on the DCP-read executor. The node routes keep the envelopes they build in
+`node_entries`, which guards every operation with its own lock.
 
 This module holds the bundle and the doors' one way onto the executor,
 `run_dcp_read`, to keep door imports separate from the composition root,
@@ -25,7 +26,7 @@ import logging
 import threading
 from collections.abc import Callable
 from concurrent.futures import BrokenExecutor, Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import TYPE_CHECKING, Annotated, Any, override
 
@@ -36,6 +37,7 @@ from dfo_platform.single_flight_cache import SingleFlightCache
 from dfo_platform.state import StateSlot
 from entity_resolution import EntityResolver
 from graph_api.config import DCP_QUEUE_WAIT_WARN_SECONDS
+from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
 from graph_generation import GenerationProvider
 from materialise.facet_profile import FacetProfileCache
@@ -44,9 +46,7 @@ if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
     from graph_api.card_reads import CardReadCaches
     from materialise.provenance_doc import ProvenanceDoc
-
-    # `series_coverage.shared` needs numpy, which the `graph` extra does not install.
-    from series_coverage.shared import CoverageService
+    from series_coverage.shared import ServedCoverage
 
 
 logger = logging.getLogger(__name__)
@@ -68,17 +68,15 @@ class GraphDeps:
     # Source documents keyed by `(dcid, origin catalogue build id)` and `generation`'s stamp,
     # read on `dcp_executor`.
     provenance_docs: SingleFlightCache[tuple[str, str], ProvenanceDoc]
-    # `None` when `COVERAGE_ARTIFACT_URI` is unset or the artifact failed to load.
-    coverage: CoverageService | None = None
-    # True when `coverage` is `None` because the artifact failed to load, a gap a later start
-    # can clear. An unset URI is a deployment's choice, so it leaves this false.
-    coverage_load_failed: bool = False
+    coverage: ServedCoverage
     # The process's shared facet profiles on a live surface. An injected graph has its own
     # only when the surface was given a profile graph and availability reader, else `None`.
     profile_cache: FacetProfileCache | None = None
     # The national currencies and node facts a variable's availability reads beside its
     # profile, on the DCP-read executor. Set whenever `profile_cache` is.
     card_reads: CardReadCaches | None = None
+    # The envelopes the node routes built, keyed by generation stamp, table builds and dcid.
+    node_entries: NodeEntryCache = field(default_factory=NodeEntryCache)
 
 
 class DcpExecutorShutDown(Exception):

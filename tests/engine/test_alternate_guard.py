@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import sys
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
+from code_index.shared import get_measure_index
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.quantity import (
     DenominatorRead,
@@ -29,6 +30,7 @@ from search.engine.region import resolve_variable
 from search.engine.region.alternate_guard import (
     AlternateJudge,
     QueryPins,
+    _price_basis_vocabulary,
     inadmissible_alternates,
     inadmissible_reason,
     measure_class,
@@ -40,6 +42,7 @@ from search.engine.region.requirements import judge, meets_stray_values
 from search.engine.region.state import Requirement, ValueRule, unapplied_departure
 from search.engine.shape import ShapeDraft
 from search.models import GraphRef, ResolvedQualifier
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -1605,11 +1608,8 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen_shape_index,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
+        return elected_reply(
+            self._chosen_shape_index, bindings=[], also_plausible=self._also_plausible
         ), None
 
 
@@ -2212,3 +2212,15 @@ def test_a_value_word_and_a_drafted_value_of_one_phrase_depart_once():
     ).departures()
 
     assert [fact.asked.casefold() for _warning, fact in departed] == ["male"]
+
+
+def test_the_price_basis_vocabulary_cache_holds_no_measure_index():
+    """A measure index a release swap replaces must be freeable, so the memo keys on the
+    qualifier rows' text. A key holding the index adds a reference to it."""
+    index = dataclasses.replace(get_measure_index(), nouns=())
+    before = sys.getrefcount(index)
+
+    vocabulary = _price_basis_vocabulary(index)
+
+    assert vocabulary
+    assert sys.getrefcount(index) == before

@@ -396,10 +396,10 @@ def _facet_from_coverage_candidate(candidate: _CoverageFacetCandidate) -> Facet:
     """Maps a coverage candidate's `n_obs`, `first_year` and `last_year` to facet count and
     year-grain dates, its first series' end to `first_series_end`, and its years with data
     (from the row year masks) to `dates`, so `overlaps_window` tests the points a window
-    holds. Its `observation_period` comes from the
-    coverage artifact's facet metadata, so `cadences_by_member` can tell a quarterly facet from
-    an annual one whatever the year-grain dates say. Four-digit years sort lexically through
-    9999. This artifact's horizon starts in 1960."""
+    holds. Its `observation_period` comes from the coverage view's facet metadata, so
+    `cadences_by_member` can tell a quarterly facet from an annual one whatever the year-grain
+    dates say. Four-digit years sort lexically through
+    9999. The coverage view's horizon starts in 1960."""
     return Facet(
         dates=tuple(str(year) for year in candidate.years),
         facet_id=candidate.facet_id,
@@ -472,6 +472,31 @@ def role_bearing_facet_candidates(
         last_year=last_year,
         facet_candidates=True,
     )
+
+
+def role_bearing_facet_candidates_by_donor(
+    *, stat_vars: Sequence[str], donors: Sequence[str], coverage: CoverageIndex
+) -> dict[str, dict[str, list[Facet]]]:
+    """Each of `stat_vars`' facet choices at each of `donors` bound alone to the donor role,
+    the recipient open, read in one grouped pass over the variables' rows.
+
+    Each value equals `role_bearing_facet_candidates` with only that donor bound, ranked the
+    same way; a variable and donor with no rows map to `[]`. A variable lacking `RoleNames`,
+    or declaring no donor role, holds no row at any donor, so every value it has is `[]`."""
+    found = coverage.pair_facet_candidates(
+        variables=stat_vars,
+        bound={"donor": frozenset(donors)},
+        pair_roles=("donor",),
+        facet_candidates=True,
+    )
+    by_donor: dict[str, dict[str, list[Facet]]] = {
+        stat_var: {donor: [] for donor in donors} for stat_var in stat_vars
+    }
+    for (stat_var, (donor,)), facet_coverage in found.items():
+        candidates = _coverage_facet_candidates(facet_coverage, metadata=coverage.facet_metadata)
+        ranked = _coverage_rank_candidates(candidates)
+        by_donor[stat_var][donor] = [_facet_from_coverage_candidate(c) for c in ranked]
+    return by_donor
 
 
 def _coverage_facets(

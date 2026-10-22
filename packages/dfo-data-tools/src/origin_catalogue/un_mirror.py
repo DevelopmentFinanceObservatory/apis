@@ -62,7 +62,7 @@ from typing import Final, Literal, Protocol
 import httpx
 
 from artifact_publication.jobs import emit
-from dc_graph import IMPORT_ADDED_CONSTRAINT_PROPERTIES, GraphReadError
+from dc_graph import GraphReadError, dfo_visible
 from origin_catalogue.node_reads import NodeReadFault, NodeRun, chunks, read_arcs, read_subjects
 from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.registry import Registry, UnAgency
@@ -166,10 +166,9 @@ def wire_arcs(arcs: Iterable[UnArc]) -> dict[str, dict[str, list[dict]]]:
 
 
 def import_added(arc: UnArc) -> bool:
-    """Whether `arc` is a `constraintProperties` target naming an
-    `IMPORT_ADDED_CONSTRAINT_PROPERTIES` property, which every served read leaves out
+    """Whether `dc_graph.dfo_visible` hides `arc`, which every served read then leaves out
     (`dc_graph.GraphClient.node_arcs_batch` live, `origin_catalogue.graph` from the tables)."""
-    return arc.property == "constraintProperties" and arc.dcid in IMPORT_ADDED_CONSTRAINT_PROPERTIES
+    return not dfo_visible(arc.property, arc.dcid)
 
 
 @dataclass(frozen=True, slots=True)

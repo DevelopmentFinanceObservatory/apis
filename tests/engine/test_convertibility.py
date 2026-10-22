@@ -15,7 +15,6 @@ from materialise.facets import ElectedDataset, FacetSelection
 from materialise.graph import SubjectPage
 from materialise.rate_tables import RateTableCache
 from materialise.recipes import CONVERSION_NODE_PROPERTIES
-from search.engine.bind import _UniversalBindOutput
 from search.engine.errors import EngineInfraError, EngineInputError
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
@@ -29,6 +28,7 @@ from search.models import (
 )
 from tests.engine import _answer_invariants_world as world_module
 from tests.engine._base_identity import make_identity, subject_entity
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     build_coverage_index,
@@ -48,7 +48,7 @@ class _SoleShapeLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None),
+            elected_reply(0, bindings=[], also_plausible=None),
             None,
         )
 

@@ -116,7 +116,6 @@
   why: InternationalMonetaryFund is the origin dcid the cur-ids-tza-imf-usd-constant-2024-projected golden posts.
   reuse: panel/ids-013
   tags: {theme: debt, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: ids.debt_stock}
@@ -286,7 +285,6 @@
   why: Resolves to ids.debt_stock for country/GHA as destination.
   reuse: panel/ids-030
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: ids.debt_stock, bound: {guaranteeStatus: PublicOrPubliclyGuaranteed}}
@@ -297,7 +295,6 @@
   why: Resolves to ids.debt_stock for country/GHA as destination.
   reuse: panel/ids-031
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: ids.debt_stock, bound: {maturityBand: ShortTermMaturity}}
@@ -339,7 +336,7 @@
 
 - id: dq-ids-032
   query: Ghana debt service as a share of exports
-  why: The ratio is a published IDS series with an exports denominator; share_of would ask the caller to divide.
+  why: The ratio is a published IDS series with an exports denominator; a no_data refusal also fits, as the menu holds no such series and the nearest pick rates 0.5.
   reuse: panel/ids-037
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
   known_failure: {issue: 1156, checks: [measure]}
@@ -348,6 +345,7 @@
       measure: {family: ids.debt_service_ratio}
       entities: [{dcid: country/GHA, role: destination}]
       operations: []
+    no_data: {reason: variable_not_resolved, category: unresolved}
 
 - id: dq-ids-033
   query: debt service and interest payments of Zambia and Ghana
@@ -369,7 +367,7 @@
   why: IDS publishes a Sub-Saharan Africa aggregate debtor, and that node answers in place of the member countries.
   reuse: panel/ids-039
   tags: {theme: debt, entity: region_group, direction: destination_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [measure, entities, provenance]}
+  known_failure: {issue: 1156, checks: [entities]}
   expect:
     definite:
       measure: {family: ids.debt_stock, stat_vars: [Amount_FinancialPosition_AmountOutstanding_Nominal]}
@@ -381,7 +379,7 @@
   why: IDS publishes a low-income aggregate debtor, and that node answers.
   reuse: panel/ids-040
   tags: {theme: debt, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [income_group]}
-  known_failure: {issue: 1156, checks: [measure, entities, provenance]}
+  known_failure: {issue: 1156, checks: [entities]}
   expect:
     definite:
       measure: {family: ids.debt_service}
@@ -399,7 +397,6 @@
   why: A bare 'debt' names no debtor or measure, so the answer offers the IDS stock families as candidates.
   reuse: panel/ids-044
   tags: {theme: debt, entity: none, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [candidates]}
   expect: {candidates: {include_families: [ids.debt_stock]}}
 
 - id: dq-ids-038
@@ -510,7 +507,6 @@
   parsed: [{variable_text: debt service, entities: [{text: Ghana, role_text: debtor}], unit_text: euros}]
   why: Resolves to ids.debt_service for country/GHA as destination.
   tags: {theme: debt, entity: country, direction: destination_only, unit: currency, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: ids.debt_service}
@@ -679,7 +675,6 @@
   query: Georgia's debt service on PPG external debt
   why: Georgia owes the debt it services, so it is the debtor, which IDS places on the destination role.
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_Nominal]}

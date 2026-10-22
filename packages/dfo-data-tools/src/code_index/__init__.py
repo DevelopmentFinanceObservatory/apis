@@ -1,10 +1,10 @@
 """Read-only in-memory catalogue of classification codes and constrained StatVars.
 
-`load_index` reads a JSON export. CRS behaviour comes from its declarations."""
+`parse_index` parses a code index document. CRS behaviour comes from its declarations."""
 
 from __future__ import annotations
 
-from code_index.loader import IndexFormatError, default_index_path, load_index, parse_index
+from code_index.loader import IndexFormatError, parse_index
 from code_index.members import (
     DatasetFamily,
     FamilyQuery,
@@ -73,12 +73,10 @@ __all__ = [
     "absent_readings",
     "antichain_minimal_rows",
     "dedupe_first_seen",
-    "default_index_path",
     "elect_dataset",
     "fold_text",
     "identity_family_query",
     "index_covers_slot_keys",
-    "load_index",
     "parse_index",
     "summable_axes",
 ]

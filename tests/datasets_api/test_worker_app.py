@@ -1,5 +1,5 @@
 """Pins worker-route authentication, claim outcomes, submission-count validation, and status mapping.
-Route tests stub `run_operation`. Dependency-construction tests exercise `_build_live_definition_deps`.
+Route tests stub `run_operation`. Dependency-construction tests exercise `_live_deps_factory`.
 A successful route response reports the operation's stored terminal state."""
 
 from __future__ import annotations
@@ -14,8 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from artifact_store import ArtifactStore
-from code_index.query import CodeIndex
-from code_index.types import IndexStamp
+from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
@@ -29,7 +28,7 @@ from datasets_api.operations.worker import (
 )
 from datasets_api.operations.worker_app import (
     RUN_ROUTE_PATH,
-    _build_live_definition_deps,
+    _live_deps_factory,
     build_worker_app,
 )
 from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD_ROWS
@@ -39,7 +38,7 @@ from materialise.graph import GraphReader
 from origin_catalogue import Catalogue, current_catalogue
 from origin_catalogue.service import CatalogueService
 from series_coverage.index import Estimate
-from series_coverage.shared import CoverageService
+from series_coverage.shared import ServedCoverage
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from ._operation_store import FakeOperationDatasetStore
@@ -736,36 +735,27 @@ class TestFinalAttempt:
 
 
 class TestLiveDefinitionDepsConstruction:
-    """`_build_live_definition_deps` is the pure assembly step the
+    """`_live_deps_factory` is the pure assembly step the
     worker's own `lifespan` calls once its live sub-dependencies (graph,
-    SDMX, store, artifact store, code index, coverage) are built.
+    SDMX, store, artifact store, coverage) are built.
     Exercised here directly, with cheap stand-ins for those sub-
     dependencies, since none of them do any I/O merely by being
     constructed or referenced."""
 
     _semaphore = MaterialisePermits(1)
 
-    def _deps(self):
-        return _build_live_definition_deps(
+    def _factory(self):
+        return _live_deps_factory(
             store=FakeOperationDatasetStore(),
             graph=cast(GraphReader, object()),
             sdmx=SdmxClient(base_url="https://example.org"),
             artifact_store=cast(ArtifactStore, object()),
-            code_index=CodeIndex(
-                stamp=IndexStamp(
-                    graph_endpoint="test",
-                    exported_at="2026-01-01T00:00:00Z",
-                    code_counts={},
-                    statvar_shape_counts={},
-                    content_hash="test",
-                ),
-                declarations=(),
-                codes=(),
-                statvars=(),
-            ),
-            coverage=cast(CoverageService, object()),
+            coverage=cast(ServedCoverage, object()),
             materialise_semaphore=self._semaphore,
         )
+
+    def _deps(self):
+        return self._factory()(code_index=get_index())
 
     def test_ceiling_is_the_configured_raw_fetch_guard(self):
         """The same `datasets_api.publish_models.MAX_ROWS` the mint/
@@ -785,6 +775,22 @@ class TestLiveDefinitionDepsConstruction:
     def test_materialisation_takes_the_process_semaphore(self):
         """The worker takes a materialise permit, as the doors do."""
         assert self._deps().materialise_semaphore is self._semaphore
+
+    def test_the_factory_holds_no_code_index(self):
+        """Each run completes the factory with the index its own bindings read, so the
+        long-lived factory pins no index across a release swap."""
+        factory = self._factory()
+        index = get_index()
+
+        assert "code_index" not in factory.keywords
+        assert factory(code_index=index).code_index is index
+
+    def test_runs_share_the_process_rebuild_flights(self):
+        """One head-advancing rebuild per subject at a time holds across the process's runs."""
+        factory = self._factory()
+        index = get_index()
+
+        assert factory(code_index=index).rebuilds is factory(code_index=index).rebuilds
 
     def test_snapshot_reader_is_live(self):
         """`run_operation` reads artifact locations through it before completing a row."""

@@ -46,6 +46,7 @@ from dfo_platform.executor import submit_with_context
 from dfo_platform.request_deadline import request_deadline
 from dfo_platform.single_flight_cache import SingleFlightCache
 from graph_generation import GenerationProvider
+from graph_release.context import bound_release, current_release
 from materialise.facets import (
     BreadthUnread,
     MemberProbe,
@@ -415,11 +416,13 @@ class FacetProfileCache:
     ) -> dict[str, ProfileOutcome]:
         """Each of `stat_vars`' outcome, keyed by bare dcid: its cached profile, else a read in
         the variable's own flight, shared with every caller missing the same key. A flight binds
-        `catalogue` and reads `coverage.index`. Each wait ends at the earlier of its flight's
-        deadline and `deadline`. A variable without a profile is `ProfileUnavailable` with its
-        `ProfileGap` and is not stored, while the profiles of the variables that finished are:
-        its own probe raised, its scope was unsettled, its flight failed, or its flight or the
-        wait for it ended. Any other error of a flight propagates."""
+        `catalogue` and the caller's bound graph release, and reads `coverage.index`. Each
+        wait ends at the earlier of its flight's deadline and `deadline`. A variable without a
+        profile is `ProfileUnavailable` with its `ProfileGap` and is not stored, while the
+        profiles of the variables that finished are: its own probe raised, its scope was
+        unsettled, its flight failed, or its flight or the wait for it ended. Any other error of
+        a flight propagates. Raises `graph_release.context.ReleaseNotBound` with no release
+        bound."""
         keys, fetch = self._flight(stat_vars, catalogue=catalogue, coverage=coverage)
         found = self._cache.get_or_fetch_many(
             keys,
@@ -467,6 +470,7 @@ class FacetProfileCache:
             )
             for sv in dict.fromkeys(sv.removeprefix(_STAT_VAR_REF_PREFIX) for sv in stat_vars)
         ]
+        release = current_release()
 
         def fetch(
             missing: list[ProfileKey], flight_deadline: float
@@ -476,7 +480,11 @@ class FacetProfileCache:
             # places, degraded reads, timings), and a failed UN part fails the flight rather
             # than reading as empty. It binds only what the read needs.
             def read() -> dict[str, ProfileOutcome]:
-                with bound_catalogue(catalogue), request_deadline(flight_deadline):
+                with (
+                    bound_catalogue(catalogue),
+                    bound_release(release),
+                    request_deadline(flight_deadline),
+                ):
                     return read_facet_profiles(
                         [key.stat_var for key in missing],
                         graph=self._graph,

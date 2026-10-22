@@ -479,7 +479,7 @@ def _constraint_arcs(constraints: dict[str, str]) -> dict:
 
 
 def _imputed_arcs() -> dict[str, dict]:
-    """The arcs of the imputed table's education members, from the packaged index."""
+    """The arcs of the imputed table's education members, from the fixture index."""
     education = _INDEX.descendants("CRSPurposeCode110")
     return {
         row.dcid: _constraint_arcs(dict(row.constraint_properties))
@@ -615,7 +615,7 @@ def _two_publisher_index() -> CodeIndex:
 
 @pytest.fixture
 def two_publishers(monkeypatch) -> CodeIndex:
-    """`_two_publisher_index` in place of the packaged index wherever Search reads it."""
+    """`_two_publisher_index` in place of the fixture index wherever Search reads it."""
     index = _two_publisher_index()
     monkeypatch.setattr(bound_values_module, "get_index", lambda: index)
     monkeypatch.setattr(phase_rank_bind_module, "get_index", lambda: index)
@@ -837,7 +837,7 @@ _IDS = "provenance/WorldBankInternationalDebtStatistics"
     ids=["named-ids", "named-crs", "excluding-ids", "excluding-crs"],
 )
 def test_a_listed_five_tuple_stays_where_a_listed_row_is_in_scope(scope, kept):
-    """The packaged index lists IDS's debt positions without declaring a dataset for them
+    """The fixture index lists IDS's debt positions without declaring a dataset for them
     (`CodeIndex.listed_statvars`). A shape on that five-tuple stays when the scope allows a
     provenance a listed row carries, whatever else it allows."""
     position = dataclasses.replace(

@@ -12,12 +12,13 @@ import asyncio
 import httpx
 
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import IdentityCurrencyRole
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -110,7 +111,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _run_standard(*, unit_text: str, sdmx: EngineSdmxClient | None = None):
@@ -158,7 +159,7 @@ def _run_standard(*, unit_text: str, sdmx: EngineSdmxClient | None = None):
     )
 
 
-def _run_role_bearing(*, unit_text: str, llm=None):
+def _run_role_bearing(*, unit_text: str, llm=None, variable: str = "aid"):
     role_query = "aid from Norway to Kenya"
     sdmx = FakeSdmxClient(observations={_ROLE_SV: {(("provider", _NOR), ("recipient", _KEN)): []}})
     graph = FakeGraph(
@@ -173,7 +174,7 @@ def _run_role_bearing(*, unit_text: str, llm=None):
     )
     return asyncio.run(
         resolve_variable(
-            "aid",
+            variable,
             entities=["Norway", "Kenya"],
             date_request=None,
             detect_query=role_query,
@@ -249,16 +250,18 @@ class _StrayBindLLM:
         stray = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[stray]), None
+        return elected_reply(0, bindings=[stray]), None
 
 
 def test_a_missing_facet_beside_a_stray_value_refuses_naming_it() -> None:
     """The donor-currency flow finds no facet to convert (`facet_not_available`), which
-    refuses before any answer is judged. The bind drafted Female on a slot the flow lacks,
-    which the elected answer leaves unmet, and `qualifier_not_bound` ranks first, so the
-    part refuses naming it (`phase_shared.settle_unjudged_refusal`), with the elected flow
+    refuses before any answer is judged. The bind drafted Female, which the words name, on
+    a slot the flow lacks, which the elected answer leaves unmet, and `qualifier_not_bound`
+    ranks first, so the part refuses naming it (`phase_shared.settle_unjudged_refusal`), with the elected flow
     as its flagged match, whose trace records the term. Nothing departs."""
-    result = _run_role_bearing(unit_text="donor currency", llm=_StrayBindLLM())
+    result = _run_role_bearing(
+        unit_text="donor currency", llm=_StrayBindLLM(), variable="female aid"
+    )
 
     assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
     assert [q.text for q in result.unbound_qualifiers] == ["Female"]

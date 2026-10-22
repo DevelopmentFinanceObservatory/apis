@@ -8,7 +8,7 @@ same model output.
 
 Fixtures in `tests/fixtures/llm_responses.json` use the key
 `fixture_key(Extraction, system, query)`, where `system` is the
-extraction prompt with `PINNED_DATE`. A missing fixture exits as a setup
+extraction prompt template, its year left as `[[YEAR]]`. A missing fixture exits as a setup
 error and, when `HARVEST_MISS_PATH_ENV` is set, is logged as a harvest miss so
 `scripts/harvest_llm_fixtures.py` can record it. Scoring runs offline, without
 model or graph calls.
@@ -27,11 +27,10 @@ from collections.abc import Sequence
 from functools import cache
 from pathlib import Path
 from typing import Literal
-from unittest.mock import patch
 
 import search.engine.extract as extract
 from search.engine.extract import ExtractedEntity, Extraction, _validate_role_spans
-from tests.fixtures import HARVEST_MISS_PATH_ENV, PINNED_DATE, _append_harvest_line
+from tests.fixtures import HARVEST_MISS_PATH_ENV, _append_harvest_line
 from tests.fixtures.keys import fixture_key
 
 REPO = Path(__file__).parent.parent.parent
@@ -41,22 +40,12 @@ Axis = Literal["origin", "destination"]
 
 
 @cache
-def _system_instruction() -> str:
-    """The extraction prompt hashed for fixtures, with its date fixed at `PINNED_DATE`.
-
-    Cached because every fixture uses the same prompt."""
-    with patch.object(extract, "date") as mock_date:
-        mock_date.today.return_value = PINNED_DATE
-        return extract._system_instruction()
-
-
-@cache
 def _bank() -> dict:
     return json.loads(FIXTURES_PATH.read_text())
 
 
 def _fixture_key(query: str) -> str:
-    return fixture_key(Extraction, _system_instruction(), query)
+    return fixture_key(Extraction, extract._EXTRACTION_SYSTEM_PROMPT, query)
 
 
 def _recorded_extraction(query: str) -> Extraction:
@@ -69,7 +58,7 @@ def _recorded_extraction(query: str) -> Extraction:
                 outcome="miss",
                 key=_fixture_key(query),
                 schema_name=Extraction.__name__,
-                system=_system_instruction(),
+                system=extract._EXTRACTION_SYSTEM_PROMPT,
                 prompt=query,
             )
         sys.exit(

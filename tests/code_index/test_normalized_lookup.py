@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from code_index import CodeIndex, CodeRow, default_index_path, load_index
+from code_index import CodeIndex, CodeRow
 from code_index.tokens import tokenize
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 
 def lookup(code_index: CodeIndex, text: str) -> tuple[CodeRow, ...]:
@@ -113,7 +114,7 @@ def test_separators_in_label_and_query(code_index: CodeIndex, text: str, dcids: 
     ],
 )
 def test_committed_index_reads_reproductive_health_as_sector_130(text: str, dcids: set[str]):
-    assert {row.dcid for row in lookup(load_index(default_index_path()), text)} == dcids
+    assert {row.dcid for row in lookup(load_index(INDEX_FIXTURE), text)} == dcids
 
 
 @pytest.mark.parametrize(

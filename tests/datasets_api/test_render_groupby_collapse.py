@@ -135,7 +135,7 @@ _BY_NO_CRS_AXIS = MintOptions(groupby=GroupbyOptions(by=["financingProvider"], o
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {})
 
 
 class TestFullCollapseMultiMember:

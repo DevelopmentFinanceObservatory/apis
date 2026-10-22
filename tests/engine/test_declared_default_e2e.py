@@ -1,16 +1,17 @@
 """The declared flow default stamps ``CRSTypeOfFlow10`` as ``declared_default`` (#968).
 
-The fixture uses a packaged-index CRS StatVar.
+The fixture uses a fixture-index CRS StatVar.
 Omitting "ODA" from the query leaves the flow slot open for the default."""
 
 from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
@@ -30,15 +31,14 @@ class _FlowOpenLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how", property_dcid="crsTypeOfFlow", kind="unbound", value_dcids=[]
                 )
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 

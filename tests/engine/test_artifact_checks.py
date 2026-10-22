@@ -21,10 +21,14 @@ from search.engine.artifact_checks import (
     index_drift_warning,
     pair_stale_warning,
 )
+from search.engine.events import ResponseEvent
 from search.engine.region.codes import ARTIFACT_PAIR_STALE, CATALOGUE_INDEX_DRIFT
+from search.engine.response_cache import ResponseCache
+from search.models import ResolveRequest
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import empty_coverage_snapshot
-from tests.engine._harness import make_request, offline_resolve
+from tests.engine._harness import make_request, member_walk_reader, offline_events, offline_resolve
+from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 from tests.origin_catalogue.support import named_labels
 
@@ -77,11 +81,12 @@ def _index(*rows: StatVarRow) -> CodeIndex:
 def _catalogue(
     arcs: dict[str, tuple[UnArc, ...]], *, ingestion: Ingestion | None = None
 ) -> FakeCatalogue:
+    """A catalogue whose build holds `arcs` as base Data Commons arcs, which the build serves;
+    a DFO variable's arcs come from the bound graph release's origin view."""
     return FakeCatalogue(
         build_id="catalogue-build",
         ingestion=ingestion,
-        dfo_variables=frozenset(arcs),
-        arcs=ArcTables(dfo=arcs, base={}, schema={}, labels=named_labels(arcs)),
+        arcs=ArcTables(dfo={}, base=arcs, schema={}, labels=named_labels(arcs)),
     )
 
 
@@ -267,3 +272,46 @@ def test_the_environment_silences_either_warning(monkeypatch, variable, silenced
     codes = _codes()
     assert silenced not in codes
     assert kept in codes
+
+
+def _drift_counts(request: ResolveRequest, *, stream: bool) -> tuple[int, int, int]:
+    """`catalogue_index_drift` on a computed answer and on the cache hit that follows it,
+    and the cache's hit count."""
+    cache = ResponseCache()
+    # The member walk verifies membership, without which no answer is stored.
+    materialise_graph = member_walk_reader(FakeGraph())
+    counts = []
+    for _ in range(2):
+        events = offline_events(
+            request,
+            materialise_graph=materialise_graph,
+            stream_slot_options=stream,
+            response_cache=cache,
+        )
+        (response,) = (e.response for e in events if isinstance(e, ResponseEvent))
+        counts.append([w.code for w in response.diagnostics.warnings].count(CATALOGUE_INDEX_DRIFT))
+    return counts[0], counts[1], cache.stats().hits
+
+
+_KENYA_POPULATION = {
+    "raw_text": {"kind": "raw_text", "query": "population of Kenya"},
+    "parsed": {
+        "kind": "parsed",
+        "parts": [{"variable_text": "population", "entities": [{"text": "Kenya"}]}],
+    },
+}
+
+
+@pytest.mark.usefixtures("drifted_stale_pair")
+@pytest.mark.parametrize("door", ["raw_text", "parsed"])
+@pytest.mark.parametrize("stream", [False, True], ids=["buffered", "sse"])
+def test_a_cache_hit_carries_the_drift_warning_once(door: str, stream: bool):
+    """The warning is stored with the answer. A hit at either layer keeps it and adds none."""
+    request = ResolveRequest.model_validate(
+        {
+            "schema_version": 1,
+            "input": _KENYA_POPULATION[door],
+            "response_options": {"include_observations": True},
+        }
+    )
+    assert _drift_counts(request, stream=stream) == (1, 1, 1)

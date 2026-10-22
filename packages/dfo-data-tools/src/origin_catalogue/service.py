@@ -66,7 +66,7 @@ class CatalogueSettings(BaseSettings):
     stays."""
     warn_index_drift: bool = Field(default=True, alias="ORIGIN_CATALOGUE_WARN_INDEX_DRIFT")
     """Whether a Search answer carries `catalogue_index_drift` when the catalogue's arcs
-    and the packaged code index disagree on a StatVar it serves. `false` silences the
+    and the release's code index disagree on a StatVar it serves. `false` silences the
     warning; the log line stays."""
 
 

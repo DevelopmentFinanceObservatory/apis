@@ -31,11 +31,11 @@ from origin_catalogue.families import family_tables
 from origin_catalogue.graph import _table_arcs, arcs_mirrored
 from origin_catalogue.node_reads import iter_node_arcs
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, wire_arcs
+from tests.artifact_publication.support import FakeBigQuery
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue
 from tests.origin_catalogue.support import build_labelled
 from tests.origin_catalogue.test_job import SPANNER_EDGES, FakeGraph, spanner_rows
 from tests.origin_catalogue.un_fake import FakeUn, target
-from tests.series_coverage.test_job import FakeBigQuery
 
 _CONNECTION = "proj.region.conn"
 

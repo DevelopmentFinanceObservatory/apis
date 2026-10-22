@@ -1,6 +1,6 @@
 """Slot menus count the rows each option would serve and drop the options serving none.
 
-The resubmit cases resolve a CRS aid identity from Germany to Guatemala against the packaged
+The resubmit cases resolve a CRS aid identity from Germany to Guatemala against the fixture
 code index, with a coverage index holding rows for a handful of its members. Each count is
 the rows a resubmit binding that option would download, one per series and year, so every
 assertion below states the fixture rows behind it.
@@ -14,6 +14,7 @@ from dataclasses import replace
 import pytest
 
 from code_index.shared import get_index
+from graph_release.context import bound_release
 from materialise.facets import native_currency_iso
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
@@ -80,6 +81,7 @@ from tests.engine.test_conjoin_measure_merge import _recipient_only_shape, _wher
 from tests.engine.test_resubmit_alternative_measure_round_trip import _arcs_for_row
 from tests.fixtures import FakeGraph, _load_json
 from tests.fixtures.provenance import index_provenance
+from tests.graph_release.support import origin_release
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
     RateTableServer,
@@ -103,7 +105,7 @@ _SECTOR_BUDGET_SUPPORT = "CRSCooperationModalityA02"
 
 
 def _member(population: str = "FinancialFlow", **values: str) -> str:
-    """The one packaged-index row of the aid five-tuple with exactly `values`."""
+    """The one fixture-index row of the aid five-tuple with exactly `values`."""
     rows = [
         row
         for row in get_index().statvars
@@ -239,7 +241,7 @@ _CRS_SLOTS: dict[str, str | None] = {
 
 @functools.cache
 def _index_member_nodes() -> dict[str, dict]:
-    """A graph node for every StatVar the packaged index lists, as the live graph holds
+    """A graph node for every StatVar the fixture index lists, as the live graph holds
     them, so an answer whose index election spans the whole family re-reads every member's
     arcs and drops none under `members_absent_from_graph`."""
     return {
@@ -627,7 +629,7 @@ def test_a_merged_menu_counts_a_series_two_members_serve_once():
 # and every counted option is reachable by a resubmit of the client's member list
 # ---------------------------------------------------------------------------
 
-# Debt service, a family the packaged index carries no row of, so the mint's graph walk
+# Debt service, a family the fixture index carries no row of, so the mint's graph walk
 # decides it. It has a total. A pick of a creditor reads the parts under it.
 _DS_TOTAL = "Amount_FinancialFlow_ServicingPayment_Nominal"
 _DS_OFFICIAL = "Amount_FinancialFlow_ServicingPayment_IDSCreditorTypeOFFT_Nominal"
@@ -698,22 +700,25 @@ def _debt_resubmit(monkeypatch: pytest.MonkeyPatch, **bound: str):
     coverage = patch_coverage(
         monkeypatch, _DS_ROWS, role_names=dict.fromkeys(_DS_CONSTRAINTS, _ROLE_NAMES)
     )
-    return resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=identity,
-        ),
-        graph=graph,
-        sdmx=FakeSdmxClient(observations={}, availability={}),
-        coverage=FakeCoverageService(coverage).snapshot(),
-        options=walk_options(
-            graph,
-            EngineOptions(
-                materialise_graph=with_member_arcs(
-                    axis_confirming_reader(*_DS_CONSTRAINTS, graph=graph), graph
-                )
+    # The release holds the debt-service StatVars as DFO, so the member walk reads their arcs.
+    release = origin_release({dcid: _ds_arcs(dcid) for dcid in _DS_CONSTRAINTS})
+    with bound_release(release):
+        return resolve_spec_resubmit(
+            inp=ResubmitIdentityPayload(
+                identity=identity,
             ),
-        ),
-    )
+            graph=graph,
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            coverage=FakeCoverageService(coverage).snapshot(),
+            options=walk_options(
+                graph,
+                EngineOptions(
+                    materialise_graph=with_member_arcs(
+                        axis_confirming_reader(*_DS_CONSTRAINTS, graph=graph), graph
+                    )
+                ),
+            ),
+        )
 
 
 @pytest.mark.usefixtures("unlisted_index")
