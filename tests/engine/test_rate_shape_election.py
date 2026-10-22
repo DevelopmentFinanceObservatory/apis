@@ -8,12 +8,13 @@ from typing import Any
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.config import settings
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.result import RegionResult
 from search.models import Binding, BindingSet, BindingUnbound, BindingValue
+from tests.engine._binders import FixedBindReplyLLM, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
@@ -91,6 +92,7 @@ class _RecordingBindLLM:
                 bindings=self.bindings,
                 ask=self.ask,
                 nearest_refused_index=self.nearest_refused_index,
+                measuring=[ShapeRating(index=self.chosen_shape_index, rating=1.0)],
             ),
             self.usage,
         )
@@ -384,8 +386,18 @@ def test_recorded_measles_menu_lists_the_case_count_as_nearest_and_refuses_its_f
     """The case count serves no rate, so it is not electable beside the immunization
     coverage, which measures something else. Bind declines the coverage and names the case
     count as nearest, so the answer refuses `denominator_not_available` flagging the measles
-    case count alone: the reading the question asked for, settled on the condition it names."""
-    response = offline_resolve(make_request("measles incidence rate Kenya"), llm=FakeLLM())
+    case count alone, the reading the question asked for, settled on the condition it names.
+    The bind reply is that decline, held fixed."""
+    llm = FixedBindReplyLLM(
+        _UniversalBindOutput(
+            chosen_shape_index=0, ask="no shape measures the phrase", nearest_refused_index=0
+        )
+    )
+    response = offline_resolve(make_request("measles incidence rate Kenya"), llm=llm)
+
+    (prompt,) = llm.bind_prompts
+    assert "Measles Immunization Coverage" in prompt.partition("NOT ELECTABLE")[0]
+    assert "  0: Count of Measles incidents" in prompt.partition("NOT ELECTABLE")[2]
 
     assert response.status == "no_data"
     part = response.parts[0]
@@ -605,8 +617,8 @@ class _FemaleUrbanBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]

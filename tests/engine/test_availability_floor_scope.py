@@ -13,13 +13,13 @@ import threading
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet, _force_full_facets
 from search.engine.extract import DateRequest
-from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.phase_intake import _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES
 from search.engine.region.state import EngineOptions
+from tests.engine._binders import FixedBinder
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import QuantityReadOnlyLLM
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV = "sv/gdp"
@@ -131,42 +131,6 @@ class _PostCountingGraph(FakeGraph):
         return result
 
 
-class _UnusedLLM:
-    """Placeholder while bind_universal is patched in the test; it answers only the
-    quantity read, which runs beside bind."""
-
-    async def generate_structured(self, *, prompt, system, schema):
-        if schema is QuantityOutput:
-            return NO_QUANTITY
-        raise AssertionError("bind_universal was replaced by a spy; the LLM must not be called")
-
-
-def _spy_bind_universal(monkeypatch) -> None:
-    """Elect the first shape without invoking an LLM."""
-
-    async def _spy(
-        variable,
-        shapes,
-        *,
-        admitted_qualifiers=(),
-        admitted_ties=(),
-        withheld_measure_axes=frozenset(),
-        dropped_qualifier_phrases=(),
-        candidate_menus=(),
-        denominators=(),
-        frame=None,
-        refused=(),
-        availability=(),
-        llm,
-    ):
-        return (
-            _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None),
-            None,
-        )
-
-    monkeypatch.setattr("search.engine.region.phase_rank_bind.bind_universal", _spy)
-
-
 def _run(
     *,
     date_request: DateRequest | None,
@@ -192,7 +156,10 @@ def _run(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_UnusedLLM(),
+            llm=QuantityReadOnlyLLM(),
+            binder=FixedBinder(
+                _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None)
+            ),
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -202,19 +169,15 @@ def _run(
     return graph
 
 
-def test_dated_query_shares_one_post_between_floor_and_standard_probes(monkeypatch):
+def test_dated_query_shares_one_post_between_floor_and_standard_probes():
     """A dated query shares the floor and standard probes' cache entry."""
-    _spy_bind_universal(monkeypatch)
-
     graph = _run(date_request=DateRequest(window=None, latest=True), include_observations=False)
 
     assert graph.post_count == 1
 
 
-def test_dated_query_over_candidate_bound_issues_two_posts(monkeypatch):
+def test_dated_query_over_candidate_bound_issues_two_posts():
     """A dated query above the candidate bound uses two cache entries."""
-    _spy_bind_universal(monkeypatch)
-
     graph = _run(
         date_request=DateRequest(window=None, latest=True),
         include_observations=False,
@@ -224,23 +187,19 @@ def test_dated_query_over_candidate_bound_issues_two_posts(monkeypatch):
     assert graph.post_count == 2
 
 
-def test_undated_observation_bearing_query_issues_two_posts(monkeypatch):
+def test_undated_observation_bearing_query_issues_two_posts():
     """An undated query with an observations preview uses two cache entries."""
-    _spy_bind_universal(monkeypatch)
-
     graph = _run(date_request=None, include_observations=True)
 
     assert graph.post_count == 2
 
 
-def test_dated_query_topic_expansion_past_bound_keeps_floor_probe_narrow_single_group(monkeypatch):
+def test_dated_query_topic_expansion_past_bound_keeps_floor_probe_narrow_single_group():
     """One Topic expands to 37 members after the initial candidate check.
 
     The floor probe stays narrow for all members. The standard probe requests
     full facets for the same group, so two cache-miss POSTs are expected.
     """
-    _spy_bind_universal(monkeypatch)
-
     graph = _run(
         date_request=DateRequest(window=None, latest=True),
         include_observations=False,
@@ -302,15 +261,11 @@ _DETECT_TOPIC_MULTI_GROUP: dict = {
 }
 
 
-def test_dated_query_topic_expansion_multi_group_past_bound_avoids_full_history_waste(
-    monkeypatch,
-):
+def test_dated_query_topic_expansion_multi_group_past_bound_avoids_full_history_waste():
     """The 15- and 22-member groups exceed the bound.
 
     Only the first group reaches the standard probe.
     """
-    _spy_bind_universal(monkeypatch)
-
     graph = _run(
         date_request=DateRequest(window=None, latest=True),
         include_observations=False,

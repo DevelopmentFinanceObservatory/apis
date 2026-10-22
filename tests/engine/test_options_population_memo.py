@@ -51,7 +51,7 @@ def _walks_store_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # Mirrors test_options_population.py's own _NON_INDEX_SHAPE: a five-tuple the
-# packaged index carries no row for, so options_population sources it through the
+# fixture index carries no row for, so options_population sources it through the
 # shared enumerator -- the one branch that reads `graph`.
 _NON_INDEX_SHAPE = IdentityShapeSchema(
     population_type="Person", measured_property="lifeExpectancy", stat_type="measuredValue"

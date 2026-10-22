@@ -63,14 +63,14 @@ generation = ["httpx>=0.28.1", "google-auth[requests]>=2.55"]
 # top of a 64-bit mask, so this is numpy, not an optional convenience.
 # artifact_publication.uri reads a gs:// artifact through google-cloud-storage,
 # imported lazily (never required for a file:// artifact, e.g. every
-# offline test). series_coverage.job (the building job, a Cloud Run Job
-# entrypoint, never imported by the serving path) reads Spanner through the
-# BigQuery federation connection via google-cloud-bigquery, also imported
-# lazily so no offline test or serving-path install needs it. Kept named
-# `coverage` (not `series_coverage`) as an extra -- only the importable
-# package name collides with coverage.py (pytest-cov). series_coverage also
-# reads observations through dc_sdmx directly, so `coverage` carries
-# `sdmx`'s own dependencies too.
+# offline test). artifact_publication.jobs.BigQueryReader, which
+# origin_catalogue.job reads Spanner through over the BigQuery federation
+# connection, imports google-cloud-bigquery lazily, so no offline test or
+# serving-path install needs it. Kept named `coverage` (not
+# `series_coverage`) as an extra -- only the importable package name
+# collides with coverage.py (pytest-cov). series_coverage.index plans its
+# estimates with dc_sdmx's request planner, so `coverage` carries `sdmx`'s
+# own dependencies too.
 coverage = [
     "numpy>=2.0",
     "google-cloud-storage>=2.18",

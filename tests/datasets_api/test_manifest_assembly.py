@@ -1187,7 +1187,7 @@ def test_definition_version_record_carries_base_content_version_on_the_record():
 
 
 def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
-    """Builds an index with a synthetic axis absent from the packaged index."""
+    """Builds an index with a synthetic axis absent from the fixture index."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="https://fixture.example.org",

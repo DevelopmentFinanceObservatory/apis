@@ -38,7 +38,7 @@ from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import GraphReadError, SubjectPage
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import assemble_region
 from search.engine.errors import EngineInputError
@@ -63,6 +63,7 @@ from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from statvar_members import shared_enumerator
+from tests.engine._binders import elected_reply
 from tests.engine._facet_option_builds import wrap_facet_option_builds
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient, scope_availability_of
@@ -701,9 +702,7 @@ class _Bind:
         if schema is QuantityOutput:
             return NO_QUANTITY
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0, bindings=self._bindings, also_plausible=self._also_plausible
-            ),
+            elected_reply(0, bindings=self._bindings, also_plausible=self._also_plausible),
             None,
         )
 

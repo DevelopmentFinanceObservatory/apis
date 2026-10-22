@@ -334,7 +334,7 @@ def test_official_donors_resolve_as_a_graph_confirmed_aggregate(shared_resolver)
 
 
 class _IndexWithoutParties:
-    """The packaged index under another content hash, declaring no party kinds."""
+    """The fixture index under another content hash, declaring no party kinds."""
 
     def __init__(self) -> None:
         self._index = get_index()

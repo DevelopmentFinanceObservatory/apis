@@ -1,7 +1,8 @@
 """Map parsed role text to flow axes and check it against query wording.
 
 The door supplies each axis. This module checks it against query text, and reads
-the direction of a debt from the query's own wording (`debt_axes`).
+the direction of a debt (`debt_axes`) and of a receipt (`receipt_axes`) from the query's
+own wording.
 """
 
 from __future__ import annotations
@@ -121,6 +122,10 @@ _DEBT_ACTION_WORDS: frozenset[str] = frozenset(
         "swaps",
     }
 )
+# Active forms of "owe", whose subject is the debtor and whose object is the creditor:
+# "how much does China owe India". The past "owed" is left out, since "China owed by
+# Kenya" is passive and reverses the parties.
+_OWE_VERBS: frozenset[str] = frozenset({"owe", "owes"})
 # Words before a "by" that make the place after it the debtor: "owed by Kenya".
 _DEBTOR_BY_HEADS: frozenset[str] = frozenset(
     {"owed", "repaid", "borrowed", "incurred", "debt", "debts"}
@@ -235,6 +240,16 @@ def _owns_debt(query_tokens: list[str], after: int) -> bool | None:
     return shares and all(token in _CONJUNCTIONS for token in phrase)
 
 
+def _follows_owe(query_tokens: list[str], start: int) -> bool:
+    """Whether the place starting at ``start`` is the object of an active ``owe``, as
+    ``India`` in ``China owe India``. An article before the place is skipped: ``owe the
+    IMF``."""
+    verb = start - 1
+    if verb >= 0 and query_tokens[verb] == "the":
+        verb -= 1
+    return verb >= 0 and query_tokens[verb] in _OWE_VERBS
+
+
 def debt_axes(
     query: str,
     *,
@@ -252,10 +267,12 @@ def debt_axes(
     after the debtor in ``owed by Kenya to China``) is the creditor. A possessive place
     over its own debt (``Kenya's debt``, ``Kenya's debt service payments``) and a place
     after a debtor ``by`` (``owed by``, or ``by`` after the creditor in ``owed to China by
-    Kenya``) are the debtor. Each place needs its own evidence of being a party: a cue, or
+    Kenya``) are the debtor. An active ``owe`` reads both parties: its subject is the debtor
+    and its object the creditor (``how much does China owe India``, ``what does Zambia owe
+    the IMF``). Each place needs its own evidence of being a party: a cue, or
     an extracted axis (``directed`` maps those places to their extracted axes). A cued
     place sets its axis. A place with no cue keeps an extracted axis opposite the cued one,
-    so ``how much does Kenya owe to China`` sets both parties. A place with no cue whose
+    so ``Kenya debt owed to China`` sets both parties. A place with no cue whose
     extracted axis equals the cued one is a second debtor or creditor, as in ``Kenya's debt
     relative to Sub-Saharan Africa``, and a place with neither, as in ``Kenya's external
     debt compared with China``: both leave the query a comparison and set nothing. So does
@@ -287,8 +304,14 @@ def debt_axes(
         name
         for name, start, _ in occurrences
         if _follows_creditor_cue(query_tokens, start, debtor_ends)
+        or _follows_owe(query_tokens, start)
     }
     debtors = {name for name, _ in debtor_by}
+    debtors.update(
+        name
+        for name, _, end in occurrences
+        if end < len(query_tokens) and query_tokens[end] in _OWE_VERBS
+    )
     for name, spans in places.items():
         for tokens in (_tokenize(span) for span in spans):
             if not tokens:
@@ -313,6 +336,50 @@ def debt_axes(
                 return {}
             cued[name] = _OPPOSITE_AXIS[other]
     return cued
+
+
+# Forms of "receive" that read the place beside them as the recipient: "received by
+# Ethiopia", "the ODA Ghana received".
+_RECEIPT_VERBS: frozenset[str] = frozenset({"receive", "receives", "received", "receiving"})
+_RECEIPT_AGENT_PREP = "by"
+# A preposition before a place makes it the head of its own phrase, so a receipt verb
+# after it reads another noun: "aid from Norway received by Kenya".
+_PLACE_PHRASE_PREPS: frozenset[str] = _PHRASE_END_PREPS | {"in", "for"}
+
+
+def receipt_axes(query: str, *, places: Mapping[str, Sequence[str]]) -> dict[str, RoleAxis]:
+    """Return ``destination`` for each place the query names as a recipient, by place name.
+
+    A place right after ``received by`` (an article skipped: ``received by the Gambia``)
+    and a place right before a form of ``receive`` (``the ODA Ghana received``) is the
+    recipient. A place a preposition opens is the head of its own phrase, so the verb after
+    it reads another noun: in ``aid from Norway received by Kenya`` only Kenya receives.
+    Spans match whole words, and every occurrence of a place's spans is read.
+    """
+    query_tokens = _tokenize(query.replace("\u2019", "'"))
+    recipients: dict[str, RoleAxis] = {}
+    for name, spans in places.items():
+        for tokens in (_tokenize(span) for span in spans):
+            if not tokens:
+                continue
+            for start in _span_starts(query_tokens, tokens):
+                end = start + len(tokens)
+                prep = start - 1
+                if prep >= 0 and query_tokens[prep] == "the":
+                    prep -= 1
+                after_agent = (
+                    prep >= 1
+                    and query_tokens[prep] == _RECEIPT_AGENT_PREP
+                    and query_tokens[prep - 1] in _RECEIPT_VERBS
+                )
+                before_verb = (
+                    end < len(query_tokens)
+                    and query_tokens[end] in _RECEIPT_VERBS
+                    and not (prep >= 0 and query_tokens[prep] in _PLACE_PHRASE_PREPS)
+                )
+                if after_agent or before_verb:
+                    recipients[name] = "destination"
+    return recipients
 
 
 def contradicts(query: str, *, span: str, axis: RoleAxis) -> bool:
@@ -457,7 +524,7 @@ class DoorRole:
     preserved in its role query. A name can occur on both axes, so each
     occurrence has its own entry. ``stated`` is whether the request's own words give
     the place its direction. A parsed part's role text always does, and so does a debt
-    axis (`debt_axes`). On raw text, any other direction is stated when the extractor's
+    axis (`debt_axes`) or a receipt axis (`receipt_axes`). On raw text, any other direction is stated when the extractor's
     validated cue (`ExtractedEntity.role_span`) attaches to the place, as a cue before it
     or a verb after it (`raw_text._cue_states_direction`). A possessive, "of" or a national
     adjective reads the direction off the measure, so it states none.

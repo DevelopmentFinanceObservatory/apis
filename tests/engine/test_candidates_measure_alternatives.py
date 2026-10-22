@@ -1,6 +1,6 @@
 """Candidate responses publish measure labels and alternatives for every candidate.
 
-The elected FinancialFlow/grantEquivalent member belongs to a packaged measure family but has no
+The elected FinancialFlow/grantEquivalent member belongs to a fixture index measure family but has no
 alternative measures. The also-plausible FinancialFlow/amount fixture is subject-only, so it does
 not fold into the elected role-bearing shape and has no measure family of its own.
 """
@@ -10,11 +10,12 @@ from __future__ import annotations
 import asyncio
 
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.models import Spec
 from series_coverage.schema import RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -47,7 +48,7 @@ _ROLE_RECIPIENT = "financingRecipient"
 # Shares the elected shape's populationType (FinancialFlow) but declares no
 # non-subject role, so it neither folds in as a measure sibling
 # (_shapes_are_measure_siblings) nor trips R5's population conjunct. Its
-# RealValue qualifier appears on no row of the packaged index (every row
+# RealValue qualifier appears on no row of the fixture index (every row
 # there is Nominal), so its five-tuple carries no measure family at all.
 _ALT_SV = (
     "Amount_FinancialFlow_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
@@ -146,8 +147,8 @@ class _ElectGrantEquivalentAlsoPlausibleAidSpendingLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -157,7 +158,6 @@ class _ElectGrantEquivalentAlsoPlausibleAidSpendingLLM:
                 )
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 

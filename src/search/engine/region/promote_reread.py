@@ -46,7 +46,7 @@ def _family_measurement_qualifier(arcs: dict) -> str | None:
 
 def _elected_members(state: _PromoteState) -> list[str] | RegionResult:
     """The members of the family the posted identity resolves, as the Datasets mint elects
-    them: the packaged index's election for an identity that names a measure family, the
+    them: the release's code index's election for an identity that names a measure family, the
     code index's family when it decides the identity, else the antichain-minimal members
     of the mint's graph walk (`RoleClassWalks.family` in its resubmit mode), which reads
     the whole filtered set up to the subject ceiling when its first page truncates without

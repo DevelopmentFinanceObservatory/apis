@@ -8,12 +8,13 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.assemble import build_no_data_part
-from search.engine.bind import _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ONLY_ALTERNATE_HAS_DATA
 from search.models import ResolvedEntity
 from series_coverage.schema import RoleNames
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -45,12 +46,10 @@ class _ElectNoDataAlsoPlausibleHasDataLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
-def _run(monkeypatch):
+def _run(monkeypatch, *, binder: Binder | None = None):
     graph = FakeGraph(
         nodes={
             _NOR: {"label": "Norway", "type": "Country"},
@@ -89,6 +88,7 @@ def _run(monkeypatch):
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_ElectNoDataAlsoPlausibleHasDataLLM(),
             sdmx=sdmx,
             base_timing={},
@@ -99,7 +99,7 @@ def _run(monkeypatch):
 
 def test_only_alternate_has_data_reaches_a_both_bound_shape(monkeypatch):
     """The fixture reaches the guard with both donor and recipient bound."""
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     assert result.status == "no_data"
     assert result.no_data_reason == "no_observations"
     assert result.gate == ONLY_ALTERNATE_HAS_DATA
@@ -114,7 +114,7 @@ def test_only_alternate_has_data_reaches_a_both_bound_shape(monkeypatch):
 
 def test_no_data_bound_role_dcids_names_both_axes_the_query_bound(monkeypatch):
     """Bound role dcids are recorded when both flow axes have entities."""
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     assert result.no_data_bound_role_dcids == {"origin": (_NOR,), "destination": (_KEN,)}
 
 
@@ -134,7 +134,7 @@ def _build_part(result, alternate_match):
 
 def test_role_correct_alternate_is_shown_end_to_end(monkeypatch):
     """The alternate shares the query's bound donor and recipient, so its sentence is shown."""
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     assert [
         e.role for e in result.alternate_match.resolved.entities if e.role != "observationAbout"
     ]
@@ -146,7 +146,7 @@ def test_role_correct_alternate_is_shown_end_to_end(monkeypatch):
 
 def test_a_swapped_alternate_is_withheld_against_the_real_bound_role_dcids(monkeypatch):
     """The guard withholds the alternate when it swaps Norway from donor to recipient."""
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     alt = result.alternate_match
     assert alt is not None
     swapped_role = {"origin": "destination", "destination": "origin"}

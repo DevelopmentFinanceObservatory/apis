@@ -218,7 +218,7 @@ def test_app_builds_a_shared_memoised_llm_and_a_repeat_costs_no_gemini_call(wire
     # One extract, one bind and one quantity read, on the first request only.
     assert calls_after_first == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert replay_client.models.calls == calls_after_first
-    assert "LLM memo hit: schema=Extraction" in capture.messages
+    assert "Extraction store hit" in capture.messages
     assert "LLM memo hit: schema=_UniversalBindOutput" in capture.messages
     assert "LLM memo hit: schema=QuantityOutput" in capture.messages
 
@@ -320,7 +320,7 @@ def test_a_live_answer_without_usage_metadata_is_not_logged_as_a_memo_hit(wired)
 
     _body(_resolve(client, sse=False))
     assert replay_client.models.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
-    assert "LLM memo hit: schema=Extraction" in capture.messages
+    assert "LLM memo hit: schema=QuantityOutput" in capture.messages
 
 
 def _no_usage_generate(replay_client):

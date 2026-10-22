@@ -24,7 +24,6 @@ from materialise.facets import FacetSelection, subject_probe
 from materialise.rate_tables import RateTableCache, RateTableInvalidError
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.recipes import NonCurrencyUnitError, RateCoverageGapError, RecipeNotDeclaredError
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.errors import EngineInputError
 from search.engine.quantity_read import QuantityOutput
@@ -48,6 +47,7 @@ from search.models import (
     ResolvedQualifier,
     ResubmitIdentityPayload,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import build_coverage_index, empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -112,9 +112,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=self.also_plausible, ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=self.also_plausible), None
 
 
 _USD_FIXTURE_A = ObsFacetFixture(

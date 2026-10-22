@@ -21,6 +21,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
+from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -112,19 +113,19 @@ class _FanOutResult:
 
     regions: list[RegionResult] = field(default_factory=list)
     timed_out: bool = False
-    # True when at least one leg's exception, other than an EngineInfraError or a
-    # RATE_TABLE_REFUSALS member, was swallowed into a `_placeholder_no_data`
-    # result under `degrade_on_error`.
-    # That leg's response part looks like a genuine no_data answer, so a
-    # consumer that needs to tell a transient upstream failure apart from a
-    # settled negative one, such as the response cache deciding what is safe
-    # to store, reads this flag instead of the response body. It is also True
-    # when a leg's answer states `alternates_unevaluated`
-    # (`RegionResult.alternates_left_out`): an alternate went unevaluated for
-    # want of a presence read, when its presence read left a StatVar's
-    # default scope unsettled (`RegionResult.scope_unsettled`), and when the
-    # leg swallowed a graph read failure (`RegionResult.degraded`). It does not
-    # cover the deadline backfill, which `timed_out` reports.
+    # True when a leg's answer is weaker than its response part shows. A consumer that must
+    # tell a transient upstream failure from a settled negative one, such as the response
+    # cache deciding what is safe to store, reads this flag instead of the response body.
+    # It is True when:
+    # - a leg's exception, other than an EngineInfraError or a RATE_TABLE_REFUSALS member,
+    #   was swallowed into a `_placeholder_no_data` result under `degrade_on_error`, which
+    #   looks like a genuine no_data answer;
+    # - a leg's answer states `alternates_unevaluated` (`RegionResult.alternates_left_out`)
+    #   because an alternate lacked a presence read;
+    # - a presence read left a StatVar's default scope unsettled
+    #   (`RegionResult.scope_unsettled`);
+    # - a leg swallowed a graph read failure (`RegionResult.degraded`).
+    # The deadline backfill is reported by `timed_out` and does not set it.
     degraded_leg: bool = False
 
 
@@ -432,6 +433,7 @@ async def _stream_one_variable(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None,
@@ -535,6 +537,7 @@ async def _stream_one_variable(
             resolver=resolver,
             admission=admission,
             llm=llm,
+            binder=binder,
             sdmx=sdmx,
             base_timing=base_timing,
             pre_resolved=pre_resolved,
@@ -814,6 +817,7 @@ def _launch_variable_tasks(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     deadline: float,
@@ -859,6 +863,7 @@ def _launch_variable_tasks(
                 resolver=resolver,
                 admission=admission,
                 llm=llm,
+                binder=binder,
                 sdmx=sdmx,
                 deadline=deadline,
                 base_timing=base_timing,
@@ -950,6 +955,7 @@ async def _run_variables_streaming(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None,
@@ -1060,6 +1066,7 @@ async def _run_variables_streaming(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=binder,
         sdmx=sdmx,
         base_timing=base_timing,
         deadline=deadline,

@@ -10,7 +10,6 @@ import re
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
@@ -36,6 +35,7 @@ from tests.engine._base_identity import (
     origin_entity,
     subject_entity,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._builders import value_slot
 from tests.engine._fake_coverage import (
     FakeCoverageService,
@@ -115,7 +115,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _nodes(*, resolve: dict[str, str], label_dcids: list[str], sv_dcid: str, sv_arcs: dict) -> dict:

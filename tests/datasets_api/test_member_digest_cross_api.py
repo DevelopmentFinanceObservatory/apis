@@ -36,7 +36,7 @@ from .test_resolve_definition_members_index import (
 
 _PROVIDER = "country/FRA"
 _RECIPIENT = "country/KEN"
-# The dataset the packaged index records the two members under, which the mint serves from.
+# The dataset the fixture index records the two members under, which the mint serves from.
 _PROVENANCE = "provenance/OECDCreditorReportingSystem"
 
 _CSV_HEADER = (
@@ -87,8 +87,8 @@ def _sdmx_transport() -> httpx.MockTransport:
 
 
 def test_the_mints_family_digest_equals_the_digest_of_the_search_resolve_it_mints(monkeypatch):
-    """Search resolves a two-member CRS family from the packaged index, and the mint is
-    posted the spec that resolve minted. No packaged row dominates another, so the mint
+    """Search resolves a two-member CRS family from the fixture index, and the mint is
+    posted the spec that resolve minted. No fixture row dominates another, so the mint
     serves the whole family."""
     region = _search_resolve(monkeypatch)
     assert region.status == "definite"

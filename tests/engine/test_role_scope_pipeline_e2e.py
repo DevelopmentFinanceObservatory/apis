@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from materialise.roles import axis_for_role
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.concurrency import scoped_concurrency
 from search.engine.extract import DateRequest, ExtractedEntity, Extraction
@@ -23,6 +23,7 @@ from search.engine.region.result import every_member_phrases
 from search.engine.region.state import EngineOptions
 from search.models import CoverageBreadth, DateRange, ResubmitIdentityPayload, TimeWindow
 from series_coverage.schema import FacetMetadata, RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     CoverageRow,
     FakeCoverageService,
@@ -116,7 +117,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _graph_for(
@@ -156,6 +157,7 @@ def _run(
     sv_score: float,
     role_query: str,
     sdmx: FakeSdmxClient,
+    variable: str = "aid",
     date_request: DateRequest | None = None,
     include_observations: bool = False,
     unit_text: str | None = None,
@@ -188,7 +190,7 @@ def _run(
     )
     return asyncio.run(
         resolve_variable(
-            "aid",
+            variable,
             entities=entities,
             date_request=date_request,
             detect_query=role_query,
@@ -864,7 +866,7 @@ class _TwoPartExtractLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def test_an_every_member_phrase_one_part_meets_still_departs_on_a_subject_only_sibling(
@@ -1288,13 +1290,14 @@ class _StrayBindLLM:
         stray = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[stray]), None
+        return elected_reply(0, bindings=[stray]), None
 
 
 def test_empty_discovery_with_a_stray_value_refuses_naming_it(monkeypatch):
     """Discovery finds no recipient with data, which refuses `no_observations` before any
-    answer is judged. The bind drafted Female on a slot the elected shape lacks, which the
-    elected answer leaves unmet, and `qualifier_not_bound` ranks first, so the part refuses
+    answer is judged. The bind drafted Female, which the words name, on a slot the elected
+    shape lacks, which the elected answer leaves unmet, and `qualifier_not_bound` ranks
+    first, so the part refuses
     naming it (`phase_shared.settle_unjudged_refusal`), with the elected answer as its
     flagged match, whose trace records the term, and keeps the recipient axis discovery
     left open. Nothing departs."""
@@ -1308,6 +1311,7 @@ def test_empty_discovery_with_a_stray_value_refuses_naming_it(monkeypatch):
         sv_score=0.9,
         role_query="aid disbursed",
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        variable="female aid",
     )
 
     assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
@@ -1415,9 +1419,7 @@ class _RoleBearingCandidateBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
 def test_candidates_path_buffered_discovered_scope_single_survivor_reuses_the_index(

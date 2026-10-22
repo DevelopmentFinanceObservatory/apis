@@ -21,6 +21,14 @@ its own recall score, capped at the best scored shape of the list: it stands beh
 scored shape at or above that rank, wherever those shapes stand, so a root never leads the
 reading recall scored best.
 
+The seat count is also the root-size limit: a root of more than that many leaves never
+reaches the menu, so a lower count removes whole roots, not a sample of them.
+
+Each resolver scores on its own scale (`shape.Pool`), so the walk seats our pool's hits
+first and the UN System Data Commons' take the seats left, each pool ranked and capped by
+its own scores. Only a pass that merged the UN pool (`phase_intake._merge_un_pool`) holds
+both.
+
 The bind menu and the not-electable list beside it are both seated this way
 (`phase_rank_bind._phase_prune_and_rank`, `phase_rank_bind._refused_on_pinned`).
 """
@@ -29,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from search.engine.shape import ShapeDraft
+from search.engine.shape import Pool, ShapeDraft
 
 
 def is_expansion(shape: ShapeDraft) -> bool:
@@ -37,11 +45,25 @@ def is_expansion(shape: ShapeDraft) -> bool:
     return shape.representative_score is None and shape.expansion_root is not None
 
 
+# The order the pools take seats in.
+_POOL_ORDER: tuple[Pool, ...] = ("ours", "un_system")
+
+
 def seat_menu(shapes: Sequence[ShapeDraft], seats: int) -> list[ShapeDraft]:
     """The readings of `shapes`, the admissible ones in rank order, that take the `seats` of
-    a menu: at most `seats` of them, in seated order. A list with no expansion keeps its
-    first `seats` shapes. A list of nothing but the leaves of roots larger than the menu
-    seats none.
+    a menu: at most `seats` of them, in seated order. Our pool's shapes are seated first
+    (`_seat_pool`), then the UN pool's in the seats left."""
+    seated: list[ShapeDraft] = []
+    for pool in _POOL_ORDER:
+        held = [shape for shape in shapes if shape.pool == pool]
+        seated.extend(_seat_pool(held, seats - len(seated)))
+    return seated
+
+
+def _seat_pool(shapes: Sequence[ShapeDraft], seats: int) -> list[ShapeDraft]:
+    """The shapes of one pool that take `seats` seats, in seated order. A list with no
+    expansion keeps its first `seats` shapes. A list of nothing but the leaves of roots
+    larger than the menu seats none.
 
     The ceiling on a root's rank is the best recall score among `shapes`, the readings
     still admissible when the list is seated, so a shape refused before then caps nothing.

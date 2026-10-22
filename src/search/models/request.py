@@ -36,6 +36,18 @@ class RawTextInput(StrictModel):
     )
     query: str = Field(description="the user's natural-language request")
 
+    @field_validator("query")
+    @classmethod
+    def _encodes(cls, query: str) -> str:
+        """A query holding a lone surrogate does not encode as UTF-8, so it is refused here,
+        as pydantic refuses one in every length-bounded text field, and the text the engine
+        sends to a model, stores and echoes encodes."""
+        try:
+            query.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("the query must not hold a lone surrogate") from exc
+        return query
+
 
 # Parsed model caps mirror search.engine.config but remain local literals so
 # importing search.models does not require the optional engine package. A parity

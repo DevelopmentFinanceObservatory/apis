@@ -2,8 +2,8 @@
 `role_grid` does.
 
 The grid crosses populations of rows, slot bindings, bound role keys and open role keys.
-The packaged populations are each dataset's rows of each family of the packaged code
-index, and the synthetic ones cover the structures the packaged index lacks. Each test
+The fixture populations are each dataset's rows of each family of the fixture code
+index, and the synthetic ones cover the structures the fixture index lacks. Each test
 runs once per grid and label, so a difference names the case it falls in.
 """
 
@@ -37,21 +37,21 @@ from .role_grid import (
     count_by_label,
     elect,
     elect_any_row,
-    packaged_cells,
+    fixture_cells,
     synthetic_cells,
 )
 
 _DAC1 = "provenance/OECDDAC1"
 
 _GRIDS: dict[str, Callable[[], tuple[Cell, ...]]] = {
-    "packaged": packaged_cells,
+    "fixture": fixture_cells,
     "synthetic": synthetic_cells,
 }
 _GRID_LABELS = {
-    "packaged": (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
+    "fixture": (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
     "synthetic": LABELS,
 }
-"""The labels each grid holds. The packaged index has no role twin, no role sets that do
+"""The labels each grid holds. The fixture index has no role twin, no role sets that do
 not nest, and no nested role sets whose rows hold other constraint keys under one slot
 binding."""
 
@@ -290,11 +290,11 @@ def test_the_rule_departs_from_the_any_row_rule_on_the_moved_labels_alone(grid: 
     assert not mislabelled, _report(mislabelled, len(found))
 
 
-def test_the_moved_labels_occur_in_the_packaged_index_only_in_dac1():
-    """Of the packaged datasets, only OECD DAC1 publishes a family whose rows declare
+def test_the_moved_labels_occur_in_the_fixture_index_only_in_dac1():
+    """Of the fixture datasets, only OECD DAC1 publishes a family whose rows declare
     nested role sets, so the rule reads every other dataset as the any-row rule does."""
     moved = {
-        cell.population.dataset for cell in packaged_cells() if cell.expected.label in MOVED_LABELS
+        cell.population.dataset for cell in fixture_cells() if cell.expected.label in MOVED_LABELS
     }
 
     assert moved == {_DAC1}

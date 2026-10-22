@@ -50,7 +50,7 @@ from tests.engine._harness import member_walk_reader
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
-_HEALTH = "CRSPurposeCode120"  # hierarchical (crsPurpose), real packaged index
+_HEALTH = "CRSPurposeCode120"  # hierarchical (crsPurpose), real fixture index
 _MALARIA_CONTROL = "CRSPurposeCode12262"  # a leaf under _HEALTH
 _FLOW_GRANT = "CRSTypeOfFlow10"  # crsTypeOfFlow is flat
 
@@ -437,7 +437,7 @@ _TEST_PROVENANCE = FIXTURE_PROVENANCE
 
 
 def _index_carrying_the_fixture_family(*, member_crs_purpose: str) -> CodeIndex:
-    """The packaged index plus the fixture StatVar, in a dataset that reads absence as zero.
+    """The fixture index plus the fixture StatVar, in a dataset that reads absence as zero.
 
     The fixture family is one row, so its five-tuple would pin `crsPurpose` and the
     canonical identity would unbind the bound slot (`canonical_identity`). The pin is

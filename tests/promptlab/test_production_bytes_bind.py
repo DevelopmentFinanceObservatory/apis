@@ -6,7 +6,7 @@ import json
 
 from promptlab.compose import compose
 from promptlab.manifest import PROMPTLAB_ROOT, load_rung
-from search.engine.bind import _UNIVERSAL_BIND_SYSTEM_PROMPT
+from search.engine.bind import _MEASURING_BIND_SYSTEM_PROMPT
 
 EXTRACT_MANIFEST = PROMPTLAB_ROOT / "rungs" / "production-extract.json"
 BIND_MANIFEST = PROMPTLAB_ROOT / "rungs" / "production-bind.json"
@@ -14,7 +14,7 @@ BIND_MANIFEST = PROMPTLAB_ROOT / "rungs" / "production-bind.json"
 
 def test_production_bind_composes_byte_for_byte_to_the_shipped_constant():
     rung = load_rung(EXTRACT_MANIFEST, BIND_MANIFEST)
-    assert compose(rung.bind) == _UNIVERSAL_BIND_SYSTEM_PROMPT
+    assert compose(rung.bind) == _MEASURING_BIND_SYSTEM_PROMPT
 
 
 def test_production_bind_run_config():

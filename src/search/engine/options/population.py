@@ -1,6 +1,6 @@
 """Derive an options request's StatVar population and declared role signature.
 
-The packaged index supplies the population of an identity whose membership it
+The release's code index supplies the population of an identity whose membership it
 decides (`index_decides_membership`, the Datasets mint's test). Its synthetic
 `ShapeDraft` sets `sv_arc_facts_complete=False` so `shape_member_facts` reads
 the family the index resolves; an empty indexed result remains empty. Other

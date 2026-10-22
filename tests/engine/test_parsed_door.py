@@ -307,7 +307,7 @@ class TestPartProvenance:
             },
         ]
 
-    def test_the_served_schema_lists_the_packaged_index_datasets(self):
+    def test_the_served_schema_lists_the_fixture_index_datasets(self):
         client = make_client()
         body = client.get("/api/search/schema").json()
         field = body["request"]["$defs"]["ParsedPart"]["properties"]["provenance"]

@@ -81,9 +81,6 @@ def _release_snapshot(release: Release) -> CoverageSnapshot:
             stamp=release.release_id,
             build_id=release.release_id,
             built_at=manifest.read_timestamp,
-            source="graph_release",
-            row_counts={},
-            files={},
             horizon=index.horizon,
             # The release records its import's completion time and no creation time, so the
             # `artifact_pair_stale` warning, which compares execution ids, names the former.

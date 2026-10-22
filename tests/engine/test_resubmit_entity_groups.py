@@ -11,7 +11,6 @@ import pytest
 from pydantic import ValidationError
 
 from entity_resolution import Entity, Group
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.resubmit_request import resubmit_named_groups
@@ -34,6 +33,7 @@ from tests.engine._base_identity import (
     origin_entity,
     subject_entity,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve, walk_options
@@ -209,9 +209,7 @@ class _ElectSoleShape:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
-        ), None
+        return elected_reply(0, also_plausible=None), None
 
 
 def _eu_graph() -> FakeGraph:

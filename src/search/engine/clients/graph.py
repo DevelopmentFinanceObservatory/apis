@@ -504,7 +504,7 @@ class EngineGraphClient(Protocol):
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         """Fetch confirmed display labels in one ``POST /v2/node``.
 
-        Omit missing nodes. Use the packaged index label when available, which strips the
+        Omit missing nodes. Use the release's code index label when available, which strips the
         graph name's parenthetical code-system suffix. Otherwise return the graph name.
         Transport and HTTP failures raise ``GraphInfraError``.
         """

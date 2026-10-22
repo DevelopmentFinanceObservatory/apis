@@ -8,7 +8,7 @@ import asyncio
 import pytest
 
 from search.engine.bind import (
-    _UNIVERSAL_BIND_SYSTEM_PROMPT,
+    _MEASURING_BIND_SYSTEM_PROMPT,
     _build_universal_bind_prompt,
     _UniversalBindOutput,
 )
@@ -44,7 +44,7 @@ def test_the_bind_schema_and_prompts_carry_no_quantity_reading():
     and neither bind prompt lists the denominators or asks for the reading."""
     assert not set(QuantityOutput.model_fields) & set(_UniversalBindOutput.model_fields)
     prompt = _build_universal_bind_prompt("widget to GDP", [_shape("widget")])
-    for text in (_UNIVERSAL_BIND_SYSTEM_PROMPT, prompt):
+    for text in (_MEASURING_BIND_SYSTEM_PROMPT, prompt):
         assert "DENOMINATORS" not in text
         assert "PART 3" not in text
 
@@ -63,7 +63,7 @@ class _OrderLLM(FakeLLM):
             await asyncio.sleep(0)
             self.events.append("quantity-end")
             return NO_QUANTITY
-        if schema is _UniversalBindOutput:
+        if issubclass(schema, _UniversalBindOutput):
             self.events.append("bind-start")
             output = await super().generate_structured(prompt=prompt, system=system, schema=schema)
             self.events.append("bind-end")

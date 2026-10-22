@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from code_index import CodeIndex, load_index
+from code_index import CodeIndex
+from tests.code_index.support import load_index
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "index.json"
 

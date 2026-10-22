@@ -474,10 +474,11 @@ def _plan_status(state: ResolveState) -> StatusPlan:
     that the alternate guard admits (`AlternateJudge.inadmissible`, as `_plan_admission`
     judges it), each with D read on its own assignment
     (`availability.has_data_where_asked`), whether bind nominated it, and whether the
-    registry pairs it with the elected shape. The guard runs first, so `sole` means P is the
-    only admissible reading with data. The measure axes the question leaves open for the
-    elected shape are read here (`_open_axes`) and kept as `state.open_measure_axes`, which
-    the rule and the guard both read. A base the question states that the quantity read
+    registry pairs it with the elected shape. The guard runs first, so `sole` means P is
+    the only admissible reading with data. The measure axes the question leaves open for
+    the elected shape are read here
+    (`_open_axes`) and kept as `state.open_measure_axes`, which the rule and the guard both
+    read. A base the question states that the quantity read
     matched to no listed denominator (`NamedDenominator.ref` `None`) is the rule's
     `base_unmatched`. A reading the model declined in favour of a refused one has no
     alternatives: the part refuses with it."""

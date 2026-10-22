@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.departures import warning_key
 from search.engine.quantity_read import QuantityOutput
@@ -26,6 +25,7 @@ from search.models import (
 )
 from series_coverage.schema import ABSENT_ENTITY, RoleNames
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query, offline_resolve
@@ -65,7 +65,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _graph(

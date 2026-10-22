@@ -11,7 +11,7 @@ import ast
 import re
 from dataclasses import dataclass
 
-from search.engine.bind import AVAILABILITY_LABEL
+from search.engine.bind import AVAILABILITY_LABEL, DROPPED_QUALIFIERS_HEADER
 
 _NONE = "(none)"
 
@@ -59,15 +59,6 @@ _FIXED_CONTEXT_HEADER_LINE = (
 _SHAPE_FIXED_CONTEXT_LINE = "  fixed_context:"
 _FIXED_CONTEXT_ENTRY_RE = re.compile(
     r"    property_dcid=(?P<prop>[^,]*), value_dcid=(?P<val>.*) \((?P<label>.*)\)"
-)
-_DROPPED_QUALIFIERS_HEADER_LINE = (
-    "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
-    "apply them -- for the shape you choose, if one of these phrases asks for "
-    'every value of one of its constraint slots (e.g. "across all flows", '
-    '"regardless of type"), bind that slot kind=unbound, evidence=requested_all, '
-    "and set that binding's own requested_all_phrase to the phrase verbatim; "
-    "leave requested_all_phrase null when no phrase names one of the chosen "
-    "shape's own constraint slots):"
 )
 _DROPPED_QUALIFIERS_ENTRY_RE = re.compile(r"  (?P<phrase>.*)")
 _CONSTRAINT_NONE_LINE = "  constraint_slots: (none)"
@@ -234,7 +225,7 @@ def parse_menu(prompt: str) -> tuple[str, tuple[MenuEntry, ...]]:
     if pos < len(lines) and lines[pos] == _FIXED_CONTEXT_HEADER_LINE:
         pos = _literal(lines, pos + 1, "")
 
-    if pos < len(lines) and lines[pos] == _DROPPED_QUALIFIERS_HEADER_LINE:
+    if pos < len(lines) and lines[pos] == DROPPED_QUALIFIERS_HEADER:
         pos += 1
         saw_dropped_qualifier_entry = False
         while pos < len(lines) and _DROPPED_QUALIFIERS_ENTRY_RE.fullmatch(lines[pos]):

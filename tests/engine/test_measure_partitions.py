@@ -862,7 +862,7 @@ def test_none_valued_axes_are_excluded_before_matching():
     assert match == PartitionLabelMatch(label="red", uncovered=())
 
 
-# Four packaged partitions each have one label; `measurementQualifier` remains uncovered.
+# Four fixture partitions each have one label; `measurementQualifier` remains uncovered.
 
 
 def _real_partitions() -> tuple[MeasurePartition, ...]:

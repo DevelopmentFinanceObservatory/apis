@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
+from functools import cached_property
 from typing import Literal, NamedTuple
 
 from code_index.labels import without_property_suffix
@@ -23,13 +25,27 @@ from search.engine.bind import (
     CandidateMenu,
     SlotBindingDraft,
     _UniversalBindOutput,
-    bind_universal,
+    rank_elected,
     split_stray_bindings,
 )
 from search.engine.bind_repair import (
     _label_has_negated_occurrence,
     _label_named_in_text,
     _label_negated_in_text,
+)
+from search.engine.binders import BindRequest, BindResult, QuantityRequest
+from search.engine.binders.base import PolicyContractError
+from search.engine.binders.house_policy import (
+    POLICY_ORDER,
+    Context,
+    PolicyChoice,
+    PolicyName,
+    PolicyPool,
+    ShapeFacts,
+    apply_house_policies,
+    chooses_on,
+    context_of,
+    shape_facts,
 )
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
@@ -79,7 +95,7 @@ from search.engine.quantity import (
     statvar_denominators,
     with_stated_form,
 )
-from search.engine.quantity_read import QuantityOutput, read_stated_quantity
+from search.engine.quantity_read import QuantityOutput
 from search.engine.region.admissibility import (
     judge_measure_and_roles,
     judge_pinned_parts,
@@ -191,8 +207,10 @@ def _part_codes(shape: ShapeDraft, index: CodeIndex) -> dict[str, frozenset[str]
     return {prop: frozenset(values) for prop, values in held.items()}
 
 
-def _rank_key(shape: ShapeDraft) -> tuple[bool, float, int, int, str]:
-    """Order by recall or topic-root rank, breadth, country breadth, then ``shape_id``.
+def _rank_key(shape: ShapeDraft) -> tuple[bool, bool, float, int, int, str]:
+    """Order our pool's shapes ahead of the UN System Data Commons', since each resolver
+    scores on its own scale (`shape.Pool`), then by recall or topic-root rank, breadth,
+    country breadth, then ``shape_id``.
 
     Unscored shapes sort last. Breadth is the confirmed recall sample. It breaks
     flat-score ties, broadest first. Country breadth (`_country_breadth`) breaks the
@@ -201,6 +219,7 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, float, int, int, str]:
     same key selects the cross-population anchor.
     """
     return (
+        shape.pool != "ours",
         shape.rank_score is None,
         -(shape.rank_score or 0.0),
         -(len(shape.sv_arc_facts) if shape.sv_arc_facts else 1),
@@ -298,7 +317,7 @@ async def _read_stated_quantity(
     state: ResolveState, shapes: Sequence[ShapeDraft]
 ) -> RegionResult | None:
     """Read the form and the base the variable phrase states, from its own words, over the
-    denominators `shapes` divide by (`quantity_read.read_stated_quantity`), and record them
+    denominators `shapes` divide by (`binders.Binder.read_quantity`), and record them
     (`_read_quantity_answer`). Return a terminal result for a malformed reading.
 
     The read runs after the measure and role rules and before the form rule, so a form
@@ -306,9 +325,15 @@ async def _read_stated_quantity(
     (`admissibility.judge_pinned_parts`), and the bind call elects among what is left. Its
     usage opens the part's LLM usage (`ResolveState.var_usage`)."""
     denominators = _quantity_denominators(state, shapes)
-    quantity, state.var_usage = await read_stated_quantity(
-        _quantity_phrase(state), denominators, llm=state.llm
+    request = QuantityRequest(
+        variable=_quantity_phrase(state),
+        denominators=denominators,
+        bind_variable=_bind_variable(state, shapes),
+        query_text=state.query_text or state.role_query,
+        part=state.variable_index,
+        pool=state.pool,
     )
+    quantity, state.var_usage = await state.binder.read_quantity(request, llm=state.llm)
     if _read_quantity_answer(state, quantity, denominators, shapes):
         return None
     await _record_shape_step(state)
@@ -671,9 +696,17 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     none is refused on a pinned part, the part refuses without a bind call
     (`_refusal_before_bind`), flagging nothing.
 
-    The shapes are one pool's, ours or the UN System Data Commons' on the pass that runs
-    when ours ends no_data (`ResolveState.pool`), and meet that pool's score floor
-    (`_meets_score_floor`). The open-axis preference, five-tuple family election, the
+    The steps run in this order, and any binder that reads the quantity late keeps it:
+    measure and roles; the quantity read; the form rule; pinned codes; the refusals
+    written to `ResolveState.interpretations`; open-axis preference, family election and
+    collapse; seating; the availability read; bind. The form rule runs before seating, so
+    a shape it refuses holds no seat, and a menu it empties ends in a refusal because the
+    refusals are already recorded.
+
+    The shapes are ours, with `SEARCH_UN_ON_FIRST_MENU` joined by the UN System Data
+    Commons' (`phase_intake._merge_un_pool`), or the UN System Data Commons' alone on the
+    pass that runs when ours ends no_data (`ResolveState.pool`). Each shape meets its own
+    pool's score floor (`_meets_score_floor`). The open-axis preference, five-tuple family election, the
     unasked-axes rule and the measure-family collapse narrow the admissible shapes, and
     the menu seats them in rank order under ``bind_top_k``, a topic root with every leaf
     or none (`seating.seat_menu`). What the phase reads for the readings it may offer
@@ -977,7 +1010,11 @@ def _refusal_before_bind(state: ResolveState, *, llm_usage: dict | None = None) 
     on them cannot bind."""
     judged = state.interpretations.interpretations
     reason = state.interpretations.refusal_reason()
-    assert reason is not None
+    if reason is None:
+        # A menu emptied without recording why is a fault upstream; refuse the part loudly
+        # rather than answer from a menu nobody judged.
+        logger.error("part %r reached a refusal with no refused reading recorded", state.variable)
+        return state.no_data("variable_not_resolved", llm_usage=llm_usage)
     return state.no_data(
         reason,
         unbound_qualifiers=tuple(
@@ -2837,6 +2874,56 @@ def _coverage_records(
     return [*unsupported, *records]
 
 
+def model_only_values(
+    state: ResolveState, prop: str, values: Sequence[str], labels: Mapping[str, str]
+) -> tuple[str, ...]:
+    """The `values` bound on `prop` that no recorded term of the request supports, so only
+    the bind model read them from the words. A term supports every value on `prop` when it
+    is an admitted qualifier match on `prop` or a query record a binding on it covers, and
+    supports one value when one of its names (`_value_names`) is a run of the variable,
+    a dropped qualifier phrase or the single-variable query, so "women" names Female by
+    its synonym. Each source is read separately. A value with no name is the model's. An
+    answer that cannot apply a supported value refuses `qualifier_not_bound` on it, and one
+    that cannot apply a model-only value discloses it (`unrealisable.unbind_unrealisable`,
+    `_stray_requirements`)."""
+    if any(match.code_system == prop for match in state.admitted_qualifiers) or any(
+        record.slot == prop and record.disposition == "bound" for record in state.query_qualifiers
+    ):
+        return ()
+    texts = [state.variable, *state.dropped_qualifier_phrases]
+    if query_text := state.query_text:
+        texts.append(query_text)
+    sources = [tokenize(text) for text in dict.fromkeys(texts)]
+    return tuple(
+        value
+        for value in values
+        if not any(
+            _token_occurrences(tokens, name)
+            for tokens in sources
+            for name in _value_names(prop, value, labels.get(value))
+        )
+    )
+
+
+def _value_names(prop: str, value: str, label: str | None) -> tuple[str, ...]:
+    """Every name the qualifier matcher reads for `value` on `prop`, and its graph `label`:
+    the code index's label and synonyms of the code, and the label and synonyms of each
+    matchable measure value on `prop` that spells its reading, aliases included."""
+    code = get_index().code_by_dcid(value)
+    measure_index = get_measure_index()
+    reading = measure_index.reading_set(value)
+    return (
+        *(() if label is None else (label,)),
+        *(() if code is None else (code.label, *code.synonyms)),
+        *(
+            text
+            for row in measure_index.values
+            if row.axis == prop and row.matchable and row.dcid in reading
+            for text in (row.label, *row.synonyms)
+        ),
+    )
+
+
 def value_requirements(
     state: ResolveState, recorded: Sequence[ResolvedQualifier]
 ) -> tuple[Requirement, ...]:
@@ -3236,9 +3323,10 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        ``"uncovered"``, and every other exclusion or comparison phrase
        (`_coverage_records`). In log mode election vetting logs them instead
        (`phase_election._repair_bindings`) and the answer reads without them.
-    10. Each value the bind drafted on a property the elected shape has no slot for
-       (`ResolveState.stray_requirements`), ``unbound`` with evidence ``"model"``, in
-       every coverage mode, unless a record above already names that text.
+    10. Each value the bind drafted on a property the elected shape has no slot for and a
+       recorded term supports (`ResolveState.stray_requirements`), ``unbound`` with
+       evidence ``"model"``, in every coverage mode, unless a record above already names
+       that text.
 
     The words naming a value a shape on the bind menu holds are no record here: election
     vetting records them as value requirements (`value_requirements`), which each final
@@ -3391,7 +3479,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     resolved.extend(
         requirement.term
         for requirement in state.stray_requirements
-        if _normalize(requirement.term.text) not in already_recorded
+        if requirement.refuses and _normalize(requirement.term.text) not in already_recorded
     )
     return resolved
 
@@ -3435,38 +3523,6 @@ def _model_records(
             )
         )
     return records
-
-
-def _validate_requested_all_bindings(
-    bindings: list[SlotBindingDraft],
-    dropped_qualifier_phrases: list[str],
-    *,
-    slot_properties: frozenset[str],
-) -> tuple[list[SlotBindingDraft], frozenset[str]]:
-    """Validate model ``requested_all`` claims before defaults or warning suppression use them.
-
-    A claim must be unbound, name a property on the elected shape, and reproduce a dropped
-    phrase exactly. Demote invalid claims to ``mentioned`` and clear their phrase. Return
-    bindings in order plus normalised phrases from valid claims only.
-    """
-    applied: set[str] = set()
-    validated: list[SlotBindingDraft] = []
-    for binding in bindings:
-        if binding.evidence == "requested_all":
-            if (
-                binding.kind == "unbound"
-                and binding.property_dcid in slot_properties
-                and binding.requested_all_phrase is not None
-                and binding.requested_all_phrase in dropped_qualifier_phrases
-            ):
-                applied.add(_normalize(binding.requested_all_phrase))
-                validated.append(binding)
-                continue
-            binding = binding.model_copy(
-                update={"evidence": "mentioned", "requested_all_phrase": None}
-            )
-        validated.append(binding)
-    return validated, frozenset(applied)
 
 
 def operation_slot_phrases(
@@ -3536,29 +3592,157 @@ def _open_operation_slots(
     return result
 
 
-def _bind_variable(state: ResolveState) -> str:
+def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:
     """The variable phrase the bind model reads: the part's own, or the graph name of its
     series code's StatVars when the code is all the part's variable text writes
     (`ResolveState.source_code`), so the model reads the measure in place of an opaque code.
-    The name is that of the menu's code member declaring the fewest roles, the code's
-    aggregate. A part none of whose members has a name reads its own phrase."""
+    The name is that of the code member declaring the fewest roles among `shapes`, the
+    code's aggregate: the admissible shapes for the quantity read, which runs before the
+    menu is seated, and the seated menu for the bind call. A part none of whose members has
+    a name reads its own phrase."""
     code = state.source_code
     if code is None or not names_only_code(state.variable, code.code):
         return state.variable
     named = [
         (len(arcs.get("observationProperties", {}).get("nodes", [])), name)
-        for shape in state.capped_shapes
+        for shape in shapes
         for dcid, arcs in (shape.sv_arc_facts or {}).items()
         if dcid in code.dcids and (name := read_name(arcs)) is not None
     ]
     return min(named)[1] if named else state.variable
 
 
-async def _phase_bind(state: ResolveState) -> RegionResult | None:
-    """Run one choose-and-bind call. Return a terminal result for an ask that names no
-    nearest reading, or an invalid index.
+@dataclass(kw_only=True)
+class _HousePolicyStep:
+    """A part's house-policy step (`BindRequest.apply_policies`): the house policies over a
+    binder's pool (`house_policy.apply_house_policies`), the pool's first index the binder's
+    pick, read against the part's menu, frame, each shape's admitted qualifiers and
+    availability, and the code index's house default datasets, with the binder's ratings of
+    the pool shapes and its report of the pool shapes that hold what it recognised on its
+    pick. `calls` counts the binder's calls. Each menu shape's facts are read once, and the
+    context once per pool, however often the binder asks `chooses_on`."""
 
-    The call elects a shape of the admissible menu and binds its slots. The part's frame
+    shapes: Sequence[ShapeDraft]
+    frame: Frame
+    admitted_qualifiers: Sequence[Sequence[QualifierMatch]]
+    availability: Sequence[bool | None]
+    code_index: CodeIndex
+    calls: int = 0
+    _contexts: dict[frozenset[int], Context] = field(default_factory=dict, init=False, repr=False)
+
+    def __call__(
+        self,
+        pool: PolicyPool,
+        *,
+        ratings: Mapping[int, float] | None = None,
+        holds: Mapping[int, bool] | None = None,
+    ) -> PolicyChoice:
+        self.calls += 1
+        return apply_house_policies(
+            self._facts_of(pool.measuring),
+            pool,
+            self._context(pool.measuring),
+            chosen=pool.measuring[0],
+            ratings=ratings,
+            holds=holds,
+        )
+
+    def chooses_on(
+        self, indices: Sequence[int], axis: str, *, policies: Sequence[PolicyName] = POLICY_ORDER
+    ) -> bool:
+        """Whether one of `policies` would choose on measure axis `axis` among the menu
+        shapes at `indices` (`house_policy.chooses_on`). Not a call of the step."""
+        return chooses_on(self._facts_of(indices), self._context(indices), axis, policies=policies)
+
+    @cached_property
+    def _facts(self) -> tuple[ShapeFacts, ...]:
+        """The facts of every menu shape, by menu index."""
+        return shape_facts(
+            self.shapes, self.availability, range(len(self.shapes)), code_index=self.code_index
+        )
+
+    def _facts_of(self, indices: Sequence[int]) -> tuple[ShapeFacts, ...]:
+        return tuple(self._facts[i] for i in indices)
+
+    def _context(self, pool: Sequence[int]) -> Context:
+        """The context over `pool`, which reads the pool as a set."""
+        key = frozenset(pool)
+        if key not in self._contexts:
+            self._contexts[key] = context_of(
+                self.frame,
+                self.admitted_qualifiers,
+                pool,
+                wanted_datasets=self.code_index.house_defaults(),
+                case_systems=self.code_index.house_case_systems(),
+            )
+        return self._contexts[key]
+
+
+def _elected_index(state: ResolveState) -> int:
+    """The menu index of the elected reading: the first shape the bind menu states as the
+    reading the model chose, in the rank that orders the menu (`bind.rank_elected`), and
+    the model's own choice where the menu tells every higher-ranked shape apart from it.
+    The rank reads only the shapes the house policies left standing in their pool
+    (`BindResult.policy_choice`), so it breaks a tie among the survivors and leaves
+    a policy's move in place. The model's bindings and nominations stand as drafted: the bindings
+    read the elected shape unchanged, and a nominated shape that is elected here is no
+    alternative to itself (`phase_place_materialise._plan_status`). A reading the model
+    declined every menu shape for stands in as it is (`_stand_in_declined`)."""
+    bind_result = state.bind_result
+    if state.declined is not None:
+        return bind_result.chosen_shape_index
+    decision = state.bind_decision
+    among = None
+    if decision is not None and decision.policy_pool is not None:
+        dropped = decision.policy_choice.dropped if decision.policy_choice is not None else ()
+        among = frozenset(decision.policy_pool.measuring) - frozenset(dropped)
+    return rank_elected(
+        state.capped_shapes, bind_result, availability=state.menu_availability, among=among
+    )
+
+
+def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None:
+    """One line per bind call, ``bind_decision`` and a JSON object: the part and pass, the
+    binder, the menu's shape ids, the shape the binder chose (``chosen``), the one the house
+    policies elect (``elected``) and the one the part answers with after the menu-rank
+    tie-break (``answered``, `_elected_index`), each None when the reply elects none, the
+    policy pool, the policies that narrowed, the reply's
+    ratings as it wrote them (None on a refusal), the binder's own scores
+    (`BindResult.scores`), the facts the policies read of each pool shape, and whether the
+    schema refused the reply (`decision` None)."""
+    pool = decision.policy_pool if decision is not None else None
+    choice = decision.policy_choice if decision is not None else None
+    output = decision.output if decision is not None else None
+    record = {
+        "part": state.variable_index,
+        "pass": state.pool,
+        "binder": decision.binder if decision is not None else state.binder.name,
+        "menu": [shape.shape_id for shape in state.capped_shapes],
+        "chosen": pool.measuring[0] if pool is not None else None,
+        "elected": choice.survivor if choice is not None else None,
+        "answered": _elected_index(state) if choice is not None else None,
+        "pool": list(pool.measuring) if pool is not None else [],
+        "fired": list(choice.fired) if choice is not None else [],
+        "ratings": [r.model_dump() for r in output.measuring] if output is not None else None,
+        "scores": dict(decision.scores) if decision is not None else {},
+        "facts": [asdict(f) for f in choice.facts] if choice is not None else [],
+        "refused": decision is None,
+    }
+    logger.info("bind_decision %s", json.dumps(record, separators=(",", ":")))
+
+
+async def _phase_bind(state: ResolveState) -> RegionResult | None:
+    """Run one choose-and-bind call through the part's binder (`ResolveState.binder`).
+    Return a terminal result for an ask that names no nearest reading, or an invalid index.
+
+    The call elects a shape of the admissible menu and binds its slots, and the house
+    policies choose among the shapes the binder elects from (`BindRequest.apply_policies`,
+    `_HousePolicyStep`), once on a reply that elects a shape and never on one that does
+    not. The binder's answer is `ResolveState.bind_decision`, logged as one
+    ``bind_decision`` line (`_log_bind_decision`). A binder that runs the step any other
+    number of times, or raises `PolicyContractError`, breaks that contract. The breach is
+    logged at ERROR in place of the line and the part refuses ``variable_not_resolved``
+    with the call's usage. The part's frame
     opens the prompt, and the readings refused only on a pinned part follow the menu as not
     electable (`InterpretationSet.refused_on_pinned`). Each shape's own admitted qualifiers
     become its fixed context (`_shape_qualifiers`), less the terms inside a phrase its own
@@ -3575,9 +3759,10 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     value) refuses ``variable_not_resolved`` with the call's usage and warns
     ``degenerate_binding_detected``. A value or set draft on a property the elected shape
     has no slot for leaves the output (`split_stray_bindings`), and its value is recorded
-    in the ledger as a requirement (`_stray_requirements`) every answer is held to: the
-    part answers from the readings that apply it, and refuses ``qualifier_not_bound`` on it,
-    with the elected reading flagged, when none does.
+    in the ledger as a requirement (`_stray_requirements`). Every answer is held to a value
+    a recorded term supports. The part answers from the readings that apply it, and refuses
+    ``qualifier_not_bound`` on it, with the elected reading flagged, when none does. An
+    answer that leaves a value only the model read unapplied stands and discloses it.
 
     A model that asks declines every admissible reading. When it names the nearest refused
     reading, that reading stands in as the elected shape (`_stand_in_declined`), so the
@@ -3608,25 +3793,36 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             has_data_where_asked(state, shape, series=series) for shape in state.capped_shapes
         ]
     state.menu_availability = availability
+    policies = _HousePolicyStep(
+        shapes=state.capped_shapes,
+        frame=state.frame,
+        admitted_qualifiers=admitted_qualifiers,
+        availability=availability,
+        code_index=get_index(),
+    )
+    request = BindRequest(
+        variable=_bind_variable(state, state.capped_shapes),
+        shapes=state.capped_shapes,
+        admitted_qualifiers=admitted_qualifiers,
+        admitted_ties=admitted_ties,
+        withheld_measure_axes=withheld_measure_axes,
+        dropped_qualifier_phrases=tuple(state.dropped_qualifier_phrases),
+        candidate_menus=candidate_menus if any(candidate_menus) else (),
+        frame=state.frame,
+        refused=state.interpretations.refused_on_pinned,
+        availability=availability,
+        query_text=state.query_text or state.role_query,
+        apply_policies=policies,
+        policy_chooses_on=policies.chooses_on,
+        part=state.variable_index,
+        pool=state.pool,
+    )
     t0 = now_ms()
     bind_result: _UniversalBindOutput
-    _bind_usage: dict | None
-    bind_task = asyncio.create_task(
-        bind_universal(
-            _bind_variable(state),
-            state.capped_shapes,
-            admitted_qualifiers=admitted_qualifiers,
-            admitted_ties=admitted_ties,
-            withheld_measure_axes=withheld_measure_axes,
-            dropped_qualifier_phrases=tuple(state.dropped_qualifier_phrases),
-            candidate_menus=candidate_menus if any(candidate_menus) else (),
-            frame=state.frame,
-            refused=state.interpretations.refused_on_pinned,
-            availability=availability,
-            llm=state.llm,
-        )
-    )
+    _bind_usage: dict | None = None
+    bind_task = asyncio.create_task(state.binder.bind(request, llm=state.llm))
     refusal: LLMOutputRefused | None = None
+    breach: str | None = None
     try:
         if state.emit is not None and state.capped_shapes:
             # Emit the top-ranked candidate while the bind call runs. It may differ from the choice.
@@ -3635,7 +3831,9 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             )
             await state.emit(shape_event)
         try:
-            bind_result, _bind_usage = await bind_task
+            decision, _bind_usage = await bind_task
+            state.bind_decision = decision
+            bind_result = decision.output
         except LLMOutputRefused as exc:
             # The schema refuses a binding that names no value, so a model that answers
             # with one has bound nothing it can name: the variable is not resolved. Gemini
@@ -3643,7 +3841,20 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             # infrastructure failure.
             logger.info("bind answer refused at parse for %r: %s", state.variable, exc)
             refusal = exc
+            if policies.calls:
+                breach = f"house policies ran {policies.calls} times on a refusal"
+        except PolicyContractError as exc:
+            breach = str(exc)
         else:
+            elects = not bind_result.ask and 0 <= bind_result.chosen_shape_index < len(
+                state.capped_shapes
+            )
+            if policies.calls != int(elects):
+                breach = (
+                    f"house policies ran {policies.calls} times on a bind call that "
+                    f"{'elects' if elects else 'elects no'} shape"
+                )
+        if breach is None and refusal is None:
             bind_result, stray = split_stray_bindings(bind_result, state.capped_shapes)
             state.bind_result = bind_result
             if stray:
@@ -3654,12 +3865,23 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             bind_task.cancel()
             await asyncio.gather(bind_task, return_exceptions=True)
     state.timing["bind"] = now_ms() - t0
+    # A call that broke the house-policy contract logs its breach in place of a decision.
+    if breach is None:
+        _log_bind_decision(state, None if refusal is not None else state.bind_decision)
     await _emit_step(
         state.emit,
         state.variable_index,
         "bind",
         ms=state.timing["bind"],
     )
+    if breach is not None:
+        # A binder that breaks the house-policy contract has an election nobody can
+        # vouch for, so the part refuses loudly.
+        logger.error(
+            "part %r: the binder broke the house-policy contract: %s", state.variable, breach
+        )
+        usage = refusal.usage if refusal is not None else _bind_usage
+        return state.no_data("variable_not_resolved", llm_usage=_sum_usage(state.var_usage, usage))
     if refusal is not None:
         state.warnings.append(
             Warning(
@@ -3709,8 +3931,11 @@ async def _stray_requirements(
     state: ResolveState, stray: Sequence[SlotBindingDraft]
 ) -> tuple[Requirement, ...]:
     """One requirement per property `stray` binds values on: the values the bind drafted on
-    properties the elected shape has no slot for (`split_stray_bindings`). The values on
-    one property are a set the request names (`ValueRule`), applied by membership: an
+    properties the elected shape has no slot for (`split_stray_bindings`). A value no
+    recorded term supports (`model_only_values`) is a requirement of its own that does not
+    refuse (`Requirement.refuses`). An answer that leaves it unapplied stands and departs
+    `measure_not_applied` under the value's name. The other values on one property are a
+    set the request names (`ValueRule`), applied by membership: an
     answer that binds one of them, or every member of which holds one, applies it, and the
     elected answer, which drops the draft, leaves it unmet unless every member holds one.
     Its term is ``unbound`` with evidence ``"model"``, named by the values' labels joined
@@ -3751,7 +3976,29 @@ async def _stray_requirements(
     for prop, value in values:
         by_prop.setdefault(prop, []).append(value)
     requirements: list[Requirement] = []
-    for prop, drafted in by_prop.items():
+    for prop, values_on in by_prop.items():
+        model = model_only_values(state, prop, values_on, labels)
+        requirements.extend(
+            Requirement(
+                term=ResolvedQualifier(
+                    text=labels[value],
+                    named=[GraphRef(ref=value, label=labels[value])],
+                    slot=None,
+                    disposition="unbound",
+                    evidence="model",
+                ),
+                origin="stray",
+                rule=ValueRule(values=frozenset({(prop, value)})),
+                departure=unapplied_departure(
+                    labels[value], asked=labels[value], property_dcid=prop
+                ),
+                refuses=False,
+            )
+            for value in model
+        )
+        drafted = [value for value in values_on if value not in model]
+        if not drafted:
+            continue
         named = [GraphRef(ref=value, label=labels[value]) for value in drafted]
         label = " and ".join(ref.label for ref in named)
         requirements.append(

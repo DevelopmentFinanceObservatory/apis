@@ -1110,7 +1110,7 @@ def _swapping_release(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> tuple[ReleaseService, Callable[[], None]]:
     """A graph release service serving the first of two published releases, and the function
-    that swaps it to the second. Each release's views are the packaged code index and
+    that swaps it to the second. Each release's views are the fixture code index and
     `_coverage_index()`, and each one's origin view is the session release's, so a request
     reads the same index and origin from either."""
     views = ReleaseViews(

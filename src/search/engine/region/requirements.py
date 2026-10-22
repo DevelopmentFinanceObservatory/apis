@@ -123,8 +123,8 @@ class Judgement:
         The choice does not depend on the ledger's order; the departures follow it.
 
         With no answer, what the bindings leave unapplied departs: every requirement but a
-        query record of the elected reading and a value, which are unmet only against an
-        answer."""
+        query record of the elected reading and a value that refuses, which are unmet only
+        against an answer."""
         settled = {_normalize(term.text) for term in self.refused}
         if self.outcomes:
             settled |= set.intersection(
@@ -142,7 +142,11 @@ class Judgement:
             for requirement in self.requirements
             if (requirement.departure or requirement.alone or requirement.generic) is not None
             and requirement.phrase not in settled
-            and (self.outcomes or not _met_only_by_an_answer(requirement.rule))
+            and (
+                self.outcomes
+                or not requirement.refuses
+                or not _met_only_by_an_answer(requirement.rule)
+            )
         }
         # Each departure a requirement carries, its own (`departure`) and the one it
         # discloses alone (`alone`), with the departure's rank on that requirement: unmet
@@ -254,7 +258,8 @@ def judge(
     it, or the answer leaves its set unmet, and is outside an answer that meets the set by
     membership without it, so it departs and refuses nothing. A query record of the elected reading no binding covers ("unbound")
     is unmet on every answer, and a term no answer is judged on (`None`) is outside every
-    answer."""
+    answer. A requirement that does not refuse (`Requirement.refuses`) is outside an
+    answer that leaves it unmet, so it departs and refuses nothing."""
     requirements = tuple(requirements)
     answers = tuple(answers)
     served = tuple(served) or (None,) * len(answers)
@@ -272,7 +277,10 @@ def judge(
         unmet_sets = [
             r.rule.values
             for r in values
-            if r.origin == "stray" and id(r) in unmet_values and isinstance(r.rule, ValueRule)
+            if r.origin == "stray"
+            and r.refuses
+            and id(r) in unmet_values
+            and isinstance(r.rule, ValueRule)
         ]
         answer: list[Outcome] = []
         named: dict[int, ResolvedQualifier] = {}
@@ -296,6 +304,10 @@ def judge(
                     answer.append("met")
             else:
                 answer.append("unmet" if rule == "unbound" else "outside")
+            if not requirement.refuses and answer[-1] == "unmet":
+                # A value only the bind model read is disclosed and refuses nothing.
+                answer[-1] = "outside"
+                named.pop(j, None)
         outcomes.append(tuple(answer))
         slot_terms.append(named)
     return Judgement(
@@ -433,13 +445,18 @@ def settle_flagged(
 def settle_unanswered(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
     """Settle a `qualifier_not_bound` refusal that returns before any answer is judged, and
     keep its judgement for the part's departures. Return the terms it names beside its own
-    records: each phrase of a requirement only an answer can meet (`_met_only_by_an_answer`),
-    named by its most specific such requirement, in ledger order. No answer met them, so
-    the refusal names them, and every other requirement departs."""
+    records: each phrase of a requirement that refuses and only an answer can meet
+    (`_met_only_by_an_answer`), named by its most specific such requirement, in ledger
+    order. No answer met them, so the refusal names them, and every other requirement
+    departs."""
     named: dict[str, Requirement] = {}
     for requirement in state.requirements:
         # A value of a drafted set is named by the set's own requirement.
-        if requirement.origin == "set_value" or not _met_only_by_an_answer(requirement.rule):
+        if (
+            requirement.origin == "set_value"
+            or not requirement.refuses
+            or not _met_only_by_an_answer(requirement.rule)
+        ):
             continue
         held = named.get(requirement.phrase)
         if held is None or _specificity(requirement.rule) > _specificity(held.rule):
@@ -535,14 +552,19 @@ def record_reading(state: ResolveState, records: Sequence[ResolvedQualifier]) ->
 
 def _strays(requirements: Iterable[Requirement]) -> list[Requirement]:
     """The requirements of the values the bind drafted on slots the elected reading lacks
-    (`phase_rank_bind._stray_requirements`), one per property."""
-    return [r for r in requirements if r.origin == "stray" and isinstance(r.rule, ValueRule)]
+    and a recorded term supports (`phase_rank_bind._stray_requirements`), one per
+    property."""
+    return [
+        r
+        for r in requirements
+        if r.origin == "stray" and r.refuses and isinstance(r.rule, ValueRule)
+    ]
 
 
 def stray_values(requirements: Iterable[Requirement]) -> frozenset[tuple[str, str]]:
-    """The (property, value) pairs the bind drafted on slots the elected reading lacks
-    (`phase_rank_bind._stray_requirements`), which the request names though no binding of
-    the elected reading holds them."""
+    """The (property, value) pairs the bind drafted on slots the elected reading lacks and a
+    recorded term supports (`phase_rank_bind._stray_requirements`), which the request
+    names though no binding of the elected reading holds them."""
     return frozenset(
         pair
         for r in _strays(requirements)

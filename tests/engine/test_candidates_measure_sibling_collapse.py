@@ -7,13 +7,15 @@ from __future__ import annotations
 import asyncio
 
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
+from search.engine.binders import Binder
 from search.engine.clients.graph import Facet
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.models import Spec
 from series_coverage.schema import RoleNames
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -131,8 +133,8 @@ class _ElectGrantEquivalentAlsoPlausibleAmountLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -142,7 +144,6 @@ class _ElectGrantEquivalentAlsoPlausibleAmountLLM:
                 )
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 
@@ -157,7 +158,13 @@ _COVERAGE_ROWS_ELECTED_HAS_NO_DATA = [
 ]
 
 
-def _run(monkeypatch, obs: dict = _SDMX_OBS, coverage_rows: list = _COVERAGE_ROWS):
+def _run(
+    monkeypatch,
+    obs: dict = _SDMX_OBS,
+    coverage_rows: list = _COVERAGE_ROWS,
+    *,
+    binder: Binder | None = None,
+):
     role_names = {row[0]: _ROLE_NAMES for row in coverage_rows}
     _auto_coverage_index_1 = patch_coverage(monkeypatch, coverage_rows, role_names=role_names)
     graph = FakeGraph(nodes=_NODES, detect=_DETECT, resolve={"Kenya": _KEN_DCID}, obs={})
@@ -173,6 +180,7 @@ def _run(monkeypatch, obs: dict = _SDMX_OBS, coverage_rows: list = _COVERAGE_ROW
             graph=graph,
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=obs, availability={}),
+            binder=binder,
             llm=_ElectGrantEquivalentAlsoPlausibleAmountLLM(),
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
@@ -181,7 +189,7 @@ def _run(monkeypatch, obs: dict = _SDMX_OBS, coverage_rows: list = _COVERAGE_ROW
 
 
 def test_a_measure_only_pair_collapses_to_one_definite_answer(monkeypatch):
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     assert result.status == "definite"
     assert len(result.specs) == 1
 
@@ -204,7 +212,7 @@ def _bound_ref(identity, property_dcid: str) -> str | None:
 
 
 def test_the_folded_sibling_rides_alternative_measures_not_a_second_menu_entry(monkeypatch):
-    result = _run(monkeypatch)
+    result = _run(monkeypatch, binder=ReplyBinder())
     survivor = result.specs[0]
 
     alternatives = survivor.resolved.alternative_measures
@@ -249,6 +257,7 @@ def test_s8_a_measure_sibling_with_data_rides_on_the_refusal(monkeypatch):
         monkeypatch,
         obs=_SDMX_OBS_ELECTED_HAS_NO_DATA,
         coverage_rows=_COVERAGE_ROWS_ELECTED_HAS_NO_DATA,
+        binder=ReplyBinder(),
     )
     assert (result.status, result.no_data_reason) == ("no_data", "no_observations")
     assert result.gate == "only_alternate_has_data"

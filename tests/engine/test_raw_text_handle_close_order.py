@@ -7,6 +7,7 @@ import time
 from unittest.mock import patch
 
 from entity_resolution import Admission
+from search.engine.binders import GeminiBinder
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import raw_text
 from search.engine.entry.params import EntryParams
@@ -32,6 +33,7 @@ def _params() -> EntryParams:
         include_skills=False,
         skills_index=None,
         coverage=empty_coverage_snapshot(),
+        binder=GeminiBinder(),
     )
 
 

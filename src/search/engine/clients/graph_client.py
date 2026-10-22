@@ -3,7 +3,7 @@ UN System Data Commons and admits every facet against the request's origin catal
 
 The shared client supplies primitive, observation-facet and `materialise.graph` reads. This adapter
 adds Search's recall over our resolve and the UN's (`detect_svs`), the `force_full_facets` upgrade
-on observation reads, observation counts, subject-page coverage, and the packaged code index's
+on observation reads, observation counts, subject-page coverage, and the release's code index's
 label override. Search uses one attempt by default and substitutes `GraphReadFailure`,
 `GraphDeadlineFailure` and `GraphCapExceededError`, catchable as both Search and `dc_graph` errors.
 

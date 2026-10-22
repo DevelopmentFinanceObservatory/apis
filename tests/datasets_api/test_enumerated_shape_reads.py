@@ -539,7 +539,7 @@ def test_two_hierarchical_category_slots_both_widen_and_the_leaf_member_resolves
         }
     )
     # Sanity: this is genuinely the non-hollow case the old gate turned on,
-    # not an artifact of a stale packaged index.
+    # not an artifact of a stale fixture index.
     assert len(get_index().descendants("CRSPurposeCode110")) > 1
 
     shapes = _resolve(identity, graph=graph)

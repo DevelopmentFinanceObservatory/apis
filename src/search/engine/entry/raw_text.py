@@ -87,7 +87,7 @@ from search.engine.region.place_options import PlaceOptionsPool, replayed_place_
 from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
 from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
-from search.engine.role_text import DoorRole, debt_axes
+from search.engine.role_text import DoorRole, debt_axes, receipt_axes
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import scan_sources, source_phrases
 from search.engine.source_scope import (
@@ -290,11 +290,12 @@ def _entity_roles(
     """Map stripped entity names to their flow axes and spans.
 
     The query's debt wording sets the axes of a two-party debt relation
-    (`role_text.debt_axes`); every other place keeps its extracted axis. Preserve distinct
-    mentions in order, including self-flows on opposite axes. Collapse duplicate mentions
-    with the same axis and span. Store directional roles only, each recording whether the
-    query's words give its direction. A debt axis does by construction, and an extracted
-    axis does when its cue does (`_cue_states_direction`). Fall back to entity text for
+    (`role_text.debt_axes`), and its receipt wording sets each recipient's
+    (`role_text.receipt_axes`); every other place keeps its extracted axis. Preserve
+    distinct mentions in order, including self-flows on opposite axes. Collapse duplicate
+    mentions with the same axis and span. Store directional roles only, each recording
+    whether the query's words give its direction. A debt or receipt axis does by
+    construction, and an extracted axis does when its cue does (`_cue_states_direction`). Fall back to entity text for
     the overlap anchor when translation leaves no span.
     """
     places: dict[str, list[str]] = {}
@@ -307,17 +308,18 @@ def _entity_roles(
             axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
     directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
     debt = debt_axes(query, measures=measures, places=places, directed=directed)
+    worded = receipt_axes(query, places=places) | debt
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
         name = _entity_key(entity)
-        axis = debt.get(name)
+        axis = worded.get(name)
         if axis is None:
             if entity.flow_role == "unspecified":
                 continue
             axis = entity.flow_role
         occurrences = roles.setdefault(name, [])
         span = entity.span or entity.text
-        stated = name in debt or _cue_states_direction(entity, entities=entities, query=query)
+        stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
         role = DoorRole(axis=axis, span=span, stated=stated)
         if role not in occurrences:
             occurrences.append(role)
@@ -465,6 +467,7 @@ async def _disposition_response(
     """
     timed_out = False
     degraded = False
+    check_t0 = now_ms()
     try:
         place = await _confirmed_country(
             extraction.entities, resolver=resolver, deadline=params.deadline
@@ -475,6 +478,7 @@ async def _disposition_response(
         # The place only fills the website's examples; the answer stands without it.
         logger.warning("scope.place: resolver failed; answering without a place", exc_info=True)
         place, degraded = None, True
+    timing_entity_check = now_ms() - check_t0
     if scope is not None:
         scope.note_health(timed_out=timed_out, degraded_leg=degraded)
 
@@ -482,7 +486,7 @@ async def _disposition_response(
     diag = make_diagnostics(
         build_commit(),
         [],
-        {"extract": timing_extract},
+        {"extract": timing_extract, "entity_check": timing_entity_check},
         now_ms() - start_ms,
         llm_usage=extract_usage,
     )
@@ -635,8 +639,9 @@ def _prepare_extraction(
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
     entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
 
+    # A relative date the extraction could not read is gone from `dates`; its warning says so.
+    clamp_warnings: list[Warning] = list(extract_result.warnings)
     # Compare distinct model measures with the cap, before emitting a warning.
-    clamp_warnings: list[Warning] = []
     if extract_result.raw_variable_count > settings().max_variables:
         clamp_warnings.append(
             Warning(
@@ -816,6 +821,7 @@ async def _handle_single_variable(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=params.binder,
         sdmx=sdmx,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
@@ -950,6 +956,7 @@ async def _handle_multi_variable(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=params.binder,
         sdmx=sdmx,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
@@ -1088,8 +1095,9 @@ async def handle(
         expected_results=len(prep.unique),
     )
 
-    # Include entities, roles, dates, qualifiers, operations, sources and raw-text signals in the
-    # cache key so semantically distinct queries retain separate entries.
+    # Include entities, roles, dates, qualifiers, operations, sources, raw-text signals and the
+    # extraction's warnings in the cache key so semantically distinct queries retain separate
+    # entries.
     # `query_text` applies only to N=1, matching the single-variable cache readers.
     # A cache hit returns before binding. Core always supplies `scope`.
     # Direct tests may omit it.
@@ -1108,6 +1116,7 @@ async def handle(
             source_codes=prep.per_variable_source_codes,
             query_text=query if len(prep.unique) == 1 else None,
             separate=prep.separate,
+            extraction_warnings=prep.clamp_warnings,
             llm_usage=extract_usage,
         )
     _log_unclaimed_words(prep, extraction, query=query)

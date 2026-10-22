@@ -826,7 +826,7 @@ def main() -> None:
 
         from search.engine.core import resolve_async
 
-        # Pin [[TODAY]] so recording and replay compute the same FakeLLM key.
+        # Pin the current year so recorded relative dates and forecast years match replay.
 
         for case in cases:
             print(f"  Recording {case.id}: {case.query!r}")

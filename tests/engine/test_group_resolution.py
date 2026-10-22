@@ -13,7 +13,6 @@ import pytest
 from dfo_spec_kit.identity import spec_id_from_value
 
 from entity_resolution import Ambiguous, Entity, Group, Resolved
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.config import settings
 from search.engine.core import resolve_async
@@ -31,6 +30,7 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -78,9 +78,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=None), None
 
 
 def _run(

@@ -15,7 +15,6 @@ import httpx
 import pytest
 
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
@@ -24,6 +23,7 @@ from search.engine.region.state import EngineOptions
 from search.models import CoverageExact
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine import test_role_bearing_pipeline_e2e as role_bearing
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -104,9 +104,7 @@ class _Bind:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=[]), None
 
 
 class _RecordingGraph(FakeGraph):

@@ -13,9 +13,9 @@ from fastapi.testclient import TestClient
 
 import origin_catalogue.service as catalogue_service_module
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from series_coverage.schema import RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs
@@ -44,7 +44,7 @@ class _ShapeZeroLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _fertility_client(llm: FakeLLM | _ShapeZeroLLM | None = None) -> TestClient:

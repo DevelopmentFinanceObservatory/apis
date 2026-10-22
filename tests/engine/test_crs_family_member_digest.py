@@ -10,12 +10,13 @@ import hashlib
 import rfc8785
 
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from series_coverage.schema import RoleNames
 from statvar_members import FiveTuple, enumerate_members
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -32,7 +33,7 @@ _STAT_TYPE = "measuredValue"
 _MEAS_QUAL = "Nominal"
 
 # The two real dcids test_candidates_member_count_ordering.py's own shape 1
-# uses: real members of this deployment's packaged CRS index, sharing every
+# uses: real members of the fixture CRS index, sharing every
 # constraint property but crsTypeOfFlow (30 vs 10).
 _RECALLED_SV = (
     "Amount_FinancialObligation_Commitment_CRSTypeOfFlow30_CRSTypeOfFinance110_"
@@ -49,7 +50,7 @@ _PROP_FINANCE = "crsTypeOfFinance"
 _PROP_OBLIGATION_TYPE = "financialObligationType"
 _PROP_FLOW = "crsTypeOfFlow"
 
-# The four axes both real rows share (real values, read off the packaged
+# The four axes both real rows share (real values, read off the fixture
 # index below rather than hand-typed, so a corpus refresh that moves them
 # fails this fixture loudly instead of silently). crsTypeOfFlow stays
 # unbound: it's the one axis the two dcids differ on.
@@ -63,8 +64,8 @@ def _real_row(dcid: str):
     return next(r for r in index.statvars if r.dcid == dcid)
 
 
-def test_fixture_matches_the_real_packaged_index():
-    """The packaged index members share four bound axes and differ on crsTypeOfFlow."""
+def test_fixture_matches_the_real_index():
+    """The fixture index members share four bound axes and differ on crsTypeOfFlow."""
     recalled_row = _real_row(_RECALLED_SV)
     extra_row = _real_row(_EXTRA_SV)
     target = (_POP_TYPE, _MEAS_PROP, _STAT_TYPE, _MEAS_QUAL, None)
@@ -158,8 +159,8 @@ class _BindAllFourSharedAxesLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         recalled_row = _real_row(_RECALLED_SV)
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -170,7 +171,6 @@ class _BindAllFourSharedAxesLLM:
                 for prop in _BOUND_PROPS
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 
@@ -206,7 +206,7 @@ def _independent_digest_via_enumerate_members() -> str:
     """The same two dcids, resolved from scratch through
     statvar_members.enumerate_members rather than search's own resolve
     machinery: a FakeMemberArcReader fed the two real dcids' own real arcs
-    (read off the packaged index, mirroring _sv_arcs_from_real_row above),
+    (read off the fixture index, mirroring _sv_arcs_from_real_row above),
     queried with the identical FiveTuple and the identical four "value"
     slot bindings, crsTypeOfFlow left ("unbound",)."""
     recalled_row = _real_row(_RECALLED_SV)

@@ -6,11 +6,11 @@ import asyncio
 from unittest.mock import patch
 
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_answer as region_phase_answer
 from search.engine.region import resolve_variable
 from search.engine.region.state import EngineOptions
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs
@@ -26,7 +26,7 @@ class _SoleShapeLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None),
+            elected_reply(0, also_plausible=None),
             None,
         )
 
