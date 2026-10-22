@@ -255,6 +255,31 @@ def test_the_jev_bind_call_sends_the_bind_request_and_assembles_its_answers():
     }
 
 
+def test_the_bind_rates_each_nominated_word_in_its_own_request():
+    """A nominated word adds one ``unread|i|k`` noul to the bind request, by its menu
+    index and its place among the shape's words, so a word holding a space or a bar keeps
+    a clean id, and a request nominating none asks none. Jev's answers fill
+    `BindResult.stated_words`, and a word Jev left unanswered stays unrated."""
+    plain = _golden_request(_CountingStep())
+    request = dataclasses.replace(
+        plain, nominated_words=[("official",), ("development assistance", "a|b")]
+    )
+    ask = FakeAsk(_GOLDEN.stored, stated={"official": 0.2, "development assistance": 0.7})
+
+    result, _usage = asyncio.run(JevBinder(ask=ask).bind(request, llm=None))
+
+    ((_state, questions),) = ask.requests
+    _plain_state, plain_questions = bind_request(jev_menu(plain))
+    assert sorted(questions.keys() - plain_questions.keys()) == [
+        "unread|0|0",
+        "unread|1|0",
+        "unread|1|1",
+    ]
+    assert plain_questions.keys() <= questions.keys()
+    assert not [qid for qid in plain_questions if qid.startswith("unread|")]
+    assert result.stated_words == {(0, "official"): 0.2, (1, "development assistance"): 0.7}
+
+
 def test_the_jev_quantity_read_is_its_own_request():
     ask = FakeAsk(_GOLDEN.stored)
     request = QuantityRequest(

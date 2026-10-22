@@ -21,7 +21,7 @@ from entity_resolution import Admission, Entity, EntityResolver, Resolved
 from origin_catalogue import UnTables
 from origin_catalogue.un_mirror import UnVariable
 from search.engine.bind import DraftBindingKind, SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import GeminiBinder
+from search.engine.binders import BindRequest, GeminiBinder, JevBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -72,7 +72,7 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import GraphRef, NoData, NoDataPart, ResolvedQualifier, Spec
 from tests.conftest import minimal_spec
-from tests.engine._binders import RatingBinder
+from tests.engine._binders import FakeAsk, RatingBinder, keep_the_pick
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._index_slots import crs_flow_slot_keys, own_variable_spans, read_text
@@ -760,6 +760,37 @@ def test_the_binder_rates_the_words_left_unrated_once_the_bindings_settle(
     assert all(request.shape_index == 1 for request in binder.requests)
     assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
     assert lost.reads == degraded
+
+
+@pytest.mark.parametrize(
+    ("rating", "records"), [(0.1, ["refugee"]), (0.9, [])], ids=["below-the-bar", "above"]
+)
+def test_jev_rates_the_nominated_words_in_the_bind_and_the_rule_reads_its_rating(
+    search_settings, rating, records
+):
+    """Jev answers the rating of a word left unrated from the ``unread|`` noul its bind
+    request asked: "refugee" on the count of all persons, rated below
+    `SearchSettings.stated_word_bar`, is a record that leaves the part a miss, and rated
+    above it the part answers."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="refugee population", shape_draft=_READER_PERSONS, bindings=[], unplaced=[]
+    )
+    state.capped_shapes = [replace(_READER_TAX, shape_id="tax"), _READER_PERSONS]
+    binder = JevBinder(ask=FakeAsk(stated={"refugee": rating}))
+    request = BindRequest(
+        variable=state.variable,
+        shapes=state.capped_shapes,
+        nominated_words=[_nominated_words(state, shape) for shape in state.capped_shapes],
+        query_text=None,
+        apply_policies=keep_the_pick,
+    )
+    state.bind_decision, _usage = asyncio.run(binder.bind(request, llm=None))
+    state.binder = binder
+    qualifiers = _run(state)
+
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
+    assert _has_miss(qualifiers) == bool(records)
 
 
 @pytest.mark.parametrize(

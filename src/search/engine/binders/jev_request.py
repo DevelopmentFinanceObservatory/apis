@@ -6,8 +6,10 @@ question alone, and `jev_assemble` turns the answers into the bind output and th
 read. The state holds the phrases, the query and, for the quantity request, its rules and
 denominators; shapes appear only inside question text.
 
-Question ids are positional: ``m|i`` names menu shape i, and ``n|P|j`` value j of slot P's
-union (`jev_menu.asked_values`). The quantity read's ids start ``q|``.
+Question ids are positional: ``m|i`` names menu shape i, ``n|P|j`` value j of slot P's
+union (`jev_menu.asked_values`), and ``unread|i|k`` word k of shape i's nominated words
+(`BindRequest.nominated_words`), so a word's spelling never enters an id. The quantity
+read's ids start ``q|``.
 
 A bind whose answers draft values the phrase names on two or more slots of one shape asks a
 second request over the same state (`span_questions`): which words name each such value,
@@ -19,7 +21,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from typesafe_sdk import ChoiceModel, JSONContent, NoulModel
+from typesafe_sdk import ChoiceModel, JSONContent, NoulCriteria, NoulModel
 
 from search.engine.bind import stated_reading
 from search.engine.binders.jev_client import JevQuestion
@@ -39,6 +41,7 @@ type JevRequest = tuple[dict[str, JSONContent], dict[str, JevQuestion]]
 _FORM_WORDS = "a per-person, per-area, percentage, share or ratio form, or the base it divides by"
 
 QUANTITY_PREFIX = "q|"
+UNREAD_PREFIX = "unread|"
 SPAN_MEASURE = "span|measure"
 NONE = "none"
 NONE_OF_THESE = "none of these"
@@ -78,6 +81,26 @@ def bind_request(menu: JevMenu) -> JevRequest:
     if request.query_text is not None:
         state["query"] = request.query_text
     return state, _bind_questions(menu, query=request.query_text is not None)
+
+
+# The question whether a shape's series states what a nominated word names: yes when the
+# series counts only what the word names, so the word is read. A calibration run swaps
+# these two to choose the wording on labelled pairs.
+STATED_WORD_INSTRUCTIONS = (
+    "Does the measure {measure} count only what '{word}' names in `variable_phrase`?"
+)
+STATED_WORD_CRITERIA: NoulCriteria = {
+    "true": "Everything the measure counts is what the word names, so the word adds no "
+    "restriction to it.",
+    "false": "The measure also counts what the word does not name, as total revenue counts "
+    "more than tax and the whole population more than refugees.",
+}
+
+
+def unread_id(shape: int, word: int) -> str:
+    """The ``unread|`` question id of word `word` of menu shape `shape`'s nominated
+    words."""
+    return f"{UNREAD_PREFIX}{shape}|{word}"
 
 
 def _measures(desc: str) -> NoulModel:
@@ -136,6 +159,13 @@ def _bind_questions(menu: JevMenu, *, query: bool) -> dict[str, JevQuestion]:
                 "from, by its name or acronym (as 'CRS', 'DAC2a' or 'IDS')?"
             ),
         )
+        words = request.nominated_words[i] if request.nominated_words else ()
+        for k, word in enumerate(words):
+            q[unread_id(i, k)] = NoulModel(
+                type="noul",
+                instructions=STATED_WORD_INSTRUCTIONS.format(measure=desc, word=word),
+                criteria=STATED_WORD_CRITERIA,
+            )
     for row in measure_values(request.shapes):
         also = f" (also called {', '.join(row.synonyms)})" if row.synonyms else ""
         meaning = f" It means: {row.definition}" if row.definition else ""

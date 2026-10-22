@@ -3,8 +3,8 @@
 Jev writes no text and no dcid: every decision here is a threshold (`Thresholds`) on a
 probability Jev returned for a question of `jev_request`, or a comparison of the words its
 span answers name, so the functions are pure and a threshold change replays from stored
-answers. A noul Jev did not answer reads as a probability of 0.0, and a span question it
-did not answer as no words.
+answers. A noul Jev did not answer reads as a probability of 0.0, an ``unread|`` noul it
+did not answer as no rating, and a span question it did not answer as no words.
 
 `assemble` elects a shape, binds its listed slots and lists its alternates; `bind_result`
 applies the rules the engine applies to every binder's drafts (`bind.ground_bind_output`).
@@ -68,6 +68,7 @@ from search.engine.binders.jev_request import (
     span_id,
     span_occurrences,
     span_questions,
+    unread_id,
     word_positions,
 )
 from search.engine.frame import Frame
@@ -372,7 +373,8 @@ def bind_result(
     (`bind.ground_bind_output`), and each shape's measure and election scores and the
     ``none`` share of ``electq`` as the result's scores. The result is `none_first` when
     it elects a shape though ``electq`` gives ``none`` more than any shape (`_none_first`),
-    which the decline rule lets through when a shape measures the phrase above `decline`."""
+    which the decline rule lets through when a shape measures the phrase above `decline`.
+    Its `stated_words` are the ``unread|`` answers (`stated_words`)."""
     output, conf = assemble(
         menu, answers, stated_form=stated_form, thresholds=thresholds, populations=populations
     )
@@ -388,8 +390,22 @@ def bind_result(
             "none": round(float(answers.choices.get("electq", {}).get(NONE, 0.0)), 3),
         },
         none_first=output.ask is None and _none_first(answers),
+        stated_words=stated_words(menu, answers),
     )
     return result, conf
+
+
+def stated_words(menu: JevMenu, answers: JevAnswers) -> dict[tuple[int, str], float]:
+    """Jev's probability, by menu index and nominated word (`BindRequest.nominated_words`),
+    that the shape's series states what the word names. A word whose ``unread|`` noul Jev
+    did not answer is left out, so it stays unrated, where `JevAnswers.noul` would read it
+    as 0.0 and unread."""
+    return {
+        (i, word): float(answers.nouls[qid])
+        for i, words in enumerate(menu.request.nominated_words)
+        for k, word in enumerate(words)
+        if (qid := unread_id(i, k)) in answers.nouls
+    }
 
 
 def _scores(menu: JevMenu, answers: JevAnswers, t: Thresholds) -> Confidence:

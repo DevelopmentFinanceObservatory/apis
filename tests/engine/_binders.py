@@ -21,6 +21,7 @@ from search.engine.binders import (
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev_client import JevResponse, JevUsage
+from search.engine.binders.jev_request import UNREAD_PREFIX
 from tests.fixtures import FakeLLM
 
 # The rating a scripted reply gives each shape it nominates: the lowest a nomination stands
@@ -260,9 +261,9 @@ class RatingBinder:
 class FakeAsk:
     """`jev_client.ask` answering from `answers` (`answer_all` when None), or raising
     `fail`, and recording each request. A `gate` holds every answer until it is set. A
-    noul asking whether menu shape i's series states word w (``unread|i|w``) answers
-    `stated`'s probability for w where it holds one, else as `answers` do: yes at 0.9
-    under `answer_all`, stated."""
+    noul asking whether a menu shape's series states a nominated word (``unread|i|k``)
+    answers `stated`'s probability for the word its question quotes where `stated` holds
+    one, else as `answers` do: yes at 0.9 under `answer_all`, stated."""
 
     def __init__(
         self,
@@ -286,9 +287,11 @@ class FakeAsk:
             raise self.fail
         stored = self.answers if self.answers is not None else answer_all(questions)
         asked = {qid: stored[qid] for qid in questions if qid in stored}
-        for qid in questions:
-            if qid.startswith("unread|") and (word := qid.rpartition("|")[2]) in self.stated:
-                asked[qid] = {"type": "noul", "noul": self.stated[word]}
+        for qid, question in questions.items():
+            if qid.startswith(UNREAD_PREFIX):
+                for word, probability in self.stated.items():
+                    if f"'{word}'" in question["instructions"]:
+                        asked[qid] = {"type": "noul", "noul": probability}
         return JevResponse(
             nouls={k: float(v["noul"]) for k, v in asked.items() if v["type"] == "noul"},
             choices={
