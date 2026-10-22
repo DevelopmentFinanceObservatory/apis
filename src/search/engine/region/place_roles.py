@@ -45,6 +45,7 @@ from search.engine.retrieval.bound_values import (
     RoleKeys,
     declared_datasets,
     phrases_within,
+    ratio_base_axis,
     shape_family,
     shape_five_tuple,
     shape_part_datasets,
@@ -168,8 +169,14 @@ def _undirected_place_axis(
     the other axis: "top creditors of external debt of Kenya" reads Kenya as the debtor.
     This holds for the elected shape and every alternate alike. A group can read either way
     ("top recipients of aid in Africa" scopes the ranked recipients, "top creditors of
-    external debt of Africa" names the debtors), so it skips this rule. Otherwise an
-    alternate takes the axis the elected shape (`state.shape_draft`) assigned the place to,
+    external debt of Africa" names the debtors), so it skips this rule. A ratio whose
+    datasets declare the axis whose party's own total it divides by
+    (`bound_values.ratio_base_axis`) reads the place, a group too, as that party: "ODA as a
+    share of GNI for Norway" reads Norway as the provider on DAC1's share of the donor's
+    GNI and as the recipient on DAC2a's share of the recipient's, where Norway holds no
+    data, so the menu shows that reading has none (`availability.series_at_places`) and the
+    answer states the base the question named. This holds for the elected shape and every
+    alternate alike. Otherwise an alternate takes the axis the elected shape (`state.shape_draft`) assigned the place to,
     when it declares a role on that axis: an alternate reads the variable another way, not
     the place, so a debt total's recipient stays the recipient of a by-creditor alternate,
     and a place the elected shape reads on the one direction with data
@@ -190,6 +197,9 @@ def _undirected_place_axis(
     if not place_set.members and len(open_axes) == 1 and len(names) == 2:
         (open_axis,) = open_axes
         return "destination" if open_axis == "origin" else "origin"
+    base = ratio_base_axis(shape, get_index())
+    if base is not None and base in names:
+        return base
     if state.shape_draft is None or state.shape_draft is shape:
         return None
     elected = state.elected_place_roles
@@ -302,17 +312,23 @@ def lacks_query_axis(state: ResolveState, shape: ShapeDraft) -> bool:
     provider-only shape for "aid to Kenya" or "top recipients of US aid", or a one-way
     subject-only series whose declared side (`series_declarations.declared_side`) is not
     among the query's axes, such as climate finance provided for "climate finance to
-    Bangladesh". It could not place the query's places, or its answer could not run the
-    operation, so admissibility refuses it `role_incompatible`
+    Bangladesh". A ratio whose datasets declare the axis whose party's own total it divides
+    by (`bound_values.ratio_base_axis`) lacks the query's axes when that axis is not among
+    them: DAC2a's ODA as a share of the recipient's GNI for "ODA as a share of GNI from
+    Norway", which asks for Norway's own. It could not place the query's places, or its
+    answer could not run the operation, so admissibility refuses it `role_incompatible`
     (`admissibility.judge_measure_and_roles`). Any other subject-only shape lacks no axis:
     it binds a directed place as its subject."""
     axes = query_role_axes(state)
     if not axes:
         return False
     if is_role_bearing(shape):
-        return not _declares_axes(shape, axes)
-    side = declared_side(shape)
-    return side is not None and side not in axes
+        if not _declares_axes(shape, axes):
+            return True
+    elif (side := declared_side(shape)) is not None and side not in axes:
+        return True
+    base = ratio_base_axis(shape, get_index())
+    return base is not None and base not in axes
 
 
 def without_unasked_axes(
