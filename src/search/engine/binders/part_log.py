@@ -3,9 +3,12 @@ request was routed to, the one that served the call, why it fell back when it di
 Jev request's time, questions, chunks and tokens when one was sent. A Jev bind also states
 the questions of its span round (``span_questions``, ``-`` when none ran) and the values the
 span rule left unbound (``inferred``, ``property=value`` pairs joined by commas, ``-`` for
-none). A part's later calls after a fallback log ``fallback=inherited`` with no
-``jev_error`` and no Jev counts, so the lines that carry ``jev_error`` count the Jev
-requests that failed, each once. Fallback share, 402 and 429 counts and Jev latency are
+none). A Jev request rating a pass's words again once its values are bound
+(`JevBinder.restated`) logs ``call=stated``, so those lines give its share of bind calls and
+its latency; one that failed falls back on nothing, and logs ``served_by=-`` and
+``fallback=-`` with its ``jev_error``. A part's later calls after a fallback log
+``fallback=inherited`` with no ``jev_error`` and no Jev counts, so the lines that carry
+``jev_error`` count the Jev requests that failed, each once. Fallback share, 402 and 429 counts and Jev latency are
 log-based metrics on this line.
 """
 
@@ -31,7 +34,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-type Call = Literal["quantity", "bind"]
+type Call = Literal["quantity", "bind", "stated"]
 
 
 def elapsed_ms(started: float) -> int:
@@ -71,6 +74,9 @@ def log_binder_part(
         )
     )
     inferred = ",".join(sent.inferred) if sent is not None and sent.inferred else "-"
+    # A failed ``stated`` request falls back on nothing (`FallbackBinder.rate_words_stated`).
+    fell_back = failure is not None and call != "stated"
+    fallback = "inherited" if inherited else failure.reason if fell_back else "-"
     logger.info(
         "binder_part call=%s binder=%s served_by=%s fallback=%s jev_error=%s ms=%d jev_ms=%s "
         "questions=%s chunks=%s jev_input_tokens=%s jev_output_tokens=%s span_questions=%s "
@@ -78,7 +84,7 @@ def log_binder_part(
         call,
         binder,
         served_by,
-        "inherited" if inherited else "-" if failure is None else failure.reason,
+        fallback,
         "-" if failure is None or inherited else failure.kind,
         ms,
         *counts,

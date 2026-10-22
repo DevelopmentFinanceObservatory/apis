@@ -16,6 +16,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import MeasureValueRow
 from search.engine.bind import (
     _MAX_TAXONOMY_VALUES_SHOWN,
+    SlotBindingDraft,
     _display_taxonomy_values,
     _listed_slots,
     _qualifier_menu,
@@ -25,6 +26,7 @@ from search.engine.bind import (
 from search.engine.binders.base import BindRequest
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import bound_value_label
 from search.models import Axis
 
 type Prop = tuple[Axis, str]
@@ -131,21 +133,51 @@ def prop_id(prop: Prop) -> str:
     return f"{prop[0]}:{prop[1]}"
 
 
-def describe(shape: ShapeDraft, fixed: Sequence[QualifierMatch] = ()) -> str:
-    """One shape as a question quotes it: its label, then what its five-tuple and fixed
-    values state beyond the label, and the slots that select parts of it."""
+def describe(
+    shape: ShapeDraft,
+    fixed: Sequence[QualifierMatch] = (),
+    *,
+    bindings: Sequence[SlotBindingDraft] = (),
+) -> str:
+    """One shape as a question quotes it: its label, then what its five-tuple, fixed values
+    and the values `bindings` restrict it to (`restricting`) state beyond the label, and the
+    slots left that select parts of it. A bound value reads by
+    `stated_words_read.bound_value_label`, a set's values joined by "or"."""
     reading = stated_reading(shape)
     parts = [f"{reading.measured_property} of {reading.population_type}"]
     if reading.qualifier:
         parts.append(reading.qualifier)
     if reading.denominator:
         parts.append(f"divided by {reading.denominator}")
-    if fixed:
-        parts.append("restricted to " + ", ".join(dict.fromkeys(m.label for m in fixed)))
-    slots = [s.label for s in shape.slot_keys if s.property_dcid and s.axis != "source"]
+    bound = restricting(bindings)
+    restricted = [m.label for m in fixed] + [
+        " or ".join(bound_value_label(shape, prop, dcid) for dcid in values)
+        for prop, values in bound.items()
+    ]
+    if restricted:
+        parts.append("restricted to " + ", ".join(dict.fromkeys(restricted)))
+    slots = [
+        s.label
+        for s in shape.slot_keys
+        if s.property_dcid and s.axis != "source" and s.property_dcid not in bound
+    ]
     if slots:
         parts.append("parts selectable by " + ", ".join(dict.fromkeys(slots)))
     return f"'{reading.label}' ({'; '.join(parts)})"
+
+
+def restricting(bindings: Sequence[SlotBindingDraft]) -> dict[str, tuple[str, ...]]:
+    """The values each value or set binding of `bindings` restricts its slot to, by property
+    dcid. A source binding restricts nothing, since it picks where the series comes from
+    and not what it counts, and neither does a binding with no property or no value."""
+    return {
+        prop: tuple(binding.value_dcids)
+        for binding in bindings
+        if binding.kind in ("value", "set")
+        and binding.axis != "source"
+        and (prop := binding.property_dcid) is not None
+        and binding.value_dcids
+    }
 
 
 def measure_values(shapes: Sequence[ShapeDraft]) -> list[MeasureValueRow]:

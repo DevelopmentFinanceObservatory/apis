@@ -14,6 +14,10 @@ read's ids start ``q|``.
 A bind whose answers draft values the phrase names on two or more slots of one shape asks a
 second request over the same state (`span_questions`): which words name each such value,
 ``span|P|dcid``, and which name the measure, ``span|measure``.
+
+Once the bind has bound values on the elected shape, the ``unread|`` questions on its words
+the bind rated as unread are asked again over the shape as those values restrict it
+(`restated_request`).
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from collections.abc import Sequence
 
 from typesafe_sdk import ChoiceModel, JSONContent, NoulCriteria, NoulModel
 
-from search.engine.bind import stated_reading
+from search.engine.bind import SlotBindingDraft, stated_reading
 from search.engine.binders.jev_client import JevQuestion
 from search.engine.binders.jev_menu import (
     JevMenu,
@@ -33,6 +37,7 @@ from search.engine.binders.jev_menu import (
     measure_values,
     prop_id,
 )
+from search.engine.shape import ShapeDraft
 from search.models import GraphRef
 
 type JevRequest = tuple[dict[str, JSONContent], dict[str, JevQuestion]]
@@ -99,6 +104,29 @@ STATED_WORD_CRITERIA: NoulCriteria = {
     "false": "The word names a narrower or a different thing than the measure counts, so "
     "the measure counts more than the word names, or something else.",
 }
+
+
+def restated_request(
+    variable: str,
+    shape: ShapeDraft,
+    index: int,
+    words: Sequence[str],
+    *,
+    bindings: Sequence[SlotBindingDraft],
+) -> JevRequest:
+    """The stated-word questions asked again once the bind has bound values: the variable
+    phrase in the state, and one ``unread|index|k`` noul per word k of `words`, quoting menu
+    shape `index` as the values `bindings` restrict it to (`describe`)."""
+    desc = describe(shape, bindings=bindings)
+    questions: dict[str, JevQuestion] = {
+        unread_id(index, k): NoulModel(
+            type="noul",
+            instructions=STATED_WORD_INSTRUCTIONS.format(measure=desc, word=word),
+            criteria=STATED_WORD_CRITERIA,
+        )
+        for k, word in enumerate(words)
+    }
+    return {"variable_phrase": variable}, questions
 
 
 def unread_id(shape: int, word: int) -> str:

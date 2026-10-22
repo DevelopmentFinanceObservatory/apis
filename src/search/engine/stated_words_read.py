@@ -109,28 +109,29 @@ def build_stated_words_prompt(
 
 def _restricted_values(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> str:
     """Each slot a value or set binding of `bindings` binds, as ``Property=Value``, a set's
-    values joined by "or": "Sex=Female; Age=15 to 24 years". A value reads by its code
-    row's label, else by its graph label (`ShapeDraft.value_labels`) less the trailing name
-    of its property (`without_property_suffix`), else by its dcid split into words. A slot
-    reads by its slot key's label. Empty when no binding binds a value."""
-    index = get_index()
-    labels = shape.value_labels or {}
+    values joined by "or": "Sex=Female; Age=15 to 24 years". A value reads by
+    `bound_value_label`, and a slot by its slot key's label. Empty when no binding binds a
+    value."""
     slot_labels = {key.property_dcid: key.label for key in shape.slot_keys}
-
-    def value_label(prop: str, dcid: str) -> str:
-        if (row := index.code_by_dcid(dcid)) is not None:
-            return row.label
-        return without_property_suffix(_humanize_ref(dcid, labels.get(dcid)), labels.get(prop))
-
     restricted = [
         f"{_humanize_ref(prop, slot_labels.get(prop))}="
-        + " or ".join(value_label(prop, dcid) for dcid in binding.value_dcids)
+        + " or ".join(bound_value_label(shape, prop, dcid) for dcid in binding.value_dcids)
         for binding in bindings
         if binding.kind in ("value", "set")
         and (prop := binding.property_dcid) is not None
         and binding.value_dcids
     ]
     return "; ".join(restricted)
+
+
+def bound_value_label(shape: ShapeDraft, prop: str, dcid: str) -> str:
+    """Value `dcid` of `shape`'s slot `prop` as a prompt names it: its code row's label,
+    else its graph label (`ShapeDraft.value_labels`) less the trailing name of its property
+    (`without_property_suffix`), else its dcid split into words."""
+    if (row := get_index().code_by_dcid(dcid)) is not None:
+        return row.label
+    labels = shape.value_labels or {}
+    return without_property_suffix(_humanize_ref(dcid, labels.get(dcid)), labels.get(prop))
 
 
 def word_ratings(output: StatedWordsOutput, words: Sequence[str]) -> dict[str, float]:
