@@ -1532,6 +1532,8 @@ def _index_member_shape(dcid: str) -> ShapeDraft:
         **{p: {"nodes": [{"dcid": v}]} for p, v in row.constraint_properties.items()},
         "observationProperties": {"nodes": [{"dcid": r} for r in row.observation_properties]},
     }
+    if row.measurement_denominator is not None:
+        arcs["measurementDenominator"] = {"nodes": [{"dcid": row.measurement_denominator}]}
     nodes = {dcid: {"label": dcid, "type": "StatisticalVariable", "arcs": arcs}}
     (shape,) = derive_shapes(
         confirmed_svs=[dcid], graph=FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
@@ -1704,6 +1706,58 @@ def test_a_one_way_series_lacks_the_flow_end_its_declared_side_opposes(
     )
 
     assert lacks_query_axis(state, _un_series_shape(series)) is lacks
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_DAC1_GNI_SHARE = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_DAC2A_GNI_SHARE = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_DAC2A_AMOUNT = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
+
+
+@pytest.mark.parametrize(
+    ("member", "axes", "declared", "lacks"),
+    [
+        pytest.param(_DAC1_GNI_SHARE, ("origin",), True, False, id="donor-share-for-a-donor"),
+        pytest.param(_DAC2A_GNI_SHARE, ("origin",), True, True, id="recipient-share-for-a-donor"),
+        pytest.param(
+            _DAC2A_GNI_SHARE, ("destination",), True, False, id="recipient-share-for-a-recipient"
+        ),
+        pytest.param(
+            _DAC1_GNI_SHARE, ("destination",), True, True, id="donor-share-for-a-recipient"
+        ),
+        pytest.param(_DAC2A_GNI_SHARE, ("origin", "destination"), True, False, id="both-ends"),
+        pytest.param(_DAC2A_GNI_SHARE, ("origin",), False, False, id="undeclared"),
+        pytest.param(_DAC2A_AMOUNT, ("origin",), True, False, id="no-ratio"),
+    ],
+)
+def test_a_ratio_lacks_the_flow_end_whose_total_it_does_not_divide_by(
+    monkeypatch, member: str, axes: tuple[str, ...], declared: bool, lacks: bool
+) -> None:
+    """DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the
+    recipient's (`DatasetDeclaration.ratio_base_axis`). A query whose places sit only on
+    the other end asks for a ratio the shape does not hold: "ODA as a share of GNI from
+    Norway" asks for Norway's own GNI. DAC2a with no base declared, and an amount of a
+    dataset that declares one, lack no axis by it."""
+    if not declared:
+        datasets = get_index().datasets
+        monkeypatch.setitem(
+            datasets, _DAC2A, dataclasses.replace(datasets[_DAC2A], ratio_base_axis=None)
+        )
+    places = dict(list({"Norway": _NOR, "Kenya": "country/KEN"}.items())[: len(axes)])
+    state = _state(
+        names_and_roles={
+            name: [_door_role(axis, name)] for name, axis in zip(places, axes, strict=True)
+        },
+        places=places,
+    )
+
+    assert lacks_query_axis(state, _index_member_shape(member)) is lacks
 
 
 def _resolve_directed(

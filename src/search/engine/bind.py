@@ -18,6 +18,7 @@ from pydantic.json_schema import SkipJsonSchema
 from pydantic_core import PydanticCustomError
 
 from code_index.shared import get_index
+from dfo_platform.roles import GENERIC_ROLE_WORDING
 from search.engine.clients.llm import (
     SCHEMA_REFUSAL,
     SupportsLLM,
@@ -33,11 +34,12 @@ from search.engine.quantity import (
 from search.engine.retrieval.bound_values import (
     applies_value,
     five_tuple_member_facts,
+    ratio_base_axis,
     shape_invariants,
     shape_partly_stated,
 )
 from search.engine.shape import STANDARD_SHAPE_LABEL, _declared_role_names, is_un_shape
-from search.models import Axis
+from search.models import Axis, RoleAxis
 
 if TYPE_CHECKING:
     from code_index.types import CodeRow
@@ -466,20 +468,33 @@ _SCHEMA_DENOMINATOR_TEXT: dict[DenominatorKind, str] = {
 UNRESOLVED_DENOMINATOR = "(present, unresolved)"
 
 
-def menu_denominator(denominator: str | None, *, unresolved: bool) -> str | None:
+def menu_denominator(
+    denominator: str | None, *, unresolved: bool, base_axis: RoleAxis | None = None
+) -> str | None:
     """The measurementDenominator text the bind menu shows for a shape, `None` when it
     divides by nothing.
 
     A schema term shows its meaning (`quantity.schema_denominator_kind`) whether or not its
     arc resolves, so `Count_Person` and the ProvisionalNode `PerCapita` show one per-person
     base. Any other unresolved arc shows `UNRESOLVED_DENOMINATOR`, which keeps it distinct
-    from a resolved shape sharing its dcid, and a StatVar denominator shows its dcid."""
+    from a resolved shape sharing its dcid, and a StatVar denominator shows its dcid.
+
+    `base_axis` names the flow end whose party's own total the shape divides by
+    (`bound_values.ratio_base_axis`), and the text names that party after the base: DAC1's
+    ODA as a share of GNI shows "... of the provider", DAC2a's "... of the recipient", so
+    the menu states the two ratios apart."""
     kind = schema_denominator_kind(denominator) if denominator is not None else None
     if kind is not None:
-        return _SCHEMA_DENOMINATOR_TEXT[kind]
-    if unresolved:
-        return UNRESOLVED_DENOMINATOR
-    return denominator or None
+        text = _SCHEMA_DENOMINATOR_TEXT[kind]
+    elif unresolved:
+        text = UNRESOLVED_DENOMINATOR
+    elif denominator:
+        text = denominator
+    else:
+        return None
+    if base_axis is None:
+        return text
+    return f"{text} of the {GENERIC_ROLE_WORDING.noun(base_axis).singular}"
 
 
 class StatedReading(NamedTuple):
@@ -499,7 +514,7 @@ class StatedReading(NamedTuple):
 def stated_reading(shape: ShapeDraft) -> StatedReading:
     """The reading the bind menu states for `shape`: its label, its origin, its family
     (standard, or the roles its series declare), its five-tuple, and its denominator by
-    meaning (`menu_denominator`). The prompt prints these fields and `rank_elected`
+    meaning and the party whose total it is (`menu_denominator`). The prompt prints these fields and `rank_elected`
     compares them, so two shapes the menu states alike are equal here. The sample member
     dcids a block also prints are examples of its members and state no reading."""
     roles = _declared_role_names(shape)
@@ -511,7 +526,11 @@ def stated_reading(shape: ShapeDraft) -> StatedReading:
         measured_property=shape.meas_prop_dcid,
         stat_type=shape.stat_type_dcid,
         qualifier=shape.meas_qual_dcid,
-        denominator=menu_denominator(shape.meas_denom_dcid, unresolved=shape.meas_denom_unresolved),
+        denominator=menu_denominator(
+            shape.meas_denom_dcid,
+            unresolved=shape.meas_denom_unresolved,
+            base_axis=ratio_base_axis(shape, get_index()),
+        ),
     )
 
 
