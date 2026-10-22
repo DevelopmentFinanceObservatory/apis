@@ -119,8 +119,8 @@ def test_frame_unavailable_outcome_change_moves_the_token(release: CatalogueRele
     baseline = version.compute_presentation_capability_version(release=release)
     mutated_outcome = dict(version._FRAME_UNAVAILABLE_OUTCOME)
     reason = next(iter(sorted(mutated_outcome)))
-    status, retryable = mutated_outcome[reason]
-    mutated_outcome[reason] = (status, not retryable)
+    code, status, retryable = mutated_outcome[reason]
+    mutated_outcome[reason] = (code, status, not retryable)
 
     perturbed = version.compute_presentation_capability_version(
         release=release, frame_unavailable_outcome=mutated_outcome

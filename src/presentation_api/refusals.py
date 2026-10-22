@@ -47,25 +47,25 @@ def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
     )
 
 
-# `expired` and `ops_unsupported` can succeed after republishing. Revoked, missing, digest
-# mismatch, quarantined, and unknown refs are permanent. I/O maps to retryable 503.
-_FRAME_UNAVAILABLE_OUTCOME: dict[str, tuple[int, bool]] = {
-    "expired": (404, True),
-    "revoked": (404, False),
-    "ops_unsupported": (404, True),
-    "missing_rendering": (404, False),
-    "digest_mismatch": (404, False),
-    "quarantined": (404, False),
-    "io": (503, True),
-    "unknown": (404, False),
+# The code, status, and retryability each `FrameUnavailable` reason refuses with. `expired` and
+# `ops_unsupported` can succeed after republishing. Revoked, missing, digest mismatch,
+# quarantined, and unknown refs are permanent. A store that fails to answer (`io`) is
+# `service_unavailable`.
+_FRAME_UNAVAILABLE_OUTCOME: dict[str, tuple[str, int, bool]] = {
+    "expired": ("frame_unavailable", 404, True),
+    "revoked": ("frame_unavailable", 404, False),
+    "ops_unsupported": ("frame_unavailable", 404, True),
+    "missing_rendering": ("frame_unavailable", 404, False),
+    "digest_mismatch": ("frame_unavailable", 404, False),
+    "quarantined": ("frame_unavailable", 404, False),
+    "io": ("service_unavailable", 503, True),
+    "unknown": ("frame_unavailable", 404, False),
 }
 
 
 def frame_unavailable_spec(exc: FrameUnavailable) -> ProblemSpec:
-    status, retryable = _FRAME_UNAVAILABLE_OUTCOME.get(exc.reason, (503, True))
-    return ProblemSpec(
-        status=status, code="frame_unavailable", detail=exc.detail, retryable=retryable
-    )
+    code, status, retryable = _FRAME_UNAVAILABLE_OUTCOME[exc.reason]
+    return ProblemSpec(status=status, code=code, detail=exc.detail, retryable=retryable)
 
 
 def request_validation_spec(exc: BaseException) -> ProblemSpec | None:

@@ -739,6 +739,18 @@ def test_load_refuses_a_canonical_frame_over_the_row_bound_before_fetching_it():
     assert [call for call in artifacts.calls if call[0] == "get"] == []
 
 
+def test_load_refuses_a_canonical_frame_whose_bytes_do_not_decode():
+    """Stored bytes that match their digest and do not decode as a frame never load, so the
+    load refuses `missing_rendering`."""
+    snapshots, artifacts, frame_ref = _canonical_frame_version(b"not a parquet file")
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
 def test_load_decodes_a_canonical_frame_at_the_row_bound():
     snapshots, artifacts, frame_ref, frame = _canonical_frame_fixture()
     store = _store(snapshots=snapshots, artifacts=artifacts, frame_max_rows=frame.table.num_rows)

@@ -113,15 +113,15 @@ def test_an_unknown_dimension_is_binding_invalid(client: TestClient, frame_ref: 
     assert resp.json()["code"] == "binding_invalid"
 
 
-def test_an_unregistered_frame_is_frame_unavailable(client: TestClient):
-    # The fake maps an unregistered frame to retryable 503 `io`.
+def test_a_frame_store_that_fails_to_answer_is_service_unavailable(client: TestClient):
+    # The fake refuses an unregistered frame with reason `io`.
     resp = client.get(
         "/api/presentation/frames/spec_00000000000000000000000000000000/"
         "cv_00000000000000000000000000000000",
     )
     assert resp.status_code == 503
     body = resp.json()
-    assert body["code"] == "frame_unavailable"
+    assert body["code"] == "service_unavailable"
     assert body["retryable"] is True
 
 

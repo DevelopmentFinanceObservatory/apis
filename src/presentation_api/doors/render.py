@@ -36,10 +36,11 @@ of the other kind, a version or recipe the stores do not hold, and a door with n
 the rule. A `note_narration` binds no frame, so no target can stand in for one, and it refuses
 `render_target_mismatch` too.
 
-A refusal of the render carries the status the code registry gives its code on
-`presentation.render`, which for five codes differs from the status the write routes serve:
-`binding_invalid` and `constraint_violation` 422, and `frame_unavailable`, `release_mismatch`,
-and `resource_exhausted` 409. The caller replays a stored intent it cannot correct, so
+A refusal of the render goes out at the status the code registry gives its code on
+`presentation.render` (`RENDER_ENDPOINT`), read through `dfo_platform.codes.registered_status`.
+For five codes it differs from the status the write routes serve: `binding_invalid` and
+`constraint_violation` answer 422, and `frame_unavailable`, `release_mismatch`, and
+`resource_exhausted` 409. The caller replays a stored intent it cannot correct, so
 `retryable` is the write routes' value read through `presentation_api.codes.replay_retryable`:
 true only for a `retry_after_delay` or `refresh_then_retry` code whose occurrence is retryable.
 """
@@ -72,6 +73,7 @@ from datasets_api.live_refresh import (
 )
 from datasets_api.recipe_store import RecipeReader
 from dfo_platform import ProblemSpec
+from dfo_platform.codes import bound_registry_endpoint, registered_status
 from presentation_api.codes import replay_retryable, retryable_for
 from presentation_api.doors.component_data import COMPONENT_DATA_MEDIA_TYPES
 from presentation_api.models import ComponentReadResponse
@@ -94,14 +96,7 @@ _DERIVED_SPEC_PREFIX = "ops_"
 # name decides nothing.
 _NO_PRINCIPAL = LiveRefreshPrincipal(header="x-dfo-principal", principal="")
 
-# The `presentation.render` status of each assembler refusal the write routes serve at another.
-_RENDER_STATUS: Mapping[str, int] = {
-    "binding_invalid": 422,
-    "constraint_violation": 422,
-    "frame_unavailable": 409,
-    "release_mismatch": 409,
-    "resource_exhausted": 409,
-}
+RENDER_ENDPOINT = "presentation.render"
 
 
 class RenderTargetMismatch(Exception):
@@ -272,9 +267,9 @@ def build_render_router(
 ) -> APIRouter:
     """The two render routes, run through the components door's `run` on its `deps`.
 
-    `classify` is the components door's classifier, whose problem for a refusal the routes
-    restate at its `presentation.render` status and replay retryability. `live_refresh=None`
-    refuses every caller.
+    `classify` is the components door's classifier for component and component data refusals,
+    whose problem the routes restate at its `presentation.render` status and replay
+    retryability. `live_refresh=None` refuses every caller.
     """
     principal = live_refresh if live_refresh is not None else _NO_PRINCIPAL
     router = APIRouter(route_class=principal.route_class())
@@ -287,9 +282,11 @@ def build_render_router(
             spec = classify(exc) or classify_render_exception(exc)
             if spec is None:
                 raise
+            with bound_registry_endpoint(RENDER_ENDPOINT):
+                status = registered_status(spec.code)
             raise RenderRefused(
                 spec._replace(
-                    status=_RENDER_STATUS.get(spec.code, spec.status),
+                    status=status,
                     retryable=replay_retryable(spec.code, retryable=spec.retryable),
                 )
             ) from exc

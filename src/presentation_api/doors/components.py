@@ -69,8 +69,11 @@ from presentation_api.doors.component_data import (
     classify_component_data_exception,
 )
 from presentation_api.doors.render import (
+    RENDER_DATA_PATH,
+    RENDER_ENDPOINT,
     RENDER_EXCEPTION_EXEMPLARS,
     RENDER_EXCEPTION_TYPES,
+    RENDER_PATH,
     build_render_router,
     classify_render_exception,
 )
@@ -96,6 +99,10 @@ logger = logging.getLogger(__name__)
 # Carries the write token a create returned; a revise, or a create into an existing
 # composition, sends it back.
 WRITE_TOKEN_HEADER = "x-dfo-write-token"
+
+COMPONENTS_PATH = "/api/presentation/components"
+COMPONENT_PATH = f"{COMPONENTS_PATH}/{{component_id}}"
+WRITE_ENDPOINT = "presentation.write"
 
 
 class PresentationBackpressure(Exception):
@@ -403,7 +410,7 @@ def build_components_door(
     router = APIRouter()
 
     @router.post(
-        "/api/presentation/components",
+        COMPONENTS_PATH,
         status_code=201,
         responses={201: {"model": CreateReplyResponse}},
     )
@@ -428,7 +435,7 @@ def build_components_door(
         return await _run(job)
 
     @router.patch(
-        "/api/presentation/components/{component_id}",
+        COMPONENT_PATH,
         responses={200: {"model": WriteReplyResponse}},
     )
     async def revise_component(
@@ -454,7 +461,7 @@ def build_components_door(
         return await _run(job)
 
     @router.get(
-        "/api/presentation/components/{component_id}",
+        COMPONENT_PATH,
         responses={200: {"model": ComponentReadResponse}},
     )
     async def read_component(
@@ -479,7 +486,9 @@ def build_components_door(
         build_render_router(
             deps=deps,
             run=_run,
-            classify=classify_components_exception,
+            classify=combine_classifiers(
+                classify_components_exception, classify_component_data_exception
+            ),
             live_refresh=live_refresh,
         ).routes
     )
@@ -491,6 +500,14 @@ def build_components_door(
             classify_component_data_exception,
             classify_render_exception,
         ),
+        # The component read shares the revise route's path, so it runs with
+        # `presentation.write` bound and serves the write routes' statuses.
+        registry_endpoints={
+            COMPONENTS_PATH: WRITE_ENDPOINT,
+            COMPONENT_PATH: WRITE_ENDPOINT,
+            RENDER_PATH: RENDER_ENDPOINT,
+            RENDER_DATA_PATH: RENDER_ENDPOINT,
+        },
         exception_types=(
             PathParamInvalid,
             CreateRequestInvalid,

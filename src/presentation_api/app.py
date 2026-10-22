@@ -128,5 +128,8 @@ def presentation_surface(
             exemplar for door in doors for exemplar in door.exception_exemplars
         ),
         lifespan=lifespan,
+        registry_endpoints={
+            path: endpoint for door in doors for path, endpoint in door.registry_endpoints.items()
+        },
         request_scope=request_scope,
     )

@@ -31,7 +31,7 @@ verified against `src/presentation_api` and the shared platform envelope it rend
 | C7b    | POST /api/presentation/components/{component_id}/revisions/{revision}/render takes `{"frame": {spec_id, content_version}}` and answers what a component read answers for that revision, built from its stored intent on the named frame, with `resolved_payload.provenance.inputs` naming that frame and `provenance.refreshed_from` set to the revision. It appends no revision and pins the frame for the component. It admits only the caller holding `LIVE_REFRESH_PRINCIPAL` in the `DATASETS_PRINCIPAL_HEADER` header, checked before the path or body is validated | implemented |     |
 | C7c    | GET /api/presentation/components/{component_id}/revisions/{revision}/render/data?spec_id=&content_version= serves the C7a export of that revision rendered on the named frame, with the same `format` and `bundle` options, under the caller rule of C7b. It pins nothing | implemented |     |
 | C7d    | C7b and C7c accept the frame the revision is stored on, a dataset frame of the same `spec_id` and rendering, or a derived frame whose recipe has the stored frame's `normal_form_hash`. Any other frame refuses `render_target_mismatch`, 409 | implemented |     |
-| C7e    | On C7b and C7c `binding_invalid` and `constraint_violation` answer 422, and `frame_unavailable`, `release_mismatch`, and `resource_exhausted` answer 409, the statuses the code registry maps for `presentation.render`. "Refusal code detail" below gives the statuses create and revise serve | implemented |     |
+| C7e    | On C7b and C7c every refusal answers the status the code registry maps for its code on `presentation.render`: `binding_invalid` and `constraint_violation` answer 422, and `frame_unavailable`, `release_mismatch`, and `resource_exhausted` answer 409. A component with no current revision refuses `edit_conflict`, 409. "Refusal code detail" below gives the statuses create and revise serve | implemented |     |
 
 ## Request shape
 
@@ -99,7 +99,7 @@ alone.
 | write_refused                   | 403            | do_not_retry                                    | implemented |     |
 | request_invalid                 | 400            | headline correct_and_retry; wire `retryable` always false | implemented |     |
 | resource_exhausted               | 400            | do_not_retry                                    | implemented |     |
-| frame_unavailable                | 404 or 503 per cause (see below) | refresh_then_retry (expired, ops_unsupported) / do_not_retry (revoked, missing_rendering, digest_mismatch, quarantined, unknown) / retry_after_delay (io) | implemented |     |
+| frame_unavailable                | 404            | refresh_then_retry (expired, ops_unsupported) / do_not_retry (revoked, missing_rendering, digest_mismatch, quarantined, unknown) | implemented |     |
 | release_mismatch                 | 503            | retry_after_delay                               | implemented |     |
 | service_unavailable              | 503            | retry_after_delay                               | implemented |     |
 | timeout                          | 504            | retry_after_delay                               | implemented |     |
@@ -108,31 +108,40 @@ alone.
 | refresh_not_permitted            | 403            | do_not_retry                                    | implemented |     |
 | render_target_mismatch           | 409            | do_not_retry                                    | implemented |     |
 
-### frame_unavailable outcome by reason
+### FrameUnavailable outcome by reason
 
-| Reason            | HTTP | retryable |
-| ------------------ | ---- | --------- |
-| expired            | 404  | true      |
-| revoked             | 404  | false     |
-| ops_unsupported      | 404  | true      |
-| missing_rendering     | 404  | false     |
-| digest_mismatch       | 404  | false     |
-| quarantined           | 404  | false     |
-| io                  | 503  | true      |
-| unknown              | 404  | false     |
-| any other reason      | 503  | true      |
+A frame store that fails to answer (`io`) refuses `service_unavailable`. A reason outside this table fails classification, and the platform default answers `internal_error`.
+
+| Reason            | Code                | HTTP | retryable |
+| ----------------- | ------------------- | ---- | --------- |
+| expired           | frame_unavailable   | 404  | true      |
+| revoked           | frame_unavailable   | 404  | false     |
+| ops_unsupported   | frame_unavailable   | 404  | true      |
+| missing_rendering | frame_unavailable   | 404  | false     |
+| digest_mismatch   | frame_unavailable   | 404  | false     |
+| quarantined       | frame_unavailable   | 404  | false     |
+| io                | service_unavailable | 503  | true      |
+| unknown           | frame_unavailable   | 404  | false     |
 
 ## Registry binding
 
 `presentation_api.codes.PRESENTATION_CODE_CATALOGUE` union
-`presentation_api.codes.PRESENTATION_SERVED_PLATFORM_CODES` — the seven codes this surface mints
-itself, plus the six platform codes its own handlers, its own `validation_problem` path, or the
-platform default put on the wire (`not_found`, `request_invalid`, `service_unavailable`, `timeout`,
-`internal_error`, `unsupported_schema_version`) — is exactly the set of active spec-kit registry
-entries whose mappings name a `presentation.*` endpoint (all thirteen map onto
-`presentation.write`). `tests/platform/test_registry_binding.py`'s
+`presentation_api.codes.PRESENTATION_SERVED_PLATFORM_CODES`, the nine codes this surface mints
+itself plus the seven platform codes its handlers, its `validation_problem` path, the
+live-refresh check, or the platform default put on the wire (`not_found`, `request_invalid`,
+`service_unavailable`, `timeout`, `internal_error`, `unsupported_schema_version`,
+`refresh_not_permitted`), is exactly the set of active spec-kit registry entries whose mappings
+name a `presentation.*` endpoint. `tests/platform/test_registry_binding.py`'s
 `test_presentation_served_codes_match_registry` asserts this bijection and passes.
 `PRESENTATION_SERVED_PLATFORM_CODES` is what carries `C12`'s `unsupported_schema_version` into
 that comparison: it has no `CODE_RETRY_MODE` entry, since that table mirrors the baked catalogue
 manifest's `retry_modes` byte for byte, so `CODE_RETRY_MODE`'s own key set alone would leave the
 code out of the served set on both sides.
+
+The surface binds `presentation.write` to create and revise, and `presentation.render` to C7b
+and C7c (`Surface.registry_endpoints`). The component read shares revise's path, so it is bound
+with it. The frames, component data, release, and meta routes map no registry endpoint and serve
+the write routes' statuses. `tests/presentation_api/test_refusal_registry.py` asserts that every
+`presentation.*` endpoint is bound and that every exemplar goes out at the status the registry
+gives its code: a render door exemplar on `presentation.render`, every other on
+`presentation.write`.

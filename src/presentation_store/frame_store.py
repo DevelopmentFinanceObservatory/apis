@@ -368,8 +368,8 @@ def _decode_frame(
     """The frame1 document `data` holds and the bytes the cache counts for it: a frame1
     document parsed, at its byte length, or a canonical frame built into one, at
     `_document_bytes`. A canonical frame whose Parquet footer counts more than `max_rows` rows
-    refuses `missing_rendering` before any row is decoded. Bytes that do not decode refuse
-    `io`."""
+    refuses `missing_rendering` before any row is decoded. Bytes that do not decode never will,
+    so they refuse `missing_rendering` too."""
     try:
         if location.media_type == FRAME1_MEDIA_TYPE:
             return cast("Mapping[str, object]", json.loads(data)), len(data)
@@ -379,7 +379,7 @@ def _decode_frame(
         doc = canonical_frame_document(read_canonical_frame_table(data))
     except (ValueError, pa.ArrowException) as exc:
         raise FrameUnavailable(
-            reason="io",
+            reason="missing_rendering",
             detail=(
                 f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
                 f"{type(exc).__name__}"
