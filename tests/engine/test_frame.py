@@ -1,7 +1,7 @@
 """The frame each door builds for one part (`search.engine.frame`).
 
 The two text doors ask the place-set world (`_place_set_world`) one selection each; the
-event tests ask the packaged CRS index for "aid flows to Kenya".
+event tests ask the fixture CRS index for "aid flows to Kenya".
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 `describe_version(record, vocabulary)` describes a dataset version or a computed version, as
 the record's id says. `describe_card(record, selection, vocabulary, *, component_id,
 revision)` describes a card revision drawn from the record's version. Both return JSON-ready
-wire data, and every description served here is validated against dfo-spec-kit's
+wire data, and every description served here is validated against the `spec-kit` repository's
 `description.schema.json`.
 
 The records and vocabulary are built from the design's own facts: the worked example
@@ -194,7 +194,7 @@ _INDEX = CodeIndex(
     statvars=(),
 )
 
-# Keyed as the packaged measure index keys its partition labels: on the shape's
+# Keyed as the fixture measure index keys its partition labels: on the shape's
 # `populationType` and `measuredProperty` beside the constraint axes.
 _MEASURES = MeasureIndex(
     axes=(

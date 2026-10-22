@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 import time
 
+import pytest
+
 from artifact_publication.uri import (
+    download_uri_to_path,
+    list_uri_object_generations,
     list_uri_object_times,
     read_uri_bytes_and_generation,
     write_uri_bytes,
@@ -88,6 +92,22 @@ def test_list_uri_object_times_reads_every_file_recursively(tmp_path):
     assert abs(times["versions/b1/a.txt"] - old_time) < 2
     assert times["versions/b1/b.txt"] > old_time + 900
 
+    listed = list_uri_object_generations(f"file://{base}")
+
+    assert {name: written for name, (written, _) in listed.items()} == times
+    assert listed["versions/b1/a.txt"][1] == _generation(f"file://{old_file}")
+
 
 def test_list_uri_object_times_is_empty_for_a_base_that_does_not_exist(tmp_path):
     assert list_uri_object_times(f"file://{tmp_path / 'missing'}") == {}
+    assert list_uri_object_generations(f"file://{tmp_path / 'missing'}") == {}
+
+
+def test_download_uri_to_path_copies_the_object_and_refuses_a_missing_one(tmp_path):
+    write_uri_bytes(f"file://{tmp_path / 'parts' / 'a.arrow'}", b"part")
+
+    download_uri_to_path(f"file://{tmp_path / 'parts' / 'a.arrow'}", tmp_path / "local")
+
+    assert (tmp_path / "local").read_bytes() == b"part"
+    with pytest.raises(FileNotFoundError):
+        download_uri_to_path(f"file://{tmp_path / 'parts' / 'gone'}", tmp_path / "local")

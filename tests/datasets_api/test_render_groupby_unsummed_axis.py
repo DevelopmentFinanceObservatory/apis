@@ -103,7 +103,7 @@ def _sum(members: tuple[tuple[str, float], ...]):
         options=MintOptions(groupby=GroupbyOptions(by=["time_period"], op="sum")),
         entity_columns=_ENTITY_COLUMNS,
         reads=_RenderReads(
-            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties={}),
+            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {}),
             known={},
             deadline=None,
         ),

@@ -9,7 +9,7 @@ import logging
 import threading
 from collections.abc import Callable
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
-from typing import Any
+from typing import Any, override
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,20 @@ class SaturationTrackingExecutor(ThreadPoolExecutor):
                 self._in_flight,
                 self._pool_size,
             )
+
+
+class ContextCarryingExecutor(ThreadPoolExecutor):
+    """Thread pool whose every `submit` runs under a copy of the submitter's context.
+
+    For pools that only ever run a request's own work, so request-scoped state such as the
+    bound graph release and origin catalogue reaches every job however it is submitted. A pool
+    that runs work shared across requests passes the context it means instead
+    (`request_deadline.submit_detached`).
+    """
+
+    @override
+    def submit(self, fn, /, *args: Any, **kwargs: Any):  # type: ignore[override]
+        return super().submit(contextvars.copy_context().run, fn, *args, **kwargs)
 
 
 def submit_with_context[**P, R](

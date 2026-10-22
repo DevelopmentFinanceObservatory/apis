@@ -625,7 +625,7 @@ class TestGenerationLifespanWiring:
 
     def test_unconfigured_generation_environment_still_serves_normally(self, monkeypatch):
         """Neither `DFO_GRAPH_GENERATION` nor `DFO_GRAPH_GENERATION_SERVICE`
-        set (the common case before dfo-infra's own grant lands) must never
+        set (the common case before the `infra` repository's own grant lands) must never
         fail a request. The real, unmocked shared provider degrades to
         "unknown" and the surface serves normally, mirroring graph_api.app's
         own identical test for the resolve door.

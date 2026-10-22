@@ -21,7 +21,7 @@ _STAT_VAR_REF_PREFIX = "dcid:"
 """Mirrors `materialise.frame_build._STAT_VAR_REF_PREFIX`: every frame's own
 `stat_var` column is canonicalised to this `dcid:`-prefixed spelling
 (`_canonicalize_stat_var_ref`'s own docstring), a StatVar-ref convention
-unrelated to any code system. The packaged code index's own `StatVarRow
+unrelated to any code system. The code index's own `StatVarRow
 .dcid` is the graph's bare spelling instead -- the same one
 `StatVarRow.constraint_properties`' own values and `CodeRow.dcid` use
 throughout `code_index` -- so this module strips the prefix before matching

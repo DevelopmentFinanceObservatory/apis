@@ -79,10 +79,15 @@ class Timing(StrictModel):
     """Latency breakdown, reused at two scopes: the envelope's own
     diagnostics.timing_ms, where total is the whole request's wall-clock
     elapsed time and by_step names the steps that run once per request,
-    shared across every part (e.g. extract), and a part's own timing_ms,
-    where total sums that part's own by_step values and by_step names only
-    the phases that part ran, excluding the shared steps already reported
-    on the envelope.
+    shared across every part (coverage; extract; cache_lookup on a raw-text
+    request with the response cache active; entity_check on a request that
+    runs the place check), and a part's own timing_ms, where total sums
+    that part's own by_step values and by_step names the steps that part
+    ran plus a phase_<name> entry for each phase it ran, holding the time
+    no step booked, excluding the shared steps already reported on the
+    envelope. A part's shape_arcs, shape_probe, shape_probe_coverage,
+    shape_labels, shape_groups and shape_admission steps are nested inside
+    its shape step, so its total leaves them out.
     """
 
     total: int = Field(description="total latency in milliseconds, at whichever scope this sits")
@@ -108,7 +113,10 @@ class Diagnostics(StrictModel):
     timing_ms: Timing | None = Field(default=None, description="latency breakdown")
     llm_usage: dict[str, int] | None = Field(
         default=None,
-        description="per-request LLM token counts {input_tokens, output_tokens, cached_tokens}",
+        description=(
+            "per-request LLM token counts {input_tokens, output_tokens, cached_tokens}, "
+            "plus {jev_input_tokens, jev_output_tokens} when Jev answered a call"
+        ),
     )
     timed_out: bool | None = Field(
         default=None,

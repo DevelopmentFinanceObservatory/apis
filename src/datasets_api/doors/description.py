@@ -3,7 +3,7 @@
 Routes:
 
 - `GET /api/datasets/{id}/{content_version}/description` answers the version's description
-  (`description.compose.describe_version`) in dfo-spec-kit's description schema.
+  (`description.compose.describe_version`) in the `spec-kit` repository's description schema.
 - `GET /api/datasets/{id}/{content_version}/description/values?property=&limit=&cursor=` pages
   the values the version's record holds for one open dimension, with their variable counts.
 
@@ -96,6 +96,7 @@ from materialise.facets import native_currency_iso
 from materialise.graph import GraphReader
 from materialise.provenance_doc import read_source_citations
 from origin_catalogue import current_catalogue
+from origin_catalogue.context import current_words_build
 from spec_registry import IdentityQuarantined
 from unit_words.currency_codes import ISO_4217_CODES
 
@@ -243,7 +244,7 @@ def _vocabulary(
     `inputs`, the records of the versions `record` was computed from, is labelled by its title
     (`version_title`), worded from the same label read. The vocabulary's revision names the
     graph generation stamped as the reads start and the build of the catalogue the request is
-    bound to."""
+    bound to, with the bound release (`current_words_build`)."""
     generation = graph.generation_stamp().token
     deadline = time.monotonic() + _GRAPH_READ_SECONDS
     degraded = False
@@ -297,7 +298,7 @@ def _vocabulary(
             sources=sources,
             currency_units=_currency_units(record),
             graph_generation=generation,
-            catalogue_build=catalogue.build_id,
+            catalogue_build=current_words_build(),
         )
 
     vocabulary = words(labels)

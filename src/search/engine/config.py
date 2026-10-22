@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dfo_platform.flags import lenient_bool
@@ -29,6 +29,7 @@ from origin_catalogue.graph import (
     UN_BASE_URL_ENV,
 )
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_DEPTH, TOPIC_EXPAND_MAX_MEMBERS
+from search.engine.extraction_store import is_extraction_store_mode
 from search.observations import observation_settings
 from statvar_members import DEFAULT_SUBJECT_CEILING
 from unit_words.currency_codes import ISO_4217_CODES
@@ -107,9 +108,10 @@ class SearchSettings(BaseSettings):
     Constructed once at import (`_SETTINGS` below); every consumer reads a
     field off `settings()`'s return value at the point of use. Field names
     are the `SEARCH_` env var name lowercased with that prefix stripped
-    (e.g. `SEARCH_MAX_VARIABLES` -> `max_variables`). Two fields are aliased:
+    (e.g. `SEARCH_MAX_VARIABLES` -> `max_variables`). Three fields are aliased:
     `gemini_api_key` to the unprefixed `GEMINI_API_KEY` that every other
-    Gemini-touching tool in this ecosystem already expects, and
+    Gemini-touching tool in this ecosystem already expects, `jev_api_key` to
+    the TypeSafe SDK's own `TYPESAFE_API_KEY`, and
     `capability_version_override` to `SEARCH_CAPABILITY_VERSION`, which sets the
     `capability_version` property.
 
@@ -125,6 +127,13 @@ class SearchSettings(BaseSettings):
     # Concrete default ties local evaluation baselines to one model. CI pins its own value.
     engine_model: str = "gemini-3.5-flash-lite"
 
+    # The binder that reads each part's stated quantity and elects its shape
+    # (`search.engine.binders.configured_binder`): "gemini"; "jev", Jev with Gemini as its
+    # fallback on the `jev_traffic_pct` share of queries and Gemini on the rest; or
+    # "shadow", Gemini answering with Jev run beside it on `jev_shadow_sample` of calls. The
+    # response cache keys each answer on the binder its request was routed to and its model.
+    binder: Literal["gemini", "jev", "shadow"] = "gemini"
+
     # Best-effort Gemini seed. Repeated identical queries matched on the pinned model.
     # Defaults to 1. An explicit empty string selects unseeded sampling.
     llm_seed: int | None = 1
@@ -134,6 +143,43 @@ class SearchSettings(BaseSettings):
 
     # Gemini API key for LLM calls. Reads unprefixed GEMINI_API_KEY.
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+
+    # -- Jev ------------------------------------------------------------
+    # TypeSafe's System One model the Jev binder asks (`binders.jev_client`). A versioned id:
+    # the `jev-latest` alias moves when a release ships, and the Jev thresholds are fitted
+    # on this version.
+    jev_model: str = "jev-1.13.0"
+
+    # TypeSafe API key. Reads unprefixed TYPESAFE_API_KEY, the SDK's own variable.
+    jev_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="TYPESAFE_API_KEY")
+
+    # Seconds one Jev call may take in all, from the wait for a concurrency slot through
+    # its retry and every chunk of a split request. Jev per part ran p50 281 ms and p95
+    # 622 ms, and chunked requests p95 about 1.1 s.
+    jev_ceiling_s: float = 2.5
+
+    # Jev requests in flight per event loop, chunks of a split request included.
+    jev_max_concurrency: int = 8
+
+    # Percent of queries, 0 to 100, `binder="jev"` routes to Jev, picked by a hash of the
+    # normalised query so a repeated query keeps its binder; the rest go to Gemini. Read only
+    # under `binder="jev"`, where every query goes to Jev unless a partial rollout sets it
+    # below 100.
+    jev_traffic_pct: int = 100
+
+    # Share of quantity reads and bind calls, 0 to 1, `binder="shadow"` also sends to Jev
+    # to compare with Gemini's answer.
+    jev_shadow_sample: float = 0.0
+
+    # Share of those shadowed calls, 0 to 1, that ask Gemini a second time in place of Jev,
+    # so the comparison measures Gemini's disagreement with itself as its control.
+    jev_shadow_control: float = 0.05
+
+    # Shadow calls, Jev and control alike, in flight per event loop; a sampled call made
+    # while this many run goes unshadowed. Control calls take a Gemini pool of this many
+    # connections per event loop of their own (`clients.llm.detached`), so a control never
+    # waits for a connection and never takes one from a served call.
+    jev_shadow_max_inflight: int = 4
 
     # -- Graph ------------------------------------------------------------
     # Bare host of the Data Commons service, from SEARCH_GRAPH_BASE. Required, so
@@ -182,7 +228,7 @@ class SearchSettings(BaseSettings):
     # inline-display caps. A read of several series shares the cap times its series equally.
     obs_preview_max_rows: int = 20_000
 
-    # Open-axis discovery filters the coverage artifact without a member-count cap.
+    # Open-axis discovery filters the release's coverage view without a member-count cap.
     # scope_min_year floors open-ended windows. Coverage paths also floor at the artifact's
     # epoch_year, the first year represented by its bitmask.
     # scope_max_window_years limits year lists before they become SDMX OR-filters.
@@ -214,7 +260,7 @@ class SearchSettings(BaseSettings):
     # (JSON) or a terminal error event (SSE). The hard cap also bounds every graph and SDMX
     # read the request makes (`dfo_platform.request_deadline`). Cancelling unfinished
     # variables and assembling the partial answer take milliseconds, so the grace covers
-    # that work only. dfo-ai's data-mcp gives up on a resolve at 50 s.
+    # that work only. The `ai` repository's data-mcp gives up on a resolve at 50 s.
     finalise_grace_s: float = 2
 
     # Deadline from request start for a resubmit whose member walk reads the whole filtered
@@ -260,12 +306,20 @@ class SearchSettings(BaseSettings):
 
     # How long a part waits for the UN leg, its resolve and the derivation of its shapes,
     # from the start of derivation, in seconds. The UN derivation runs beside ours, and only
-    # a part whose own pass ends no_data waits for it. Past it that part keeps our answer
-    # and carries un_system_unavailable. Run
+    # a part whose own pass ends no_data waits for it, or with un_on_first_menu one whose
+    # best shape is weak. Past it that part keeps our answer and carries
+    # un_system_unavailable. Run
     # beside ours against the live UN deployment, ten queries' UN legs finished 0.89 to
     # 1.57 s after derivation began; a 1.0 s wait missed one of the ten. The `un_derive` log
     # line gives each derivation's time. Must be in (0, un_resolve_timeout_s].
     un_first_pass_wait_s: float = 1.5
+
+    # Whether our pass's menu also holds the UN leg's shapes, each meeting the same admission
+    # and its own pool's floor (`phase_intake._merge_un_pool`). Only a part whose best shape
+    # scores below `phase_intake.UN_MERGE_WEAK_SCORE` takes them, waiting for the UN leg up
+    # to un_first_pass_wait_s. The UN shapes take the seats ours leave (`seating.seat_menu`).
+    # A part whose merged pass ends no_data still runs the UN pass.
+    un_on_first_menu: bool = False
 
     # Timeout in seconds for a definite answer's related-measures reads (`related`), which
     # start beside the answer's other post-election reads. Past it the answer states
@@ -328,6 +382,11 @@ class SearchSettings(BaseSettings):
 
     # Maximum number of candidate shapes (across all families) presented to the universal
     # choose+bind prompt. Retrieval ranks shapes. The LLM elects the winner.
+    # 4 seats lose 21 elections on 399 definite dev items (97.5% to 93.0%).
+    # No acceptable shape ranks below 8: recall found an expected shape for 131 parts, the
+    # menu seated one for 127, and policy refused the other 4.
+    # Seating all 255 shapes fills more than 8 on 123 menus, gains nothing, adds 300 ms at
+    # p95, and sends up to 60,010 tokens against a 64k request ceiling.
     bind_top_k: int = 8
 
     # A Topic expands when its score is within this margin of the pool top, including the
@@ -438,6 +497,11 @@ class SearchSettings(BaseSettings):
 
     # Oversized answers are served without storage, protecting other memo entries from eviction.
     llm_memo_max_entry_bytes: int = 256 * 1024
+
+    # Where extract() keeps the model's reading of each query: `off`, `memory` (an in-process
+    # LRU with no TTL) or `file:<path>` (JSON lines a later run replays). Keys hold the extract
+    # prompt and schema, so an edit to either reads afresh.
+    extract_store: str = "memory"
 
     # -- Observation values ------------------------------------------------
     # Worker cap for one preview fetch. 1 runs its pairs sequentially.
@@ -742,7 +806,7 @@ class SearchSettings(BaseSettings):
             raise ValueError(f"SEARCH_MAX_OPTIONS must be >= 1; got {self.max_options!r}")
 
     def _validate_timeout_and_preview_bounds(self) -> None:
-        """Graph/LLM/request timeouts, Gemini and observation-preview concurrency."""
+        """Graph/LLM/Jev/request timeouts, Gemini, Jev and observation-preview concurrency."""
         if self.graph_timeout_s <= 0:
             raise ValueError(f"SEARCH_GRAPH_TIMEOUT_S must be > 0; got {self.graph_timeout_s!r}")
         if self.llm_timeout_s <= 0:
@@ -750,6 +814,30 @@ class SearchSettings(BaseSettings):
         if self.llm_max_concurrency < 1:
             raise ValueError(
                 f"SEARCH_LLM_MAX_CONCURRENCY must be >= 1; got {self.llm_max_concurrency!r}"
+            )
+        if not math.isfinite(self.jev_ceiling_s) or self.jev_ceiling_s <= 0:
+            raise ValueError(
+                f"SEARCH_JEV_CEILING_S must be a finite number > 0; got {self.jev_ceiling_s!r}"
+            )
+        if self.jev_max_concurrency < 1:
+            raise ValueError(
+                f"SEARCH_JEV_MAX_CONCURRENCY must be >= 1; got {self.jev_max_concurrency!r}"
+            )
+        if not 0 <= self.jev_traffic_pct <= 100:
+            raise ValueError(
+                f"SEARCH_JEV_TRAFFIC_PCT must be in [0, 100]; got {self.jev_traffic_pct!r}"
+            )
+        if not 0.0 <= self.jev_shadow_sample <= 1.0:
+            raise ValueError(
+                f"SEARCH_JEV_SHADOW_SAMPLE must be in [0, 1]; got {self.jev_shadow_sample!r}"
+            )
+        if not 0.0 <= self.jev_shadow_control <= 1.0:
+            raise ValueError(
+                f"SEARCH_JEV_SHADOW_CONTROL must be in [0, 1]; got {self.jev_shadow_control!r}"
+            )
+        if self.jev_shadow_max_inflight < 1:
+            raise ValueError(
+                f"SEARCH_JEV_SHADOW_MAX_INFLIGHT must be >= 1; got {self.jev_shadow_max_inflight!r}"
             )
         if self.max_query_chars < 1:
             raise ValueError(f"SEARCH_MAX_QUERY_CHARS must be >= 1; got {self.max_query_chars!r}")
@@ -846,7 +934,7 @@ class SearchSettings(BaseSettings):
             )
 
     def _validate_cache_and_memo_bounds(self) -> None:
-        """Response-cache and LLM-memo cache bounds."""
+        """Response-cache, LLM-memo and extraction-store settings."""
         if self.response_cache_max_bytes < 1:
             raise ValueError(
                 "SEARCH_RESPONSE_CACHE_MAX_BYTES must be >= 1; got "
@@ -885,6 +973,11 @@ class SearchSettings(BaseSettings):
                 "SEARCH_LLM_MEMO_MAX_ENTRY_BYTES "
                 f"({self.llm_memo_max_entry_bytes!r}) must be <= "
                 f"SEARCH_LLM_MEMO_MAX_BYTES ({self.llm_memo_max_bytes!r})"
+            )
+        if not is_extraction_store_mode(self.extract_store):
+            raise ValueError(
+                "SEARCH_EXTRACT_STORE must be off, memory or file:<path>; got "
+                f"{self.extract_store!r}"
             )
 
 

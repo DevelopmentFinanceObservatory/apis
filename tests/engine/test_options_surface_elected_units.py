@@ -45,7 +45,7 @@ _CURRENCY_ARCS = {
 
 
 _GDP_ACTIVITY_SOURCE = "GrossDomesticProduction"
-# A fixture-only measured property keeps the shape out of the packaged index, so population
+# A fixture-only measured property keeps the shape out of the fixture index, so population
 # comes from graph arcs. `FinancialFlow` is a population type the DAC recipe converts.
 _MEASURED_PROPERTY = "optElectAmount"
 _FLOW_SHAPE = IdentityShapeSchema(

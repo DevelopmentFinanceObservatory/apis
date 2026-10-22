@@ -34,7 +34,7 @@ from artifact_publication.uri import (
 
 logger = logging.getLogger(__name__)
 
-FORMAT_VERSION: Final[int] = 2
+FORMAT_VERSION: Final[int] = 3
 """Bumped when a build's JSON changes shape, so an image reads only the
 builds it understands."""
 
@@ -128,7 +128,8 @@ class CataloguePlace(_Model):
 
 
 class BuildInputs(_Model):
-    """What a build read. `build_key` hashes these."""
+    """What a build read. `build_key` hashes these. `coverage_build_id` is the
+    id of the graph release whose coverage view the build read."""
 
     origin_catalogue_build_id: str
     coverage_build_id: str
@@ -137,10 +138,12 @@ class BuildInputs(_Model):
 
 
 class CatalogueArtifact(_Model):
-    """One published build."""
+    """One published build. `started_at` is when the run that built it started,
+    which orders runs: a run never publishes over a build of a later run."""
 
     catalogue_version: CatalogueVersion
     key: str
+    started_at: datetime
     built_at: datetime
     inputs: BuildInputs
     counts: Counts
@@ -149,10 +152,11 @@ class CatalogueArtifact(_Model):
 
 
 class CataloguePointer(_Model):
-    """`current.json`: the live build and its key."""
+    """`current.json`: the live build, its key and its run's start."""
 
     catalogue_version: CatalogueVersion
     key: str
+    started_at: datetime
 
 
 class CatalogueRefusal(_Model):
@@ -223,7 +227,11 @@ def publish(base_uri: str, artifact: CatalogueArtifact, *, expected_generation: 
         build_uri, artifact.model_dump_json().encode("utf-8"), expected_generation=None
     ):
         raise CatalogueArtifactError(f"{build_uri!r} already exists")
-    pointer = CataloguePointer(catalogue_version=artifact.catalogue_version, key=artifact.key)
+    pointer = CataloguePointer(
+        catalogue_version=artifact.catalogue_version,
+        key=artifact.key,
+        started_at=artifact.started_at,
+    )
     return write_uri_bytes_if_unchanged(
         join_uri(root, POINTER_FILE),
         pointer.model_dump_json().encode("utf-8"),

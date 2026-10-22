@@ -176,7 +176,7 @@ def test_each_subcommand_dispatches_to_its_task(monkeypatch, task):
     assert ran == [task]
 
 
-# The environment the dfo-infra maintenance Job sets, and nothing else.
+# The environment the `infra` maintenance Job sets, and nothing else.
 _JOB_ENV = {
     "DATASETS_ARTIFACT_BUCKET_WORKING": "working-bucket",
     "DATASETS_ARTIFACT_BUCKET_PINNED": "pinned-bucket",

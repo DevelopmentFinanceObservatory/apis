@@ -5,6 +5,7 @@ the clients it reads through."""
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
@@ -131,10 +132,16 @@ def test_two_holders_share_one_cache_and_one_flight_for_a_cold_variable(monkeypa
     assert search.cache is graph_surface.cache
 
     found: list[FacetProfile] = []
-    first = threading.Thread(target=lambda: found.append(_profile(graph_surface)))
+    # Each reader runs in a copy of the test's context, as a request pool's do, so it reads
+    # under the bound release.
+    first = threading.Thread(
+        target=contextvars.copy_context().run, args=(lambda: found.append(_profile(graph_surface)),)
+    )
     first.start()
     assert clients.graph is not None and clients.graph.reading.wait(5)
-    second = threading.Thread(target=lambda: found.append(_profile(search)))
+    second = threading.Thread(
+        target=contextvars.copy_context().run, args=(lambda: found.append(_profile(search)),)
+    )
     second.start()
     gate.set()
     first.join(5)
@@ -248,7 +255,7 @@ def test_teardown_waits_for_a_running_flight_before_closing_its_clients(monkeypa
     clients = _Clients(gate=gate)
     _install(monkeypatch, clients)
     holder = acquire_shared_profiles(source=_SOURCE, generation=FakeGeneration(token="g1"))
-    reader = threading.Thread(target=_profile, args=(holder,))
+    reader = threading.Thread(target=contextvars.copy_context().run, args=(_profile, holder))
     reader.start()
     assert clients.graph is not None and clients.graph.reading.wait(5)
 

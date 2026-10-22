@@ -34,6 +34,9 @@ header's `total`. Each request kind reports p50 and p95 latency and, per count, 
 and maximum. The JSON report also records the base URL, the seed, the sample count and, per
 shape, the deployed build (`x-dfo-commit`).
 
+`search.eval.apis_auth` adds the Cloud Run ID token an `https` base URL needs. Set
+`DFO_APIS_ID_TOKEN`, or point the base URL at `gcloud run services proxy` on localhost.
+
 Usage:
     uv run --extra datasets python scripts/bench_datasets.py --out bench.json
     uv run --extra datasets python scripts/bench_datasets.py \\
@@ -57,6 +60,7 @@ from typing import cast
 
 import httpx
 
+from search.eval.apis_auth import apis_auth
 from spec_registry.identity import recompute_identity
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -292,7 +296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path("bench-datasets.json"))
     args = parser.parse_args(argv)
     seed = args.seed if args.seed is not None else time.time_ns() % 1_000_000
-    with httpx.Client(base_url=args.base_url, timeout=_TIMEOUT_SECONDS) as client:
+    with httpx.Client(base_url=args.base_url, timeout=_TIMEOUT_SECONDS, auth=apis_auth()) as client:
         report = run_bench(client, recorded_shapes(seed=seed), samples=args.samples, seed=seed)
     args.out.write_text(json.dumps(report, indent=2) + "\n")
     print(f"wrote {args.out}", file=sys.stderr)

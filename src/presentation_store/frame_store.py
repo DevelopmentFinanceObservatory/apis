@@ -20,8 +20,9 @@ one second or a tenth of its budget, whichever is smaller, so the graph reads st
 door's wait ends. A load whose graph label read or family definition read failed is not
 cached, so the next load reads again. A quarantined family identity is a lasting state, so its
 missing label is cached. The load that reads the labels stamps the frame with the graph
-generation the read starts under and the build of the catalogue the load is bound to
-(`ResolvedFrame.graph_generation`, `ResolvedFrame.catalogue_build`), and the cached frame keeps
+generation the read starts under and the build of the catalogue the load is bound to, with the
+bound release (`ResolvedFrame.graph_generation`,
+`ResolvedFrame.catalogue_build`), and the cached frame keeps
 both, so a card's vocabulary revision names the read its labels came from. A cached frame's
 words, its labels, its anchor's left-out labels, its citation and its source documents, are
 read again from its cached bytes once the graph generation or the bound catalogue build moves
@@ -208,6 +209,7 @@ from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
 from materialise.provenance_doc import SourceCitation, read_source_citations
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
+from origin_catalogue.context import current_words_build
 from spec_registry.errors import (
     IdentityQuarantined,
     SpecRegistryStoreError,
@@ -621,12 +623,14 @@ class LiveFrameStore:
     `recipe_reader` supplies a derived frame's rolling anchor, and `None` loads every frame
     without one. `description_reader` supplies each version's description record, and `None`
     loads every frame without one.
-    `code_index` and `measure_index` default to the packaged indexes. `now` supplies the clock
-    for expiry checks and reference timestamps. `read_budget_seconds` bounds the graph reads of
-    one `load()` from its start, as the module docstring describes, for a caller that sets no
-    door deadline. `frame_max_rows` bounds the rows of a canonical frame `load()` decodes, since
-    the whole frame is built in memory. A larger frame refuses `missing_rendering`, before its
-    object is fetched when the version's facts record its row count.
+    `code_index` and `measure_index` are fixed when given. Left out, each read takes the
+    indexes the request reads (`get_index`, `get_measure_index`), which can change between
+    requests. `now` supplies the clock for expiry checks and reference timestamps.
+    `read_budget_seconds` bounds the graph reads of one `load()` from its start, as the module
+    docstring describes, for a caller that sets no door deadline. `frame_max_rows` bounds the
+    rows of a canonical frame `load()` decodes, since the whole frame is built in memory. A
+    larger frame refuses `missing_rendering`, before its object is fetched when the version's
+    facts record its row count.
     """
 
     def __init__(
@@ -653,8 +657,8 @@ class LiveFrameStore:
         self._spec_reader = spec_reader
         self._recipe_reader = recipe_reader
         self._description_reader = description_reader
-        self._code_index = code_index if code_index is not None else get_index()
-        self._measure_index = measure_index if measure_index is not None else get_measure_index()
+        self._given_code_index = code_index
+        self._given_measure_index = measure_index
         self._now = now
         self._cache_max_bytes = cache_max_bytes
         self._read_budget_seconds = read_budget_seconds
@@ -664,6 +668,16 @@ class LiveFrameStore:
         self._cache_bytes = 0
         self._refreshing: set[tuple[str, str]] = set()
         self._refresh_ended = threading.Condition(self._cache_lock)
+
+    @property
+    def _code_index(self) -> CodeIndex:
+        return self._given_code_index if self._given_code_index is not None else get_index()
+
+    @property
+    def _measure_index(self) -> MeasureIndex:
+        if self._given_measure_index is not None:
+            return self._given_measure_index
+        return get_measure_index()
 
     # -- FrameStore ---------------------------------------------------
 
@@ -917,10 +931,11 @@ class LiveFrameStore:
 
     def _read_under(self) -> tuple[str | None, str | None]:
         """The graph generation token a graph read starts under now, and the build of the
-        catalogue this load is bound to, or `(None, None)` for a store with no graph."""
+        catalogue this load is bound to, joined to the bound release (`current_words_build`), or
+        `(None, None)` for a store with no graph."""
         if self._graph is None:
             return None, None
-        return self._graph.generation_stamp().token, current_catalogue().build_id
+        return self._graph.generation_stamp().token, current_words_build()
 
     def _description_records(
         self, frame_ref: FrameRef

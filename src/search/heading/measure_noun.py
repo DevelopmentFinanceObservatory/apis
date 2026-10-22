@@ -3,7 +3,7 @@
 OECD CRS and ONE imputed partitions take their partition label
 (`measure_label_for_partition`). Other series take the code index's measure nouns
 (`MeasureIndex.nouns`), authored beside the partition labels in
-`scripts/export_code_index.py`. Without one a heading would read the graph name, which
+`code_index/declarations.py`. Without one a heading would read the graph name, which
 carries the unit inside it: "Debt service on external debt (current US$)", "Gross
 domestic product (GDP), Per capita, purchasing power parity (PPP) international dollar,
 ICP benchmarks 2017-2021". `measure_noun` gives "external debt service" and "GDP"

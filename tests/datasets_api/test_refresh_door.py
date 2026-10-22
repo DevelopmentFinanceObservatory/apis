@@ -4,9 +4,9 @@ the queued rebuild, the shared rebuild, and admission on `POST /api/datasets/fra
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
@@ -24,7 +24,6 @@ from dataset_store.snapshot import (
     WORKING_TIER_RETENTION,
     LiveSnapshotReader,
 )
-from datasets_api.admission import COVERAGE_RESTARTS
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.operation_store import LiveOperationStore
@@ -41,8 +40,6 @@ from datasets_api.version_store import (
 from dc_sdmx import SdmxClient
 from materialise import EnrichmentLookup
 from materialise.rate_tables import RateTableCache
-from series_coverage.index import CoverageIndex
-from series_coverage.shared import CoverageService, CoverageSnapshot
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from statvar_members import MemberEnumerator
@@ -67,7 +64,6 @@ from .test_definition_door_currency import (
     _RenderableArtifactStore,
     _row,
 )
-from .test_materialise_semaphore import _CoverageBuilds, _PermitLog, _reload_before_permit
 from .test_pin_door import FakeArtifactReferenceWriter
 
 _BASE_URL = "https://datacommons.one.org/core/api"
@@ -77,13 +73,6 @@ _PUBLISH_PRINCIPAL = "publish-principal"
 _LIVE = {"x-dfo-principal": _LIVE_PRINCIPAL}
 _PUBLISH = {"x-dfo-principal": _PUBLISH_PRINCIPAL}
 _GROUPBY = {"by": ["recipient"], "op": "sum"}
-
-
-class _Coverage(_CoverageFromFacets):
-    """Adds the worker's `snapshot_current()` read to the mutable coverage double."""
-
-    def snapshot_current(self) -> CoverageSnapshot:
-        return self.snapshot()
 
 
 @dataclass
@@ -216,7 +205,7 @@ class _PlainRig:
     facets: dict
     arcs: dict
     graph: object
-    coverage: _Coverage
+    coverage: _CoverageFromFacets
     spec_id: str
     content_version: str
 
@@ -229,18 +218,17 @@ class _PlainRig:
         )
 
 
-def _plain_rig(*, served_coverage: CoverageService | None = None, **kwargs) -> _PlainRig:
-    """A rig holding one minted single-member dataset, its head primed by the mint. The app
-    reads `served_coverage` when given, in place of the rig's mutable double."""
+def _plain_rig(**kwargs) -> _PlainRig:
+    """A rig holding one minted single-member dataset, its head primed by the mint."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     arcs: dict[str, dict[str, tuple[str, ...]]] = {
         "OECD_DAC2A": {"lastDataRefreshDate": ("2026-01-01",)}
     }
     graph = _mutable_graph(facets, arcs)
-    coverage = _Coverage(facets)
+    coverage = _CoverageFromFacets(facets)
     rig = _rig(
         graph=graph,
-        coverage=served_coverage if served_coverage is not None else coverage,
+        coverage=coverage,
         body=_CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000"),
         **kwargs,
     )
@@ -493,22 +481,20 @@ class _CollapseRig:
         ]
 
 
-def _family_rig(
-    *, body: str, code_index: CodeIndex | None = None, coverage: CoverageService | None = None
-) -> _Rig:
+def _family_rig(*, body: str, code_index: CodeIndex | None = None) -> _Rig:
     """A rig over the two-member family dataset, serving `body` as its observations."""
     return _rig(
         graph=collapse_fixture._graph(),
-        coverage=coverage if coverage is not None else collapse_fixture._coverage_service(),
+        coverage=collapse_fixture._coverage_service(),
         body=body,
         code_index=code_index if code_index is not None else collapse_fixture._code_index(),
     )
 
 
-def _collapse_rig(*, coverage: CoverageService | None = None) -> _CollapseRig:
+def _collapse_rig() -> _CollapseRig:
     """A rig holding a two-member dataset minted with a groupby that sums both members, so the
     collapse has its own content version and the head holds the raw one."""
-    rig = _family_rig(body=collapse_fixture._CSV_BODY, coverage=coverage)
+    rig = _family_rig(body=collapse_fixture._CSV_BODY)
     spec_id, sidecar = collapse_fixture._spec_id_and_sidecar()
     minted = collapse_fixture._mint(
         rig.client,
@@ -734,14 +720,13 @@ def _absent_reads_zero_code_index() -> CodeIndex:
     )
 
 
-def _one_contributor_rig(*mints: dict, coverage: CoverageService | None = None) -> _CollapseRig:
+def _one_contributor_rig(*mints: dict) -> _CollapseRig:
     """A rig holding the family dataset while only one member has rows, minted once per entry
     of `mints`. A groupby sum leaves that frame unchanged, so every mint is linked under the
     head's raw version, which the rig names as both of its versions."""
     rig = _family_rig(
         body=collapse_fixture._CSV_HEADER + _MEMBER_A_ROW,
         code_index=_absent_reads_zero_code_index(),
-        coverage=coverage,
     )
     spec_id, sidecar = collapse_fixture._spec_id_and_sidecar()
     versions = {
@@ -825,172 +810,6 @@ def test_a_raw_version_linking_both_renderings_refuses_once_they_differ():
         assert refused.json()["retryable"] is False
 
 
-# --- A coverage reload between a request's snapshot and its permit ---
-
-
-def _plain_index() -> CoverageIndex:
-    return _CoverageFromFacets({(_STAT_VAR, _RECIPIENT): [_FACET]}).current()
-
-
-def _family_index() -> CoverageIndex:
-    return collapse_fixture._coverage_service().current()
-
-
-def _definition_get_rebuild(coverage: CoverageService) -> Callable[[], httpx.Response]:
-    """A definition GET whose head is past its maximum age, so `serve_current` rebuilds."""
-    plain = _plain_rig(served_coverage=coverage)
-    plain.rig.head_store.age_head(plain.spec_id, age=_PAST_MAX_AGE)
-    return lambda: plain.rig.client.get(f"/api/datasets/{plain.spec_id}?bundle=false")
-
-
-def _refresh_head_frame(coverage: CoverageService) -> Callable[[], httpx.Response]:
-    """A refresh of a collapsed frame whose head another rendering moved, so `_load_head_frame`
-    renders the collapse from the head's stored frame."""
-    collapsed = _collapse_rig(coverage=coverage)
-    collapsed.move_data()
-    rebuilt = collapsed.rig.client.get(f"/api/datasets/{collapsed.spec_id}?bundle=false")
-    assert rebuilt.status_code == 200, rebuilt.text
-    return lambda: collapsed.rig.refresh(
-        spec_id=collapsed.spec_id, content_version=collapsed.collapsed_content_version
-    )
-
-
-def _refresh_differing_renderings(coverage: CoverageService) -> Callable[[], httpx.Response]:
-    """A refresh of an ambiguous frame whose current version links a plain CSV alone, so
-    `_refuse_differing_renderings` renders the sum and then the plain frame file."""
-    shared = _one_contributor_rig(_PLAIN_MINT, _SUMMED_MINT, coverage=coverage)
-    _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
-    rebuilt = shared.rig.client.get(f"/api/datasets/{shared.spec_id}?bundle=false")
-    assert rebuilt.status_code == 200, rebuilt.text
-    return lambda: shared.rig.refresh(
-        spec_id=shared.spec_id, content_version=shared.base_content_version
-    )
-
-
-def _file_link_re_render(coverage: CoverageService) -> Callable[[], httpx.Response]:
-    """A click on a CSV link past retention whose object is gone while the stored frame is
-    still in retention, so the files door's `_re_render` renders through the head path."""
-    plain = _plain_rig(served_coverage=coverage)
-    rig = plain.rig
-    minted = rig.client.get(f"/api/datasets/{plain.spec_id}?format=csv&bundle=false")
-    assert minted.status_code == 200, minted.text
-    csv = next(a for a in minted.json()["artifacts"] if a["media_type"] == "text/csv")
-    with rig.version_store.transaction() as tx:
-        tx.execute(
-            "UPDATE datasets.artifact_location SET stored_at = %s WHERE artifact_digest = %s",
-            (
-                datetime.now(UTC) - WORKING_TIER_RETENTION - timedelta(days=1),
-                csv["artifact_digest"],
-            ),
-        )
-    del rig.artifact_store._objects[(csv["artifact_digest"], Tier.working.value)]
-    return lambda: rig.client.get(csv["url"], follow_redirects=False)
-
-
-def _record_frame_work(
-    monkeypatch: pytest.MonkeyPatch, coverage: _CoverageBuilds
-) -> list[tuple[int, bool]]:
-    """Record, for each materialisation and each render from a stored frame, the coverage
-    build whose index it runs on and whether build 1's index is still resident."""
-    worked: list[tuple[int, bool]] = []
-    for module, name in ((serve_module, "prewrite_definition"), (current_module, "_render_frame")):
-        real = getattr(module, name)
-
-        def recording(*args, _real=real, **kwargs):
-            worked.append((coverage.serving(kwargs["coverage_index"]), coverage.resident(1)))
-            return _real(*args, **kwargs)
-
-        monkeypatch.setattr(module, name, recording)
-    return worked
-
-
-@pytest.mark.parametrize(
-    ("make_index", "arrange", "untouched_permits", "status", "worked"),
-    [
-        pytest.param(
-            _plain_index, _definition_get_rebuild, 0, 200, [(2, False)], id="definition-get-rebuild"
-        ),
-        pytest.param(
-            _family_index, _refresh_head_frame, 0, 200, [(2, False)], id="refresh-head-frame"
-        ),
-        pytest.param(
-            _family_index,
-            _refresh_differing_renderings,
-            0,
-            200,
-            [(2, False), (2, False)],
-            id="refresh-differing-renderings",
-        ),
-        pytest.param(
-            _family_index,
-            _refresh_differing_renderings,
-            1,
-            200,
-            [(1, True), (2, False)],
-            id="refresh-differing-renderings-second-render",
-        ),
-        pytest.param(
-            _plain_index, _file_link_re_render, 0, 302, [(2, False)], id="file-link-re-render"
-        ),
-    ],
-)
-def test_a_reload_between_a_snapshot_and_its_permit_restarts_the_work_on_the_served_build(
-    monkeypatch: pytest.MonkeyPatch,
-    make_index: Callable[[], CoverageIndex],
-    arrange: Callable[[CoverageService], Callable[[], httpx.Response]],
-    untouched_permits: int,
-    status: int,
-    worked: list[tuple[int, bool]],
-):
-    """A request took build 1's snapshot and a reload to build 2 completed before one of its
-    permits. The request gives that permit back with nothing built, starts again, and builds
-    on build 2's index once build 1's has left memory. `untouched_permits` is how many permits
-    the request takes on build 1 before the reload."""
-    log = _PermitLog()
-    coverage = _CoverageBuilds(monkeypatch, make_index=make_index)
-    schedule = _reload_before_permit(monkeypatch, log, coverage)
-    call = arrange(coverage.service)
-    frame_work = _record_frame_work(monkeypatch, coverage)
-    log.events.clear()
-    schedule(1, after=untouched_permits)
-
-    resp = call()
-
-    assert resp.status_code == status, resp.text
-    assert frame_work == worked
-    kinds = log.kinds()
-    assert kinds.count("reload") == 1
-    # The stale pass takes its permit after the reload and gives it straight back.
-    stale = kinds.index("reload") + 1
-    assert kinds[stale : stale + 2] == ["acquire", "release"]
-    assert kinds.count("acquire") == kinds.count("release")
-
-
-def test_a_definition_rebuild_whose_snapshot_is_replaced_on_every_start_refuses_backpressure(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """A reload replaces the snapshot before the permit on a rebuild's first pass and on each
-    of the `COVERAGE_RESTARTS` restarts. The GET answers the retryable backpressure refusal,
-    having fetched nothing."""
-    log = _PermitLog()
-    coverage = _CoverageBuilds(monkeypatch, make_index=_plain_index)
-    schedule = _reload_before_permit(monkeypatch, log, coverage)
-    call = _definition_get_rebuild(coverage.service)
-    frame_work = _record_frame_work(monkeypatch, coverage)
-    log.events.clear()
-    schedule(1 + COVERAGE_RESTARTS)
-
-    resp = call()
-
-    assert resp.status_code == 503, resp.text
-    assert resp.headers["retry-after"] == "1"
-    assert resp.json()["code"] == "service_unavailable"
-    assert resp.json()["retryable"] is True
-    assert frame_work == []
-    kinds = log.kinds()
-    assert kinds.count("acquire") == kinds.count("release") == 1 + COVERAGE_RESTARTS
-
-
 # --- A rebuild over the inline budget ---
 
 
@@ -1018,7 +837,7 @@ def _worker_deps(plain: _PlainRig) -> DefinitionDeps:
         ceiling=1_000_000,
         member_concurrency=4,
         enumerator=MemberEnumerator(),
-        enrichment=EnrichmentLookup(plain.graph, parties={}),
+        enrichment=EnrichmentLookup(plain.graph, parties=lambda: {}),
         code_index=get_index(),
         rate_cache=RateTableCache(),
         coverage=plain.coverage,
@@ -1190,8 +1009,10 @@ class _HeldRebuild:
             self.responses.append(rig.client.get(f"/api/datasets/{plain.spec_id}?bundle=false"))
 
         # The client context keeps every request on one portal loop.
-        callers = [threading.Thread(target=refresh) for _ in range(3)]
-        callers.append(threading.Thread(target=read_definition))
+        callers = [
+            threading.Thread(target=contextvars.copy_context().run, args=(caller,))
+            for caller in (refresh, refresh, refresh, read_definition)
+        ]
         for caller in callers:
             caller.start()
         assert self.entered.wait(timeout=5.0), "no caller reached materialisation"
@@ -1308,7 +1129,7 @@ def test_a_saturated_work_executor_refuses_a_refresh_and_still_serves_a_head_hit
     def refresh() -> None:
         held.append(rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version))
 
-    holder = threading.Thread(target=refresh)
+    holder = threading.Thread(target=contextvars.copy_context().run, args=(refresh,))
     holder.start()
     assert entered.wait(timeout=5.0), "the refresh never reached its worker"
     refused = rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)

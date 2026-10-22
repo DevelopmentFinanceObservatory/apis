@@ -42,6 +42,7 @@ from search.engine.clients.graph import (
 )
 from search.engine.config import settings
 from search.engine.errors import GraphInfraError
+from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT
 from search.engine.retrieval.facts import _dcids_for
 from tests.engine._fake_sdmx import scope_availability_of
 from tests.fixtures.keys import fixture_key
@@ -57,7 +58,7 @@ _FIXTURES_DIR = Path(__file__).parent
 def make_resolver(graph: GraphLookup) -> EntityResolver:
     """Build an EntityResolver over `graph` using the session's shared resolver and the code
     index production Search passes, so a node's kind follows `entity_resolution.kinds.classify`."""
-    return EntityResolver(graph=graph, shared=acquire_shared(), code_index=get_index())
+    return EntityResolver(graph=graph, shared=acquire_shared(), code_index=get_index)
 
 
 def declare_regions(
@@ -122,7 +123,8 @@ def _arc_type_of(arc: str) -> str | None:
 
 
 PINNED_DATE = date(2026, 6, 23)
-"""Extract prompts hash [[TODAY]] into FakeLLM keys. Recording and replay share this date."""
+"""The `date.today()` tests pin, so `extract` resolves relative dates and forecast years
+against one current year (2026) in recording and replay."""
 
 
 def _load_json(name: str) -> dict:
@@ -275,13 +277,28 @@ def _append_harvest_line(
         f.write(line + "\n")
 
 
+_YEAR_PREFIX, _, _YEAR_SUFFIX = _EXTRACTION_SYSTEM_PROMPT.partition("[[YEAR]]")
+
+
+def _recorded_system(system: str) -> str:
+    """`system` as recorded fixtures key it. An extraction prompt with a four-digit year in
+    place of `[[YEAR]]` keys as the template, so a recorded extraction replays in any year;
+    every other prompt keys as sent."""
+    if len(system) != len(_YEAR_PREFIX) + 4 + len(_YEAR_SUFFIX):
+        return system
+    if not (system.startswith(_YEAR_PREFIX) and system.endswith(_YEAR_SUFFIX)):
+        return system
+    year = system[len(_YEAR_PREFIX) : len(_YEAR_PREFIX) + 4]
+    return _EXTRACTION_SYSTEM_PROMPT if year.isdigit() else system
+
+
 class FakeLLM:
     """Replay structured outputs from JSON fixtures.
 
     Missing keys raise MissingFixtureError, carrying the schema name, key, and full system and
     user prompt so the fixture can be written without a second run. Optional harvest logging
     records each call.
-    Keys come from `fixture_key`.
+    Keys come from `fixture_key` over the system prompt as `_recorded_system` keys it.
     """
 
     def __init__(self, responses: dict | None = None):
@@ -297,7 +314,7 @@ class FakeLLM:
         schema: type[_T],
     ) -> tuple[_T, dict | None]:
         schema_name = schema.__name__
-        key = fixture_key(schema, system, prompt)
+        key = fixture_key(schema, _recorded_system(system), prompt)
         harvest_path = os.environ.get(HARVEST_MISS_PATH_ENV)
         if key not in self._responses:
             note_miss(key)
@@ -749,7 +766,7 @@ class FakeGraph:
         ]
 
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
-        """Fetch fixture labels, preferring packaged CodeRow labels when available."""
+        """Fetch fixture labels, preferring fixture index CodeRow labels when available."""
         if self._impl is not None:
             return self._impl.node_labels_batch(dcids)
         index = get_index()

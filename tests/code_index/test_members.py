@@ -1,4 +1,4 @@
-"""Test index membership and minimal StatVar selection against the packaged index and a small family.
+"""Test index membership and minimal StatVar selection against the fixture index and a small family.
 
 CRS rows cover undeclared modality. A synthetic Person/gender family tests aggregate reduction and
 parity with the graph walk.
@@ -76,7 +76,7 @@ def test_slot_keys_cover_no_row_for_a_denominator_unresolved_ask(code_index: Cod
     assert index_covers_slot_keys(code_index, unresolved, _EDU_ODA_SLOTS.keys()) is False
 
 
-def test_bound_and_unbound_slots_against_the_packaged_index(code_index: CodeIndex):
+def test_bound_and_unbound_slots_against_the_fixture_index(code_index: CodeIndex):
     rows = _minimal(code_index, _EDU_ODA_FIVE_TUPLE, _EDU_ODA_SLOTS)
     assert {row.dcid for row in rows} == _EDU_ODA_DCIDS
 

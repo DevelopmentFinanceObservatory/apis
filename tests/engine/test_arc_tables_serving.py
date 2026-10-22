@@ -23,15 +23,18 @@ import pytest
 
 from code_index.tokens import tokenize
 from entity_resolution import Admission, EntityResolver
+from graph_release.context import ReleaseNotBound, bound_release
+from graph_release.service import Release, ReleaseService
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
-from origin_catalogue import BASE, UN_SYSTEM
+from origin_catalogue import BASE, UN_SYSTEM, Catalogue
+from origin_catalogue.arc_tables import ArcTablesBuilder
 from origin_catalogue.artifact import load_catalogue
 from origin_catalogue.catalogue import CatalogueSnapshot
-from origin_catalogue.families import FamilyKey, FamilySummary, family_tables
-from origin_catalogue.graph import _wire
-from origin_catalogue.un_mirror import EMPTY_UN_MIRROR
+from origin_catalogue.families import FamilyKey, FamilySummary, family_tables, summarise_table
+from origin_catalogue.graph import _table_arcs, _wire
+from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnVariable
 from scripts.stage_origin_catalogue_fixture import stage_fixture
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import SupportsLLM
@@ -108,18 +111,21 @@ from search.engine.retrieval.standard import (
 from search.engine.shape import ShapeDraft
 from search.models import GraphRef
 from statvar_members import MultiValuedConstraint
+from tests.engine._binders import elected_reply
 from tests.engine._builders import subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
+from tests.graph_release.recorded import recorded_dfo_arcs
+from tests.graph_release.support import TEST_REVISION, build_view_release
 from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
     restrictive_catalogue,
     un_mirror,
     un_variable,
 )
-from tests.origin_catalogue.support import build_arc_tables
+from tests.origin_catalogue.support import JobTables, build_arc_tables, build_labelled
 
 _OURS_HOST = "ours.example.org"
 _UN_HOST = "un.example.org"
@@ -474,6 +480,178 @@ def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -
 
     assert family_tables(dfo={}, base=tables.base, un=EMPTY_UN_MIRROR).arcs == expected
     assert len(expected) == 6
+
+
+_FLOWS = FamilyKey("FinancialFlow", "amount", "measuredValue", "Nominal", None, False, True)
+"""The recorded slice's largest DFO family, which `_recorded_catalogue` gives base and UN
+members too."""
+_FLOW_TOTAL = "Amount_FinancialFlow_Base_Nominal"
+_FLOW_DEBT = "AAA_Amount_FinancialFlow_Debt_Nominal"
+_UN_FLOW = "undata/WB/Amount_FinancialFlow_Nominal"
+_FLOW_TOPIC = "dc/topic/Flows"
+
+
+def _flow(name: str, **constraints: str) -> dict:
+    """A base member of `_FLOWS`: its five-tuple, a recipient role, `name`, and
+    `constraints`."""
+
+    def node(dcid: str) -> dict:
+        return {"nodes": [{"dcid": dcid}]}
+
+    return {
+        "typeOf": node("StatisticalVariable"),
+        "populationType": node("FinancialFlow"),
+        "measuredProperty": node("amount"),
+        "statType": node("measuredValue"),
+        "measurementQualifier": node("Nominal"),
+        "observationProperties": node("financingRecipient"),
+        "name": {"nodes": [{"value": name}]},
+        **(
+            {"constraintProperties": {"nodes": [{"dcid": p} for p in constraints]}}
+            if constraints
+            else {}
+        ),
+        **{prop: node(value) for prop, value in constraints.items()},
+    }
+
+
+def _recorded_catalogue(*, with_dfo: bool) -> CatalogueSnapshot:
+    """A catalogue over the recorded slice's DFO variables, read as the catalogue job reads
+    them, and two base and one UN member of `_FLOWS`: a total and a member sorting before
+    every DFO one. `with_dfo` false leaves the DFO variables out of its tables, as a
+    catalogue of another import would hold other ones."""
+    builder = ArcTablesBuilder()
+    read = recorded_dfo_arcs(builder)
+    denominators = {
+        arc.dcid
+        for rows in builder.table("dfo").values()
+        for arc in rows
+        if arc.property == "measurementDenominator"
+        and arc.dcid is not None
+        and arc.dcid not in read.variables
+    }
+    if not with_dfo:
+        builder = ArcTablesBuilder()
+    # The schema nodes the catalogue job holds for the DFO denominators, Count_Person apart.
+    for denominator in sorted(denominators - {"Count_Person"}):
+        builder.add("schema", denominator, None)
+    builder.add("base", _FLOW_TOTAL, _flow("Financial flows"))
+    builder.add("base", _FLOW_DEBT, _flow("Debt flows", financialFlowType="Debt"))
+    builder.add("base", "Count_Person", {"typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]}})
+    un_flow = UnVariable(
+        series="FinancialFlow",
+        arcs=tuple(
+            UnArc(property=prop, dcid=target.get("dcid"), value=target.get("value"))
+            for prop, arcs in _flow("UN financial flows").items()
+            for target in arcs["nodes"]
+        ),
+    )
+    return restrictive_catalogue(
+        dfo_variables=read.variables,
+        topics={_FLOW_TOPIC: [_FLOW_DEBT, *sorted(read.variables)[:2]]},
+        un_mirror=un_mirror({_UN_FLOW: un_flow}),
+        arcs=build_labelled(builder),
+    )
+
+
+def _origin_release(root: Path, *, revision: str = TEST_REVISION) -> Release:
+    """The recorded slice's release, opened with its views and its origin view."""
+    uri = (root / "releases").as_uri()
+    build_view_release(uri, dc_serving_revision=revision)
+    return ReleaseService(uri=uri, local_dir=root / "local", recheck_seconds=0).snapshot()
+
+
+def test_a_release_s_dfo_half_serves_the_catalogue_s_families_and_arcs(tmp_path: Path) -> None:
+    """The DFO variables' arcs and family members come from the bound release, and every held
+    family and table read equals the one the catalogue job's own tables give for the same
+    import (`JobTables`), members in order, whether or not the catalogue holds the job's DFO
+    table."""
+    full, stripped = _recorded_catalogue(with_dfo=True), _recorded_catalogue(with_dfo=False)
+    release = _origin_release(tmp_path)
+    keys = [*full.families.arcs, *full.families.un]
+    dcids = [*full.arcs.dfo, *full.arcs.base, *full.arcs.schema, _UN_FLOW, _FLOW_TOPIC, _UNLISTED]
+
+    def reads(catalogue: Catalogue) -> tuple[dict, dict]:
+        return (
+            {key: catalogue.held_family(key) for key in keys},
+            {dcid: _table_arcs(catalogue, dcid) for dcid in dcids},
+        )
+
+    served = reads(cast("Catalogue", JobTables(full)))
+    with bound_release(release):
+        assert reads(full) == served
+        assert reads(stripped) == served
+
+    flows = served[0][_FLOWS]
+    assert flows is not None
+    dfo = sorted(dcid for dcid in full.arcs.dfo if dcid in flows.members)
+    assert flows.members == (*dfo, _FLOW_DEBT, _FLOW_TOTAL, _UN_FLOW)
+    assert len(dfo) > 1
+    assert flows.total == _FLOW_TOTAL
+
+
+def test_a_base_variable_the_release_owns_appears_once_with_the_release_s_values(
+    tmp_path: Path,
+) -> None:
+    """A variable the catalogue's base table holds and the bound release owns as DFO leaves
+    every base family its base arcs place it in: its own family lists it once with the
+    release's values, and a family it alone made goes."""
+    release = _origin_release(tmp_path)
+    released = release.origin.families[_FLOWS]
+    owned, elsewhere = released.members[:2]
+    real = FamilyKey("FinancialFlow", "amount", "measuredValue", "RealValue", None, False, True)
+    builder = ArcTablesBuilder()
+    builder.add("base", _FLOW_TOTAL, _flow("Financial flows"))
+    builder.add("base", owned, _flow("A stale copy", financialFlowType="Stale"))
+    moved = _flow("A stale copy elsewhere")
+    moved["measurementQualifier"] = {"nodes": [{"dcid": "RealValue"}]}
+    builder.add("base", elsewhere, moved)
+    catalogue = restrictive_catalogue(arcs=build_labelled(builder))
+    assert catalogue.families.arcs[real].members == (elsewhere,)
+
+    with bound_release(release):
+        flows = catalogue.held_family(_FLOWS)
+        gone = catalogue.held_family(real)
+
+    assert flows is not None
+    assert flows.members == (*released.members, _FLOW_TOTAL)
+    assert flows.values == released.values
+    assert gone is None
+
+
+@pytest.mark.unbound_release
+def test_a_read_refuses_with_no_release_bound() -> None:
+    catalogue = _recorded_catalogue(with_dfo=False)
+
+    with pytest.raises(ReleaseNotBound):
+        catalogue.held_family(_FLOWS)
+    with pytest.raises(ReleaseNotBound):
+        _table_arcs(catalogue, _FLOW_TOTAL)
+
+
+def test_a_held_decode_keys_on_the_bound_release(tmp_path: Path, bind_catalogue) -> None:
+    """A request bound to a release whose family holds other DFO members decodes that family
+    afresh while a request bound to the first still holds its decode."""
+    bind_catalogue(_recorded_catalogue(with_dfo=False))
+    first = _origin_release(tmp_path / "a", revision="rev-a")
+    origin = first.origin
+    dropped = origin.families[_FLOWS].members[0]
+    arcs = {dcid: rows for dcid, rows in origin.arcs.items() if dcid != dropped}
+    second = dataclasses.replace(
+        _origin_release(tmp_path / "b", revision="rev-b"),
+        origin=dataclasses.replace(origin, arcs=arcs, families=summarise_table(arcs)),
+    )
+    assert first.release_id != second.release_id
+
+    with bound_release(first), held_family_memo():
+        held = _held_members(_FLOWS)
+    # `held` keeps the first request's decode alive, so `_held_decodes` still holds it.
+    with bound_release(second), held_family_memo():
+        swapped = list(_held_members(_FLOWS).arcs)
+
+    assert dropped in held.arcs
+    assert dropped not in swapped
+    assert swapped == [dcid for dcid in held.arcs if dcid != dropped]
 
 
 def _held_debt_shape(
@@ -1039,7 +1217,7 @@ def test_a_binding_a_held_member_realises_is_kept(bind_catalogue) -> None:
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
-            return _UniversalBindOutput(chosen_shape_index=0, bindings=bindings, ask=None), None
+            return elected_reply(0, bindings=bindings), None
 
     result = asyncio.run(
         resolve_variable(

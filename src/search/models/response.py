@@ -70,7 +70,8 @@ class _PartBase(StrictModel):
         default=None,
         description=(
             "this part's own latency breakdown, where by_step names only the phases "
-            "this part ran and total sums them. Excludes the shared, once-per-request "
+            "this part ran and total sums them, leaving out the shape_* stages nested "
+            "inside shape. Excludes the shared, once-per-request "
             "steps (e.g. extract), which diagnostics.timing_ms.by_step carries once "
             "for the whole request; distinct too from diagnostics.timing_ms.total, "
             "the whole request's wall-clock elapsed time."

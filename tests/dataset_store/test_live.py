@@ -1741,7 +1741,7 @@ class _StubCoverageSnapshot:
 
 
 class _StubCoverage:
-    def snapshot_current(self):
+    def snapshot(self):
         return _StubCoverageSnapshot()
 
 
@@ -2955,7 +2955,8 @@ _NULL_COLLECTION_MIGRATION = "0022_drop_null_collection.sql"
 def _null_collection_body(spec_id: str) -> dict[str, object]:
     """A definition body in the shape an earlier `encode_version_body` wrote, with `collection`
     stored as null and every optional field and nested field set. The identity is the
-    projection of dfo-spec-kit's `shape-statvar-schema-all-five-members` identity vector."""
+    projection of the `spec-kit` repository's `shape-statvar-schema-all-five-members`
+    identity vector."""
     return {
         "schema_version": 1,
         "definition": {

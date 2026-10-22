@@ -33,7 +33,8 @@ them usually gives or receives.
   energy in total energy", "share of women in parliament").
 - explain: an explanation or advice about the data ("why did aid to Ethiopia fall in
   2023" has the phrase "why did fall").
-- forecast: a projection to a year after today's year ("aid to Ethiopia in 2030").
+- forecast: a projection to a future year, or one worded as a forecast ("aid to Ethiopia
+  in 2030").
 - report: an overview or write-up ("a comprehensive overview of health spending in
   Kenya").
 A phrase recorded as an operation is not also listed in `dropped_qualifiers`. A forecast

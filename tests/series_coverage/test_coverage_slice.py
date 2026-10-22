@@ -12,10 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from series_coverage.loader import load_coverage
+from tests.series_coverage.support import slice_index
 
 _FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
-_SLICE_DIR = _FIXTURES_DIR / "coverage_slice"
 _SDMX_OBS_PATH = _FIXTURES_DIR / "sdmx_obs.json"
 
 
@@ -45,14 +44,14 @@ def _non_stub_full_history_entries() -> list[tuple[str, dict[str, str], dict]]:
 
 @pytest.mark.parametrize("variable,roles,record", _non_stub_full_history_entries())
 def test_slice_agrees_with_full_history_sdmx_obs_entry(variable, roles, record):
-    loaded = load_coverage(f"file://{_SLICE_DIR}")
-    names = loaded.index.role_names.get(variable)
+    index = slice_index()
+    names = index.role_names.get(variable)
     assert names is not None, f"{variable!r} has an sdmx_obs.json entry but no coverage_slice rows"
     donor_dcid = roles.get(names.donor)
     recipient_dcid = roles.get(names.recipient)
     assert donor_dcid and recipient_dcid, f"key roles {roles!r} don't cover {names!r}"
 
-    matches = loaded.index.filter_candidates(
+    matches = index.filter_candidates(
         variables=[variable],
         bound={"donor": frozenset({donor_dcid}), "recipient": frozenset({recipient_dcid})},
     )

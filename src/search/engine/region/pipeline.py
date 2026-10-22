@@ -17,9 +17,11 @@ from dc_sdmx import SdmxCapExceededError
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise.member_conversion import request_conversion_reader
 from origin_catalogue import note_un_unserved, recording_un_blocked_places, scoped_reads
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.conjoin import NESTED_SHAPE_STEPS
 from search.engine.degraded_reads import (
     DegradedReads,
     note_degraded_read,
@@ -142,6 +144,7 @@ async def resolve_variable(
     resolver: EntityResolver,
     admission: Admission | None = None,
     llm: SupportsLLM,
+    binder: Binder | None = None,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None = None,
@@ -201,15 +204,22 @@ async def resolve_variable(
     part's frame (`ResolveState.frame`); a direct caller states them as the parsed door's does.
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
-    availability reads use `sdmx`. `llm` is stateless per call. `date_request` is the shared
-    window, while `base_timing` carries extraction timing.
+    availability reads use `sdmx`. `llm` is stateless per call. `binder` reads the quantity
+    and binds on `llm`. It is the request's own, which `core` routes once per request
+    (`binders.configured_binder`) and every door passes down, or the Gemini binder for a
+    direct caller that passes none. `date_request` is the shared window, while `base_timing`
+    carries extraction timing.
 
     Recall runs once. Our pass elects over our candidates first, while the UN System Data
     Commons' resolve and shape derivation run beside it (`ResolveState.un_leg`). When our
     pass ends `no_data`, a UN pass elects over the UN pool's shapes (`_fill_gap`). A part
     answered on our pass never waits for the UN leg. A part whose UN leg failed or was late
     and that ends `no_data` carries `un_system_unavailable`, which keeps the response out of
-    the response cache.
+    the response cache. With `SEARCH_UN_ON_FIRST_MENU`, a part holding no strong shape of
+    its own waits for the UN leg and its menu also holds the UN pool's shapes
+    (`phase_intake._merge_un_pool`); when the leg failed or was late, the part carries
+    `un_system_unavailable` whatever its status. A part with a strong shape never takes the
+    UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass.
 
     Returns a `RegionResult` with status `definite`, `candidates`, `no_data`, or `unsupported`.
     When the pipeline's UN System Data Commons reads named places the UN front door refuses,
@@ -220,6 +230,7 @@ async def resolve_variable(
     """
     _admission = admission if admission is not None else Admission(graph=graph)
     _options = options if options is not None else EngineOptions()
+    _binder = binder if binder is not None else GeminiBinder()
 
     # One conversion memo serves every unit decision, coverage check and preview of the call.
     materialise_graph = (
@@ -262,6 +273,7 @@ async def resolve_variable(
             resolver=resolver,
             admission=_admission,
             llm=llm,
+            binder=_binder,
             sdmx=sdmx,
             deadline=deadline,
             pre_resolved=pre_resolved,
@@ -449,8 +461,8 @@ def binds_each_party(result: RegionResult, named: Sequence[PartyWord]) -> bool:
 
 def _within_source_code(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result`, or the refusal of a part whose series code named its StatVars
-    (`ResolveState.source_code`) and one of whose Specs mints an identity the Datasets mint
-    elects StatVars outside them for, or none it can tell from the index's listed rows
+    (`ResolveState.source_code`) and one of whose Specs mints an identity whose Datasets
+    mint serves StatVars outside them, or ones the code index does not resolve in memory
     (`bound_values.elects_within`). The orchestrator fetches the Spec by its spec_id, so
     such an answer would serve another series than the code's."""
     code = state.source_code
@@ -459,7 +471,7 @@ def _within_source_code(result: RegionResult, state: ResolveState) -> RegionResu
     for spec in result.specs:
         if not elects_within(spec.definition.identity, code.dcids):
             logger.info(
-                "source code %s: spec %s elects no family within its StatVars",
+                "source code %s: spec %s serves StatVars outside the code's",
                 code.code,
                 spec.spec_id,
             )
@@ -523,8 +535,11 @@ async def _fill_gap(
     without observations: a superseded variable stands in our pass as the UN variable the
     UN resolve may recall too. It waits for the leg no longer than
     `SEARCH_UN_FIRST_PASS_WAIT_S` from the start of our derivation, and ends
-    `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands only when it is `definite`
-    or `candidates`; otherwise `result` stands with its reason. A `result` holding an
+    `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands when it is `definite` or
+    `candidates`, or when it is `no_data` carrying an `alternate_match` and `result`
+    carries none. Of two refusals, the one offering a reading with data at the place
+    stands, as status rule 1 has a nominee ride on a refusal. Otherwise `result` stands
+    with its reason. A `result` holding an
     `alternate_match`, a reading the model nominated from our pool with data at the place,
     also stands when the UN pass's elected shape matches the phrase only weakly
     (`_representative_score_is_weak`): such an answer has no better claim to the question
@@ -534,9 +549,12 @@ async def _fill_gap(
     A UN leg that failed, or was not in by its wait, and a UN pass that fails upstream
     (`_UPSTREAM_FAILURES`) or has no time to start, leave `result` standing with
     `un_system_unavailable`, only ever on a `no_data` answer, the one case where the UN
-    pool could have changed it. What the leg's reads could not serve (`UnPool.unserved`,
-    `UnPool.lost`) joins the part's records only when the UN pass runs, so an answer our
-    pass serves carries none of it. A declared-default refusal
+    pool could have changed it. A leg our pass waited for and missed
+    (`ResolveState.un_pool`) is the exception: the menu lacked the pool, so every answer
+    carries the warning and no UN pass runs. A pool merged onto our pass's menu is the UN
+    pass's pool when ours ends `no_data`. What the leg's reads could not serve
+    (`UnPool.unserved`, `UnPool.lost`) joins the part's records only when the pool reaches
+    a menu, so an answer our pass serves without it carries none of it. A declared-default refusal
     (`DeclaredDefaultUnsupportedError`), an index-sourced shape meeting a default scope
     (`DefaultScopeIndexSourcedError`) or a conversion-table refusal (`RATE_TABLE_REFUSALS`)
     in the UN pass propagates, since each refuses the request on every door; any other
@@ -544,13 +562,17 @@ async def _fill_gap(
     step events on the stream describe our pass.
     """
     bound = None if deadline is None else deadline - _UN_PASS_RESERVE_S
+    merged = first.un_pool
+    if merged is not None and merged.missed is not None:
+        _log_gap_fill(first, result, un_pass="skipped:un_unavailable")
+        return _with_un_search_warning(result, merged.missed)
     skip = _un_pass_skip(result, first)
     leg = first.un_leg
     if skip is not None or leg is None:
         # A part that ended before derivation started no UN leg.
         _log_gap_fill(first, result, un_pass=f"skipped:{skip or 'no_un_leg'}")
         return result
-    pool = await un_pool_shapes(leg, bound=bound)
+    pool = merged if merged is not None else await un_pool_shapes(leg, bound=bound)
     if pool.missed is not None:
         _log_gap_fill(first, result, un_pass="skipped:un_unavailable")
         return _with_un_search_warning(result, pool.missed)
@@ -570,10 +592,12 @@ async def _fill_gap(
         _log_gap_fill(first, result, un_pass="skipped:deadline")
         return _with_un_search_warning(result, _UN_PASS_INCOMPLETE)
 
-    # The leg's reads bear on the answer only now the UN pass runs over its shapes.
-    note_un_unserved(pool.unserved)
-    for read in pool.lost:
-        note_degraded_read(read)
+    # The leg's reads bear on the answer only now the UN pass runs over its shapes, unless
+    # our pass's menu already held them.
+    if merged is None:
+        note_un_unserved(pool.unserved)
+        for read in pool.lost:
+            note_degraded_read(read)
     state = un_state(bound)
     state.rcl = first.rcl
     state.shapes_found = shapes
@@ -604,9 +628,14 @@ async def _fill_gap(
     displaces_alternate = result.alternate_match is None or not _representative_score_is_weak(
         None if un_elected is None else un_elected.measured_score
     )
-    chosen = (
-        second if second.status in ("definite", "candidates") and displaces_alternate else result
+    answers = second.status in ("definite", "candidates") and displaces_alternate
+    # Of two refusals, the one carrying a nominee with data stands (status rule 1).
+    offers_alternate = (
+        second.status == "no_data"
+        and second.alternate_match is not None
+        and result.alternate_match is None
     )
+    chosen = second if answers or offers_alternate else result
     timing = dict(result.timing_by_step)
     for step, ms in second.timing_by_step.items():
         timing[step] = timing.get(step, 0) + ms
@@ -661,17 +690,24 @@ def _log_gap_fill(
     first: ResolveState, result: RegionResult, *, un_pass: str, un_ms: int = 0
 ) -> None:
     """One line per part: our pass's status, the pool of the shape it elected
-    (`ShapeDraft.pool`, `-` when it elected none), and what the UN pass did: why it was
-    skipped, or the status it reached and its time."""
+    (`ShapeDraft.pool`, `-` when it elected none), what the UN pass did (why it was
+    skipped, or the status it reached and its time), whether our pass's bind asked
+    (`_UniversalBindOutput.ask`), which its status alone does not show once a declined
+    reading or a source-named term refuses in its place, and whether our pass's menu held
+    the UN pool (`ResolveState.un_pool`)."""
     elected = first.shape_draft
+    bind = first.bind_result
+    merged = first.un_pool
     logger.info(
-        "gap_fill part=%d status=%s/%s pool=%s un_pass=%s un_ms=%d",
+        "gap_fill part=%d status=%s/%s pool=%s un_pass=%s un_ms=%d bind_asked=%s un_merged=%s",
         first.variable_index,
         result.status,
         result.no_data_reason,
         "-" if elected is None else elected.pool,
         un_pass,
         un_ms,
+        "true" if bind is not None and bind.ask is not None else "false",
+        "true" if merged is not None and merged.missed is None else "false",
     )
 
 
@@ -681,28 +717,39 @@ async def _run_phases(state: ResolveState) -> RegionResult:
     to the part's sources (`ResolveState.scope`), so a part that only excludes sources ranks
     unscoped and reads scoped from election on. However the pass ends, it then cancels what
     it queued (`_cancel_queued_reads`) and ends its related-measures reads
-    (`_end_related_reads`)."""
+    (`_end_related_reads`). Each phase's time that no step booked lands under
+    `phase_<name>` (`_book_unbooked_time`)."""
     scoped = False
     settled = False
+    unbooked: dict[str, int] = {}
     try:
         with ExitStack() as reads:
             for phase in _PHASES:
                 # Every `_PHASES` entry is a plain function, but `Callable` hides its `__name__`.
                 name = phase.__name__.removeprefix("_phase_")  # ty: ignore[unresolved-attribute]
                 enter_phase(f"{state.pool}:{name}")
+                t0, booked_before = now_ms(), _booked_ms(state)
                 result = await phase(state)
+                # A refusal once the bindings are final that judged no answer is judged
+                # on the elected answer, so each requirement is named or departs
+                # (`settle_unjudged_refusal`).
+                if (
+                    result is not None
+                    and settled
+                    and state.judgement is None
+                    and result.status in ("no_data", "unsupported")
+                ):
+                    result = await settle_unjudged_refusal(state, result)
+                _book_unbooked_time(
+                    state,
+                    unbooked,
+                    f"phase_{name}",
+                    elapsed=now_ms() - t0,
+                    booked=_booked_ms(state) - booked_before,
+                )
                 if result is None:
                     settled = settled or phase is _phase_settle
                 else:
-                    # A refusal once the bindings are final that judged no answer is judged
-                    # on the elected answer, so each requirement is named or departs
-                    # (`settle_unjudged_refusal`).
-                    if (
-                        settled
-                        and state.judgement is None
-                        and result.status in ("no_data", "unsupported")
-                    ):
-                        result = await settle_unjudged_refusal(state, result)
                     # Only a vetted election can report qualifier matches: earlier terminals
                     # may hold pre-bind candidates without a forced binding or elected shape.
                     admitted = (
@@ -723,6 +770,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                                 result, state.requirements, state.judgement
                             ),
                             admitted_qualifier_phrases=admitted,
+                            timing_by_step={**result.timing_by_step, **unbooked},
                             scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
                             inferred_facts=(
@@ -739,6 +787,36 @@ async def _run_phases(state: ResolveState) -> RegionResult:
         _cancel_queued_reads(state)
         enter_phase(f"{state.pool}:end_related_reads")
         await _end_related_reads(state)
+
+
+def _booked_ms(state: ResolveState) -> int:
+    """The ms `state.timing` books, leaving out the stages inside `shape`
+    (`conjoin.NESTED_SHAPE_STEPS`), since `shape` already spans them."""
+    return sum(ms for step, ms in state.timing.items() if step not in NESTED_SHAPE_STEPS)
+
+
+def _book_unbooked_time(
+    state: ResolveState,
+    unbooked: dict[str, int],
+    step: str,
+    *,
+    elapsed: int,
+    booked: int,
+) -> None:
+    """Book under `step` the part of a phase's `elapsed` ms that its own steps (`booked`)
+    left out, so no millisecond is counted twice. A step that books from before its phase
+    began (`shape` starts in `_phase_derive_shapes` and ends in `_phase_prune_and_rank`)
+    books more than the phase ran; the excess comes off the latest earlier phases
+    already booked in `unbooked`, whose entries `state.timing` mirrors."""
+    excess = booked - elapsed
+    for earlier in reversed(unbooked):
+        if excess <= 0:
+            break
+        taken = min(unbooked[earlier], excess)
+        unbooked[earlier] -= taken
+        state.timing[earlier] -= taken
+        excess -= taken
+    unbooked[step] = state.timing[step] = max(0, elapsed - booked)
 
 
 def _refused_pinned_phrases(state: ResolveState, result: RegionResult) -> frozenset[str]:

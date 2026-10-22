@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from entity_resolution import Admission
+from search.engine.binders import GeminiBinder
 from search.engine.concurrency import (
     MissingConcurrencyScope,
     bounded_semaphore,
@@ -121,6 +122,7 @@ def test_run_variables_streaming_use_semaphore_without_a_scope_raises():
                 resolver=resolver,
                 admission=admission,
                 llm=llm,
+                binder=GeminiBinder(),
                 sdmx=sdmx,
                 base_timing={},
                 pre_resolved=None,
@@ -157,6 +159,7 @@ def test_scoped_concurrency_lets_the_same_call_succeed():
                 resolver=resolver,
                 admission=admission,
                 llm=llm,
+                binder=GeminiBinder(),
                 sdmx=sdmx,
                 base_timing={},
                 pre_resolved=None,

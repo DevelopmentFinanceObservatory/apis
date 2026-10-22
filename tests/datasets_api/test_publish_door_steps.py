@@ -219,7 +219,7 @@ def test_malformed_steps_are_refused_with_a_pointer_and_write_nothing(
 
 
 def test_a_chained_derivation_publishes_with_its_roots_as_inputs() -> None:
-    """dfo-ai lists the immediate input frames, here a filtered frame by the `cv_` of its
+    """`ai` lists the immediate input frames, here a filtered frame by the `cv_` of its
     bytes, while its steps retrieve the root datasets. The record's inputs are the roots."""
     store = FakeVersionRecordDatasetStore()
     filtered = "cv_" + "f0" * 16

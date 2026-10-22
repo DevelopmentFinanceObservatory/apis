@@ -1,6 +1,6 @@
 """End-to-end tests for how an aid question elects its dataset.
 
-The packaged index holds two datasets, each on its own five-tuple: the CRS on `amount`,
+The fixture index holds two datasets, each on its own five-tuple: the CRS on `amount`,
 and the opt-in imputed multilateral sectors table on `attributedAmount`, whose every row
 carries `dac2aAidType=DAC2aAidType106` and `crsTypeOfFlow=CRSTypeOfFlow10`, the slots the
 five-tuple pins. The election implies both, so an imputed part's identity leaves them
@@ -37,7 +37,8 @@ from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.errors import (
     DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
@@ -80,6 +81,7 @@ from tests.code_index.aid_identity import (
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._binders import ReplyBinder, nominee_ratings
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events, offline_resolve
@@ -95,7 +97,7 @@ _CRS_MEMBER = (
     "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
     "CRSCooperationModalityA01_CRSPurposeCode11330_Nominal"
 )
-# The imputed member for the same purpose, read from the packaged index so its dcid
+# The imputed member for the same purpose, read from the fixture index so its dcid
 # follows the export.
 _IMPUTED_MEMBER = next(
     row.dcid
@@ -393,7 +395,7 @@ def test_a_ranked_education_aid_question_asks_every_donor_and_keeps_its_operatio
 
 
 def _with_second_table(*, opt_in: bool) -> CodeIndex:
-    """The packaged index with `_SECOND` declared beside the CRS on the aid five-tuple."""
+    """The fixture index with `_SECOND` declared beside the CRS on the aid five-tuple."""
     packaged = get_index()
     aid = row_five_tuple(next(row for row in packaged.statvars if row.dcid == _CRS_MEMBER))
     return CodeIndex(
@@ -425,7 +427,7 @@ def _with_second_table(*, opt_in: bool) -> CodeIndex:
 
 
 def _use_second_table(monkeypatch: pytest.MonkeyPatch, *, opt_in: bool) -> None:
-    """Serve `_with_second_table` wherever a loaded module reads the packaged index, and
+    """Serve `_with_second_table` wherever a loaded module reads the fixture index, and
     give the CRS member a series under `_SECOND` as well."""
     index = _with_second_table(opt_in=opt_in)
     packaged = shared_module.get_index
@@ -1157,6 +1159,10 @@ class _ScriptedLLM:
             bindings=self._drafted,
             also_plausible=self._also_plausible,
             ask=self._ask,
+            measuring=[
+                ShapeRating(index=0, rating=1.0),
+                *nominee_ratings(self._also_plausible, rated=(0,)),
+            ],
         ), None
 
 
@@ -1379,13 +1385,18 @@ class _CountingLLM(_ScriptedLLM):
 
 
 def _resolve_scripted(
-    query: str, llm: _ScriptedLLM, *variables: str, graph: FakeGraph | None = None
+    query: str,
+    llm: _ScriptedLLM,
+    *variables: str,
+    graph: FakeGraph | None = None,
+    binder: Binder | None = None,
 ) -> ResolveResponse:
     return offline_resolve(
         make_request(query),
         graph=graph if graph is not None else _graph(*variables),
         llm=llm,
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=binder,
     )
 
 
@@ -1470,6 +1481,7 @@ def test_the_opt_in_table_reached_as_an_alternate_mints_the_identity_electing_it
         "aid to Kenya",
         _ScriptedLLM("aid", also_plausible=[1]),
         graph=_graph("aid", members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER)),
+        binder=ReplyBinder(),
     )
     fresh = _resolve_scripted(
         "aid to Kenya",
@@ -1497,6 +1509,7 @@ def test_the_opt_in_measure_alternative_mints_the_identity_electing_it():
         f"{_E} to Kenya",
         _ScriptedLLM(_E, also_plausible=[1]),
         graph=_graph(_E, members=(_CRS_MEMBER, _IMPUTED_MEMBER)),
+        binder=ReplyBinder(),
     )
     fresh = _resolve_scripted(
         f"{_E} to Kenya", _ScriptedLLM(_E), graph=_graph(_E, members=(_IMPUTED_MEMBER, _CRS_MEMBER))
@@ -1753,7 +1766,7 @@ def test_an_exclusion_refusal_stands_though_the_un_system_has_a_candidate(
 
 # Each row: a raw-text question whose identity binds a table it did not name in a typed
 # field, the variable, the recall members, the sources its words name, the second
-# table's declaration (`None` leaves the packaged index), and the table the identity binds.
+# table's declaration (`None` leaves the fixture index), and the table the identity binds.
 _TABLE_ROWS = [
     pytest.param("aid", (_CRS_MEMBER,), (_naming(_SECOND_LABEL),), False, _SECOND, id="names"),
     pytest.param("aid", (_CRS_MEMBER,), (_excluding("CRS"),), False, _SECOND, id="excludes"),
@@ -1919,7 +1932,7 @@ def _hold_france_series_only_under(monkeypatch: pytest.MonkeyPatch, facet: str |
 # Each row: a parsed part whose run settles on a table and finds no observation under it,
 # with no flagged match to carry the identity. The variable, the recall members, the
 # entities, the open roles, the part's source mentions, the second table's declaration
-# (`None` leaves the packaged index), the one table holding a series from France, and the
+# (`None` leaves the fixture index), the one table holding a series from France, and the
 # table the restatement names.
 _NO_DATA_ROWS = [
     pytest.param(

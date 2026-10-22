@@ -5,7 +5,9 @@ uvicorn applies this once per process through `--log-config log-config.json`
 carries `severity`, `message`, `logger`, and `time`. A line logged while a
 request is in flight also carries `logging.googleapis.com/trace`, built from
 the Cloud Trace ID that `dfo_platform.app._trace_id_dispatch` binds, so Cloud
-Logging groups the line under that request.
+Logging groups the line under that request. A record logged with
+`extra={JSON_FIELDS_ATTR: {...}}` has those keys merged into its entry as top-level
+JSON fields (`dfo_platform.caller` logs one per request this way).
 
 The trace resource names the Google Cloud project, read from the
 `GOOGLE_CLOUD_PROJECT` environment variable. Without it the lines omit the
@@ -24,6 +26,7 @@ from dfo_platform.trace import get_cloud_trace_id
 
 PROJECT_ENV = "GOOGLE_CLOUD_PROJECT"
 TRACE_FIELD = "logging.googleapis.com/trace"
+JSON_FIELDS_ATTR = "json_fields"
 
 
 class JsonFormatter(logging.Formatter):
@@ -46,6 +49,7 @@ class JsonFormatter(logging.Formatter):
         if record.stack_info:
             message = f"{message}\n{self.formatStack(record.stack_info)}"
         entry = {
+            **getattr(record, JSON_FIELDS_ATTR, {}),
             "severity": record.levelname,
             "message": message,
             "logger": record.name,

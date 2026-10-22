@@ -40,7 +40,7 @@ left the cut frame unchanged.
 Freshness is the definition door's (`current.serve_current` through `_serve_spec`): a head
 confirmed within `head_recheck_seconds` answers with no read, a later call compares the head's
 dependency fingerprint in one graph read, and a changed fingerprint or a head older than
-`head_max_age_seconds` rebuilds. A rebuild mints the options dfo-ai mints a frame with (bare
+`head_max_age_seconds` rebuilds. A rebuild mints the options `ai` mints a frame with (bare
 parquet in the frame layout) plus the frame's minting options, so it writes the canonical frame
 Presentation reads, and a frame minted without party totals is minted without them again.
 Concurrent refreshes and definition reads of one dataset share one rebuild
@@ -57,9 +57,9 @@ the head's stored frame and records it. When that cannot be done, or the head's 
 expired, the door rebuilds the dataset.
 
 A dataset whose rebuild is always over the inline budget holds no head, because the worker
-advances none. Each refresh of it probes and then reads the operation recorded for the current
-coverage build: done answers that operation's version, and a new coverage build queues a new
-operation. A done operation answers only while a snapshot read still lists its rendering's file
+advances none. Each refresh of it probes and then reads the operation its request submits
+(`operation_store.compute_operation_id`): done answers that operation's version. A done
+operation answers only while a snapshot read still lists its rendering's file
 (`snapshot.rendering_servable`, the check the operations poll makes). When the file has left
 storage the door fails the row (`OperationStore.fail_unservable_done`) and submits again, which
 re-runs the operation and answers `pending`.
@@ -83,7 +83,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dataset_store.snapshot import SnapshotNotFound, SnapshotReader
-from datasets_api.admission import under_current_coverage
 from datasets_api.backpressure import Backpressure
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.current import DefinitionDeps, head_rendering, load_stored
@@ -251,7 +250,7 @@ FrameRefreshResponse = Annotated[
 
 
 def _frame_options(minting: MintingOptions | None) -> MintOptions:
-    """The options a mint of a frame takes: the bare frame-layout parquet dfo-ai mints a frame
+    """The options a mint of a frame takes: the bare frame-layout parquet `ai` mints a frame
     with, plus the minting options."""
     if minting is None:
         return MintOptions(format="parquet", bundle=False, layout="frame")
@@ -494,8 +493,7 @@ def _refuse_differing_renderings(
 
     if _records_both():
         return
-    # Each render takes its own permit, so both run again when a reload replaces the snapshot.
-    if under_current_coverage(deps.coverage.snapshot, _render_both):
+    if _render_both(deps.coverage.snapshot()):
         return
     raise RenderingNotRecorded(spec_id=spec_id, content_version=content_version, ambiguous=True)
 

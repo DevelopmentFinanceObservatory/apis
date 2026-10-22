@@ -5,9 +5,10 @@ name: Eval gate
 # merge would land on it. The changes job decides whether the PR touches
 # anything the eval reads. The run job is a matrix of EVAL_SHARDS shards on
 # parallel runners. Each shard builds an environment in each tree, stages the
-# deployed coverage and origin catalogue builds (scripts/stage_eval_data.py,
-# read as the eval reader service account), migrates one Postgres database per
-# tree with that tree's dataset_store migrations, serves both trees with the
+# deployed graph release and origin catalogue build
+# (scripts/stage_eval_data.py, read as the eval reader service account),
+# migrates one Postgres database per tree with that tree's dataset_store
+# migrations, serves both trees with the
 # eval profile and the Datasets surface on two ports, and runs
 # scripts/eval_paired.py --shard K/N over the
 # eligible cases in corpus/ whose id hashes to K, with at most
@@ -80,9 +81,9 @@ env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
   UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
   UV_NO_SYNC: "1"
-  # The deployed artifact roots, owned by the dfo-infra `apis` stack. The eval
-  # reader service account reads both buckets and nothing else.
-  DEPLOYED_COVERAGE_URI: gs://dfo-dev-coverage-dev-fin-observatory/
+  # The deployed artifact roots, owned by the `apis` stack in `infra`. The eval
+  # reader service account reads these buckets and nothing else.
+  DEPLOYED_RELEASE_URI: gs://dfo-dev-graph-release-dev-fin-observatory/
   DEPLOYED_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
   HEAD_PORT: "8100"
   BASE_PORT: "8101"
@@ -304,12 +305,10 @@ jobs:
           SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
           HEAD_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-head
           BASE_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-base
-          # The eval profile: every request reaches the engine and the LLM, and
-          # the staged coverage serves without the code index check, since the
-          # base tree's code index can differ from the build both apps read.
+          # The eval profile: every request reaches the engine and the LLM.
           SEARCH_RESPONSE_CACHE_ENABLED: "false"
           SEARCH_LLM_MEMO_MAX_BYTES: "0"
-          COVERAGE_INDEX_CHECK: "off"
+          SEARCH_EXTRACT_STORE: "off"
           SHARD: ${{ matrix.shard.index }}
           # The Datasets surface, for its members door. Each app reads its own
           # database (DATASET_STORE_DATABASE, set per app below) as the runtime
@@ -339,7 +338,7 @@ jobs:
           rc=0
           staged="$(uv run python scripts/stage_eval_data.py \
             --checkout . --checkout "$BASE_DIR" --dest "$RUNNER_TEMP/eval-data" \
-            --coverage-uri "$DEPLOYED_COVERAGE_URI" \
+            --release-uri "$DEPLOYED_RELEASE_URI" \
             --catalogue-uri "$DEPLOYED_CATALOGUE_URI")" || rc=$?
           if [ "$rc" -eq 3 ]; then
             echo "::error::A format root one of the trees reads has no deployed build; see the log above."
@@ -348,7 +347,7 @@ jobs:
           elif [ "$rc" -ne 0 ]; then
             exit "$rc"
           fi
-          # COVERAGE_ARTIFACT_URI and ORIGIN_CATALOGUE_URI, for both apps and the driver.
+          # GRAPH_RELEASE_URI and ORIGIN_CATALOGUE_URI, for both apps and the driver.
           while IFS="=" read -r name uri; do export "$name=$uri"; done <<< "$staged"
 
           # One database per tree, migrated by that tree's own migrations. The

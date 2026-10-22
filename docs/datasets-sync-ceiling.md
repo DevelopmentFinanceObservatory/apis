@@ -152,7 +152,7 @@ state. The default lets
 every delivery wait behind a full backlog and then run to its dispatch deadline, with the backoff
 between deliveries and a margin: `attempts x (ceil(backlog_max / dispatch_concurrency) x
 dispatch_deadline + dispatch_deadline) + (attempts - 1) x backoff + margin`, 3 x (5 x 1,800 +
-1,800) + 2 x 1,680 + 240 = 36,000 seconds. dfo-infra computes it from the queue's own locals.
+1,800) + 2 x 1,680 + 240 = 36,000 seconds. `infra` computes it from the queue's own locals.
 
 The poll fails an abandoned row with `refusal_code` `internal_error`, retryable, through
 `OperationStore.abandon`, one `UPDATE` fenced on the attempt the poll read, so a delivery that
@@ -170,7 +170,7 @@ Setting `DFO_WORKER_SURFACE` (truthy: `1`/`true`) swaps the whole app compositio
 ASGI app carrying exactly one route, `POST /internal/datasets/operations/{operation_id}/run`
 (`datasets_api.operations.worker_app.build_worker_app`), with no Search or public Datasets routes.
 The worker's Cloud Run service takes internal-only ingress. The deployed worker runs at Cloud Run
-concurrency 1 on 2 vCPU and 4 GiB, with up to four instances (dfo-infra's
+concurrency 1 on 2 vCPU and 4 GiB, with up to four instances (the `infra` repository's
 `infra/stacks/apis/datasets_worker.tf`), so the app builds one `DefinitionDeps` at startup and runs
 each dispatch's materialisation on a worker thread.
 
@@ -200,15 +200,14 @@ The write half checks it before the version record and before each artifact rend
 a run past it takes the transient path below, so no write starts after it. The lease outlasts the
 work deadline by 120 seconds for the writes already under way, and stays under the task's
 1,800-second dispatch deadline. Its materialisation takes one permit from the worker process's single-permit semaphore.
-The run takes one coverage snapshot with `CoverageService.snapshot_current`, which reads the
-published `current.json` pointer and loads a moved build before it returns, so the run never
-executes against an artifact older than the pointer at run start, however long the worker instance
-sat idle with its CPU throttled. A failed pointer read or load is a transient failure of the
-attempt. The run then resolves the stored subject and estimates it against that snapshot with
-`sync_estimate`, the same estimator admission uses. It records the fresh estimate on the row,
+The run binds the graph release the worker process serves when the run starts
+(`graph_release.context.bound_served_release`) and reads coverage from that release's coverage
+view throughout. The process swaps to a newer published release in the background
+(`deploy/graph-release.md`). The run then resolves the stored subject and estimates it against
+that coverage with `sync_estimate`, the same estimator admission uses. It records the fresh estimate on the row,
 checks the async ceilings again (a breach fails the operation `over_ceiling`, not retryable), and
-sizes the raw-fetch guard from the fresh estimate. A coverage republish between submission and
-execution is therefore enforced against the data the run fetches. The run then serves through
+sizes the raw-fetch guard from the fresh estimate. A release published between submission and
+execution is therefore enforced against the data the run fetches once the worker serves it. The run then serves through
 `current.serve_current`, so a current head that holds the request's rendering answers with no fetch,
 and a rebuild advances the head.
 
@@ -250,7 +249,7 @@ a separate number, `dfo-data-tools`' own generic default for a caller of `materi
 
 ## Publish
 
-`POST /frames/publish` has no coverage artifact to estimate against, so it keeps its own fixed,
+`POST /frames/publish` has no coverage view to estimate against, so it keeps its own fixed,
 non-env-tunable row ceiling, `PUBLISH_MAX_ROWS = 250_000`
 (`datasets_api.doors.publish.PUBLISH_MAX_ROWS`), enforced by the same `OverCeilingError` the
 mid-fetch backstop raises. The door builds the whole frame in memory before it stores the canonical
@@ -273,7 +272,7 @@ beside mints and rebuilds. With no permit free the door answers `service_unavail
 door inflates a gzip body in 1 MiB steps and refuses it with `request_invalid` as soon as the
 decoded size passes the bound, so a gzip bomb costs at most the bound plus one step. Corrupt,
 truncated, or multi-member gzip data also refuses with `request_invalid`. Cloud Run caps an HTTP/1
-request at 32 MiB on the wire, which an identity body reaches at about 150,000 dfo-ai rows. The same
+request at 32 MiB on the wire, which an identity body reaches at about 150,000 `ai` rows. The same
 250,000-row body is 54 MB as JSON and 4.7 MB gzipped at level 1.
 
 ## Writer memory

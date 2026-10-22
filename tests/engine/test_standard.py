@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.core import resolve_async
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
@@ -18,6 +17,7 @@ from search.models import (
     ResolveRequest,
     ResolveResponse,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._harness import EMPTY_SDMX, offline_resolve
 from tests.engine._harness import make_request as _req
 from tests.engine._quantity import NO_QUANTITY
@@ -128,12 +128,7 @@ class _ExtractOnlyLLM:
         if schema.__name__ == "Extraction":
             return self._extraction, None
         if schema.__name__ == "_UniversalBindOutput":
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[],
-                also_plausible=None,
-                ask=None,
-            ), None
+            return elected_reply(0, also_plausible=None), None
         if schema is QuantityOutput:
             return NO_QUANTITY
         raise AssertionError(f"unexpected schema {schema.__name__!r}")

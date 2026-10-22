@@ -78,7 +78,7 @@ def _render_digest(chunks, *, options: MintOptions, store: FakeArtifactStore) ->
         site=SITE,
         artifact_store=store,
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
         pivot_max_output_cells=5_000_000,
         resolved_stat_var_refs=(),
     )

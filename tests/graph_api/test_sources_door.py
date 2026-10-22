@@ -917,7 +917,7 @@ class TestOrigin:
 
 
 def _escape(markdown: str) -> str:
-    """The stored form of a Markdown document: dfo-pipelines'
+    """The stored form of a Markdown document: `pipelines`'
     `escape_markdown` without its outer quotes, which the graph drops.
     """
     return json.dumps(markdown, ensure_ascii=False)[1:-1].replace('\\"', "\\u0022")
@@ -1029,7 +1029,7 @@ class _BrokenShapesCoverage:
 
 
 class _FakeCoverage:
-    """Stands in for `CoverageService`, whose `current()` is all the door reads."""
+    """Stands in for `ServedCoverage`, whose `current()` is all the door reads."""
 
     def __init__(
         self,
@@ -1044,7 +1044,7 @@ class _FakeCoverage:
 
     def current(self) -> _FakeIndex:
         if self._unreadable:
-            raise RuntimeError("coverage artifact unreadable")
+            raise RuntimeError("coverage view unreadable")
         return _FakeIndex(provenance_currencies=self._units, provenance_shapes=self._shapes)
 
 
@@ -1149,20 +1149,14 @@ class TestCurrency:
         ] == ["granularity"]
 
     def test_the_recorded_coverage_slice_serves_crs_in_usd(self):
-        """The committed slice holds one CRS facet, in `CurrencyUSD`, so the
-        real service and inversion resolve the orphan CRS Provenance to USD.
+        """The session release's coverage view is the committed slice, which holds one CRS
+        facet, in `CurrencyUSD`, so the bound release's coverage and inversion resolve the
+        orphan CRS Provenance to USD.
         """
-        from series_coverage.shared import CoverageService
-        from tests.series_coverage.support import index_for
-
-        slice_uri = f"file://{Path(__file__).parent.parent / 'fixtures' / 'coverage_slice'}"
-        coverage = CoverageService(
-            artifact_uri=slice_uri, index=index_for(slice_uri), recheck_seconds=0
-        )
         crs = "provenance/OECDCreditorReportingSystem"
         graph = FakeGraphNodeReader(nodes={crs: {"typeOf": ("Provenance",)}})
 
-        with make_client(graph=graph, coverage=coverage) as client:
+        with make_client(graph=graph) as client:
             resp = client.get(f"/api/graph/documentation/{crs}")
 
         assert resp.status_code == 200, resp.text
@@ -1174,7 +1168,7 @@ class TestCurrency:
         assert "scope_and_units.granularity" in resp.json()["gaps"]
 
 
-def _documentation_response(coverage: object | None, headers: dict[str, str] | None = None):
+def _documentation_response(coverage: object, headers: dict[str, str] | None = None):
     with make_client(graph=_two_child_dataset(), coverage=coverage) as client:
         return client.get("/api/graph/documentation/dc/d/Dataset1", headers=headers)
 
@@ -1196,41 +1190,18 @@ class TestCachePolicy:
 
         assert resp.status_code == 304
 
-    @pytest.mark.parametrize(
-        ("coverage", "load_failed"),
-        [
-            pytest.param(None, True, id="failed-to-load"),
-            pytest.param(_FakeCoverage(None), False, id="unreadable"),
-        ],
-    )
-    def test_a_coverage_gap_from_a_failed_or_unreadable_index_serves_no_store(
-        self, coverage, load_failed
-    ):
-        with make_client(graph=_two_child_dataset(), coverage=coverage) as client:
-            deps = client.app.state.graph_deps
-            client.app.state.graph_deps = replace(deps, coverage_load_failed=load_failed)
-            resp = client.get("/api/graph/documentation/dc/d/Dataset1")
+    def test_a_coverage_gap_from_an_unreadable_index_serves_no_store(self):
+        resp = _documentation_response(_FakeCoverage(None))
 
         assert resp.status_code == 200, resp.text
         assert resp.headers["cache-control"] == "no-store"
         assert "etag" not in resp.headers
 
-    def test_unconfigured_coverage_is_a_permanent_gap_and_serves_public(self):
-        resp = _documentation_response(None)
-
-        assert resp.status_code == 200, resp.text
-        assert "scope_and_units.currencies" in resp.json()["gaps"]
-        assert resp.headers["cache-control"] == "public, max-age=300"
-        assert resp.headers["etag"]
-
     def test_the_policy_follows_the_coverage_state_across_a_source_document_cache_hit(self):
-        with make_client(graph=_two_child_dataset()) as client:
+        with make_client(graph=_two_child_dataset(), coverage=_FakeCoverage(None)) as client:
             deps = client.app.state.graph_deps
-            client.app.state.graph_deps = replace(deps, coverage_load_failed=True)
             first = client.get("/api/graph/documentation/dc/d/Dataset1")
-            client.app.state.graph_deps = replace(
-                deps, coverage=_FakeCoverage({}), coverage_load_failed=False
-            )
+            client.app.state.graph_deps = replace(deps, coverage=_FakeCoverage({}))
             second = client.get("/api/graph/documentation/dc/d/Dataset1")
 
         assert first.headers["cache-control"] == "no-store"

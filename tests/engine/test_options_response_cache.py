@@ -14,10 +14,12 @@ from collections.abc import Callable
 import pytest
 from fastapi.testclient import TestClient
 
+import origin_catalogue.service as catalogue_service_module
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.facets import bound_variable_breadth
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import GraphReadError
+from origin_catalogue import note_un_blocked_places, record_un_read_failure
 from search.engine import config
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.options import surface
@@ -34,6 +36,7 @@ from search.models import (
     OptionsFor,
     OptionsRequest,
     OptionsSet,
+    Warning,
 )
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -47,6 +50,7 @@ from tests.engine._options_fixtures import (
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 from tests.materialise.conftest import FakeGraphReader
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_service
 
 _GHANA_DCID = "country/GHA"
 _KENYA_CHILD_DCID = "administrativearea1/KEN_X"
@@ -158,7 +162,7 @@ def _body(req: OptionsRequest) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The coverage artifact stamp participates in the key.
+# The coverage view's stamp participates in the key.
 # ---------------------------------------------------------------------------
 
 
@@ -183,10 +187,18 @@ class TestCacheKeyMovesWithTheCoverageStamp:
         target = _peers_target()
 
         key_a = options_response_cache_key(
-            req, target, build_commit="commit-x", coverage=empty_coverage_snapshot(stamp="stamp-a")
+            req,
+            target,
+            build_commit="commit-x",
+            coverage=empty_coverage_snapshot(stamp="stamp-a"),
+            catalogue=FakeCatalogue(),
         )
         key_b = options_response_cache_key(
-            req, target, build_commit="commit-x", coverage=empty_coverage_snapshot(stamp="stamp-b")
+            req,
+            target,
+            build_commit="commit-x",
+            coverage=empty_coverage_snapshot(stamp="stamp-b"),
+            catalogue=FakeCatalogue(),
         )
 
         assert key_a != key_b
@@ -197,13 +209,39 @@ class TestCacheKeyMovesWithTheCoverageStamp:
         coverage = empty_coverage_snapshot(stamp="stamp-a")
 
         key_first = options_response_cache_key(
-            req, target, build_commit="commit-x", coverage=coverage
+            req, target, build_commit="commit-x", coverage=coverage, catalogue=FakeCatalogue()
         )
         key_second = options_response_cache_key(
-            req, target, build_commit="commit-x", coverage=coverage
+            req, target, build_commit="commit-x", coverage=coverage, catalogue=FakeCatalogue()
         )
 
         assert key_first == key_second
+
+
+class TestCacheKeyMovesWithTheOriginCatalogue:
+    @pytest.mark.parametrize(
+        "other",
+        [
+            FakeCatalogue(build_id="build-b"),
+            FakeCatalogue(build_id="build-a", un_system_enabled=False),
+        ],
+        ids=["build", "un-system-setting"],
+    )
+    def test_a_catalogue_reload_changes_the_key(self, other: FakeCatalogue):
+        """A reload moves the origin catalogue build and leaves the graph generation, so the
+        build and the UN System setting it admits by are part of the key."""
+        req = _peers_request(_KENYA_DCID)
+        target = _peers_target()
+        coverage = empty_coverage_snapshot()
+
+        key_a, key_b = (
+            options_response_cache_key(
+                req, target, build_commit="commit-x", coverage=coverage, catalogue=catalogue
+            )
+            for catalogue in (FakeCatalogue(build_id="build-a"), other)
+        )
+
+        assert key_a != key_b
 
 
 class TestCacheKeyMovesWithTheOpenedRole:
@@ -226,6 +264,7 @@ class TestCacheKeyMovesWithTheOpenedRole:
                 ),
                 build_commit="commit-x",
                 coverage=coverage,
+                catalogue=FakeCatalogue(),
             )
             for open_roles in (None, ["origin"], ["destination"])
         }
@@ -401,6 +440,92 @@ class TestDegradedResultsAreNeverCached:
         assert len(calls) == computes
 
 
+def _refused_by_the_un_front_door() -> None:
+    note_un_blocked_places([_GHANA_DCID])
+
+
+def _failed_un_read() -> None:
+    assert record_un_read_failure(
+        GraphReadError("synthetic UN read failure"),
+        variables=["undata/sv"],
+        places=[_GHANA_DCID],
+        alongside_ours=True,
+    )
+
+
+class TestUnSystemWarnings:
+    @pytest.mark.parametrize(
+        ("unserved", "build_refuses", "stored"),
+        [
+            (_refused_by_the_un_front_door, frozenset({_GHANA_DCID}), True),
+            (_refused_by_the_un_front_door, frozenset(), False),
+            (_failed_un_read, frozenset({_GHANA_DCID}), False),
+        ],
+        ids=["refused-by-the-build", "refused-while-serving", "failed-read"],
+    )
+    def test_only_a_failed_un_read_keeps_a_result_out_of_the_cache(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        unserved: Callable[[], None],
+        build_refuses: frozenset[str],
+        stored: bool,
+    ):
+        """Places the origin catalogue build found refused are a fact of that build, so the
+        result naming them is stored and a hit returns their warning. A place refused only
+        while serving may be a stray refusal, and a UN read that failed during the compute
+        is a failure; either leaves the result uncached."""
+        real = surface._observation_about_options_set
+
+        def unserving(*args, **kwargs):
+            unserved()
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(surface, "_observation_about_options_set", unserving)
+        graph = _counting_graph()
+        service = fake_catalogue_service(FakeCatalogue(un_blocked_places=build_refuses))
+        with catalogue_service_module._singleton.poisoned_for_test(service):
+            client = _make_client(
+                graph=graph, materialise_graph=_materialise_graph(), cache=OptionsResponseCache()
+            )
+            body = _body(_peers_request(_KENYA_DCID))
+
+            resp1 = client.post("/api/search/options", json=body)
+            after_first = graph.child_places_batch_calls
+            resp2 = client.post("/api/search/options", json=body)
+
+        assert resp1.status_code == resp2.status_code == 200
+        codes = [[w["code"] for w in r.json()["diagnostics"]["warnings"]] for r in (resp1, resp2)]
+        assert codes == [["un_system_unavailable"]] * 2
+        assert (graph.child_places_batch_calls == after_first) is stored
+
+
+class TestCatalogueReload:
+    def test_a_stored_result_is_not_served_after_the_catalogue_build_changes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A reload changes the origin catalogue build and not the graph generation, so the
+        entry stored under the old build must not answer a request bound to the new one."""
+        graph = _counting_graph()
+        service = fake_catalogue_service()
+        served = [FakeCatalogue(build_id="build-a")]
+        monkeypatch.setattr(service, "snapshot", lambda: served[0])
+        with catalogue_service_module._singleton.poisoned_for_test(service):
+            client = _make_client(
+                graph=graph, materialise_graph=_materialise_graph(), cache=OptionsResponseCache()
+            )
+            body = _body(_peers_request(_KENYA_DCID))
+
+            client.post("/api/search/options", json=body)
+            after_first = graph.child_places_batch_calls
+            client.post("/api/search/options", json=body)
+            after_repeat = graph.child_places_batch_calls
+            served[0] = FakeCatalogue(build_id="build-b")
+            client.post("/api/search/options", json=body)
+
+        assert after_repeat == after_first
+        assert graph.child_places_batch_calls > after_repeat
+
+
 # ---------------------------------------------------------------------------
 # A refusal still fires on a warm cache.
 # ---------------------------------------------------------------------------
@@ -432,6 +557,7 @@ class TestRefusalsStillFireOnAWarmCache:
 # ---------------------------------------------------------------------------
 
 _EMPTY_OPTIONS = OptionsSet(items=[], truncated=False)
+_OFFER_WARNING = Warning(code="option_coverage_probe_failed", severity="warn", message="m")
 
 
 def _blocking_compute(
@@ -740,6 +866,37 @@ class TestGenerationKeying:
         assert len(follower_calls) == 1, "the post-flip caller must run its own compute"
         assert leader_result.options == _EMPTY_OPTIONS
         assert follower_result.options == _EMPTY_OPTIONS
+
+    @pytest.mark.parametrize(
+        ("advance", "transient", "occupied", "stored"),
+        [
+            (False, False, False, True),
+            (True, False, False, False),
+            (False, True, False, False),
+            (False, False, True, False),
+        ],
+        ids=["same-stamp", "stamp-moved", "transient", "live-entry"],
+    )
+    def test_an_offer_stores_only_under_the_stamp_it_was_computed_against(
+        self, advance: bool, transient: bool, occupied: bool, stored: bool
+    ):
+        """`offer` files a value computed outside the cache only when the stamp read before
+        the compute is still current, the value is cacheable and no live entry holds the
+        key."""
+        generation = FakeGeneration(token="gen-a")
+        cache = OptionsResponseCache(enabled=True, max_entries=10, generation=generation)
+        held = ComputedOptions(options=_EMPTY_OPTIONS, warnings=())
+        if occupied:
+            assert cache.offer("k", held, stamp_key=cache.stamp_key())
+        stamp_key = cache.stamp_key()
+        if advance:
+            generation.advance("gen-b")
+        offered = ComputedOptions(
+            options=_EMPTY_OPTIONS, warnings=(_OFFER_WARNING,), transient=transient
+        )
+
+        assert cache.offer("k", offered, stamp_key=stamp_key) is stored
+        assert cache.cached("k") is (offered if stored else held if occupied else None)
 
     def test_stats_counts_hits_misses_evictions_and_entries(self):
         async def scenario():

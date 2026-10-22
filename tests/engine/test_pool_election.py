@@ -1,8 +1,10 @@
-"""Pool order: our pass elects over our candidates alone, and the UN System Data Commons'
-shapes, derived beside it, reach a menu only on the UN pass that runs when ours ends
-`no_data` (`region.pipeline._fill_gap`). Each pool meets its own score floor, and a part
-waits for the UN resolve and its shape derivation at most `SEARCH_UN_FIRST_PASS_WAIT_S`
-from the start of derivation, and only when its own pass ends `no_data`.
+"""Pool order: our pass elects over our candidates, and the UN System Data Commons'
+shapes, derived beside it, reach a menu on the UN pass that runs when ours ends `no_data`
+(`region.pipeline._fill_gap`). With `SEARCH_UN_ON_FIRST_MENU` they also reach our pass's
+menu beside ours (`region.phase_intake._merge_un_pool`). Each pool meets its own score
+floor, and a part waits for the UN resolve and its shape derivation at most
+`SEARCH_UN_FIRST_PASS_WAIT_S` from the start of derivation: when its own pass ends
+`no_data`, or under the flag when its best shape is weak.
 """
 
 from __future__ import annotations
@@ -20,22 +22,24 @@ from typing import cast
 
 import pytest
 
+from dfo_platform.timings import record_elapsed
 from materialise.errors import UpstreamVersionChangedError
 from origin_catalogue import note_un_blocked_places
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import DetectedSV, Detection
 from search.engine.errors import DeclaredDefaultUnsupportedError, GraphInfraError
 from search.engine.events import Event, EventSink, FrameEvent, SentenceEvent, StepEvent
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch
 from search.engine.quantity_read import NONE_OF_THESE, QuantityOutput
-from search.engine.region import pipeline
+from search.engine.region import phase_intake, pipeline
 from search.engine.region.phase_rank_bind import _dataset_candidates
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions, ResolveState, UnLeg, UnPool
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_scope import SourceScope
-from search.models import Warning
+from search.models import Spec, Warning
+from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine.test_ids_index_sourcing import _crs_shape
@@ -181,6 +185,10 @@ class _ElectLLM:
             bindings=list(self.bindings) if len(self.prompts) == 1 else [],
             also_plausible=nominated or None,
             ask="Which measure do you mean?" if chosen is None and self.ask_without else None,
+            measuring=[
+                ShapeRating(index=chosen or 0, rating=1.0),
+                *nominee_ratings(nominated, rated=(chosen or 0,)),
+            ],
         )
         return output, usage
 
@@ -255,24 +263,101 @@ def _gap_fill_line(caplog: pytest.LogCaptureFixture) -> str:
     return line
 
 
+def _origins(prompt: str) -> list[tuple[str, str]]:
+    """Each menu shape's member and origin, in menu order."""
+    return [
+        (
+            next(dcid for dcid in _NODES if dcid in block),
+            re.search(r"origin: ([^\n]*)", block).group(1),
+        )
+        for block in _menu_blocks(prompt)
+    ]
+
+
+class _SlowOurReads(FakeGraph):
+    """Holds the first arc read naming our literacy rate for half a second, so the UN leg
+    finishes before our derivation does."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.held = False
+
+    def node_arcs_batch(self, dcids):
+        if not self.held and _OURS in dcids:
+            self.held = True
+            time.sleep(0.5)
+        return super().node_arcs_batch(dcids)
+
+
 # -- pool order --
 
 
-def test_our_pass_answers_and_the_un_pool_reaches_no_menu(caplog) -> None:
+@pytest.mark.parametrize(
+    ("on_first_menu", "cls"),
+    [
+        pytest.param(False, FakeGraph, id="flag-off"),
+        pytest.param(True, FakeGraph, id="flag-on"),
+        pytest.param(True, _SlowOurReads, id="flag-on-un-leg-first"),
+    ],
+)
+def test_our_pass_answers_and_the_un_pool_reaches_no_menu(
+    caplog, search_settings, on_first_menu: bool, cls: type[FakeGraph]
+) -> None:
     """Our literacy rate and the UN's series both have data at Kenya, and the model would
     elect the UN's series were it on the menu. Our pass answers from ours alone, so the UN
-    reading neither displaces ours nor stands beside it as a rival."""
+    reading neither displaces ours nor stands beside it as a rival. Under
+    `SEARCH_UN_ON_FIRST_MENU` our strong shape never takes the UN pool, even when the UN leg
+    finishes before our slow derivation does, so the answer does not depend on which read
+    came first."""
+    search_settings(un_on_first_menu=on_first_menu)
     llm = _ElectLLM(_UN, nominate=(_UN,))
 
     with caplog.at_level(logging.INFO, logger="search.engine.region.pipeline"):
-        result = _resolve(_graph(data=(_OURS, _UN)), llm=llm)
+        result = _resolve(_graph(data=(_OURS, _UN), cls=cls), llm=llm)
 
     assert (result.status, _elected(result)) == ("definite", [_OURS])
     assert _named(llm, _UN) == [False]
     assert "un_system_unavailable" not in _codes(result)
     assert _gap_fill_line(caplog) == (
         "gap_fill part=0 status=definite/None pool=ours un_pass=skipped:answered un_ms=0"
+        " bind_asked=false un_merged=false"
     )
+
+
+def test_a_merged_menu_seats_our_pool_first(caplog, search_settings) -> None:
+    """Our literacy rate clears its floor but is weak, so our pass waits for the UN leg,
+    whose GDP per capita series, another measure, scores higher on its own resolver's
+    scale. The menu holds both, each showing its pool's origin, ours first
+    (`seating.seat_menu`)."""
+    search_settings(un_on_first_menu=True)
+    llm = _ElectLLM(_OURS)
+    graph = _graph(ours=((_OURS, 0.68),), un=((_UN_GDP_PER_CAPITA, 0.85),), data=(_OURS,))
+
+    with caplog.at_level(logging.INFO, logger="search.engine.region.pipeline"):
+        result = _resolve(graph, llm=llm)
+
+    assert _origins(_menu(llm)) == [
+        (_OURS, "our Data Commons"),
+        (_UN_GDP_PER_CAPITA, "UN System Data Commons"),
+    ]
+    assert (result.status, _elected(result)) == ("definite", [_OURS])
+    assert _gap_fill_line(caplog).endswith(" un_merged=true")
+
+
+@pytest.mark.parametrize("nominated", [True, False], ids=["nominated", "not-nominated"])
+def test_one_measure_in_both_pools_stays_two_readings(search_settings, nominated: bool) -> None:
+    """Our literacy rate and the UN's both have data at Kenya and seat side by side, neither
+    collapsed into the other. A pool apart they are two measures to the status rule, so
+    the UN's is listed beside the elected ours only when the model nominates it."""
+    search_settings(un_on_first_menu=True)
+    llm = _ElectLLM(_OURS, nominate=(_UN,) if nominated else ())
+    graph = _graph(ours=((_OURS, 0.68),), un=((_UN, 0.85),), data=(_OURS, _UN))
+
+    result = _resolve(graph, llm=llm)
+
+    assert [dcid for dcid, _ in _origins(_menu(llm))] == [_OURS, _UN]
+    assert _elected(result) == ([_OURS, _UN] if nominated else [_OURS])
+    assert result.status == ("candidates" if nominated else "definite")
 
 
 def test_a_part_ours_leaves_without_data_is_answered_by_the_un_pass(caplog) -> None:
@@ -338,25 +423,41 @@ def test_a_un_fallback_answers_where_the_bound_member_of_ours_reads_zero() -> No
 
 
 @pytest.mark.parametrize(
-    ("floors", "menus"),
+    ("floors", "scores", "on_first_menu", "menus"),
     [
-        pytest.param((0.75, 0.65), [_UN], id="ours-under-its-floor"),
-        pytest.param((0.65, 0.75), [_OURS], id="un-under-its-floor"),
+        pytest.param((0.75, 0.65), (0.7, 0.7), False, [[_UN]], id="ours-under-its-floor"),
+        pytest.param((0.65, 0.75), (0.7, 0.7), False, [[_OURS]], id="un-under-its-floor"),
+        pytest.param((0.65, 0.65), (0.66, 0.6), True, [[_OURS]], id="merged-un-under-its-floor"),
+        pytest.param(
+            (0.65, 0.65), (0.66, 0.7), True, [[_OURS, _UN]], id="merged-un-over-its-floor"
+        ),
     ],
 )
 def test_each_pool_meets_its_own_score_floor(
-    search_settings, floors: tuple[float, float], menus: list[str]
+    search_settings,
+    floors: tuple[float, float],
+    scores: tuple[float, float],
+    on_first_menu: bool,
+    menus: list[list[str]],
 ) -> None:
-    """Both resolvers score their candidate 0.7, and neither has data at Kenya. Each floor
-    drops only its own pool's: under ours, our pass holds no shape and the UN pass elects
-    the UN's; under the UN's, the UN pass holds no shape and never binds."""
+    """Neither resolver's candidate has data at Kenya. Each floor drops only its own pool's:
+    under ours, our pass holds no shape and the UN pass elects the UN's; under the UN's,
+    the UN pass holds no shape and never binds. A UN shape merged onto our weak pass's menu
+    (`SEARCH_UN_ON_FIRST_MENU`) meets the UN's floor there too: below it, it reaches
+    neither menu; over it, the merged menu elects it, and the UN pass, holding only the
+    shape our pass found without data, does not run."""
     ours_floor, un_floor = floors
-    search_settings(unknown_score_threshold=ours_floor, un_unknown_score_threshold=un_floor)
-    llm = _ElectLLM()
+    ours_score, un_score = scores
+    search_settings(
+        unknown_score_threshold=ours_floor,
+        un_unknown_score_threshold=un_floor,
+        un_on_first_menu=on_first_menu,
+    )
+    llm = _ElectLLM(_UN)
 
-    _resolve(_graph(ours=((_OURS, 0.7),), un=((_UN, 0.7),), data=()), llm=llm)
+    _resolve(_graph(ours=((_OURS, ours_score),), un=((_UN, un_score),), data=()), llm=llm)
 
-    assert [dcid for prompt in llm.prompts for dcid in (_OURS, _UN) if dcid in prompt] == menus
+    assert [[dcid for dcid in (_OURS, _UN) if dcid in prompt] for prompt in llm.prompts] == menus
 
 
 def test_a_per_capita_query_lists_each_pools_shape_without_a_denominator_as_not_electable() -> None:
@@ -422,7 +523,11 @@ def test_a_part_excluding_a_source_keeps_the_tables_the_index_does_not_declare()
     assert [shape.shape_id for shape in kept] == [crs.shape_id, un.shape_id, base.shape_id]
 
 
-def test_a_scope_allowing_no_un_provenance_never_starts_the_un_leg(caplog) -> None:
+@pytest.mark.parametrize("on_first_menu", [False, True], ids=["flag-off", "flag-on"])
+def test_a_scope_allowing_no_un_provenance_never_starts_the_un_leg(
+    caplog, search_settings, on_first_menu: bool
+) -> None:
+    search_settings(un_on_first_menu=on_first_menu)
     leg = _Leg()
     graph = _graph(cls=_PendingUnGraph, leg=leg)
     llm = _ElectLLM()
@@ -475,16 +580,20 @@ def _un_leg(dcid: str) -> tuple[DetectedSV, ...]:
     return (DetectedSV(dcid=dcid, score=0.85, type_of="StatisticalVariable", sentence=dcid),)
 
 
-def test_our_answer_does_not_wait_for_a_running_un_resolve(search_settings) -> None:
-    """The UN resolve never settles. Our pass answers without waiting out the UN leg's
-    budget, and leaves no task behind."""
-    search_settings(un_first_pass_wait_s=3.0)
+@pytest.mark.parametrize("on_first_menu", [False, True], ids=["flag-off", "flag-on"])
+def test_our_answer_does_not_wait_for_a_running_un_resolve(
+    search_settings, on_first_menu: bool
+) -> None:
+    """The UN resolve never settles. Our pass answers from its strong shape alone without
+    waiting out the UN leg's budget, warns nothing, and leaves no task behind."""
+    search_settings(un_first_pass_wait_s=3.0, un_on_first_menu=on_first_menu)
     leg = _Leg()
+    llm = _ElectLLM()
     graph = _graph(cls=_PendingUnGraph, leg=leg, data=(_OURS,))
 
     async def answer() -> tuple[RegionResult, set[asyncio.Task]]:
         async with asyncio.timeout(5):
-            result = await _resolving(graph)
+            result = await _resolving(graph, llm=llm)
         await asyncio.sleep(0)
         return result, asyncio.all_tasks() - {asyncio.current_task()}
 
@@ -493,9 +602,43 @@ def test_our_answer_does_not_wait_for_a_running_un_resolve(search_settings) -> N
 
     assert time.monotonic() - started < 2.0
     assert result.status == "definite"
+    assert [dcid for dcid, _ in _origins(_menu(llm))] == [_OURS]
     assert "un_system_unavailable" not in _codes(result)
     assert not leg.done() and not leg.cancelled()
     assert leftover == set()
+
+
+@pytest.mark.parametrize("leg_state", ["late", "failed"])
+def test_a_weak_shape_waits_for_the_un_leg_and_an_answer_warns_on_a_miss(
+    caplog, search_settings, leg_state: str
+) -> None:
+    """Under `SEARCH_UN_ON_FIRST_MENU` our pass's only shape is weak, so it waits for the
+    UN leg: out to the bound for a resolve that never settles, or not at all for one that
+    failed. The menu is ours alone, and the answer it serves carries
+    `un_system_unavailable`."""
+    wait = 0.3
+    search_settings(un_first_pass_wait_s=wait, un_on_first_menu=True)
+    leg = _Leg()
+    llm = _ElectLLM()
+    graph = (
+        _graph(cls=_PendingUnGraph, leg=leg, ours=((_OURS, 0.68),), data=(_OURS,))
+        if leg_state == "late"
+        else _graph(un=None, ours=((_OURS, 0.68),), data=(_OURS,))
+    )
+    started = time.monotonic()
+
+    with caplog.at_level(logging.INFO, logger="search.engine.region.pipeline"):
+        result = asyncio.run(asyncio.wait_for(_resolving(graph, llm=llm), 5))
+
+    took = time.monotonic() - started
+    assert took < 2.0
+    if leg_state == "late":
+        assert took >= wait
+    assert (result.status, _elected(result)) == ("definite", [_OURS])
+    assert [dcid for dcid, _ in _origins(_menu(llm))] == [_OURS]
+    assert "un_system_unavailable" in _codes(result)
+    assert "un_pass=skipped:un_unavailable " in _gap_fill_line(caplog)
+    assert _gap_fill_line(caplog).endswith(" un_merged=false")
 
 
 def test_a_un_resolve_in_within_the_wait_fills_a_part_without_data(search_settings) -> None:
@@ -627,6 +770,33 @@ def test_the_un_legs_unserved_reads_mark_only_an_answer_the_un_pass_ran_for(
     assert result.degraded is not ours_have_data
 
 
+_SHAPE_STAGES = ("shape_arcs", "shape_probe", "shape_labels", "shape_groups", "shape_admission")
+
+
+def test_the_un_legs_derivation_stays_out_of_our_shape_timing(monkeypatch, search_settings) -> None:
+    """The UN leg's derivation records an hour of `shape_arcs` before ours starts deriving.
+    Each derivation records onto its own collector, so our part's shape stages are ours."""
+    search_settings(un_first_pass_wait_s=2.0)
+    real_derive = phase_intake.derive_shapes
+    un_recorded = threading.Event()
+
+    def derive(**kwargs):
+        if any(dcid.startswith("undata/") for dcid in kwargs["confirmed_svs"]):
+            record_elapsed("shape_arcs", 3600.0)
+            un_recorded.set()
+        else:
+            assert un_recorded.wait(2)
+        return real_derive(**kwargs)
+
+    monkeypatch.setattr(phase_intake, "derive_shapes", derive)
+
+    result = _resolve(_graph(data=(_OURS, _UN)), llm=_ElectLLM(_UN))
+
+    assert _elected(result) == [_OURS]
+    assert set(_SHAPE_STAGES) <= set(result.timing_by_step)
+    assert result.timing_by_step["shape_arcs"] < 3_600_000
+
+
 # -- the UN pass's own failures and bounds --
 
 
@@ -694,27 +864,34 @@ def test_a_deadline_spent_before_the_un_pass_keeps_our_refusal_with_a_warning(ca
     assert "un_pass=skipped:" in _gap_fill_line(caplog)
 
 
-def test_a_gap_filled_answer_states_an_alternate_either_pass_left_unevaluated() -> None:
-    """A pass that left an alternate unevaluated states `alternates_unevaluated`; the
-    answer that stands carries it from whichever pass left it, so it stays out of the
-    cache."""
+def _gap_result(
+    status: str,
+    *,
+    unevaluated: bool = False,
+    alternate: Spec | None = None,
+    usage: int = 0,
+) -> RegionResult:
+    warnings = (
+        (Warning(code="alternates_unevaluated", severity="warn", message="-"),)
+        if unevaluated
+        else ()
+    )
+    return RegionResult(
+        variable_text=_QUERY,
+        status=status,
+        specs=(),
+        no_data_reason="no_observations" if status == "no_data" else None,
+        warnings=warnings,
+        timing_by_step={},
+        alternate_match=alternate,
+        llm_usage={"input_tokens": usage, "output_tokens": usage, "cached_tokens": 0},
+    )
 
-    def result(status: str, *, unevaluated: bool) -> RegionResult:
-        warnings = (
-            (Warning(code="alternates_unevaluated", severity="warn", message="-"),)
-            if unevaluated
-            else ()
-        )
-        return RegionResult(
-            variable_text=_QUERY,
-            status=status,
-            specs=(),
-            no_data_reason="no_observations" if status == "no_data" else None,
-            warnings=warnings,
-            timing_by_step={},
-        )
 
-    async def fill(ours: RegionResult, un: RegionResult) -> RegionResult:
+def _fill(ours: RegionResult, un: RegionResult) -> RegionResult:
+    """`pipeline._fill_gap` over our pass's `ours`, with a UN pass that returns `un`."""
+
+    async def fill() -> RegionResult:
         async def shapes() -> UnPool:
             return UnPool(shapes=[_shape(_UN, population_type=_UN, pool="un_system")])
 
@@ -725,7 +902,9 @@ def test_a_gap_filled_answer_states_an_alternate_either_pass_left_unevaluated() 
             scope_settled=False,
             rcl=None,
             variable_index=0,
+            bind_result=None,
             un_leg=UnLeg(task=asyncio.create_task(shapes()), ends=time.monotonic() + 1),
+            un_pool=None,
         )
         un_state = SimpleNamespace(rcl=None, shapes_found=[], shape_draft=None)
 
@@ -741,15 +920,39 @@ def test_a_gap_filled_answer_states_an_alternate_either_pass_left_unevaluated() 
                 un_state=lambda _bound: cast(ResolveState, un_state),
             )
 
-    filled = asyncio.run(
-        fill(result("no_data", unevaluated=True), result("definite", unevaluated=False))
-    )
-    kept = asyncio.run(
-        fill(result("no_data", unevaluated=False), result("no_data", unevaluated=True))
-    )
+    return asyncio.run(fill())
+
+
+def test_a_gap_filled_answer_states_an_alternate_either_pass_left_unevaluated() -> None:
+    """A pass that left an alternate unevaluated states `alternates_unevaluated`; the
+    answer that stands carries it from whichever pass left it, so it stays out of the
+    cache."""
+    filled = _fill(_gap_result("no_data", unevaluated=True), _gap_result("definite"))
+    kept = _fill(_gap_result("no_data"), _gap_result("no_data", unevaluated=True))
 
     assert filled.status == "definite" and filled.alternates_left_out
     assert kept.status == "no_data" and kept.alternates_left_out
+
+
+@pytest.mark.parametrize("ours_offers", [False, True], ids=["ours_bare", "ours_offers"])
+def test_a_un_refusal_offering_an_alternate_stands_over_a_bare_refusal_of_ours(
+    ours_offers: bool,
+) -> None:
+    """ "measles immunization coverage in Pakistan": our pass's measure has no data at
+    Pakistan and nominates nothing; the UN pass's pick has none either, and its nominee,
+    with data, rides on its refusal. That refusal stands, carrying both passes' model usage
+    and an alternate our pass left unevaluated. A refusal of ours that offers its own
+    alternate stands."""
+    un_alternate = cast(Spec, object())
+    our_alternate = cast(Spec, object()) if ours_offers else None
+    ours = _gap_result("no_data", unevaluated=True, alternate=our_alternate, usage=1)
+    un = _gap_result("no_data", alternate=un_alternate, usage=2)
+
+    chosen = _fill(ours, un)
+
+    assert chosen.alternate_match is (our_alternate if ours_offers else un_alternate)
+    assert chosen.alternates_left_out
+    assert chosen.llm_usage == {"input_tokens": 3, "output_tokens": 3, "cached_tokens": 0}
 
 
 def _shape(dcid: str, *, population_type: str, pool: Pool) -> ShapeDraft:
@@ -821,7 +1024,7 @@ def _health_graph() -> FakeGraph:
     )
 
 
-def test_current_health_expenditure_share_of_gdp_elects_who_on_the_un_pass() -> None:
+def test_current_health_expenditure_share_of_gdp_elects_who_on_the_un_pass(caplog) -> None:
     """The education share cannot bind HealthcareExpenditure, so it is refused, and the
     model asks rather than elect military spending for health spending, so our pass ends
     no_data. The model elects WHO's series on the UN pass with GDP as the denominator;
@@ -834,7 +1037,8 @@ def test_current_health_expenditure_share_of_gdp_elects_who_on_the_un_pass() -> 
         matches=(_HEALTH,),
     )
 
-    result = _resolve(_health_graph(), query=_HEALTH_QUERY, llm=llm, qualifiers=(sidecar,))
+    with caplog.at_level(logging.INFO, logger="search.engine.region.pipeline"):
+        result = _resolve(_health_graph(), query=_HEALTH_QUERY, llm=llm, qualifiers=(sidecar,))
 
     ours, un = llm.prompts
     assert _EDUCATION_SHARE not in ours.split("NOT ELECTABLE")[0]
@@ -843,3 +1047,5 @@ def test_current_health_expenditure_share_of_gdp_elects_who_on_the_un_pass() -> 
     assert _elected(result) == [_WHO_HEALTH_SHARE]
     (warning,) = [w for w in result.warnings if w.code == "denominator_unverified"]
     assert 'whether it divides by "GDP"' in warning.message
+    # The UN pass's answer stands, and the line still records that our bind asked.
+    assert _gap_fill_line(caplog).endswith(" bind_asked=true un_merged=false")

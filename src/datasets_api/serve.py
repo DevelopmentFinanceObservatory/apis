@@ -2,7 +2,7 @@
 Its prewrite half materialises resolved requests and builds a manifest with an empty artifact list.
 Its write half stores artifacts, renders the requested rendering, records the version, and
 advances the head. `datasets_api.current.serve_current` calls it for every materialising entry
-point. The options route's answer for an unregistered definition uses the prewrite half alone.
+point.
 
 Group members materialise across `member_concurrency` workers. The materialise timing covers
 the full fan-out. The prewrite half records output-profile CPU in a separate `Server-Timing`
@@ -24,7 +24,8 @@ gathers just before it. Artifacts are stored through a `deferred` view
 of the artifact store, whose writes add their inventory rows to an `InventoryBatch` for the
 write transaction and read no inventory for new bytes, so the frame worker opens no
 transaction beside the request thread. The canonical frame and the requested rendering overlap.
-The `store` timing includes both, and frame encoding runs inside it.
+Each times under its own phase, `store_frame` and `store_rendering`, beside `store_statistics` for
+the series statistics, and frame encoding runs inside `store_frame`.
 
 Every run records one `datasets.materialisation` row (`MaterialisationRecord`) after the version
 record commits: the trigger, release, code index, catalogue, coverage and graph generation it ran
@@ -53,7 +54,7 @@ import contextvars
 import logging
 import math
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -231,7 +232,7 @@ class ServeDeps:
     ceiling: int
     member_concurrency: int
     enrichment: EnrichmentLookup
-    # Process-wide index used by rendering and manifest assembly.
+    # The code index this request reads, used by rendering and manifest assembly.
     code_index: CodeIndex
     # One process-wide rate-table cache shared by materialisations.
     rate_cache: RateTableCache
@@ -561,8 +562,7 @@ def prewrite_definition(
     The citation read takes each source's documentation only when `documented` and the
     version is not on record. `snapshot_reader` is read, in one transaction, only when the
     caller's head names the result's `content_version` (`head_content_version`). A re-mint
-    renders from the stored citation (`bundle_citations`), and the options route's write-free
-    answer for an unregistered definition passes `documented=False`.
+    renders from the stored citation (`bundle_citations`).
 
     Every read runs under the identity's pinned provenances
     (`adapter.pinned_provenance_scope`), so a pinned source is admitted before DFO
@@ -695,7 +695,6 @@ def serve_definition(
     ceiling: int | None = None,
     coverage_stamp: str | None = None,
     coverage_index: CoverageIndex | None = None,
-    coverage_current: Callable[[], bool] | None = None,
     progress: RowProgress | None = None,
 ) -> ServedDefinition:
     """Materialises with `prewrite_definition`, then writes artifacts and the version record,
@@ -712,9 +711,8 @@ def serve_definition(
 
     One materialise permit is held from before materialisation to after the last artifact write,
     waiting up to the earlier of `settings.materialise_wait_seconds` and `deps.deadline`. A full
-    semaphore raises retryable `MintBackpressure` (503). `coverage_current` is
-    `bounded_materialise_slot`'s: a `coverage_index` a reload replaced during the wait raises
-    `StaleCoverageSnapshot` before anything is fetched. The prewrite and its frame are bound
+    semaphore, or a swap that replaced the request's bound release, raises retryable
+    `MintBackpressure` (503) before anything is fetched. The prewrite and its frame are bound
     only in the function the slot calls, so they are freed before the permit is released.
     """
 
@@ -760,7 +758,6 @@ def serve_definition(
         deps.materialise_semaphore,
         wait_seconds=deps.settings.materialise_wait_seconds,
         deadline=deps.deadline,
-        coverage_current=coverage_current,
     ):
         return _materialise_and_record()
 

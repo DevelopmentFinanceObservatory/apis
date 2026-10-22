@@ -15,6 +15,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
+from graph_release.context import served_origin_key
 from origin_catalogue.catalogue import Catalogue
 
 _BOUND: ContextVar[Catalogue | None] = ContextVar("origin_catalogue", default=None)
@@ -68,6 +69,15 @@ def current_build_id(*, default: Callable[[], str]) -> str:
     """The bound catalogue's build id, or `default()` where none is bound."""
     catalogue = _BOUND.get()
     return default() if catalogue is None else catalogue.build_id
+
+
+def current_words_build() -> str:
+    """The bound catalogue's build id, and the bound release's id after `@`
+    (`served_origin_key`), which answers the DFO variables' names and types. A label read stamps
+    it, so words read under one release are read again under the next. Raises
+    `CatalogueNotBound` when no catalogue is bound, and `graph_release.context.ReleaseNotBound`
+    when no release is."""
+    return f"{current_catalogue().build_id}@{served_origin_key()}"
 
 
 def current_source_scope() -> frozenset[str] | None:
@@ -205,6 +215,7 @@ __all__ = [
     "current_build_id",
     "current_catalogue",
     "current_source_scope",
+    "current_words_build",
     "note_un_blocked_places",
     "note_un_unserved",
     "recording_un_blocked_places",

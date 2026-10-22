@@ -10,6 +10,8 @@ import pytest
 
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
 from origin_catalogue import bound_catalogue
+from search.engine import config
+from search.engine.binders import Binder, Fallbacks, configured_binder
 from search.engine.envelope import now_ms
 from search.engine.extract import ExtractedEntity
 from search.engine.response_cache import ResponseCache
@@ -26,8 +28,10 @@ from search.models import (
     ResolveRequest,
     ResolveResponse,
     ResubmitParsedEntry,
+    Warning,
 )
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._binders import KeyedBinder
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import make_request, member_walk_reader, offline_resolve
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -64,6 +68,8 @@ def _make_scope(
     generation: GenerationProvider = UNKNOWN_GENERATION,
     coverage: CoverageSnapshot = _COVERAGE_SNAPSHOT,
     trailing: bool = False,
+    binder: Binder | None = None,
+    fallbacks: Fallbacks | None = None,
 ) -> CacheScope:
     return CacheScope(
         cache,
@@ -71,7 +77,8 @@ def _make_scope(
         start_ms=now_ms(),
         deadline=deadline if deadline is not None else time.monotonic() + _DEADLINE_HORIZON_S,
         build_commit=_BUILD_COMMIT,
-        model=_MODEL,
+        binder=binder if binder is not None else KeyedBinder(model=_MODEL),
+        fallbacks=fallbacks if fallbacks is not None else Fallbacks(),
         seed=_SEED,
         today=_TODAY,
         max_candidates=_MAX_CANDIDATES,
@@ -118,12 +125,21 @@ async def _test_inactive_for_a_dataset_resubmit(base: ResolveResponse):
     await _assert_inactive_noop(_make_scope(_new_cache(), request=resubmit_request), base)
 
 
-async def _test_inactive_on_a_transport_with_trailing_events(base: ResolveResponse):
-    obs_request = ResolveRequest(
-        input=RawTextInput(query="q"),
-        response_options=ResolveOptions(include_observations=True),
-    )
-    await _assert_inactive_noop(_make_scope(_new_cache(), request=obs_request, trailing=True), base)
+async def _test_a_transport_with_trailing_events_never_reads_a_response_entry(
+    base: ResolveResponse,
+):
+    cache = _new_cache()
+    options = ResolveOptions(include_observations=True)
+    request = ResolveRequest(input=RawTextInput(query="q"), response_options=options)
+    stored = _make_scope(cache, request=request)
+    assert await stored.lookup_raw("q") is None
+    await stored.store(base)
+    assert cache.stats().entries == 1
+
+    streaming = _make_scope(cache, request=request, trailing=True)
+    assert streaming.active
+    assert await streaming.lookup_raw("q") is None
+    await streaming.release()
 
 
 async def _test_full_miss_then_store_then_layer1_hit_carries_the_new_wording(base: ResolveResponse):
@@ -229,6 +245,29 @@ def _population_india_extraction() -> dict:
         "sources": [()],
         "query_text": None,
     }
+
+
+def test_single_variable_queries_cannot_share_an_unindexed_value_grounding_result():
+    base = _base_response()
+
+    async def run():
+        cache = _new_cache()
+        extraction = _population_india_extraction()
+        female = "female population India"
+        male = "male population India"
+        writer = _make_scope(cache)
+        assert await writer.lookup_raw(female) is None
+        extraction["query_text"] = female
+        assert await writer.lookup_parsed(query=female, **extraction) is None
+        await writer.store(base)
+
+        reader = _make_scope(cache)
+        assert await reader.lookup_raw(male) is None
+        extraction["query_text"] = male
+        assert await reader.lookup_parsed(query=male, **extraction) is None
+        await reader.release()
+
+    asyncio.run(run())
 
 
 async def _woken_layer2_follower(
@@ -630,8 +669,10 @@ def test_inactive_for_a_dataset_resubmit():
     asyncio.run(_test_inactive_for_a_dataset_resubmit(_base_response()))
 
 
-def test_inactive_on_a_transport_with_trailing_events():
-    asyncio.run(_test_inactive_on_a_transport_with_trailing_events(_base_response()))
+def test_a_transport_with_trailing_events_never_reads_a_response_entry():
+    asyncio.run(
+        _test_a_transport_with_trailing_events_never_reads_a_response_entry(_base_response())
+    )
 
 
 def test_full_miss_then_store_then_layer1_hit_carries_the_new_wording():
@@ -899,3 +940,134 @@ def test_an_answer_is_served_only_under_the_origin_catalogue_it_was_admitted_by(
     )
 
     assert (restored is not None) is served
+
+
+async def _test_a_un_refusal_is_stored_only_under_a_build_that_refuses_the_place(
+    base: ResolveResponse, build_refuses: frozenset[str]
+) -> ResolveResponse | None:
+    cache = _new_cache()
+    query = "inflation ghana"
+    refusal = Warning(
+        code="un_system_unavailable",
+        severity="warn",
+        message="m",
+        params={"places": ["country/ESH"], "variables": [], "variable_labels": []},
+    )
+    diagnostics = base.diagnostics.model_copy(
+        update={"warnings": [*base.diagnostics.warnings, refusal]}
+    )
+    refused = base.model_copy(update={"diagnostics": diagnostics})
+    catalogue = FakeCatalogue(un_blocked_places=build_refuses)
+    with bound_catalogue(catalogue):
+        scope = _make_scope(cache)
+    assert await scope.lookup_raw(query) is None
+    await scope.store(refused)
+
+    with bound_catalogue(catalogue):
+        return await _make_scope(cache).lookup_raw(query)
+
+
+@pytest.mark.parametrize(
+    ("build_refuses", "stored"),
+    [
+        pytest.param(frozenset({"country/ESH"}), True, id="refused-by-the-build"),
+        pytest.param(frozenset(), False, id="refused-while-serving"),
+    ],
+)
+def test_a_un_refusal_is_stored_only_under_a_build_that_refuses_the_place(
+    build_refuses: frozenset[str], stored: bool
+):
+    """A place the origin catalogue build found refused is a fact of that build, which the
+    key names. A place refused only while serving may be a stray refusal, so the answer
+    naming it is not stored."""
+    restored = asyncio.run(
+        _test_a_un_refusal_is_stored_only_under_a_build_that_refuses_the_place(
+            _base_response(), build_refuses
+        )
+    )
+    assert (restored is not None) is stored
+
+
+def test_a_binder_reading_the_query_text_looks_up_nothing_on_layer_two():
+    """A reworded query with the same extraction misses under a binder whose calls read the
+    query's own text, since its answer may differ. The stored query's repeat still hits
+    layer 1."""
+    jev = KeyedBinder(name="jev", model="jev-1.13.0", reads_query_text=True)
+
+    base = _base_response()
+
+    async def run() -> tuple[ResolveResponse | None, bool, bool]:
+        cache = _new_cache()
+        writer = _make_scope(cache, binder=jev)
+        assert await writer.lookup_raw("total population india") is None
+        assert await writer.lookup_parsed(query="total population india", **_EXTRACTION) is None
+        await writer.store(base)
+
+        reader = _make_scope(cache, binder=jev)
+        assert await reader.lookup_raw("how many people live in india") is None
+        hit = await reader.lookup_parsed(query="how many people live in india", **_EXTRACTION)
+        await reader.release()
+        repeat = _make_scope(cache, binder=jev)
+        return (
+            hit,
+            reader._layer2_lease is None,
+            await repeat.lookup_raw("total population india") is not None,
+        )
+
+    hit, no_layer2_lease, repeat_hits = asyncio.run(run())
+
+    assert hit is None
+    assert no_layer2_lease
+    assert repeat_hits
+
+
+def test_a_request_whose_binder_fell_back_stores_nothing():
+    """An answer a fallback served is not the one its binder's key names, so neither
+    layer keeps it."""
+
+    base = _base_response()
+
+    async def run() -> tuple[bool, ResolveResponse | None]:
+        cache = _new_cache()
+        scope = _make_scope(cache, fallbacks=Fallbacks(reasons=["timeout"]))
+        assert await scope.lookup_raw("total population india") is None
+        assert await scope.lookup_parsed(query="total population india", **_EXTRACTION) is None
+        await scope.store(base)
+
+        later = _make_scope(cache)
+        layer1 = await later.lookup_raw("total population india") is not None
+        layer2 = await later.lookup_parsed(query="how many people live in india", **_EXTRACTION)
+        await later.release()
+        return layer1, layer2
+
+    layer1, layer2 = asyncio.run(run())
+
+    assert not layer1
+    assert layer2 is None
+
+
+_EXTRACTION = {
+    "variables": ["population"],
+    "entities": [ExtractedEntity(text="India")],
+    "dates": [],
+    "dropped_qualifiers": [],
+    "variable_qualifiers": [()],
+    "operations": [()],
+    "entity_roles": {},
+    "sources": [()],
+    "query_text": None,
+}
+
+
+def test_the_default_route_keys_on_the_gemini_binder_and_the_engine_model():
+    """Under the default settings the key names the Gemini binder, and both its model and
+    the engine model are `engine_model`."""
+    scope = _make_scope(_new_cache(), binder=configured_binder("total population india"))
+    engine_model = config.settings().engine_model
+
+    assert scope._scope is not None
+    assert {k: scope._scope[k] for k in ("binder", "model", "engine_model")} == {
+        "binder": "gemini",
+        "model": engine_model,
+        "engine_model": engine_model,
+    }

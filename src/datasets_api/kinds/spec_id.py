@@ -49,7 +49,6 @@ from datasets_api.admission import (
     identity_role_keys,
     refuse_excel_over_estimate,
     sync_estimate,
-    under_current_coverage,
     within_sync_budget,
     xlsx_splits_totals,
 )
@@ -73,9 +72,8 @@ from datasets_api.surgery import apply_scope_surgery, open_roles_left_open
 from datasets_api.timings import phase
 from materialise import MaterialisationRequest
 from materialise.graph import GraphReader
-from series_coverage.shared import CoverageSnapshot
 from spec_registry import RecomputedIdentity, SpecIdMismatch, SpecRegistry, recompute_identity
-from spec_registry.reader import StoredDefinition
+from spec_registry.reader import SpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
 
 _POINTER = "/input/spec_id"
@@ -92,6 +90,14 @@ class MemberResolutionDeps(Protocol):
     code_index: CodeIndex
     settings: DatasetsBuildSettings
     deadline: float | None
+
+
+class SidecarRegistrationDeps(MemberResolutionDeps, Protocol):
+    """`MemberResolutionDeps` plus the registry a sidecar registration writes and the reader
+    that reads it back."""
+
+    registry: SpecRegistry
+    spec_reader: SpecReader
 
 
 def _walk_bounds(deps: MemberResolutionDeps) -> MemberReadBounds:
@@ -246,6 +252,32 @@ def admit_sidecar(
     return recomputed, shapes
 
 
+def register_sidecar(
+    definition: CanonicalDefinition,
+    *,
+    spec_id: str,
+    scope: Scope | None,
+    deps: SidecarRegistrationDeps,
+    trace_id: str | None,
+) -> tuple[StoredDefinition, tuple[StatVarShape, ...]]:
+    """Admit the sidecar `definition` for the unregistered `spec_id` (`admit_sidecar`), register
+    it, and read it back. Returns the stored definition and the shapes admission resolved.
+
+    Admission runs before the registry write, so its refusals leave no registry row. The
+    registry write is read back before the caller serves anything.
+    """
+    _recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=scope, deps=deps)
+    deps.registry.register_definition(
+        identity_definition=definition.identity,
+        schema_version=definition.schema_version,
+        supplied_spec_id=spec_id,
+        trace_id=trace_id,
+    )
+    stored = deps.spec_reader.read_definition(spec_id)
+    assert stored is not None, "definition missing immediately after its own registration"
+    return stored, shapes
+
+
 def _served_identity(
     identity: Mapping[str, object], *, scope: Scope | None, code_index: CodeIndex
 ) -> RecomputedIdentity | None:
@@ -317,17 +349,9 @@ def mint_spec_id(
         if stored is None:
             if definition is None:
                 raise SpecNotFound(subject_id=spec_id, pointer="/input/spec_id")
-            # Resolve and validate the sidecar before writing. Refusals leave no registry row.
-            _recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=scope, deps=deps)
-            deps.registry.register_definition(
-                identity_definition=definition.identity,
-                schema_version=definition.schema_version,
-                supplied_spec_id=spec_id,
-                trace_id=trace_id,
+            stored, shapes = register_sidecar(
+                definition, spec_id=spec_id, scope=scope, deps=deps, trace_id=trace_id
             )
-            # No manifest returns before the registry write is read back.
-            stored = deps.spec_reader.read_definition(spec_id)
-            assert stored is not None, "definition missing immediately after its own registration"
         else:
             if definition is not None:
                 # The registered identity supplies members. Verify the sidecar for consistency.
@@ -408,71 +432,65 @@ def serve_mint(
     the head and verdict `serve_current_head` reached, so the head is read once.
 
     One coverage snapshot serves the head check, the estimate, the budget decision and the
-    fetch. When a reload replaces it before the materialise permit is taken, all four run
-    again on the served snapshot (`admission.under_current_coverage`).
+    fetch.
     """
     definition_deps = deps.to_definition_deps()
 
-    def _take() -> CoverageSnapshot:
-        with phase("coverage"):
-            return deps.coverage.snapshot()
-
-    def _serve(coverage_snapshot: CoverageSnapshot) -> Manifest:
-        # Keep the estimate and fetch on the same coverage index and stamp.
-        served = serve_current_head(
-            stored,
-            requests=requests,
-            options=options,
-            trigger="mint",
-            deps=definition_deps,
-            trace_id=trace_id,
-            coverage_snapshot=coverage_snapshot,
-            revoked_under=revoked_under,
+    with phase("coverage"):
+        coverage_snapshot = deps.coverage.snapshot()
+    # Keep the estimate and fetch on the same coverage index and stamp.
+    served = serve_current_head(
+        stored,
+        requests=requests,
+        options=options,
+        trigger="mint",
+        deps=definition_deps,
+        trace_id=trace_id,
+        coverage_snapshot=coverage_snapshot,
+        revoked_under=revoked_under,
+    )
+    if isinstance(served, Manifest):
+        return served
+    with phase("estimate"):
+        estimate = sync_estimate(
+            requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
         )
-        if isinstance(served, Manifest):
-            return served
-        with phase("estimate"):
-            estimate = sync_estimate(
-                requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
-            )
-            refuse_excel_over_estimate(
-                estimate,
-                format=options.format,
-                splits_totals=xlsx_splits_totals(
-                    options,
-                    identity=stored.identity,
-                    role_columns=identity_role_keys(stored.identity),
-                    parties=definition_deps.code_index.parties,
-                    datasets=elected_provenances(requests),
-                ),
-            )
-        submit_over_budget(
-            subject_id=stored.spec_id,
-            options=options,
-            estimate=estimate,
-            coverage_stamp=coverage_snapshot.stamp,
-            operation_store=deps.operation_store,
-            task_client=deps.task_client,
-            within_budget=within_sync_budget(
-                estimate,
-                sync_budget_rows=deps.settings.sync_budget_rows,
-                sync_budget_requests=deps.settings.sync_budget_requests,
+        refuse_excel_over_estimate(
+            estimate,
+            format=options.format,
+            splits_totals=xlsx_splits_totals(
+                options,
+                identity=stored.identity,
+                role_columns=identity_role_keys(stored.identity),
+                parties=definition_deps.code_index.parties,
+                datasets=elected_provenances(requests),
             ),
-            async_max_rows=deps.settings.async_max_rows,
-            async_max_requests=deps.settings.async_max_requests,
-            members=[request.stat_var for request in requests],
         )
-        return serve_current(
-            stored,
-            resolve_requests=lambda: requests,
-            options=options,
-            trigger="mint",
-            deps=definition_deps,
-            trace_id=trace_id,
-            admitted=estimate,
-            coverage_snapshot=coverage_snapshot,
-            head_read=served,
-            revoked_under=revoked_under,
-        )
-
-    return under_current_coverage(_take, _serve)
+    submit_over_budget(
+        subject_id=stored.spec_id,
+        options=options,
+        estimate=estimate,
+        coverage_stamp=coverage_snapshot.stamp,
+        operation_store=deps.operation_store,
+        task_client=deps.task_client,
+        within_budget=within_sync_budget(
+            estimate,
+            sync_budget_rows=deps.settings.sync_budget_rows,
+            sync_budget_requests=deps.settings.sync_budget_requests,
+        ),
+        async_max_rows=deps.settings.async_max_rows,
+        async_max_requests=deps.settings.async_max_requests,
+        members=[request.stat_var for request in requests],
+    )
+    return serve_current(
+        stored,
+        resolve_requests=lambda: requests,
+        options=options,
+        trigger="mint",
+        deps=definition_deps,
+        trace_id=trace_id,
+        admitted=estimate,
+        coverage_snapshot=coverage_snapshot,
+        head_read=served,
+        revoked_under=revoked_under,
+    )

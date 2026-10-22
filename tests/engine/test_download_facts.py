@@ -1,5 +1,5 @@
 """Checks the download facts a Spec states where the recorded mints
-(`test_download_mint_contract`) do not reach: a member the coverage artifact does not hold,
+(`test_download_mint_contract`) do not reach: a member the release's coverage view does not hold,
 a series whose facets carry no complete date list, and the licence."""
 
 from __future__ import annotations

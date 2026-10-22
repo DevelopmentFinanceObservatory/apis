@@ -40,9 +40,10 @@ already gives it. The same cap applies on the recipe write route.
 
 `steps` are the frame's step records (`description.steps.Step`), one per operation that computed
 it, in order. A step's shape is the kit's step schema, and its `op` is any bounded name, so an
-operation dfo-spec-kit has not listed yet still publishes. The list meets dfo-spec-kit's structure
-rules (`dfo_descriptions.check_steps`), checked in the kit's order: at most `MAX_STEPS` (62)
-steps, at most `MAX_STEPS_BYTES` (65,536) bytes of RFC 8785 canonical JSON, step ids unique, and every input
+operation `spec-kit` has not listed yet still publishes. The list meets the `spec-kit`
+repository's structure rules (`dfo_descriptions.check_steps`), checked in the kit's order:
+at most `MAX_STEPS` (62) steps, at most `MAX_STEPS_BYTES` (65,536) bytes of RFC 8785
+canonical JSON, step ids unique, and every input
 that names a step naming an earlier one, so the steps form no cycle. A version reference is the
 `input` of a `retrieve` step and of nothing else, and at least one step names one, so every
 version the steps name is one of the frame's root inputs, which the record lists, and a record
@@ -312,7 +313,7 @@ def _step_refusal(
     posted: str,
 ) -> ValidationError:
     """A refusal of one step's member, located under `steps` so its pointer names the member.
-    `reason` is the dfo-spec-kit structure rule the step breaks, or one of this door's three
+    `reason` is the `spec-kit` structure rule the step breaks, or one of this door's three
     rules: `version_not_retrieved`, that only a `retrieve` step's `input` names a version,
     `no_version_retrieved`, that the steps name at least one, and `params_invalid`, that a
     `continue_series` step's `params` state its method and periods (`_continuation_params`)."""
@@ -524,7 +525,7 @@ class PublishFrameRequest(BaseModel):
     @field_validator("steps", mode="after")
     @classmethod
     def _check_step_structure(cls, value: list[Step] | None) -> list[Step] | None:
-        """Refuses steps that break dfo-spec-kit's structure rules
+        """Refuses steps that break the `spec-kit` repository's structure rules
         (`dfo_descriptions.check_steps`) in their stored form: a value JSON
         cannot carry (a lone surrogate, a non-finite number or an integer past 2**53), more than
         `MAX_STEPS_BYTES` of RFC 8785 canonical JSON, or the first step whose id repeats an

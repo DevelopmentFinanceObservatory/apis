@@ -105,7 +105,7 @@ All domain exceptions inherit from `SpecRegistryError`. Store operations catch d
 | `SpecRegistryUnavailable` | Database connection pool exhausted (`PoolTimeoutError`). Transient condition. | `503 Service Unavailable` (`service_unavailable`) |
 | `SpecRegistryStoreError` | Database query failure or connection error. | `503 Service Unavailable` (`service_unavailable`) |
 
-## Integration with `dfo-spec-kit` and `datasets_api`
+## Integration with `spec-kit` and `datasets_api`
 
 ```
 +--------------------------------------------------------------------------------+
@@ -125,7 +125,7 @@ All domain exceptions inherit from `SpecRegistryError`. Store operations catch d
                         | Uses canonicalization          | Reads/Writes
                         v                                v
 +---------------------------------------+  +-------------------------------------+
-|             dfo-spec-kit              |  |            dataset_store            |
+|               spec-kit                |  |            dataset_store            |
 |  - identity.build_projection          |  |  (PostgreSQL tables in              |
 |  - identity.canonicalize              |  |   datasets.* schema)                |
 |  - identity.mint_spec_id              |  +-------------------------------------+
@@ -134,9 +134,9 @@ All domain exceptions inherit from `SpecRegistryError`. Store operations catch d
 
 ### Integration Points
 
-- **`dfo-spec-kit`**:
+- **`spec-kit`**:
   - `spec_registry.identity` acts as an adapter over `dfo_spec_kit.identity`.
-  - Normalisation, projection building, and canonical serialization conform to RFC 8785 (JSON Canonicalization Scheme) implemented in `dfo-spec-kit`.
+  - Normalisation, projection building, and canonical serialization conform to RFC 8785 (JSON Canonicalization Scheme) implemented in `spec-kit`.
   - Spec ID minting uses `dfo_spec_kit.identity.mint_spec_id`.
 - **`datasets_api`**:
   - **Register Door (`POST /api/datasets/register`)**: Calls `LiveSpecRegistry.register_definition` on a dedicated `ThreadPoolExecutor` with semaphore-gated backpressure. Maps domain exceptions to standard RFC 9457 problem details envelopes.

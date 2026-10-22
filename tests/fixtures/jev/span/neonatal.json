@@ -1,0 +1,134 @@
+{
+ "query": "neonatal mortality",
+ "variable": "neonatal mortality",
+ "slots": [
+  {
+   "slot": "how:undataAge",
+   "label": "Age",
+   "values": [
+    {
+     "dcid": "undata/AGE-M0",
+     "label": "Under 1 month old"
+    },
+    {
+     "dcid": "unresolved:undataAge:1",
+     "label": "Under 1 year old"
+    }
+   ]
+  }
+ ],
+ "runs": [
+  {
+   "nouls": {
+    "m|0": 0.96,
+    "mq|0": 0.93,
+    "named|0": 0.03,
+    "part|how:ageGroupClassification": 0.21,
+    "n|how:ageGroupClassification|0": 0.98,
+    "n|how:ageGroupClassification|1": 0.91,
+    "n|how:ageGroupClassification|2": 0.65,
+    "several|how:ageGroupClassification": 0.04,
+    "part|how:age": 0.12,
+    "n|how:age|0": 0.74,
+    "n|how:age|1": 0.22,
+    "n|how:age|2": 0.77,
+    "n|how:age|3": 0.97,
+    "n|how:age|4": 0.06,
+    "n|how:age|5": 0.08,
+    "n|how:age|6": 0.22,
+    "n|how:age|7": 0.02,
+    "n|how:age|8": 0.02,
+    "n|how:age|9": 0.27,
+    "n|how:age|10": 0.47,
+    "n|how:age|11": 0.01,
+    "n|how:age|12": 0.8,
+    "n|how:age|13": 0.01,
+    "n|how:age|14": 0.01,
+    "n|how:age|15": 0.01,
+    "n|how:age|16": 0.01,
+    "n|how:age|17": 0.01,
+    "n|how:age|18": 0.01,
+    "n|how:age|19": 0.01,
+    "n|how:age|20": 0.01,
+    "n|how:age|21": 0.01,
+    "n|how:age|22": 0.01,
+    "n|how:age|23": 0.01,
+    "several|how:age": 0.04,
+    "part|how:undataAge": 0.17,
+    "n|how:undataAge|0": 0.98,
+    "n|how:undataAge|1": 0.92,
+    "several|how:undataAge": 0.04,
+    "part|how:undataSex": 0.04,
+    "n|how:undataSex|0": 0.02,
+    "n|how:undataSex|1": 0.02,
+    "several|how:undataSex": 0.02,
+    "part|how:causeOfDeath": 0.12,
+    "n|how:causeOfDeath|0": 0.36,
+    "n|how:causeOfDeath|1": 0.04,
+    "n|how:causeOfDeath|2": 0.1,
+    "n|how:causeOfDeath|3": 0.03,
+    "n|how:causeOfDeath|4": 0.02,
+    "n|how:causeOfDeath|5": 0.02,
+    "n|how:causeOfDeath|6": 0.02,
+    "n|how:causeOfDeath|7": 0.02,
+    "n|how:causeOfDeath|8": 0.04,
+    "n|how:causeOfDeath|9": 0.02,
+    "n|how:causeOfDeath|10": 0.02,
+    "n|how:causeOfDeath|11": 0.03,
+    "n|how:causeOfDeath|12": 0.02,
+    "n|how:causeOfDeath|13": 0.02,
+    "n|how:causeOfDeath|14": 0.02,
+    "n|how:causeOfDeath|15": 0.02,
+    "n|how:causeOfDeath|16": 0.19,
+    "n|how:causeOfDeath|17": 0.02,
+    "n|how:causeOfDeath|18": 0.02,
+    "n|how:causeOfDeath|19": 0.04,
+    "several|how:causeOfDeath": 0.04,
+    "part|how:gender": 0.05,
+    "n|how:gender|0": 0.02,
+    "n|how:gender|1": 0.02,
+    "several|how:gender": 0.02,
+    "part|how:race": 0.03,
+    "n|how:race|0": 0.02,
+    "n|how:race|1": 0.02,
+    "n|how:race|2": 0.02,
+    "n|how:race|3": 0.02,
+    "several|how:race": 0.02,
+    "part|how:incidentType": 0.18,
+    "n|how:incidentType|0": 0.02,
+    "part|how:ethnicity": 0.03,
+    "n|how:ethnicity|0": 0.02,
+    "n|how:ethnicity|1": 0.02,
+    "n|how:ethnicity|2": 0.01,
+    "n|how:ethnicity|3": 0.02,
+    "several|how:ethnicity": 0.02,
+    "part|how:residentStatus": 0.08,
+    "n|how:residentStatus|0": 0.02,
+    "n|how:residentStatus|1": 0.04,
+    "several|how:residentStatus": 0.02
+   },
+   "choices": {
+    "elect": {
+     "Shape 0": 0.65
+    },
+    "electq": {
+     "Shape 0": 0.96,
+     "none": 0.0
+    }
+   },
+   "recorded_drafts": [
+    {
+     "axis": "how",
+     "property_dcid": "undataAge",
+     "kind": "value",
+     "value_dcids": [
+      "undata/AGE-M0"
+     ],
+     "evidence": "mentioned",
+     "requested_all_phrase": null
+    }
+   ]
+  }
+ ],
+ "population": null
+}

@@ -457,7 +457,7 @@ def facet_from_coverage(facet: FacetCoverage, meta: FacetMetadata | None) -> Fac
     (`materialise.facets.coverage_probe`). A candidate summed across every role tuple of a
     family therefore holds at most one date per horizon year. An election ranks it by
     ``obs_count`` and a window check reads the years. Facet metadata, the observation period
-    included, is copied from the coverage artifact when present. The years are coverage's,
+    included, is copied from the release's coverage view when present. The years are coverage's,
     whatever the facet's cadence, so they are no evidence that it is annual
     (``dates_coarsened``).
     """

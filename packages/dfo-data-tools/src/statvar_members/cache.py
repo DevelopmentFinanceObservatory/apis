@@ -9,6 +9,14 @@ by `graph_generation.ttu_from_stamp_key`, so a new graph generation or catalogue
 walks afresh, and an unknown generation keeps its entries for the shorter unknown
 lifetime.
 
+A call reads the request's graph release (`graph_release.context.current_release`), and
+raises when none is bound. A family the release holds
+(`graph_release.origin.ReleaseOrigin.holds_family`) walks the release's graph reader in place
+of the caller's, and every entry's key also holds the release id, so a swap walks afresh.
+An enumerator following the process's release service (`MemberEnumerator.follow_swaps`, which
+`graph_release.service` sets up for `shared_enumerator`) drops the entries of every other
+release once a swap serves a new one, and stores none for a replaced release after it.
+
 Each entry weighs one plus its family size, the dcids of every confirmed candidate
 before antichain reduction, since a deep root's family runs to about 14,000 dcids.
 Concurrent misses on one key run one enumeration. The others wait, each bounded by its
@@ -26,6 +34,7 @@ import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import cachetools
 
@@ -39,6 +48,9 @@ from statvar_members.enumerate import (
 )
 from statvar_members.types import EMPTY_READINGS, AbsentReading, FiveTuple, MemberArcReader
 
+if TYPE_CHECKING:
+    from graph_release.service import Release, ReleaseService
+
 logger = logging.getLogger(__name__)
 
 MEMBER_GROUP_CACHE_MAX_WEIGHT = 200_000
@@ -48,6 +60,7 @@ about 20 MB of families, 2% of the 1 GiB the service shares with Search's other 
 That is fourteen deep-root families of 13,800 dcids, or thousands of the median walk's."""
 
 type _CacheKey = tuple[
+    str,
     str,
     FiveTuple,
     frozenset[tuple[str, SlotBinding]],
@@ -100,6 +113,37 @@ class MemberEnumerator:
             maxsize=max_weight, ttu=_ttu, timer=timer, getsizeof=_weight
         )
         self._flights: dict[_CacheKey, _Flight] = {}
+        # The release the followed service serves, `None` while following none.
+        self._served_release: str | None = None
+        self._unfollow: Callable[[], None] | None = None
+
+    def follow_swaps(self, service: ReleaseService) -> None:
+        """Drop every group keyed on a release `service` no longer serves once it swaps, and
+        store none for such a release after, in place of any service followed before. `close`
+        stops following."""
+        self.close()
+        with self._lock:
+            self._served_release = service.snapshot().release_id
+        self._unfollow = service.on_swap(self._swapped)
+
+    def close(self) -> None:
+        """Stop following the service `follow_swaps` named."""
+        if self._unfollow is not None:
+            self._unfollow()
+            self._unfollow = None
+        with self._lock:
+            self._served_release = None
+
+    def _swapped(self, release: Release) -> None:
+        with self._lock:
+            self._served_release = release.release_id
+            for key in [key for key in self._groups if not self._storable(key)]:
+                del self._groups[key]
+
+    def _storable(self, key: _CacheKey) -> bool:
+        """Whether `key` names the release the followed service serves, or no service is
+        followed. Called under `_lock`."""
+        return self._served_release in (None, key[1])
 
     def enumerate(
         self,
@@ -120,19 +164,22 @@ class MemberEnumerator:
         """Return the group `statvar_members.enumerate_members` resolves for the query,
         reading `graph` on a miss.
 
-        `stamp_key` is the `GenerationStamp.key` of `graph`'s reads. The cache key holds
-        it, the five-tuple, slots, readings, `subject_ceiling`, extra candidates, and bound
-        and open role keys. `deadline` bounds the walk's first page and `full_read_deadline`, which
-        defaults to `deadline` and stays out of the key, its full read. The later of the
-        two bounds any wait for another call's walk of the same key. A read or wait past
-        its bound raises `MemberReadDeadline`. `spec_id` names the walk in its log line.
-        Enumeration errors propagate uncached. A group with undismissed candidates is
-        returned uncached, so a call after its walk's flight ends reads them again; calls
-        waiting on that flight take the group it returned. A group whose inconsistent
-        candidates a confirmed root dismisses is settled and stored: its members cannot
-        change, and a fresh walk leaves the same candidates past the same re-probe budget."""
+        `stamp_key` is the `GenerationStamp.key` of `graph`'s reads. The cache key holds it, the
+        bound release's id (`_served_walk`), the five-tuple, slots, readings,
+        `subject_ceiling`, extra candidates, and bound and open role keys. `deadline`
+        bounds the walk's first page and `full_read_deadline`, which defaults to `deadline` and
+        stays out of the key, its full read. The later of the two bounds any wait for another
+        call's walk of the same key. A read or wait past its bound raises `MemberReadDeadline`.
+        `spec_id` names the walk in its log line. Enumeration errors propagate uncached. A group
+        with undismissed candidates is returned uncached, so a call after its walk's flight ends
+        reads them again; calls waiting on that flight take the group it returned. A group whose
+        inconsistent candidates a confirmed root dismisses is settled and stored: its members
+        cannot change, and a fresh walk leaves the same candidates past the same re-probe
+        budget."""
+        graph, release = _served_walk(graph, five_tuple=five_tuple)
         key: _CacheKey = (
             stamp_key,
+            release,
             five_tuple,
             frozenset(slots.items()),
             frozenset(readings.items()),
@@ -168,7 +215,7 @@ class MemberEnumerator:
             flight.group = group
             if not group.undismissed_candidates:
                 with self._lock:
-                    if _weight(group) <= self._groups.maxsize:
+                    if _weight(group) <= self._groups.maxsize and self._storable(key):
                         self._groups[key] = group
             return group
 
@@ -261,6 +308,21 @@ class MemberEnumerator:
             time.monotonic() - started,
         )
         return group
+
+
+def _served_walk(graph: MemberArcReader, *, five_tuple: FiveTuple) -> tuple[MemberArcReader, str]:
+    """The reader `five_tuple`'s walk reads and the release its group keys on: the bound
+    release's id, and the release's graph reader for a family the release holds, else `graph`.
+    Raises `graph_release.context.ReleaseNotBound` when no release is bound."""
+    # Imported here, as `_ttu` imports `graph_generation`, so `statvar_members` imports
+    # without the release and catalogue packages.
+    from graph_release.context import current_release
+    from origin_catalogue.context import current_catalogue
+
+    release = current_release()
+    if release.origin.holds_family(five_tuple, catalogue=current_catalogue()):
+        return release.origin.reader, release.release_id
+    return graph, release.release_id
 
 
 def _later(deadline: float | None, full_read_deadline: float | None) -> float | None:

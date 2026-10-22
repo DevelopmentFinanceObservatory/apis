@@ -52,5 +52,5 @@ Gated surface packages are imported lazily inside activation branches. Importing
 | `DFO_GRAPH_SURFACE` | `false` | Set to `1` or `true` to mount `/api/graph`. |
 | `DFO_PRESENTATION_SURFACE` | `false` | Set to `1` or `true` to mount `/api/presentation`. |
 | `DFO_SKILLS_SURFACE` | `false` | Set to `1` or `true` to mount `/api/skills`. |
-| `DFO_CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins applied to all mounted surfaces. Dev leaves it empty; an empty value disables CORS headers, and wildcard origins are never used. See dfo-infra's `infra/dfo-dev/apis/README.md` for dev deployment configuration. |
+| `DFO_CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins applied to all mounted surfaces. Dev leaves it empty; an empty value disables CORS headers, and wildcard origins are never used. See the `infra` repository's `infra/dfo-dev/apis/README.md` for dev deployment configuration. |
 | `DFO_EXECUTOR_MAX_WORKERS` | `32` | Worker thread capacity for the platform-wide asynchronous thread executor

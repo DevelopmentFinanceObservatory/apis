@@ -1,4 +1,4 @@
-"""Protocol tests for member facts. Graph arcs and packaged index rows must
+"""Protocol tests for member facts. Graph arcs and fixture index rows must
 yield the same five-tuple, constraints, and declared roles.
 """
 
@@ -30,12 +30,12 @@ def _arcs_from_row(row: StatVarRow) -> dict:
 
 
 def _real_crs_row() -> StatVarRow:
-    """Return a packaged row with a qualifier and at least 3 constraints."""
+    """Return a fixture row with a qualifier and at least 3 constraints."""
     index = get_index()
     for row in index.statvars:
         if row.measurement_qualifier and len(row.constraint_properties) >= 3:
             return row
-    raise AssertionError("packaged index carries no StatVarRow rich enough for this test")
+    raise AssertionError("fixture index carries no StatVarRow rich enough for this test")
 
 
 def test_read_five_tuple_agrees_between_arcs_and_index_sources():

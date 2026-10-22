@@ -6,8 +6,10 @@
 #
 # Dispatch only: every run mints new versions on the target and holds its
 # materialise permits, so it never runs on a schedule or a push. The default
-# target is the dfo-dev Cloud Run service dfo-infra defines, which answers
-# /api/datasets/* with no auth header.
+# target is the dfo-dev Cloud Run service `infra` defines. The script sends a
+# Cloud Run ID token minted for the target as the eval reader account
+# (search.eval.apis_auth), which holds roles/run.invoker on the dev service
+# only, so another target refuses the run with 401 or 403.
 name: Datasets bench
 
 on:
@@ -41,6 +43,9 @@ jobs:
   bench:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,6 +59,12 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --frozen --no-default-groups --extra datasets
+
+      - name: Authenticate to Google Cloud as the eval reader
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
+          service_account: ${{ secrets.EVAL_WIF_SA }}
 
       - name: Run the bench
         env:

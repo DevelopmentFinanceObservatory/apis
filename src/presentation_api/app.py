@@ -2,8 +2,9 @@
 Injected stores are shared across doors. Missing stores are built in each door's lifespan.
 
 Construction resolves the pinned catalogue to compute `capability_version` from packaged data,
-and loads the origin catalogue, whose snapshot each request binds. Live stores and credentials
-load in door lifespans. The fronting Data access proxy authenticates requests. A `cmp_` or
+and loads the origin catalogue, whose snapshot each request binds. With `GRAPH_RELEASE_URI` set,
+each request also binds the release service's served release, and an unreadable release fails
+construction. Live stores and credentials load in door lifespans. The fronting Data access proxy authenticates requests. A `cmp_` or
 `cps_` id grants read of a draft, and the write token its create returned grants write, so the
 doors take no caller or session. The two render routes of `presentation_api.doors.render` are
 the exception. They admit the live-refresh principal the composition passes in, and refuse
@@ -15,7 +16,8 @@ The surface maps refusals to RFC 9457 problem details through the platform `Enve
 from __future__ import annotations
 
 import logging
-from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import Iterator
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 
 from fastapi import FastAPI
 
@@ -26,6 +28,8 @@ from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.recipe_store import RecipeReader
 from dfo_platform.app import Surface
 from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
+from graph_release.context import bound_served_release
+from graph_release.service import get_release_service
 from origin_catalogue import bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from presentation_api.codes import PRESENTATION_CODE_CATALOGUE
@@ -62,12 +66,16 @@ def presentation_surface(
     by its rule, so only the frame a revision is stored on renders. `vocabulary_source` gives
     the words cards' descriptions are composed from, and defaults to a `LiveVocabularySource`
     over the code index.
+
+    Each request binds the origin catalogue's loaded snapshot and the release service's served
+    graph release, so an unset `GRAPH_RELEASE_URI` or an unreadable release fails startup.
     """
     effective_release_registry: ReleaseRegistry = (
         release_registry if release_registry is not None else BakedReleaseRegistry()
     )
     release = effective_release_registry.pinned()
     catalogue = get_catalogue_service()
+    release_service = get_release_service()
     capability_version = compute_presentation_capability_version(release=release)
     logger.info(
         "Presentation surface resolved catalog_version=%s capability_version=%s",
@@ -102,6 +110,11 @@ def presentation_surface(
                     await stack.enter_async_context(door.lifespan(app))
             yield
 
+    @contextmanager
+    def request_scope() -> Iterator[None]:
+        with bound_catalogue(catalogue.snapshot()), bound_served_release(release_service):
+            yield
+
     return Surface(
         name="presentation",
         prefix="/api/presentation",
@@ -115,5 +128,5 @@ def presentation_surface(
             exemplar for door in doors for exemplar in door.exception_exemplars
         ),
         lifespan=lifespan,
-        request_scope=lambda: bound_catalogue(catalogue.snapshot()),
+        request_scope=request_scope,
     )

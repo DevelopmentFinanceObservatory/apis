@@ -6,6 +6,7 @@ triggers and the GitHub Environment.
 
 import re
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -175,10 +176,10 @@ def test_every_name_comes_from_the_environment_variables():
         "SERVICE_WORKER",
         "JOB_DATASETS_MIGRATE",
         "JOB_PRESENTATION_MIGRATE",
-        "JOB_COVERAGE",
         "JOB_ORIGIN_CATALOGUE",
         "JOB_SEARCH_CATALOGUE",
         "JOB_DATASETS_MAINTENANCE",
+        "JOB_GRAPH_RELEASE",
     ):
         assert image["env"][name] == f"${{{{ vars.{name} }}}}"
         assert name in image["run"]
@@ -191,9 +192,19 @@ def test_every_name_comes_from_the_environment_variables():
         )
     ]
     # Six job updates, ten job executions, and two service updates.
-    assert len(targets) == 18
-    for target in targets:
-        assert re.fullmatch(r'"\$\{\{ vars\.(JOB|SERVICE)_[A-Z_]+ \}\}"', target), target
+    assert Counter(targets) == {
+        f'"${{{{ vars.{name} }}}}"': count
+        for name, count in {
+            "JOB_DATASETS_MIGRATE": 2,
+            "JOB_PRESENTATION_MIGRATE": 2,
+            "JOB_DATASETS_MAINTENANCE": 3,
+            "JOB_ORIGIN_CATALOGUE": 3,
+            "JOB_GRAPH_RELEASE": 3,
+            "JOB_SEARCH_CATALOGUE": 3,
+            "SERVICE_WORKER": 1,
+            "SERVICE_APIS": 1,
+        }.items()
+    }
 
 
 @pytest.mark.parametrize(
@@ -208,12 +219,16 @@ def test_every_name_comes_from_the_environment_variables():
             "Run the presentation migration job",
         ),
         (
-            "Point the coverage job at the new image",
-            "Ensure a compatible coverage artifact is published",
-        ),
-        (
             "Point the origin catalogue job at the new image",
             "Ensure a compatible origin catalogue is published",
+        ),
+        (
+            "Point the graph release job at the new image",
+            "Ensure a compatible graph release is published",
+        ),
+        (
+            "Point the search catalogue job at the new image",
+            "Build the search catalogue on the new image",
         ),
     ],
 )
@@ -239,19 +254,95 @@ def test_the_build_fetches_the_public_spec_kit_without_a_credential():
     assert "secrets" not in _step("image").get("env", {})
 
 
-def test_search_catalogue_job_moves_to_the_new_image_without_executing():
-    """Its Scheduler rebuilds on the new image within 15 minutes, and the service starts
-    without a catalogue, so the deploy only moves the image."""
+def test_search_catalogue_builds_on_the_new_image_before_traffic_moves():
+    """The build key includes the image's commit and a format bump starts an empty format
+    root, so the deploy runs the job once on the new image and waits for it, after the
+    origin catalogue and graph release it reads are ensured and before either service moves.
+    The job exits 0 on some runs that publish nothing, so a verify execution after it decides
+    whether a build is published; either failure stops the deploy."""
     names = [step.get("name") for step in _steps()]
     update = "Point the search catalogue job at the new image"
-    run = _named(update)["run"]
+    build = "Build the search catalogue on the new image"
+    executions = [
+        step.get("name")
+        for step in _steps()
+        if 'jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}"' in step.get("run", "")
+    ]
+    update_run = _named(update)["run"]
+    build_run = _named(build)["run"]
 
-    assert 'gcloud run jobs update "${{ vars.JOB_SEARCH_CATALOGUE }}"' in run
-    assert "--image=" in run
-    for step in _steps():
-        assert 'jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}"' not in step.get("run", "")
-    assert names.index("Ensure a compatible origin catalogue is published") < names.index(update)
-    assert names.index(update) < names.index("Point the datasets worker at the new image")
+    assert 'gcloud run jobs update "${{ vars.JOB_SEARCH_CATALOGUE }}"' in update_run
+    assert "--image=" in update_run
+    assert executions == [build]
+    assert "--async" not in build_run
+    run_job, verify_job = build_run.split("gcloud run jobs execute ")[1:]
+    assert "--wait" in run_job
+    assert "--args" not in run_job
+    assert "--wait" in verify_job
+    assert "--args=-m,search.catalogue.verify" in verify_job
+    assert build_run.lstrip().startswith("set -euo pipefail")
+    assert (
+        names.index("Ensure a compatible origin catalogue is published")
+        < names.index("Ensure a compatible graph release is published")
+        < names.index(update)
+        < names.index(build)
+        < names.index("Point the datasets worker at the new image")
+        < names.index("Point Cloud Run at the new image")
+    )
+
+
+_FAKE_GCLOUD = """#!/bin/bash
+echo "$*" >> "$GCLOUD_LOG"
+case "$*" in
+  *graph_release.verify*)
+    statuses=($VERIFY_STATUSES)
+    exit "${statuses[$(($(grep -c graph_release.verify "$GCLOUD_LOG") - 1))]}" ;;
+esac
+"""
+
+
+@pytest.mark.parametrize(
+    ("verify_statuses", "status", "executions"),
+    [
+        ("0", 0, ["verify"]),
+        ("3 0", 0, ["verify", "build", "verify"]),
+        ("1 1", 1, ["verify", "build", "verify"]),
+    ],
+    ids=["opens", "builds-then-opens", "still-refused"],
+)
+def test_the_graph_release_step_verifies_builds_once_and_verifies_again(
+    tmp_path: Path, verify_statuses: str, status: int, executions: list[str]
+):
+    """A failed verify runs one build, and a second failed verify stops the deploy."""
+    gcloud = tmp_path / "bin" / "gcloud"
+    gcloud.parent.mkdir()
+    gcloud.write_text(_FAKE_GCLOUD)
+    gcloud.chmod(0o755)
+    log = tmp_path / "gcloud.log"
+    log.touch()
+    # The step, with workflow expressions filled in as Actions would.
+    step = re.sub(
+        r"\$\{\{[^}]*\}\}", "dev", _named("Ensure a compatible graph release is published")["run"]
+    )
+
+    ran = subprocess.run(
+        ["bash", "-c", step],
+        env={
+            "PATH": f"{gcloud.parent}:/usr/bin:/bin",
+            "GCLOUD_LOG": str(log),
+            "VERIFY_STATUSES": verify_statuses,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert ran.returncode == status, ran.stderr
+    calls = log.read_text().splitlines()
+    assert [
+        "verify" if "--args=-m,graph_release.verify" in call else "build" for call in calls
+    ] == executions
+    assert all(call.startswith("run jobs execute") and "--wait" in call for call in calls)
 
 
 def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
@@ -271,7 +362,7 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
     """The previous image writes rows in the old shape, and versions without a description
     record, until both services move, so the settle and then the description backfill run after
     the apis service moves, and they are the deploy's only maintenance executions. The backfill
-    runs after the code index record, so its failure never holds that record back."""
+    runs after the settle, so its failure never holds the settle back."""
     names = [step.get("name") for step in _steps()]
     settle = "Settle rows the previous image wrote"
     backfill = "Backfill description records"
@@ -287,7 +378,7 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
     for name in (settle, backfill):
         assert "--wait" in _named(name)["run"]
     assert names.index("Point Cloud Run at the new image") < names.index(settle)
-    assert names.index("Record the code index the services run") < names.index(backfill)
+    assert names.index(settle) < names.index(backfill)
 
 
 def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
@@ -317,14 +408,13 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
         assert _named(name)["run"].lstrip().startswith("set -euo pipefail\ngcloud run jobs")
 
 
-def test_worker_then_service_move_then_the_code_index_is_recorded():
+def test_worker_then_service_move_then_the_maintenance_steps_run():
     names = [step.get("name") for step in _steps()]
 
-    assert names[-5:] == [
+    assert names[-4:] == [
         "Point the datasets worker at the new image",
         "Point Cloud Run at the new image",
         "Settle rows the previous image wrote",
-        "Record the code index the services run",
         "Backfill description records",
     ]
 
@@ -344,7 +434,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 19
+    assert len(later) == 18
     for step in later:
         assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 

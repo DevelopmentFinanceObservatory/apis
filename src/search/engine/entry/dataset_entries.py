@@ -19,6 +19,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
+from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -273,6 +274,7 @@ async def resolve_parsed_entries(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     materialise_graph: GraphReader | None,
     materialise_sdmx: MaterialiseSdmxClient | None,
@@ -319,6 +321,7 @@ async def resolve_parsed_entries(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=binder,
         sdmx=sdmx,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,

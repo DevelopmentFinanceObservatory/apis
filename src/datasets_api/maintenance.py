@@ -157,6 +157,8 @@ from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
 from description.facts import SCHEMA_VERSION, DescriptionRecord
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
+from graph_release.context import bound_served_release
+from graph_release.service import get_release_service
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
@@ -826,9 +828,11 @@ def _base_record(store: DatasetStore, version: StoredVersion) -> DescriptionReco
 
 
 def _backfill_descriptions() -> int:
-    return _run_over_artifacts(
-        "backfill-descriptions", partial(run_backfill_descriptions, code_index=get_index())
-    )
+    # The run reads one code index, the served graph release's.
+    with bound_served_release(get_release_service()):
+        return _run_over_artifacts(
+            "backfill-descriptions", partial(run_backfill_descriptions, code_index=get_index())
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

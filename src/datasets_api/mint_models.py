@@ -435,9 +435,9 @@ MintInput = Annotated[SpecIdInput | StatVarSetInput, Field(discriminator="kind")
 
 class DefinitionOptionsRequest(BaseModel):
     """Body of `POST /api/datasets/{id}/options`. It carries the canonical `definition` a search
-    response gives for `id`, so the options route answers before any mint registers it.
+    response gives for `id`, so the options route answers for an id no mint has registered.
 
-    The route admits the definition as a mint admits a `spec_id` sidecar and writes nothing.
+    The route admits and registers the definition as a `spec_id` mint registers its sidecar.
     `definition.spec_id` must equal the path id, and the identity must hash to it.
     """
 
