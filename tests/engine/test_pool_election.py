@@ -26,6 +26,7 @@ from dfo_platform.timings import record_elapsed
 from materialise.errors import UpstreamVersionChangedError
 from origin_catalogue import note_un_blocked_places
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import GeminiBinder
 from search.engine.clients.graph import DetectedSV, Detection
 from search.engine.errors import DeclaredDefaultUnsupportedError, GraphInfraError
 from search.engine.events import Event, EventSink, FrameEvent, SentenceEvent, StepEvent
@@ -118,12 +119,13 @@ def _graph(
     data: tuple[str, ...] = (_UN,),
     query: str = _QUERY,
     cls: type[FakeGraph] = FakeGraph,
+    nodes: dict[str, dict] = _NODES,
     **kwargs,
 ) -> FakeGraph:
-    """Our resolve returns `ours` and the UN's `un` (`None` fails it); the variables in
-    `data` have observations at Kenya."""
+    """Our resolve returns `ours` and the UN's `un` (`None` fails it), over `nodes`; the
+    variables in `data` have observations at Kenya."""
     return cls(
-        nodes=_NODES,
+        nodes=nodes,
         obs={f"{dcid}|{_KEN}": [_FACET] for dcid in data},
         detect={query: _leg(*ours)},
         un_detect={query: None if un is None else _leg(*un)},
@@ -320,7 +322,7 @@ def test_our_pass_answers_and_the_un_pool_reaches_no_menu(
     assert "un_system_unavailable" not in _codes(result)
     assert _gap_fill_line(caplog) == (
         "gap_fill part=0 status=definite/None pool=ours un_pass=skipped:answered un_ms=0"
-        " bind_asked=false un_merged=false"
+        " bind_asked=false un_merged=false doubted=false"
     )
 
 
@@ -341,7 +343,49 @@ def test_a_merged_menu_seats_our_pool_first(caplog, search_settings) -> None:
         (_UN_GDP_PER_CAPITA, "UN System Data Commons"),
     ]
     assert (result.status, _elected(result)) == ("definite", [_OURS])
-    assert _gap_fill_line(caplog).endswith(" un_merged=true")
+    assert _gap_fill_line(caplog).endswith(" un_merged=true doubted=false")
+
+
+@pytest.mark.parametrize(
+    ("on_first_menu", "ours_count"),
+    [
+        pytest.param(False, 1, id="flag-off"),
+        pytest.param(True, 1, id="un-seated"),
+        pytest.param(True, 2, id="un-seated-after-two"),
+        pytest.param(True, 8, id="un-unseated"),
+    ],
+)
+def test_a_doubted_answer_reaches_the_un_shape_its_menu_left_unseated(
+    monkeypatch, search_settings, on_first_menu: bool, ours_count: int
+) -> None:
+    """Our weak literacy shapes take the menu's seats first (`seating.seat_menu`), and the
+    binder rates "none of the shapes" above its pick of ours. A UN shape that took a seat
+    was elected on our menu; one that took none reached no binder, so the UN pass runs over
+    it and elects it."""
+    search_settings(un_on_first_menu=on_first_menu, bind_top_k=8)
+    ours = [f"{_OURS}_{k}" for k in range(ours_count)]
+    nodes = {
+        **_NODES,
+        **{dcid: _sv_node(dcid, population_type=dcid, meas_prop="literacyRate") for dcid in ours},
+    }
+    graph = FakeGraph(
+        nodes=nodes,
+        obs={f"{dcid}|{_KEN}": [_FACET] for dcid in (*ours, _UN)},
+        detect={_QUERY: _leg(*((dcid, 0.68) for dcid in ours))},
+        un_detect={_QUERY: _leg((_UN, 0.9))},
+        resolve={"Kenya": _KEN},
+    )
+    bind = GeminiBinder.bind
+
+    async def doubted_on_ours(self, request, *, llm):
+        result, usage = await bind(self, request, llm=llm)
+        return dataclasses.replace(result, none_first=request.pool == "ours"), usage
+
+    monkeypatch.setattr(GeminiBinder, "bind", doubted_on_ours)
+
+    result = _resolve(graph, llm=_ElectLLM(_UN))
+
+    assert (result.status, _elected(result)) == ("definite", [_UN])
 
 
 @pytest.mark.parametrize("nominated", [True, False], ids=["nominated", "not-nominated"])
@@ -638,7 +682,7 @@ def test_a_weak_shape_waits_for_the_un_leg_and_an_answer_warns_on_a_miss(
     assert [dcid for dcid, _ in _origins(_menu(llm))] == [_OURS]
     assert "un_system_unavailable" in _codes(result)
     assert "un_pass=skipped:un_unavailable " in _gap_fill_line(caplog)
-    assert _gap_fill_line(caplog).endswith(" un_merged=false")
+    assert _gap_fill_line(caplog).endswith(" un_merged=false doubted=false")
 
 
 def test_a_un_resolve_in_within_the_wait_fills_a_part_without_data(search_settings) -> None:
@@ -867,6 +911,7 @@ def test_a_deadline_spent_before_the_un_pass_keeps_our_refusal_with_a_warning(ca
 def _gap_result(
     status: str,
     *,
+    reason: str = "no_observations",
     unevaluated: bool = False,
     alternate: Spec | None = None,
     usage: int = 0,
@@ -880,7 +925,7 @@ def _gap_result(
         variable_text=_QUERY,
         status=status,
         specs=(),
-        no_data_reason="no_observations" if status == "no_data" else None,
+        no_data_reason=reason if status == "no_data" else None,
         warnings=warnings,
         timing_by_step={},
         alternate_match=alternate,
@@ -888,47 +933,98 @@ def _gap_result(
     )
 
 
-def _fill(ours: RegionResult, un: RegionResult) -> RegionResult:
-    """`pipeline._fill_gap` over our pass's `ours`, with a UN pass that returns `un`."""
+def _fill(
+    ours: RegionResult,
+    un: RegionResult,
+    *,
+    ours_doubted: bool = False,
+    un_doubted: bool = False,
+    party_words_off: bool = True,
+    elected: ShapeDraft | None = None,
+    missed: str | None = None,
+    merged: bool = False,
+    seated: bool = True,
+    trailing: dict[str, bool] | None = None,
+    un_score: float | None = None,
+    un_elected: bool | None = None,
+) -> tuple[RegionResult, list[ShapeDraft] | None]:
+    """`pipeline._fill_gap` over our pass's `ours`, elected on `elected`, with a UN pass
+    that returns `un`, and the shapes the UN pass ran over, None when it did not run.
+    `ours_doubted` and `un_doubted` say each pass's binder rated "none of the shapes"
+    first (`BindResult.none_first`), `missed` is why the UN leg's pool is missing, and
+    `merged` puts the UN pool on our pass's menu (`ResolveState.un_pool`), where its shape
+    takes a seat when `seated` (`ResolveState.capped_shapes`). Given
+    `trailing`, each pass's result holds a pending observations task, and `trailing` maps
+    "ours" and "un" to whether `_fill_gap` cancelled it. `un_score` is the measured
+    score of the shape the UN pass elects; it elects one when `un_elected`, which defaults
+    to whether `un_score` is given."""
+    ran: list[list[ShapeDraft]] = []
 
     async def fill() -> RegionResult:
+        nonlocal ours, un
+        tasks: dict[str, asyncio.Task[None]] = {}
+        if trailing is not None:
+            tasks = {side: asyncio.create_task(asyncio.sleep(60)) for side in ("ours", "un")}
+            ours = dataclasses.replace(ours, observations_task=tasks["ours"])
+            un = dataclasses.replace(un, observations_task=tasks["un"])
+
         async def shapes() -> UnPool:
+            if missed is not None:
+                return UnPool(shapes=[], missed=missed)
             return UnPool(shapes=[_shape(_UN, population_type=_UN, pool="un_system")])
 
+        merged_shape = _shape(_UN, population_type=_UN, pool="un_system")
         first = SimpleNamespace(
-            shape_draft=None,
+            shape_draft=elected,
+            capped_shapes=[merged_shape] if merged and seated else [],
             scope=None,
             source_code=None,
             scope_settled=False,
             rcl=None,
             variable_index=0,
             bind_result=None,
+            bind_decision=SimpleNamespace(none_first=ours_doubted),
+            party_words_off=party_words_off,
             un_leg=UnLeg(task=asyncio.create_task(shapes()), ends=time.monotonic() + 1),
-            un_pool=None,
+            un_pool=UnPool(shapes=[merged_shape]) if merged else None,
         )
-        un_state = SimpleNamespace(rcl=None, shapes_found=[], shape_draft=None)
+        un_state = SimpleNamespace(
+            rcl=None,
+            shapes_found=[],
+            shape_draft=(
+                SimpleNamespace(measured_score=un_score)
+                if (un_score is not None if un_elected is None else un_elected)
+                else None
+            ),
+            bind_decision=SimpleNamespace(none_first=un_doubted),
+        )
 
-        async def run(_state: object) -> RegionResult:
+        async def run(state: SimpleNamespace) -> RegionResult:
+            ran.append(state.shapes_found)
             return un
 
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(pipeline, "_run_phases", run)
-            return await pipeline._fill_gap(
+            result = await pipeline._fill_gap(
                 ours,
                 first=cast(ResolveState, first),
                 deadline=None,
                 un_state=lambda _bound: cast(ResolveState, un_state),
             )
+        if trailing is not None:
+            trailing.update({side: task.cancelled() for side, task in tasks.items()})
+        return result
 
-    return asyncio.run(fill())
+    result = asyncio.run(fill())
+    return result, ran[0] if ran else None
 
 
 def test_a_gap_filled_answer_states_an_alternate_either_pass_left_unevaluated() -> None:
     """A pass that left an alternate unevaluated states `alternates_unevaluated`; the
     answer that stands carries it from whichever pass left it, so it stays out of the
     cache."""
-    filled = _fill(_gap_result("no_data", unevaluated=True), _gap_result("definite"))
-    kept = _fill(_gap_result("no_data"), _gap_result("no_data", unevaluated=True))
+    filled, _ = _fill(_gap_result("no_data", unevaluated=True), _gap_result("definite"))
+    kept, _ = _fill(_gap_result("no_data"), _gap_result("no_data", unevaluated=True))
 
     assert filled.status == "definite" and filled.alternates_left_out
     assert kept.status == "no_data" and kept.alternates_left_out
@@ -948,11 +1044,209 @@ def test_a_un_refusal_offering_an_alternate_stands_over_a_bare_refusal_of_ours(
     ours = _gap_result("no_data", unevaluated=True, alternate=our_alternate, usage=1)
     un = _gap_result("no_data", alternate=un_alternate, usage=2)
 
-    chosen = _fill(ours, un)
+    chosen, _ = _fill(ours, un)
 
     assert chosen.alternate_match is (our_alternate if ours_offers else un_alternate)
     assert chosen.alternates_left_out
     assert chosen.llm_usage == {"input_tokens": 3, "output_tokens": 3, "cached_tokens": 0}
+
+
+@pytest.mark.parametrize(
+    ("ours", "un", "ours_doubted", "un_doubted", "party_words_off", "replaced"),
+    [
+        # "refugee population in Turkey" on Jev: our Person count is elected though Jev
+        # rates "none of the shapes" above it; the UN pass answers with refugees by host
+        # country, whose own election Jev does not doubt.
+        ("definite", "definite", True, False, True, True),
+        ("candidates", "candidates", True, False, True, True),
+        # Both binders doubt their picks, so the UN answer has no better claim.
+        ("definite", "definite", True, True, True, False),
+        # A UN refusal, even one offering an alternate, leaves our answer standing.
+        ("definite", "no_data", True, False, True, False),
+        # An answer its binder does not doubt never waits for the UN leg.
+        ("definite", "definite", False, False, True, None),
+        # On the resolution with party words a UN answer could bind no party.
+        ("definite", "definite", True, False, False, None),
+    ],
+    ids=[
+        "doubted-replaced",
+        "doubted-candidates-replaced",
+        "both-doubted",
+        "un-refuses",
+        "undoubted",
+        "party-words",
+    ],
+)
+def test_a_doubted_answer_of_ours_gives_way_to_an_undoubted_un_answer(
+    caplog: pytest.LogCaptureFixture,
+    ours: str,
+    un: str,
+    ours_doubted: bool,
+    un_doubted: bool,
+    party_words_off: bool,
+    replaced: bool | None,
+) -> None:
+    """An answer of ours whose binder rated "none of the shapes" above its pick
+    (`BindResult.none_first`) runs the UN pass, and the UN answer replaces it when it is
+    `definite` or `candidates` and its own binder did not doubt it. `replaced` None marks
+    an answer the UN pass never ran for."""
+    ours_result = _gap_result(ours, usage=1)
+    un_result = _gap_result(un, alternate=cast(Spec, object()), usage=2)
+
+    with caplog.at_level(logging.INFO, logger=pipeline.__name__):
+        chosen, ran = _fill(
+            ours_result,
+            un_result,
+            ours_doubted=ours_doubted,
+            un_doubted=un_doubted,
+            party_words_off=party_words_off,
+        )
+
+    if replaced is None:
+        assert ran is None and chosen is ours_result
+        assert "un_pass=skipped:answered" in _gap_fill_line(caplog)
+        return
+    assert ran is not None
+    assert chosen.status == (un if replaced else ours)
+    assert (chosen.alternate_match is un_result.alternate_match) == replaced
+    assert chosen.llm_usage == {"input_tokens": 3, "output_tokens": 3, "cached_tokens": 0}
+    assert _gap_fill_line(caplog).endswith(" doubted=true")
+
+
+def test_a_doubted_answer_excludes_its_own_series_from_the_un_pool() -> None:
+    """Our pass can elect a UN series it recalls under a superseded variable, and the UN
+    pass would elect it again and replace our answer with itself, so a doubted answer's
+    elected series leaves the UN pool."""
+    elected = _shape(_UN, population_type=_UN, pool="ours")
+    ours = _gap_result("definite")
+
+    chosen, ran = _fill(ours, _gap_result("definite"), ours_doubted=True, elected=elected)
+    kept, ran_undoubted = _fill(ours, _gap_result("definite"), elected=elected)
+
+    assert ran is None and chosen is ours
+    assert ran_undoubted is None and kept is ours
+
+
+def test_a_doubted_answer_whose_un_leg_missed_states_it() -> None:
+    """A doubted answer the UN pass could have replaced, whose UN leg failed or was late,
+    carries `un_system_unavailable`, which keeps it out of the response cache; an
+    undoubted answer does not."""
+    ours = _gap_result("definite")
+
+    doubted, _ = _fill(ours, _gap_result("definite"), ours_doubted=True, missed="late")
+    undoubted, _ = _fill(ours, _gap_result("definite"), missed="late")
+
+    assert "un_system_unavailable" in _codes(doubted)
+    assert "un_system_unavailable" not in _codes(undoubted)
+
+
+@pytest.mark.parametrize(
+    ("ours_reason", "un_reason", "un_elected", "un_score", "un_stands"),
+    [
+        # "government debt as a share of GDP in Japan": our menu matches nothing, and the
+        # UN pass matches the IMF series and finds no Japan values.
+        ("variable_not_resolved", "no_observations", True, 0.9, True),
+        # "measles incidence rate Kenya": the UN pass matches a burden-of-disease rate only
+        # weakly, which says no more than ours matching nothing.
+        ("variable_not_resolved", "no_observations", True, 0.7, False),
+        # A UN pass that elected no shape, or one with no measured score, matched nothing
+        # it can show, whatever its reason.
+        ("variable_not_resolved", "no_observations", False, None, False),
+        ("variable_not_resolved", "denominator_not_available", False, None, False),
+        ("variable_not_resolved", "no_observations", True, None, False),
+        ("variable_not_resolved", "variable_not_resolved", True, 0.9, False),
+        # Between two refusals that both matched a measure ours stands: D6's
+        # '"climate" is not a distinction this data records' over a UN series with no data.
+        ("qualifier_not_bound", "no_observations", True, 0.9, False),
+        ("no_observations", "qualifier_not_bound", True, 0.9, False),
+        # The UN pass mints these on its elected shape's places, so it matched a variable,
+        # though `NO_DATA_RESOLUTION_ORDER` ranks both before `variable_not_resolved`.
+        ("variable_not_resolved", "entity_set_too_large", True, 0.9, True),
+        ("variable_not_resolved", "entity_role_not_admitted", True, 0.9, True),
+    ],
+)
+def test_a_un_refusal_on_a_matched_variable_stands_over_ours_matching_none(
+    ours_reason: str, un_reason: str, un_elected: bool, un_score: float | None, un_stands: bool
+) -> None:
+    """Of two refusals, the UN pass's stands when ours matched no variable and the UN pass
+    elected a shape whose measured score is present and not weak
+    (`_representative_score_is_weak`), since its reason says what the data lacks."""
+    ours = _gap_result("no_data", reason=ours_reason)
+    un = _gap_result("no_data", reason=un_reason)
+
+    chosen, _ = _fill(ours, un, un_score=un_score, un_elected=un_elected)
+
+    assert chosen.no_data_reason == (un_reason if un_stands else ours_reason)
+
+
+def test_a_un_refusal_before_election_leaves_ours_matching_none(caplog) -> None:
+    """Our pass recalls nothing for "literacy rate", and the UN pass's one series counts
+    people, so it refuses ``denominator_not_available`` with no shape elected. That says no
+    more about the data than ours matching nothing, so ours stands."""
+    nodes = {**_NODES, _UN: _sv_node(_UN, population_type=_UN, meas_prop="count")}
+    graph = _graph(ours=(), un=((_UN, 0.7),), data=(_UN,), nodes=nodes)
+
+    with caplog.at_level(logging.INFO, logger=pipeline.__name__):
+        result = _resolve(graph, llm=_ElectLLM(ask_without=True))
+
+    assert "un_pass=ran:no_data/denominator_not_available " in _gap_fill_line(caplog)
+    assert (result.status, result.no_data_reason) == ("no_data", "variable_not_resolved")
+
+
+@pytest.mark.parametrize(
+    ("ours", "un", "ours_doubted", "un_doubted", "dropped"),
+    [
+        # Our doubted answer gives way to the UN answer.
+        ("definite", "definite", True, False, "ours"),
+        # Both binders doubt, so the UN answer is dropped.
+        ("definite", "definite", True, True, "un"),
+        ("no_data", "definite", False, False, "ours"),
+    ],
+    ids=["ours-replaced", "both-doubted", "gap-filled"],
+)
+def test_the_dropped_answer_of_a_gap_fill_cancels_its_trailing_tasks(
+    ours: str, un: str, ours_doubted: bool, un_doubted: bool, dropped: str
+) -> None:
+    """Both passes stream their trailing reads, and the answer that does not stand names a
+    Spec the response never shows, so its reads are cancelled and the standing one's run."""
+    trailing: dict[str, bool] = {}
+
+    _fill(
+        _gap_result(ours),
+        _gap_result(un),
+        ours_doubted=ours_doubted,
+        un_doubted=un_doubted,
+        trailing=trailing,
+    )
+
+    assert trailing == {"ours": dropped == "ours", "un": dropped == "un"}
+
+
+@pytest.mark.parametrize("seated", [True, False], ids=["seated", "unseated"])
+def test_a_doubted_answer_on_a_merged_menu_runs_the_un_pass_over_its_unseated_shapes(
+    caplog: pytest.LogCaptureFixture, seated: bool
+) -> None:
+    """A menu that seated the UN pool merged onto it already offered the binder the UN
+    shapes it rated "none" above, so a UN pass would elect again among them. A UN shape our
+    shapes kept off the menu reached no binder, so the UN pass runs over it. A merged
+    `no_data` part runs the UN pass over the whole pool either way."""
+    ours = _gap_result("definite")
+
+    with caplog.at_level(logging.INFO, logger=pipeline.__name__):
+        chosen, ran = _fill(
+            ours, _gap_result("definite"), ours_doubted=True, merged=True, seated=seated
+        )
+    _, refused_ran = _fill(
+        _gap_result("no_data"), _gap_result("definite"), merged=True, seated=seated
+    )
+
+    if seated:
+        assert ran is None and chosen is ours
+        assert "un_pass=skipped:merged " in _gap_fill_line(caplog)
+    else:
+        assert [shape.shape_id for shape in ran or ()] == [_UN]
+        assert chosen.status == "definite" and chosen is not ours
+    assert [shape.shape_id for shape in refused_ran or ()] == [_UN]
 
 
 def _shape(dcid: str, *, population_type: str, pool: Pool) -> ShapeDraft:
@@ -1048,4 +1342,4 @@ def test_current_health_expenditure_share_of_gdp_elects_who_on_the_un_pass(caplo
     (warning,) = [w for w in result.warnings if w.code == "denominator_unverified"]
     assert 'whether it divides by "GDP"' in warning.message
     # The UN pass's answer stands, and the line still records that our bind asked.
-    assert _gap_fill_line(caplog).endswith(" bind_asked=true un_merged=false")
+    assert _gap_fill_line(caplog).endswith(" bind_asked=true un_merged=false doubted=false")

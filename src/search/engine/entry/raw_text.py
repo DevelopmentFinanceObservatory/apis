@@ -520,8 +520,9 @@ class _ExtractionPrep:
     `per_variable_date_requests` runs parallel to `unique` too: `date_request`, or a
     forecasting variable's own window without its target years.
     `unit_text` is the dropped phrases that bind as one unit request
-    (`_split_unit_phrases`), which every variable's part carries as the parsed door's
-    `ParsedPart.unit_text` does; they stay out of `dropped_qualifier_phrases`.
+    (`_split_unit_phrases`); they stay out of `dropped_qualifier_phrases`.
+    `per_variable_unit_texts` runs parallel to `unique`: each part's unit request, as the
+    parsed door's `ParsedPart.unit_text` is (`_part_unit_text`).
     `qualifier_facts` holds the departure of each `qualifier_warnings` entry whose phrase
     asks for something (`_dropped_phrase_fact`), under its warning's key. `entity_words`
     maps each entity name to the query's own words for it (`ExtractedEntity.span`), first
@@ -556,6 +557,7 @@ class _ExtractionPrep:
     entity_words: dict[str, str]
     entity_surfaces: dict[str, str]
     unit_text: str | None
+    per_variable_unit_texts: list[str | None]
     separate: list[bool]
     read_connectives: frozenset[int]
     per_variable_sources: list[tuple[SourceMention, ...]]
@@ -574,17 +576,30 @@ class _ExtractionPrep:
 def _split_unit_phrases(phrases: Sequence[str]) -> tuple[str | None, list[str]]:
     """The unit text the dropped `phrases` bind as, and the phrases left over.
 
-    A phrase joins the unit text when the text so far plus the phrase still binds
-    (`unit.bind.names_unit_request`), so a second phrase that conflicts with the first
-    ("in euros", "in yen") stays dropped. Phrases are taken in query order."""
+    A phrase joins the unit text when it binds on its own and the text so far plus the
+    phrase still binds (`unit.bind.names_unit_request`), so a second phrase that conflicts
+    with the first ("in euros", "in yen") stays dropped, and a bare year ("in 2020") never
+    becomes the base year of a currency another phrase names. Phrases are taken in query
+    order."""
     claimed: list[str] = []
     rest: list[str] = []
     for phrase in phrases:
-        if names_unit_request(" ".join([*claimed, phrase])):
+        if names_unit_request(phrase) and names_unit_request(" ".join([*claimed, phrase])):
             claimed.append(phrase)
         else:
             rest.append(phrase)
     return (" ".join(claimed) or None), rest
+
+
+def _part_unit_text(own: str | None, shared: str | None) -> str | None:
+    """A part's unit request: the unit text extraction peeled from its own variable
+    (`ExtractionResult.unit_texts`) with the request-wide `shared` one, or its own alone
+    when the two bind as no one request ("in euros" beside "in yen"). A part whose variable
+    held none carries `shared`, so a variable's own phrase reaches no other part."""
+    if own is None or shared is None:
+        return own or shared
+    joined = f"{own} {shared}"
+    return joined if names_unit_request(joined) else own
 
 
 def _dropped_phrase_fact(phrase: str) -> DepartureFact | None:
@@ -740,6 +755,9 @@ def _prepare_extraction(
         entity_words=entity_words,
         entity_surfaces=entity_surfaces,
         unit_text=unit_text,
+        per_variable_unit_texts=[
+            _part_unit_text(extract_result.unit_texts.get(v), unit_text) for v in unique
+        ],
         separate=list(reading.separate),
         read_connectives=reading.read_connectives,
         per_variable_sources=per_variable_sources,
@@ -767,6 +785,7 @@ def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query
         ),
         *(bound for date in extraction.dates for bound in (date.start, date.end) if bound),
         *([prep.unit_text] if prep.unit_text else []),
+        *(text for text in prep.per_variable_unit_texts if text),
         *(m.text for mentions in prep.per_variable_sources for m in mentions if m.text),
         *(code for code in prep.per_variable_source_codes if code),
     ]
@@ -828,7 +847,7 @@ async def _handle_single_variable(
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
         per_variable_date_requests=prep.per_variable_date_requests,
-        per_variable_unit_texts=[prep.unit_text] * len(prep.unique),
+        per_variable_unit_texts=prep.per_variable_unit_texts,
         per_variable_source_scopes=prep.per_variable_source_scopes,
         per_variable_source_codes=prep.per_variable_compiled_codes,
         unit_text_best_effort=True,
@@ -961,7 +980,7 @@ async def _handle_multi_variable(
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
         per_variable_date_requests=prep.per_variable_date_requests,
-        per_variable_unit_texts=[prep.unit_text] * len(prep.unique),
+        per_variable_unit_texts=prep.per_variable_unit_texts,
         per_variable_source_scopes=prep.per_variable_source_scopes,
         per_variable_source_codes=prep.per_variable_compiled_codes,
         unit_text_best_effort=True,
@@ -1083,9 +1102,9 @@ async def handle(
         expected_results=len(prep.unique),
     )
 
-    # Include entities, roles, dates, qualifiers, operations, sources, raw-text signals and the
-    # extraction's warnings in the cache key so semantically distinct queries retain separate
-    # entries.
+    # Include entities, roles, dates, qualifiers, operations, sources, the unit text peeled
+    # from each variable, raw-text signals and the extraction's warnings in the cache key so
+    # semantically distinct queries retain separate entries.
     # `query_text` applies only to N=1, matching the single-variable cache readers.
     # A cache hit returns before binding. Core always supplies `scope`.
     # Direct tests may omit it.
@@ -1097,6 +1116,7 @@ async def handle(
             entities=extraction.entities,
             dates=extraction.dates,
             dropped_qualifiers=extraction.dropped_qualifiers,
+            unit_texts=[extract_result.unit_texts.get(v) for v in prep.unique],
             variable_qualifiers=prep.per_variable_qualifiers,
             operations=prep.per_variable_operations,
             entity_roles=prep.entity_roles,

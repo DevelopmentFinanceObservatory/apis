@@ -306,19 +306,20 @@ class SearchSettings(BaseSettings):
 
     # How long a part waits for the UN leg, its resolve and the derivation of its shapes,
     # from the start of derivation, in seconds. The UN derivation runs beside ours, and only
-    # a part whose own pass ends no_data waits for it, or with un_on_first_menu one whose
-    # best shape is weak. Past it that part keeps our answer and carries
-    # un_system_unavailable. Run
-    # beside ours against the live UN deployment, ten queries' UN legs finished 0.89 to
-    # 1.57 s after derivation began; a 1.0 s wait missed one of the ten. The `un_derive` log
-    # line gives each derivation's time. Must be in (0, un_resolve_timeout_s].
+    # a part whose own pass ends no_data or answers on a pick its binder doubted waits for
+    # it, or with un_on_first_menu one whose best shape is weak. Past it that part keeps our
+    # answer and carries un_system_unavailable. Run beside ours against the live UN
+    # deployment, ten queries' UN legs finished 0.89 to 1.57 s after derivation began; a
+    # 1.0 s wait missed one of the ten. The `un_derive` log line gives each derivation's
+    # time. Must be in (0, un_resolve_timeout_s].
     un_first_pass_wait_s: float = 1.5
 
     # Whether our pass's menu also holds the UN leg's shapes, each meeting the same admission
     # and its own pool's floor (`phase_intake._merge_un_pool`). Only a part whose best shape
     # scores below `phase_intake.UN_MERGE_WEAK_SCORE` takes them, waiting for the UN leg up
     # to un_first_pass_wait_s. The UN shapes take the seats ours leave (`seating.seat_menu`).
-    # A part whose merged pass ends no_data still runs the UN pass.
+    # A part whose merged pass ends no_data still runs the UN pass, and one whose binder
+    # doubted its answer runs it over the UN shapes that took no seat on the menu.
     un_on_first_menu: bool = False
 
     # Timeout in seconds for a definite answer's related-measures reads (`related`), which
