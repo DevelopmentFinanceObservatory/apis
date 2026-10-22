@@ -133,9 +133,10 @@ def _log_resolve(
     leg cut at the soft deadline is backfilled as `no_data`/`variable_not_resolved`, so only
     `timed_out` tells it from a real miss.
 
-    `query_sha256` is the sha256 hex of a raw_text query after `.strip().casefold()`, null for
-    other input kinds. It is a pseudonymous key for counting repeats, and hashing a guessed
-    phrasing recovers a common query. The line carries no query text.
+    `query_sha256` is the sha256 hex of a raw_text query after `.strip().casefold()` and
+    UTF-8 encoding with `surrogatepass`, null for other input kinds. It is a pseudonymous key
+    for counting repeats, and hashing a guessed phrasing recovers a common query. The line
+    carries no query text.
 
     Every response-derived field is null, and every list empty, when the request ended before
     its response event.
@@ -153,7 +154,9 @@ def _log_resolve(
         outcome = response.kind
     inp = request.input
     query_sha256 = (
-        hashlib.sha256(inp.query.strip().casefold().encode()).hexdigest()
+        hashlib.sha256(
+            inp.query.strip().casefold().encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
         if isinstance(inp, RawTextInput)
         else None
     )

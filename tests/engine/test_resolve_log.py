@@ -121,3 +121,13 @@ def test_the_query_hash_keys_a_casefolded_raw_text_query_and_carries_no_text():
 
     assert logged["query_sha256"] == hashlib.sha256(b"fertility rate in kenya").hexdigest()
     assert "fertility" not in json.dumps(logged).casefold()
+
+
+@pytest.mark.parametrize(
+    ("query", "encoded"),
+    [("\ud800", b"\xed\xa0\x80"), ("\udfff", b"\xed\xbf\xbf")],
+)
+def test_the_query_hash_preserves_unpaired_surrogates(query, encoded):
+    logged = _logged(make_request(query), _ResolveRecord(trace_id="abc123"))
+
+    assert logged["query_sha256"] == hashlib.sha256(encoded).hexdigest()
