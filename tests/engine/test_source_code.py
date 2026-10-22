@@ -17,6 +17,7 @@ from code_index.shared import get_index
 from code_index.types import IndexStamp, SourceCodeRow
 from datasets_api.adapter import resolve_definition_members
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.core import resolve_async
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
@@ -40,6 +41,7 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import MemberEnumerator
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._binders import RatingBinder
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
@@ -232,10 +234,11 @@ def _answer(
     *,
     recalled: Sequence[str] = (),
     read: str = _IDS,
+    binder: Binder | None = None,
 ):
     """`part`'s answer through the parsed door, over a graph recalling `recalled` and
     coverage holding every StatVar's observations under the provenance `read`, IDS as the
-    graph holds them."""
+    graph holds them, bound by `binder`, the configured one by default."""
     metadata = {
         facet_id: FacetMetadata(provenance_id=read, observation_period="P1Y")
         for _, facet_id, *_ in _COVERAGE_ROWS
@@ -249,19 +252,20 @@ def _answer(
             resolver=make_resolver(graph),
             llm=llm or _BindLLM(),
             sdmx=FakeSdmxClient(observations={}),
+            binder=binder,
         )
     )
     (answer,) = response.parts
     return answer
 
 
-def _minted_members(answer) -> set[str]:
-    """The StatVars the Datasets mint resolves `answer`'s identity to over the fixture
-    index, as the orchestrator's fetch by its spec_id reads them."""
-    identity = answer.spec.definition.identity.model_dump(mode="json", exclude_none=True)
+def _minted_members(spec) -> set[str]:
+    """The StatVars the Datasets mint resolves `spec`'s identity to over the fixture index,
+    as the orchestrator's fetch by its spec_id reads them."""
+    identity = spec.definition.identity.model_dump(mode="json", exclude_none=True)
     resolved = resolve_definition_members(
         identity,
-        spec_id=answer.spec.spec_id,
+        spec_id=spec.spec_id,
         graph=FakeMintGraphReader(arcs={}),
         enumerator=MemberEnumerator(),
         code_index=get_index(),
@@ -372,7 +376,7 @@ def test_the_parsed_door_answers_a_code_from_its_statvars(
         assert answer.status == "definite", answer
         assert answer.restatement.source_code == _DEGG
         assert answer.spec.definition.identity.open_roles == (["origin"] if open_roles else None)
-        assert _minted_members(answer) == {_BY_CREDITOR if open_roles else _AGGREGATE}
+        assert _minted_members(answer.spec) == {_BY_CREDITOR if open_roles else _AGGREGATE}
         return
     assert answer.no_data.reason == reason
     assert answer.no_data.category == "unresolved"
@@ -395,31 +399,27 @@ def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
 
 
 @pytest.mark.parametrize(
-    ("source_code", "recalled", "bound", "open_roles", "exact"),
+    ("source_code", "recalled", "bound", "open_roles", "exact", "unread"),
     [
-        (_DEGG, (), {}, None, {_DEGG: True}),
-        (None, (_AGGREGATE, _BY_CREDITOR), _GG, None, {_DEGG: True}),
-        (None, (_AGGREGATE, _TOTAL), _ALL_DEBTORS, None, {"DT.TDS.DECT.CD": True}),
-        pytest.param(
-            _DPPG,
-            (),
-            {},
-            None,
-            {_DPPG: True},
-        ),
+        (_DEGG, (), {}, None, {_DEGG: True}, ()),
+        (None, (_AGGREGATE, _BY_CREDITOR), _GG, None, {_DEGG: True}, ()),
+        (None, (_AGGREGATE, _TOTAL), _ALL_DEBTORS, None, {"DT.TDS.DECT.CD": True}, ()),
+        (_DPPG, (), {}, None, {_DPPG: True}, ("service",)),
         (
             None,
             (_AGGREGATE, _CENTRAL_BANK),
             _TWO_DEBTOR_TYPES,
             None,
             {_DEGG: False, "DT.TDS.DECB.CD": False},
+            (),
         ),
-        pytest.param(
+        (
             None,
             (_NET_FLOW,),
             _CONCESSIONAL_NET,
             ["creditor"],
             {"DT.NFL.IMFC.CD": False, "DT.NFL.MIDA.CD": False},
+            ("service",),
         ),
     ],
     ids=[
@@ -432,7 +432,7 @@ def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
     ],
 )
 def test_a_served_code_is_exact_where_a_search_for_it_accepts_the_spec(
-    source_code, recalled, bound, open_roles, exact, monkeypatch, bind_catalogue
+    source_code, recalled, bound, open_roles, exact, unread, monkeypatch, bind_catalogue
 ):
     """A Spec lists the codes of the StatVars it serves, and marks one exact only where a
     part naming that code answers with the same Spec: the members a Datasets mint of its
@@ -441,7 +441,9 @@ def test_a_served_code_is_exact_where_a_search_for_it_accepts_the_spec(
     dominates each debtor type's series, so the mint serves DT.TDS.DECT.CD's StatVar alone.
     DT.DOD.DPPG.CD's family holds a variable-rate PPG stock outside the code, which its
     aggregate dominates, so the code part answers. Two debtor types, each its own code,
-    serve a StatVar of each, so neither code is exact."""
+    serve a StatVar of each, so neither code is exact. Neither the PPG debt stock nor the
+    concessional net flows state "service", as the binder rates them, so those parts refuse
+    on it and the Spec each flags lists its codes alike."""
     # The catalogue holds the PPG stock family, as the deployed one does, so a PPG stock
     # shape declares every slot of its family and its identity leaves the variable rate open.
     stocks = (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR, _VARIABLE_PPG_STOCK)
@@ -454,16 +456,30 @@ def test_a_served_code_is_exact_where_a_search_for_it_accepts_the_spec(
         open_roles=open_roles,
     )
 
-    answer = _answer(part, monkeypatch, _BindLLM(bindings=_mentioned(bound)), recalled=recalled)
+    answer = _answer(
+        part,
+        monkeypatch,
+        _BindLLM(bindings=_mentioned(bound)),
+        recalled=recalled,
+        binder=RatingBinder(GeminiBinder(), {"debt": 0.0, "service": 0.0}),
+    )
 
-    assert answer.status == "definite", answer
-    assert served_members(answer.spec.definition.identity) == _minted_members(answer)
-    resolved = answer.spec.resolved
+    if unread:
+        assert answer.no_data.reason == "qualifier_not_bound"
+        assert [(q.text, q.disposition, q.evidence) for q in answer.no_data.unbound_qualifiers] == [
+            (word, "no_vocabulary", "uncovered") for word in unread
+        ]
+        spec = answer.no_data.flagged_match
+    else:
+        assert answer.status == "definite", answer
+        spec = answer.spec
+    assert served_members(spec.definition.identity) == _minted_members(spec)
+    resolved = spec.resolved
     assert resolved.facets["provenance"].ref == _IDS
     assert {(c.provenance, c.code): c.exact for c in resolved.stat_vars.source_codes} == {
         (_IDS, code): flag for code, flag in exact.items()
     }
-    wire = answer.spec.model_dump(mode="json", exclude_none=True)["resolved"]["stat_vars"]
+    wire = spec.model_dump(mode="json", exclude_none=True)["resolved"]["stat_vars"]
     assert ["exact" in entry for entry in wire["source_codes"]] == list(exact.values())
 
 

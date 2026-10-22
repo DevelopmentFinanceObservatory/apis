@@ -38,7 +38,7 @@ from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import Binder
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.errors import (
     DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
@@ -82,7 +82,7 @@ from tests.code_index.aid_identity import (
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
-from tests.engine._binders import ReplyBinder, nominee_ratings
+from tests.engine._binders import RatingBinder, ReplyBinder, nominee_ratings
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events, offline_resolve
@@ -927,6 +927,11 @@ def test_the_reply_reports_the_model_usage_of_every_reading(
     assert usage["input_tokens"] == usage["output_tokens"] == sum(llm.calls.values())
 
 
+# The words of "contributions to multilateral organisations" the coverage rule leaves for
+# the binder to rate on DAC1's multilateral contributions, whose graph name is its dcid.
+_CONTRIBUTION_WORDS = ("contributions", "multilateral", "organisations")
+
+
 @pytest.mark.parametrize(
     ("variable", "entities"),
     [
@@ -963,7 +968,9 @@ def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
     "multilateral" follows a preposition. Kept in the variable, the phrase reads DAC1's
     multilateral contributions from Germany; lifted as a recipient, the alias names the
     multilaterals total as the recipient. Either reply equals the one read without party
-    words, so the party reading leaves the question alone."""
+    words, so the party reading leaves the question alone. Kept in the variable, each word
+    of the phrase is one no reader reads on DAC1's multilateral contributions and the
+    binder rates that series stating."""
     patch_coverage(
         monkeypatch,
         [(_DAC1_CONTRIBUTIONS, "dac1", _DEU, ABSENT_ENTITY, [2019, 2020, 2021])],
@@ -989,9 +996,13 @@ def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
         )
         llm = _ScriptedLLM(variable, entities=entities)
         return _resolve_scripted(
-            "contributions to multilateral organisations from Germany", llm, graph=graph
+            "contributions to multilateral organisations from Germany",
+            llm,
+            graph=graph,
+            binder=binder,
         )
 
+    binder = RatingBinder(GeminiBinder(), dict.fromkeys(_CONTRIBUTION_WORDS, 1.0))
     response = resolve()
     with monkeypatch.context() as patched:
         patched.setattr(pipeline_module, "stated_party_words", lambda state: ())
@@ -1000,6 +1011,7 @@ def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
         (spec,) = _specs(response)
         assert _sources(spec) == [_DAC1]
         assert spec.definition.identity.entities == {"origin": [_DEU]}
+        assert {request.words for request in binder.requests} == {tuple(_CONTRIBUTION_WORDS)}
 
 
 @pytest.mark.parametrize(
@@ -1208,19 +1220,18 @@ def test_the_un_pass_reads_without_the_party_word(monkeypatch: pytest.MonkeyPatc
         pytest.param(
             "multilateral ODA", "answers-then-a-step-fails", id="failing-after-the-un-pass"
         ),
-        pytest.param(
-            "multilateral aid",
-            "refuses",
-            id="the-un-pass-refuses",
-        ),
+        pytest.param("multilateral aid", "refuses", id="the-un-pass-refuses"),
     ],
 )
 def test_a_withdrawn_party_reading_reports_the_usage_of_its_un_pass(
     monkeypatch: pytest.MonkeyPatch, variable, un_pass
 ):
     """A party reading withdrawn after its UN pass made model calls reports them with the
-    rest, one token per call made: whether a later step fails, or the UN pass itself refuses
-    the request, as on a UN series declaring a default unit."""
+    rest, one token per call made, when a later step fails. When the UN pass itself refuses
+    the request, as on a UN series declaring a default unit, the party reading is withdrawn
+    and the reading without party words is read. Neither the CRS nor the UN series states
+    "multilateral", as the binder rates it, so that reading refuses on it, runs its own UN
+    pass, and the declared default refuses the whole request (`pipeline._fill_gap`)."""
     _party_coverage(monkeypatch, from_the_party=False)
     without_word = variable.removeprefix("multilateral ")
     recalled = _party_graph(variable, without_word)
@@ -1251,12 +1262,18 @@ def test_a_withdrawn_party_reading_reports_the_usage_of_its_un_pass(
 
         monkeypatch.setattr(pipeline_module, "with_un_unavailable_warning", failing_once)
     llm = _CountingLLM(variable)
+    binder = RatingBinder(GeminiBinder(), {"multilateral": 0.0})
 
-    response = _resolve_scripted(f"{variable} to Kenya", llm, graph=graph)
-
-    usage = response.diagnostics.llm_usage
-    assert usage is not None
-    assert usage["input_tokens"] == sum(llm.calls.values())
+    if un_pass == "refuses":
+        with pytest.raises(DeclaredDefaultUnsupportedError):
+            _resolve_scripted(f"{variable} to Kenya", llm, graph=graph, binder=binder)
+        # The party reading's UN pass, then the reading without party words and its UN pass.
+        assert [request.pool for request in binder.requests] == ["un_system", "ours", "un_system"]
+    else:
+        response = _resolve_scripted(f"{variable} to Kenya", llm, graph=graph, binder=binder)
+        usage = response.diagnostics.llm_usage
+        assert usage is not None
+        assert usage["input_tokens"] == sum(llm.calls.values())
 
 
 def _stream(query: str, variable: str) -> list[dict]:

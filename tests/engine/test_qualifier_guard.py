@@ -330,16 +330,8 @@ _ENTITIES = ("Kenya", "France", "Hong Kong SAR, China", "Côte d'Ivoire")
         ),
         ("HIV prevalence", _CRS_SLOTS, [("prevalence", ["CRSPurposeCode13040"])]),
         ("imputed multilateral ODA", (_DAC1_SLOT,), [("imputed", ["DAC1AidType2000"])]),
-        pytest.param(
-            "ODA GNI ratio",
-            (_DAC1_SLOT,),
-            [("GNI ratio", ["DAC1AidType1010"])],
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "ratio" is form wording, always read, so the '
-                'record names "GNI" alone',
-                strict=True,
-            ),
-        ),
+        # "ratio" is form wording, always read, so the record names "GNI" alone.
+        ("ODA GNI ratio", (_DAC1_SLOT,), [("GNI", ["DAC1AidType1010"])]),
         ("grant-equivalent ODA", (_DAC1_SLOT,), [("grant-equivalent", ["DAC1AidType1010"])]),
         ("ODA grant equivalents", (_DAC1_SLOT,), [("grant equivalents", ["DAC1AidType1010"])]),
         # A grant-equivalent shape states "grant" and "equivalent", in a hyphenated word
@@ -666,28 +658,117 @@ def test_each_word_of_the_variable_is_read_or_unread(
     assert list(_coverage_reading(state, []).verdicts) == verdicts
 
 
+# The reader gaps: a word no reader reads on a series that states it, which the binder rates
+# stated.
+_READER_UNDER_FIVE = _reader_shape("Under-five mortality rate [under 5 years old]")
+_READER_CONTRIBUTIONS = _reader_shape("Multilateral contributions")
+_READER_POVERTY_LINE = _reader_shape("Proportion of population below international poverty line")
+_READER_FOREST = _reader_shape("Forest area")
+
+
 @pytest.mark.parametrize(
-    ("variable", "ratings", "bar", "verdicts", "records"),
+    ("variable", "shape", "ratings", "bar", "verdicts", "records"),
     [
         # No rating reads the word as stated.
-        ("refugee population", {}, 0.5, [("refugee", "unrated")], []),
-        ("refugee population", {"refugee": 0.1}, 0.5, [("refugee", "unread")], ["refugee"]),
-        ("refugee population", {"refugee": 0.5}, 0.5, [("refugee", "stated")], []),
-        ("refugee population", {"refugee": 0.5}, 0.6, [("refugee", "unread")], ["refugee"]),
+        (
+            "refugee population",
+            _READER_PERSONS,
+            {},
+            0.5,
+            [("refugee", "unrated"), ("population", "measure")],
+            [],
+        ),
+        (
+            "refugee population",
+            _READER_PERSONS,
+            {"refugee": 0.1},
+            0.5,
+            [("refugee", "unread"), ("population", "measure")],
+            ["refugee"],
+        ),
+        (
+            "refugee population",
+            _READER_PERSONS,
+            {"refugee": 0.5},
+            0.5,
+            [("refugee", "stated"), ("population", "measure")],
+            [],
+        ),
+        (
+            "refugee population",
+            _READER_PERSONS,
+            {"refugee": 0.5},
+            0.6,
+            [("refugee", "unread"), ("population", "measure")],
+            ["refugee"],
+        ),
         # Each stretch rated below the bar is one record.
         (
             "stateless refugee population",
+            _READER_PERSONS,
             {"stateless": 0.2, "refugee": 0.3},
             0.5,
-            [("stateless", "unread"), ("refugee", "unread")],
+            [("stateless", "unread"), ("refugee", "unread"), ("population", "measure")],
             ["stateless refugee"],
         ),
         (
             "stateless refugee population",
+            _READER_PERSONS,
             {"stateless": 0.2, "refugee": 0.9},
             0.5,
-            [("stateless", "unread"), ("refugee", "stated")],
+            [("stateless", "unread"), ("refugee", "stated"), ("population", "measure")],
             ["stateless"],
+        ),
+        # A word nominated and rated stated: the under-five rate states "child", DAC1's
+        # multilateral contributions "organisations", the poverty line series the people
+        # "living" describes, and forest area each word of the land use it is a kind of.
+        (
+            "under-5 child mortality rate",
+            _READER_UNDER_FIVE,
+            {"child": 0.9},
+            0.3,
+            [
+                ("under-5", "measure"),
+                ("child", "stated"),
+                ("mortality", "measure"),
+                ("rate", "form"),
+            ],
+            [],
+        ),
+        (
+            "contributions to multilateral organisations",
+            _READER_CONTRIBUTIONS,
+            {"organisations": 0.9},
+            0.3,
+            [
+                ("contributions", "measure"),
+                ("to", "conversational"),
+                ("multilateral", "measure"),
+                ("organisations", "stated"),
+            ],
+            [],
+        ),
+        (
+            "population living in extreme poverty",
+            _READER_POVERTY_LINE,
+            {"living": 0.9, "extreme": 0.9},
+            0.3,
+            [
+                ("population", "measure"),
+                ("living", "stated"),
+                ("in", "conversational"),
+                ("extreme", "stated"),
+                ("poverty", "measure"),
+            ],
+            [],
+        ),
+        (
+            "land use statistic",
+            _READER_FOREST,
+            {"land": 0.9, "use": 0.9, "statistic": 0.9},
+            0.3,
+            [("land", "stated"), ("use", "stated"), ("statistic", "stated")],
+            [],
         ),
     ],
     ids=[
@@ -697,21 +778,25 @@ def test_each_word_of_the_variable_is_read_or_unread(
         "below-a-higher-bar",
         "one-stretch",
         "stretch-split-by-a-stated-word",
+        "nominated-and-rated-stated-child",
+        "nominated-and-rated-stated-organisations",
+        "nominated-and-rated-stated-living",
+        "nominated-and-rated-stated-land-use",
     ],
 )
 def test_a_word_beside_no_code_is_unread_only_when_rated_below_the_bar(
-    search_settings, variable, ratings, bar, verdicts, records
+    search_settings, variable, shape, ratings, bar, verdicts, records
 ):
     """A word beside no code that no reader reads is a ``no_vocabulary`` record only when
     the binder rates the elected shape's series stating it below
     `SearchSettings.stated_word_bar`; at the bar or above it is ``stated``, and with no
     rating it is ``unrated`` and read."""
     search_settings(qualifier_coverage="refuse", stated_word_bar=bar)
-    state = _state(variable=variable, shape_draft=_READER_PERSONS, bindings=[], unplaced=[])
+    state = _state(variable=variable, shape_draft=shape, bindings=[], unplaced=[])
     state.stated_word_ratings = ratings
 
     reading = _coverage_reading(state, [])
-    assert [verdict for verdict in reading.verdicts if verdict[0] != "population"] == verdicts
+    assert list(reading.verdicts) == verdicts
     uncovered = [q for q in _resolve_query_qualifiers(state) if q.evidence == "uncovered"]
     assert [(q.text, q.disposition) for q in uncovered] == [
         (text, "no_vocabulary") for text in records
@@ -1803,7 +1888,7 @@ _VALUE_LITERACY = _value_shape(
 
 
 @pytest.mark.parametrize(
-    ("variable", "elected", "menu", "bound", "entity_roles", "records"),
+    ("variable", "elected", "menu", "bound", "entity_roles", "records", "ratings"),
     [
         # The elected literacy rate has no gender slot, so "female" is unapplied, whatever
         # the bind model reports (female-literacy-bangladesh).
@@ -1814,6 +1899,7 @@ _VALUE_LITERACY = _value_shape(
             [_VALUE_LITERATE],
             {},
             [("female", "no_vocabulary", None)],
+            {},
         ),
         # An answer binding Female applies it.
         (
@@ -1828,6 +1914,7 @@ _VALUE_LITERACY = _value_shape(
             [_VALUE_LITERATE, _VALUE_FEMALE],
             {},
             [],
+            {},
         ),
         # A gender slot left open answers every gender, so "female" is unapplied, a
         # category the gender slot leaves unbound.
@@ -1846,6 +1933,7 @@ _VALUE_LITERACY = _value_shape(
             [_VALUE_LITERATE],
             {},
             [("female", "unbound", "gender")],
+            {},
         ),
         # Every member of the elected shape holds gender Female, so its measure states it.
         (
@@ -1859,6 +1947,7 @@ _VALUE_LITERACY = _value_shape(
             [_VALUE_LITERATE],
             {},
             [],
+            {},
         ),
         # The member binding age 0 is named "Infant Mortality Rate", so the answer states
         # "infant" though it binds no age group (std-07).
@@ -1869,6 +1958,7 @@ _VALUE_LITERACY = _value_shape(
             [("age", ["Years0"])],
             {},
             [],
+            {},
         ),
         # An age group bound absent leaves the age-0 member alone.
         (
@@ -1878,6 +1968,7 @@ _VALUE_LITERACY = _value_shape(
             [("ageGroupClassification", [])],
             {},
             [],
+            {},
         ),
         # With both slots open the answer holds the newborn rate too, whose name lacks
         # "infant", left unbound on the age group slot that holds Infant
@@ -1889,6 +1980,7 @@ _VALUE_LITERACY = _value_shape(
             [],
             {},
             [("infant", "unbound", "ageGroupClassification")],
+            {},
         ),
         # The elected shape's population type is the measure word "student".
         (
@@ -1898,6 +1990,7 @@ _VALUE_LITERACY = _value_shape(
             [_VALUE_LITERATE],
             {},
             [],
+            {},
         ),
         # "German" is the origin role's own words (dq-crs-049), whatever value a sibling
         # labels with it.
@@ -1908,6 +2001,7 @@ _VALUE_LITERACY = _value_shape(
             [_VALUE_LITERATE],
             {"Germany": [DoorRole(axis="origin", span="German")]},
             [],
+            {},
         ),
         # A code term is the code reading's: "health" names purpose 120, and the answer
         # applies it through its descendant 12220.
@@ -1918,6 +2012,7 @@ _VALUE_LITERACY = _value_shape(
             _VALUE_HEALTH_ODA,
             {},
             [],
+            {},
         ),
         # A bound parent purpose selects the members holding its descendants, as
         # materialisation reads it, and each of them holds gender Female.
@@ -1935,16 +2030,19 @@ _VALUE_LITERACY = _value_shape(
             [("crsPurpose", ["CRSPurposeCode120"])],
             {},
             [],
+            {},
         ),
         # A code term is the code readers' even where the elected shape holds no slot of
-        # its system: they judge "health", purpose 120, and this reader names nothing.
-        pytest.param(
+        # its system: they judge "health", purpose 120, and this reader names nothing. The
+        # literacy rate does not state "health", so the binder's rating leaves it unread.
+        (
             "health literacy rate",
             _VALUE_LITERACY,
             [_value_shape("health_sibling", members=[{"crsPurpose": "CRSPurposeCode120"}])],
             [_VALUE_LITERATE],
             {},
-            [],
+            [("health", "no_vocabulary", None)],
+            {"health": 0.0},
         ),
         # "primary education" is also the text of CRS purpose 11220, but the elected
         # completion rate holds no CRS slot, so the code readers judge nothing here and
@@ -1963,6 +2061,7 @@ _VALUE_LITERACY = _value_shape(
             [],
             {},
             [("primary education", "unbound", "educationLevel")],
+            {},
         ),
         # Skill Literacy, the one skill of the UN youth/adult literacy rate, names that
         # series' measure, so "literacy" restricts nothing on the literate share elected
@@ -1982,10 +2081,13 @@ _VALUE_LITERACY = _value_shape(
             [],
             {},
             [],
+            {},
         ),
         # The ECLAC series states both its poverty statuses and splits on them, so "in
-        # extreme poverty" restricts it and another poverty series leaves it unapplied.
-        pytest.param(
+        # extreme poverty" restricts it and another poverty series leaves it unapplied. The
+        # poverty line series is defined over the people "living" describes, so the binder
+        # rates it stated.
+        (
             "population living in extreme poverty",
             _series_shape(
                 "poverty_line",
@@ -2005,9 +2107,11 @@ _VALUE_LITERACY = _value_shape(
             [],
             {},
             [("in extreme poverty", "no_vocabulary", None)],
+            {"living": 1.0},
         ),
-        # SE_TOT_PRFL splits on the two skills its series names (SDG proficiency).
-        pytest.param(
+        # SE_TOT_PRFL splits on the two skills its series names (SDG proficiency). The
+        # completion rate states neither "children" nor "achieving".
+        (
             "children achieving minimum proficiency in mathematics",
             _series_shape("completion", "Completion rate", _UN_YOUTH_AGE),
             [
@@ -2023,10 +2127,15 @@ _VALUE_LITERACY = _value_shape(
             ],
             [],
             {},
-            [("minimum proficiency in mathematics", "no_vocabulary", None)],
+            [
+                ("children achieving", "no_vocabulary", None),
+                ("minimum proficiency in mathematics", "no_vocabulary", None),
+            ],
+            {"children": 0.0, "achieving": 0.0},
         ),
-        # The WHO WASH series splits on the three service types its series names.
-        pytest.param(
+        # The WHO WASH series splits on the three service types its series names. Deaths
+        # from diarrhoea state no cause, so "attributable" and "inadequate" are unread.
+        (
             "diarrhoea deaths attributable to inadequate sanitation",
             _series_shape("diarrhoea_deaths", "Number of deaths from diarrhoea", _UN_YOUTH_AGE),
             [
@@ -2043,7 +2152,12 @@ _VALUE_LITERACY = _value_shape(
             ],
             [],
             {},
-            [("sanitation", "no_vocabulary", None)],
+            [
+                ("attributable", "no_vocabulary", None),
+                ("inadequate", "no_vocabulary", None),
+                ("sanitation", "no_vocabulary", None),
+            ],
+            {"attributable": 0.0, "inadequate": 0.0},
         ),
     ],
     ids=[
@@ -2067,7 +2181,7 @@ _VALUE_LITERACY = _value_shape(
     ],
 )
 def test_a_value_the_request_names_is_judged_against_the_answer(
-    search_settings, variable, elected, menu, bound, entity_roles, records
+    search_settings, variable, elected, menu, bound, entity_roles, records, ratings
 ):
     """Under the refuse coverage mode a word naming, by its graph label, a value a shape on
     the bind menu holds is a requirement the answer leaves unmet unless it binds that
@@ -2075,9 +2189,10 @@ def test_a_value_the_request_names_is_judged_against_the_answer(
     a system the answer holds. An unmet value is a category left unbound on the answer's
     slot for its property, and a distinction the data does not record (``no_vocabulary``)
     on an answer with no such slot. A value with no codes binds absent. The bind model's
-    `unplaced` is empty throughout."""
+    `unplaced` is empty throughout. A word no reader reads is a distinction the data does
+    not record where `ratings`, the binder's, rate the elected series not stating it."""
     search_settings(qualifier_coverage="refuse")
-    assert _value_refusal(variable, elected, menu, bound, entity_roles) == records
+    assert _value_refusal(variable, elected, menu, bound, entity_roles, ratings) == records
 
 
 def _value_refusal(
@@ -2086,9 +2201,11 @@ def _value_refusal(
     menu: Sequence[ShapeDraft],
     bound: Sequence[tuple[str, list[str]]] = (),
     entity_roles: dict[str, list[DoorRole]] | None = None,
+    ratings: dict[str, float] | None = None,
 ) -> list[tuple[str, str, str | None]]:
-    """The terms the elected answer refuses on, with their slots, once the variable's value requirements,
-    read off `menu` and `elected`, are recorded."""
+    """The terms the elected answer refuses on, with their slots, once the variable's value
+    requirements, read off `menu` and `elected`, are recorded, with `ratings` as the
+    binder's rating of each word the coverage rule leaves unrated."""
     entity_roles = entity_roles or {}
     kinds: dict[int, DraftBindingKind] = {0: "absent", 1: "value"}
     state = _state(
@@ -2104,6 +2221,7 @@ def _value_refusal(
     state.bindings = state.bind_result.bindings
     state.entity_roles = entity_roles
     state.capped_shapes = [*menu, elected]
+    state.stated_word_ratings = ratings or {}
     record_reading(state, _resolve_query_qualifiers(state))
     state.requirements = (*state.requirements, *value_requirements(state, state.query_qualifiers))
     missed = refusal_terms(state, state.shape_draft, state.bindings)
@@ -2174,7 +2292,7 @@ def _un_sample(series: str, name: str, skill: str) -> ShapeDraft:
 
 
 @pytest.mark.parametrize(
-    ("variable", "menu", "members", "records"),
+    ("variable", "menu", "members", "records", "ratings"),
     [
         # The catalogue lists every member of the youth/adult literacy rate, and each holds
         # Skill Literacy, so "literacy" names the series' measure.
@@ -2186,10 +2304,12 @@ def _un_sample(series: str, name: str, skill: str) -> ShapeDraft:
                 _un_member(_LITERACY_SERIES, "undata/SKILL-LTRCY", "undata/AGE-Y15T99"),
             ],
             [],
+            {},
         ),
         # The sample shows mathematics alone, but the catalogue's members split on reading
-        # and mathematics, so the skill restricts the series.
-        pytest.param(
+        # and mathematics, so the skill restricts the series. The literate share states
+        # neither "children" nor "achieving".
+        (
             "children achieving minimum proficiency in mathematics",
             _un_sample(
                 _PROFICIENCY_SERIES,
@@ -2201,7 +2321,11 @@ def _un_sample(series: str, name: str, skill: str) -> ShapeDraft:
                 _un_member(_PROFICIENCY_SERIES, "undata/SKILL-MATH", "undata/AGE-Y15T24"),
                 _un_member(_PROFICIENCY_SERIES, "undata/SKILL-READ", "undata/AGE-Y15T24"),
             ],
-            [("minimum proficiency in mathematics", "no_vocabulary", None)],
+            [
+                ("children achieving", "no_vocabulary", None),
+                ("minimum proficiency in mathematics", "no_vocabulary", None),
+            ],
+            {"children": 0.0, "achieving": 0.0},
         ),
         # No source lists the series' whole family, so its sample cannot show the value
         # restricts nothing.
@@ -2210,12 +2334,13 @@ def _un_sample(series: str, name: str, skill: str) -> ShapeDraft:
             _un_sample(_LITERACY_SERIES, "Youth/adult literacy rate", "undata/SKILL-LTRCY"),
             [],
             [("literacy", "no_vocabulary", None)],
+            {},
         ),
     ],
     ids=["family-holds-one-value", "sample-hides-a-split", "family-unlisted"],
 )
 def test_a_value_names_its_series_measure_only_when_its_whole_family_holds_it(
-    search_settings, bind_catalogue, variable, menu, members, records
+    search_settings, bind_catalogue, variable, menu, members, records, ratings
 ):
     """Whether a value its holding series states is that series' measure is read off the
     series' whole family, the UN tables of the origin catalogue here, never off the bind
@@ -2230,7 +2355,7 @@ def test_a_value_names_its_series_measure_only_when_its_whole_family_holds_it(
         "pct_literate", "Percentage of the population that is literate", _UN_YOUTH_AGE
     )
 
-    assert _value_refusal(variable, elected, [menu]) == records
+    assert _value_refusal(variable, elected, [menu], ratings=ratings) == records
 
 
 @pytest.mark.parametrize("mode", ["refuse", "log"])

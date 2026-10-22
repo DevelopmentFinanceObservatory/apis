@@ -8,16 +8,18 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import SlotBindingDraft
+from search.engine.binders import GeminiBinder
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.stated_words_read import StatedWordsOutput
-from tests.engine._binders import elected_reply
+from search.models import NoDataPart
+from tests.engine._binders import RatingBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
-from tests.engine.test_qualifier_suppression_and_provenance import _e2e_graph_for
+from tests.engine.test_qualifier_suppression_and_provenance import _E2E_SV_DCID, _e2e_graph_for
 from tests.fixtures import make_resolver
 
 _QUERY = "standard grants"
@@ -182,16 +184,27 @@ def test_single_variable_raw_query_naming_aid_defaults_the_flow_type():
 
 
 def test_two_variable_raw_query_naming_aid_leaves_the_flow_type_open():
-    """Two extracted variables leave "aid" unattributed, so both flow slots stay open."""
+    """Two extracted variables leave "aid" unattributed, so both flow slots stay open. The
+    grant-equivalent flow both parts elect does not state "loans", as the binder rates it,
+    so that part refuses on it, flagging the flow with its slot open."""
     response = offline_resolve(
         make_request("How much aid did Kenya get?"),
         graph=_e2e_graph_for("funding", "loans"),
         llm=_ExtractFlowOpenLLM(["funding", "loans"]),
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=RatingBinder(GeminiBinder(), {"loans": 0.0}),
     )
 
-    flow_filters = _flow_filters(response)
-    assert len(flow_filters) == 2
-    for flow_filter in flow_filters:
+    funding, loans = response.parts
+    assert isinstance(loans, NoDataPart)
+    assert loans.no_data.reason == "qualifier_not_bound"
+    assert [(q.text, q.disposition, q.evidence) for q in loans.no_data.unbound_qualifiers] == [
+        ("loans", "no_vocabulary", "uncovered")
+    ]
+    flagged = loans.no_data.flagged_match
+    assert flagged is not None
+    assert [member.ref.ref for member in flagged.resolved.members] == [_E2E_SV_DCID]
+    for spec in (funding.spec, flagged):
+        flow_filter = _filter_for(spec, "crsTypeOfFlow")
         assert flow_filter.provenance == "binder"
         assert flow_filter.binding_kind == "unbound"

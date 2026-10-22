@@ -29,7 +29,7 @@ from entity_resolution import Admission
 from origin_catalogue import BASE
 from search.engine import core as search_core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import GeminiBinder
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.departures import warning_key
 from search.engine.entry.parsed import _open_axes_for_part
 from search.engine.errors import EngineInputError, FamilyNotResolvableError, RoleSignatureError
@@ -108,7 +108,7 @@ from series_coverage.shared import CoverageSnapshot
 from statvar_members import MemberEnumerator, member_digest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
-from tests.engine._binders import elected_reply
+from tests.engine._binders import RatingBinder, elected_reply
 from tests.engine._builders import bound_place_context, flow_place_roles
 from tests.engine._fake_coverage import (
     FIXTURE_PROVENANCE,
@@ -706,7 +706,9 @@ def test_a_resubmit_of_a_recipient_only_identity_answers_the_mints_family():
     assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_TOTAL]
 
 
-def _guaranteed_debt_of_kenya(nodes: dict, *, obs: dict | None = None):
+def _guaranteed_debt_of_kenya(
+    nodes: dict, *, obs: dict | None = None, binder: Binder | None = None
+):
     """Resolve "guaranteed debt of Kenya" with the by-creditor members recalled and the
     mint's walk reading `nodes`."""
     query = "guaranteed debt of Kenya"
@@ -733,6 +735,7 @@ def _guaranteed_debt_of_kenya(nodes: dict, *, obs: dict | None = None):
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=_one_role_coverage(nodes, obs),
             options=EngineOptions(materialise_graph=_walk_reader(nodes)),
+            binder=binder,
         )
     )
 
@@ -744,12 +747,23 @@ def test_a_place_whose_walk_meets_a_tie_reports_the_role_signature_refusal(nodes
     assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
 
 
-def test_a_place_whose_walk_finds_a_total_of_another_constraint_value_answers_the_total():
-    result = _guaranteed_debt_of_kenya(_NESTED_NODES, obs={"Tie_Total_Arrears|country/KEN": _OBS})
+def test_a_place_whose_walk_finds_a_total_of_another_constraint_value_elects_the_total():
+    """The walk settles the shape on the arrears total, the recipient-only total of another
+    constraint value. That total does not state "guaranteed", as the binder rates it, so
+    the part refuses on it, flagging the total under `destination: KEN`."""
+    result = _guaranteed_debt_of_kenya(
+        _NESTED_NODES,
+        obs={"Tie_Total_Arrears|country/KEN": _OBS},
+        binder=RatingBinder(GeminiBinder(), {"guaranteed": 0.0}),
+    )
 
-    assert result.status == "definite"
-    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == ["Tie_Total_Arrears"]
-    assert result.specs[0].definition.identity.entities == {"destination": ["country/KEN"]}
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert [(q.text, q.disposition, q.evidence) for q in result.unbound_qualifiers] == [
+        ("guaranteed", "no_vocabulary", "uncovered")
+    ]
+    (flagged,) = result.flagged_match or ()
+    assert [sv.ref.ref for sv in flagged.resolved.members] == ["Tie_Total_Arrears"]
+    assert flagged.definition.identity.entities == {"destination": ["country/KEN"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1058,7 +1072,9 @@ def _run_leg(
     recalled: list[str] | None = None,
 ):
     """Resolve one fan-out leg over Kenya, as a door hands it its operations and its own
-    open roles. Recall finds `recalled`, every member of `nodes` by default."""
+    open roles. Recall finds `recalled`, every member of `nodes` by default. The default
+    `query` is the raw-text door's for a rank over creditors (`_RANK_CREDITORS`); a leg
+    without that rank passes the text its door sends."""
     recalled = list(nodes) if recalled is None else recalled
     graph = FakeGraph(
         nodes={**_PLACES, **nodes},
@@ -1100,6 +1116,10 @@ def _run_leg(
 
 _RECIPIENT_ONLY_NODES = {dcid: _DEBT_NODES[dcid] for dcid in (_TOTAL, _TOTAL_GUARANTEED)}
 
+# The variable a parsed part asking a role open sends (`ParsedPart.open_roles`): its
+# variable text, with the open role and no operation.
+_PARSED_VARIABLE = "external debt stocks"
+
 
 def test_a_rank_over_creditors_on_a_twin_family_keeps_the_operation_and_the_open_creditor():
     """The rank runs over creditors, so the leg leaves the creditor open. The by-creditor
@@ -1124,7 +1144,12 @@ def test_a_parsed_part_asking_every_creditor_answers_as_a_rank_over_creditors_do
     )
     open_axes = _open_axes_for_part(part, pointer_prefix="/input/parts/0")
 
-    opened = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), open_axes=open_axes)
+    opened = _run_leg(
+        nodes=_DEBT_NODES,
+        coverage=_twin_coverage(),
+        open_axes=open_axes,
+        query=part.variable_text,
+    )
     ranked = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), operations=(_RANK_CREDITORS,))
 
     assert open_axes == {"origin"}
@@ -1229,6 +1254,7 @@ def test_an_open_creditor_on_an_index_family_with_no_twin_answers_the_total_and_
         nodes=_DEBT_NODES,
         coverage=coverage,
         open_axes=frozenset({"origin"}),
+        query=_PARSED_VARIABLE,
         recalled=[_TOTAL],
     )
 
@@ -1307,7 +1333,7 @@ def _resubmit_entry(
 def _recipient_only_identity() -> tuple[BaseIdentity, str, CoverageSnapshot]:
     """The recipient-only total's identity at Kenya, its spec_id, and its coverage."""
     coverage = _one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS})
-    first = _run_leg(nodes=_RECIPIENT_ONLY_NODES, coverage=coverage)
+    first = _run_leg(nodes=_RECIPIENT_ONLY_NODES, coverage=coverage, query=_QUERY)
     return first.specs[0].definition.identity, first.specs[0].spec_id, coverage
 
 
@@ -1551,7 +1577,10 @@ def test_an_open_role_a_named_place_binds_drops_and_warns():
     """Kenya, named without a direction, binds the recipient, so the open recipient the
     part asks for drops. The bound role wins and the part says so."""
     region = _run_leg(
-        nodes=_DEBT_NODES, coverage=_twin_coverage(), open_axes=frozenset({"destination"})
+        nodes=_DEBT_NODES,
+        coverage=_twin_coverage(),
+        open_axes=frozenset({"destination"}),
+        query=_PARSED_VARIABLE,
     )
 
     assert region.status == "definite"
@@ -1888,6 +1917,7 @@ def test_an_open_creditor_on_a_recipient_only_answer_warns_once():
         nodes=_RECIPIENT_ONLY_NODES,
         coverage=_one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS}),
         open_axes=frozenset({"origin"}),
+        query=_PARSED_VARIABLE,
     )
 
     assert stamped.status == "definite"
@@ -2357,12 +2387,18 @@ def test_the_unknown_score_floor_exempts_only_a_role_bearing_shape_the_index_car
 # ---------------------------------------------------------------------------
 
 _RECEIVED = "Debt_Received_Total"
-_LOANS_BY_CREDITOR = "Loans_ByCreditor"
-_GRANTS_BY_CREDITOR = "Grants_ByCreditor"
+_DISBURSED_BY_CREDITOR = "Disbursed_ByCreditor"
+_REPAID_BY_CREDITOR = "Repaid_ByCreditor"
+# Two by-creditor families of external debt on different five-tuples, each named for the
+# debt it measures.
 _ANSWER_NODES = {
     _RECEIVED: _node("External debt received", _RECIPIENT, positionType="AmountOutstanding"),
-    _LOANS_BY_CREDITOR: _node("Loans, by creditor", _PAIR, population_type="LoanFlow"),
-    _GRANTS_BY_CREDITOR: _node("Grants, by creditor", _PAIR, population_type="GrantFlow"),
+    _DISBURSED_BY_CREDITOR: _node(
+        "External debt disbursements, by creditor", _PAIR, population_type="DisbursementFlow"
+    ),
+    _REPAID_BY_CREDITOR: _node(
+        "External debt repayments, by creditor", _PAIR, population_type="RepaymentFlow"
+    ),
 }
 
 
@@ -2392,8 +2428,8 @@ def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
     coverage = FakeCoverageService(
         build_coverage_index(
             [
-                (_LOANS_BY_CREDITOR, "f1", "country/CHN", "country/KEN", [2020]),
-                (_GRANTS_BY_CREDITOR, "f1", "country/CHN", "country/KEN", [2020]),
+                (_DISBURSED_BY_CREDITOR, "f1", "country/CHN", "country/KEN", [2020]),
+                (_REPAID_BY_CREDITOR, "f1", "country/CHN", "country/KEN", [2020]),
                 *(
                     (_RECEIVED, "f_received", ABSENT_ENTITY, "country/KEN", [2020])
                     for key in obs
@@ -2401,8 +2437,8 @@ def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
                 ),
             ],
             role_names={
-                _LOANS_BY_CREDITOR: pair_roles,
-                _GRANTS_BY_CREDITOR: pair_roles,
+                _DISBURSED_BY_CREDITOR: pair_roles,
+                _REPAID_BY_CREDITOR: pair_roles,
                 _RECEIVED: RoleNames(donor=None, recipient="financingRecipient"),
             },
         )
@@ -2435,8 +2471,8 @@ def test_a_candidate_set_answers_under_the_roles_of_its_candidates():
 
     assert result.status == "candidates"
     assert {spec.resolved.members[0].ref.ref for spec in result.specs} == {
-        _LOANS_BY_CREDITOR,
-        _GRANTS_BY_CREDITOR,
+        _DISBURSED_BY_CREDITOR,
+        _REPAID_BY_CREDITOR,
     }
     assert result.answered_roles == tuple(_PAIR)
     stamped = with_runnable_operations(result, (_RANK_CREDITORS,))
@@ -2459,7 +2495,7 @@ def test_a_definite_answer_from_an_alternate_answers_under_the_alternates_roles(
     result = _run_beside_by_creditor(obs={f"{_RECEIVED}|country/KEN": _OBS}, also_plausible=[1])
 
     assert result.status == "definite"
-    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_GRANTS_BY_CREDITOR]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_REPAID_BY_CREDITOR]
     assert result.answered_roles == tuple(_PAIR)
     stamped = with_runnable_operations(result, (_RANK_CREDITORS,))
     assert stamped.operations == (_RANK_CREDITORS,)
