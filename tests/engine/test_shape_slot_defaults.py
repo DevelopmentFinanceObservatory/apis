@@ -185,10 +185,11 @@ def _status(
     )
 
 
-def test_births_declare_live_birth_as_the_medical_status_default() -> None:
+def test_the_index_declares_live_births_and_debt_outstanding_as_slot_defaults() -> None:
     defaults = get_index().shape_slot_defaults
     assert [(d.population_type, d.property_dcid, d.value_dcid) for d in defaults] == [
-        ("BirthEvent", "medicalStatus", "LiveBirth")
+        ("BirthEvent", "medicalStatus", "LiveBirth"),
+        ("FinancialPosition", "financialPositionType", "AmountOutstanding"),
     ]
 
 
