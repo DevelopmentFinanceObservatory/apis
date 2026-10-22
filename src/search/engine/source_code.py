@@ -17,7 +17,9 @@ refuses `source_code_not_held` later, from the part's pipeline (`ResolveState.no
 Each `source_code_not_held` names its cause (`NotHeldCause`).
 
 On the raw-text door the extraction names no code, and `scan_source_codes` finds one in the
-query's own words.
+query's own words: a code the index holds, or a token written as a dotted series code
+(`_SERIES_CODE`) the index does not hold, which refuses `source_code_not_held` with cause
+`unknown`, naming the code.
 """
 
 from __future__ import annotations
@@ -49,6 +51,12 @@ its StatVars cannot answer the part as asked (`unanswerable`)."""
 _TOKEN = re.compile("[^\\s()\\[\\]{}<>\"'\u2018\u2019\u201c\u201d,;:!?]+")
 # The characters that make a token read as a code whatever its case.
 _CODE_MARKS = re.compile(r"[._\d]")
+# A dotted series code as the World Bank writes one, held (DT.TDS.DEGG.CD) or not
+# (NY.GDP.MKTP.KD): a two-letter topic, then two or more segments of two to five capitals or
+# digits. Every code the index holds has this shape, and no query of the eval corpus or the
+# sentence panel holds a token of it that is not a code; OECD agency ids (OECD.DCD.FSD), web
+# hosts (www.oecd.org) and numbered targets (3.3.1) fall outside it.
+_SERIES_CODE = re.compile(r"[A-Z]{2}(?:\.[A-Z0-9]{2,5}){2,}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,20 +200,24 @@ def scan_source_codes(query: str, *, measures: Sequence[str], index: CodeIndex) 
     """The series code `query` writes for each of `measures`, parallel to them, `None` for a
     measure it writes none for.
 
-    A token of the query names a code when it writes a code `index` holds (`_reads_as_code`).
-    The code qualifies the measure whose words hold the token, else the only measure, else
-    no measure. A measure keeps the first code the query writes for it."""
+    A token of the query names a code when it writes a code `index` holds (`_reads_as_code`),
+    or when it has the shape of a series code (`_SERIES_CODE`, in any case) the index does not
+    hold, so that `compile_part_code` refuses it. The code qualifies the measure whose words
+    hold the token, else the only measure, else no measure. A measure keeps the first code the
+    query writes for it."""
     codes: list[str | None] = [None] * len(measures)
     measure_tokens = [{_bare(t).upper() for t in _TOKEN.findall(m)} for m in measures]
     for match in _TOKEN.finditer(query):
         token = _bare(match.group())
-        held = token.upper()
-        if not token or not index.source_code_members(held) or not _reads_as_code(token, held):
+        code = token.upper()
+        if not token or not _reads_as_code(token, code):
             continue
-        targets = [i for i, tokens in enumerate(measure_tokens) if held in tokens]
+        if not index.source_code_members(code) and not _SERIES_CODE.fullmatch(code):
+            continue
+        targets = [i for i, tokens in enumerate(measure_tokens) if code in tokens]
         if not targets and len(measures) == 1:
             targets = [0]
         for position in targets:
             if codes[position] is None:
-                codes[position] = held
+                codes[position] = code
     return codes
