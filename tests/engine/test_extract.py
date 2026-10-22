@@ -18,9 +18,11 @@ from search.engine.extract import (
     MAX_OPERATIONS,
     ExtractedDate,
     ExtractedEntity,
+    ExtractedMeasureQualifier,
     ExtractedOperation,
     Extraction,
     ExtractionResult,
+    _admit_measure_qualifiers,
     _admit_operations,
     _drop_forecast_years,
     _occurs_in,
@@ -294,12 +296,20 @@ def test_validate_role_spans_downgrades_an_overlapping_role_span(caplog):
 # _validate_role_spans: the adjectival acceptance route on condition (2)
 
 
-def test_validate_role_spans_keeps_an_adjectival_surface_modifying_a_measure():
-    """A national adjective marks origin when it directly precedes the measure, as in "French aid"."""
-    entities = [_entity("France", span="French", flow_role="origin", role_span="French")]
-    validated = _validate_role_spans("French aid to Senegal", entities, ["aid"])
+@pytest.mark.parametrize(
+    ("query", "text", "span", "variable"),
+    [
+        ("French aid to Senegal", "France", "French", "aid"),
+        ("China loans to Kenya", "China", "China", "loans"),
+        ("IMF credit outstanding Argentina", "IMF", "IMF", "credit outstanding"),
+    ],
+)
+def test_validate_role_spans_keeps_a_surface_modifying_a_measure(query, text, span, variable):
+    """A national adjective or a name directly before the measure is its own cue."""
+    entities = [_entity(text, span=span, flow_role="origin", role_span=span)]
+    validated = _validate_role_spans(query, entities, [variable])
     assert validated[0].flow_role == "origin"
-    assert validated[0].role_span == "French"
+    assert validated[0].role_span == span
 
 
 def test_validate_role_spans_downgrades_an_adjectival_surface_with_no_measure_to_modify():
@@ -2117,6 +2127,25 @@ def test_admit_operations_keeps_a_forecast_naming_no_dated_year_alone(query, phr
     assert targeted == {
         "education aid": (Operation(verb="forecast", phrase=phrase, target_year=target),)
     }
+
+
+def test_admit_measure_qualifiers_keys_each_word_on_its_own_variable():
+    """A narrowing word reaches the variable its index names, once. A word the query does
+    not write, an index outside `variables`, and a blank word are discarded."""
+    query = "total bilateral and imputed multilateral aid to Ethiopia"
+    extraction = Extraction(
+        kind="resolution",
+        variables=["bilateral aid", "imputed multilateral aid"],
+        measure_qualifiers=[
+            ExtractedMeasureQualifier(variable=0, phrase=" bilateral "),
+            ExtractedMeasureQualifier(variable=0, phrase="Bilateral"),
+            ExtractedMeasureQualifier(variable=1, phrase="concessional"),
+            ExtractedMeasureQualifier(variable=2, phrase="imputed"),
+            ExtractedMeasureQualifier(variable=1, phrase=" "),
+        ],
+    )
+
+    assert _admit_measure_qualifiers(query, extraction) == {"bilateral aid": ("bilateral",)}
 
 
 def test_extract_binds_the_year_of_a_past_forecast():

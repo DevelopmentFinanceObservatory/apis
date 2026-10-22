@@ -383,6 +383,7 @@ class CacheScope:
         source_codes: Sequence[str | None] = (),
         separate: Sequence[bool] = (),
         extraction_warnings: Sequence[Warning] = (),
+        measure_qualifiers: Sequence[tuple[str, ...]] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
@@ -391,6 +392,8 @@ class CacheScope:
         and `sources` are required to build a complete key. `source_codes` runs parallel to
         `variables` and holds the series code the query writes for each. `separate` runs parallel to
         `variables` and marks each one the raw query compares with another.
+        `measure_qualifiers` runs parallel to `variables` and holds the words narrowing each
+        one's measure.
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
         serves as stored. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
@@ -429,6 +432,7 @@ class CacheScope:
             scope=self._scope,
             separate=separate,
             extraction_warnings=extraction_warnings,
+            measure_qualifiers=measure_qualifiers,
         )
         self._layer2_key = key
         value, self._layer2_lease = await self._acquire(key)

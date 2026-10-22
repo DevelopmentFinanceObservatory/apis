@@ -82,9 +82,11 @@ from search.engine.qualifier_match import (
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.region.phase_rank_bind import _value_names
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
 from search.engine.region.sentence_events import answer_events
+from search.engine.region.state import qualifier_dropped_warning
 from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import DoorRole, debt_axes, receipt_axes
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
@@ -107,6 +109,7 @@ from search.models import (
     RoleAxis,
     Scope,
     SourceMention,
+    Spec,
     Warning,
 )
 
@@ -522,6 +525,10 @@ class _ExtractionPrep:
     `unit_text` is the dropped phrases that bind as one unit request
     (`_split_unit_phrases`), which every variable's part carries as the parsed door's
     `ParsedPart.unit_text` does; they stay out of `dropped_qualifier_phrases`.
+    `per_variable_measure_qualifiers` runs parallel to `unique` too: the words that narrow
+    each variable's measure (`ExtractionResult.measure_qualifiers`), less any the request's
+    dropped phrases already hold. They reach that variable's part alone
+    (`dropped_phrases_of`), which warns for each its answer leaves unapplied (`onto`).
     `qualifier_facts` holds the departure of each `qualifier_warnings` entry whose phrase
     asks for something (`_dropped_phrase_fact`), under its warning's key. `entity_words`
     maps each entity name to the query's own words for it (`ExtractedEntity.span`), first
@@ -550,6 +557,7 @@ class _ExtractionPrep:
     per_variable_date_requests: list[DateRequest | None]
     interpretation_variables: list[str]
     dropped_qualifier_phrases: list[str]
+    per_variable_measure_qualifiers: list[tuple[str, ...]]
     clamp_warnings: list[Warning]
     qualifier_warnings: list[Warning]
     qualifier_facts: dict[WarningKey, DepartureFact]
@@ -563,12 +571,52 @@ class _ExtractionPrep:
     per_variable_source_codes: list[str | None]
     per_variable_compiled_codes: list[PartCode | None]
 
-    def onto(self, region: RegionResult) -> RegionResult:
-        """`region` holding what this extraction knows beyond it: the departures raised
-        beside the request-wide qualifier warnings and the query's words for each entity."""
-        return with_entity_words(
-            with_departure_facts(region, self.qualifier_facts), self.entity_words
-        )
+    def dropped_phrases_of(self, i: int) -> list[str]:
+        """The dropped phrases the part of `unique[i]` reads: the request's, then the words
+        that narrow its own measure."""
+        return [*self.dropped_qualifier_phrases, *self.per_variable_measure_qualifiers[i]]
+
+    def onto(self, region: RegionResult, i: int) -> RegionResult:
+        """`region`, the part of `unique[i]`, holding what this extraction knows beyond it:
+        the departures raised beside the request-wide qualifier warnings, a
+        `query_qualifier_dropped` warning and its departure for each word narrowing its own
+        measure that its answer leaves unapplied, and the query's words for each entity.
+
+        The answer applies a narrowing word when the region admitted it as a qualifier
+        phrase, or when every Spec it answers with binds a value named by it
+        (`_binds_value_named`): "concessional" on a part that binds IDS Concessional."""
+        unapplied = [
+            phrase
+            for phrase in self.per_variable_measure_qualifiers[i]
+            if _normalize(phrase) not in region.admitted_qualifier_phrases
+            and not (region.specs and all(_binds_value_named(phrase, s) for s in region.specs))
+        ]
+        warnings = [qualifier_dropped_warning(phrase) for phrase in unapplied]
+        facts = dict(self.qualifier_facts)
+        for warning, phrase in zip(warnings, unapplied, strict=True):
+            if (fact := _dropped_phrase_fact(phrase)) is not None:
+                facts[warning_key(warning)] = fact
+        if warnings:
+            region = dataclasses.replace(region, warnings=(*region.warnings, *warnings))
+        return with_entity_words(with_departure_facts(region, facts), self.entity_words)
+
+
+_WORD_RE = re.compile(r"\w+")
+
+
+def _binds_value_named(phrase: str, spec: Spec) -> bool:
+    """Whether `spec` binds a value one of whose names holds every word of `phrase`. A
+    value's names are its graph label and what the qualifier matcher reads for it
+    (`phase_rank_bind._value_names`): "bilateral" names DAC1 "bilateral ODA" and IDS
+    creditor type "Bilateral", and no name of DAC2a "official development assistance"."""
+    words = {match.casefold() for match in _WORD_RE.findall(phrase)}
+    return any(
+        words <= {match.casefold() for match in _WORD_RE.findall(name)}
+        for slot in spec.resolved.trace.slot_filters
+        if slot.key.property is not None
+        for ref in slot.refs
+        for name in _value_names(slot.key.property.ref, ref.ref, ref.label)
+    )
 
 
 def _split_unit_phrases(phrases: Sequence[str]) -> tuple[str | None, list[str]]:
@@ -692,6 +740,15 @@ def _prepare_extraction(
         for warning, phrase in zip(qualifier_warnings, dropped_qualifier_phrases, strict=True)
         if (fact := _dropped_phrase_fact(phrase)) is not None
     }
+    request_phrases = {_normalize(phrase) for phrase in dropped}
+    per_variable_measure_qualifiers = [
+        tuple(
+            phrase
+            for phrase in extract_result.measure_qualifiers.get(v, ())
+            if _normalize(phrase) not in request_phrases
+        )
+        for v in unique
+    ]
 
     entity_words: dict[str, str] = {}
     for entity in extracted_entities:
@@ -734,6 +791,7 @@ def _prepare_extraction(
         per_variable_date_requests=per_variable_date_requests,
         interpretation_variables=interpretation_variables,
         dropped_qualifier_phrases=dropped_qualifier_phrases,
+        per_variable_measure_qualifiers=per_variable_measure_qualifiers,
         clamp_warnings=clamp_warnings,
         qualifier_warnings=qualifier_warnings,
         qualifier_facts=qualifier_facts,
@@ -823,7 +881,9 @@ async def _handle_single_variable(
         degrade_on_error=False,
         use_semaphore=False,
         out=out,
-        dropped_qualifier_phrases=prep.dropped_qualifier_phrases,
+        per_variable_dropped_qualifier_phrases=[
+            prep.dropped_phrases_of(i) for i in range(len(prep.unique))
+        ],
         query_text=query,
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
@@ -846,7 +906,7 @@ async def _handle_single_variable(
         scope.note_health(timed_out=out.timed_out, degraded_leg=out.degraded_leg)
     total_usage = _sum_usage(extract_usage, region.llm_usage)
     # The part and its late departures read the same facts and entity words.
-    answered = prep.onto(region)
+    answered = prep.onto(region, 0)
     response = assemble_region(
         answered,
         query=query,
@@ -957,7 +1017,9 @@ async def _handle_multi_variable(
         degrade_on_error=True,
         use_semaphore=True,
         out=out,
-        dropped_qualifier_phrases=prep.dropped_qualifier_phrases,
+        per_variable_dropped_qualifier_phrases=[
+            prep.dropped_phrases_of(i) for i in range(len(prep.unique))
+        ],
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
         per_variable_date_requests=prep.per_variable_date_requests,
@@ -977,7 +1039,7 @@ async def _handle_multi_variable(
 
     async with aclosing(
         _stream_combined_regions(
-            [prep.onto(region) for region in out.regions],
+            [prep.onto(region, i) for i, region in enumerate(out.regions)],
             initial_llm_usage=extract_usage,
             query=query,
             # Filter before merging. same_shape unions admitted phrases per group.
@@ -1105,6 +1167,7 @@ async def handle(
             query_text=query if len(prep.unique) == 1 else None,
             separate=prep.separate,
             extraction_warnings=prep.clamp_warnings,
+            measure_qualifiers=prep.per_variable_measure_qualifiers,
             llm_usage=extract_usage,
         )
     _log_unclaimed_words(prep, extraction, query=query)

@@ -15,7 +15,7 @@ import asyncio
 import pytest
 
 from search.engine.bind import SlotBindingDraft
-from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.extract import ExtractedEntity, ExtractedMeasureQualifier, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
@@ -240,8 +240,14 @@ def test_a_hallucinated_requested_all_phrase_not_in_the_input_list_is_discarded(
 class _TwoLegLLM:
     """Record each variable's bind prompt and claim the breadth phrase on the CRS shape."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        dropped_qualifiers: tuple[str, ...] = (_BREADTH_PHRASE,),
+        measure_qualifiers: tuple[ExtractedMeasureQualifier, ...] = (),
+    ) -> None:
         self.prompts_by_variable: dict[str, str] = {}
+        self._dropped = list(dropped_qualifiers)
+        self._measure = list(measure_qualifiers)
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "Extraction":
@@ -250,7 +256,8 @@ class _TwoLegLLM:
                 variables=[_QUERY, _RESOLVE_DETECT_QUERY],
                 entities=[ExtractedEntity(text="Kenya")],
                 dates=[],
-                dropped_qualifiers=[_BREADTH_PHRASE],
+                measure_qualifiers=self._measure,
+                dropped_qualifiers=self._dropped,
             ), None
         if schema is QuantityOutput:
             return NO_QUANTITY
@@ -331,6 +338,30 @@ def test_two_variable_query_broadcasts_dropped_qualifiers_to_every_leg():
     assert len(flow_filters) == 1
     assert flow_filters[0].binding_kind == "unbound"
     assert flow_filters[0].provenance != "declared_default"
+
+
+def test_a_measure_qualifier_reaches_its_own_leg_and_warns_on_its_part_alone():
+    """A word narrowing the second measure reaches that leg's bind alone, and the part that
+    leaves it unapplied warns; the other part and the envelope do not."""
+    llm = _TwoLegLLM(
+        dropped_qualifiers=(),
+        measure_qualifiers=(ExtractedMeasureQualifier(variable=1, phrase="grants"),),
+    )
+    response = offline_resolve(
+        make_request("standard grants and population"),
+        graph=_two_leg_graph(),
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert "DROPPED QUALIFIERS" not in llm.prompts_by_variable[_QUERY]
+    assert "grants" in llm.prompts_by_variable[_RESOLVE_DETECT_QUERY].split("DROPPED QUALIFIERS")[1]
+    dropped = 'The requested qualifier "grants" was not applied.'
+    assert [w.message for w in response.parts[1].warnings if w.code == QUERY_QUALIFIER_DROPPED] == [
+        dropped
+    ]
+    assert not [w for w in response.parts[0].warnings if w.code == QUERY_QUALIFIER_DROPPED]
+    assert not [w for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED]
 
 
 def test_a_requested_all_claim_on_a_property_the_elected_shape_lacks_keeps_its_warning():

@@ -679,3 +679,12 @@
     definite:
       measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_Nominal]}
       entities: [{dcid: country/GEO, role: destination}]
+
+- id: dq-ids-065
+  query: IMF credit outstanding Argentina
+  why: '"IMF credit" names the IMF as the lender, so it is the origin entity of the by-creditor debt stock and Argentina the debtor.'
+  tags: {theme: debt, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock}
+      entities: [{dcid: InternationalMonetaryFund, role: origin}, {dcid: country/ARG, role: destination}]
