@@ -115,6 +115,7 @@ def scope_document(
     max_candidates: int,
     seam_default: bool,
     qualifier_coverage: Literal["log", "refuse"],
+    stated_word_bar: float,
     build_commit: str,
     binder: str,
     model: str,
@@ -131,14 +132,15 @@ def scope_document(
     """Build shared key material from caller-supplied values.
 
     Includes the schema, defaulted response options, effective candidate cap,
-    place-as-constraint default, qualifier coverage mode, build commit, the binder the
+    place-as-constraint default, qualifier coverage mode and the bar its rated words are
+    held to, build commit, the binder the
     request resolved to and the model it answers with, the engine's Gemini model, which
     runs extraction and every other model call whichever binder answers, seed, day, graph
     and coverage
     stamps, the revision of the conversion catalogue the request
     bound (None when it bound none), and the build of the origin catalogue it bound with
     its UN System setting, which decide what provenances an answer admits. The cap, the
-    place default and the coverage mode can change answers without changing the build
+    place default, the coverage mode and its bar can change answers without changing the build
     commit. A catalogue
     reload changes the revision or build and not the graph generation. Each stamp is
     captured once and invalidates both layers when it changes. `bundle` marks a request
@@ -151,6 +153,7 @@ def scope_document(
         "response_options": _resolved_options(options, max_candidates=max_candidates),
         "seam_default": seam_default,
         "qualifier_coverage": qualifier_coverage,
+        "stated_word_bar": stated_word_bar,
         "build_commit": build_commit,
         "binder": binder,
         "model": model,

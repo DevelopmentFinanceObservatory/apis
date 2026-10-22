@@ -280,11 +280,16 @@ class SearchSettings(BaseSettings):
     seam_default: bool = True
 
     # -- Qualifier coverage -------------------------------------------------
-    # Sets what happens to a word no reader covers beside a recognised code
-    # (`phase_rank_bind._coverage_records`). "refuse" records it, so the part refuses
-    # qualifier_not_bound with the near match. "log" logs the record it would add and
-    # answers as if it were absent.
+    # Sets what happens to a word of the variable no reader covers, beside a recognised
+    # code or rated unread beside none (`phase_rank_bind._coverage_records`). "refuse"
+    # records it, so the part refuses qualifier_not_bound with the near match. "log" logs
+    # the record it would add, with the binder's ratings, and answers as if it were absent.
     qualifier_coverage: Literal["log", "refuse"] = "refuse"
+    # The probability below which a word the coverage readers leave unread beside no code
+    # is unread: the binder rates how likely the elected shape's series states what the
+    # word names (`Binder.rate_words_stated`), and a word rated below it is a record. A
+    # word rated at or above it, or not rated, reads as stated.
+    stated_word_bar: float = Field(default=0.5, ge=0, le=1)
 
     # -- Security / prompt safety ------------------------------------------
     # FastAPI rejects longer queries with 422 before any LLM or graph call.

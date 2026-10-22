@@ -403,10 +403,6 @@ def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
             {},
             None,
             {_DPPG: True},
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" is unread on the PPG debt stock the code names',
-                strict=True,
-            ),
         ),
         (
             None,
@@ -421,10 +417,6 @@ def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
             _CONCESSIONAL_NET,
             ["creditor"],
             {"DT.NFL.IMFC.CD": False, "DT.NFL.MIDA.CD": False},
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "debt service" is unread on concessional net flows',
-                strict=True,
-            ),
         ),
     ],
     ids=[

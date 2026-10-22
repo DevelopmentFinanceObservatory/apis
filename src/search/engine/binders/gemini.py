@@ -23,6 +23,7 @@ from search.engine.binders.base import (
     BindResult,
     PolicyContractError,
     QuantityRequest,
+    StatedWordsRequest,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.config import settings
@@ -83,6 +84,12 @@ class GeminiBinder:
         self, request: QuantityRequest, *, llm: SupportsLLM
     ) -> tuple[QuantityOutput, dict | None]:
         return await read_stated_quantity(request.variable, request.denominators, llm=llm)
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """No rating and no call: each word counts as stated."""
+        return {}, None
 
     async def bind(
         self, request: BindRequest, *, llm: SupportsLLM

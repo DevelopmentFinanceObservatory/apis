@@ -137,7 +137,7 @@ def _state(*, shape_draft: ShapeDraft, bindings: list[SlotBindingDraft]) -> Reso
 
 
 def _run_repair(state: ResolveState) -> list[SlotBindingDraft]:
-    result = _repair_bindings(state)
+    result = asyncio.run(_repair_bindings(state))
     assert result is None, "expected _repair_bindings to fall through"
     return state.bindings
 

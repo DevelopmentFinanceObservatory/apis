@@ -37,6 +37,7 @@ from search.engine.binders.base import (
     BindResult,
     PolicyContractError,
     QuantityRequest,
+    StatedWordsRequest,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev import FallbackCause, JevCall, JevFailure
@@ -189,6 +190,16 @@ class FallbackBinder:
             inherited=inherited,
         )
         return result, usage
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """The rating of the binder that answered the bind call (`BindResult.binder`): the
+        primary's from its bind answers, else the fallback's."""
+        decision = request.decision
+        if decision is not None and decision.binder == self.primary.name:
+            return self.primary.stated_words(request), None
+        return await self.fallback.rate_words_stated(request, llm=llm)
 
     def _earlier_failure(self, part: int | None) -> JevFailure | None:
         """The failure an earlier call of `part` fell back on, recorded for this call as one

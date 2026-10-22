@@ -1,10 +1,11 @@
 """The interface the engine reads the stated quantity and elects a shape through.
 
-A `Binder` answers the two model questions of a part: which form and base the variable
-phrase states (`Binder.read_quantity`), and which menu shape the part means with its slot
-bindings (`Binder.bind`). The engine builds one `BindRequest` per bind call and reads the
-binder's `BindResult`. The quantity read
-takes one `QuantityRequest`.
+A `Binder` answers the model questions of a part: which form and base the variable
+phrase states (`Binder.read_quantity`), which menu shape the part means with its slot
+bindings (`Binder.bind`), and how likely the elected shape's series states each word of
+the variable the coverage readers leave unread (`Binder.rate_words_stated`). The engine
+builds one `BindRequest` per bind call and reads the binder's `BindResult`. The quantity
+read takes one `QuantityRequest`, and the rating one `StatedWordsRequest`.
 """
 
 from __future__ import annotations
@@ -85,6 +86,12 @@ class BindRequest:
     roles were read from. `policy_chooses_on` asks whether a house policy would choose on
     a measure axis among menu shapes, None when no policy reads the menu. `part` and `pool`
     join a binder's log lines to the part's, as on `QuantityRequest`.
+
+    `nominated_words` holds, for each shape in menu order, the casefolded words of the
+    variable that the readers reading no binding leave unread on it
+    (`phase_rank_bind._nominated_words`). Every word `Binder.rate_words_stated` is later
+    asked to rate on the elected shape is among its shape's, so a binder may answer the
+    rating from questions it asks in the bind.
     """
 
     variable: str
@@ -94,6 +101,7 @@ class BindRequest:
     withheld_measure_axes: frozenset[str] = frozenset()
     dropped_qualifier_phrases: tuple[str, ...] = ()
     candidate_menus: Sequence[tuple[CandidateMenu, ...]] = ()
+    nominated_words: Sequence[tuple[str, ...]] = ()
     frame: Frame | None = None
     refused: Sequence[Interpretation] = ()
     availability: Sequence[bool | None] = ()
@@ -118,7 +126,10 @@ class BindResult:
     ``bind_decision`` line logs them; empty when the binder states none. `none_first` says
     the binder elected a shape though it rated "none of the shapes" above every one, so the
     UN System Data Commons' pass may replace the answer (`region.pipeline._fill_gap`); a
-    binder that offers no such rating leaves it False.
+    binder that offers no such rating leaves it False. `stated_words` holds the
+    probability, by menu index and nominated word (`BindRequest.nominated_words`), that
+    the shape's series states what the word names, for a binder that asks it in the bind;
+    empty for one that does not.
     """
 
     output: _UniversalBindOutput
@@ -127,6 +138,25 @@ class BindResult:
     policy_choice: PolicyChoice | None = None
     scores: Mapping[str, Sequence[float] | float] = field(default_factory=dict)
     none_first: bool = False
+    stated_words: Mapping[tuple[int, str], float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StatedWordsRequest:
+    """One rating of the words of the variable the coverage readers leave unread on the
+    elected shape over the final bindings (`phase_rank_bind._unrated_words`): the variable
+    phrase, the elected shape and its index in the bind menu (None for a refused reading
+    standing in for a declined menu), the casefolded words, each among the shape's
+    `BindRequest.nominated_words`, and the bind call's result. `part` and `pool` join a
+    binder's log lines to the part's, as on `QuantityRequest`."""
+
+    variable: str
+    shape: ShapeDraft
+    shape_index: int | None
+    words: tuple[str, ...]
+    decision: BindResult | None
+    part: int | None = None
+    pool: Pool | None = None
 
 
 class Binder(Protocol):
@@ -161,4 +191,15 @@ class Binder(Protocol):
     ) -> tuple[BindResult, dict | None]:
         """The shape `request`'s menu elects with its slot bindings, and the call's token
         usage. Raises `LLMOutputRefused` for a reply the bind schema refuses."""
+        ...
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """For each word of `request.words` the binder rates, the probability that the
+        elected shape's series states what the word names: near 1 when the series counts
+        only what the word names, so the word is read, near 0 when it counts more, so the
+        word is unread. A word left out is unrated, which the coverage rule counts as
+        stated. Also the call's token usage. Raises `LLMInfraError` for a read that
+        failed."""
         ...

@@ -36,6 +36,7 @@ def _scope(
     max_candidates: int = 6,
     seam_default: bool = True,
     qualifier_coverage: Literal["log", "refuse"] = "log",
+    stated_word_bar: float = 0.5,
     build_commit: str = "commit-a",
     binder: str = "gemini",
     model: str = "model-a",
@@ -54,6 +55,7 @@ def _scope(
         max_candidates=max_candidates,
         seam_default=seam_default,
         qualifier_coverage=qualifier_coverage,
+        stated_word_bar=stated_word_bar,
         build_commit=build_commit,
         binder=binder,
         model=model,
@@ -764,6 +766,14 @@ def test_different_qualifier_coverage_changes_key() -> None:
     assert log != refuse
 
 
+def test_different_stated_word_bar_changes_key() -> None:
+    """SEARCH_STATED_WORD_BAR decides which rated word refuses, with no per-request
+    override, so it changes the answer without moving build_commit."""
+    low = layer1_key(query="gdp kenya", scope=_scope(stated_word_bar=0.4))
+    high = layer1_key(query="gdp kenya", scope=_scope(stated_word_bar=0.6))
+    assert low != high
+
+
 def test_different_today_changes_key() -> None:
     """The current day changes an open-ended window's result and belongs in the key."""
     day_one = layer1_key(query="gdp kenya", scope=_scope(today="2026-09-20"))
@@ -855,6 +865,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         max_candidates=5,
         seam_default=True,
         qualifier_coverage="log",
+        stated_word_bar=0.5,
         build_commit="commit-a",
         binder="gemini",
         model="model-a",
@@ -876,6 +887,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         build_commit="commit-a",
         seam_default=True,
         qualifier_coverage="log",
+        stated_word_bar=0.5,
         max_candidates=5,
         options=ResolveOptions(include_skills=True),
         schema_version=1,

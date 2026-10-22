@@ -491,10 +491,6 @@ def test_single_bind_output_passes_value_set_unbound_and_absent_without_transfer
     assert isinstance(slots["function"], BindingUnbound)
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "female" is unread on the literate rate, which binds no gender',
-    strict=True,
-)
 def test_rate_filter_never_transfers_a_cross_member_raw_binding_combination() -> None:
     raw_female = "RawFemale"
     raw_literate = "RawLiterate"

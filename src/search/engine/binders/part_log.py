@@ -13,9 +13,15 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
-from search.engine.binders.base import BindRequest, BindResult, QuantityRequest
+from search.engine.binders.base import (
+    BindRequest,
+    BindResult,
+    QuantityRequest,
+    StatedWordsRequest,
+)
 
 if TYPE_CHECKING:
     from search.engine.binders.base import Binder
@@ -115,3 +121,8 @@ class DirectBinder:
         answer = await self.binder.bind(request, llm=llm)
         log_binder_part(call="bind", binder=self.name, served_by=self.name, ms=elapsed_ms(started))
         return answer
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        return await self.binder.rate_words_stated(request, llm=llm)

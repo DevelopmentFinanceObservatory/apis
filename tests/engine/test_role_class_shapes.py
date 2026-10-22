@@ -741,10 +741,6 @@ def test_a_place_whose_walk_meets_a_tie_reports_the_role_signature_refusal(nodes
     assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "guaranteed" is unread on the by-creditor members bind selects',
-    strict=True,
-)
 def test_a_place_whose_walk_finds_a_total_of_another_constraint_value_answers_the_total():
     result = _guaranteed_debt_of_kenya(_NESTED_NODES, obs={"Tie_Total_Arrears|country/KEN": _OBS})
 
@@ -1113,11 +1109,6 @@ def test_a_rank_over_creditors_on_a_twin_family_keeps_the_operation_and_the_open
     assert not [w for w in region.warnings if w.code == "query_qualifier_dropped"]
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "top" (and "creditors" on a shape declaring no creditor) is '
-    "unread on the leg, which carries no rank operation",
-    strict=True,
-)
 def test_a_parsed_part_asking_every_creditor_answers_as_a_rank_over_creditors_does():
     part = ParsedPart(
         variable_text="external debt stocks",
@@ -1219,11 +1210,6 @@ def test_an_open_creditor_elects_the_index_familys_twin_that_recall_missed(monke
     assert not [w for w in region.warnings if w.code == "query_qualifier_dropped"]
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "top" (and "creditors" on a shape declaring no creditor) is '
-    "unread on the leg, which carries no rank operation",
-    strict=True,
-)
 def test_an_open_creditor_on_an_index_family_with_no_twin_answers_the_total_and_warns(
     monkeypatch,
 ):
@@ -1318,11 +1304,6 @@ def _recipient_only_identity() -> tuple[BaseIdentity, str, CoverageSnapshot]:
     return first.specs[0].definition.identity, first.specs[0].spec_id, coverage
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "top" (and "creditors" on a shape declaring no creditor) is '
-    "unread on the leg, which carries no rank operation",
-    strict=True,
-)
 def test_a_resubmit_naming_an_open_creditor_no_member_serves_refuses(monkeypatch):
     """The posted identity asks for every creditor, and no member of the family declares
     one, so the resubmit cannot give a series per creditor and refuses. The identity is the
@@ -1400,11 +1381,6 @@ def _resubmit_candidates(
     )
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "top" (and "creditors" on a shape declaring no creditor) is '
-    "unread on the leg, which carries no rank operation",
-    strict=True,
-)
 def test_a_candidate_whose_open_creditor_no_member_serves_refuses(monkeypatch):
     """A candidate's open role is a promise, like an identity entry's. No member of the
     family declares a creditor, so the candidate set refuses."""
@@ -1564,11 +1540,6 @@ def test_a_recipient_only_answer_settles_the_shape_on_the_recipient_alone(monkey
     assert state.shape_draft.declared_roles == ("financingRecipient",)
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "top" (and "creditors" on a shape declaring no creditor) is '
-    "unread on the leg, which carries no rank operation",
-    strict=True,
-)
 def test_an_open_role_a_named_place_binds_drops_and_warns():
     """Kenya, named without a direction, binds the recipient, so the open recipient the
     part asks for drops. The bound role wins and the part says so."""
@@ -1899,11 +1870,6 @@ _OPEN_CREDITOR_DROPPED = (
 )
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "top" (and "creditors" on a shape declaring no creditor) is '
-    "unread on the leg, which carries no rank operation",
-    strict=True,
-)
 def test_an_open_creditor_on_a_recipient_only_answer_warns_once():
     """No member declares the creditor, so the open creditor the part asks for elects as it
     would unasked and the answer is the total over every creditor. An axis asked member by
@@ -2447,9 +2413,6 @@ def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
     )
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "external debt" is unread on loans and grants by creditor', strict=True
-)
 def test_a_candidate_set_answers_under_the_roles_of_its_candidates():
     """A rank over creditors needs the origin axis, so the recipient-only total, which
     declares none, is no candidate (`lacks_query_axis`), and the two by-creditor shapes
@@ -2468,9 +2431,6 @@ def test_a_candidate_set_answers_under_the_roles_of_its_candidates():
     assert not [w for w in stamped.warnings if w.code == "query_qualifier_dropped"]
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "external debt" is unread on loans and grants by creditor', strict=True
-)
 def test_a_definite_answer_from_an_alternate_answers_under_the_alternates_roles(monkeypatch):
     """A bound unit can leave the elected Spec out of the candidate set
     (`candidate_collapse._apply_bound_unit_filter`), and the other by-creditor shape then

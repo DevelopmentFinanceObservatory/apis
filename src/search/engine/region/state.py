@@ -971,6 +971,12 @@ class ResolveState:
     # (`phase_election.log_would_refuse`). Empty in refuse mode.
     would_refuse: tuple[ResolvedQualifier, ...] = ()
     word_verdicts: tuple[tuple[str, str], ...] = ()
+    # The binder's rating of each casefolded word the coverage rule leaves unrated on the
+    # elected shape over the final bindings: the probability that the shape's series states
+    # what the word names (`phase_election._rate_unread_words`). The rule reads a word
+    # rated below `SearchSettings.stated_word_bar` as unread. Empty until the bindings
+    # settle, and for a read that failed.
+    stated_word_ratings: Mapping[str, float] = field(default_factory=dict)
     # Every term the request names that each final answer is judged against
     # (`Requirement`), in the order recorded.
     requirements: tuple[Requirement, ...] = ()

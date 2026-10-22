@@ -937,11 +937,6 @@ def test_the_reply_reports_the_model_usage_of_every_reading(
                 ),
             ),
             id="the-phrase-in-the-variable",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "organisations" is unread on DAC1 multilateral '
-                "contributions",
-                strict=True,
-            ),
         ),
         pytest.param(
             "contributions",
@@ -1214,12 +1209,6 @@ def test_the_un_pass_reads_without_the_party_word(monkeypatch: pytest.MonkeyPatc
             "multilateral aid",
             "refuses",
             id="the-un-pass-refuses",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "multilateral" is unread on the CRS reading without '
-                "party words, so its own UN pass runs and refuses the request",
-                raises=DeclaredDefaultUnsupportedError,
-                strict=True,
-            ),
         ),
     ],
 )

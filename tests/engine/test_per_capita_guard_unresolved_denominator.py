@@ -584,26 +584,14 @@ def _members(spec) -> list[str]:
         pytest.param(
             "debt to GDP ratio",
             (),
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "GDP" is unread on the dollar level, which the trace now records',
-                strict=True,
-            ),
         ),
         pytest.param(
             "debt service as a share of exports",
             (),
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "exports" are unread on the dollar level, which the trace now records',
-                strict=True,
-            ),
         ),
         pytest.param(
             "measles debt to GDP ratio",
             ("measles",),
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "GDP" is unread on the dollar level, which the trace now records',
-                strict=True,
-            ),
         ),
     ],
     ids=["rate", "share", "rate-unplaced-word"],
@@ -929,10 +917,6 @@ def test_ghana_debt_to_gdp_flags_the_share_of_gni_with_the_debt_stock_nearest(mo
             (),
             "definite",
             [],
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "exports" is unread on the share of GNI when the read quotes no base',
-                strict=True,
-            ),
         ),
         pytest.param(
             "External debt (% of GNI)",
@@ -940,10 +924,6 @@ def test_ghana_debt_to_gdp_flags_the_share_of_gni_with_the_debt_stock_nearest(mo
             (),
             "definite",
             [],
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "exports" is unread on the share of GNI when the read quotes no base',
-                strict=True,
-            ),
         ),
         # The quoted base leaves the level not electable, so bind asks, naming it nearest.
         (None, "exports", (), "no_data", []),
@@ -1088,10 +1068,6 @@ def test_a_form_only_the_model_states_refuses_the_level_before_bind(monkeypatch)
             None,
             "definite",
             None,
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "GDP" is unread on a series whose name lacks it and no base read names it',
-                strict=True,
-            ),
         ),
         ("debt to GDP", "External debt to GDP ratio", "GDP", "rate", "definite", "rate"),
         # "ratio" names a rate, so the model's form is not read.
@@ -1102,10 +1078,6 @@ def test_a_form_only_the_model_states_refuses_the_level_before_bind(monkeypatch)
             "per_person",
             "definite",
             None,
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "GDP" is unread on a series whose name lacks it and no base read names it',
-                strict=True,
-            ),
         ),
     ],
     ids=["none-stated", "stated-rate-traced", "phrase-form-wins"],
@@ -1131,10 +1103,6 @@ class _QuantityReadFailsLLM(_ReadingLLM):
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
 
 
-@pytest.mark.xfail(
-    reason='coverage reader: "GDP" is unread on a series whose name lacks it and no base read names it',
-    strict=True,
-)
 def test_a_failed_quantity_read_answers_as_a_phrase_naming_no_form(monkeypatch):
     """ "debt to GDP" names no form a phrase reads. A failed quantity read leaves the part
     answering on the elected level, as a read that states no form does
@@ -1219,82 +1187,46 @@ def test_an_unverified_series_without_data_raises_no_unverified_warning(monkeypa
             None,
             None,
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         pytest.param(
             "Ghana",
             None,
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         pytest.param(
             "private creditors",
             None,
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         pytest.param(
             "private creditors",
             "rate",
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         pytest.param(
             "private",
             None,
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         pytest.param(
             "to private creditors",
             None,
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         pytest.param(
             "to private creditors",
             "rate",
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         pytest.param(
             "to",
             "rate",
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         pytest.param(
             "Ghana",
             "rate",
             "definite",
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "service" and "private creditors" are unread on the dollar debt level',
-                strict=True,
-            ),
         ),
         (None, "rate", "no_data"),
         (None, "share", "no_data"),

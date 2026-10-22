@@ -23,7 +23,12 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from typesafe_sdk import JSONContent
 
 from code_index.shared import get_index
-from search.engine.binders.base import BindRequest, BindResult, QuantityRequest
+from search.engine.binders.base import (
+    BindRequest,
+    BindResult,
+    QuantityRequest,
+    StatedWordsRequest,
+)
 from search.engine.binders.jev_assemble import (
     JevAnswers,
     Population,
@@ -175,6 +180,25 @@ class JevBinder:
     ) -> tuple[BindResult, dict | None]:
         result, call = await self.elect(request)
         return result, call.usage
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """The ratings Jev gave the elected shape's words in the bind
+        (`BindResult.stated_words`), with no request."""
+        return self.stated_words(request), None
+
+    def stated_words(self, request: StatedWordsRequest) -> dict[str, float]:
+        """Each word of `request` the bind's answers rate on the elected shape
+        (`BindResult.stated_words`); none on a shape outside the menu."""
+        decision, index = request.decision, request.shape_index
+        if decision is None or index is None:
+            return {}
+        return {
+            word: decision.stated_words[(index, word)]
+            for word in request.words
+            if (index, word) in decision.stated_words
+        }
 
     async def quantity(self, request: QuantityRequest) -> tuple[QuantityOutput, JevCall]:
         """The quantity read and the Jev request it took.

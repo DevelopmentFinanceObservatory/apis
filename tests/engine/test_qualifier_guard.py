@@ -6,6 +6,7 @@ synthetic shapes that prevent measure-family election from changing bindings.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from collections.abc import Sequence
 from dataclasses import replace
@@ -20,11 +21,14 @@ from entity_resolution import Admission, Entity, EntityResolver, Resolved
 from origin_catalogue import UnTables
 from origin_catalogue.un_mirror import UnVariable
 from search.engine.bind import DraftBindingKind, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import _build_part
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.departures import measure_not_applied, warning_key
+from search.engine.errors import LLMInfraError
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import QualifierSpan
@@ -32,8 +36,10 @@ from search.engine.quantity import NamedDenominator
 from search.engine.region.phase_election import _repair_bindings
 from search.engine.region.phase_rank_bind import (
     _coverage_reading,
+    _nominated_words,
     _qualifier_disposition,
     _resolve_query_qualifiers,
+    _unrated_words,
     _unread_runs,
     judge_value_requirements,
     value_requirements,
@@ -66,6 +72,7 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import GraphRef, NoData, NoDataPart, ResolvedQualifier, Spec
 from tests.conftest import minimal_spec
+from tests.engine._binders import RatingBinder
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._index_slots import crs_flow_slot_keys, own_variable_spans, read_text
@@ -156,7 +163,7 @@ def _state(
 
 
 def _run(state: ResolveState) -> list[ResolvedQualifier]:
-    result = _repair_bindings(state)
+    result = asyncio.run(_repair_bindings(state))
     assert result is None, "expected _repair_bindings to fall through"
     return state.query_qualifiers
 
@@ -422,13 +429,14 @@ _READER_DEBT_BY_CREDITOR = replace(
 @pytest.mark.parametrize(
     ("variable", "shape", "unit_text", "base_words", "verdicts"),
     [
-        # The count of all persons states the count, never who is counted.
+        # The count of all persons states the count, not who is counted, so the binder
+        # rates "refugee".
         (
             "refugee population",
             _READER_PERSONS,
             None,
             None,
-            [("refugee", "unread"), ("population", "measure")],
+            [("refugee", "unrated"), ("population", "measure")],
         ),
         ("refugees", _READER_REFUGEES, None, None, [("refugees", "measure")]),
         (
@@ -457,7 +465,7 @@ _READER_DEBT_BY_CREDITOR = replace(
                 _READER_REFUGEE_SHARE,
                 None,
                 None,
-                [("refugee", "measure"), (noun, "unread")],
+                [("refugee", "measure"), (noun, "unrated")],
                 id=f"no-count-shape-{noun}",
             )
             for noun in ("number", "population", "people", "persons")
@@ -492,7 +500,7 @@ _READER_DEBT_BY_CREDITOR = replace(
                 ("tax", "measure"),
                 ("revenue", "measure"),
                 ("of", "conversational"),
-                ("GDP", "unread"),
+                ("GDP", "unrated"),
             ],
         ),
         (
@@ -533,7 +541,7 @@ _READER_DEBT_BY_CREDITOR = replace(
                 ("tax", "measure"),
                 ("revenue", "measure"),
                 ("in", "conversational"),
-                ("euros", "unread"),
+                ("euros", "unrated"),
             ],
         ),
         # A role noun on an axis the shape declares.
@@ -560,23 +568,24 @@ _READER_DEBT_BY_CREDITOR = replace(
                 ("debt", "measure"),
                 ("stocks", "measure"),
                 ("by", "conversational"),
-                ("creditors", "unread"),
+                ("creditors", "unrated"),
             ],
         ),
-        # Two forms of one word: a shared start of five letters or more.
+        # Only words the code index folds alike read each other, so another form of a
+        # name word is left for the binder to rate.
         (
             "literacy rate",
             _reader_shape("Population: Literate"),
             None,
             None,
-            [("literacy", "measure"), ("rate", "form")],
+            [("literacy", "unrated"), ("rate", "form")],
         ),
         (
             "climate finance",
             _reader_shape("Total climate-specific financial support"),
             None,
             None,
-            [("climate", "measure"), ("finance", "measure")],
+            [("climate", "unrated"), ("finance", "unrated")],
         ),
         (
             "Gini coefficient",
@@ -589,11 +598,11 @@ _READER_DEBT_BY_CREDITOR = replace(
             ],
         ),
         (
-            "nation index",
+            "national index",
             _reader_shape("National income"),
             None,
             None,
-            [("nation", "measure"), ("index", "unread")],
+            [("national", "measure"), ("index", "unrated")],
         ),
     ],
     ids=[
@@ -632,13 +641,162 @@ def test_each_word_of_the_variable_is_read_or_unread(
     elected shape: its members' names (`measure`), the nouns for what a count counts
     (`count`), a role noun on an axis the shape declares (`role`), form wording (`form`),
     the question's words for the base the quantity read names (`base`), the unit text
-    (`unit`) and the conversational words; any other word is unread."""
+    (`unit`) and the conversational words. Any other word beside no code is ``unrated``,
+    which the binder rates once the bindings settle."""
     state = _state(variable=variable, shape_draft=shape, bindings=[], unplaced=[], entities=())
     state.unit_text = unit_text
     if base_words is not None:
         state.named_denominator = NamedDenominator(ref=None, base_words=base_words)
 
     assert list(_coverage_reading(state, []).verdicts) == verdicts
+
+
+@pytest.mark.parametrize(
+    ("variable", "ratings", "bar", "verdicts", "records"),
+    [
+        # No rating reads the word as stated.
+        ("refugee population", {}, 0.5, [("refugee", "unrated")], []),
+        ("refugee population", {"refugee": 0.1}, 0.5, [("refugee", "unread")], ["refugee"]),
+        ("refugee population", {"refugee": 0.5}, 0.5, [("refugee", "stated")], []),
+        ("refugee population", {"refugee": 0.5}, 0.6, [("refugee", "unread")], ["refugee"]),
+        # Each stretch rated below the bar is one record.
+        (
+            "stateless refugee population",
+            {"stateless": 0.2, "refugee": 0.3},
+            0.5,
+            [("stateless", "unread"), ("refugee", "unread")],
+            ["stateless refugee"],
+        ),
+        (
+            "stateless refugee population",
+            {"stateless": 0.2, "refugee": 0.9},
+            0.5,
+            [("stateless", "unread"), ("refugee", "stated")],
+            ["stateless"],
+        ),
+    ],
+    ids=[
+        "unrated",
+        "below-the-bar",
+        "at-the-bar",
+        "below-a-higher-bar",
+        "one-stretch",
+        "stretch-split-by-a-stated-word",
+    ],
+)
+def test_a_word_beside_no_code_is_unread_only_when_rated_below_the_bar(
+    search_settings, variable, ratings, bar, verdicts, records
+):
+    """A word beside no code that no reader reads is a ``no_vocabulary`` record only when
+    the binder rates the elected shape's series stating it below
+    `SearchSettings.stated_word_bar`; at the bar or above it is ``stated``, and with no
+    rating it is ``unrated`` and read."""
+    search_settings(qualifier_coverage="refuse", stated_word_bar=bar)
+    state = _state(variable=variable, shape_draft=_READER_PERSONS, bindings=[], unplaced=[])
+    state.stated_word_ratings = ratings
+
+    reading = _coverage_reading(state, [])
+    assert [verdict for verdict in reading.verdicts if verdict[0] != "population"] == verdicts
+    uncovered = [q for q in _resolve_query_qualifiers(state) if q.evidence == "uncovered"]
+    assert [(q.text, q.disposition) for q in uncovered] == [
+        (text, "no_vocabulary") for text in records
+    ]
+
+
+class _FailingRating(RatingBinder):
+    async def rate_words_stated(self, request, *, llm):
+        self.requests.append(request)
+        raise LLMInfraError("rating failed")
+
+
+@pytest.mark.parametrize(
+    ("variable", "shape", "binder", "asked", "records", "degraded"),
+    [
+        (
+            "refugee population",
+            _READER_PERSONS,
+            RatingBinder(GeminiBinder(), {"refugee": 0.1}),
+            [("refugee",)],
+            ["refugee"],
+            [],
+        ),
+        (
+            "refugee population",
+            _READER_PERSONS,
+            RatingBinder(GeminiBinder(), {"refugee": 0.9}),
+            [("refugee",)],
+            [],
+            [],
+        ),
+        # Every word read: the binder is not asked.
+        ("refugee population", _READER_REFUGEES, RatingBinder(GeminiBinder()), [], [], []),
+        # A failed read rates no word and is noted as lost.
+        (
+            "refugee population",
+            _READER_PERSONS,
+            _FailingRating(GeminiBinder()),
+            [("refugee",)],
+            [],
+            ["stated words read"],
+        ),
+    ],
+    ids=["rated-unread", "rated-stated", "nothing-to-rate", "failed-read"],
+)
+def test_the_binder_rates_the_words_left_unrated_once_the_bindings_settle(
+    search_settings, variable, shape, binder, asked, records, degraded
+):
+    """Binding repair asks the binder once for the words the coverage rule leaves unrated
+    on the elected shape, with the shape's menu index, and the rule refuses on those it
+    rates below the bar. A read that fails counts each word as stated and notes the read
+    as degraded."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(variable=variable, shape_draft=shape, bindings=[], unplaced=[])
+    state.capped_shapes = [replace(_READER_TAX, shape_id="tax"), shape]
+    state.binder = binder
+    with recording_degraded_reads() as lost:
+        qualifiers = _run(state)
+
+    assert [request.words for request in binder.requests] == asked
+    assert all(request.shape_index == 1 for request in binder.requests)
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
+    assert lost.reads == degraded
+
+
+@pytest.mark.parametrize(
+    ("bound", "scored", "unrated"),
+    [
+        ((), (), ("refugee", "camps")),
+        ((), ("nominating_1",), ("camps",)),
+        ((("gender", ["Female"]),), (), ("refugee", "camps")),
+        ((("gender", ["Female"]),), ("nominating_1",), ("camps",)),
+        ((("gender", ["Male"]),), ("nominating_2",), ("refugee",)),
+    ],
+    ids=["open", "scored", "bound", "bound-and-scored", "bound-other"],
+)
+def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(bound, scored, unrated):
+    """The words the coverage rule leaves unrated on the elected shape over its bindings
+    (`_unrated_words`) are among those nominated for that shape before the bind
+    (`_nominated_words`), so a binder that rates the nominated words in the bind holds a
+    rating for each word it is later asked about."""
+    shape = _value_shape(
+        "nominating",
+        SlotKeyDraft(axis="how", property_dcid="gender", label="gender"),
+        members=[{}, {"gender": "Female"}, {"gender": "Male"}],
+        names=["Population", "Female refugee population", "Male population of camps"],
+    )
+    state = _state(
+        variable="female refugee population of camps",
+        shape_draft=replace(shape, scored_members=frozenset(scored)),
+        bindings=[_binding(prop, kind="value", value_dcids=dcids) for prop, dcids in bound],
+        unplaced=[],
+        entities=(),
+    )
+    nominated = _nominated_words(state, state.shape_draft)
+    state.bindings = state.bind_result.bindings
+
+    assert nominated == ("female", "refugee", "camps")
+    assert _unrated_words(state) == unrated
+    assert set(unrated) <= set(nominated)
 
 
 _FLOW_ROLES = ("financingProvider", "financingRecipient")
@@ -1741,11 +1899,6 @@ _VALUE_LITERACY = _value_shape(
             [_VALUE_LITERATE],
             {},
             [],
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "health" is unread on the literacy rate, whose '
-                "name lacks it",
-                strict=True,
-            ),
         ),
         # "primary education" is also the text of CRS purpose 11220, but the elected
         # completion rate holds no CRS slot, so the code readers judge nothing here and
@@ -1806,10 +1959,6 @@ _VALUE_LITERACY = _value_shape(
             [],
             {},
             [("in extreme poverty", "no_vocabulary", None)],
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "living" is unread on the international poverty line series',
-                strict=True,
-            ),
         ),
         # SE_TOT_PRFL splits on the two skills its series names (SDG proficiency).
         pytest.param(
@@ -1829,10 +1978,6 @@ _VALUE_LITERACY = _value_shape(
             [],
             {},
             [("minimum proficiency in mathematics", "no_vocabulary", None)],
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "children achieving" is unread on the completion rate',
-                strict=True,
-            ),
         ),
         # The WHO WASH series splits on the three service types its series names.
         pytest.param(
@@ -1853,10 +1998,6 @@ _VALUE_LITERACY = _value_shape(
             [],
             {},
             [("sanitation", "no_vocabulary", None)],
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "attributable" and "inadequate" are unread on deaths from diarrhoea',
-                strict=True,
-            ),
         ),
     ],
     ids=[
@@ -2015,10 +2156,6 @@ def _un_sample(series: str, name: str, skill: str) -> ShapeDraft:
                 _un_member(_PROFICIENCY_SERIES, "undata/SKILL-READ", "undata/AGE-Y15T24"),
             ],
             [("minimum proficiency in mathematics", "no_vocabulary", None)],
-            marks=pytest.mark.xfail(
-                reason='coverage reader: "children achieving" is unread on the literate share',
-                strict=True,
-            ),
         ),
         # No source lists the series' whole family, so its sample cannot show the value
         # restricts nothing.
