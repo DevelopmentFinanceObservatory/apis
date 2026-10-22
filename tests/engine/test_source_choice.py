@@ -14,7 +14,7 @@ from typing import Literal, cast
 import pytest
 
 from code_index.shared import get_index
-from origin_catalogue import BASE, UN_SYSTEM, Catalogue, ProvenanceRow, SourceRef
+from origin_catalogue import BASE, UN_SYSTEM, Catalogue, DatasetRef, ProvenanceRow, SourceRef
 from origin_catalogue.context import current_source_scope
 from search.engine.clients.graph import (
     DetectedSV,
@@ -606,11 +606,29 @@ def test_a_no_data_outcome_under_a_scope_names_its_sources(
 
 
 @pytest.mark.parametrize(("polarity", "prefix"), [("include", ""), ("exclude", "Excluding ")])
-def test_an_ambiguous_source_answers_no_data_with_an_option_per_candidate(polarity, prefix):
+def test_an_ambiguous_source_answers_no_data_with_an_option_per_candidate(
+    bind_catalogue, polarity, prefix
+):
     """The part names each candidate by ref, label and kind, and offers one option per
     candidate: the part with the ambiguous mention carrying that candidate's ref, keeping
     its words and polarity, and every resolved mention carrying its own ref. An excluded
-    mention's label says so."""
+    mention's label says so. The bound catalogue admits every ref an option posts."""
+    bind_catalogue(
+        FakeCatalogue(
+            provenances={
+                row.id: row
+                for row in (
+                    _sourced_row("provenance/A1", "Table A1", "dc/s/A", "Source A"),
+                    dataclasses.replace(
+                        _sourced_row("provenance/B1", "Table B1", "dc/s/D", "Source D"),
+                        dataset=DatasetRef(ref="dc/d/B", label="Dataset B"),
+                    ),
+                    _sourced_row("provenance/C", "Table C", "dc/s/C", "Source C"),
+                    _row(_CRS),
+                )
+            }
+        )
+    )
     candidates = (
         SourceReference(ref="dc/s/A", label="Source A", kind="source"),
         SourceReference(ref="dc/d/B", label="Dataset B", kind="dataset"),

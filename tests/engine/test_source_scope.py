@@ -247,14 +247,24 @@ def test_an_ambiguous_refusal_lists_the_candidates_and_pins_the_resolved_mention
     )
 
 
+# Both readings of the words include and exclude the same provenance.
+_EVERY_READING_EMPTY = [_include("ONE Conversion Tables"), _exclude("ONE Conversion Tables")]
+
+
 @pytest.mark.parametrize(
     ("mentions", "pointer"),
     [
         ([SourceMention(ref="provenance/Unknown")], "/sources/0"),
         ([_include("IDS"), SourceMention(ref="dc/base/WorldBank_IDS")], "/sources/1"),
         ([_include("CRS"), _exclude("IDS"), _exclude("crs")], "/sources/2"),
+        (_EVERY_READING_EMPTY, "/sources/1"),
     ],
-    ids=["unadmitted ref", "registry-excluded ref", "exclusion empties the scope"],
+    ids=[
+        "unadmitted ref",
+        "registry-excluded ref",
+        "exclusion empties the scope",
+        "every reading of ambiguous words empties the scope",
+    ],
 )
 def test_an_unadmitted_ref_or_an_empty_scope_refuses_request_invalid(
     catalogue: CatalogueSnapshot, mentions: list[SourceMention], pointer: str
@@ -263,6 +273,29 @@ def test_an_unadmitted_ref_or_an_empty_scope_refuses_request_invalid(
     with pytest.raises(EngineInputError) as caught:
         compile_sources(mentions, catalogue=catalogue, pointers=pointers)
     assert (caught.value.code, caught.value.pointer) == ("request_invalid", pointer)
+
+
+@pytest.mark.parametrize(
+    ("mentions", "reason"),
+    [
+        ([_include("CRS"), _exclude("crs")], None),
+        (_EVERY_READING_EMPTY, "source_ambiguous"),
+    ],
+    ids=["exclusion empties the scope", "every reading of ambiguous words empties the scope"],
+)
+def test_an_empty_scope_compiles_without_refuse_empty(
+    catalogue: CatalogueSnapshot, mentions: list[SourceMention], reason: str | None
+) -> None:
+    """The raw-text door compiles mentions a model wrote, which the caller cannot correct,
+    so an empty scope answers no_data rather than refusing the request."""
+    pointers = ["/input/query"] * len(mentions)
+    compiled = compile_sources(mentions, catalogue=catalogue, pointers=pointers, refuse_empty=False)
+    if reason is None:
+        assert isinstance(compiled, SourceScope)
+        assert not compiled.allowed
+    else:
+        assert isinstance(compiled, SourceRefusal)
+        assert compiled.reason == reason
 
 
 def test_no_mentions_compile_to_no_scope(catalogue: CatalogueSnapshot) -> None:

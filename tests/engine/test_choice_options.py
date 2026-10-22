@@ -113,15 +113,30 @@ def _no_data(client: TestClient, part: dict) -> dict:
     return answered.get("no_data") or {}
 
 
+def _asked(no_data: dict) -> set[str]:
+    """The request words a refusal asks the caller to choose or correct."""
+    groups = [*(no_data.get("ambiguous_sources") or ()), *(no_data.get("ambiguous_entities") or ())]
+    return {
+        *(group["text"] for group in groups),
+        *(no_data.get("entity_terms") or ()),
+        *(no_data.get("source_terms") or ()),
+    }
+
+
 def _assert_options_settle(client: TestClient, no_data: dict) -> None:
-    """Each option's request, posted unchanged, succeeds and does not refuse with the same
-    reason: it answers, or refuses on something the choice does not decide."""
+    """Each option's request, posted unchanged, is accepted and settles the choice. The
+    part answers, or refuses without asking about the option's words again. A part has one
+    unit text, so a currency choice settles when the answer offers no currencies."""
     for option in no_data["options"]:
         response = client.post("/api/search/resolve", json={"input": option["data_query"]})
         assert response.status_code == 200, (option["label"], response.text)
         (answered,) = response.json()["parts"]
-        reason = (answered.get("no_data") or {}).get("reason")
-        assert reason != no_data["reason"], option["label"]
+        again = answered.get("no_data") or {}
+        assert not set(option["mentions"]) & _asked(again), (option["label"], again)
+        assert not (no_data.get("unit_alternatives") and again.get("unit_alternatives")), (
+            option["label"],
+            again,
+        )
 
 
 def test_an_ambiguous_entity_offers_each_candidate_and_each_option_resolves_it():
@@ -213,7 +228,9 @@ def test_source_choices_omit_a_candidate_removed_by_existing_exclusions(excluded
         _assert_options_settle(client, no_data)
 
 
-def test_source_choices_omit_every_empty_mixed_polarity_choice():
+def test_a_source_wording_both_included_and_excluded_is_refused():
+    """Every reading of the wording includes and excludes one candidate, so no choice can
+    leave the part a source: the request is refused at the excluded mention."""
     words = "Shared Tables"
     rows = [
         ProvenanceRow(
@@ -227,19 +244,78 @@ def test_source_choices_omit_every_empty_mixed_polarity_choice():
     ]
     service = fake_catalogue_service(FakeCatalogue(provenances={row.id: row for row in rows}))
     with catalogue_service_module._singleton.poisoned_for_test(service):
-        no_data = _no_data(
-            _fertility_client(_ShapeZeroLLM()),
-            {
-                "variable_text": _FERTILITY,
-                "entities": [{"text": "Kenya"}],
-                "sources": [
-                    {"text": words, "polarity": "include"},
-                    {"text": words, "polarity": "exclude"},
-                ],
+        response = _fertility_client(_ShapeZeroLLM()).post(
+            "/api/search/resolve",
+            json={
+                "input": {
+                    "kind": "parsed",
+                    "parts": [
+                        {
+                            "variable_text": _FERTILITY,
+                            "entities": [{"text": "Kenya"}],
+                            "sources": [
+                                {"text": words, "polarity": "include"},
+                                {"text": words, "polarity": "exclude"},
+                            ],
+                        }
+                    ],
+                }
             },
         )
+    assert response.status_code == 400, response.text
+    problem = response.json()
+    assert (problem["code"], problem["pointer"]) == ("request_invalid", "/input/parts/0/sources/1")
+
+
+def test_a_contradiction_over_two_source_wordings_is_refused_once_one_is_chosen():
+    """Each wording is both included and excluded, so every pair of choices empties the
+    scope. Each reading of the first wording leaves the second ambiguous, so the part
+    answers source_ambiguous. Once the first is chosen, every reading of the second
+    empties the scope and the request is refused at its excluded mention."""
+    rows = [
+        ProvenanceRow(
+            id=f"dc/base/{publisher}{words.replace(' ', '')}",
+            data_commons=DFO,
+            source=SourceRef(ref=f"dc/s/{publisher}", label=publisher),
+            name=words,
+            url="https://example.org",
+        )
+        for words, publishers in (
+            ("Shared Tables", ("Alpha", "Beta")),
+            ("Joint Ledgers", ("Gamma", "Delta")),
+        )
+        for publisher in publishers
+    ]
+    part = {
+        "variable_text": _FERTILITY,
+        "entities": [{"text": "Kenya"}],
+        "sources": [
+            {"text": "Shared Tables", "polarity": "include"},
+            {"text": "Shared Tables", "polarity": "exclude"},
+            {"text": "Joint Ledgers", "polarity": "include"},
+            {"text": "Joint Ledgers", "polarity": "exclude"},
+        ],
+    }
+    service = fake_catalogue_service(FakeCatalogue(provenances={row.id: row for row in rows}))
+    with catalogue_service_module._singleton.poisoned_for_test(service):
+        client = _fertility_client(_ShapeZeroLLM())
+        no_data = _no_data(client, part)
         assert no_data["reason"] == "source_ambiguous"
-        assert not no_data.get("options")
+        assert {group["text"] for group in no_data["ambiguous_sources"]} == {
+            "Shared Tables",
+            "Joint Ledgers",
+        }
+        chosen = [
+            {**mention, "ref": rows[0].id} if mention["text"] == "Shared Tables" else mention
+            for mention in part["sources"]
+        ]
+        response = client.post(
+            "/api/search/resolve",
+            json={"input": {"kind": "parsed", "parts": [{**part, "sources": chosen}]}},
+        )
+    assert response.status_code == 400, response.text
+    problem = response.json()
+    assert (problem["code"], problem["pointer"]) == ("request_invalid", "/input/parts/0/sources/3")
 
 
 @pytest.mark.parametrize(
