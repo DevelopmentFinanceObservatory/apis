@@ -23,6 +23,7 @@ from search.engine.retrieval.bound_values import (
     index_carries_shape,
     shape_carries_measure_value,
 )
+from search.engine.series_declarations import declared_measurement_qualifier
 from search.engine.shape import ShapeDraft
 
 
@@ -30,7 +31,10 @@ def shape_carries_measure_match(shape: ShapeDraft, match: QualifierMatch) -> boo
     """Whether `shape` carries the measure value `match` names, in any spelling of its reading.
 
     Index rows decide for a shape the index carries. Otherwise the shape's own five-tuple
-    field decides, and a constraint axis, which only index rows state, is not carried.
+    field decides, and a constraint axis, which only index rows state, is not carried. A UN
+    series asserts no measurementQualifier, so the price basis the origin registry declares
+    for it stands as its own (`declared_measurement_qualifier`): UNIDO's constant-2015
+    series carries RealValue, which "constant US dollars" names.
     """
     index = get_index()
     measure_index = get_measure_index()
@@ -38,7 +42,12 @@ def shape_carries_measure_match(shape: ShapeDraft, match: QualifierMatch) -> boo
     reading = measure_index.reading_set(match.code_dcid)
     if index_carries_shape(shape, index):
         return any(shape_carries_measure_value(shape, index, axis, value) for value in reading)
-    return axis.kind == "shape" and getattr(shape, _MEASURE_AXIS_DRAFT_FIELDS[axis.axis]) in reading
+    if axis.kind != "shape":
+        return False
+    carried = getattr(shape, _MEASURE_AXIS_DRAFT_FIELDS[axis.axis])
+    if carried is None and axis.axis == "measurementQualifier":
+        carried = declared_measurement_qualifier(shape)
+    return carried in reading
 
 
 def bound_value_reads_measure(
@@ -69,6 +78,17 @@ def bound_value_reads_measure(
         if (label := value_labels.get(value_dcid)) is not None
     ]
     return any(_label_named_in_text(text, label) for text in texts for label in bound_labels)
+
+
+def answer_reads_measure(
+    shape: ShapeDraft, match: QualifierMatch, bindings: Sequence[SlotBindingDraft]
+) -> bool:
+    """Whether an answer of `shape` read under `bindings` carries the measure value `match`
+    names: its shape carries it (`shape_carries_measure_match`) or a bound value reads it
+    (`bound_value_reads_measure`)."""
+    return shape_carries_measure_match(shape, match) or bound_value_reads_measure(
+        shape, match, bindings
+    )
 
 
 def reading_for_shape(readings: QualifierReadings, shape: ShapeDraft) -> QualifierMatch | None:
