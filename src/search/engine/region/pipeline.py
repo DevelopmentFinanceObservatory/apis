@@ -544,8 +544,8 @@ async def _fill_gap(
     both passes refuse and it carries an `alternate_match` and `result` carries none. Of
     two refusals, the one offering a reading with data at the place stands, as status rule
     1 has a nominee ride on a refusal, and so does a UN refusal on a variable it matched
-    over ours `variable_not_resolved`: "no data for Japan" says more than "could not
-    match". Otherwise `result` stands with its reason. A `result` holding an
+    other than weakly (`_representative_score_is_weak`) over ours `variable_not_resolved`:
+    "no data for Japan" says more than "could not match". Otherwise `result` stands with its reason. A `result` holding an
     `alternate_match`, a reading the model nominated from our pool with data at the place,
     also stands when the UN pass's elected shape matches the phrase only weakly
     (`_representative_score_is_weak`): such an answer has no better claim to the question
@@ -633,9 +633,10 @@ async def _fill_gap(
         un_pass=f"ran:{second.status}/{second.no_data_reason}",
         un_ms=now_ms() - t0,
     )
-    displaces_alternate = result.alternate_match is None or not _representative_score_is_weak(
+    un_weak = _representative_score_is_weak(
         None if un_elected is None else un_elected.measured_score
     )
+    displaces_alternate = result.alternate_match is None or not un_weak
     un_doubted = state.bind_decision is not None and state.bind_decision.none_first
     answers = (
         second.status in ("definite", "candidates")
@@ -651,11 +652,13 @@ async def _fill_gap(
     # reason but `variable_not_resolved` is reached after election: the pass shares our
     # pass's sources and entities, which got ours as far as election, and mints
     # `entity_set_too_large` and `entity_role_not_admitted` only on its elected shape's
-    # places, though `NO_DATA_RESOLUTION_ORDER` ranks both before the variable.
+    # places, though `NO_DATA_RESOLUTION_ORDER` ranks both before the variable. A weak
+    # match says no more than ours: "measles incidence rate" is no burden-of-disease rate.
     matched_further = (
         refused
         and result.no_data_reason == "variable_not_resolved"
         and second.no_data_reason != "variable_not_resolved"
+        and not un_weak
     )
     chosen = second if answers or offers_alternate or matched_further else result
     timing = dict(result.timing_by_step)

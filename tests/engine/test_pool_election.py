@@ -900,6 +900,7 @@ def _fill(
     missed: str | None = None,
     merged: bool = False,
     trailing: dict[str, bool] | None = None,
+    un_score: float | None = None,
 ) -> tuple[RegionResult, list[ShapeDraft] | None]:
     """`pipeline._fill_gap` over our pass's `ours`, elected on `elected`, with a UN pass
     that returns `un`, and the shapes the UN pass ran over, None when it did not run.
@@ -907,7 +908,8 @@ def _fill(
     first (`BindResult.none_first`), `missed` is why the UN leg's pool is missing, and
     `merged` puts the UN pool on our pass's menu (`ResolveState.un_pool`). Given
     `trailing`, each pass's result holds a pending observations task, and `trailing` maps
-    "ours" and "un" to whether `_fill_gap` cancelled it."""
+    "ours" and "un" to whether `_fill_gap` cancelled it. `un_score` is the score of the
+    shape the UN pass elects, none when not given."""
     ran: list[list[ShapeDraft]] = []
 
     async def fill() -> RegionResult:
@@ -943,7 +945,7 @@ def _fill(
         un_state = SimpleNamespace(
             rcl=None,
             shapes_found=[],
-            shape_draft=None,
+            shape_draft=None if un_score is None else SimpleNamespace(measured_score=un_score),
             bind_decision=SimpleNamespace(none_first=un_doubted),
         )
 
@@ -1089,31 +1091,36 @@ def test_a_doubted_answer_whose_un_leg_missed_states_it() -> None:
 
 
 @pytest.mark.parametrize(
-    ("ours_reason", "un_reason", "un_stands"),
+    ("ours_reason", "un_reason", "un_score", "un_stands"),
     [
         # "government debt as a share of GDP in Japan": our menu matches nothing, and the
         # UN pass matches the IMF series and finds no Japan values.
-        ("variable_not_resolved", "no_observations", True),
-        ("variable_not_resolved", "variable_not_resolved", False),
+        ("variable_not_resolved", "no_observations", None, True),
+        ("variable_not_resolved", "no_observations", 0.9, True),
+        # "measles incidence rate Kenya": the UN pass matches a burden-of-disease rate only
+        # weakly, which says no more than ours matching nothing.
+        ("variable_not_resolved", "no_observations", 0.7, False),
+        ("variable_not_resolved", "variable_not_resolved", None, False),
         # Between two refusals that both matched a measure ours stands: D6's
         # '"climate" is not a distinction this data records' over a UN series with no data.
-        ("qualifier_not_bound", "no_observations", False),
-        ("no_observations", "qualifier_not_bound", False),
+        ("qualifier_not_bound", "no_observations", None, False),
+        ("no_observations", "qualifier_not_bound", None, False),
         # The UN pass mints these on its elected shape's places, so it matched a variable,
         # though `NO_DATA_RESOLUTION_ORDER` ranks both before `variable_not_resolved`.
-        ("variable_not_resolved", "entity_set_too_large", True),
-        ("variable_not_resolved", "entity_role_not_admitted", True),
+        ("variable_not_resolved", "entity_set_too_large", None, True),
+        ("variable_not_resolved", "entity_role_not_admitted", None, True),
     ],
 )
 def test_a_un_refusal_on_a_matched_variable_stands_over_ours_matching_none(
-    ours_reason: str, un_reason: str, un_stands: bool
+    ours_reason: str, un_reason: str, un_score: float | None, un_stands: bool
 ) -> None:
     """Of two refusals, the UN pass's stands when ours matched no variable and it matched
-    one, since its reason says what the data lacks."""
+    one other than weakly (`_representative_score_is_weak`), since its reason says what the
+    data lacks."""
     ours = _gap_result("no_data", reason=ours_reason)
     un = _gap_result("no_data", reason=un_reason)
 
-    chosen, _ = _fill(ours, un)
+    chosen, _ = _fill(ours, un, un_score=un_score)
 
     assert chosen.no_data_reason == (un_reason if un_stands else ours_reason)
 
