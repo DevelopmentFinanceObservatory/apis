@@ -577,7 +577,7 @@ def build_shape_model(
     def _tuple_ref(dcid: str | None) -> GraphRef | None:
         """Return a tuple ref, or None when the SV leaves the component unasserted.
 
-        Missing graph labels use the packaged measure index for declared axes. Other
+        Missing graph labels use the release's measure index for declared axes. Other
         dcids fall back to their own text. No ref is fabricated for absent arcs.
         """
         if not dcid:

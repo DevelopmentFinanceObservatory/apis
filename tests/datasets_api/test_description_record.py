@@ -1078,8 +1078,8 @@ _ODA_TO_KENYA = {
 }
 
 
-def test_a_definitions_shape_names_its_measure_through_the_packaged_indexes() -> None:
-    """Over the packaged code and measure indexes, the record keeps the shape the measure
+def test_a_definitions_shape_names_its_measure_through_the_fixture_indexes() -> None:
+    """Over the fixture code and measure indexes, the record keeps the shape the measure
     partition is keyed on, so the title names the measure. The `dacTypeOfFinance` slot the
     definition leaves open, which its one variable does not declare, varies over nothing and
     is not served."""

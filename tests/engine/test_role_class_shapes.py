@@ -29,6 +29,7 @@ from entity_resolution import Admission
 from origin_catalogue import BASE
 from search.engine import core as search_core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import GeminiBinder
 from search.engine.departures import warning_key
 from search.engine.entry.parsed import _open_axes_for_part
 from search.engine.errors import EngineInputError, FamilyNotResolvableError, RoleSignatureError
@@ -106,6 +107,7 @@ from series_coverage.shared import CoverageSnapshot
 from statvar_members import MemberEnumerator, member_digest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._binders import elected_reply
 from tests.engine._builders import bound_place_context, flow_place_roles
 from tests.engine._fake_coverage import (
     FIXTURE_PROVENANCE,
@@ -262,9 +264,7 @@ def test_a_question_naming_no_place_offers_a_one_role_shape_to_the_election():
                     if label in prompt
                 ]
             )
-            return _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
-            ), None
+            return elected_reply(0, also_plausible=None), None
 
     query = "national income"
     graph = FakeGraph(
@@ -798,7 +798,7 @@ def test_a_shape_none_of_whose_members_the_index_holds_takes_no_slot_key_from_it
 
 
 def _crs_row():
-    """One packaged CRS row of the five-tuple debt service shares, as a recalled node."""
+    """One fixture CRS row of the five-tuple debt service shares, as a recalled node."""
     row = next(
         row
         for row in get_index().statvars
@@ -950,9 +950,7 @@ class _BindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
-        ), None
+        return elected_reply(0, also_plausible=None), None
 
 
 class _AskNearestLLM:
@@ -978,10 +976,11 @@ def _run(
     llm=None,
     nodes: dict = _DEBT_NODES,
     options: EngineOptions | None = None,
+    value_nodes: dict | None = None,
 ):
     members = list(nodes)
     graph = FakeGraph(
-        nodes={**_PLACES, **nodes},
+        nodes={**_PLACES, **(value_nodes or {}), **nodes},
         detect={query: {"svs": members, "cosine_scores": [0.9, 0.88, 0.87, 0.86]}},
         resolve={"Kenya": "country/KEN", "China": "country/CHN"},
         obs=obs,
@@ -1073,6 +1072,7 @@ def _run_leg(
             resolver=make_resolver(graph),
             admission=Admission(graph=graph),
             llm=_BindLLM(),
+            binder=GeminiBinder(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             base_timing={},
             pre_resolved=None,
@@ -1178,7 +1178,7 @@ def _debt_index(*dcids: str) -> CodeIndex:
 
 
 def _use_index(monkeypatch: pytest.MonkeyPatch, index: CodeIndex) -> None:
-    """Serve `index` wherever a loaded module reads the packaged index."""
+    """Serve `index` wherever a loaded module reads the fixture index."""
     packaged = code_index_shared.get_index
     for module in list(sys.modules.values()):
         if vars(module).get("get_index") is packaged:
@@ -1780,9 +1780,7 @@ def test_a_candidate_of_another_role_class_binds_its_place_in_its_own_role():
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
-            return _UniversalBindOutput(
-                chosen_shape_index=1, bindings=[], also_plausible=[0], ask=None
-            ), None
+            return elected_reply(1, also_plausible=[0]), None
 
     query = "national income of Kenya"
     graph = FakeGraph(
@@ -1966,9 +1964,7 @@ def test_a_role_bearing_candidate_beside_a_subject_only_election_answers_its_own
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
-            return _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-            ), None
+            return elected_reply(0, also_plausible=[1]), None
 
     query = "national income of Kenya"
     graph = FakeGraph(
@@ -2084,7 +2080,7 @@ _CRS_PRIMARY = (
 
 
 def _index_shapes(*dcids: str) -> list[ShapeDraft]:
-    """The shapes of the packaged index rows `dcids`, recalled together."""
+    """The shapes of the fixture index rows `dcids`, recalled together."""
     graph = FakeGraph(
         nodes={dcid: _index_row_node(dcid) for dcid in dcids}, obs={}, detect={}, resolve={}
     )
@@ -2374,9 +2370,7 @@ class _ElectFirstLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible, ask=None
-        ), None
+        return elected_reply(0, also_plausible=self._also_plausible), None
 
 
 def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
@@ -2538,8 +2532,8 @@ def _relax_llm(**drafts: tuple[str, str]):
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -2551,7 +2545,6 @@ def _relax_llm(**drafts: tuple[str, str]):
                     for prop, (value, evidence) in drafts.items()
                 ],
                 also_plausible=None,
-                ask=None,
             ), None
 
     return _DraftLLM()
@@ -2632,13 +2625,14 @@ def test_sole_option_drafts_no_member_holds_together_give_way_and_the_named_valu
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])
-def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_refused_on(walked):
+def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_disclosed(walked):
     """The request names bonds and the reply drafts the guarantee as a sole option. The
     guaranteed member would answer by dropping the named instrument, and the bonds member
     by dropping the draft, so the draft goes and the bonds member answers. With both
-    values named, one must go: the first member's conflict is unbound, and the part refuses
-    `qualifier_not_bound` on that value, flagging the read made without it. The order is
-    the same where the walk exposes the conflict and where the read does."""
+    values named, one must go: the first member's conflict is unbound. No word of the
+    question names that guarantee, which has no name, so the bonds member answers and
+    departs `measure_not_applied` under the guarantee slot's name. The order is the same
+    where the walk exposes the conflict and where the read does."""
     pair = {
         _RELAX_GUARANTEED: _RELAX_NODES[_RELAX_GUARANTEED],
         _RELAX_BONDS: _RELAX_NODES[_RELAX_BONDS],
@@ -2664,15 +2658,80 @@ def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_refus
 
     assert _relax_outcome(drafted) == ("definite", None, [_RELAX_BONDS], {"instrument": "Bond"}, [])
     assert _relax_outcome(named) == (
-        "no_data",
-        "qualifier_not_bound",
+        "definite",
+        None,
         [_RELAX_BONDS],
         {"instrument": "Bond"},
-        [],
+        ["measure_not_applied"],
     )
-    assert [(term.slot, term.disposition) for term in named.unbound_qualifiers] == [
-        ("guarantee", "unbound")
-    ]
+    assert [fact.binding_ref for fact in named.departure_facts.values()] == ["how:guarantee"]
+
+
+_PPG = "Debt_Ppg"
+_PUBLIC_SECTOR = "Debt_PublicSector"
+_PPG_NODES = {
+    _PPG: _node(
+        "Public and publicly guaranteed external debt stocks",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        guaranteeStatus="PublicOrPubliclyGuaranteed",
+        idsDebtorType="IDSDebtorTypeGG",
+    ),
+    _PUBLIC_SECTOR: _node(
+        "Private nonguaranteed external debt stocks of the public sector",
+        _RECIPIENT,
+        positionType="AmountOutstanding",
+        guaranteeStatus="PrivateNonguaranteed",
+        idsDebtorType="IDSDebtorTypePS",
+    ),
+}
+_PPG_VALUE_NODES = {
+    "PublicOrPubliclyGuaranteed": {"label": "public and publicly guaranteed", "type": "Thing"},
+    "PrivateNonguaranteed": {"label": "private nonguaranteed", "type": "Thing"},
+    "IDSDebtorTypePS": {"label": "public sector", "type": "Thing"},
+    "IDSDebtorTypeGG": {"label": "general government", "type": "Thing"},
+}
+
+
+@pytest.mark.parametrize(
+    ("query", "refuses"),
+    [
+        ("public and publicly guaranteed debt of Kenya", False),
+        ("public and publicly guaranteed public sector debt of Kenya", True),
+    ],
+    ids=["model-only", "words-name-it"],
+)
+def test_a_debtor_type_no_member_holds_with_the_guarantee_refuses_only_when_words_name_it(
+    query, refuses
+):
+    """The bind binds the guarantee status the words name and a public-sector debtor type,
+    and no member holds both, so the debtor type is unbound and the guaranteed series read.
+    No recorded term supports the debtor type when the words do not name it, so the series
+    answers and departs `measure_not_applied` under its name. When the words name it, the
+    part refuses `qualifier_not_bound` on it, flagging the same series."""
+    result = _run(
+        entities=["Kenya"],
+        obs={f"{dcid}|country/KEN": _OBS for dcid in _PPG_NODES},
+        query=query,
+        nodes=_PPG_NODES,
+        value_nodes=_PPG_VALUE_NODES,
+        llm=_relax_llm(
+            guaranteeStatus=("PublicOrPubliclyGuaranteed", "mentioned"),
+            idsDebtorType=("IDSDebtorTypePS", "mentioned"),
+        ),
+    )
+
+    (spec,) = result.specs or result.flagged_match or (None,)
+    assert spec is not None
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_PPG]
+    if refuses:
+        assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+        assert [term.slot for term in result.unbound_qualifiers] == ["idsDebtorType"]
+    else:
+        assert result.status == "definite"
+        assert [
+            (fact.code, fact.binding_ref, fact.asked) for fact in result.departure_facts.values()
+        ] == [("measure_not_applied", "how:idsDebtorType", "public sector")]
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])

@@ -1,5 +1,5 @@
 """Checks between the artifacts a request binds: the origin catalogue, the coverage build
-and the packaged code index.
+and the release's code index.
 
 `pair_stale_warning` compares the ingestion the catalogue and coverage builds read.
 `index_drift_warning` compares the catalogue's arcs with the code index's rows for the

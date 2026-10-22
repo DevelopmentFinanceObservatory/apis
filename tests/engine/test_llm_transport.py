@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 import search.engine.clients.llm as llm_module
 from search.engine.bind import _UniversalBindOutput
-from search.engine.clients.llm import LLM, LLMMemo, generate_structured_async
+from search.engine.clients.llm import LLM, LLMMemo, detached, generate_structured_async
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 
 # Captured at import, before the autouse `_guard_outbound_http` fixture swaps
@@ -57,6 +57,7 @@ def live_client_env(monkeypatch: pytest.MonkeyPatch, search_settings) -> None:
     """A fresh module singleton, built with a key, with no cached client."""
     search_settings(gemini_api_key="test-key", llm_timeout_s=5.0)
     monkeypatch.setattr(llm_module, "_CLIENT", None)
+    monkeypatch.setattr(llm_module, "_DETACHED_CLIENT", None)
 
 
 def _point_at(monkeypatch: pytest.MonkeyPatch, port: int) -> None:
@@ -493,6 +494,54 @@ def test_a_cancelled_pool_waiter_leaves_the_pool_usable(
 
     assert asyncio.run(scenario()) < 1.0
     assert len(holding_listener.arrivals) == 2
+
+
+@pytest.mark.usefixtures("live_client_env", "loopback_transport")
+def test_a_held_detached_call_leaves_the_served_connection_free(
+    search_settings, holding_listener: _HoldingListener
+):
+    """With one served connection and one detached, a detached call held at the listener
+    takes no served capacity: a served call started after it reaches the listener at
+    once, well inside the pool wait that would fail it."""
+    search_settings(llm_max_concurrency=1, jev_shadow_max_inflight=1, llm_timeout_s=1.0)
+    llm = _memo_llm()
+
+    async def scenario() -> list:
+        control = asyncio.create_task(_memo_call(detached(llm)))
+        await _until(lambda: len(holding_listener.arrivals) == 1)
+        served = asyncio.create_task(_memo_call(llm))
+        await _until(lambda: len(holding_listener.arrivals) == 2, timeout=0.5)
+        holding_listener.release(2)
+        return await asyncio.gather(served, control)
+
+    results = asyncio.run(scenario())
+
+    assert [parsed for parsed, _usage in results] == [_Value(value=1)] * 2
+    assert holding_listener.max_open == 2
+
+
+@pytest.mark.usefixtures("live_client_env")
+def test_an_api_key_llm_builds_each_client_on_its_first_call(monkeypatch: pytest.MonkeyPatch):
+    """An `LLM(api_key=...)` builds no client until a call needs one, and builds each once:
+    its stage and detached clones share the two it builds."""
+    built: list[int] = []
+
+    def build(api_key: str, *, max_connections: int) -> object:
+        built.append(max_connections)
+        return object()
+
+    monkeypatch.setattr(llm_module, "_build_client", build)
+    settings = llm_module.config.settings()
+    llm = LLM(model="gemini-3.5-flash-lite", api_key="override")
+    assert built == []
+
+    served = llm._client()
+    assert llm_module.for_stage(llm, "bind")._client() is served  # ty: ignore[unresolved-attribute]  # for_stage clones the LLM
+    assert built == [settings.llm_max_concurrency]
+
+    shadow = detached(llm)._client()  # ty: ignore[unresolved-attribute]  # detached clones the LLM
+    assert detached(llm_module.for_stage(llm, "bind"))._client() is shadow  # ty: ignore[unresolved-attribute]
+    assert built == [settings.llm_max_concurrency, settings.jev_shadow_max_inflight]
 
 
 @pytest.mark.usefixtures("live_client_env", "loopback_transport")

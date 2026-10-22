@@ -42,6 +42,10 @@
       "unit": "also-plausible"
     },
     {
+      "id": "05e-measuring",
+      "core": true
+    },
+    {
       "id": "06a-header",
       "sep": "blank",
       "unit": "binding-rules"

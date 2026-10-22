@@ -1,6 +1,6 @@
 """The confirm sample can omit a slot present in the full index population.
 
-The fixture uses a packaged-index row without ``crsCooperationModality`` to pin that
+The fixture uses a fixture-index row without ``crsCooperationModality`` to pin that
 ``derive_shapes`` declares the widened slot."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ _MEAS_PROP = "amount"
 _PROP_MODALITY = "crsCooperationModality"
 _PROP_PURPOSE = "crsPurpose"
 
-# This packaged-index row omits modality, like a confirm sample missing its siblings.
+# This fixture-index row omits modality, like a confirm sample missing its siblings.
 _BARE_SV = (
     "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
     "CRSPurposeCode11110_Nominal"
@@ -25,7 +25,7 @@ _BARE_SV = (
 
 
 def _sv_arcs_from_real_row(dcid: str) -> dict:
-    """Builds graph arcs from the packaged index row for ``dcid``."""
+    """Builds graph arcs from the fixture index row for ``dcid``."""
     index = get_index()
     row = next(r for r in index.statvars if r.dcid == dcid)
     constraint_props = list(row.constraint_properties)
@@ -42,7 +42,7 @@ def _sv_arcs_from_real_row(dcid: str) -> dict:
 
 
 def test_fixture_sv_really_omits_the_widened_property():
-    """Confirms the packaged row omits ``crsCooperationModality``."""
+    """Confirms the fixture row omits ``crsCooperationModality``."""
     row = next(r for r in get_index().statvars if r.dcid == _BARE_SV)
     assert row.measured_property == _MEAS_PROP
     assert _PROP_MODALITY not in row.constraint_properties

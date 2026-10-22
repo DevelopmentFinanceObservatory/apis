@@ -1067,7 +1067,7 @@ def test_a_cards_description_names_its_versions_measure_and_fixed_values_and_wha
     frame_store, revision_store, release_registry
 ):
     """The card names its version's measure, here its one variable, and the version's fixed
-    values, each with the packaged code index's definition, and the recipients it draws in the
+    values, each with the fixture code index's definition, and the recipients it draws in the
     order it draws them. A variable's name need not state its flow type, so the flow type
     stays among the fixed values."""
     frame = _frame()

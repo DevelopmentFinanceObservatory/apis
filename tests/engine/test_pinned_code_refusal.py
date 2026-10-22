@@ -339,9 +339,11 @@ def _named_terms_state() -> ResolveState:
 
 
 def _bound_without_terms_state() -> ResolveState:
-    """The elected shape binds health and education expenditure with no term naming
-    either, and no member holds them, so unbinding drops both, under one departure."""
+    """The elected shape binds health and education expenditure, which the words name by
+    their names and no recorded term names, and no member holds them, so unbinding drops
+    both, under one departure."""
     state = _state()
+    state.variable = "Healthcare expenditure and Education expenditure as share of GDP"
     state.measure_query_matches = ()
     state.graph = cast(
         EngineGraphClient,
@@ -424,7 +426,7 @@ def test_a_candidate_set_keeps_a_code_departure_one_answer_leaves_unmet(requeste
 )
 def test_each_requested_code_is_judged_alone(requested, bound, unbound):
     """The request asks for health and education expenditure on one property, by two terms
-    or by two bound values no term names. Applying one code does not satisfy the other:
+    or by two bound values its words name and no recorded term names. Applying one code does not satisfy the other:
     each requirement is met only by its own codes."""
     state = requested()
 

@@ -67,59 +67,6 @@ No live credentials needed.
 
 By hand, when comparing a candidate flow-direction scanner against the frozen baseline scanner (`corpus/direction/role_text_pinned.py`).
 
-## `export_code_index.py`
-
-Regenerates the committed `packages/dfo-data-tools/src/code_index/data/index.json.gz` from the live graph and the published series coverage build.
-
-```bash
-COVERAGE_ARTIFACT_URI=gs://<coverage bucket>/ uv run --env-file .env \
-    python scripts/export_code_index.py \
-    --out packages/dfo-data-tools/src/code_index/data/index.json.gz
-```
-
-Needs `SEARCH_GRAPH_BASE` (and `SEARCH_GRAPH_TOKEN` on a token-gated deployment), and `COVERAGE_ARTIFACT_URI`, the root the coverage job publishes to (see `deploy/coverage.md`), with Google credentials that can read a `gs://` bucket.
-
-The graph supplies the code rows and StatVar rows. The coverage build supplies each StatVar's `provenances`: `coverage.parquet` maps a variable to its facet ids and `facets.json` maps a facet id to its provenance. The stamp records the build id (`coverage_build`) and the number of StatVars the build holds no series for (`statvars_without_coverage`); such a row carries no provenance and belongs to no dataset.
-
-`LISTED_DATASETS` names the datasets whose StatVars declare no code system, World Bank IDS among them, so no code read reaches them. The coverage build lists their StatVars, which the export reads into a separate `listed_statvars` block with their provenances. No family, dataset election, measure axis or shape reads that block: Search and the Datasets mint elect the members of a family holding a listed row from the index's rows of its five-tuple, in place of a graph walk (`code_index.members.listed_group`). The export therefore reads each five-tuple a listed row has, unsplit, and refuses when the graph holds a StatVar there that is neither an exported nor a listed row; the largest, `FinancialFlow` amount, holds about 14,000 StatVars and reads in about 45 s. When a build assigns a listed dataset a StatVar the index does not list, `python -m series_coverage.verify_index` fails naming them (`series_coverage.compatibility.index_coverage_differences`).
-
-`CODE_SYSTEMS` in `code_index/declarations.py` supplies each code system's declaration, which the export writes into the index's `declarations` block and `code_index.loader` reads into `CodeSystemDeclaration`:
-
-| Field                    | Meaning                                                                                                                                                                         |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hierarchical`           | Codes form a `specializationOf` tree. Derived from the graph and checked against `expected_hierarchical`.                                                                       |
-| `disjoint_from_children` | A record coded to a parent is a different record from one coded to its child.                                                                                                   |
-| `summable`               | Sibling values add up to their parent's total.                                                                                                                                  |
-| `absent_reading`         | How a StatVar that does not carry the property reads: `not_declared` (a separate population) or `aggregate` (a total over every value).                                         |
-| `plain_name`             | The singular noun a sentence uses for the axis.                                                                                                                                 |
-| `default`                | A code bound onto an open slot when another slot or a query phrase triggers it, or on every open slot (`when_open`), with the `note` an answer states when it fires; or `null`. |
-
-`declared_by_every_statvar_of` lives in `code_index/declarations.py` and lists the datasets whose every StatVar declares the property, and the export enumerates each dataset only through the systems that list it.
-
-`DATASETS` supplies one declaration per published table, written into the `datasets` block and read into `DatasetDeclaration`:
-
-| Field                | Meaning                                                                                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `provenance`         | The provenance the table's observations carry. A StatVar row belongs to the dataset when its `provenances` names it.                                   |
-| `label`              | The name a sentence uses for the dataset.                                                                                                              |
-| `opt_in`             | Whether a question answers from the table only when it names the table.                                                                                |
-| `absent_observation` | Whether an observation the table holds no row for reads as `zero`, or `unknown`.                                                                       |
-| `account`            | Whose account of a flow the table gives, `provider`. It names the two parties of a series and says which one leads a heading.                          |
-| `rank`               | The serving order among datasets that publish one five-tuple: of those that can serve a family, the lowest rank serves it. Unique across declarations. |
-
-ONE Imputed Multilateral Sectors is opt-in, and CRS, OECD DAC1, OECD DAC2a and OECD DAC2b are not. CRS and ONE Imputed Multilateral Sectors read an absent observation as zero, and OECD DAC1, OECD DAC2a and OECD DAC2b read it as unknown. All five give the provider's account. CRS has rank 0, ONE Imputed Multilateral Sectors rank 10, OECD DAC1 rank 20, OECD DAC2a rank 30 and OECD DAC2b rank 40. DAC1, DAC2a and DAC2b share the CRS five-tuples under their own codes, so each forms families of its own and its rank orders it against no other table. ONE Imputed Multilateral Sectors and OECD DAC2a's code 106 share the `attributedAmount` five-tuple under different key sets: the imputed rows hold a sector and a flow type beside the aid type, and DAC2a's row holds neither. A question's keys therefore decide which table answers.
-
-The export and the loader refuse a document in which a StatVar carries a provenance no dataset declares, a declared dataset has no StatVar, or a dataset's `rank` is not an integer or repeats another's. The second case means a stale or misjoined coverage build. A StatVar may carry several provenances, and several datasets may publish one five-tuple. `code_index.members.elect_dataset` serves each family from the dataset the identity names. Without one, a dataset whose rows cover the identity's role keys serves before one whose rows do not, then one whose family declares exactly the roles those keys place, then the lowest rank.
-
-Two gates check the committed export, each against the source it can read:
-
-| Gate                                                                                                    | Runs                                                                                 | Checks                                                                                                                                                                                                                                                                          |
-| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `code-index-drift` in `.github/workflows/code-index-live.yml` (`tests/code_index/test_export_drift.py`) | Weekday schedule, plus ready PRs touching `code_index` paths; graph credentials only | Everything the graph and the authored config determine: declarations, datasets, codes, StatVar rows without `provenances`, measure blocks, the stamp's counts, and its content hash.                                                                                            |
-| `python -m series_coverage.verify_index --record` in `.github/workflows/deploy-dev.yml`                 | Every deploy, on the coverage job, before traffic moves                              | Each StatVar row's `provenances` equals the published coverage build's for that variable, and every declared dataset has a row in the build. It prints the index's `coverage_build` beside the build it read, and on a pass records that build as the index's compatible build. |
-
-Run the export by hand when either gate reports a difference. The coverage check also runs locally: `COVERAGE_ARTIFACT_URI=gs://<coverage bucket>/ uv run python -m series_coverage.verify_index`, with `--index <path>` for an export not yet committed.
-
 ## `export_graph_entities.py`
 
 Regenerates `entity_resolution`'s committed graph-derived pack data: every `Organization`, `DACRecipientUnallocatedByCountry` and `DACUnspecifiedParty` node (`graph_entities.json`) and the resolvekit region-to-dcid mapping (`region_ids.json`). A record's `dac_code` is the node's numerically lowest `dacCode`; its other codes join its aliases, since a resolvekit entity holds one code per system and every code must resolve.
@@ -131,7 +78,7 @@ uv run --env-file .env python scripts/export_graph_entities.py regions \
     --out packages/dfo-data-tools/src/entity_resolution/data/region_ids.json
 ```
 
-Needs `SEARCH_GRAPH_BASE`.
+Needs `SEARCH_GRAPH_BASE` and `GRAPH_RELEASE_URI` set to a published graph release, whose code index it reads (`code_index.shared.get_index`), with Google credentials that can read a `gs://` release.
 
 By hand, when the graph's organisation, unallocated-recipient or unspecified-party population or the resolvekit region mapping changes.
 
@@ -146,23 +93,6 @@ uv run python scripts/generate_sample_bundle.py <output-directory>
 No live credentials needed.
 
 Run by `.github/workflows/bundle-round-trip.yml`, same trigger as `bundle_round_trip.R`.
-
-## `graph_release_parity.py`
-
-Diffs the serving views of an environment's graph release against the coverage build and a fresh code index export of the same import. Its one gate, `coverage`, builds the current release's views with `graph_release.views`, then compares its `CoverageIndex` with the published coverage build (every row, role names, variable provenances, facet metadata, horizon and build year) and its `code_index_blocks` document with a fresh `export_index` over the live mixer, joined with that coverage build, every block row by row.
-
-```bash
-uv run python scripts/graph_release_parity.py coverage \
-    --release-uri gs://dfo-dev-graph-release-dev-fin-observatory/ \
-    --coverage-uri gs://dfo-dev-coverage-dev-fin-observatory/ \
-    --graph-base https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app \
-    --datacommons-service projects/dev-fin-observatory/locations/northamerica-northeast1/services/dfo-dev-dc-datacommons-service \
-    --out parity-dev.json
-```
-
-The gate refuses with exit 2 and a `refused.code` when the coverage build and the release come from different ingestion executions (`import_mismatch`, `coverage_ingestion_unrecorded`), when the DC service serves another revision than the release read (`serving_revision_moved`), when the checkout's declarations hash differs from the release's (`declarations_moved`) or when the export refuses (`export_refused`). Otherwise the JSON report counts, per category, the items compared and the differences, with the first `--examples` of them; the exit status is 0 when nothing differs and 1 when anything does. On dev it takes about 15 minutes, nearly all of them the export's mixer reads.
-
-Needs Google credentials that read the release and coverage buckets and `run.services.get` on the DC service, and `SEARCH_GRAPH_TOKEN` on a token-gated mixer.
 
 ## `harvest_llm_fixtures.py`
 
@@ -222,19 +152,6 @@ Needs `GEMINI_API_KEY` and `GRAPH_RELEASE_URI` (the engine serves the code index
 
 By hand, when re-checking the corpus's timing claims against a live deployment.
 
-## `measure_coverage_lookup.py`
-
-Measures `series_coverage.CoverageIndex` lookup wall-clock (p50/p95/p99) and peak RSS per query mode against a real published coverage artifact.
-
-```bash
-uv run python scripts/measure_coverage_lookup.py
-uv run python scripts/measure_coverage_lookup.py --artifact-uri file:///tmp/coverage-live
-```
-
-No live credentials needed; reads a coverage artifact by URI (`file://` or `gs://`).
-
-By hand, when checking coverage-index lookup performance against a real artifact.
-
 ## `measure_writer_rss.py`
 
 Measures `materialise.formats`' three streaming writers' peak RSS against synthetic CRS-shaped frames.
@@ -247,20 +164,6 @@ uv run python scripts/measure_writer_rss.py --out /tmp/writer-rss.json
 No live credentials needed.
 
 By hand. `docs/datasets-sync-ceiling.md` cites this script as the method behind its writer-memory numbers; re-run it when the streaming writers change.
-
-## `record_coverage_slice.py`
-
-Records `tests/fixtures/coverage_slice/`: a real, unmodified slice of a published coverage artifact, filtered to every role-bearing StatVar the offline suite's fixtures and the `corpus/*.yaml` cases and families reference.
-
-```bash
-uv run python scripts/record_coverage_slice.py \
-    --source file:///path/to/real/coverage/artifact \
-    --out tests/fixtures/coverage_slice
-```
-
-No live credentials needed; reads a coverage artifact by URI.
-
-By hand, when the fixture needs refreshing after the corpus or the source coverage artifact changes.
 
 ## `record_origin_catalogue_fixture.py`
 
@@ -302,7 +205,7 @@ Trims a sentence panel run into the golden `tests/render/test_sentence_golden.py
 uv run python scripts/sentence_golden.py runs/sentence-panel
 ```
 
-No live credentials are needed. It reads the `raw-*.jsonl` files a sentence panel run wrote.
+Needs `GRAPH_RELEASE_URI` set to a published graph release, whose measure index it reads (`get_measure_index`), with Google credentials that can read a `gs://` release. It reads the `raw-*.jsonl` files a sentence panel run wrote.
 
 Run by `just sentence-golden <run directory>`, by hand, after a change to the renderer's output. Record a panel run from the branch, trim it, and review the printed sentences.
 
@@ -322,14 +225,14 @@ Run by `just sentence-panel`. Runnable by hand.
 
 ## `stage_eval_data.py`
 
-Stages the deployed graph release, origin catalogue and coverage artifacts for the eval apps. It copies the release the deployed pointer names, with its manifest and parts. For each checkout it asks `origin_catalogue.schema.FORMAT_ROOT` for the format root, and `series_coverage.schema.FORMAT_ROOT` too when the checkout serves coverage from the coverage artifact, reads each distinct root's current pointer from the deployed bucket, downloads that one version into a local root, and prints the `file://` URIs.
+Stages the deployed graph release and origin catalogue for the eval apps. It copies the release the deployed pointer names, with its manifest and parts. For each checkout it asks `origin_catalogue.schema.FORMAT_ROOT` for the format root, reads each distinct root's current pointer from the deployed bucket, downloads that one version into a local root, and prints the `file://` URIs.
 
 ```bash
 uv run python scripts/stage_eval_data.py --checkout <head-checkout> --checkout <base-checkout> \
     --dest staged --release-uri gs://<release bucket>/ --catalogue-uri gs://<catalogue bucket>/
 ```
 
-Needs read access to the deployed release and catalogue buckets, and the coverage bucket for a checkout that reads it. Exits 3 when a root or the release is missing from the bucket.
+Needs read access to the deployed release and catalogue buckets. Exits 3 when a root or the release is missing from the bucket.
 
 Run by `.github/workflows/eval-gate.yml` before the apps start.
 

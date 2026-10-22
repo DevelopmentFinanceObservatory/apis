@@ -19,7 +19,7 @@ import search.engine.region.candidate_collapse as candidate_collapse
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
 from materialise import place_scope
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.departures import spec_departure_facts
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
@@ -38,6 +38,7 @@ from search.render.plan import render_sentence_plan
 from search.render.tokens import sentence_from_plan
 from statvar_members import MemberEnumerator
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, member_walk_reader
@@ -75,12 +76,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=None,
-            ask=None,
-        ), None
+        return elected_reply(0, also_plausible=None), None
 
 
 class _CountingFakeGraph(FakeGraph):
@@ -349,12 +345,7 @@ class _CandidatesBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=[1],
-            ask=None,
-        ), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
 _SV_A = "TEST/PlaceScopeDefault_Population"
@@ -558,8 +549,8 @@ class _BindFemaleLLM:
         assert schema.__name__ == "_UniversalBindOutput"
         from search.engine.bind import SlotBindingDraft
 
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what",
@@ -569,7 +560,6 @@ class _BindFemaleLLM:
                 ),
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 
@@ -583,8 +573,8 @@ class _BindFemaleOldLLM:
         assert schema.__name__ == "_UniversalBindOutput"
         from search.engine.bind import SlotBindingDraft
 
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what", property_dcid="testSex", kind="value", value_dcids=["Female"]
@@ -594,7 +584,6 @@ class _BindFemaleOldLLM:
                 ),
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 
@@ -649,11 +638,11 @@ def test_no_member_asserts_bound_property_reports_no_matching_slice_zero_probes(
     assert any(w.code == PLACE_SCOPE_DEFAULTED for w in result.warnings)
 
 
-def test_a_value_bound_on_an_aggregate_without_its_slot_refuses_naming_it():
+def test_a_value_bound_on_an_aggregate_without_its_slot_is_disclosed():
     """Recall builds only the bare aggregate, which has no `testSex` slot, and the bind
-    model binds `testSex=Female` on it. The stray value is dropped, so the aggregate
-    answers no narrower question, and the part refuses `qualifier_not_bound` with the
-    aggregate flagged, naming Female."""
+    model binds `testSex=Female` on it, which no word of the question names. The stray
+    value is dropped and the aggregate answers, departing `measure_not_applied` under
+    Female."""
     obs = {
         f"{_BOUND_SV}|country/A1": [
             {
@@ -686,11 +675,10 @@ def test_a_value_bound_on_an_aggregate_without_its_slot_refuses_naming_it():
         )
     )
 
-    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
-    assert result.flagged_match is not None
-    (flagged,) = result.flagged_match
-    assert [m.ref.ref for m in flagged.resolved.members] == [_BOUND_SV]
-    assert [[ref.ref for ref in term.named] for term in result.unbound_qualifiers] == [["Female"]]
+    assert result.status == "definite"
+    (spec,) = result.specs
+    assert [m.ref.ref for m in spec.resolved.members] == [_BOUND_SV]
+    assert [fact.asked for fact in result.departure_facts.values()] == ["Female"]
 
 
 # ---------------------------------------------------------------------------
@@ -869,8 +857,8 @@ class _BindFemaleAdultLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what", property_dcid="gender", kind="value", value_dcids=["Female"]
@@ -880,7 +868,6 @@ class _BindFemaleAdultLLM:
                 ),
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 

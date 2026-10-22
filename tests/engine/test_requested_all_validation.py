@@ -3,11 +3,10 @@ the claims an operation over a category makes without bind."""
 
 from __future__ import annotations
 
-from search.engine.bind import SlotBindingDraft
-from search.engine.region.phase_rank_bind import (
-    _open_operation_slots,
-    _validate_requested_all_bindings,
-)
+import pytest
+
+from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
+from search.engine.region.phase_rank_bind import _open_operation_slots
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import Operation
 
@@ -34,7 +33,7 @@ def test_evidence_not_requested_all_passes_through_untouched_even_with_a_phrase_
         requested_all_phrase=_PHRASE,
     )
 
-    validated, applied = _validate_requested_all_bindings(
+    validated, applied = validate_requested_all_bindings(
         [mentioned_unbound, value_binding], [_PHRASE], slot_properties=_SLOTS
     )
 
@@ -46,7 +45,7 @@ def test_requested_all_with_no_phrase_is_demoted():
     """A missing phrase demotes a `requested_all` claim to `mentioned`."""
     binding = _unbound(evidence="requested_all", requested_all_phrase=None)
 
-    validated, applied = _validate_requested_all_bindings(
+    validated, applied = validate_requested_all_bindings(
         [binding], [_PHRASE], slot_properties=_SLOTS
     )
 
@@ -61,7 +60,7 @@ def test_requested_all_with_a_non_verbatim_phrase_is_demoted():
     """A phrase absent from the query's dropped qualifiers is demoted."""
     binding = _unbound(evidence="requested_all", requested_all_phrase="a phrase never offered")
 
-    validated, applied = _validate_requested_all_bindings(
+    validated, applied = validate_requested_all_bindings(
         [binding], [_PHRASE], slot_properties=_SLOTS
     )
 
@@ -82,7 +81,7 @@ def test_requested_all_on_a_value_or_set_binding_is_demoted():
         requested_all_phrase=_PHRASE,
     )
 
-    validated, applied = _validate_requested_all_bindings(
+    validated, applied = validate_requested_all_bindings(
         [binding], [_PHRASE], slot_properties=_SLOTS
     )
 
@@ -95,7 +94,7 @@ def test_requested_all_with_a_verbatim_phrase_validates():
     """A verbatim phrase on an unbound slot validates and is reported applied."""
     binding = _unbound(evidence="requested_all", requested_all_phrase=_PHRASE)
 
-    validated, applied = _validate_requested_all_bindings(
+    validated, applied = validate_requested_all_bindings(
         [binding], [_PHRASE], slot_properties=_SLOTS
     )
 
@@ -114,7 +113,7 @@ def test_a_mixed_batch_only_demotes_the_invalid_claim():
         requested_all_phrase="not offered",
     )
 
-    validated, applied = _validate_requested_all_bindings(
+    validated, applied = validate_requested_all_bindings(
         [valid, invalid], [_PHRASE], slot_properties=_SLOTS
     )
 
@@ -122,6 +121,31 @@ def test_a_mixed_batch_only_demotes_the_invalid_claim():
     assert validated[1].evidence == "mentioned"
     assert validated[1].requested_all_phrase is None
     assert applied == frozenset({_PHRASE})
+
+
+@pytest.mark.parametrize(
+    ("property_dcid", "phrase"),
+    [
+        # "total" asks for a sum and names no slot.
+        ("crsTypeOfFlow", "total"),
+        # The phrase names the flow slot, and the claim is on the instrument slot.
+        ("crsTypeOfFinance", _PHRASE),
+    ],
+)
+def test_requested_all_whose_phrase_names_another_slot_or_none_is_demoted(
+    property_dcid: str, phrase: str
+):
+    """A verbatim phrase that does not name the claimed slot by its declared plain name is
+    demoted, so a declared default still binds the slot."""
+    binding = _unbound(property_dcid, evidence="requested_all", requested_all_phrase=phrase)
+
+    validated, applied = validate_requested_all_bindings(
+        [binding], [phrase], slot_properties=_SLOTS
+    )
+
+    assert validated[0].evidence == "mentioned"
+    assert validated[0].requested_all_phrase is None
+    assert applied == frozenset()
 
 
 def test_requested_all_on_a_property_the_elected_shape_lacks_is_demoted():
@@ -132,7 +156,7 @@ def test_requested_all_on_a_property_the_elected_shape_lacks_is_demoted():
         requested_all_phrase=_PHRASE,
     )
 
-    validated, applied = _validate_requested_all_bindings(
+    validated, applied = validate_requested_all_bindings(
         [binding], [_PHRASE], slot_properties=_SLOTS
     )
 

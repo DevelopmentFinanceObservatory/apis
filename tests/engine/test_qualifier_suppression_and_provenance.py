@@ -1,6 +1,6 @@
 """Tests qualifier admission in warnings, filter provenance, and same-shape merges.
 
-Fixtures use packaged CRS data and one synthetic code system.
+Fixtures use fixture CRS data and one synthetic code system.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.same_shape import collapse_same_shape
 from search.engine.spec_build import build_spec
 from search.models import CoverageBare, StatVar, Warning
+from tests.engine._binders import elected_reply
 from tests.engine._builders import conjoin_spec as _spec
 from tests.engine._builders import gref as _gr
 from tests.engine._builders import shape_five_tuple as _shape
@@ -102,9 +103,7 @@ class _ExtractAndBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[]), None
 
 
 def _e2e_graph() -> FakeGraph:
@@ -667,8 +666,8 @@ def test_e2e_forced_binding_carries_text_recognized_provenance_binder_elects_the
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -678,7 +677,6 @@ def test_e2e_forced_binding_carries_text_recognized_provenance_binder_elects_the
                     )
                 ],
                 also_plausible=[],
-                ask=None,
             ), None
 
     result = asyncio.run(
@@ -783,9 +781,7 @@ class _SyntheticNoBindingLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[]), None
 
 
 def test_synthetic_code_system_admission_reaches_both_halves(monkeypatch, search_settings):

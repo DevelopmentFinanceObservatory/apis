@@ -49,7 +49,7 @@ from typing import Any
 import pytest
 
 from materialise.place_scope import DefaultPlaceScope, scope_of_places
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.extract import DateRequest
 from search.engine.place import default_place_scope_message
 from search.engine.quantity_read import QuantityOutput
@@ -69,6 +69,7 @@ from search.engine.region.state import EngineOptions
 from search.engine.shape import ShapeDraft
 from search.models import NearestRealSpec, ResubmitIdentityPayload, Spec, TimeWindow
 from tests.engine import test_first_answer_place_scenarios as scenarios
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -656,11 +657,10 @@ class _Bind:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=self._route.chosen,
+        return elected_reply(
+            self._route.chosen,
             bindings=list(self._route.bindings),
             also_plausible=list(self._route.also_plausible),
-            ask=None,
         ), None
 
 

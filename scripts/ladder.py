@@ -56,7 +56,7 @@ from promptlab.store import (  # noqa: E402
     StoreError,
 )
 from search.engine import config  # noqa: E402
-from search.engine.bind import _UNIVERSAL_BIND_SYSTEM_PROMPT  # noqa: E402
+from search.engine.bind import _MEASURING_BIND_SYSTEM_PROMPT  # noqa: E402
 from search.engine.clients.llm import LLM  # noqa: E402
 from search.engine.config import settings  # noqa: E402
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT  # noqa: E402
@@ -260,7 +260,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
                 corpus_sha256=_corpus_sha256(),
                 seeds=(),
                 extract_system_sha1=_sha1(_EXTRACTION_SYSTEM_PROMPT),
-                bind_system_sha1=_sha1(_UNIVERSAL_BIND_SYSTEM_PROMPT),
+                bind_system_sha1=_sha1(_MEASURING_BIND_SYSTEM_PROMPT),
             )
             store = CaptureStore.create(capture_root, manifest=manifest)
     except StoreError as exc:

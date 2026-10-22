@@ -3,7 +3,7 @@ options and slot token an entity_ambiguous part carries.
 
 An operation rides on the part of the variable extract assigned it, and its phrase
 reaches that variable's bind the way a dropped qualifier's does, with no
-query_qualifier_dropped warning and no sentence note. The fixture is the packaged CRS
+query_qualifier_dropped warning and no sentence note. The fixture is the fixture CRS
 index with the query "standard grants", which leaves crsTypeOfFlow open for the binder.
 """
 
@@ -14,7 +14,7 @@ import asyncio
 import pytest
 from dfo_spec_kit.registry import load_registry
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_events
 from search.engine.events import ResponseEvent, SentenceEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity, ExtractedOperation, Extraction
@@ -34,6 +34,7 @@ from search.models import (
     ResubmitIdentityEntry,
     ResubmitParsedEntry,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
@@ -90,9 +91,7 @@ class _ScriptedLLM:
                     requested_all_phrase=self._phrase,
                 )
             )
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=bindings, also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, bindings=bindings, also_plausible=[]), None
 
 
 def _extraction(**fields) -> Extraction:

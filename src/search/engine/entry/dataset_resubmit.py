@@ -371,6 +371,7 @@ async def handle(
                     resolver=resolver,
                     admission=admission,
                     llm=llm,
+                    binder=params.binder,
                     sdmx=sdmx,
                     materialise_graph=materialise_graph,
                     materialise_sdmx=materialise_sdmx,

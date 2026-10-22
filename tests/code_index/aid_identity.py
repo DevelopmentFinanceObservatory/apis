@@ -1,4 +1,4 @@
-"""The education-aid-to-Kenya identity and the facts the packaged index holds for it.
+"""The education-aid-to-Kenya identity and the facts the fixture index holds for it.
 
 The Datasets mint tests and the Search tests resolve this one identity.
 """
@@ -38,18 +38,18 @@ IMPUTED_MULTILATERAL = "DAC2aAidType106"
 CRS_PROVENANCE = "provenance/OECDCreditorReportingSystem"
 IMPUTED_PROVENANCE = "provenance/ONEImputedMultilateralSectors"
 
-# CRS members of the education family in the packaged index, and those among them that
+# CRS members of the education family in the fixture index, and those among them that
 # declare no `crsCooperationModality`.
 CRS_MEMBER_COUNT = 257
 CRS_MEMBERS_WITHOUT_MODALITY = 22
 
-# Imputed multilateral members of the education family in the packaged index, all on the
+# Imputed multilateral members of the education family in the fixture index, all on the
 # `attributedAmount` five-tuple.
 IMPUTED_MEMBER_COUNT = 16
 
 # The StatVars a Search response listed for the identity when a family spanned both
 # datasets, as recorded from the deployed service, and the imputed members among them,
-# whose `Amount_` dcids are absent from the packaged index.
+# whose `Amount_` dcids are absent from the fixture index.
 LISTED_STAT_VARS: tuple[str, ...] = tuple(
     json.loads(
         (Path(__file__).parent / "fixtures" / "education_aid_listed_stat_vars.json").read_text()

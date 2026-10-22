@@ -187,7 +187,7 @@ a legitimate combination width multiplied across every StatVar in a large
 population, which nothing bounded before this guard. `options/surface.py`
 calls `decide_part_unit` with its full server-derived population, which
 carries no StatVar-count precheck of its own (see that module's own
-docstring), and the packaged code index's own population is deliberately
+docstring), and the code index's own population is deliberately
 never capped at all (see `options/population.py`'s own docstring) -- both
 make a large `sv_dcids` reachable here.
 

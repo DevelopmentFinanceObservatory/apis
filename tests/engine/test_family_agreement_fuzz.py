@@ -1,6 +1,6 @@
 """Search and the Datasets mint resolve the same members for the same identity.
 
-A seeded fuzz draws identities from the packaged code index: ones that bind no value, sit on
+A seeded fuzz draws identities from the fixture code index: ones that bind no value, sit on
 the opt-in dataset's five-tuple, name a dataset, bind values no row holds together, and declare fewer
 slots than any row carries. A slot binds a value, a set, or a set of one ref. The provenance
 facet binds a value, a set of one ref, a set of two, or a provenance the index does not hold.
@@ -229,7 +229,7 @@ def _draw(rng: random.Random) -> list[_Drawn]:
         for five_tuple in rows_by_five_tuple
         if any(index.datasets[owner].opt_in for owner in index.datasets_by_five_tuple[five_tuple])
     ]
-    assert opt_in, "the packaged index holds no five-tuple of an opt-in dataset"
+    assert opt_in, "the fixture index holds no five-tuple of an opt-in dataset"
     datasets = sorted(index.datasets)
 
     drawn = []
@@ -1107,7 +1107,7 @@ def _overlapping_sparse_index() -> CodeIndex:
     )
 
 
-_GRID_INDEXES = {"packaged": get_index, "overlapping-sparse": _overlapping_sparse_index}
+_GRID_INDEXES = {"fixture": get_index, "overlapping-sparse": _overlapping_sparse_index}
 
 
 @pytest.mark.parametrize("name", _GRID_INDEXES)

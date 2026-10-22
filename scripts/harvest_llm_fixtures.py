@@ -342,25 +342,20 @@ def _direction_corpus_collect(*, harvest_path: Path) -> None:
     """Run extraction over direction queries and append every requested key to the shared file.
 
     Extraction reads no graph, so this collector runs in-process. A fresh `FakeLLM` per query
-    reloads fixtures written earlier in the same pass. Pin `extract.date` to `PINNED_DATE` because
-    the system prompt includes the date in each fixture key.
+    reloads fixtures written earlier in the same pass. The key hashes the query and the
+    system prompt template, with its year left as `[[YEAR]]`, so the collector needs no
+    pinned date.
     """
-    from datetime import date
-    from unittest.mock import patch
-
     from search.engine.extract import extract as _extract
-    from tests.fixtures import PINNED_DATE, FakeLLM
+    from tests.fixtures import FakeLLM
 
     old_env = os.environ.get(HARVEST_MISS_PATH_ENV)
     os.environ[HARVEST_MISS_PATH_ENV] = str(harvest_path)
     try:
-        with patch("search.engine.extract.date") as mock_date:
-            mock_date.today.return_value = PINNED_DATE
-            mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
-            for query in _direction_corpus_queries():
-                # FakeLLM logs the miss before raising.
-                with contextlib.suppress(MissingFixtureError):
-                    asyncio.run(_extract(query, llm=FakeLLM()))
+        for query in _direction_corpus_queries():
+            # FakeLLM logs the miss before raising.
+            with contextlib.suppress(MissingFixtureError):
+                asyncio.run(_extract(query, llm=FakeLLM()))
     finally:
         if old_env is None:
             os.environ.pop(HARVEST_MISS_PATH_ENV, None)

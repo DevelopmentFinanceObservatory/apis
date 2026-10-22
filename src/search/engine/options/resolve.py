@@ -23,7 +23,7 @@ itself, since this door builds no `ShapeDraft` to hand that function.
 ## What this module derives, and from where
 
 - **The StatVar population**: `options.population.options_population`, the
-  server-side derivation seam -- either the packaged code index's full
+  server-side derivation seam -- either the release's code index's full
   population for a shape it carries (CRS today), or the mint's graph walk
   through the shared enumerator (`statvar_members.shared_enumerator`,
   SDG-shaped asks). See that module's own docstring for the two-source split

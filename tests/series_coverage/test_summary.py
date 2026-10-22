@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from code_index.types import PartyRow
 from series_coverage.index import CoverageIndex
-from series_coverage.loader import load_coverage
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from series_coverage.summary import FacetSummary, PartyCounts
 from tests.series_coverage.support import (
@@ -23,15 +20,15 @@ from tests.series_coverage.support import (
     V4,
     V5,
     ZWE,
-    build_test_artifact,
+    build_test_index,
     coverage_table,
 )
 
 _FLOW_ROLES = RoleNames(donor="financingProvider", recipient="financingRecipient")
 
 
-def test_a_variable_summary_folds_each_facet_of_the_loaded_build(tmp_path: Path) -> None:
-    index = load_coverage(build_test_artifact(tmp_path / "coverage")).index
+def test_a_variable_summary_folds_each_facet_of_the_index() -> None:
+    index = build_test_index()
 
     summary = index.facet_summary.variable(V1)
 
@@ -61,9 +58,9 @@ def test_a_variable_summary_folds_each_facet_of_the_loaded_build(tmp_path: Path)
     assert index.facet_summary.variable("NoSuchVariable") is None
 
 
-def test_facet_spans_agree_with_the_summary_for_every_variable(tmp_path: Path) -> None:
+def test_facet_spans_agree_with_the_summary_for_every_variable() -> None:
     """The summary and `facet_spans` with no binding read the same rows."""
-    index = load_coverage(build_test_artifact(tmp_path / "coverage")).index
+    index = build_test_index()
     variables = [V1, V2, V3, V5]
 
     folded = {

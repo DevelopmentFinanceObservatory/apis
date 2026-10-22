@@ -9,7 +9,6 @@ import httpx
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.rate_tables import RateTableCache
 from materialise.roles import axis_for_role
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
@@ -17,6 +16,7 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import TimeWindow
 from series_coverage.schema import FacetMetadata, RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import CoverageRow, FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -131,7 +131,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _run(
@@ -436,9 +436,7 @@ class _CandidatesBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
 def test_candidates_each_narrow_their_own_scope_to_the_surviving_role_index(monkeypatch):

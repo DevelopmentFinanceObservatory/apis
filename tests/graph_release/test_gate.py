@@ -1,7 +1,7 @@
-"""Pins the release gate and the shadow diff on releases built from recorded dev data.
+"""Pins the release gate on releases built from recorded dev data.
 
 The invariant, SDMX and coverage checks run on the platform parts of `raw_inputs.json` (see
-`test_platform.py`). The mixer differential and the origin arc diff run on
+`test_platform.py`). The mixer differential runs on
 `dc_graph/visible_arcs/ids_variables.json`: five IDS variables' Spanner `Edge` rows and the dev
 mixer's `->*` answer for them, whose `constraintProperties` carry the import-added
 `sourceIndicatorCode`. Each check first passes on an unbroken release, then fails on one built
@@ -18,12 +18,8 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import pytest
-from google.auth.exceptions import RefreshError
 
-from artifact_publication import POINTER_FILE
-from artifact_publication.uri import join_uri, write_uri_bytes
 from dc_graph import GraphClient
 from dc_graph.client import SubjectPage
 from dc_graph.errors import GraphReadError
@@ -31,8 +27,7 @@ from dc_graph.visible_arcs import IMPORT_ADDED_CONSTRAINT_PROPERTIES
 from dc_sdmx.errors import SdmxQueryError, SdmxTransportError
 from dc_sdmx.results import SdmxDataResult, SdmxObservation
 from dfo_platform.roles import ROLE_AXES
-from graph_release import shadow
-from graph_release.coverage import HORIZON, coverage_rows, role_map
+from graph_release.coverage import role_map
 from graph_release.dfo import build_dfo_parts, dfo_inputs, stage_dfo_parts
 from graph_release.format import StagedPart, conform_part
 from graph_release.gate import (
@@ -53,46 +48,16 @@ from graph_release.gate import (
 )
 from graph_release.origin import ReleaseOrigin, origin_view
 from graph_release.platform import PlatformParts, PlatformRefusal, stage_platform_parts
-from graph_release.shadow import (
-    PINNED_ARC_PROPERTY,
-    PINNED_INDEX_VARIABLES,
-    ComparatorBuild,
-    diff_coverage,
-    diff_origin_arcs,
-    index_report,
-    shadow_builds,
-)
-from origin_catalogue.artifact import encode_build, publish_build
-from origin_catalogue.artifact import format_root as origin_root
-from origin_catalogue.schema import CataloguePointer
-from series_coverage.io import (
-    write_coverage_table,
-    write_current,
-    write_facet_metadata,
-    write_manifest,
-    write_role_names,
-)
-from series_coverage.schema import CoverageManifest, CoveragePointer, FacetMetadata
 from tests.graph_release.recorded import (
     SLICE_BASE_PARTIES,
     SLICE_DECLARATIONS,
     platform_parts,
     slice_platform_parts,
 )
-from tests.origin_catalogue.support import (
-    BUILT_AT,
-    build_arc_tables,
-    held_wire_arcs,
-    sample_arc_tables,
-    sample_tables,
-)
-from tests.series_coverage.support import build_dir, build_test_artifact, pointer_path
 
 _IDS_FIXTURE = Path(__file__).parents[1] / "fixtures/dc_graph/visible_arcs/ids_variables.json"
-_STAMP = "stamp-a"
-_COVERAGE_BUILD = f"{_STAMP}-build"
-_ORIGIN_BUILD = "build-a"
 _SEED = "seed-a"
+_CONSTRAINT_PROPERTIES = "constraintProperties"
 
 
 @pytest.fixture
@@ -395,7 +360,7 @@ def test_a_property_only_the_mixer_holds_is_reported_and_decides_nothing(ids, mo
     parts = dataclasses.replace(
         parts,
         edges=parts.edges.filter(
-            pc.not_equal(parts.edges["predicate"].cast(pa.string()), PINNED_ARC_PROPERTY)
+            pc.not_equal(parts.edges["predicate"].cast(pa.string()), _CONSTRAINT_PROPERTIES)
         ),
     )
     variable = ids["variables"][3]
@@ -410,7 +375,7 @@ def test_a_property_only_the_mixer_holds_is_reported_and_decides_nothing(ids, mo
             for dcid in dcids:
                 served[dcid] = {
                     **served[dcid],
-                    PINNED_ARC_PROPERTY: {"nodes": [{"dcid": import_added}]},
+                    _CONSTRAINT_PROPERTIES: {"nodes": [{"dcid": import_added}]},
                 }
             served[variable]["extraProperty"] = {"nodes": [{"value": "x"}]}
             return served
@@ -564,264 +529,6 @@ def test_a_refused_sdmx_query_is_a_finding_and_a_transport_error_unavailable(par
     unavailable = check_sdmx(parts, sdmx=_Sdmx(drop), seed=_SEED)
     assert unavailable.findings == ()
     assert [u.dependency for u in unavailable.unavailable] == [Dependency.SDMX]
-
-
-# ---------------------------------------------------------------- shadow
-
-
-def _publish_coverage(base: Path, parts: PlatformParts, *, stamp: str = _STAMP) -> str:
-    """Publishes the coverage build `parts` give, as the coverage job writes one."""
-    roles = role_map(parts.edges, ROLE_AXES)
-    table = coverage_rows(parts.series, roles)
-    build_id = f"{stamp}-build"
-    prefix = build_dir(base, build_id)
-    prefix.mkdir(parents=True)
-    write_coverage_table(table.cast(HORIZON.schema), prefix / "coverage.parquet", horizon=HORIZON)
-    write_role_names(dict(roles), prefix / "role_names.json")
-    facets = {
-        facet: FacetMetadata()
-        for facet in parts.series["facet_id"].cast(pa.string()).unique().to_pylist()
-    }
-    write_facet_metadata(facets, prefix / "facets.json")
-    write_manifest(
-        CoverageManifest(
-            stamp=stamp,
-            build_id=build_id,
-            built_at="2026-10-19T00:00:00Z",
-            source="tests.graph_release.test_gate",
-            row_counts={"rows": table.num_rows},
-            files={
-                "coverage": "coverage.parquet",
-                "role_names": "role_names.json",
-                "facets": "facets.json",
-            },
-            horizon=HORIZON,
-        ),
-        prefix / "manifest.json",
-    )
-    write_current(CoveragePointer(stamp=stamp, build_id=build_id), pointer_path(base))
-    return f"file://{base}"
-
-
-def _rewrite_published(base: Path, change: Callable[[pa.Table], pa.Table]) -> None:
-    path = build_dir(base, f"{_STAMP}-build") / "coverage.parquet"
-    table = pq.read_table(path)
-    write_coverage_table(change(table).cast(HORIZON.schema), path, horizon=HORIZON)
-
-
-def _bump_first_count(table: pa.Table) -> pa.Table:
-    counts = table["n_obs"].to_pylist()
-    counts[0] += 1
-    return table.set_column(
-        table.schema.get_field_index("n_obs"), "n_obs", pa.array(counts, pa.uint32())
-    )
-
-
-def test_the_coverage_diff_finds_a_changed_or_missing_row(parts, tmp_path):
-    base = tmp_path / "coverage"
-    uri = _publish_coverage(base, parts)
-    # The diff reads the build it is given, wherever the pointer has moved since.
-    write_current(CoveragePointer(stamp="stamp-b", build_id="stamp-b-build"), pointer_path(base))
-    clean = diff_coverage(
-        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
-    )
-    assert clean.passed, clean.summary()
-
-    _rewrite_published(base, _bump_first_count)
-    changed = diff_coverage(
-        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
-    )
-    _rewrite_published(base, lambda table: table.slice(1))
-    missing = diff_coverage(
-        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
-    )
-    _rewrite_published(base, _with_unknown_recipient)  # and still without the first row
-    extra = diff_coverage(
-        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
-    )
-
-    assert _codes(changed) == ["shadow_coverage_diff"]
-    assert changed.findings[0].detail.startswith("1 coverage row")
-    assert _codes(missing) == ["shadow_coverage_diff"]
-    assert missing.findings[0].detail.startswith("1 coverage row")
-    assert _codes(extra) == ["shadow_coverage_diff"]
-    assert extra.findings[0].detail.startswith("2 coverage row")
-    assert "country/ZZZ" in [example.split()[-1] for example in extra.findings[0].examples]
-
-
-def _with_unknown_recipient(table: pa.Table) -> pa.Table:
-    """`table` plus a copy of its first row for a recipient no release row names."""
-    row = table.slice(0, 1).to_pylist()[0] | {"recipient": "country/ZZZ"}
-    return pa.concat_tables([table, pa.Table.from_pylist([row], schema=table.schema)])
-
-
-def test_the_coverage_diff_finds_other_role_names(parts, tmp_path):
-    base = tmp_path / "coverage"
-    uri = _publish_coverage(base, parts)
-    path = build_dir(base, f"{_STAMP}-build") / "role_names.json"
-    names = json.loads(path.read_text())
-    variable = next(v for v, n in names.items() if n["donor"] and n["recipient"])
-    names[variable] = {"donor": names[variable]["recipient"], "recipient": names[variable]["donor"]}
-    path.write_text(json.dumps(names))
-
-    result = diff_coverage(
-        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id=_COVERAGE_BUILD
-    )
-
-    assert _codes(result) == ["shadow_coverage_diff"]
-    assert result.findings[0].examples == (variable,)
-
-
-def test_a_comparator_at_another_import_or_unreadable_is_unavailable(parts, tmp_path):
-    uri = _publish_coverage(tmp_path / "coverage", parts, stamp="stamp-old")
-
-    behind = diff_coverage(
-        parts, import_stamp=_STAMP, role_axes=ROLE_AXES, uri=uri, build_id="stamp-old-build"
-    )
-    absent = diff_coverage(
-        parts,
-        import_stamp=_STAMP,
-        role_axes=ROLE_AXES,
-        uri=f"file://{tmp_path / 'none'}",
-        build_id=_COVERAGE_BUILD,
-    )
-    no_origin = diff_origin_arcs(
-        parts, import_stamp=_STAMP, uri=f"file://{tmp_path / 'none'}", build_id=_ORIGIN_BUILD
-    )
-
-    for result, dependency in (
-        (behind, Dependency.COVERAGE_BUILD),
-        (absent, Dependency.COVERAGE_BUILD),
-        (no_origin, Dependency.ORIGIN_CATALOGUE),
-    ):
-        assert result.findings == ()
-        assert [u.dependency for u in result.unavailable] == [dependency]
-
-
-def _mixer_answers(ids: dict) -> dict[str, dict]:
-    """The recorded `->*` answer by variable, a copy each test may edit."""
-    return json.loads(json.dumps({v: n["arcs"] for v, n in ids["mixer_response"]["data"].items()}))
-
-
-def _publish_origin(base: Path, answers: Mapping[str, dict], *, stamp: str = _STAMP) -> str:
-    """Publishes the sample origin build with `answers`' variables as its DFO variables and
-    their `->*` answers as its DFO arc table rows, as the catalogue job stores them."""
-    uri = f"file://{base}"
-    sample = sample_arc_tables()
-    arcs = build_arc_tables(
-        dfo=answers,
-        base={node: held_wire_arcs(sample, node) or None for node in sample.base},
-        schema={node: held_wire_arcs(sample, node) or {} for node in sample.schema},
-    )
-    build = encode_build(
-        dataclasses.replace(sample_tables(), dfo_variables=frozenset(answers)),
-        build_id="build-a",
-        built_at=BUILT_AT,
-        build_seconds=1.0,
-        identity_inputs={"dfo_fingerprint": stamp, "registry": "r1", "week": "2026-W42"},
-        registry_hash="r1",
-        arcs=arcs,
-    )
-    assert publish_build(uri, build, expected_generation=None)
-    return uri
-
-
-def test_the_origin_arc_diff_pins_the_import_added_property_and_finds_any_other(ids, tmp_path):
-    parts = _ids_parts(ids)
-    lacking, renamed = _mixer_answers(ids), _mixer_answers(ids)
-    for arcs in lacking.values():
-        del arcs["statType"]
-    for arcs in renamed.values():
-        for node in arcs["constraintProperties"]["nodes"]:
-            if node["dcid"] == "sourceIndicatorCode":
-                node["dcid"] = "sourceSeriesCode"
-
-    origin = _publish_origin(tmp_path / "a", _mixer_answers(ids))
-    # The diff reads the build it is given, wherever the pointer has moved since.
-    write_uri_bytes(
-        join_uri(origin_root(origin), POINTER_FILE),
-        CataloguePointer(build_id="build-b", identity="identity-b").to_json().encode(),
-    )
-    clean = diff_origin_arcs(parts, import_stamp=_STAMP, uri=origin, build_id=_ORIGIN_BUILD)
-    assert clean.passed, clean.summary()
-    assert clean.reports["shadow_arcs"] == {"variables": 5, "pinned": 5}
-
-    for answers, name, side in (
-        (lacking, "statType", "release only"),
-        (renamed, "sourceSeriesCode", "origin catalogue only"),
-    ):
-        result = diff_origin_arcs(
-            parts,
-            import_stamp=_STAMP,
-            uri=_publish_origin(tmp_path / name, answers),
-            build_id=_ORIGIN_BUILD,
-        )
-        assert _codes(result) == ["shadow_arc_diff"], name
-        assert result.findings[0].detail.startswith("5 arc(s)"), name
-        assert all(name in e and e.endswith(side) for e in result.findings[0].examples), name
-
-
-def test_shadow_builds_names_each_comparator_build_and_its_import(parts, ids, tmp_path):
-    coverage = build_test_artifact(tmp_path / "coverage", stamp=_STAMP)
-    origin = _publish_origin(tmp_path / "origin", _mixer_answers(ids))
-    old_origin = _publish_origin(tmp_path / "old", _mixer_answers(ids), stamp="stamp-old")
-
-    assert shadow_builds(coverage_uri=coverage, origin_uri=origin) == (
-        ComparatorBuild(Dependency.COVERAGE_BUILD, _STAMP, f"{_STAMP}-build"),
-        ComparatorBuild(Dependency.ORIGIN_CATALOGUE, _STAMP, "build-a"),
-    )
-    assert shadow_builds(coverage_uri=coverage, origin_uri=old_origin) == (
-        ComparatorBuild(Dependency.COVERAGE_BUILD, _STAMP, f"{_STAMP}-build"),
-        ComparatorBuild(Dependency.ORIGIN_CATALOGUE, "stamp-old", "build-a"),
-    )
-
-    missing = shadow_builds(coverage_uri=coverage, origin_uri=f"file://{tmp_path / 'x'}")
-    assert getattr(missing, "dependency", None) == Dependency.ORIGIN_CATALOGUE
-    pointer_path(tmp_path / "coverage").write_text("{")
-    malformed = shadow_builds(coverage_uri=coverage, origin_uri=origin)
-    assert getattr(malformed, "dependency", None) == Dependency.COVERAGE_BUILD
-
-
-@pytest.mark.parametrize("failing", [Dependency.COVERAGE_BUILD, Dependency.ORIGIN_CATALOGUE])
-def test_shadow_builds_count_a_credentials_failure_as_unavailable(
-    ids, tmp_path, monkeypatch, failing
-):
-    coverage = build_test_artifact(tmp_path / "coverage", stamp=_STAMP)
-    origin = _publish_origin(tmp_path / "origin", _mixer_answers(ids))
-    broken = coverage if failing is Dependency.COVERAGE_BUILD else origin
-    read = shadow.read_uri_bytes
-
-    def refreshing(uri, *args, **kwargs):
-        if uri.startswith(broken):
-            raise RefreshError("token refresh failed")
-        return read(uri, *args, **kwargs)
-
-    monkeypatch.setattr(shadow, "read_uri_bytes", refreshing)
-
-    result = shadow_builds(coverage_uri=coverage, origin_uri=origin)
-
-    assert getattr(result, "dependency", None) == failing
-
-
-def test_the_index_report_marks_the_pinned_variable_and_counts_the_rest(tmp_path):
-    pinned = next(iter(PINNED_INDEX_VARIABLES))
-    committed = {
-        "statvars": [{"dcid": "A", "name": "a", "provenances": ["p"]}],
-        "listed_statvars": [{"dcid": "A"}],
-    }
-    release = {
-        "statvars": [{"dcid": "A", "name": "a2", "provenances": ["q"]}],
-        "listed_statvars": [{"dcid": "A"}, {"dcid": pinned}, {"dcid": "B"}],
-    }
-    path = tmp_path / "index.json.gz"
-    path.write_bytes(gzip.compress(json.dumps(committed).encode()))
-
-    report = index_report(gzip.compress(json.dumps(release).encode()), path)
-
-    assert report["statvars"]["changed_fields"] == {"name": 1}
-    assert report["statvars"]["unpinned"] == 1
-    assert report["listed_statvars"]["added_count"] == 2
-    assert (report["listed_statvars"]["pinned"], report["listed_statvars"]["unpinned"]) == (1, 1)
 
 
 # ---------------------------------------------------------------- DFO rebuild and run_gate

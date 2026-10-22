@@ -32,7 +32,7 @@ every election whose surviving rows declare more than one role set ties. The two
 agree on every cell whose label is outside `MOVED_LABELS`.
 
 A cell is one population of rows, one slot binding, and one pair of bound and open role
-keys. `packaged_cells` crosses every dataset's rows of every family of the packaged code
+keys. `fixture_cells` crosses every dataset's rows of every family of the fixture code
 index, and `synthetic_cells` the populations of `SYNTHETIC`. `shared_cells` crosses the
 families of `SHARED`, each published by two or three datasets.
 """
@@ -46,12 +46,12 @@ import random
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 
-from code_index import default_index_path, load_index
 from code_index.query import CodeIndex
 from code_index.types import DatasetDeclaration, IndexStamp, StatVarRow
 from dfo_platform.roles import ROLE_AXES
 from statvar_members import SlotBinding
 from statvar_members.types import AbsentReading, FiveTuple
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 SUBJECT = "observationAbout"
 ORIGIN = "origin"
@@ -844,7 +844,7 @@ elects the first, whose row declares a provider. Asked with the origin alone ope
 second serves, since its row declares exactly the role the origin places."""
 
 
-def packaged_populations(index: CodeIndex) -> Iterator[Population]:
+def fixture_populations(index: CodeIndex) -> Iterator[Population]:
     """The rows each dataset publishes in each family of `index`, under the absent
     readings its code systems declare."""
     readings = {system: declared.absent_reading for system, declared in index.declarations.items()}
@@ -928,15 +928,15 @@ def _index(name: str, populations: Sequence[Population]) -> CodeIndex:
 
 
 @functools.cache
-def packaged_index() -> CodeIndex:
-    return load_index(default_index_path())
+def fixture_index() -> CodeIndex:
+    return load_index(INDEX_FIXTURE)
 
 
 @functools.cache
-def packaged_cells() -> tuple[Cell, ...]:
-    """Every cell of every population of the packaged code index."""
+def fixture_cells() -> tuple[Cell, ...]:
+    """Every cell of every population of the fixture code index."""
     return tuple(
-        cell for population in packaged_populations(packaged_index()) for cell in cells(population)
+        cell for population in fixture_populations(fixture_index()) for cell in cells(population)
     )
 
 
@@ -953,13 +953,13 @@ def shared_cells() -> tuple[SharedCell, ...]:
 
 
 @functools.cache
-def sampled_packaged_cells(slots_per_population: int, seed: int = 0) -> tuple[Cell, ...]:
-    """The packaged cells a door too slow for the whole grid reads: every population under
+def sampled_fixture_cells(slots_per_population: int, seed: int = 0) -> tuple[Cell, ...]:
+    """The fixture cells a door too slow for the whole grid reads: every population under
     every pair of role keys with no slot bound, every slot binding that holds a cell of a
     moved label, and `slots_per_population` single-value bindings per population drawn
     with `seed`."""
     by_slot: dict[tuple[str, tuple[str, str] | None], list[Cell]] = defaultdict(list)
-    for cell in packaged_cells():
+    for cell in fixture_cells():
         by_slot[cell.population.name, cell.slot].append(cell)
     single: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for name, slot in by_slot:

@@ -17,14 +17,11 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 import graph_release.service as service_module
-from artifact_publication.jobs import Ingestion
 from artifact_publication.uri import read_uri_bytes_and_generation
-from code_index.loader import default_index_path
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
 from graph_release.authored import literal_id
 from graph_release.context import bound_release, current_release
-from graph_release.coverage import HORIZON
 from graph_release.declarations import DECLARATIONS
 from graph_release.format import (
     MASK_EPOCH,
@@ -42,27 +39,12 @@ from graph_release.publish import PublishStatus, hold_release, publish_release
 from graph_release.service import Release, ReleaseService
 from origin_catalogue.arc_reads import DFO_VARIABLE_TYPE
 from origin_catalogue.arc_tables import WireArcs
-from series_coverage.io import (
-    write_coverage_table,
-    write_current,
-    write_facet_metadata,
-    write_manifest,
-    write_role_names,
-)
-from series_coverage.schema import (
-    FACET_COLUMN,
-    CoverageManifest,
-    CoveragePointer,
-    FacetMetadata,
-    RoleNames,
-)
-from tests.graph_release.recorded import platform_parts, raw_inputs
-from tests.series_coverage.support import build_dir, pointer_path
+from series_coverage.schema import RoleNames
+from tests.code_index.support import INDEX_FIXTURE
+from tests.graph_release.recorded import platform_parts
 
 TEST_EXECUTION = "test-import-execution"
 TEST_REVISION = "test-dc-revision"
-_READ_AT = "2026-10-19T00:00:00Z"
-"""`build_test_release`'s `read_timestamp`, as a coverage build's `built_at` writes it."""
 
 
 def sample_tables() -> dict[str, pa.Table]:
@@ -214,23 +196,23 @@ def build_test_release(
     return manifest
 
 
-def build_packaged_index_release(root_uri: str) -> Manifest:
+def build_fixture_index_release(root_uri: str) -> Manifest:
     """Publishes a release under `root_uri` whose only part is the code index, the
-    packaged `index.json.gz` document byte for byte."""
+    recorded index document (`INDEX_FIXTURE`) byte for byte."""
     return build_test_release(
-        root_uri, tables={}, blobs={"code_index_blocks": default_index_path().read_bytes()}
+        root_uri, tables={}, blobs={"code_index_blocks": INDEX_FIXTURE.read_bytes()}
     )
 
 
 def build_view_release(root_uri: str, *, dc_serving_revision: str = TEST_REVISION) -> Manifest:
-    """Publishes a release under `root_uri` whose views build: the packaged `index.json.gz`
-    document as its code index part, and the recorded slice's platform parts and the
+    """Publishes a release under `root_uri` whose views build: the recorded index document
+    (`INDEX_FIXTURE`) as its code index part, and the recorded slice's platform parts and the
     declarations as the parts its coverage view reads (`tests.graph_release.recorded`)."""
     return build_test_release(
         root_uri,
         tables=platform_parts().tables(),
         blobs={
-            "code_index_blocks": default_index_path().read_bytes(),
+            "code_index_blocks": INDEX_FIXTURE.read_bytes(),
             "declarations": DECLARATIONS.declarations_json(),
         },
         dc_serving_revision=dc_serving_revision,
@@ -239,7 +221,7 @@ def build_view_release(root_uri: str, *, dc_serving_revision: str = TEST_REVISIO
 
 COVERAGE_SLICE = Path(__file__).parents[1] / "fixtures" / "coverage_slice" / "format-3"
 """The recorded coverage slice: a coverage build of the variables the suite's fixtures and
-corpora name (`scripts/record_coverage_slice.py`)."""
+corpora name, frozen at the recording."""
 
 
 def slice_series_tables(slice_dir: Path = COVERAGE_SLICE) -> dict[str, pa.Table]:
@@ -325,7 +307,7 @@ def build_session_release(root_uri: str) -> Manifest:
         root_uri,
         tables=tables,
         blobs={
-            "code_index_blocks": default_index_path().read_bytes(),
+            "code_index_blocks": INDEX_FIXTURE.read_bytes(),
             "declarations": DECLARATIONS.declarations_json(),
         },
     )
@@ -347,59 +329,6 @@ def _plain(schema: pa.Schema, row: Mapping[str, object] | None = None) -> pa.Sch
         for field in schema
         if row is None or field.name in row
     )
-
-
-def publish_coverage_build(
-    base: Path, published: dict, *, ingestion: Ingestion | None = None
-) -> str:
-    """Publishes `published`'s rows and role names under `base` as the coverage job writes a
-    build, built at `build_test_release`'s read time from `ingestion`, each facet's metadata
-    from the recorded facet JSON. Returns `base`'s URI."""
-    prefix = build_dir(base, "build")
-    prefix.mkdir(parents=True)
-    table = pa.Table.from_pylist(
-        [dict(zip(published["columns"], row, strict=True)) for row in published["rows"]],
-        schema=HORIZON.schema,
-    )
-    write_coverage_table(table, prefix / "coverage.parquet", horizon=HORIZON)
-    write_role_names(
-        {variable: RoleNames(**names) for variable, names in published["role_names"].items()},
-        prefix / "role_names.json",
-    )
-    covered = set(table[FACET_COLUMN].to_pylist())
-    facets = raw_inputs().facets
-    metadata: dict[str, FacetMetadata] = {}
-    for facet_id, facet in zip(
-        facets["facet_id"].to_pylist(), facets["facet_min"].to_pylist(), strict=True
-    ):
-        if facet_id in covered:
-            fields = json.loads(facet)
-            metadata[facet_id] = FacetMetadata(
-                provenance_id=fields["provenance"],
-                measurement_method=fields.get("measurementMethod"),
-                unit=fields.get("unit"),
-                observation_period=fields.get("observationPeriod"),
-            )
-    write_facet_metadata(metadata, prefix / "facets.json")
-    write_manifest(
-        CoverageManifest(
-            stamp="stamp",
-            build_id="build",
-            built_at=_READ_AT,
-            ingestion=ingestion,
-            source="tests.graph_release.support",
-            row_counts={"rows": table.num_rows},
-            files={
-                "coverage": "coverage.parquet",
-                "role_names": "role_names.json",
-                "facets": "facets.json",
-            },
-            horizon=HORIZON,
-        ),
-        prefix / "manifest.json",
-    )
-    write_current(CoveragePointer(stamp="stamp", build_id="build"), pointer_path(base))
-    return base.as_uri()
 
 
 class _OneReleaseService:

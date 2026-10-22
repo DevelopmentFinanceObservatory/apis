@@ -143,7 +143,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure:
@@ -519,7 +518,6 @@
   tags:
     directional_flow: na
     conjunction: none
-  known_failure: {issue: 1156, checks: [measure]}
   expect:
     definite:
       measure:

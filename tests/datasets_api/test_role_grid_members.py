@@ -4,12 +4,12 @@
 `POST /api/datasets/{id}/members` serves what `resolve_definition_members` resolves for the
 identity and `check_reproducible` admits. Each cell of the role grid becomes the identity
 Search mints for it: its bound keys as entities and, as open roles, the open keys the rule
-admits. Three paths resolve it: the packaged code index, a synthetic index that holds one
+admits. Three paths resolve it: the fixture code index, a synthetic index that holds one
 population, and the graph walk over a graph that holds one. A family several datasets
 publish (`role_grid.SHARED`) is asked of an index holding it, naming each dataset and
 naming none.
 
-The packaged grid is `role_grid.sampled_packaged_cells` with `_SAMPLED_SLOTS` single-value
+The fixture grid is `role_grid.sampled_fixture_cells` with `_SAMPLED_SLOTS` single-value
 bindings per population. The index paths ask each cell naming the dataset and naming none.
 """
 
@@ -38,9 +38,9 @@ from tests.statvar_members.role_grid import (
     Election,
     Row,
     SharedCell,
-    packaged_index,
+    fixture_index,
     places,
-    sampled_packaged_cells,
+    sampled_fixture_cells,
     shared_cells,
     shared_index,
     synthetic_cells,
@@ -58,11 +58,11 @@ _SAMPLED_SLOTS = 4
 TIED = ("role_signature_incompatible",)
 NOT_REPRODUCIBLE = ("definition_not_reproducible",)
 
-PACKAGED = "packaged index"
+FIXTURE = "fixture index"
 SYNTHETIC_INDEX = "synthetic index"
 WALK = "walk"
 _PATH_LABELS = {
-    PACKAGED: (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
+    FIXTURE: (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
     SYNTHETIC_INDEX: LABELS,
     WALK: LABELS,
 }
@@ -70,7 +70,7 @@ _PATH_LABELS = {
 
 
 def _cells(path: str) -> tuple[Cell, ...]:
-    return sampled_packaged_cells(_SAMPLED_SLOTS) if path == PACKAGED else synthetic_cells()
+    return sampled_fixture_cells(_SAMPLED_SLOTS) if path == FIXTURE else synthetic_cells()
 
 
 def minted_identity(cell: Cell, *, named: bool, open_roles: Collection[str] | None = None) -> dict:
@@ -177,7 +177,7 @@ def served(cell: Cell, path: str, *, named: bool, open_roles: Collection[str] | 
     dcids with the family's count and digest, or the code of its refusal."""
     identity = minted_identity(cell, named=named, open_roles=open_roles)
     index: CodeIndex = (
-        synthetic_index(cell.population.name) if path == SYNTHETIC_INDEX else packaged_index()
+        synthetic_index(cell.population.name) if path == SYNTHETIC_INDEX else fixture_index()
     )
     graph = population_graph(cell) if path == WALK else FakeMintGraphReader(arcs={})
     return _served(identity, index, graph)[:3]
@@ -285,7 +285,7 @@ def test_each_path_refuses_and_serves(path: str):
         for outcome in map(expected_served, _cells(path))
     }
 
-    assert outcomes == {("served",), NOT_REPRODUCIBLE} | (set() if path == PACKAGED else {TIED})
+    assert outcomes == {("served",), NOT_REPRODUCIBLE} | (set() if path == FIXTURE else {TIED})
 
 
 @pytest.mark.parametrize("case", DATASET_CASES)

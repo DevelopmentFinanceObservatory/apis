@@ -61,6 +61,7 @@ from tests.engine._base_identity import (
     subject_entity,
     where_slots_for,
 )
+from tests.engine._binders import BIRTH_RATE_CANDIDATES, KeyedBindReplyLLM
 from tests.engine._builders import sv_arcs as _sv_arcs
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -198,7 +199,10 @@ _FERTILITY_RATE = "FertilityRate_Person_Female"
 
 def test_n_part_envelope_composes_sentence_over_every_part():
     """A three-entry request composes one sentence across identity, placeholder, and candidates."""
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     assert birth_rate_part.status == "candidates"
 
@@ -261,7 +265,10 @@ def test_a_resubmit_drops_a_label_only_group_and_states_a_spec_sentence_without_
 def test_every_entry_kind_echoes_its_posted_operations_onto_its_part():
     """Identity, placeholder, candidates, and parsed entries each carry their own
     operations back, a parsed entry through its `part`."""
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     rank = Operation(verb="rank", phrase="top 5", over="place")
     growth = Operation(verb="growth", phrase="change in", over="year")
@@ -317,7 +324,10 @@ def test_promoting_a_candidate_hoists_shared_qualifiers_once_both_parts_agree():
     windows differ (population runs to 2024, fertility rate to 2023), so each part keeps
     its own place and time tokens.
     """
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     population, birth_rate_candidates = ethiopia.parts
     assert population.status == "definite"
     assert birth_rate_candidates.status == "candidates"
@@ -475,7 +485,10 @@ def test_window_disagreement_blocks_fold_editing_to_agree_enables_it():
 def test_candidates_entry_preserves_posted_order_even_reversed():
     """A reversed birth-rate/fertility-rate pair returns in posted order, not member-count
     order."""
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     natural_order = list(birth_rate_part.candidates.specs)
     assert len(natural_order) == 2
@@ -517,7 +530,10 @@ def test_identity_entry_resolves_definite():
 
 def test_candidates_entry_resolves_candidates():
     """The full birth-rate candidate set resubmits as candidates."""
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     entry = _candidates_entry_from_part(
         birth_rate_part,
@@ -554,7 +570,10 @@ def test_candidates_entry_resolves_candidates():
 
 def test_candidates_entry_round_trips_a_raw_text_part_without_collapsing():
     """An unedited candidate set keeps its status and candidates after resubmission."""
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     assert birth_rate_part.status == "candidates"
     entry = _candidates_entry_from_part(
@@ -582,7 +601,10 @@ def test_collapsed_candidates_entry_carries_the_warning_on_the_wire():
     """When only the fertility-rate candidate has data, the response is definite with
     `candidates_collapsed_definite` so clients can identify the collapse.
     """
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     survivor = _spec_with_sv(birth_rate_part, _FERTILITY_RATE)
     no_data_entry = _gdp_entry(_USA, "GDP-USA")
@@ -920,7 +942,10 @@ def test_candidates_entry_beyond_search_max_candidates_refuses_request_invalid()
     SEARCH_MAX_CANDIDATES ceiling refuses request_invalid, naming the entry:
     the engine enforces its own real ceiling here rather than trusting a
     client-posted count checked only against itself."""
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     oversized = list(birth_rate_part.candidates.specs) * 4  # 8 candidates
     entry = _candidates_entry_from_part(
@@ -1489,7 +1514,10 @@ def test_static_candidates_ceiling_check_outranks_a_lower_index_dynamic_refusal(
 
     monkeypatch.setattr("asyncio.to_thread", _inline_to_thread)
 
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     oversized = list(birth_rate_part.candidates.specs) * 4  # 8 candidates
     entries = [
@@ -1968,7 +1996,10 @@ def test_build_candidates_region_one_survivor_collapses_to_definite(repeats: int
     `candidates` part, which CandidateSet.specs' own min_length=2 has no
     wire shape for. A repeat of the survivor counts as resolving and
     rebuilds to the same reading."""
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     survivor_spec = _spec_with_sv(birth_rate_part, _CRUDE_BIRTH_RATE)
     other_spec = _spec_with_sv(birth_rate_part, _FERTILITY_RATE)
@@ -2020,7 +2051,10 @@ def test_build_candidates_region_zero_survivors_collapses_to_no_data():
     "unsupported candidates" wire shape to fall back to either, so a mix of
     no_data/unsupported promotes collapses the same way regardless of which
     reason(s) the individual promotes carried."""
-    ethiopia = offline_resolve(make_request("population and birth rate in Ethiopia"))
+    ethiopia = offline_resolve(
+        make_request("population and birth rate in Ethiopia"),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
+    )
     birth_rate_part = ethiopia.parts[1]
     spec_a = _spec_with_sv(birth_rate_part, _CRUDE_BIRTH_RATE)
     spec_b = _spec_with_sv(birth_rate_part, _FERTILITY_RATE)
