@@ -20,7 +20,12 @@ code, then after `code_delimiter` its constraint pairs, separated by
 after the agency's own prefix.
 
 A UN entry may exclude series, each `superseded_by_dfo` and naming the DFO
-provenance that holds the data the series derives from.
+provenance that holds the data the series derives from. It may also declare facts of
+its own series that the UN graph does not state. `side` names the end of a one-way flow
+the series' place sits on: `provider` for finance a country provides, `recipient` for
+finance it receives. `measurement_qualifier` names the price basis of a series whose
+values are at constant prices, as a `measurementQualifier` value. An absent fact is
+undeclared, and an excluded series declares none.
 
 A national source names its country. An
 entry may name a `scan_type`, the place type where its series sit, inside its
@@ -68,6 +73,8 @@ topics, and for the topic families that group indicators across agencies
 (`undata/topic/sdgf/...`). No agency segment may shadow one."""
 
 type ExclusionReason = Literal["superseded_by_dfo", "superseded_by_un_system"]
+type SeriesSide = Literal["provider", "recipient"]
+type SeriesMeasurementQualifier = Literal["Nominal", "PurchasingPowerParity", "RealValue"]
 
 _SourceDcid = Annotated[str, Field(pattern=r"^dc/s/[A-Za-z0-9_.-]+$")]
 _CountryDcid = Annotated[str, Field(pattern=r"^country/[A-Z]{3}$")]
@@ -179,6 +186,22 @@ class SeriesExclusion(_Model):
     dfo_provenance: _DfoProvenance
 
 
+class SeriesDeclaration(_Model):
+    """Facts of one UN series the UN graph does not state. `side` is the end of a one-way
+    flow its place sits on, and `measurement_qualifier` the price basis of its values.
+    A declaration states at least one."""
+
+    series: _UnSeries
+    side: SeriesSide | None = None
+    measurement_qualifier: SeriesMeasurementQualifier | None = None
+
+    @model_validator(mode="after")
+    def _declares_a_fact(self) -> Self:
+        if self.side is None and self.measurement_qualifier is None:
+            raise ValueError(f"declaration of {self.series!r} states no fact")
+        return self
+
+
 class BaseSource(_Model):
     """A base Data Commons `Source` node whose provenances are admitted."""
 
@@ -204,6 +227,7 @@ class UnAgency(_Model):
     segment: _UnSegment
     label: _Label
     exclusions: tuple[SeriesExclusion, ...] = ()
+    declarations: tuple[SeriesDeclaration, ...] = ()
 
     @property
     def id_prefix(self) -> str:
@@ -220,17 +244,22 @@ class UnAgency(_Model):
         return self
 
     @model_validator(mode="after")
-    def _excludes_its_own_series(self) -> Self:
+    def _names_its_own_series(self) -> Self:
         own = self.id_prefix
-        foreign = sorted(
-            exclusion.series
-            for exclusion in self.exclusions
-            if not exclusion.series.startswith(own)
-        )
-        if foreign:
-            raise ValueError(
-                f"{self.provenance!r} excludes {foreign!r}, outside its own series ({own}...)"
-            )
+        for verb, entries in (("excludes", self.exclusions), ("declares", self.declarations)):
+            foreign = sorted(entry.series for entry in entries if not entry.series.startswith(own))
+            if foreign:
+                raise ValueError(
+                    f"{self.provenance!r} {verb} {foreign!r}, outside its own series ({own}...)"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _declares_no_excluded_series(self) -> Self:
+        excluded = {exclusion.series for exclusion in self.exclusions}
+        declared = sorted(d.series for d in self.declarations if d.series in excluded)
+        if declared:
+            raise ValueError(f"{self.provenance!r} declares excluded series {declared!r}")
         return self
 
 
@@ -250,7 +279,7 @@ class Alias(_Model):
 
 class Registry(_Model):
     """Every admitted upstream source and the other names of any source. Duplicate
-    sources, provenances, segments, exclusions, refs within an alias and alias names
+    sources, provenances, segments, exclusions, series declarations, refs within an alias and alias names
     (ignoring case and extra whitespace) are refused, and a UN supersession names a
     registered agency."""
 
@@ -279,6 +308,10 @@ class Registry(_Model):
         _refuse_duplicates(
             "excluded series",
             [exclusion.series for agency in self.un_system for exclusion in agency.exclusions],
+        )
+        _refuse_duplicates(
+            "declared series",
+            [d.series for agency in self.un_system for d in agency.declarations],
         )
         _refuse_duplicates(
             "alias name",
@@ -310,6 +343,10 @@ class Registry(_Model):
             for exclusion in entry.exclusions or ()
             if isinstance(exclusion, UnSupersededProvenance)
         )
+
+    def series_declarations(self) -> dict[str, SeriesDeclaration]:
+        """Each declared UN series' declaration, keyed by series."""
+        return {d.series: d for agency in self.un_system for d in agency.declarations}
 
     def scan_levels(self) -> dict[str, tuple[ScanLevel, ...]]:
         """Each base source's scan level, keyed by source, for sources that
@@ -361,7 +398,10 @@ __all__ = [
     "ExclusionReason",
     "Registry",
     "RegistryError",
+    "SeriesDeclaration",
     "SeriesExclusion",
+    "SeriesMeasurementQualifier",
+    "SeriesSide",
     "UnAgency",
     "UnSupersededProvenance",
     "load_registry",

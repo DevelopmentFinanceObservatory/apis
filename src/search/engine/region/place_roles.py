@@ -50,6 +50,7 @@ from search.engine.retrieval.bound_values import (
     shape_part_datasets,
 )
 from search.engine.role_text import contradicts
+from search.engine.series_declarations import declared_side
 from search.engine.shape import (
     ShapeDraft,
     entities_by_role,
@@ -296,14 +297,22 @@ def _declares_axes(shape: ShapeDraft, axes: frozenset[RoleAxis]) -> bool:
 
 
 def lacks_query_axis(state: ResolveState, shape: ShapeDraft) -> bool:
-    """Whether role-bearing `shape` declares no role on an axis the query needs
-    (`query_role_axes`, read by `_declares_axes`): a provider-only shape for "aid to
-    Kenya" or "top recipients of US aid". It could not place the query's places, or its
-    answer could not run the operation, so admissibility refuses it `role_incompatible`
-    (`admissibility.judge_measure_and_roles`). A subject-only shape lacks no axis: it binds
-    a directed place as its subject."""
+    """Whether `shape` cannot hold an axis the query needs (`query_role_axes`): a
+    role-bearing shape that declares no role on it (`_declares_axes`), such as a
+    provider-only shape for "aid to Kenya" or "top recipients of US aid", or a one-way
+    subject-only series whose declared side (`series_declarations.declared_side`) is not
+    among the query's axes, such as climate finance provided for "climate finance to
+    Bangladesh". It could not place the query's places, or its answer could not run the
+    operation, so admissibility refuses it `role_incompatible`
+    (`admissibility.judge_measure_and_roles`). Any other subject-only shape lacks no axis:
+    it binds a directed place as its subject."""
     axes = query_role_axes(state)
-    return bool(axes) and is_role_bearing(shape) and not _declares_axes(shape, axes)
+    if not axes:
+        return False
+    if is_role_bearing(shape):
+        return not _declares_axes(shape, axes)
+    side = declared_side(shape)
+    return side is not None and side not in axes
 
 
 def without_unasked_axes(

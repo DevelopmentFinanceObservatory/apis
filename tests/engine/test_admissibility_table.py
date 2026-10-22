@@ -58,7 +58,9 @@ from search.engine.retrieval.bound_values import (
     index_member_rows,
     price_basis_order,
 )
+from search.engine.retrieval.derive import derive_shapes
 from search.engine.role_text import DoorRole
+from search.engine.series_declarations import declared_measurement_qualifier
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import DefinitePart, Operation, Resolution, RoleAxis, TimeWindow
 from tests.engine._binders import FixedBindReplyLLM, ReplyBinder, elected_reply
@@ -2523,6 +2525,26 @@ def test_real_gdp_of_zambia_keeps_its_named_price_basis_in_the_un_pass():
     assert isinstance(part, DefinitePart)
     assert ref_dcid(part.spec.resolved.shape.population_type) == "undata/unido/SERIES-NA_GDPCOD"
     assert QUERY_QUALIFIER_DROPPED in [warning.code for warning in part.warnings]
+
+
+@pytest.mark.parametrize(
+    ("variable", "qualifier"),
+    [
+        pytest.param("undata/unido/NA_GDPCOD", "RealValue", id="constant-2015-dollars"),
+        pytest.param("undata/unido/NA_GDPCUD", None, id="current-prices-undeclared"),
+    ],
+)
+def test_a_un_series_shape_carries_the_price_basis_the_registry_declares(
+    variable: str, qualifier: str | None
+):
+    """UNIDO's "Gross domestic product at constant prices of 2015 in US dollars" asserts no
+    `measurementQualifier`, so its shape's own field is empty and the origin registry's
+    declaration states its price basis. The current-price series declares none."""
+    (shape,) = derive_shapes(confirmed_svs=[variable], graph=FakeGraph())
+
+    assert shape.pop_type_dcid == variable.replace("unido/", "unido/SERIES-")
+    assert shape.meas_qual_dcid is None
+    assert declared_measurement_qualifier(shape) == qualifier
 
 
 # Interpretation admissibility: each rule refuses one reading of a corpus question and admits
