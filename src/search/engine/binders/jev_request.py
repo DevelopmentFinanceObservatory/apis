@@ -84,16 +84,20 @@ def bind_request(menu: JevMenu) -> JevRequest:
 
 
 # The question whether a shape's series states what a nominated word names: yes when the
-# series counts only what the word names, so the word is read. A calibration run swaps
+# series measures only what the word names, so the word is read. A calibration run swaps
 # these two to choose the wording on labelled pairs.
 STATED_WORD_INSTRUCTIONS = (
-    "Does the measure {measure} count only what '{word}' names in `variable_phrase`?"
+    "Does the measure {measure} measure only what '{word}' names in `variable_phrase`, "
+    "under any wording, value or synonym? Judge the word alone, whatever the rest of the "
+    "phrase asks."
 )
 STATED_WORD_CRITERIA: NoulCriteria = {
-    "true": "Everything the measure counts is what the word names, so the word adds no "
-    "restriction to it.",
-    "false": "The measure also counts what the word does not name, as total revenue counts "
-    "more than tax and the whole population more than refugees.",
+    "true": "The measure measures what the word names, in the same or other words or "
+    "through a value it is restricted to; or the word names the measure's form (a rate, "
+    "share, count, index or average) or the people or things the measure is defined over; "
+    "or the word only describes, restates or links what the measure counts.",
+    "false": "The word names a narrower or a different thing than the measure counts, so "
+    "the measure counts more than the word names, or something else.",
 }
 
 

@@ -46,20 +46,19 @@ class StatedWordsOutput(BaseModel):
 # wording on labelled pairs.
 STATED_WORDS_SYSTEM_PROMPT: str = """\
 A user asked for the quantity the variable phrase names, and the series below was chosen to
-answer it. Each numbered word is a word of the variable phrase, which the series may state in
-other words. For each word, say whether the series states what the word names.
+answer it. Each numbered word is a word of the variable phrase. For each word, say whether
+the series states what the word names.
 
-stated is false when the word narrows the request to a part of what the series counts that
-the series does not single out: a kind, a group, a type, a party or a source. Total revenue
-counts more than tax, so it does not state "tax". The whole population counts more than
-refugees, so it does not state "refugee". Debt owed to all multilateral creditors counts more
-than debt owed to the IMF, so it does not state "IMF".
+stated is true when the series measures what the word names, under any wording: the same
+word, a synonym, an abbreviation, another spelling or word form, or a value the series is
+restricted to. It is also true when the word names the series' form (a rate, a share, a
+count, an index, an average), names the people or things the series is defined over though
+its label leaves them implicit, or only describes, restates or links what the series
+measures.
 
-stated is true when the word names what the series measures, in other words or another word
-form, or names its subject, its form, the reading the measure takes by convention, or a part
-the series already singles out. A count of the people who can read states "literacy", and a
-count of persons aged 0 to 14 states "children". When in doubt whether the word narrows the
-series, it is stated.
+stated is false when the word names something narrower than, or different from, what the
+series counts: a kind, a group, a party, a cause or a purpose the series does not single out,
+so the series counts more than the word names, or something else.
 
 Answer each word once, by its number in the WORDS list.
 """

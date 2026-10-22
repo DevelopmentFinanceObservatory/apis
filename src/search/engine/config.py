@@ -289,7 +289,7 @@ class SearchSettings(BaseSettings):
     # is unread: the binder rates how likely the elected shape's series states what the
     # word names (`Binder.rate_words_stated`), and a word rated below it is a record. A
     # word rated at or above it, or not rated, reads as stated.
-    stated_word_bar: float = Field(default=0.5, ge=0, le=1)
+    stated_word_bar: float = Field(default=0.3, ge=0, le=1)
 
     # -- Security / prompt safety ------------------------------------------
     # FastAPI rejects longer queries with 422 before any LLM or graph call.
