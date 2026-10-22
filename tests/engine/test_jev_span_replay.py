@@ -152,15 +152,9 @@ _SPANNED = {
     "public_sector_ppg": {**_AO, "idsDebtorType": ["IDSDebtorTypePS"], **_PPG},
 }
 
-# Runs whose round-one drafts differ from the query's other runs. DPPG 2020's round-three
-# run scores "publicly guaranteed" at 0.66 above `part` with "several" at 0.81, so the
-# guarantee status is drafted as a set; the public-sector debtor still loses to its words.
-_RUN_DRAFTS = {
-    ("dppg_kenya_2020", 3): {
-        **_AO,
-        "guaranteeStatus": ["PublicOrPubliclyGuaranteed", "PubliclyGuaranteedClaim"],
-    },
-}
+# DPPG 2020's round-three run scores "publicly guaranteed" at 0.66 above `part` with
+# "several" at 0.81, so the guarantee status is drafted as a set. The claim's words lie
+# within PPG's "public or publicly guaranteed", so PPG keeps them and the claim drops.
 
 _RUNS = [
     pytest.param(name, k, id=f"{name}-run{k}")
@@ -175,7 +169,7 @@ def test_a_recorded_bind_keeps_the_values_the_phrase_pays_for(name: str, k: int)
 
     named, _conf = replay(record, record["runs"][k])
 
-    assert named == _RUN_DRAFTS.get((name, k), _SPANNED[name])
+    assert named == _SPANNED[name]
 
 
 @pytest.mark.parametrize("k", range(3))
