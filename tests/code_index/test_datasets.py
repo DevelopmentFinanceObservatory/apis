@@ -97,7 +97,12 @@ def test_parse_index_reads_a_document_as_load_index_reads_its_file(code_index: C
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("absent_observation", "not_reported"), ("account", "lender"), ("account", None)],
+    [
+        ("absent_observation", "not_reported"),
+        ("account", "lender"),
+        ("account", None),
+        ("ratio_base_axis", "recipient"),
+    ],
 )
 def test_loader_rejects_a_value_outside_a_fields_vocabulary(field: str, value: object):
     payload = _fixture()
@@ -813,6 +818,15 @@ def test_loader_reads_the_house_default_each_dataset_claims():
         "donor": _IMPUTED_PROVENANCE,
     }
     assert parse_index(_fixture()).house_defaults() == {}
+
+
+def test_loader_reads_whose_base_a_ratio_divides_by_and_an_absent_key_declares_none():
+    payload = _with_imputed_dataset()
+    payload["datasets"][0]["ratio_base_axis"] = "destination"
+    index = parse_index(payload)
+
+    assert index.datasets[_CRS_PROVENANCE].ratio_base_axis == "destination"
+    assert index.datasets[_IMPUTED_PROVENANCE].ratio_base_axis is None
 
 
 @pytest.mark.parametrize(

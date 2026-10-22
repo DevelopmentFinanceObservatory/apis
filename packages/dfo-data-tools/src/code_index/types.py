@@ -378,6 +378,11 @@ class DatasetDeclaration:
     by house convention when several datasets' shapes measure the phrase: the CRS for a
     sector, DAC2a for a recipient total, DAC1 for a donor total. The loader refuses an
     index where two datasets claim one kind (`code_index.loader._check_datasets`).
+
+    `ratio_base_axis` names the flow axis whose party's own total a ratio of the table
+    divides by: DAC1 states ODA as a share of the donor's GNI (`origin`), DAC2a as a share
+    of the recipient's GNI (`destination`). `None` declares nothing, the reading of a
+    release exported before the field existed.
     """
 
     provenance: str
@@ -391,6 +396,7 @@ class DatasetDeclaration:
     stated_words: tuple[StatedWord, ...] = ()
     party_words: tuple[PartyWord, ...] = ()
     house_default_for: tuple[HouseDefaultCase, ...] = ()
+    ratio_base_axis: RoleAxis | None = None
 
 
 PartyKind = Literal["party", "total", "residual"]

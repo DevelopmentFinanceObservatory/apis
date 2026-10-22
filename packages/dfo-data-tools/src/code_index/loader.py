@@ -416,7 +416,8 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     a `rank` that is not an integer, an empty `label`, an empty `description`,
     a `stated_words` row `_parse_stated_words` refuses or a `party_words` row
     `_parse_party_words` refuses (both keys are optional), a `house_default_for`
-    (optional) that is not a list of `HouseDefaultCase` values, or a
+    (optional) that is not a list of `HouseDefaultCase` values, a `ratio_base_axis`
+    (optional, absent reads as `None`) outside `AXIS_LABELS`, or a
     `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
@@ -436,6 +437,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
                 party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
                 house_default_for=tuple(row.get("house_default_for", ())),
+                ratio_base_axis=row.get("ratio_base_axis"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
@@ -466,6 +468,11 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 f"datasets row for {dataset.provenance!r} carries "
                 f"house_default_for={list(dataset.house_default_for)!r}, outside the "
                 f"vocabulary {sorted(_HOUSE_DEFAULT_CASES)!r}"
+            )
+        if dataset.ratio_base_axis is not None and dataset.ratio_base_axis not in AXIS_LABELS:
+            raise IndexFormatError(
+                f"datasets row for {dataset.provenance!r} carries "
+                f"ratio_base_axis={dataset.ratio_base_axis!r}, outside {sorted(AXIS_LABELS)!r}"
             )
         if not dataset.label:
             raise IndexFormatError(f"datasets row for {dataset.provenance!r} carries no label")

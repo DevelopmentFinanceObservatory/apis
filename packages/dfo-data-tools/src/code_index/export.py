@@ -1644,6 +1644,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
             if dataset.house_default_for
             else {}
         ),
+        **(
+            {"ratio_base_axis": dataset.ratio_base_axis}
+            if dataset.ratio_base_axis is not None
+            else {}
+        ),
     }
 
 

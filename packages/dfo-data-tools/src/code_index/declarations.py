@@ -156,7 +156,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             code="DAC2aAidType206",
             when_bound_under=(),
             when_open=True,
-            note="No aid type was named, so the answer covers official development assistance.",
+            note="The answer covers official development assistance of every aid type.",
         ),
     ),
     # DAC1 aid types nest totals over their parts ("bilateral ODA" under "ODA"), and memo items
@@ -175,7 +175,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             code="DAC1AidType1010",
             when_bound_under=(),
             when_open=True,
-            note="No aid type was named, so the answer covers official development assistance.",
+            note="The answer covers official development assistance of every aid type.",
         ),
     ),
     # DAC2b flow types nest totals over their parts (OOF under official non-concessional
@@ -279,6 +279,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         account="provider",
         rank=20,
         house_default_for=("donor",),
+        ratio_base_axis="origin",
     ),
     DatasetDeclaration(
         provenance=_DAC2A,
@@ -298,6 +299,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
         house_default_for=("recipient",),
+        ratio_base_axis="destination",
     ),
     DatasetDeclaration(
         provenance=_DAC2B,
@@ -1242,10 +1244,17 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
     ),
 )
 # A birth in demographic statistics is a live birth, and the crude birth rate is live births
-# per person. A births question that names no status reads live births.
+# per person. A births question that names no status reads live births. Debt named without a
+# flow word ("Kenya's debt owed to China") is the stock outstanding, so a debt position that
+# names no position type reads the amount outstanding.
 SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
     ShapeSlotDefault(
         population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
+    ),
+    ShapeSlotDefault(
+        population_type="FinancialPosition",
+        property_dcid="financialPositionType",
+        value_dcid="AmountOutstanding",
     ),
 )
 
