@@ -178,10 +178,12 @@ def _render(
     spec: dict[str, object] | None = None,
     source: str = "tuples",
     parties: dict[str, PartyRow] = _PARTIES,
+    stat_var_refs: Sequence[str] | None = None,
 ) -> tuple[RenderedDefinition, bytes]:
     """`chunks` render as tuple tables, as the Arrow frames a single-member mint streams with
     `source="arrow"`, or as the row groups of a group mint's Parquet frame with
-    `source="parquet"`."""
+    `source="parquet"`. The definition resolves `stat_var_refs`, by default the rows'
+    StatVars."""
     chunks = chunks if chunks is not None else (rows,)
     rows = [row for chunk in chunks for row in chunk]
     store = FakeArtifactStore()
@@ -200,7 +202,11 @@ def _render(
         enrichment=EnrichmentLookup(graph, parties=lambda: parties),
         pivot_max_output_cells=5_000_000,
         code_index=index,
-        resolved_stat_var_refs=tuple(str(row[0]) for row in rows),
+        resolved_stat_var_refs=(
+            tuple(stat_var_refs)
+            if stat_var_refs is not None
+            else tuple(str(row[0]) for row in rows)
+        ),
         deadline=deadline,
     )
     return rendered, store.fetch(rendered.artifact.url)
@@ -1177,6 +1183,39 @@ def test_a_frame_mixing_year_points_and_spans_writes_every_period_as_text(
     types = {field["name"]: field["type"] for field in resource["schema"]["fields"]}
     assert types["time_period"] == ("integer" if typed else "string")
     assert sorted(r["time_period"] for r in _records(archive.read(resource["path"]))) == periods
+
+
+def _parquet_types(options: MintOptions, rows: Sequence[tuple[object, ...]]) -> dict[str, str]:
+    """The Arrow type of each column of the Parquet file `options` render from `rows` of a
+    definition that resolves the StatVars of `_ROWS`."""
+    _rendered, body = _render(
+        options, rows=rows, source="arrow", stat_var_refs=[str(row[0]) for row in _ROWS]
+    )
+    return {field.name: str(field.type) for field in pq.read_schema(io.BytesIO(body))}
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        pytest.param(MintOptions(format="parquet", bundle=False), id="long"),
+        pytest.param(MintOptions(format="parquet", bundle=False, layout="frame"), id="frame"),
+        pytest.param(
+            MintOptions(format="parquet", bundle=False, without_party_totals=True),
+            id="without-party-totals",
+        ),
+        pytest.param(
+            MintOptions(format="parquet", bundle=False, groupby=_BY_PURPOSE), id="groupby"
+        ),
+    ],
+)
+def test_an_empty_build_types_its_columns_as_a_build_with_rows(options):
+    """`time_period` is left out: it is an integer only in a frame of year points
+    (`period_grain`), and an empty frame holds no period."""
+    with_rows = _parquet_types(options, _ROWS)
+    empty = _parquet_types(options, ())
+    del with_rows["time_period"], empty["time_period"]
+
+    assert empty == with_rows
 
 
 _DAC2A = "provenance/OECDDAC2A"
