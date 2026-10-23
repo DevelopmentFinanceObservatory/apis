@@ -95,6 +95,7 @@ from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
     DerivedVersion,
     artifact_rendering_keys,
+    entity_roles,
     is_incomplete_rendering,
     is_statistics_rendering,
     refuse_pivot_over_stored_caps,
@@ -657,7 +658,8 @@ def _render_frame(
     table = read_stored_frame(frame.data, media_type=frame.location.media_type)
     if options.without_party_totals and not plan.derived_frame and not isinstance(table, Frame):
         return None
-    entity_columns = frame_entity_columns(table.columns)
+    # A collapse's kept code axes render as the decoded codes its mint wrote them as.
+    entity_columns = entity_roles(frame_entity_columns(table.columns))
     facets = cast("list[dict[str, object]]", manifest.trace.get("facets", []))
     provenance_refs = provenance_refs_of(facets)
     # `plan_stored_render` refused a trace without `resolved_stat_vars`.

@@ -264,6 +264,18 @@ class GroupbyCollapseRendering:
     contributing_member_count: int
 
 
+_KEPT_AXIS_PREFIX = f"{_STAT_VAR_COLUMN}_"
+"""The prefix of the role column a collapse keeps a code axis in (`stat_var_<code_system>`)."""
+
+
+def entity_roles(role_columns: Sequence[str]) -> tuple[str, ...]:
+    """The entity roles among a frame's `role_columns`: every role but the kept code axis
+    columns a collapse adds (`GroupbyCollapseRendering.role_columns`). The render that wrote a
+    collapse read those columns as decoded codes beside the roles of the frame it collapsed, so
+    a render of the stored collapse reads them the same way."""
+    return tuple(role for role in role_columns if not role.startswith(_KEPT_AXIS_PREFIX))
+
+
 @dataclass(frozen=True)
 class ReshapeResult:
     """Carries the reshaped table, warnings, and optional collapse frame. `warning_order`
@@ -630,7 +642,7 @@ def _reshape_groupby_collapse(
         }
         for row in current.rows
     ]
-    role_columns = (*entity_columns, *(f"{_STAT_VAR_COLUMN}_{axis}" for axis in kept))
+    role_columns = (*entity_columns, *(f"{_KEPT_AXIS_PREFIX}{axis}" for axis in kept))
     collapsed_frame = build_frame(role_keys=role_columns, rows=rows_as_dicts)
     current = cast(Table, collapsed_frame)
     collapsed_frame_sha256 = frame_sha256(collapsed_frame)

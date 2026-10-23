@@ -543,12 +543,48 @@ def _dac_total_read_as_a_party() -> CodeIndex:
     )
 
 
+# The renderings a stored frame renders: each format, a bundle, and the frame layout.
+_OUTPUTS = pytest.mark.parametrize(
+    "output",
+    [
+        {"format": "csv", "bundle": False},
+        {"format": "csv", "bundle": True},
+        {"format": "xlsx", "bundle": False},
+        {"format": "parquet", "bundle": False},
+        {"format": "parquet", "bundle": False, "layout": "frame"},
+    ],
+    ids=["csv", "bundle", "xlsx", "parquet", "frame"],
+)
+
+
+def _query(output: dict[str, Any]) -> str:
+    return "&".join(
+        f"{key}={str(value).lower() if isinstance(value, bool) else value}"
+        for key, value in output.items()
+    )
+
+
 def _derived_rig(derivation: str):
     """A client, its version and artifact stores, and the spec and options of a derived mint:
-    a summed groupby or a party-totals cut."""
+    a summed groupby, a groupby that sums `flowAxis` and keeps the code axis `testAxis`, or a
+    party-totals cut."""
     if derivation == "groupby":
         client, version_store, artifact_store = _rig()
         return client, version_store, artifact_store, *_spec_id_and_sidecar(), _GROUPBY_OPTIONS
+    if derivation == "groupby-keeps-a-code-axis":
+        version_store = FakeVersionRecordDatasetStore()
+        artifact_store = _RenewingArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        )
+        spec_id = recompute_identity(_CUT_FAMILY_IDENTITY).spec_id
+        return (
+            _cut_family_client(version_store, artifact_store, flow_summable=True),
+            version_store,
+            artifact_store,
+            spec_id,
+            {"schema_version": 1, "spec_id": spec_id, "identity": _CUT_FAMILY_IDENTITY},
+            {"groupby": {"by": ["recipient", "testAxis"], "op": "sum"}},
+        )
     rig = _PartyRig()
     client = rig.client(party_totals._code_index())
     return (
@@ -560,16 +596,17 @@ def _derived_rig(derivation: str):
     )
 
 
-@pytest.mark.parametrize("bundle", [False, True], ids=["bare", "bundle"])
-@pytest.mark.parametrize("derivation", ["groupby", "cut"])
+@pytest.mark.parametrize("via", ["selector", "link"])
+@_OUTPUTS
+@pytest.mark.parametrize("derivation", ["groupby", "groupby-keeps-a-code-axis", "cut"])
 def test_a_derived_version_renders_from_its_own_frame_once_its_base_frame_is_gone(
-    derivation: str, bundle: bool
+    derivation: str, output: dict[str, Any], via: str
 ):
-    """Every file aged out, the minted CSV's object and the base version's frame object gone:
-    the selector renders the derived version from the frame it stored, and the file it serves
-    is the one its mint wrote."""
+    """Every file aged out, the minted file's object and the base version's frame object gone:
+    the selector, or a renewal of the minted file's link, renders the derived version from the
+    frame it stored, and the file it serves is the one its mint wrote."""
     client, version_store, artifact_store, spec_id, sidecar, options = _derived_rig(derivation)
-    options = {**options, "format": "csv", "bundle": bundle}
+    options = {**options, **output}
     derived = _mint(client, spec_id=spec_id, sidecar=sidecar, options=options)
     rendering = artifact_rendering(MintOptions.model_validate(options), site=_SITE)
     [minted] = [a for a in derived["artifacts"] if a["rendering"] == rendering]
@@ -584,9 +621,8 @@ def test_a_derived_version_renders_from_its_own_frame_once_its_base_frame_is_gon
     del artifact_store._objects[(minted["artifact_digest"], Tier.working.value)]
     del artifact_store._objects[(base_frame, Tier.working.value)]
 
-    resp = client.get(
-        _selector(derived, f"format=csv&bundle={str(bundle).lower()}"), follow_redirects=False
-    )
+    path = minted["url"] if via == "link" else _selector(derived, _query(output))
+    resp = client.get(path, follow_redirects=False)
 
     assert resp.status_code == 302, resp.text
     assert _signed_digest(resp.headers["location"]) == minted["artifact_digest"]
@@ -718,7 +754,9 @@ _CUT_FAMILY_IDENTITY = {
 }
 
 
-def _cut_family_client(version_store, artifact_store):
+def _cut_family_client(version_store, artifact_store, *, flow_summable: bool = False):
+    """A client over `_CUT_FAMILY`. With `flow_summable`, the index declares `flowAxis`
+    summable too, so a groupby that keeps `testAxis` sums `flowAxis` into a frame of its own."""
     graph = FakeMintGraphReader(
         arcs={
             member: {
@@ -763,7 +801,7 @@ def _cut_family_client(version_store, artifact_store):
                 absent_reading="not_declared",
                 plain_name=system,
             )
-            for system, summable in (("testAxis", True), ("flowAxis", False))
+            for system, summable in (("testAxis", True), ("flowAxis", flow_summable))
         ),
         codes=tuple(
             CodeRow(
@@ -808,32 +846,25 @@ def _cut_family_client(version_store, artifact_store):
 
 
 @pytest.mark.parametrize("aged", ["every-location", "the-minted-file"])
+@_OUTPUTS
 @pytest.mark.parametrize(
-    "output",
+    ("by", "flow_summable"),
     [
-        {"format": "csv", "bundle": False},
-        {"format": "csv", "bundle": True},
-        {"format": "xlsx", "bundle": False},
-        {"format": "parquet", "bundle": False},
-        {"format": "parquet", "bundle": False, "layout": "frame"},
+        pytest.param(["recipient", "testAxis"], False, id="groupby-leaves-the-cut-unchanged"),
+        pytest.param(["recipient"], False, id="groupby-keeps-an-unsummed-axis"),
+        pytest.param(["recipient", "testAxis"], True, id="groupby-sums-and-keeps-a-code-axis"),
     ],
-    ids=["csv", "bundle", "xlsx", "parquet", "frame"],
-)
-@pytest.mark.parametrize(
-    "by",
-    [["recipient", "testAxis"], ["recipient"]],
-    ids=["groupby-leaves-the-cut-unchanged", "groupby-keeps-an-unsummed-axis"],
 )
 def test_a_cut_minted_with_a_groupby_serves_the_file_its_mint_wrote(
-    by: list[str], output: dict[str, Any], aged: str
+    by: list[str], flow_summable: bool, output: dict[str, Any], aged: str
 ):
     """The groupby leaves the cut frame unchanged, or keeps both values of the unsummed
     `flowAxis`, so the version is the cut frame (`render._derived_version`), recorded as a
-    collapse would be. With its minted file aged out and the file's bytes gone, the selector
-    serves the same file."""
+    collapse would be, or sums a summable `flowAxis` and keeps the code axis `testAxis`. With
+    its minted file aged out and the file's bytes gone, the selector serves the same file."""
     version_store = FakeVersionRecordDatasetStore()
     artifact_store = _RenewingArtifactStore(inventory=LiveArtifactInventory(store=version_store))
-    client = _cut_family_client(version_store, artifact_store)
+    client = _cut_family_client(version_store, artifact_store, flow_summable=flow_summable)
     spec_id = recompute_identity(_CUT_FAMILY_IDENTITY).spec_id
     options = {**output, "without_party_totals": True, "groupby": {"by": by, "op": "sum"}}
     cut = _mint(
@@ -854,12 +885,7 @@ def test_a_cut_minted_with_a_groupby_serves_the_file_its_mint_wrote(
                 (datetime.now(UTC) - timedelta(days=31), minted["artifact_digest"]),
             )
     del artifact_store._objects[(minted["artifact_digest"], Tier.working.value)]
-    query = "&".join(
-        f"{key}={str(value).lower() if isinstance(value, bool) else value}"
-        for key, value in output.items()
-    )
-
-    resp = client.get(_selector(cut, query), follow_redirects=False)
+    resp = client.get(_selector(cut, _query(output)), follow_redirects=False)
 
     assert resp.status_code == 302, resp.text
     assert _signed_digest(resp.headers["location"]) == minted["artifact_digest"]
