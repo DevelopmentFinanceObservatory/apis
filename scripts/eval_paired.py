@@ -178,16 +178,20 @@ class SampleScore:
     def infra(self) -> bool:
         return self.sample is None
 
-    def observation(self, check: str, side: Side) -> Observation | None:
+    def observation(
+        self, check: str, side: Side, *, part_count: int | None = None
+    ) -> Observation | None:
         """The check's observation on this sample. A failed run is infra at base and a
         scored sample at head, where the PR may be what made it fail. A base observation of
         a check a wrong answer can pass carries the sample's content checks
-        (``search.eval.gate.WRONG_ANSWER_CHECKS``)."""
+        (``search.eval.gate.WRONG_ANSWER_CHECKS``) and ``part_count``, the parts the case
+        expects."""
         result = self.results.get(check)
         if result is None:
             return None
         content = {}
-        if side == "base" and check in WRONG_ANSWER_CHECKS:
+        wrong_answer_check = side == "base" and check in WRONG_ANSWER_CHECKS
+        if wrong_answer_check:
             content = {
                 name: o
                 for name in CONTENT_CHECKS
@@ -200,6 +204,7 @@ class SampleScore:
             degraded=self.sample is not None and self.sample.degraded,
             run_failed=self.infra and side == "head",
             parts=result.parts,
+            part_count=part_count if wrong_answer_check else None,
             content=content,
         )
 
@@ -220,7 +225,13 @@ class CaseState:
             return None
         side: Side = "base" if round_ in ("base", "confirm_base") else "head"
         scores = self.rounds[round_]
-        return [o for s in scores if (o := s.observation(check, side)) is not None]
+        expected = self.case.expect.parts
+        part_count = len(expected) if expected is not None else None
+        return [
+            o
+            for s in scores
+            if (o := s.observation(check, side, part_count=part_count)) is not None
+        ]
 
     @property
     def known(self) -> frozenset[str]:

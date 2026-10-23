@@ -28,8 +28,8 @@ The rows, in the order they apply:
 - every reached base sample passes: the confirm round decides. Infra in it is infra as
   above. A confirm head sample that fails or is unverifiable is a regression when the
   confirm base sample passes and unverifiable at base when it is unverifiable; anything
-  else, an unreached sample on either side included, is unstable. A confirm base sample
-  that passes on a wrong answer makes it wrong answer at base.
+  else, an unreached sample on either side included, is unstable. A base with one right
+  sample regresses through the confirm round whatever its confirm base sample answers.
 
 ``scripts/eval_paired.py`` hands in a head sample whose run failed as a failed
 ``task_outcome`` sample with no infra flag, so a head-side ``"run"`` failure in the first row
@@ -56,8 +56,11 @@ head failed.
 
 A base sample's pass on ``disposition`` or ``answer`` (``WRONG_ANSWER_CHECKS``) is a pass on a
 wrong answer when the same sample fails a check that says which series or places answer
-(``CONTENT_CHECKS``: ``measure``, ``entities``, ``provenance``), read over the parts the
-head failed as above. The driver hands those observations in as ``Observation.content``.
+(``CONTENT_CHECKS``: ``measure``, ``entities``, ``provenance``) on the whole answer, or on
+a case with ``expect.parts`` when some content check fails on each part the head failed.
+A head failure that concerns the whole answer, as every ``disposition`` failure does,
+failed every expected part (``Observation.part_count``), so a base right on one part is no
+wrong answer. The driver hands those observations in as ``Observation.content``.
 A head that refuses, or answers in another status, where base answered the wrong series
 then has no right answer to regress from. The sample's own content verdicts decide, so a
 content check in the case's ``known_failure.checks`` counts as it scored on that sample:
@@ -136,6 +139,9 @@ class Observation:
     """The check's ``Result.parts``: each expected part that did not pass, by position, as a
     read-only copy, or None when the verdict concerns the whole answer, and on a pass or n/a.
     Hashing leaves it out, so equal observations still hash alike."""
+    part_count: int | None = None
+    """How many parts the case expects, on a base sample of a check in
+    ``WRONG_ANSWER_CHECKS`` on a case with ``expect.parts``; None otherwise."""
     content: Mapping[str, Observation] = field(default_factory=dict, hash=False)
     """The same sample's observations on ``CONTENT_CHECKS``, by check, on a base sample of a
     check in ``WRONG_ANSWER_CHECKS``, as a read-only copy. Hashing leaves it out."""
@@ -212,13 +218,15 @@ def judge(
     if any(o.infra for o in base):
         return verdict(Outcome.INFRA)
     failed = _failed_parts(head)
-    reached_base = [o for o in base if _effective(o, "base", failed=failed) != Verdict.UNREACHED]
-    base_v = [_effective(o, "base", failed=failed) for o in reached_base]
+    reached_base = [
+        (o, v) for o in base if (v := _effective(o, "base", failed=failed)) != Verdict.UNREACHED
+    ]
+    base_v = [v for _, v in reached_base]
     if not base_v or Verdict.FAIL in base_v:
         return verdict(Outcome.PRE_EXISTING)
     if Verdict.UNVERIFIABLE in base_v:
         return verdict(Outcome.UNVERIFIABLE_AT_BASE)
-    if all(_wrong_answer(o, check=check, failed=failed) for o in reached_base):
+    if all(_wrong_answer(o, check=check, failed=failed) for o, _ in reached_base):
         return verdict(Outcome.WRONG_ANSWER_AT_BASE)
     if confirm is None:
         return verdict(Outcome.NEEDS_CONFIRM)
@@ -229,10 +237,7 @@ def judge(
         return verdict(Outcome.INFRA)
     if _effective(confirm[0], "head") in (Verdict.PASS, Verdict.UNREACHED):
         return verdict(Outcome.UNSTABLE)
-    confirm_failed = _failed_parts(confirm[:1])
-    match _effective(confirm[1], "base", failed=confirm_failed):
-        case Verdict.PASS if _wrong_answer(confirm[1], check=check, failed=confirm_failed):
-            return verdict(Outcome.WRONG_ANSWER_AT_BASE)
+    match _effective(confirm[1], "base", failed=_failed_parts(confirm[:1])):
         case Verdict.PASS:
             return verdict(Outcome.REGRESSION)
         case Verdict.UNVERIFIABLE:
@@ -279,9 +284,17 @@ def _effective(
 
 def _wrong_answer(observation: Observation, *, check: str, failed: AbstractSet[int] | None) -> bool:
     """Whether a base sample passes ``check`` on a wrong answer: the check is in
-    ``WRONG_ANSWER_CHECKS`` and the sample fails a content check over ``failed``."""
-    return check in WRONG_ANSWER_CHECKS and any(
-        _effective(o, "base", failed=failed) == Verdict.FAIL for o in observation.content.values()
+    ``WRONG_ANSWER_CHECKS`` and a content check fails on the whole answer, or some content
+    check fails on each part in ``failed``. ``failed`` None is every expected part."""
+    if check not in WRONG_ANSWER_CHECKS:
+        return False
+    content = observation.content.values()
+    if any(o.verdict == Verdict.FAIL and o.parts is None for o in content):
+        return True
+    if failed is None:
+        failed = frozenset(range(observation.part_count or 0))
+    return bool(failed) and all(
+        any(o.parts is not None and o.parts.get(i) == Verdict.FAIL for o in content) for i in failed
     )
 
 

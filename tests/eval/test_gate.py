@@ -15,7 +15,9 @@ P, F, U, NA = Verdict.PASS, Verdict.FAIL, Verdict.UNVERIFIABLE, Verdict.NA
 # other than `task_outcome`, ~ a check the expectation asserts that the sample's status
 # left unscored, on the whole answer. On a case with two expected parts: 0 and 1 a sample that failed only that
 # part, a a sample that reached and passed part 0 and never reached part 1. A base pass on
-# `disposition` or `answer` whose sample's `measure`: C passes, W fails, w fails on part 1.
+# `disposition` or `answer` whose sample's `measure`: C passes, W fails. The same on a
+# case with two expected parts: w fails `measure` on part 1 only, v fails `measure` on part
+# 0 and `entities` on part 1.
 _SAMPLE = {
     "P": Observation(P),
     "F": Observation(F),
@@ -31,7 +33,12 @@ _SAMPLE = {
     "a": Observation(Verdict.UNREACHED, parts={1: Verdict.UNREACHED}),
     "C": Observation(P, content={"measure": Observation(P)}),
     "W": Observation(P, content={"measure": Observation(F)}),
-    "w": Observation(P, content={"measure": Observation(F, parts={1: F})}),
+    "w": Observation(P, part_count=2, content={"measure": Observation(F, parts={1: F})}),
+    "v": Observation(
+        P,
+        part_count=2,
+        content={"measure": Observation(F, parts={0: F}), "entities": Observation(F, parts={1: F})},
+    ),
 }
 
 
@@ -226,13 +233,15 @@ ROWS = [
         base="CWW",
         check="disposition",
     ),
+    # One right base sample is a right answer the head lost, whatever the confirm draws.
     row(
         "confirm base wrong",
-        Outcome.WRONG_ANSWER_AT_BASE,
+        Outcome.REGRESSION,
         head="FFF",
         base="CWW",
         confirm="FW",
         check="disposition",
+        blocks=True,
     ),
     row(
         "confirm base right",
@@ -259,20 +268,52 @@ ROWS = [
         base="WWW",
         check="answer",
     ),
-    # Content is read over the parts the head failed.
+    # A `disposition` failure concerns the whole answer, so base is wrong only when it is
+    # wrong on every expected part.
     row(
-        "wrong only on a part the head passed",
+        "disposition, base wrong on one of two parts",
+        Outcome.REGRESSION,
+        head="FFF",
+        base="www",
+        confirm="Fw",
+        check="disposition",
+        blocks=True,
+    ),
+    row(
+        "disposition, base wrong on every part",
+        Outcome.WRONG_ANSWER_AT_BASE,
+        head="FFF",
+        base="vvv",
+        check="disposition",
+    ),
+    # `answer` names the parts the head failed; base must be wrong on each of them.
+    row(
+        "answer, wrong only on a part the head passed",
         Outcome.NEEDS_CONFIRM,
         head="000",
         base="www",
-        check="disposition",
+        check="answer",
     ),
     row(
-        "wrong on the part the head failed",
+        "answer, wrong on the part the head failed",
         Outcome.WRONG_ANSWER_AT_BASE,
         head="111",
         base="www",
-        check="disposition",
+        check="answer",
+    ),
+    row(
+        "answer, right on one failed part",
+        Outcome.NEEDS_CONFIRM,
+        head="011",
+        base="www",
+        check="answer",
+    ),
+    row(
+        "answer, wrong on every failed part",
+        Outcome.WRONG_ANSWER_AT_BASE,
+        head="011",
+        base="vvv",
+        check="answer",
     ),
     row(
         "other checks ignore content",

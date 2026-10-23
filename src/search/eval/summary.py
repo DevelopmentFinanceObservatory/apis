@@ -1,8 +1,8 @@
 """Render the eval driver's JSON report as a Markdown summary or terminal text.
 
 ``paired_markdown`` lists the blocking verdicts first, then the checks base passed on a
-wrong answer, then what the change did to the case set against base. ``single_text`` prints, case by case, every check that did not pass on
-every sample. ``single_markdown`` is its Markdown form for a job summary. All three read
+wrong answer, then what the change did to the case set against base. ``single_text``
+prints, case by case, every check that did not pass on every sample. ``single_markdown`` is its Markdown form for a job summary. All three read
 the report ``scripts/eval_paired.py`` writes. Both Markdown forms name the report's shard,
 and say so when the selection holds no eligible case.
 """
