@@ -99,6 +99,35 @@ def test_a_whole_total_and_a_set_load_and_answer_the_lookups():
     assert index.whole_set("all donors") is None
 
 
+def test_side_classes_and_population_totals_read_classes_and_covers():
+    """Each side holds the classes of its parties, totals aside, and a population total is one
+    whose markers cover `official`: the private donors' total is no population total."""
+    france = _total("France", [], datasets=[_DAC2A, _DAC2B], axes=["origin", "destination"])
+    gates = _total("Gates", [], datasets=[_DAC2A], party_class="private")
+    other = _total("DACOtherDonors", [], datasets=[_DAC2A], party_class="residual")
+    index = _parse(
+        [
+            {**france, "kind": "party"},
+            {**gates, "kind": "party"},
+            {**other, "kind": "residual"},
+            _OFFICIAL,
+            _PRIVATE,
+            _RECIPIENTS,
+        ]
+    )
+
+    assert index.side_classes == {
+        ("origin", _DAC2A): frozenset({"official", "private", "residual"}),
+        ("origin", _DAC2B): frozenset({"official"}),
+        ("destination", _DAC2A): frozenset({"official"}),
+        ("destination", _DAC2B): frozenset({"official"}),
+    }
+    assert index.population_totals_by_axis == {
+        "origin": ("DACOfficialDonors",),
+        "destination": ("DACAllRecipients",),
+    }
+
+
 def test_an_index_without_markers_loads_each_party_as_no_whole_total(code_index: CodeIndex):
     index = _parse([{"dcid": "DACAfrica", "kind": "total", "totals": "africa"}])
 

@@ -459,6 +459,9 @@ def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
         ("multilateral institutions", "DACMultilaterals", "multilaterals (DAC)"),
         ("multilateral donors", "DACMultilaterals", "multilaterals (DAC)"),
         ("private donors", "DACPrivateDonors", "private donors (DAC)"),
+        ("All Donors, Total", "DACOfficialDonors", "official donors (DAC)"),
+        ("all official donors", "DACOfficialDonors", "official donors (DAC)"),
+        ("all recipients", "DACAllRecipients", "all recipients (DAC)"),
         (
             "regional development banks",
             "DACRegionalDevelopmentBanks",

@@ -116,6 +116,8 @@ DepartureCode = Literal[
     "year_unavailable",
     "modelled_values",
     "group_read_as_members",
+    "whole_total_read",
+    "whole_total_unpublished",
     "direction_discarded",
     "direction_inferred",
     "scope_limited",
@@ -194,7 +196,9 @@ confirmed identity whose expansion is unusable, to one confirmed identity
 whose role is wrong. An elected shape whose places exceed the bound gets
 `entity_set_too_large` only once elected, after the variable reasons),
 variable, role (the two
-role-compatibility codes sit at the role position), unit (`rate_coverage_gap`,
+role-compatibility codes sit at the role position; a whole population the request
+directs to the other side refuses role_incompatible once every entity resolves,
+before the variable reasons, since the conflict holds on every shape), unit (`rate_coverage_gap`,
 currency-conversion's own no_data reason, sits immediately after
 `unit_not_resolved`. `recipe_not_declared`, the other currency-conversion
 code, maps to `unsupported_code` rather than `no_data_reason` on the `raw_text`/`parsed`
@@ -293,6 +297,11 @@ PartyKind = Literal["party", "total", "residual"]
 of its own, a `total` holds other parties' figures ("Africa, Total", the G7), so a sum across a
 flow role that counts it counts its members twice, and a `residual` holds figures no other party
 does ("Africa, unallocated by country"). Mirrors `code_index.types.PartyKind` one-for-one."""
+PartyClass = Literal["official", "private", "residual"]
+"""Whose money a flow party's figures count: `private` for a private provider of development
+finance, `official` for any other party, and `residual` for a residual. A whole population
+covers classes (`EntityGroup.whole_of`): "Official Donors, Total" covers every `official`
+donor. Mirrors `code_index.types.PartyClass` one-for-one."""
 SlotOptionRelation = Literal["child", "parent", "root"]
 """Where a level-scoped `SlotOption` sits in its slot's menu. On a bound slot,
 `"child"`/`"parent"` narrow or widen one step from the bound value in a

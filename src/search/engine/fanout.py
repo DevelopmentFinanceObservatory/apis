@@ -480,7 +480,8 @@ async def _stream_one_variable(
     bind alone, and the region opens the slots they run over. `open_axes` are the leg's own
     open roles. Together with the flow axes its operations run over they are the axes
     resolution leaves open (`asked_open_axes`). Place binding drops an axis a place binds,
-    and the part warns for each of its own that the answer drops
+    and the part warns for each of its own, and each a whole population asked member by
+    member opens (`RegionResult.listed_axes`), that the answer drops
     (`with_dropped_open_roles`). `separate` marks a leg compared with the
     others (`RegionResult.separate`). The final region is appended to `landed` before
     its terminal marker is queued. `phase` records the step the leg is in
@@ -628,7 +629,9 @@ async def _stream_one_variable(
                 separate=separate,
             ),
         )
-        region = with_dropped_open_roles(with_runnable_operations(region, operations), open_axes)
+        region = with_dropped_open_roles(
+            with_runnable_operations(region, operations), open_axes | region.listed_axes
+        )
     # Ownership attaches the instant `region` is final, ahead of the marker.
     landed.append(region)
     await queue.put(_RegionDone(index=i, region=region, degraded=degraded))

@@ -88,6 +88,7 @@ from search.engine.region.scope import (
     stated_scope_members,
 )
 from search.engine.region.state import _elected_stat_vars
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
@@ -123,6 +124,8 @@ from search.models import (
     EntityRoleKey,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
+    NoDataGate,
+    NoDataReason,
     ResolvedQualifier,
     Spec,
     TimeWindow,
@@ -665,37 +668,41 @@ def _ground_build_gates(
         facet_checked = True
     settle_posted(state)
     if required:
-        return _no_data_region(
-            state.variable_text,
-            "qualifier_not_bound",
-            warnings=state.refusal_warnings(),
-            flagged_match=(spec,),
-            elected_stat_vars=_elected_stat_vars(state.mat_result, state.shape_draft),
-            unbound_qualifiers=required,
-        )
-
+        return _flagged_refusal(state, spec, "qualifier_not_bound", unbound_qualifiers=required)
     if mat_result.available_at_place is False:
-        return _no_data_region(
-            state.variable_text,
-            "no_observations",
-            warnings=state.refusal_warnings(),
-            flagged_match=(spec,),
-            gate=NO_MEMBER_HAS_DATA_AT_PLACE,
-            elected_stat_vars=_elected_stat_vars(state.mat_result, state.shape_draft),
-        )
-
+        return _flagged_refusal(state, spec, "no_observations", gate=NO_MEMBER_HAS_DATA_AT_PLACE)
     if state.entity_dcid is None and not mat_result.has_data:
-        return _no_data_region(
-            state.variable_text,
-            "no_matching_slice",
-            warnings=state.refusal_warnings(),
-            flagged_match=(spec,),
-            gate=NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
-            elected_stat_vars=_elected_stat_vars(state.mat_result, state.shape_draft),
+        return _flagged_refusal(
+            state, spec, "no_matching_slice", gate=NO_MEMBER_ASSERTS_BOUND_PROPERTIES
         )
     if not facet_checked:
         _raise_facet_refusal(state, mat_result)
     return None
+
+
+def _flagged_refusal(
+    state: _PromoteState,
+    spec: Spec,
+    reason: NoDataReason,
+    *,
+    gate: NoDataGate | None = None,
+    unbound_qualifiers: tuple[ResolvedQualifier, ...] = (),
+) -> RegionResult:
+    """Refuse `reason` with `spec` as the flagged match. The part holds `spec`, so it states
+    `whole_total_available` for it (`whole_totals.whole_total_warnings`), as a fresh
+    request's refusal does for its flagged match (`ResolveState.no_data`)."""
+    return _no_data_region(
+        state.variable_text,
+        reason,
+        warnings=(
+            *state.refusal_warnings(),
+            *whole_total_warnings(spec, coverage=state.coverage.index),
+        ),
+        flagged_match=(spec,),
+        gate=gate,
+        elected_stat_vars=_elected_stat_vars(state.mat_result, state.shape_draft),
+        unbound_qualifiers=unbound_qualifiers,
+    )
 
 
 def _role_candidate_facets(

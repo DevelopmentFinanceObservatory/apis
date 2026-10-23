@@ -748,3 +748,35 @@ def test_ids_028_a_role_refusal_is_a_claim():
     assert sentence_from_plan(plan) == (
         'No data for "debt share" as a flow to or from any place named in this query.'
     )
+
+
+@pytest.mark.parametrize(
+    ("entity_terms", "closing"),
+    [
+        pytest.param(
+            ["all donors"],
+            ' "all donors" belongs on the other side of the flow. Swap its "from" or "to".',
+            id="one",
+        ),
+        pytest.param(
+            ["all donors", "official donors"],
+            ' "all donors" and "official donors" belong on the other side of the flow. Swap '
+            'their "from" or "to".',
+            id="two",
+        ),
+    ],
+)
+def test_a_role_refusal_naming_misdirected_populations_closes_on_them(
+    entity_terms: list[str], closing: str
+):
+    """A role_incompatible refusal naming the whole populations the request directs to the
+    other side keeps its claim as the first token, which a composed envelope reframes, and
+    names them in a token of their own, which it keeps."""
+    plan = no_data_sentence_plan(
+        "role_incompatible", variable_term="debt share", entity_terms=entity_terms
+    )
+
+    assert [token.text for token in plan] == [
+        'No data for "debt share" as a flow to or from any place named in this query.',
+        closing,
+    ]

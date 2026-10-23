@@ -117,6 +117,7 @@ from search.engine.region.scope import (
 )
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
 from search.engine.region.un_system import member_labels
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     OpenAxisFact,
@@ -332,6 +333,7 @@ def _install_filtered_answer(
             members=stated_scope_members(mat_result, filtered.plan),
             boundary_roles=state.place.roles.roles,
             label_of=state.opposite_labels,
+            unnamed_wholes=state.place.roles.unnamed_wholes,
         )
 
 
@@ -1185,7 +1187,11 @@ async def _finalize_definite_result(
         status="definite",
         specs=(spec,),
         no_data_reason=None,
-        warnings=(*state.warnings, *(warning for warning, _fact in family)),
+        warnings=(
+            *state.warnings,
+            *(warning for warning, _fact in family),
+            *whole_total_warnings(spec, coverage=state.coverage.index),
+        ),
         departure_facts={**state.departure_facts, **raised_facts(family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,

@@ -69,12 +69,21 @@ type RunFailure = Literal[
 
 
 DATA_DESCRIBING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
-    {"modelled_values", "group_read_as_members", "direction_inferred", "scope_limited"}
+    {
+        "modelled_values",
+        "group_read_as_members",
+        "whole_total_read",
+        "whole_total_unpublished",
+        "direction_inferred",
+        "scope_limited",
+    }
 )
 """Departures that describe the data the answer shows without changing what
 was asked: the values are modelled, a named group was read as its members, a
-place named without a direction was read in the one direction holding data
-there, a check covered only some values. An example may carry them."""
+flow side was read as the total its source publishes for its whole population, or as
+every party its source holds there where it publishes no such total, a place named
+without a direction was read in the one direction holding data there, a check covered
+only some values. An example may carry them."""
 
 REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
     {
