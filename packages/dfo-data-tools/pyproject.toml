@@ -37,7 +37,9 @@ dependencies = [
 # tables/RecordBatches. Named for the wire protocol both packages read,
 # not either module -- one extra, since nothing imports dc_sdmx without
 # also needing materialise's own pyarrow usage or vice versa in this repo.
-sdmx = ["httpx>=0.28.1", "pyarrow>=18"]
+# dfo_platform.cloud_run_auth, which both clients send requests through, mints
+# Cloud Run ID tokens with google-auth over its requests transport.
+sdmx = ["httpx>=0.28.1", "pyarrow>=18", "google-auth[requests]>=2.55"]
 # materialise.formats's spreadsheet writer needs openpyxl on top of sdmx's
 # own pyarrow (every format writer reads the same pyarrow Table).
 formats = ["dfo-data-tools[sdmx]", "openpyxl>=3.1.5"]
