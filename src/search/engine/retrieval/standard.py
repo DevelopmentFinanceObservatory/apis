@@ -391,9 +391,11 @@ def _admit_standard_members(
     """Source members, elected under the bindings and `role_keys`, and apply the bound-value
     filter.
 
-    An empty shape, absent source population, or degenerate value/set binding
-    returns ``NoDataDraft(reason="variable_not_resolved")``. Missing constraint
-    values pass, and mismatched asserted values are filtered. Bound values that
+    A member asserting a slot a breakdown decision left out of `shape`
+    (`ShapeDraft.omitted_slots`) is left out, as the mint of the identity minted from the
+    shape leaves it out, so the shape admits the members its identity serves. An empty
+    shape, absent source population, or degenerate value/set binding returns
+    ``NoDataDraft(reason="variable_not_resolved")``. Missing constraint values pass, and mismatched asserted values are filtered. Bound values that
     together exclude every member return ``BoundValuesUnrealisable``, naming each
     member's conflicting bound properties, so the caller can unbind a minimal set
     and resolve again. ``exact`` marks a complete population: the index's family, an
@@ -422,6 +424,14 @@ def _admit_standard_members(
     # Downstream readers share this filtered population; ShapeDraft.sv_arc_facts
     # remains the recall-sourced pool when index members back the result.
     member_facts, index_sourced = shape_member_facts(shape, shape_query(shape, bindings, role_keys))
+    # A member asserting a slot the breakdown decision left out is no member of a mint of
+    # the identity (`statvar_members.enumerate._confirm_member`).
+    if shape.omitted_slots:
+        member_facts = {
+            sv: member
+            for sv, member in member_facts.items()
+            if shape.omitted_slots.isdisjoint(asserted_constraint_properties(member) or ())
+        }
     if not member_facts:
         return NoDataDraft(reason="variable_not_resolved")
 
@@ -710,6 +720,94 @@ def bind_partition_values(
         )
         bound = [b for b in bound if b.property_dcid != prop] + [binding]
         added.append(binding)
+
+
+@dataclass(frozen=True)
+class Keep:
+    """The family holds a total, or the decision has nothing to read: the identity carries
+    every slot of the shape."""
+
+
+@dataclass(frozen=True)
+class Narrow:
+    """The identity carries `properties` and leaves every other what or how slot out, so a
+    mint of it serves only the members asserting nothing else. `lone_signature` marks a
+    family no bound or opened slot narrowed, whose members all break down by one
+    signature: the answer is narrower than asked."""
+
+    properties: frozenset[str]
+    lone_signature: bool = False
+
+
+@dataclass(frozen=True)
+class Empty:
+    """The opened slots leave no member: every member also asserts a slot the request did
+    not open."""
+
+
+@dataclass(frozen=True)
+class Candidates:
+    """Nothing opened, and the members break down by several `signatures`, each the set
+    of unbound properties some member asserts, in member order."""
+
+    signatures: tuple[frozenset[str], ...]
+
+
+type BreakdownDecision = Keep | Narrow | Empty | Candidates
+
+
+def breakdown_decision(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: Collection[str]
+) -> BreakdownDecision:
+    """Which what and how slots the identity of a part over `shape` carries under its settled
+    `bindings`, with its places bound under `role_keys`.
+
+    The decision reads the family `_admit_standard_members` admits, before any narrowing. A
+    member's signature is the set of its asserted constraint properties no binding binds to
+    a value. A family with a total (`family_totals`) keeps every slot, so is a role-bearing
+    shape, which `_elect_family` never reads, a recall sample with no catalogue family
+    (`ShapeDraft.held_family`), whose total may be a member recall did not return, and
+    bindings that admit no family. The population read is the one `bind_partition_values`
+    reads, with the families the code index decides and exact member sets beside it. Otherwise, with slots opened
+    as ``requested_all`` (an operation's slot, or a breakdown the phrase names), the
+    identity carries the bound and opened properties when a member asserts no other
+    (`Narrow`), and `Empty` when none does. With nothing opened, members asserting only
+    bound properties narrow to those, one signature narrows to it beside them, and several
+    are `Candidates`. A member whose constraints are unknown has no signature, since the
+    mint drops it."""
+    if is_role_bearing(shape):
+        return Keep()
+    admitted = _admit_standard_members(shape, list(bindings), role_keys)
+    if not isinstance(admitted, _AdmittedStandardMembers) or not (
+        admitted.exact or shape.held_family is not None
+    ):
+        return Keep()
+    if admitted.family.totals:
+        return Keep()
+    bound = frozenset(admitted.bound_values)
+    signatures = tuple(
+        dict.fromkeys(
+            properties - bound
+            for sv in admitted.family.members
+            if (properties := asserted_constraint_properties(admitted.member_facts[sv])) is not None
+        )
+    )
+    if not signatures:
+        return Keep()
+    opened = frozenset(
+        prop
+        for b in bindings
+        if b.evidence == "requested_all" and (prop := b.property_dcid) is not None
+    )
+    if opened:
+        if any(signature <= opened for signature in signatures):
+            return Narrow(bound | opened)
+        return Empty()
+    if frozenset() in signatures:
+        return Narrow(bound)
+    if len(signatures) == 1:
+        return Narrow(bound | signatures[0], lone_signature=True)
+    return Candidates(signatures)
 
 
 @dataclass(frozen=True)

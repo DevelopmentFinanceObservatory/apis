@@ -5,6 +5,7 @@ tables."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from concurrent.futures import wait
 
 import httpx
@@ -26,6 +27,7 @@ from statvar_members import member_digest
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import (
@@ -341,6 +343,169 @@ def test_a_series_with_no_total_states_the_members_a_mint_of_its_definition_serv
     assert resolved.download is not None
     assert (resolved.download.rows, resolved.download.series) == (15, len(members))
     assert "family_total_absent" not in {warning.code for warning in result.warnings}
+
+
+_QUINTILES = {
+    f"undata/who/MORT_U5_RATE.WEALTH_QUANTILE--Q{q}": (f"undata/WEALTH-Q{q}", label)
+    for q, label in enumerate(
+        ("Lowest quintile", "Second quintile", "Middle quintile", "Fourth quintile"),
+        start=1,
+    )
+} | {_Q5: ("undata/WEALTH-Q5", "Highest quintile")}
+
+
+def _hold_wealth_series(bind_catalogue, *, un_pass: bool) -> FakeGraph:
+    """Bind tables holding a WHO series whole: five wealth members, each asserting one
+    quintile, and two by-sex members, each holding five points at Kenya. Return the graph
+    whose recall for "under-five mortality by wealth quintile" scores the highest quintile
+    alone, our resolve's or, with `un_pass`, the UN resolve's, ours recalling nothing."""
+    members = {
+        **{
+            sv: (f"Under-five mortality rate [Wealth quantile={label}]", _WEALTH, value, label)
+            for sv, (value, label) in _QUINTILES.items()
+        },
+        _FEMALE: ("Under-five mortality rate [Sex=Female]", _SEX, "undata/SEX-F", "Female"),
+        _MALE: ("Under-five mortality rate [Sex=Male]", _SEX, "undata/SEX-M", "Male"),
+    }
+    slot_names = {_WEALTH: "Wealth quantile", _SEX: "Sex"}
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
+            un_mirror=un_mirror(
+                {
+                    sv: un_variable(
+                        _SERIES,
+                        name=name,
+                        constraints={prop: (slot_names[prop], value, label)},
+                    )
+                    for sv, (name, prop, value, label) in members.items()
+                }
+            ),
+        )
+    )
+    recalled = {_WEALTH_QUERY: {"svs": [_Q5], "cosine_scores": [0.9]}}
+    return FakeGraph(
+        nodes={
+            "country/KEN": {"label": "Kenya", "type": "Country"},
+            _SERIES: {"label": "Under-five mortality rate"},
+            **{prop: {"label": name} for prop, name in slot_names.items()},
+            **{value: {"label": label} for _name, _prop, value, label in members.values()},
+            **{
+                sv: _member_node(name, {prop: value})
+                for sv, (name, prop, value, _label) in members.items()
+            },
+        },
+        obs={
+            f"{sv}|country/KEN": [{"earliestDate": "2010", "latestDate": "2014", "obsCount": 5}]
+            for sv in members
+        },
+        detect={_WEALTH_QUERY: {"svs": [], "cosine_scores": []}} if un_pass else recalled,
+        un_detect=recalled if un_pass else {},
+        resolve={"Kenya": "country/KEN"},
+    )
+
+
+_WEALTH_QUERY = "under-five mortality by wealth quintile"
+
+
+def _resolve_by_wealth_quintile(graph: FakeGraph):
+    return asyncio.run(
+        resolve_variable(
+            _WEALTH_QUERY,
+            entities=["Kenya"],
+            date_request=None,
+            detect_query=_WEALTH_QUERY,
+            role_query=f"{_WEALTH_QUERY} in Kenya",
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            llm=_BindNothingLLM(),
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+            options=EngineOptions(deadline=None),
+        )
+    )
+
+
+@pytest.mark.parametrize("un_pass", [False, True], ids=["our_pass", "un_pass"])
+def test_a_breakdown_on_a_series_with_no_total_serves_its_members_alone(
+    bind_catalogue, un_pass: bool
+) -> None:
+    """ "By wealth quintile" opens the wealth slot of a series with no total, so its identity
+    carries that slot alone and the by-sex members fall outside it. The answer serves the
+    five quintiles, and the mint's walk of the identity, settled from the tables, states
+    the same five: 25 rows in Kenya. The UN pass settles its bindings as ours does."""
+    result = _resolve_by_wealth_quintile(_hold_wealth_series(bind_catalogue, un_pass=un_pass))
+
+    assert result.status == "definite"
+    (answer,) = result.specs
+    assert [slot.property for slot in answer.definition.identity.slots] == [_WEALTH]
+    resolved = answer.resolved
+    assert {sv.ref.ref for sv in resolved.members} == set(_QUINTILES)
+    assert resolved.stat_vars.served_count == len(_QUINTILES)
+    assert resolved.download is not None
+    assert (resolved.download.rows, resolved.download.series) == (25, len(_QUINTILES))
+    assert "membership_unverified" not in {warning.code for warning in result.warnings}
+
+
+def test_a_resubmit_of_a_breakdown_identity_keeps_its_spec_id(bind_catalogue) -> None:
+    """The identity the breakdown answer mints carries the wealth slot alone. A resubmit of
+    it reads its slots as posted, so it serves the same five quintiles under the same
+    spec_id."""
+    from search.engine.region import resolve_spec_resubmit
+    from search.models import ResubmitIdentityPayload
+
+    graph = _hold_wealth_series(bind_catalogue, un_pass=False)
+    (answer,) = _resolve_by_wealth_quintile(graph).specs
+
+    resubmitted = resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=answer.definition.identity),
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(graph, EngineOptions(deadline=None)),
+    )
+
+    (spec,) = resubmitted.specs
+    assert spec.spec_id == answer.spec_id
+    assert {sv.ref.ref for sv in spec.resolved.members} == set(_QUINTILES)
+    assert spec.resolved.stat_vars.served_count == len(_QUINTILES)
+
+
+def test_a_narrowed_part_whose_walk_settles_another_query_raises(bind_catalogue) -> None:
+    """A narrowed part's walk must settle its identity's query. A walk keyed by the query
+    that still carries the sex slot settled another family than a mint of the identity
+    serves, so assembling the answer raises; a walk of the identity's own query passes."""
+    from types import SimpleNamespace
+
+    from search.engine.region.phase_answer import _check_breakdown_settled
+    from search.engine.retrieval.bound_values import (
+        StatedMembers,
+        WalkedMembers,
+        identity_query,
+        walk_key,
+    )
+    from search.engine.retrieval.standard import Narrow
+
+    (answer,) = _resolve_by_wealth_quintile(
+        _hold_wealth_series(bind_catalogue, un_pass=False)
+    ).specs
+    query = identity_query(answer.definition.identity)
+    wider = dataclasses.replace(query, slots={**query.slots, _SEX: ("unbound",)})
+    state = SimpleNamespace(
+        breakdown=Narrow(frozenset({_WEALTH})),
+        walked=WalkedMembers(
+            key=walk_key(wider), stated=StatedMembers(served_count=7, digest=None)
+        ),
+        shape_draft=SimpleNamespace(shape_id="un_wealth"),
+    )
+
+    with pytest.raises(AssertionError, match="settles no members"):
+        _check_breakdown_settled(state, answer)
+
+    state.walked = dataclasses.replace(state.walked, key=walk_key(query))
+    _check_breakdown_settled(state, answer)
 
 
 def _settle_queued_presence_reads() -> None:

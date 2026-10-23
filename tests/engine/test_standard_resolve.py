@@ -19,6 +19,7 @@ from search.engine.retrieval.retrieve import (
     NoDataDraft,
     materialise,
 )
+from search.engine.retrieval.standard import Candidates, Empty, Keep, Narrow, breakdown_decision
 from search.engine.shape import ShapeDraft
 from search.models import CoverageBare, TimeWindow
 from tests.engine._binders import elected_reply
@@ -2710,6 +2711,114 @@ class TestPartitionSlotBinding:
 
         assert _served(region) == [_GVA_NOMINAL]
         assert _bound_slot(region, "activitySource").value.ref.ref == "GrossValueAdded"
+
+
+_ACTIVITY_ONLY = frozenset({"activitySource"})
+_ACTIVITY_AND_SECTOR = frozenset({"activitySource", "economicSector"})
+_SECTOR_OPENED = SlotBindingDraft(
+    axis="how", property_dcid="economicSector", kind="unbound", evidence="requested_all"
+)
+
+
+class TestBreakdownDecision:
+    """Which slots the identity of a part over a held family with no total carries once its
+    bindings settle (`breakdown_decision`)."""
+
+    @pytest.mark.parametrize(
+        ("arcs", "bindings", "decision"),
+        [
+            pytest.param(
+                {**_ACTIVITY_ARCS, "Amount_EconomicActivity_Nominal": _activity_arcs()},
+                [_activity_source("unbound")],
+                Keep(),
+                id="a_family_with_a_total_keeps_every_slot",
+            ),
+            pytest.param(
+                _ACTIVITY_ARCS,
+                [_activity_source("unbound", evidence="requested_all")],
+                Narrow(_ACTIVITY_ONLY),
+                id="an_opened_slot_narrows_to_it",
+            ),
+            pytest.param(
+                {sv: _ACTIVITY_ARCS[sv] for sv in (_GDP_NOMINAL, _GVA_CONSTRUCTION, _NDP_NOMINAL)},
+                [_activity_source("set", "GrossDomesticProduction", "GrossValueAdded")],
+                Narrow(_ACTIVITY_ONLY),
+                id="a_bound_slot_leaving_one_member_narrows_to_it",
+            ),
+            pytest.param(
+                _ACTIVITY_ARCS,
+                [_activity_source("unbound"), _SECTOR_OPENED],
+                Empty(),
+                id="opened_slots_leaving_no_member_are_empty",
+            ),
+            pytest.param(
+                {sv: _ACTIVITY_ARCS[sv] for sv in (_GDP_NOMINAL, _GVA_NOMINAL, _NDP_NOMINAL)},
+                [_activity_source("unbound")],
+                Narrow(_ACTIVITY_ONLY, lone_signature=True),
+                id="one_signature_with_nothing_opened_narrows_to_it",
+            ),
+            pytest.param(
+                _ACTIVITY_ARCS,
+                [_activity_source("unbound")],
+                Candidates((_ACTIVITY_ONLY, _ACTIVITY_AND_SECTOR)),
+                id="several_signatures_with_nothing_opened_are_candidates",
+            ),
+        ],
+    )
+    def test_decides_the_slots_of_a_held_family(self, bind_catalogue, arcs, bindings, decision):
+        shape = _activity_shape(bind_catalogue, arcs)
+
+        assert breakdown_decision(shape, bindings, ()) == decision
+
+    def test_a_recall_sample_keeps_every_slot(self):
+        """A recall sample with no catalogue family may lack the family's total, so its two
+        signatures decide nothing."""
+        shape = replace(
+            _child_mortality_shape(
+                {
+                    _UN_MALE_U5: _un_arcs(age="undata/AGE-Y0T4", sex="undata/SEX-M"),
+                    _UN_NEONATAL: _un_arcs(age="undata/AGE-M0", sex=None),
+                }
+            ),
+            sv_arc_facts_complete=False,
+        )
+
+        assert breakdown_decision(shape, [_unbound("undataSex")], ()) == Keep()
+
+    def test_a_narrowed_shape_reads_qualifiers_in_the_familys_vocabulary(self, bind_catalogue):
+        """The query's qualifier matches are keyed by the vocabulary each menu shape was read
+        in, so a shape whose sector slot a decision left out still finds them, and reads a
+        sector code as one its answer leaves unapplied."""
+        from search.engine.region.state import shape_vocabulary
+
+        shape = _activity_shape(bind_catalogue)
+        narrowed = replace(
+            shape,
+            slot_keys=tuple(k for k in shape.slot_keys if k.property_dcid != "economicSector"),
+            omitted_slots=frozenset({"economicSector"}),
+        )
+
+        assert shape_vocabulary(narrowed) == shape_vocabulary(shape)
+
+    def test_an_opened_slot_leaves_every_other_slot_out_of_the_identity(self, bind_catalogue):
+        """ "By activity source" opens that slot on a family with no total. The identity
+        carries it alone, so a mint of the definition serves the members asserting nothing
+        else, the ones the answer reads, and the construction-sector member is no member of
+        either."""
+        region = _resolve_gdp(
+            bind_catalogue,
+            "India",
+            "country/IND",
+            _activity_source("unbound"),
+            variable="GDP by activity source",
+            recalled=[_GDP_NOMINAL],
+        )
+
+        assert region.status == "definite"
+        assert [slot.property for slot in region.specs[0].definition.identity.slots] == [
+            "activitySource"
+        ]
+        assert _served(region) == [_GDP_NOMINAL, _GVA_NOMINAL, _NDP_NOMINAL]
 
 
 _NET_TRANSFERS = "Amount_DebtFlow_Net_ServicingPayment"

@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
+from dataclasses import replace
 
 from code_index.shared import get_index, get_measure_index
 from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
@@ -87,8 +88,10 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.member_facts import MemberFacts, asserted_constraint_properties
 from search.engine.retrieval.standard import (
+    Narrow,
     bind_named_member_values,
     bind_partition_values,
+    breakdown_decision,
     family_totals,
     holds_broader_reading,
 )
@@ -660,6 +663,46 @@ def _name_served_dataset(
     state.shape_draft = named
 
 
+def _narrow_to_breakdown(state: ResolveState, role_keys: RoleKeys) -> None:
+    """Decide which what and how slots the elected shape's identity carries under the
+    settled bindings (`standard.breakdown_decision`) and record it on the state.
+
+    A `Narrow` decision leaves every other what or how slot out of the elected shape's
+    slot keys (`ShapeDraft.omitted_slots`), so every reader after it mints, walks, admits
+    and reads from the slots the decision keeps, as a resubmit of the identity does from
+    its posted slots (`promote_shape._phase_build_shape`): a mint of the definition serves
+    exactly the members the answer reads. Any other decision, a family with a total among
+    them, leaves the shape object as it stands. The shape the decision read is kept on the
+    state (`ResolveState.breakdown_shape`) with every slot key.
+    """
+    shape = state.shape_draft
+    decision = breakdown_decision(shape, state.bindings, role_keys.bound)
+    state.breakdown = decision
+    state.breakdown_shape = shape
+    if not isinstance(decision, Narrow):
+        return
+    kept = tuple(
+        slot
+        for slot in shape.slot_keys
+        if slot.axis not in ("what", "how")
+        or slot.property_dcid is None
+        or slot.property_dcid in decision.properties
+    )
+    if len(kept) == len(shape.slot_keys):
+        return
+    narrowed = replace(
+        shape,
+        slot_keys=kept,
+        omitted_slots=frozenset(
+            slot.property_dcid
+            for slot in shape.slot_keys
+            if slot not in kept and slot.property_dcid is not None
+        ),
+    )
+    state.capped_shapes[state.elected_index] = narrowed
+    state.shape_draft = narrowed
+
+
 def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:
     """Settle the dataset the part is served from under its final bindings
     (`ResolveState.bindings`), or return the refusal of a part no table serves.
@@ -737,9 +780,11 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
     each that partitions a standard family to the one value its scored members state
     (`bind_partition_values`), then put the bindings in
     canonical form: each invariant slot of the dataset the part names that they leave open
-    bound to its value (`canonical_pin_bindings`). The dataset the part is served from is
-    then settled under those bindings, and a part no table serves under them refuses
-    ``qualifier_not_bound`` (`_settle_served_dataset`). Place binding reads the result.
+    bound to its value (`canonical_pin_bindings`). The slots the identity carries are then
+    decided over the family those bindings admit (`_narrow_to_breakdown`). The dataset the
+    part is served from is settled under the bindings and those slots, and a part no table
+    serves under them refuses ``qualifier_not_bound`` (`_settle_served_dataset`). Place
+    binding reads the result.
     """
     bindings: list[SlotBindingDraft] = list(state.bind_result.bindings)
     state.bindings = bindings
@@ -950,8 +995,13 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
     # and qualifier dispositions read the invariants as bound.
     state.bindings = canonical_pin_bindings(state.shape_draft, bindings, role_keys)
 
-    # The bindings change no more, so the dataset the part is served from is settled on
-    # them, and a part no table of its own serves is refused.
+    # The bindings change no more, so the slots the identity carries are decided on them,
+    # over the family they admit, and a family with no total keeps only the slots its
+    # answer reads.
+    _narrow_to_breakdown(state, role_keys)
+
+    # The dataset the part is served from is settled on the bindings and the slots the
+    # identity carries, and a part no table of its own serves is refused.
     refused = _settle_served_dataset(state, role_keys)
     if refused is not None:
         return refused
