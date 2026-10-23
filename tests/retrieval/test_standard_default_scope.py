@@ -184,8 +184,8 @@ def _labels(mat: Materialised) -> list[str]:
 
 def test_m1_a_member_is_read_over_its_own_countries() -> None:
     """Female has data in Kenya, male in Tanzania. One read over both countries costs fewer
-    POSTs than one per country; the answer serves female and settles on Kenya alone, as a
-    single source, from that read."""
+    POSTs than one per country; neither member rolls up the other, so the answer serves
+    both, as a mint does, and settles on each member's own country from that read."""
     obs = {**_at(_FEMALE, _KEN), **_at(_MALE, _TZA)}
     graph = _BatchRecordingGraph(obs)
     presence = _presence({_FEMALE: [_KEN], _MALE: [_TZA]})
@@ -193,11 +193,10 @@ def test_m1_a_member_is_read_over_its_own_countries() -> None:
     mat = _resolve(_shape(_FEMALE, _MALE), graph, presence)
 
     assert graph.batches == [([_FEMALE, _MALE], [_KEN, _TZA])]
-    assert mat.sv_dcids == [_FEMALE]
-    assert mat.default_scope == _countries(_KEN)
-    assert mat.scope_member_dcids == [_KEN]
-    assert "sources" in _labels(mat)
-    assert "countries" not in _labels(mat)
+    assert mat.sv_dcids == [_FEMALE, _MALE]
+    assert mat.default_scope == _countries(_KEN, _TZA)
+    assert mat.scope_member_dcids == [_KEN, _TZA]
+    assert "countries" in _labels(mat)
     assert _place_facts(mat) == _place_facts(_resubmitted(mat, obs, presence))
 
 
@@ -287,41 +286,41 @@ def test_no_member_with_presence_reads_no_facets() -> None:
 
 
 @pytest.mark.parametrize(
-    ("scopes", "obs", "elected", "settled"),
+    ("scopes", "obs", "served", "settled"),
     [
         pytest.param(
             {_FEMALE: [_KEN], _MALE: [_TZA]},
             {**_at(_FEMALE, _TZA), **_at(_MALE, _TZA)},
-            _MALE,
+            [_MALE],
             _countries(_TZA),
             id="presence-claims-a-place-the-facets-lack",
         ),
         pytest.param(
             {_FEMALE: [_TZA], _MALE: [_KEN]},
             {**_at(_FEMALE, _KEN, _TZA), **_at(_MALE, _KEN)},
-            _FEMALE,
-            _countries(_TZA),
+            [_FEMALE, _MALE],
+            _countries(_KEN, _TZA),
             id="presence-misses-a-place-the-facets-hold",
         ),
     ],
 )
 def test_a_presence_read_that_disagrees_with_the_facets_settles_as_a_resubmit_does(
-    scopes: dict[str, list[str]], obs: dict, elected: str, settled: DefaultPlaceScope
+    scopes: dict[str, list[str]], obs: dict, served: list[str], settled: DefaultPlaceScope
 ) -> None:
     """Presence and facets disagree on where female has data. Each member is read and
     scanned at its own presence countries: where female's presence country holds none of
-    her facets, male answers. The member that answers is settled on its presence countries,
-    which is what a resubmit of it resolves under the same presence."""
+    her facets, male alone answers. The members that answer are settled on their presence
+    countries, which is what a resubmit of them resolves under the same presence."""
     presence = _presence(scopes)
     graph = _BatchRecordingGraph(obs)
 
     mat = _resolve(_shape(_FEMALE, _MALE), graph, presence)
 
     assert graph.batches == [([_FEMALE, _MALE], [*scopes[_FEMALE], *scopes[_MALE]])]
-    assert mat.sv_dcids == [elected]
+    assert mat.sv_dcids == served
     assert mat.default_scope == settled
     resubmit = _resubmitted(
-        Materialised(sv_dcids=[elected], has_data=False, coverage=mat.coverage), obs, presence
+        Materialised(sv_dcids=served, has_data=False, coverage=mat.coverage), obs, presence
     )
     assert _place_facts(mat) == _place_facts(resubmit)
 
@@ -329,8 +328,9 @@ def test_a_presence_read_that_disagrees_with_the_facets_settles_as_a_resubmit_do
 def test_a_member_with_facets_beyond_its_scope_keeps_its_scope_alone() -> None:
     """Female has facets at Earth and in Kenya, but the presence read reports her at Earth
     only; male has data in Kenya. The read over both places fetches female's Kenya facets,
-    which she does not keep, and she is elected at Earth. The answer is female's worldwide
-    total, as a resubmit of female resolves it under the same presence."""
+    which she does not keep, so the answer serves female at Earth and male in Kenya, and
+    Kenya's facets are male's alone, as a resubmit of both resolves them under the same
+    presence."""
     presence = _presence({_FEMALE: [_EARTH], _MALE: [_KEN]})
     obs = {**_at(_FEMALE, _EARTH, _KEN), **_at(_MALE, _KEN)}
     graph = _BatchRecordingGraph(obs)
@@ -339,9 +339,10 @@ def test_a_member_with_facets_beyond_its_scope_keeps_its_scope_alone() -> None:
 
     assert graph.batches == [([_FEMALE, _MALE], [_EARTH, _KEN])]
     assert mat.has_data
-    assert mat.sv_dcids == [_FEMALE]
-    assert mat.default_scope == _countries(_EARTH)
-    assert "worldwide" in _labels(mat)
+    assert mat.sv_dcids == [_FEMALE, _MALE]
+    assert mat.default_scope == presence.union_scope([_FEMALE, _MALE])
+    assert mat.facets_by_entity is not None
+    assert len(mat.facets_by_entity[_KEN]) == 1
     assert _place_facts(mat) == _place_facts(_resubmitted(mat, obs, presence))
 
 

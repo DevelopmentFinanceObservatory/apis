@@ -58,6 +58,7 @@ from search.engine.retrieval.bound_values import (
     elected_role_class_shape,
     entity_role_keys,
     five_tuple_member_facts,
+    identity_query,
     index_carries_shape,
     shape_population_arcs,
     shape_query,
@@ -105,6 +106,7 @@ from search.models import (
     SlotOption,
     SlotOptions,
     SlotValue,
+    Spec,
     TimeWindow,
     Warning,
 )
@@ -494,6 +496,20 @@ def carrier_flag_warnings(
     if membership_unverified:
         warnings.append(membership_unverified_warning())
     return warnings
+
+
+def check_breakdown_settled(shape: ShapeDraft, walked: WalkedMembers | None, spec: Spec) -> None:
+    """Raise when the walk that settled the members of a shape a breakdown decision narrowed
+    (`ShapeDraft.omitted_slots`) settles none for the identity of its Spec: the answer read
+    a family a mint of the definition does not serve. A shape whose family no walk settled
+    answers under the `membership_unverified` warning."""
+    if not shape.omitted_slots or walked is None:
+        return
+    if not walked.settles(identity_query(spec.definition.identity)):
+        raise AssertionError(
+            f"the walk of {shape.shape_id!r} settles no members for the identity of "
+            f"{spec.spec_id!r}, which leaves out the slots {sorted(shape.omitted_slots)!r}"
+        )
 
 
 def membership_unverified_warning() -> Warning:

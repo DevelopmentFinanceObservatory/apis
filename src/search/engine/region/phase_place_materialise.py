@@ -75,7 +75,7 @@ from search.engine.region.materialise_step import (
 from search.engine.region.observations.dispatch import _attach_observations
 from search.engine.region.observations.entities import _observation_entities
 from search.engine.region.observations.fetch import _build_observations
-from search.engine.region.phase_election import _settle_served_dataset
+from search.engine.region.phase_election import _settle_served_dataset, narrowed_to_breakdown
 from search.engine.region.phase_intake import not_admitted_entity
 from search.engine.region.phase_shared import (
     _elected_flagged_match,
@@ -138,7 +138,11 @@ from search.engine.retrieval.bound_values import (
     shape_population_arcs,
     shape_query,
 )
-from search.engine.retrieval.facts import read_constraints, read_declared_roles
+from search.engine.retrieval.facts import (
+    read_constraints,
+    read_declared_constraint_properties,
+    read_declared_roles,
+)
 from search.engine.retrieval.retrieve import (
     BoundValuesUnrealisable,
     Materialised,
@@ -147,7 +151,7 @@ from search.engine.retrieval.retrieve import (
     UnsupportedDraft,
 )
 from search.engine.retrieval.role_resolve import unrealisable_bound_values
-from search.engine.retrieval.standard import FacetBatch
+from search.engine.retrieval.standard import Candidates, FacetBatch, Narrow
 from search.engine.shape import (
     ShapeDraft,
     is_role_bearing,
@@ -276,6 +280,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     if bound == "no_direction_holds":
         return await _role_not_resolved_no_data(state, offer=False)
     state.elected_place_roles = bound
+    _settle_breakdown(state)
     # The bound roles elect one role class among the shape's members, and every later
     # step reads the shape narrowed to it. The election reads a held family whole, so it
     # runs off the event loop. The mint's walk then settles the members, off the event loop
@@ -438,6 +443,87 @@ def _settle_direction(
     )
 
 
+def _settle_breakdown(state: ResolveState) -> None:
+    """The elected shape's breakdown when its family holds no total and the question names
+    none that serves a member (`standard.Candidates`): one copy of the shape per breakdown
+    signature, each narrowed to the bound properties and that signature
+    (`phase_election.narrowed_to_breakdown`) and bound with the signature's slots open
+    (`_breakdown_bindings`). The copies are ordered by their recalled members with data at
+    the places the part names, then by their recalled members, and capped at
+    `max_candidates`, a cut the candidate set states (`ResolveState.breakdown_truncated`,
+    `CandidateSet.truncated`). The first is installed as the elected shape; each other is
+    offered beside it as a `breakdown` candidate (`ResolveState.breakdown_rivals`). A lone
+    copy answers alone, narrower than asked (`standard.Narrow.lone_signature`)."""
+    decision = state.breakdown
+    if not isinstance(decision, Candidates):
+        return
+    shape = state.shape_draft
+    rank = _breakdown_rank(shape, decision.bound)
+    signatures = sorted(decision.signatures, key=rank)[: settings().max_candidates]
+    state.breakdown_truncated = len(signatures) < len(decision.signatures)
+    copies = [
+        (
+            narrowed_to_breakdown(shape, decision.bound | signature),
+            _breakdown_bindings(state.bindings, shape, signature),
+        )
+        for signature in signatures
+    ]
+    (elected, bindings), *others = copies
+    state.shape_draft = state.capped_shapes[state.elected_index] = elected
+    state.bindings = bindings
+    if not others:
+        state.breakdown = Narrow(decision.bound | signatures[0], lone_signature=True)
+    for copy, copy_bindings in others:
+        state.breakdown_rivals[len(state.capped_shapes)] = copy_bindings
+        state.capped_shapes.append(copy)
+
+
+def _breakdown_rank(
+    shape: ShapeDraft, bound: frozenset[str]
+) -> Callable[[frozenset[str]], tuple[int, int]]:
+    """The sort key of a breakdown signature of `shape` under its `bound` properties: its
+    recalled members with data at the places the part names
+    (`ShapeDraft.named_place_coverage`, else `ShapeDraft.member_coverage`), then its
+    recalled members (`ShapeDraft.scored_members`), most first. A member's signature is the
+    set of constraint properties it declares outside `bound`."""
+    coverage = shape.named_place_coverage or shape.member_coverage or {}
+    with_data: dict[frozenset[str], int] = {}
+    recalled: dict[frozenset[str], int] = {}
+    for sv, arcs in (shape.sv_arc_facts or {}).items():
+        signature = frozenset(read_declared_constraint_properties(arcs)) - bound
+        if sv in shape.scored_members:
+            recalled[signature] = recalled.get(signature, 0) + 1
+        if coverage.get(sv):
+            with_data[signature] = with_data.get(signature, 0) + 1
+    return lambda signature: (-with_data.get(signature, 0), -recalled.get(signature, 0))
+
+
+def _breakdown_bindings(
+    bindings: Sequence[SlotBindingDraft], shape: ShapeDraft, signature: frozenset[str]
+) -> list[SlotBindingDraft]:
+    """`bindings` for the copy of `shape` narrowed to `signature`: each slot of the
+    signature open, as a binding already open or ``unbound``, and every other what or how
+    slot bound to a value or left out."""
+    by_property = {b.property_dcid: b for b in bindings if b.property_dcid is not None}
+    kept = [
+        b
+        for b in bindings
+        if b.axis not in ("what", "how")
+        or b.property_dcid is None
+        or (b.kind == "unbound" if b.property_dcid in signature else b.kind in ("value", "set"))
+    ]
+    opened = [
+        SlotBindingDraft(axis=slot.axis, property_dcid=slot.property_dcid, kind="unbound")
+        for slot in shape.slot_keys
+        if slot.property_dcid in signature
+        and (
+            slot.property_dcid not in by_property
+            or by_property[slot.property_dcid].kind != "unbound"
+        )
+    ]
+    return [*kept, *opened]
+
+
 def _plan_alternates(state: ResolveState) -> _AdmissionPlan:
     """Bind every alternate's places (`_bind_alternates`), apply the admission guards and
     the status rule to them (`_plan_status`), choose the readings rule 1 tries when the
@@ -453,10 +539,16 @@ def _plan_alternates(state: ResolveState) -> _AdmissionPlan:
         [
             (i, shape)
             for i, shape in enumerate(state.capped_shapes)
-            if i != state.elected_index and i not in state.direction_rivals
+            if i != state.elected_index
+            and i not in state.direction_rivals
+            and i not in state.breakdown_rivals
         ],
     )
     state.alternate_place_roles.update(state.direction_rivals)
+    if state.elected_place_roles is not None:
+        state.alternate_place_roles.update(
+            dict.fromkeys(state.breakdown_rivals, state.elected_place_roles)
+        )
     state.status_plan = _plan_status(state)
     state.reelection_siblings = _stand_in_indices(state)
     plan = _plan_admission(state)
@@ -505,7 +597,9 @@ def _plan_status(state: ResolveState) -> StatusPlan:
     bindable = sorted(
         (i, state.capped_shapes[i])
         for i in state.alternate_place_roles
-        if i != state.elected_index and i not in state.direction_rivals
+        if i != state.elected_index
+        and i not in state.direction_rivals
+        and i not in state.breakdown_rivals
     )
     inadmissible = judge.inadmissible(bindable)
     bindable = [(i, shape) for i, shape in bindable if i not in inadmissible]
@@ -530,12 +624,16 @@ def _plan_status(state: ResolveState) -> StatusPlan:
         axes=state.open_measure_axes,
         base_unmatched=state.named_denominator is not None and state.named_denominator.ref is None,
     )
-    if not state.direction_rivals:
+    if not state.direction_rivals and not state.breakdown_rivals:
         return plan
-    # The other directions of a place named without one come first beside the elected
-    # reading: the question asks which direction it means.
-    directions = tuple(Alternative(index=i, basis="direction") for i in state.direction_rivals)
-    return dataclasses.replace(plan, rivals=(*directions, *plan.rivals), sole=False)
+    # The other directions of a place named without one, and the other breakdowns of a
+    # family with no total, come first beside the elected reading: the question asks which
+    # it means.
+    asked = (
+        *(Alternative(index=i, basis="direction") for i in state.direction_rivals),
+        *(Alternative(index=i, basis="breakdown") for i in state.breakdown_rivals),
+    )
+    return dataclasses.replace(plan, rivals=(*asked, *plan.rivals), sole=False)
 
 
 def _too_many_places(state: ResolveState, exc: PlaceSetTooLargeError) -> RegionResult:
@@ -901,9 +999,11 @@ def _offered(state: ResolveState) -> dict[int, CandidateBasis | None]:
     shape with data, R follows (rule 2). Beside one without, rule 1's stand-ins re-election
     found with data follow, else the nominated readings that ride on the refusal. Before the
     elected shape is read, both cases are planned, so the walks either needs start beside
-    its read."""
+    its read. The other breakdowns of a family with no total come first, whether or not P
+    has data: P is one breakdown among them."""
     plan = state.status_plan
-    offered: dict[int, CandidateBasis | None] = dict.fromkeys(plan.twins, "twin")
+    offered: dict[int, CandidateBasis | None] = dict.fromkeys(state.breakdown_rivals, "breakdown")
+    offered.update(dict.fromkeys(plan.twins, "twin"))
     read = state.mat_result is not None
     if not read or state.elected_has_data:
         offered.update((alternative.index, alternative.basis) for alternative in plan.rivals)
@@ -991,7 +1091,9 @@ def _strays_by_property(state: ResolveState) -> dict[str, frozenset[str]]:
     return {prop: frozenset(values) for prop, values in by_prop.items()}
 
 
-def _walk_args(state: ResolveState, shape: ShapeDraft, rep_sv: str, roles: PlaceAssignment) -> dict:
+def _walk_args(
+    state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str, roles: PlaceAssignment
+) -> dict:
     return {
         "shape": shape,
         "role_keys": roles.role_keys,
@@ -1001,6 +1103,7 @@ def _walk_args(state: ResolveState, shape: ShapeDraft, rep_sv: str, roles: Place
         "role_class_walks": state.role_class_walks,
         "scope": state.scope,
         "stray_values": _strays_by_property(state),
+        "bindings": state.breakdown_rivals.get(index),
     }
 
 
@@ -1046,6 +1149,7 @@ def _walk_assignment(
             rep_sv,
             scope=state.scope,
             stray_values=_strays_by_property(state),
+            bindings=state.breakdown_rivals.get(index),
         )
         if settled is not None and holds_whole_total(state, settled.shape, whole, settled.bindings):
             return whole
@@ -1071,16 +1175,16 @@ def _start_alternate_walks(
         key = _walk_key(state, index, shape, rep_sv, roles)
         if key in state.alternate_walks:
             continue
-        state.alternate_walks[key] = _submit_walk(state, shape, rep_sv, roles)
+        state.alternate_walks[key] = _submit_walk(state, index, shape, rep_sv, roles)
 
 
 def _submit_walk(
-    state: ResolveState, shape: ShapeDraft, rep_sv: str, roles: PlaceAssignment
+    state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str, roles: PlaceAssignment
 ) -> Future:
-    """Queue the walk of `shape` at `rep_sv` under `roles` on `_WALK_POOL`
-    (`walk_alternate`)."""
+    """Queue the walk of the alternate at `index`, offered as `shape`, at `rep_sv` under
+    `roles` on `_WALK_POOL` (`walk_alternate`)."""
     return submit_with_context(
-        _WALK_POOL, walk_alternate, **_walk_args(state, shape, rep_sv, roles)
+        _WALK_POOL, walk_alternate, **_walk_args(state, index, shape, rep_sv, roles)
     )
 
 
@@ -1097,12 +1201,12 @@ async def _walk(
         return None
     rep_sv, roles = plan
     if state.role_class_walks is None:
-        alternate = walk_alternate(**_walk_args(state, shape, rep_sv, roles))
+        alternate = walk_alternate(**_walk_args(state, index, shape, rep_sv, roles))
     else:
         key = _walk_key(state, index, shape, rep_sv, roles)
         started = state.alternate_walks.get(key)
         if started is None:
-            started = state.alternate_walks[key] = _submit_walk(state, shape, rep_sv, roles)
+            started = state.alternate_walks[key] = _submit_walk(state, index, shape, rep_sv, roles)
         alternate = await asyncio.wrap_future(started)
     return None if alternate is None else (alternate, roles)
 

@@ -96,9 +96,13 @@ def reading_for_shape(readings: QualifierReadings, shape: ShapeDraft) -> Qualifi
 
     The code reading is carried when the shape declares its code system as a constraint
     property, the test `_admit_qualifier_matches_against_elected_shape` applies to an
-    ordinary match. The measure reading is carried per `shape_carries_measure_match`.
+    ordinary match, among them a slot a breakdown decision left out
+    (`ShapeDraft.omitted_slots`). The measure reading is carried per
+    `shape_carries_measure_match`.
     """
-    declared = {slot.property_dcid for slot in shape.slot_keys if slot.property_dcid}
+    declared = {
+        slot.property_dcid for slot in shape.slot_keys if slot.property_dcid
+    } | shape.omitted_slots
     carried = [
         match
         for match, carries in (

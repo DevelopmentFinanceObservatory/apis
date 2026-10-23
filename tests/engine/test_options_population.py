@@ -35,6 +35,7 @@ from statvar_members.enumerate import (
 from statvar_members.types import UNRESOLVED_NODE
 from tests.datasets_api._graph_doubles import FirstPageWithholdingGraphReader
 from tests.statvar_members.conftest import (
+    _KENYA_LIFE_EXPECTANCY_ARCS,
     FakeMemberArcReader,
     FlakyMemberArcReader,
     kenya_reader,
@@ -278,6 +279,45 @@ def test_a_non_index_shape_sources_via_statvar_members_enumerate_members():
     assert result.source == "graph"
     assert result.stat_var_dcids == ("LifeExpectancy_Person",)
     assert result.declared_roles == ("observationAbout",)
+
+
+@pytest.mark.parametrize(
+    ("slots", "expected"),
+    [
+        pytest.param(
+            ("gender",),
+            ("LifeExpectancy_Person_Female", "LifeExpectancy_Person_Male"),
+            id="a_subset_identity_leaves_out_members_asserting_other_slots",
+        ),
+        pytest.param(
+            ("age", "gender"),
+            (
+                "LifeExpectancy_Person_0Years",
+                "LifeExpectancy_Person_Female",
+                "LifeExpectancy_Person_Male",
+            ),
+            id="the_full_identity_keeps_each_signature",
+        ),
+    ],
+)
+def test_a_family_with_no_total_populates_the_slots_its_identity_carries(slots, expected):
+    """A family with no total breaks down by sex and by age. An identity carrying the sex
+    slot alone, as a breakdown decision mints it, denotes the members asserting sex alone,
+    as a mint of it serves them."""
+    no_total = {
+        dcid: arcs
+        for dcid, arcs in _KENYA_LIFE_EXPECTANCY_ARCS.items()
+        if dcid != "LifeExpectancy_Person"
+    }
+    identity = _identity(
+        _NON_INDEX_SHAPE,
+        slots=[IdentitySlot(property=prop, binding=IdentityBindingUnbound()) for prop in slots],
+    )
+
+    result = options_population(identity, graph=FakeMemberArcReader(arcs=no_total))
+
+    assert result.source == "graph"
+    assert result.stat_var_dcids == expected
 
 
 def test_an_empty_non_index_population_refuses():

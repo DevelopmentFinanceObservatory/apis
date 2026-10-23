@@ -53,6 +53,7 @@ from search.engine.region.grounding import (
     _place_confidence,
     build_identity_entities,
     carrier_flag_warnings,
+    check_breakdown_settled,
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
@@ -650,9 +651,10 @@ def _finish_candidate(
     # ``available_at_place=False``. Place-less coverage uses ``None``.
     cand_is_elected = cand_index == 0 and state.elected_has_data
     # A reading the status rule offers on a structural or nominated basis is a rival, and
-    # so are the elected reading and its other directions beside one (`rivalled`).
+    # so are the elected reading and its other directions and breakdowns beside one
+    # (`rivalled`).
     cand_has_rival = cand.basis in ("structural", "nominated") or (
-        rivalled and (cand_is_elected or cand.basis == "direction")
+        rivalled and (cand_is_elected or cand.basis in ("direction", "breakdown"))
     )
     cand_available_at_place, cand_confidence = _place_confidence(
         destination_dcid=state.destination_dcid,
@@ -763,6 +765,7 @@ def _finish_candidate(
         named_groups=request_named_groups(state, cand.place.roles),
         measure_served_rows=measure_served_counter(groundwork.served_filter),
     )
+    check_breakdown_settled(cand_shape, cand.walked, cand_spec)
     cand_spec = apply_declaration_version(cand_spec, cand_bindings)
     cand_role_declaration_unverified = (
         False if cand_is_elected else cand_mat.role_declaration_unverified

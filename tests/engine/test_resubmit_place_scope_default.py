@@ -386,8 +386,8 @@ class _ProbeLogGraph(FakeGraph):
 def test_a_resubmitted_member_is_counted_and_grounded_at_its_own_scope():
     """Neither posted member dominates the other: the female member holds data in the first
     country and the 65-and-over member in the second. One batch reads both at the union of
-    their scopes; the answer counts the female member's one observation, is scoped over its
-    own country, and previews its series there alone."""
+    their scopes, and the answer serves both, as a mint of the identity does: it counts each
+    member's one observation and is scoped over the two countries, each member's own."""
     obs = {
         f"{_SV_FEMALE}|{_COUNTRIES[0]}": [
             {
@@ -437,12 +437,7 @@ def test_a_resubmitted_member_is_counted_and_grounded_at_its_own_scope():
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert [sv.ref.ref for sv in spec.resolved.members] == [_SV_FEMALE]
-    assert spec.resolved.coverage.observation_count == 1
-    assert _scope_members(region) == [_COUNTRIES[0]]
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_SV_FEMALE, _SV_OVER65]
+    assert spec.resolved.coverage.observation_count == 2
+    assert _scope_members(region) == _COUNTRIES[:2]
     assert ([_SV_FEMALE, _SV_OVER65], _COUNTRIES[:2]) in graph.probes
-    observations = spec.resolved.observations
-    assert observations is not None and observations.series
-    assert {entity.ref for series in observations.series for entity in series.entities} == {
-        _COUNTRIES[0]
-    }

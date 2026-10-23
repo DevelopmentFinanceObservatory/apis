@@ -108,7 +108,7 @@ from search.engine.retrieval.retrieve import (
     UnsupportedDraft,
 )
 from search.engine.retrieval.role_resolve import role_members_served
-from search.engine.retrieval.standard import default_scope_members
+from search.engine.retrieval.standard import BreakdownDecision, Keep, default_scope_members
 from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft, is_role_bearing, role_names_by_axis
 from search.engine.source_code import SeriesCodeMembers, not_held
@@ -407,8 +407,13 @@ AlternateUnevaluatedReason = Literal["no_capacity", "upstream_error", "timed_out
 
 def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
     """The constraint properties `shape` can carry into binding, its slots' properties, which
-    are also the code systems it reads qualifier text in."""
-    return frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+    are also the code systems it reads qualifier text in. A slot a breakdown decision left out
+    (`ShapeDraft.omitted_slots`) stays in it: the query was read in the family's vocabulary,
+    and a term on that slot is one the answer leaves unapplied."""
+    return (
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        | shape.omitted_slots
+    )
 
 
 def qualifier_dropped_warning(phrase: str) -> Warning:
@@ -982,6 +987,13 @@ class ResolveState:
     # settlement, which judges no answer, names it too (`requirements.settle_unanswered`).
     # One only the model read departs instead (`Requirement.refuses`).
     stray_requirements: tuple[Requirement, ...] = ()
+    # Which what and how slots the elected shape's identity carries, decided once its
+    # bindings settle (`standard.breakdown_decision`, `phase_election._narrow_to_breakdown`).
+    # A `Narrow` decision has narrowed the elected shape's slot keys to its properties.
+    breakdown: BreakdownDecision = field(default_factory=Keep)
+    # The elected shape the decision read, with every slot key: the shape itself unless a
+    # `Narrow` decision narrowed it. None before the decision runs.
+    breakdown_shape: ShapeDraft | None = None
     # Open constraint axes the elected measure's members do not declare; added to
     # `inapplicable_slots` because they are absent from the shape's slot keys.
     measure_dropped_axes: tuple[str, ...] = ()
@@ -1068,6 +1080,13 @@ class ResolveState:
     # one, by capped-shape index of its copy, when both directions hold data: offered beside
     # it as a `direction` candidate (`phase_place_materialise._settle_direction`).
     direction_rivals: dict[int, PlaceAssignment] = field(default_factory=dict)
+    # The elected shape narrowed to another breakdown of a family with no total, by
+    # capped-shape index of its copy, with its own bindings: offered beside the elected
+    # breakdown as a `breakdown` candidate (`phase_place_materialise._settle_breakdown`).
+    breakdown_rivals: dict[int, list[SlotBindingDraft]] = field(default_factory=dict)
+    # Whether `max_candidates` cut breakdown signatures before their copies were made, so
+    # the candidate set states the cut (`CandidateSet.truncated`).
+    breakdown_truncated: bool = False
     # The departures a definite answer states that no warning discloses: the direction it
     # reads a place named without one on (`RegionResult.inferred_facts`).
     inferred_facts: list[DepartureFact] = field(default_factory=list)

@@ -607,7 +607,11 @@ class ResolvedSpec(StrictModel):
 
     shape: Shape = Field(description="the structural family chosen")
     slots: list[Slot] = Field(
-        description="one entry per slot the shape defines, each in a binding state"
+        description=(
+            "one entry per slot the shape defines, each in a binding state. Its what/how "
+            "entries are the identity's slots, so a what/how property it leaves out is one "
+            "no served member asserts"
+        )
     )
     inapplicable_slots: list[str] = Field(
         default_factory=list,
@@ -784,7 +788,9 @@ class ResolvedSpec(StrictModel):
             "a genuine reading of the request's phrase; 'twin', an equivalent reading of the "
             "elected one, offered where the elected one holds no data; 'direction', the same "
             "reading with the other direction for a place the request names without one, "
-            "which a client shows as a direction prompt. The elected reading, listed first, "
+            "which a client shows as a direction prompt; 'breakdown', the same measure broken "
+            "down by another set of slots, offered when its family holds no total and the "
+            "request names no breakdown that serves a member. The elected reading, listed first, "
             "carries none. None on a definite answer and on every Spec outside "
             "CandidateSet.specs."
         ),

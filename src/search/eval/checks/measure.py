@@ -146,9 +146,13 @@ def _stat_vars_paired(form: MeasureForm, found: list[Answer], ctx: ScoreContext)
 
 
 def _open(slot: object, bindings: Mapping[str, frozenset[str] | None]) -> Result:
+    """An open slot is in the identity, unbound. An identity that leaves the slot out
+    serves no member asserting it, which excludes the slot."""
     if unconfirmed(slot):
         return unverifiable(f"open slot {slot} is unconfirmed")
-    refs = bindings.get(str(slot))
+    if str(slot) not in bindings:
+        return fail(f"slot {slot} absent, expected open")
+    refs = bindings[str(slot)]
     return PASS if refs is None else fail(f"slot {slot}: got {sorted(refs)}, expected unbound")
 
 
