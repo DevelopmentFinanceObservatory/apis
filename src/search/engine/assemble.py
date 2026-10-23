@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from dfo_platform import Cause
@@ -29,6 +30,7 @@ from search.models import (
     UNIT_REF,
     AmbiguousEntityGroup,
     AmbiguousSourceGroup,
+    Assumption,
     CandidateSet,
     CandidatesPart,
     DefinitePart,
@@ -52,6 +54,7 @@ from search.models import (
     UnsupportedPart,
     Warning,
 )
+from search.render.assumptions import assumptions_for, common_assumptions
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.departures import departures_from_facts
 from search.render.heading import (
@@ -395,6 +398,9 @@ def build_definite_part(
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    assumption_echo: Sequence[Assumption] | None = None,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
+    own_spec: Spec | None = None,
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -404,6 +410,13 @@ def build_definite_part(
     its envelope holds. ``definite_departures`` adds those the spec, the operations
     and the reading's match carry. ``entity_words`` are the request's own words for each
     entity name (`RegionResult.entity_words`), in which a group read as members is asked.
+    ``assumption_echo`` is the list a dataset resubmit entry echoed
+    (`RegionResult.assumption_echo`), of which the part states those that still hold
+    (`render.assumptions.assumptions_for`), None when it echoed none. ``asked_axes`` are
+    the flow axes the request's words asked every member of
+    (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
+    open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
+    ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
@@ -426,6 +439,13 @@ def build_definite_part(
             raised=departure_facts,
             operations=operations,
             entity_words=entity_words,
+        ),
+        assumptions=assumptions_for(
+            spec,
+            echo=assumption_echo,
+            asked_axes=asked_axes,
+            operations=operations,
+            own_spec=own_spec,
         ),
     )
 
@@ -742,6 +762,8 @@ def build_candidates_part(
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
     request_words: bool = True,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
+    assumption_echoes: Mapping[str, Sequence[Assumption]] = MappingProxyType({}),
 ) -> CandidatesPart:
     """Build a candidates part from competing specs, in the order given: the elected
     reading first and its rivals in menu order (`region.status_rule`), or the order a
@@ -761,6 +783,14 @@ def build_candidates_part(
     `elected_shape_no_data` states one `closest_match` departure
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
+    ``asked_axes`` are the flow axes the request's words asked every member of
+    (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
+    open role. `CandidatesPart.reading_assumptions` holds each shown reading's own list, as
+    a definite part answering it would carry (`assumptions_for`), and the part's
+    assumptions are the items every one of those lists holds alike (`common_assumptions`).
+    ``assumption_echoes`` holds the list a dataset resubmit candidates entry echoed for a
+    reading, under its spec_id (`RegionResult.reading_assumption_echoes`), with which that
+    reading's list is read.
     """
     cap = max_candidates if max_candidates is not None else len(specs)
     clamped = list(specs)[:cap]
@@ -789,9 +819,25 @@ def build_candidates_part(
         keep_how_properties=keep_how_properties,
         request_words=request_words,
     )
+    # What each reading assumes once picked: the list its definite part would carry. The
+    # part assumes what every one of them holds.
+    reading_lists = [
+        assumptions_for(
+            spec,
+            echo=assumption_echoes.get(spec.spec_id),
+            asked_axes=asked_axes,
+            operations=operations,
+        )
+        for spec in clamped
+    ]
+    assumptions = common_assumptions(reading_lists)
+    reading_assumptions = {
+        spec.spec_id: items for spec, items in zip(clamped, reading_lists, strict=True)
+    }
     plan = candidates_sentence_plan(
         clamped,
         departures=departures,
+        assumptions=assumptions,
         truncated=truncated,
         # Show the pre-clamp total only when no upstream budget hid candidates.
         total=len(specs) if not budget_truncated else None,
@@ -820,4 +866,6 @@ def build_candidates_part(
         restatement=restatement,
         operations=list(operations),
         departures=departures,
+        assumptions=assumptions,
+        reading_assumptions=reading_assumptions,
     )
