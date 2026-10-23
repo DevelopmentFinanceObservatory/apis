@@ -44,11 +44,12 @@ from search.models import TimeWindow
 
 logger = logging.getLogger(__name__)
 
-type _ShapeGroupKey = tuple[str, str, str, str, str | None, str | None, bool]
+type _ShapeGroupKey = tuple[str, str, str, str, str | None, str | None, bool, frozenset[str]]
 
 
 def _shape_group_key(shape: ShapeDraft) -> _ShapeGroupKey:
-    """Return a collision-free key for one derived shape group."""
+    """Return a collision-free key for one derived shape group. Each copy of a shape
+    narrowed to another breakdown (`ShapeDraft.omitted_slots`) is a group of its own."""
     return (
         shape.shape_id,
         shape.pop_type_dcid,
@@ -57,6 +58,7 @@ def _shape_group_key(shape: ShapeDraft) -> _ShapeGroupKey:
         shape.meas_qual_dcid,
         shape.meas_denom_dcid,
         shape.meas_denom_unresolved,
+        shape.omitted_slots,
     )
 
 

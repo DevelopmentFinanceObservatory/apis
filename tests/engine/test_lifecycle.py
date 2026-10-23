@@ -635,7 +635,7 @@ class TestGenerationLifespanWiring:
 
 
 class TestGenerationRefreshBeforeCacheLookup:
-    """`resolve_endpoint`/`options_endpoint` both call `deps.generation.
+    """`resolve`/`list_options` both call `deps.generation.
     refresh_if_stale()` once at their own entry, ahead of any cache lookup.
     Asserted here as call order against a spy provider, not merely that it
     is called at all.
@@ -701,7 +701,7 @@ class TestGenerationRefreshBeforeCacheLookup:
             llm=FakeLLM(),
             sdmx=EMPTY_SDMX,
             generation=_SpyGeneration(),
-            # options_endpoint refuses without a materialise_graph, so this call-order-only test injects one to reach
+            # list_options refuses without a materialise_graph, so this call-order-only test injects one to reach
             # resolve_options_target rather than refusing earlier at that guard.
             materialise_graph=FakeGraph(),
         )

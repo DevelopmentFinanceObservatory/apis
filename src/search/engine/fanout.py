@@ -64,6 +64,7 @@ from search.models import (
     ParsedPart,
     RoleAxis,
     SourceMention,
+    asked_open_axes,
 )
 from series_coverage.shared import CoverageSnapshot
 
@@ -225,7 +226,7 @@ def _leg_parsed_form(
     open_axes: Collection[RoleAxis] = (),
     separate: bool = False,
 ) -> ParsedPart | None:
-    """Build the leg's inputs as one parsed part, the form `data_query` pins into.
+    """Build the leg's inputs as one parsed part, the form `NoData.options` are built from.
 
     Each entity appears once per distinct axis the door gave it, with that axis as
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
@@ -409,18 +410,6 @@ def _bind_phrases(
     )
 
 
-def _asked_open_axes(
-    open_axes: frozenset[RoleAxis], operations: Sequence[Operation]
-) -> frozenset[RoleAxis]:
-    """The flow axes a leg asks every member of: its own open roles and each axis one of
-    its operations runs over. Place binding drops an axis a place binds."""
-    return open_axes | {
-        operation.over
-        for operation in operations
-        if operation.over == "origin" or operation.over == "destination"
-    }
-
-
 async def _stream_one_variable(
     v: str,
     i: int,
@@ -490,8 +479,9 @@ async def _stream_one_variable(
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
     bind alone, and the region opens the slots they run over. `open_axes` are the leg's own
     open roles. Together with the flow axes its operations run over they are the axes
-    resolution leaves open (`_asked_open_axes`), and the part warns for each of its own that
-    the answer drops (`with_dropped_open_roles`). `separate` marks a leg compared with the
+    resolution leaves open (`asked_open_axes`). Place binding drops an axis a place binds,
+    and the part warns for each of its own that the answer drops
+    (`with_dropped_open_roles`). `separate` marks a leg compared with the
     others (`RegionResult.separate`). The final region is appended to `landed` before
     its terminal marker is queued. `phase` records the step the leg is in
     (`search.engine.leg_phase`). `door` is the door the leg was posted on
@@ -529,7 +519,7 @@ async def _stream_one_variable(
             source_code=source_code if isinstance(source_code, SeriesCodeMembers) else None,
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             operations=operations,
-            open_axes=_asked_open_axes(open_axes, operations),
+            open_axes=asked_open_axes(open_axes, operations),
             query_text=query_text,
             qualifiers=qualifiers,
             pac=pac,

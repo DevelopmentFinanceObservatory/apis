@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -13,6 +13,7 @@ from pydantic import (
 
 from dfo_platform import Cause
 
+from .assumption import Assumption
 from .base import StrictModel
 from .departure import Departure, departures_in_precedence_order
 from .envelope import Diagnostics, QueryEcho, Timing, Warning
@@ -52,7 +53,9 @@ class _PartBase(StrictModel):
         description=(
             "true when this part was asked beside the others to be compared with them. "
             "A client resubmitting an identity, candidate set, or placeholder posts this "
-            "flag on that entry to preserve the comparison. False, the default, is omitted"
+            "flag on that entry to preserve the comparison. Two parts marked separate that "
+            "resolve to one reading carry the same spec_id and stay two parts. False, the "
+            "default, is omitted"
         ),
     )
     warnings: list[Warning] = Field(
@@ -84,7 +87,8 @@ class _PartBase(StrictModel):
             "there are ('3 readings.'), then each shown candidate's heading and a byline "
             "led by the source and span that set it apart; for no_data, a heading in "
             "the same claim form naming the entity, measure, and counterpart that were "
-            "checked. Either ends with the text of this part's departures, in order. "
+            "checked. Either ends with the text of this part's departures, in order, "
+            "and a candidates part's then closes with its assumptions clause. "
             "For a definite part this stays null or omitted: the confirmation sentence "
             "(heading and byline) lives at spec.resolved.rendered_sentence, and its "
             "departures reach the envelope's composed sentence."
@@ -140,6 +144,38 @@ class _PartBase(StrictModel):
         ),
     )
 
+    assumptions: list[Assumption] = Field(
+        default_factory=list,
+        description=(
+            "every value the engine filled that the request did not ask for, in clause "
+            "order. Declared defaults come first, in the order of the Spec's "
+            "trace.slot_filters, then open roles, then the place scope. A declared "
+            "default is a slot the request left open that its code system's or shape's "
+            "declared default fixed, named by the bound code's full label. An open role "
+            "is a flow role no request word asked for, read across every entity on it "
+            "with data. It is either a role the role scope default filled "
+            "(resolved.scope on that axis), whatever its member count, served as one "
+            "series per member where the shape declares the role, or a role the heading "
+            "states with no entity of its own ('from 164 providers', 'owed to all "
+            "creditors'), served as the total over its members. A role the identity "
+            "binds in entities or lists in open_roles, that one of the part's "
+            "operations runs over ('top 5 donors'), or that the request's words asked "
+            "every member of ('all donors'), is asked. The place scope is a request "
+            "that named no place, read across every place with data. Every door fills "
+            "assumptions. A definite part reads them from its Spec, a candidates part "
+            "carries the items every list in CandidatesPart.reading_assumptions holds "
+            "alike, text included, and no_data and unsupported parts carry []. A "
+            "dataset_resubmit identity entry posts every slot bound, so its part states "
+            "the items of the entry's assumptions echo that still hold (see "
+            "ResubmitIdentityEntry.assumptions), and a candidates entry reads each "
+            "reading with its candidate's echo (see ResubmitCandidate.assumptions). The "
+            "sentence that carries this part closes with them as one "
+            "segment='assumption' clause "
+            "('Assumed: official development assistance; every provider.'), after its "
+            "departures. [] when the answer fills nothing"
+        ),
+    )
+
     @field_validator("departures")
     @classmethod
     def _departures_in_precedence_order(cls, value: list[Departure]) -> list[Departure]:
@@ -152,10 +188,12 @@ class DefinitePart(_PartBase):
     status: Literal["definite"] = Field(description="one answer was resolved")
     spec: Spec = Field(
         description=(
-            "the resolved Spec answering this part. Several parts sharing one five-tuple "
-            "shape carry the identical spec verbatim (the same spec_id); a part that "
-            "shares the spec without minting it carries a part-scoped binding_folded "
-            "warning"
+            "the resolved Spec answering this part. Parts whose specs share a spec_id "
+            "are one reading of the data, the same series, entities and years. A later "
+            "part that folds into an earlier part's spec carries binding_folded. A part "
+            "posted with separate: true never folds and keeps its own part, so two "
+            "separate parts can carry one spec_id by request. Parts sharing a spec_id can "
+            "differ in assumptions, so a client never dedupes parts by spec_id"
         )
     )
 
@@ -167,6 +205,23 @@ class CandidatesPart(_PartBase):
         description="this part's variable was genuinely ambiguous"
     )
     candidates: CandidateSet = Field(description="2..N competing Specs")
+    reading_assumptions: dict[str, list[Assumption]] = Field(
+        default_factory=dict,
+        description=(
+            "each shown reading's own assumptions, keyed by its Spec's spec_id "
+            "(candidates.specs[].spec_id). Each list is the one a definite part "
+            "answering that Spec for this part's request carries, read with the part's "
+            "operations and the axes the request's words asked every member of. The "
+            "part's own assumptions are the items every list here holds alike, text "
+            "included, so an open role one reading reads, or an item two readings word "
+            "differently ('every provider' against 'every creditor'), is stated here "
+            "alone. A client that picks a reading posts its identity as a "
+            "dataset_resubmit identity entry and echoes reading_assumptions[spec_id] as "
+            "the entry's assumptions, so the picked answer states what that reading "
+            "assumed. A client that edits the set echoes each reading's entry as its "
+            "candidate's assumptions. [] for a reading that assumes nothing"
+        ),
+    )
 
 
 class NoDataPart(_PartBase):
@@ -252,6 +307,14 @@ class Skill(StrictModel):
     )
 
 
+def _kind_required(schema: dict[str, Any]) -> None:
+    """List `kind` as required in a response kind's JSON schema, since every serialised
+    response carries its discriminator while the constructor keeps its default."""
+    required = schema.setdefault("required", [])
+    if "kind" not in required:
+        required.append("kind")
+
+
 class _AnswerBase(BaseModel):
     """Fields every resolve response carries, whatever its kind."""
 
@@ -306,6 +369,8 @@ class Resolution(_AnswerBase):
             resp.parts[0].status  # this part's own status
     """
 
+    model_config = ConfigDict(json_schema_extra=_kind_required)
+
     kind: Literal["resolution"] = Field(
         default="resolution",
         description="discriminator for a response that resolved the question into data",
@@ -335,7 +400,17 @@ class Resolution(_AnswerBase):
             "exactly that part's own sentence. After the headings and bylines, each "
             "part's departures follow in part order as segment='departure' tokens "
             "carrying that part's part_index. This is the one sentence that writes "
-            "out a definite part's departures."
+            "out a definite part's departures. The parts' assumptions close the "
+            "sentence as segment='assumption' tokens. A joined sentence takes one "
+            "clause, each item carrying the part_index of its part and an item two "
+            "parts share carrying none. A sentence written part by part takes each "
+            "part's own clause after its departures. There, a part whose sentence and "
+            "clause both repeat an earlier part's is stated once with it, that sentence "
+            "and clause carrying no part_index, followed by each part's own departures, "
+            "and a part whose clause differs keeps its own sentence. On a mixed "
+            "resolution with at least one definite part, the sentence opens "
+            "'Answered N of M parts.', where N counts the definite parts, folded ones "
+            "included, and M is len(parts)."
         ),
     )
     sentence_plan: list[SentenceToken] | None = Field(
@@ -349,7 +424,10 @@ class Resolution(_AnswerBase):
             "shared skeleton (an inter-phrase connective, a hoisted shared qualifier, "
             "the terminal '.', or the shared ' ' the per-part fallback puts between "
             "two sentences) rather than any "
-            "one part's own."
+            "one part's own. On a mixed resolution with at least one definite part, the "
+            "plan opens with two segment='coverage' tokens carrying no part_index, "
+            "'Answered N of M parts.' and ' '. A mixed resolution with no definite "
+            "part has no opener."
         ),
     )
     skills: dict[str, Skill] | None = Field(
@@ -380,7 +458,7 @@ class CatalogueAnswer(_AnswerBase):
     neither an indicator nor a subject, such as "what data do you have?". It
     carries the country the question named, when the resolver confirms one."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_kind_required)
 
     kind: Literal["catalogue"] = Field(
         default="catalogue",
@@ -392,7 +470,7 @@ class CatalogueAnswer(_AnswerBase):
 class DeclinedAnswer(_AnswerBase):
     """A resolve response to a question search does not answer."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_kind_required)
 
     kind: Literal["declined"] = Field(
         default="declined",

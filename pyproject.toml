@@ -241,7 +241,7 @@ dfo-data-tools = { workspace = true }
 # starved_axis_binding_restored.
 # Follow-up: move all five to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/spec-kit" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "0f1a106d35aed1b11aea90cb2d11040326b58bd6", subdirectory = "python/spec-kit" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -285,8 +285,9 @@ python = ".venv"
 # literally in a docstring about averaging three ratios. "dependant" is
 # FastAPI's own attribute name (`APIRoute.dependant`).
 # heading_words_specs.json holds graph labels verbatim ("Assitance" in a UNICEF series).
+# CHANEL Foundation is an OECD private donor (code 1645) named in code_index.declarations.
 skip = "tests/render/heading_words_specs.json"
-ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant"
+ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant,chanel"
 
 [tool.ruff]
 target-version = "py312"

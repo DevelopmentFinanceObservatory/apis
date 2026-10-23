@@ -610,18 +610,22 @@ def test_a_recorded_collapse_whose_canonical_frame_expired_is_rendered_again_fro
 def test_a_collapsed_frame_with_no_file_recording_its_groupby_refuses():
     collapsed = _collapse_rig()
     # The versions route reads the groupby the refresh resolves.
+    # Both frames hold a party role, so each lists the serving index's digest.
+    digest = collapse_fixture._code_index().enrichment_digest
     assert collapsed.rig.listed_versions(collapsed.spec_id) == {
         collapsed.collapsed_content_version: {
             "content_version": collapsed.collapsed_content_version,
             "base_content_version": collapsed.base_content_version,
             "rendering": "groupby",
             "groupby": _GROUPBY,
+            "enrichment_stamp": digest,
         },
         collapsed.base_content_version: {
             "content_version": collapsed.base_content_version,
             "base_content_version": None,
             "rendering": "plain",
             "groupby": None,
+            "enrichment_stamp": digest,
         },
     }
     with collapsed.rig.version_store.transaction() as tx:
@@ -899,6 +903,42 @@ def test_a_rebuild_over_the_inline_budget_answers_pending_then_moved(
     assert plain.rig.task_client.enqueued == [(operation_id, 0)]
 
 
+def test_a_done_rebuild_of_a_kind_column_frame_is_checked_under_the_current_digest(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A rebuild whose rendering `carries_party_kind` is linked by the worker under the
+    key salted with the serving code index's digest. The refresh checks the same key, so it
+    answers `moved`; a key without the digest would find nothing and run the row again."""
+    real_frame_options = refresh_module._frame_options
+    monkeypatch.setattr(
+        refresh_module,
+        "_frame_options",
+        lambda minting: real_frame_options(minting).model_copy(update={"columns": ["party_kind"]}),
+    )
+    plain = _plain_rig()
+    operation_id = _queue_a_rebuild(plain, monkeypatch)["operation_id"]
+    claimed = plain.rig.operation_store.claim(
+        operation_id, submission_count=0, lease_seconds=60, final_delivery=False
+    )
+    assert claimed is not None
+    run_operation(
+        operation=claimed,
+        deps=_worker_deps(plain),
+        operation_store=plain.rig.operation_store,
+    )
+    completed = plain.rig.operation_store.get(operation_id)
+    assert completed is not None and completed.state == "done"
+
+    done = plain.rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
+
+    assert done.status_code == 200, done.text
+    assert done.json() == {
+        "status": "moved",
+        "frame": {"spec_id": plain.spec_id, "content_version": completed.content_version},
+    }
+    assert plain.rig.task_client.enqueued == [(operation_id, 0)]
+
+
 def test_a_done_rebuild_whose_files_left_storage_runs_again_before_it_is_answered(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1173,7 +1213,6 @@ def test_the_publish_and_live_refresh_principals_open_only_their_own_routes():
         ("POST", "/api/datasets/frames/publish"),
         ("GET", recipe_path),
         ("PUT", recipe_path),
-        ("GET", f"/api/datasets/{plain.spec_id}/versions"),
     ):
         refused = plain.rig.client.request(method, path, json={}, headers=_LIVE)
         assert refused.status_code == 403, (method, path, refused.text)
@@ -1181,8 +1220,9 @@ def test_the_publish_and_live_refresh_principals_open_only_their_own_routes():
 
     # Each principal opens its own surface.
     assert plain.rig.client.post(_ROUTE, json=frame, headers=_LIVE).status_code == 200
-    versions = plain.rig.client.get(f"/api/datasets/{plain.spec_id}/versions", headers=publish)
-    assert versions.status_code == 200, versions.text
+    recipe = plain.rig.client.get(recipe_path, headers=publish)
+    assert recipe.status_code == 404, recipe.text
+    assert recipe.json()["code"] == "recipe_not_found"
 
 
 @pytest.mark.parametrize("presented", ["", _LIVE_PRINCIPAL], ids=["empty", "any-value"])

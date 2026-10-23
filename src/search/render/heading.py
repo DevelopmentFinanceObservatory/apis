@@ -781,20 +781,24 @@ def _role_phrases(
 
     A role with entities names them (`_entities_text`). An open role reads its count or
     "all" (`_open_role_reading`). The destination carries the where slot, which it shares
-    with the subject.
+    with the subject, so a destination with no entities of its own that the heading states
+    names the places that slot binds, the subject entities. A destination the role scope
+    default filled (`scope` on the destination) keeps its scope reading.
     """
+    subject = (
+        []
+        if scope is not None and scope.axis == "destination"
+        else [entity for entity in norm_entities if entity.axis is None]
+    )
     phrases: dict[RoleAxis, RolePhrase] = {}
     for axis in _ROLE_ORDER:
         noun = wording.noun(axis)
         entities = [entity for entity in norm_entities if entity.axis == axis]
-        group: EntityGroup | None = None
-        if entities:
-            group = entity_groups.get(axis) if len(entities) > 1 else None
-            labels = [_entity_name(e.dcid, e.label) for e in entities]
-            text = _entities_text(labels, group=group, plural=noun.plural)
-            possessable = len(entities) == 1 and axis not in entity_groups
-        else:
-            reading = _open_role_reading(
+        group_key: str = axis
+        reading = (
+            None
+            if entities
+            else _open_role_reading(
                 axis,
                 noun,
                 role_axis_facts=role_axis_facts,
@@ -802,8 +806,17 @@ def _role_phrases(
                 coverage=coverage,
                 states_all=states_all,
             )
-            if reading is None:
-                continue
+        )
+        if reading is not None and axis == "destination" and subject:
+            entities, group_key, reading = subject, "observationAbout", None
+        if entities:
+            group = entity_groups.get(group_key) if len(entities) > 1 else None
+            labels = [_entity_name(e.dcid, e.label) for e in entities]
+            text = _entities_text(labels, group=group, plural=noun.plural)
+            possessable = len(entities) == 1 and group_key not in entity_groups
+        elif reading is None:
+            continue
+        else:
             text, entities = reading
             possessable = False
         phrases[axis] = RolePhrase(

@@ -264,6 +264,7 @@ def layer2_key(
     unit_texts: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
+    every_member_axes: Sequence[str | None] = (),
     extraction_warnings: Sequence[Warning] = (),
     measure_qualifiers: Sequence[tuple[str, ...]] = (),
 ) -> str:
@@ -297,10 +298,12 @@ def layer2_key(
     slots with a declared default whose plain name the query names, the stretch of the query
     that writes each variable (`written_phrase.written_phrase`), which the key states only
     when one is given, and the words a dataset states of its rows that the query negates
-    (`bind_repair.stated_words_negated`), which the key states only when there is one, and the
-    warnings extraction adds to the answer (`extraction_warnings`): a relative date the parser
-    could not read, quoting its wording, and the variable and qualifier caps, counting what
-    the model named before them. The key states those only when there is one.
+    (`bind_repair.stated_words_negated`), which the key states only when there is one, the
+    flow axis each dropped qualifier asks every member of (`role_text.every_member_axis`),
+    which the key states only when one does, and the warnings extraction adds to the answer
+    (`extraction_warnings`): a relative date the parser could not read, quoting its wording,
+    and the variable and qualifier caps, counting what the model named before them. The key
+    states those only when there is one.
     `query_text_value_source` holds the single-variable query whose words ground drafted
     values. Their names can come from graph taxonomies known only after retrieval, so
     the whole source participates in the key.
@@ -341,6 +344,8 @@ def layer2_key(
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):
         document["written_variable_phrases"] = list(written_variable_phrases)
+    if any(axis is not None for axis in every_member_axes):
+        document["every_member_axes"] = list(every_member_axes)
     if extraction_warnings:
         document["extraction_warnings"] = [
             warning.model_dump(mode="json") for warning in extraction_warnings

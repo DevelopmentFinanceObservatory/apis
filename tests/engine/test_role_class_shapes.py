@@ -1443,10 +1443,16 @@ def test_a_candidate_whose_open_creditor_its_twin_serves_keeps_its_spec_id(monke
         monkeypatch=monkeypatch,
     )
 
+    # The two posted candidates rebuild to one spec_id, so the part is that reading's
+    # definite answer, and its warning says both resolved.
     (part,) = result.parts
-    assert part.status == "candidates"
-    assert [s.spec_id for s in part.candidates.specs] == [spec.spec_id, spec.spec_id]
-    assert [s.definition.identity.open_roles for s in part.candidates.specs] == [["origin"]] * 2
+    assert part.status == "definite"
+    assert part.spec.spec_id == spec.spec_id
+    assert part.spec.definition.identity.open_roles == ["origin"]
+    (warning,) = (w for w in part.warnings if w.code == "candidates_collapsed_definite")
+    assert warning.message.startswith(
+        "2 candidates were posted; 2 still resolve and rebuild to 1 reading"
+    )
 
 
 @pytest.mark.parametrize(

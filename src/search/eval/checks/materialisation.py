@@ -59,6 +59,7 @@ from search.eval.cases import Case, StatusExpect
 from search.eval.checks.base import (
     PASS,
     READ_ERRORS,
+    MembersRefused,
     PartView,
     Result,
     ScoreContext,
@@ -451,6 +452,8 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
     resolved = f"{spec.at}.resolved"
     try:
         served = served_stat_vars(spec, ctx)
+    except MembersRefused as exc:
+        return fail(str(exc))
     except READ_ERRORS as exc:
         return infra_error(f"members door: {type(exc).__name__}: {exc}")
     if served is None:

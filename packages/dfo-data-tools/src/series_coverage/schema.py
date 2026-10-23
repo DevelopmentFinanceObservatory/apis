@@ -40,6 +40,12 @@ for that column. No graph dcid is empty, so the value never collides with a
 real entity."""
 
 
+def widen_span(spans: dict[str, tuple[int, int]], provenance: str, first: int, last: int) -> None:
+    """Widen `spans[provenance]` to cover the years `first` through `last`, inclusive."""
+    low, high = spans.get(provenance, (first, last))
+    spans[provenance] = (min(low, first), max(high, last))
+
+
 def year_mask_column(word: int) -> str:
     """The column holding mask word `word` (years `epoch_year + 64 * word`
     onward)."""

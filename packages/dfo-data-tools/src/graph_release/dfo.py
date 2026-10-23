@@ -9,13 +9,15 @@ so the code index and coverage read one release. The document's stamp holds only
 blocks determine, so an unchanged index keeps its bytes and its part across releases. `graph_release.views` stamps
 the release id and read time from the manifest when it opens the index.
 
-The parties block needs each donor's and recipient's type and name. DFO's Spanner holds them for
-organisations but not for the countries of the base Data Commons graph, which it holds as
-placeholder `Node` rows (types `Thing` or `Country`, the dcid as name) or not at all. A party is
-release-held only when `edges` carries its `typeOf` and `name` arcs; the builder reads every
-other party (`base_party_ids`) from the mixer once
-(`read_base_parties`) and stores the answer as the `base_parties` part. `export_parties` reads
-the release first and `base_parties` for the rest. Every other block reads the release alone.
+The parties block needs each donor's and recipient's type, name and OECD donor codes
+(`dacCode`). DFO's Spanner holds the type and name for organisations but not for the countries
+of the base Data Commons graph, which it holds as placeholder `Node` rows (types `Thing` or
+`Country`, the dcid as name) or not at all. A party is release-held only when `edges` carries
+its `typeOf` and `name` arcs, and its donor codes are then the `dacCode` edges it has, if any.
+The builder reads every other party (`base_party_ids`) from the mixer once, with its `typeOf`,
+`name` and `dacCode` arcs (`read_base_parties`), and stores the answer as the `base_parties`
+part. `export_parties` reads the release first and `base_parties` for the rest; every other
+block reads the release alone.
 Every part serialises deterministically, so a rebuild from the stored parts gives the same
 bytes with no mixer call.
 """
@@ -44,7 +46,15 @@ from graph_release.coverage import coverage_rows, role_map
 from graph_release.declarations import Declarations
 from graph_release.format import StagedPart, write_blob_part
 from graph_release.platform import PlatformParts, PlatformRefusal
-from series_coverage.schema import ABSENT_ENTITY, DONOR_COLUMN, FACET_COLUMN, RECIPIENT_COLUMN
+from series_coverage.schema import (
+    ABSENT_ENTITY,
+    DONOR_COLUMN,
+    FACET_COLUMN,
+    FIRST_YEAR_COLUMN,
+    LAST_YEAR_COLUMN,
+    RECIPIENT_COLUMN,
+    widen_span,
+)
 
 if TYPE_CHECKING:
     from dc_graph import SubjectPage
@@ -55,7 +65,11 @@ GRAPH_ENDPOINT: Final[str] = "graph_release"
 
 _TYPE_OF: Final[str] = "typeOf"
 _NAME: Final[str] = "name"
+_DAC_CODE: Final[str] = "dacCode"
 _PARTY_PROPERTIES: Final[tuple[str, ...]] = (_NAME, _TYPE_OF)
+"""The arcs that make a party release-held (`_release_held`)."""
+_BASE_PARTY_PROPERTIES: Final[tuple[str, ...]] = (_DAC_CODE, _NAME, _TYPE_OF)
+"""The arcs `read_base_parties` reads for a party the release does not hold."""
 _PARTY_AXES: Final[Mapping[str, RoleAxis]] = {
     DONOR_COLUMN: "origin",
     RECIPIENT_COLUMN: "destination",
@@ -139,18 +153,18 @@ class MissingBaseParties(LookupError):
 
 
 def read_base_parties(party_ids: Sequence[str], *, graph: ArcReader) -> bytes:
-    """Each party's `typeOf` and `name` as `graph` answers them, as JSON with sorted keys and
-    sorted values. Raises `MissingBaseParties` when `graph` holds no node for a party. A read
-    error propagates."""
+    """Each party's `typeOf`, `name` and `dacCode` as `graph` answers them, as JSON with sorted
+    keys and sorted values. Raises `MissingBaseParties` when `graph` holds no node for a party. A
+    read error propagates."""
     ids = sorted(set(party_ids))
-    found = graph.node_arcs_many(ids, properties=list(_PARTY_PROPERTIES))
+    found = graph.node_arcs_many(ids, properties=list(_BASE_PARTY_PROPERTIES))
     answered = {party: arcs for party in ids if (arcs := found.get(party)) is not None}
     if missing := [party for party in ids if party not in answered]:
         raise MissingBaseParties(
             f"the mixer holds no node for {len(missing)} base party(ies): {missing[:5]}"
         )
     document = {
-        party: {prop: sorted(set(arcs.get(prop, ()))) for prop in _PARTY_PROPERTIES}
+        party: {prop: sorted(set(arcs.get(prop, ()))) for prop in _BASE_PARTY_PROPERTIES}
         for party, arcs in answered.items()
     }
     return (json.dumps(document, sort_keys=True, ensure_ascii=False, indent=1) + "\n").encode(
@@ -204,6 +218,9 @@ def _code_index_document(inputs: DfoInputs, base_parties: Mapping[str, dict | No
         stat_type_words=declarations.stat_type_words,
         party_kind_overrides=declarations.party_kind_overrides,
         total_groups=declarations.total_groups,
+        private_providers=declarations.private_providers,
+        whole_totals=declarations.whole_totals,
+        whole_total_sets=declarations.whole_total_sets,
         listed_datasets=declarations.listed_datasets,
     )
 
@@ -229,9 +246,10 @@ def _party_datasets(declarations: Declarations) -> set[str]:
 
 
 def _release_held(reader: ReleaseGraphReader, party: str) -> bool:
-    """Whether `edges` carries the `typeOf` and `name` arcs `export_parties` reads for `party`.
-    A placeholder `Node` row's types and name are not the party's. The mixer answers those
-    parties from the base graph."""
+    """Whether `edges` carries the `typeOf` and `name` arcs of `party`. A placeholder `Node`
+    row's types and name are not the party's. The mixer answers those parties from the base
+    graph. A release-held party needs no `dacCode` edge: `export_parties` reads one where the
+    release has it and no donor code where it has none."""
     return all(reader.asserts(party, prop) for prop in _PARTY_PROPERTIES)
 
 
@@ -259,25 +277,32 @@ def _variable_provenances(inputs: DfoInputs) -> dict[str, tuple[str, ...]]:
 
 
 def _parties(inputs: DfoInputs, datasets: set[str]) -> dict[str, PartyPublication]:
-    """Every donor and recipient on a row of `datasets`, with the datasets that publish it and
-    the flow axes they publish it on: `origin` as a donor, `destination` as a recipient."""
-    publishers: dict[str, set[str]] = {}
+    """Every donor and recipient on a row of `datasets`, with the datasets that publish it, the
+    flow axes they publish it on (`origin` as a donor, `destination` as a recipient) and the
+    first and last year each publishes it."""
+    years: dict[str, dict[str, tuple[int, int]]] = {}
     axes: dict[str, set[RoleAxis]] = {}
     for column, axis in _PARTY_AXES.items():
-        pairs = inputs.coverage.group_by([column, FACET_COLUMN], use_threads=False).aggregate([])
-        for party, facet_id in zip(
-            cast("list[str]", _strings(pairs[column]).to_pylist()),
-            cast("list[str]", _strings(pairs[FACET_COLUMN]).to_pylist()),
+        spans = inputs.coverage.group_by([column, FACET_COLUMN], use_threads=False).aggregate(
+            ((FIRST_YEAR_COLUMN, "min"), (LAST_YEAR_COLUMN, "max"))
+        )
+        for party, facet_id, first, last in zip(
+            cast("list[str]", _strings(spans[column]).to_pylist()),
+            cast("list[str]", _strings(spans[FACET_COLUMN]).to_pylist()),
+            cast("list[int]", spans[f"{FIRST_YEAR_COLUMN}_min"].to_pylist()),
+            cast("list[int]", spans[f"{LAST_YEAR_COLUMN}_max"].to_pylist()),
             strict=True,
         ):
             provenance = inputs.facet_provenances[facet_id]
             if party == ABSENT_ENTITY or provenance not in datasets:
                 continue
-            publishers.setdefault(party, set()).add(provenance)
+            widen_span(years.setdefault(party, {}), provenance, first, last)
             axes.setdefault(party, set()).add(axis)
     return {
-        party: PartyPublication(datasets=frozenset(found), axes=frozenset(axes[party]))
-        for party, found in publishers.items()
+        party: PartyPublication(
+            datasets=frozenset(published), axes=frozenset(axes[party]), years=published
+        )
+        for party, published in years.items()
     }
 
 

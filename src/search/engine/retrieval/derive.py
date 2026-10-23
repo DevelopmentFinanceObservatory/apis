@@ -778,10 +778,20 @@ def _build_group_shape(
     constraint_props = list(prop_observed_values.keys())
     prop_labels: dict[str, str] = {p: prop_labels_raw.get(p, p) for p in constraint_props}
 
-    # `group_svs` is score-descending. Use its first scored member for rank and
-    # its highest-scoring recalled member for the label, falling back to that representative.
+    # `group_svs` is score-descending. Use its first scored member for rank and its
+    # highest-scoring recalled member for the label, falling back to that representative.
+    # A role-bearing group whose members declare more than one role set takes its
+    # least-constrained recalled member instead, the highest-scoring of a tie. The mint
+    # keeps this label for a family the catalogue holds, so it is the answer's name; any
+    # other such shape the mint renames within the role set the bound roles elect
+    # (`bound_values._recalled_role_class_shape`), which gives this name when the query
+    # binds only the recipient side. "Publicly guaranteed debt" recalls the bondholders'
+    # share of IDS debt stocks above the PPG total, and the stock reads as the total.
     rep_sv_dcid = next((sv for sv in group_svs if sv in sv_scores), group_svs[0])
-    label_sv_dcid = next((sv for sv in group_svs if sv in recall_svs), rep_sv_dcid)
+    named = [sv for sv in group_svs if sv in recall_svs]
+    if roles.optional and family is None:
+        named.sort(key=lambda sv: len(sv_facts[sv]["constraints"]))
+    label_sv_dcid = next(iter(named), rep_sv_dcid)
     pop_type_name = prop_labels_raw.get(five_tuple.pop_type_dcid, five_tuple.pop_type_dcid)
     # An index family reads as what all its rows share. Any other group reads as its family
     # does (`walked_family_label`), its recalled member's name first among its own.

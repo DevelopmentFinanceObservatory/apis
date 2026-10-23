@@ -30,7 +30,7 @@ Axis = Literal["what", "how", "where", "when", "source"]
 # "unit", the byline's unit of measure, and "method", the byline's measurement method,
 # which no request slot carries.
 SentenceAxis = Literal[Axis, "unit", "method"]
-SentenceSegment = Literal["heading", "byline", "departure"]
+SentenceSegment = Literal["coverage", "heading", "byline", "departure", "assumption"]
 CoverageKind = Literal["exact", "breadth", "bare"]
 
 # BindingProvenance records why a slot has its value, independently of its
@@ -127,6 +127,10 @@ departure code is a `Warning.code` or a refusal code, so the platform
 code registry does not list them."""
 DEPARTURE_ORDER: tuple[DepartureCode, ...] = get_args(DepartureCode)
 """`DepartureCode` in precedence order. `_PartBase.departures` follows it."""
+AssumptionKind = Literal["declared_default", "open_role", "place_scope"]
+"""Every kind of value an answer fills that its request did not ask for (see
+`models.assumption.Assumption`), in the order a part's `assumptions` lists them. A closed
+vocabulary of its own, like `DepartureCode`, outside the platform code registry."""
 ObservationsOmissionReason = Literal[
     "observations_timed_out",
     "observations_no_matching_source",
@@ -256,14 +260,16 @@ reason stops short of a graph-confirmed identity, so elected_count stays
 None there."""
 Confidence = Literal["high", "medium", "low"]
 Ordering = Literal["broadest_first", "intent_rank"]
-CandidateBasis = Literal["structural", "nominated", "twin", "direction"]
+CandidateBasis = Literal["structural", "nominated", "twin", "direction", "breakdown"]
 """Why the status rule offers a reading as a candidate beside the elected one:
 `structural`, a reading of the same population type and measured property that differs
 only on a stat type, price basis or denominator the question leaves open; `nominated`, a
 reading the bind model named as a genuine reading of the phrase that the question does not
 rule out; `twin`, an equivalent reading of the elected one that answers where the elected
 one holds no data; `direction`, the same reading with the other direction for a place the
-question names without one, where both directions hold data."""
+question names without one, where both directions hold data; `breakdown`, the same measure
+broken down by another set of slots, offered when its family holds no total and the question
+names no breakdown that serves a member."""
 PreviewOrder = Literal["ranked", "fixed"]
 """How a role-bearing bulk preview chose its series: `ranked` reads every series and shows
 the first by `search.observations.series_rank`; `fixed` reads a selection made before any

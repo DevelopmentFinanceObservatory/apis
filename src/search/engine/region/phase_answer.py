@@ -61,10 +61,14 @@ from search.engine.region.grounding import (
     _ground_answer,
     _place_confidence,
     build_identity_entities,
+    check_breakdown_settled,
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
-from search.engine.region.materialise_step import family_total_absent_departure
+from search.engine.region.materialise_step import (
+    family_total_absent_departure,
+    lone_breakdown_absent,
+)
 from search.engine.region.observations.bulk_scope import BulkScope, bulk_scope_for
 from search.engine.region.observations.dispatch import (
     _attach_observations,
@@ -136,8 +140,10 @@ from search.engine.spec_build import (
 from search.engine.unit.bind import with_unit_lexicon_version
 from search.engine.unit.conversion import (
     ConversionPeriod,
+    bound_prices,
     counted_conversion,
     pins_facets,
+    served_prices,
     with_unit_conversion,
 )
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
@@ -988,7 +994,14 @@ def _build_definite_spec(
         unresolved_slots=state.unresolved_slots,
         # Use qualifier bindings after election vetting and repair.
         text_recognized_properties=state.text_recognized_properties,
-        query_qualifiers=answer_terms(state, state.shape_draft, state.bindings),
+        # The trace is judged under the unit request the answer is served under, as its
+        # carve-outs judge it (`settle_answer`).
+        query_qualifiers=answer_terms(
+            state,
+            state.shape_draft,
+            state.bindings,
+            served=bound_prices(setup.facet_bindings),
+        ),
         facet_bindings=setup.facet_bindings,
         # Record properties forced by measure election.
         measure_elected_properties=state.measure_elected_properties,
@@ -1000,6 +1013,7 @@ def _build_definite_spec(
         named_groups=request_named_groups(state, state.place.roles),
         measure_served_rows=measure_served_counter(setup.served_filter),
     )
+    check_breakdown_settled(state.shape_draft, state.walked, spec)
     spec = with_unit_conversion(
         spec,
         members=served_members,
@@ -1011,8 +1025,14 @@ def _build_definite_spec(
     if state.bound_unit_outcome is not None:
         spec = with_unit_lexicon_version(spec, state.bound_unit_outcome)
     spec = apply_declaration_version(spec, state.bindings)
-    if mat_result.family_total_absent is not None:
-        state.family_total_absent[spec.spec_id] = mat_result.family_total_absent
+    family_total_absent = mat_result.family_total_absent or lone_breakdown_absent(
+        state.breakdown,
+        shape=state.shape_draft,
+        bindings=state.bindings,
+        served=mat_result.sv_dcids,
+    )
+    if family_total_absent is not None:
+        state.family_total_absent[spec.spec_id] = family_total_absent
 
     return _DefiniteSpec(
         spec=spec,
@@ -1032,8 +1052,11 @@ async def _assemble_carve_outs(
     """
     # Judge the final answer on every requirement (`requirements.settle_answer`). One it
     # leaves unmet refuses before any broader answer can pass as definite, naming the terms
-    # its trace records. The candidates path judges its answers the same way.
-    unbound_qualifiers = settle_answer(state, state.shape_draft, state.bindings)
+    # its trace records. The candidates path judges its answers the same way. The answer is
+    # judged under the unit request its Spec is served under, which meets a price basis.
+    unbound_qualifiers = settle_answer(
+        state, state.shape_draft, state.bindings, served=served_prices(spec)
+    )
     if unbound_qualifiers:
         return state.no_data(
             "qualifier_not_bound",
