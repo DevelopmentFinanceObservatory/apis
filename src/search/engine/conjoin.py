@@ -9,9 +9,12 @@ This module makes no graph or LLM calls.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
+from origin_catalogue import current_catalogue
 from search.engine.assemble import (
     build_candidates_part,
     build_definite_part,
@@ -22,25 +25,42 @@ from search.engine.assemble import (
 )
 from search.engine.departures import surviving_facts
 from search.engine.envelope import make_diagnostics, make_query_echo, make_response, now_ms
+from search.engine.errors import EngineInputError
 from search.engine.region.source_choice import scope_records
+from search.engine.role_text import (
+    parsed_directions_contradicted,
+    role_axis_for_text,
+    role_text_for_axis,
+)
 from search.engine.same_shape import FacetOptionsReader, collapse_same_shape, fold_key
+from search.engine.source_scope import compile_part_sources
+from search.engine.unit.bind import unit_text_naming
 from search.engine.unit.conversion import conversion_unavailable_warning
 from search.models import (
     AmbiguousEntityCandidate,
     AmbiguousEntityGroup,
     AmbiguousSourceCandidate,
     AmbiguousSourceGroup,
+    NoDataOption,
+    NoDataReason,
+    ParsedEntity,
     ParsedInput,
+    ParsedPart,
     Resolution,
     ResolvedQualifier,
+    RoleAxis,
+    SourceMention,
     Timing,
     Warning,
 )
-from search.render.no_data import ScopeSources
+from search.render.labels import _join_labels
+from search.render.no_data import ScopeSources, untold_place_name
 from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
     from search.engine.region import RegionResult
+    from search.engine.region.result import AmbiguousEntityCandidate as EngineCandidate
+    from search.engine.region.result import AmbiguousSource
     from search.models import GraphRef, Part, QueryEcho
 
 # ---------------------------------------------------------------------------
@@ -163,9 +183,30 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
     if region.no_data_reason == "entity_not_resolved":
         return list(region.unresolved_entity_names) or None, None
     if region.no_data_reason == "role_not_resolved":
-        words = region.entity_words or {}
-        return [words.get(name, name) for name in region.unresolved_entity_names] or None, None
+        return _untold_terms(region) or None, None
     return None, None
+
+
+def _untold_terms(region: RegionResult) -> list[str]:
+    """Every request text of each place set a ``role_not_resolved`` refusal could not tell
+    the direction of (``RegionResult.unresolved_entity_names``), in query order and in the
+    request's own words (``RegionResult.entity_words``), each once: the refusal's entity
+    terms and every role option's mentions."""
+    words = region.entity_words or {}
+    return list(dict.fromkeys(words.get(name, name) for name in region.unresolved_entity_names))
+
+
+def _untold_place_terms(region: RegionResult) -> list[list[str]] | None:
+    """The terms of a ``role_not_resolved`` refusal grouped by the place each names
+    (``RegionResult.untold_groups``), in the request's own words as `_untold_terms` gives
+    them, so the sentence counts places. ``None`` for every other reason."""
+    if region.no_data_reason != "role_not_resolved":
+        return None
+    words = region.entity_words or {}
+    return [
+        list(dict.fromkeys(words.get(name, name) for name in group))
+        for group in region.untold_groups
+    ] or None
 
 
 def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]:
@@ -237,33 +278,197 @@ def _unbound_terms(
     return terms or None, list(sources.values()) or None, naming
 
 
-def _data_query(region: RegionResult) -> ParsedInput | None:
-    """Return the part's parsed form for an `entity_ambiguous`, `source_ambiguous` or
-    `source_code_ambiguous` outcome.
+def _option(mentions: Sequence[str], label: str, part: ParsedPart) -> NoDataOption | None:
+    """One option posting `part`, or `None` when the parsed door would refuse it: `part`
+    breaks the `ParsedPart` bounds, states a direction its own wording contradicts, or
+    names sources that leave it none (`source_scope.compile_part_sources`, which reads the
+    bound catalogue's cached dictionary)."""
+    try:
+        posted = ParsedPart.model_validate(part.model_dump())
+    except ValidationError:
+        return None
+    if parsed_directions_contradicted(posted):
+        return None
+    if posted.sources:
+        try:
+            compile_part_sources(posted, catalogue=current_catalogue(), pointer_prefix="")
+        except EngineInputError:
+            return None
+    return NoDataOption(
+        mentions=list(mentions), label=label, data_query=ParsedInput(parts=[posted])
+    )
 
-    On `entity_ambiguous` it is the region's parsed form with every entity the region
-    resolved to one node pinned to its dcid, and each ambiguous wording left unpinned for
-    the client to pin the user's pick. A leg that cannot name a direction withholds its
-    restatement and still carries this form. On `source_ambiguous` it is the parsed form
-    as it stands: its source mentions already carry the references they resolved to, and
-    each ambiguous wording none. On `source_code_ambiguous` it is the parsed form as it
-    stands too, for the client to add the source the user picks to its `sources`. `None` for
-    every other reason, and when the region has no parsed form.
-    """
-    if region.parsed_form is None:
-        return None
-    if region.no_data_reason in ("source_ambiguous", "source_code_ambiguous"):
-        return ParsedInput(parts=[region.parsed_form])
-    if region.no_data_reason != "entity_ambiguous":
-        return None
-    part = region.parsed_form
-    pinned = [
+
+def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
+    """One option per ambiguous wording and candidate: the part with every entity that
+    resolved to one node pinned, and every row with the wording pinned to the candidate.
+    A row asked for its members takes a group's own node by the group's registered name,
+    with no dcid, since a pin cannot ask for a group's members; a group node with no
+    registered name that resolves to it alone has no option. Other ambiguous wordings stay
+    unpinned."""
+    base = [
         entity.model_copy(
             update={"dcid": region.resolved_entity_dcids.get(entity.text, entity.dcid)}
         )
         for entity in part.entities or ()
     ]
-    return ParsedInput(parts=[part.model_copy(update={"entities": pinned or None})])
+
+    def chosen(entity: ParsedEntity, candidate: EngineCandidate) -> ParsedEntity | None:
+        if entity.members and candidate.group_node:
+            if candidate.group_name is None:
+                return None
+            return entity.model_copy(update={"text": candidate.group_name, "dcid": None})
+        return entity.model_copy(update={"dcid": candidate.dcid})
+
+    options: list[NoDataOption | None] = []
+    for group in region.ambiguous_entities:
+        for candidate in group.candidates:
+            entities = [
+                chosen(entity, candidate) if entity.text == group.text else entity
+                for entity in base
+            ]
+            if None in entities:
+                continue
+            options.append(
+                _option(
+                    [group.text],
+                    candidate.name,
+                    part.model_copy(update={"entities": entities}),
+                )
+            )
+    return options
+
+
+def _source_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
+    """One option per ambiguous source wording and candidate, setting the candidate's ref on
+    every ref-less mention with that wording; a wording mentioned twice gives its options
+    once, from its first group. A label names an excluded source as excluded."""
+    groups: dict[str, AmbiguousSource] = {}
+    for group in region.ambiguous_sources:
+        groups.setdefault(group.text, group)
+    options: list[NoDataOption | None] = []
+    for text, group in groups.items():
+        mentions = [m for m in part.sources if m.ref is None and m.text == text]
+        excluded = bool(mentions) and mentions[0].polarity == "exclude"
+        for candidate in group.candidates:
+            sources = [
+                m.model_copy(update={"ref": candidate.ref}) if m in mentions else m
+                for m in part.sources
+            ]
+            label = f"Excluding {candidate.label}" if excluded else candidate.label
+            options.append(_option([text], label, part.model_copy(update={"sources": sources})))
+    return options
+
+
+def _source_code_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
+    """One option per provenance holding the part's code, naming it as the part's only
+    included source: included scopes union, so a source added beside the others would leave
+    both holders allowed. Exclusions stay."""
+    excluded = [mention for mention in part.sources if mention.polarity == "exclude"]
+    return [
+        _option(
+            [group.text],
+            candidate.label,
+            part.model_copy(update={"sources": [*excluded, SourceMention(ref=candidate.ref)]}),
+        )
+        for group in region.ambiguous_sources
+        for candidate in group.candidates
+    ]
+
+
+def _role_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
+    """One option per reading of the directions the question left untold
+    (`RegionResult.role_assignments`): every row of a mapped text states its axis, and a row
+    the reading repeats is dropped. Its mentions are the refusal's own entity terms
+    (`_untold_terms`), the same for every reading. The label reads the option's own
+    directions (`_direction_label`)."""
+    mentions = _untold_terms(region)
+    options: list[NoDataOption | None] = []
+    for reading in region.role_assignments:
+        rows = [
+            entity.model_copy(update={"role_text": role_text_for_axis(reading[entity.text])})
+            if entity.text in reading
+            else entity
+            for entity in part.entities or ()
+        ]
+        entities = [row for i, row in enumerate(rows) if row not in rows[:i]]
+        label = _direction_label(entities, region)
+        options.append(_option(mentions, label, part.model_copy(update={"entities": entities})))
+    return options
+
+
+def _direction_label(entities: Sequence[ParsedEntity], region: RegionResult) -> str:
+    """The directions `entities` state, in words. Origins read "to" destinations, and one
+    axis alone reads "From" or "To" with its names. Each untold place set
+    (``RegionResult.untold_groups``) is named once, as the refusal's message names it
+    (`untold_place_name`), as in `Kenya ("KEN") to Norway`."""
+    words = region.entity_words or {}
+    group_of = {name: group for group in region.untold_groups for name in group}
+    by_axis: dict[RoleAxis, list[tuple[str, ...]]] = {"origin": [], "destination": []}
+    for entity in entities:
+        axis = role_axis_for_text(entity.role_text)
+        group = group_of.get(entity.text, (entity.text,))
+        if axis is not None and group not in by_axis[axis]:
+            by_axis[axis].append(group)
+    origins, destinations = (
+        _axis_label(by_axis[axis], words) for axis in ("origin", "destination")
+    )
+    if origins and destinations:
+        return f"{origins} to {destinations}"
+    return f"From {origins}" if origins else f"To {destinations}"
+
+
+def _axis_label(groups: Sequence[Sequence[str]], words: Mapping[str, str]) -> str:
+    """The places `groups` holds, one per group of request texts, in the request's words."""
+    names = (
+        untold_place_name([words.get(text, text) for text in group], quote_first=False)
+        for group in groups
+    )
+    return _join_labels([name for name in names if name])
+
+
+def _unit_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
+    """One option per currency a `unit_not_resolved` refusal offers, its unit text naming
+    that currency in place of the ambiguous words (`unit.bind.unit_text_naming`). A role
+    currency's label names the role's currency."""
+    if part.unit_text is None:
+        return []
+    options: list[NoDataOption | None] = []
+    for alternative in region.unit_alternatives:
+        unit_text = unit_text_naming(part.unit_text, alternative.currency)
+        if unit_text is None:
+            continue
+        label = (
+            alternative.label
+            if isinstance(alternative.currency, str)
+            else f"{alternative.label}'s currency"
+        )
+        options.append(
+            _option([part.unit_text], label, part.model_copy(update={"unit_text": unit_text}))
+        )
+    return options
+
+
+_OPTION_BUILDERS: dict[
+    NoDataReason, Callable[[RegionResult, ParsedPart], list[NoDataOption | None]]
+] = {
+    "entity_ambiguous": _entity_options,
+    "source_ambiguous": _source_options,
+    "source_code_ambiguous": _source_code_options,
+    "role_not_resolved": _role_options,
+    "unit_not_resolved": _unit_options,
+}
+
+
+def _options(region: RegionResult) -> list[NoDataOption]:
+    """The ready requests of a refusal that asks for a choice, each a one-part parsed input
+    built from the region's parsed form. Empty for every other reason, when the region has
+    no parsed form (its inputs exceed the `ParsedPart` bounds), and for an option the parsed
+    door would refuse (`_option`)."""
+    build = _OPTION_BUILDERS.get(region.no_data_reason) if region.no_data_reason else None
+    if build is None or region.parsed_form is None:
+        return []
+    return [option for option in build(region, region.parsed_form) if option is not None]
 
 
 def _build_part(
@@ -284,9 +489,11 @@ def _build_part(
     envelope, so part timing excludes it. Folded parts carry only
     ``binding_folded``. The representative's warnings appear on its first part.
 
-    A raised departure fact reaches the part only while the part's or the envelope's warnings hold
-    the warning it was raised beside. On a candidates part only warnings stamped with no
-    reading's `spec_id` count, since the part's departures speak for every reading it shows.
+    A raised departure fact reaches the part only while the part's or the envelope's warnings,
+    or the request-wide qualifier warnings its own region leaves unapplied
+    (`RegionResult.unapplied_qualifier_warnings`), hold the warning it was raised beside. On
+    a candidates part only warnings stamped with no reading's `spec_id` count, since the
+    part's departures speak for every reading it shows.
     """
     own_timing_by_step = {
         step: ms for step, ms in region.timing_by_step.items() if step != _SHARED_TIMING_STEP
@@ -323,7 +530,9 @@ def _build_part(
             include_skills=include_skills,
             skills_index=skills_index,
             departure_facts=(
-                *surviving_facts(raised, [*warnings, *envelope_warnings]),
+                *surviving_facts(
+                    raised, [*warnings, *region.unapplied_qualifier_warnings, *envelope_warnings]
+                ),
                 *(() if folded else representative.inferred_facts),
             ),
             entity_words=region.entity_words,
@@ -348,7 +557,15 @@ def _build_part(
             # on; one raised for some readings stays on their stamped warnings.
             departure_facts=surviving_facts(
                 raised,
-                [w for w in (*region.warnings, *envelope_warnings) if w.spec_id is None],
+                [
+                    w
+                    for w in (
+                        *region.warnings,
+                        *region.unapplied_qualifier_warnings,
+                        *envelope_warnings,
+                    )
+                    if w.spec_id is None
+                ],
             ),
             request_words=region.entity_words is not None,
         )
@@ -394,6 +611,7 @@ def _build_part(
         alternate_match=region.alternate_match,
         elected_stat_vars=region.elected_stat_vars,
         entity_terms=entity_terms,
+        entity_groups=_untold_place_terms(region),
         role_axis=region.no_data_role_axis,
         bound_role_dcids=region.no_data_bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
@@ -401,7 +619,7 @@ def _build_part(
         ambiguous_roles={
             entity.text: entity.role for entity in region.ambiguous_entities if entity.role
         },
-        data_query=_data_query(region),
+        options=_options(region),
         source_terms=list(region.source_terms) or None,
         ambiguous_sources=_ambiguous_source_groups(region),
         qualifier_terms=qualifier_terms,
@@ -415,7 +633,10 @@ def _build_part(
         skills_index=skills_index,
         cause=region.cause,
         window_gap_fact=region.window_gap_fact,
-        departure_facts=surviving_facts(raised, [*region.warnings, *envelope_warnings]),
+        departure_facts=surviving_facts(
+            raised,
+            [*region.warnings, *region.unapplied_qualifier_warnings, *envelope_warnings],
+        ),
         request_words=region.entity_words is not None,
         source_code_refusal=region.source_code_refusal,
     )

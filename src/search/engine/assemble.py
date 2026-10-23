@@ -38,11 +38,11 @@ from search.models import (
     NoData,
     NoDataDenominator,
     NoDataGate,
+    NoDataOption,
     NoDataPart,
     NoDataReason,
     Operation,
     Ordering,
-    ParsedInput,
     ParsedPart,
     ResolvedQualifier,
     RoleAxis,
@@ -212,10 +212,23 @@ def _surviving_qualifier_warnings(
     """Keep dropped-qualifier warnings that remain true across all regions.
 
     Each warning stays paired with its extracted phrase. One region admitting a phrase
-    makes the request-wide warning false. Compare with the same strip-and-casefold
-    normalisation used by ``admitted_qualifier_phrases``.
+    makes the request-wide warning false. A part's departures read its own region's
+    admission (`unapplied_qualifier_warnings`, `RegionResult.unapplied_qualifier_warnings`).
     """
-    admitted = {phrase for region in regions for phrase in region.admitted_qualifier_phrases}
+    admitted = frozenset(
+        phrase for region in regions for phrase in region.admitted_qualifier_phrases
+    )
+    return unapplied_qualifier_warnings(qualifier_warnings, phrases, admitted=admitted)
+
+
+def unapplied_qualifier_warnings(
+    qualifier_warnings: Sequence[Warning],
+    phrases: Sequence[str],
+    *,
+    admitted: frozenset[str],
+) -> list[Warning]:
+    """The `qualifier_warnings` whose paired phrase `admitted` does not hold, compared with
+    the strip-and-casefold normalisation ``admitted_qualifier_phrases`` uses."""
     return [
         warning
         for warning, phrase in zip(qualifier_warnings, phrases, strict=True)
@@ -465,12 +478,13 @@ def build_no_data_part(
     alternate_match: Spec | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
     entity_terms: list[str] | None = None,
+    entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
     ambiguous_entities: list[AmbiguousEntityGroup] | None = None,
     ambiguous_roles: Mapping[str, RoleAxis] | None = None,
-    data_query: ParsedInput | None = None,
+    options: list[NoDataOption] | None = None,
     source_terms: list[str] | None = None,
     ambiguous_sources: list[AmbiguousSourceGroup] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
@@ -496,13 +510,14 @@ def build_no_data_part(
     code lives on ``NoData.gate``. ``elected_stat_vars`` lets sentence composition name an
     exact series match before a nearest substitute.
 
-    ``entity_terms`` preserves the place wording seen by the engine. ``role_axis`` names an
+    ``entity_terms`` preserves the place wording seen by the engine, and ``entity_groups``
+    groups a ``role_not_resolved`` refusal's terms by the place each names. ``role_axis`` names an
     open origin or destination axis in ``no_observations`` copy. ``bound_role_dcids`` records
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
-    the sentence marks as a slot. ``data_query`` is the part's parsed form for
-    ``entity_ambiguous``, ``source_ambiguous`` and ``source_code_ambiguous``.
+    the sentence marks as a slot. ``options`` are the ready requests of a refusal that
+    asks for a choice (`conjoin._options`).
     ``source_terms`` are the source wordings a ``source_not_resolved`` or
     ``source_ambiguous`` outcome rests on, or the series code a ``source_code_*`` outcome
     rests on, and ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
@@ -590,6 +605,7 @@ def build_no_data_part(
         elected_stat_vars=elected_stat_vars,
         variable_term=variable_text,
         entity_terms=entity_terms,
+        entity_groups=entity_groups,
         role_axis=role_axis,
         bound_role_dcids=bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
@@ -631,6 +647,7 @@ def build_no_data_part(
                 reason,
                 variable_term=variable_text,
                 entity_terms=entity_terms,
+                entity_groups=entity_groups,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,
@@ -653,7 +670,7 @@ def build_no_data_part(
             unbound_qualifiers=[*(qualifier_terms or ()), *(unbound_sources or ())],
             unit_alternatives=unit_alternatives,
             denominator=denominator,
-            data_query=data_query,
+            options=options or [],
         ),
         rendered_sentence=rendered,
         sentence_plan=plan,

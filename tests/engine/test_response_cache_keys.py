@@ -127,6 +127,7 @@ def _layer2_key(
     unit_texts: list[str | None] | None = None,
     separate: list[bool] | None = None,
     written_variable_phrases: list[str | None] | None = None,
+    every_member_axes: list[str | None] | None = None,
     measure_qualifiers: list[tuple[str, ...]] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
@@ -177,6 +178,7 @@ def _layer2_key(
         written_variable_phrases=(
             written_variable_phrases if written_variable_phrases is not None else ()
         ),
+        every_member_axes=every_member_axes if every_member_axes is not None else (),
         measure_qualifiers=measure_qualifiers if measure_qualifiers is not None else (),
     )
 
@@ -668,6 +670,18 @@ def test_the_written_stretch_of_a_variable_changes_layer2_key() -> None:
     )
     assert len({plain, as_named, reordered}) == 3
     assert plain == _layer2_key(variables=variables, written_variable_phrases=[None])
+
+
+def test_the_axis_a_dropped_phrase_asks_every_member_of_changes_layer2_key() -> None:
+    """ "aid to Ethiopia from all countries" and "aid to Ethiopia to all countries" can
+    extract alike, and only the first asks for every provider. A phrase asking for no
+    axis keys as an extraction without the field."""
+    dropped = ["all countries"]
+    plain = _layer2_key(dropped_qualifiers=dropped)
+    origin = _layer2_key(dropped_qualifiers=dropped, every_member_axes=["origin"])
+    destination = _layer2_key(dropped_qualifiers=dropped, every_member_axes=["destination"])
+    assert len({plain, origin, destination}) == 3
+    assert plain == _layer2_key(dropped_qualifiers=dropped, every_member_axes=[None])
 
 
 def test_both_spellings_of_a_series_code_share_the_parsed_key() -> None:

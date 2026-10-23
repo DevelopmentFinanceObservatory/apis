@@ -122,6 +122,7 @@ from .outcomes import (
     CandidateSet,
     NoData,
     NoDataDenominator,
+    NoDataOption,
     UnitAlternative,
 )
 from .request import (
@@ -346,6 +347,7 @@ __all__ = [
     "NoDataCategory",
     "NoDataDenominator",
     "NoDataGate",
+    "NoDataOption",
     "NoDataPart",
     "NoDataReason",
     "ObservationPoint",

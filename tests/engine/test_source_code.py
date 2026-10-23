@@ -16,8 +16,10 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import IndexStamp, SourceCodeRow
 from datasets_api.adapter import resolve_definition_members
+from origin_catalogue import DFO, ProvenanceRow, SourceRef
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.core import resolve_async
+from search.engine.entry import parsed as parsed_entry
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
@@ -959,3 +961,59 @@ def test_every_held_code_reads_as_a_code_to_an_index_without_it():
 )
 def test_a_codes_words_leave_the_variable_text(variable, expected):
     assert without_code_words(variable, _DEGG) == expected
+
+
+class _TwoHolderIndex:
+    """The packaged index, with DT.TDS.DEGG.CD's StatVars also filed under the CRS, so
+    two provenances hold the code."""
+
+    def __init__(self, index: CodeIndex) -> None:
+        self._index = index
+
+    def __getattr__(self, name: str):
+        return getattr(self._index, name)
+
+    def source_code_members(self, code: str):
+        members = self._index.source_code_members(code)
+        return {**members, _CRS: members[_IDS]} if code.upper() == _DEGG else members
+
+
+def test_a_code_two_named_sources_hold_offers_each_as_the_only_included_source(
+    monkeypatch, bind_catalogue
+):
+    """Both holders are named, and included sources union, so the code is ambiguous between
+    them. Each option names one holder as the part's only included source and keeps the
+    exclusion; posted back, neither refuses source_code_ambiguous again."""
+    rows = [
+        ProvenanceRow(
+            id=ref,
+            data_commons=DFO,
+            source=SourceRef(ref=f"dc/s/{label}", label=label),
+            name=label,
+            url="https://example.org",
+        )
+        for ref, label in ((_IDS, "IDS"), (_CRS, "CRS"), ("dc/base/Other", "Other"))
+    ]
+    bind_catalogue(FakeCatalogue(provenances={row.id: row for row in rows}))
+    monkeypatch.setattr(parsed_entry, "get_index", lambda: _TwoHolderIndex(get_index()))
+    excluded = SourceMention(ref="dc/base/Other", polarity="exclude")
+    part = ParsedPart(
+        variable_text="debt service",
+        entities=[ParsedEntity(text="Kenya")],
+        source_code=_DEGG,
+        sources=[SourceMention(ref=_IDS), SourceMention(ref=_CRS), excluded],
+    )
+
+    answer = _answer(part, monkeypatch)
+
+    assert answer.no_data.reason == "source_code_ambiguous"
+    options = answer.no_data.options
+    assert [(o.mentions, o.data_query.parts[0].sources) for o in options] == [
+        ([_DEGG], [excluded, SourceMention(ref=ref)]) for ref in (_IDS, _CRS)
+    ]
+    # The coverage holds the code's observations under IDS alone, so the CRS option reads
+    # none and refuses on its data, with the choice settled.
+    ids, crs = (_answer(o.data_query.parts[0], monkeypatch) for o in options)
+    assert ids.status == "definite"
+    assert crs.status == "no_data"
+    assert crs.no_data.reason != "source_code_ambiguous"

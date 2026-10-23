@@ -340,17 +340,28 @@ def test_two_variable_query_broadcasts_dropped_qualifiers_to_every_leg():
 
 
 @pytest.mark.parametrize(
-    ("dropped", "in_bind", "warned"),
+    ("dropped", "in_bind", "warned", "departed"),
     [
         # Dropped, and held by the second variable alone: that leg's bind reads it and its
         # part warns, though the part has no answer.
-        (("multilateral",), True, True),
+        (("multilateral",), True, True, [[], ["multilateral"]]),
         # Held by the variable only: the bind reads it in the variable already, and a part
         # with no answer leaves it unjudged, since its refusal states why nothing is shown.
-        ((), False, False),
+        ((), False, False, [[], []]),
+        # Beside a request-wide phrase the first part meets: the request-wide warning goes,
+        # "multilateral" still warns once on the second part, and the second part departs
+        # for both, the request-wide one by its own region's admission.
+        (
+            ("multilateral", _BREADTH_PHRASE),
+            True,
+            True,
+            [[], ["multilateral", _BREADTH_PHRASE]],
+        ),
     ],
 )
-def test_a_narrowing_word_is_judged_on_the_part_whose_variable_holds_it(dropped, in_bind, warned):
+def test_a_narrowing_word_is_judged_on_the_part_whose_variable_holds_it(
+    dropped, in_bind, warned, departed
+):
     """A narrowing word the second variable holds reaches that part alone: the first part
     and the envelope never warn for it."""
     second = "multilateral population"
@@ -362,7 +373,8 @@ def test_a_narrowing_word_is_judged_on_the_part_whose_variable_holds_it(dropped,
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
 
-    assert "DROPPED QUALIFIERS" not in llm.prompts_by_variable[_QUERY]
+    assert "multilateral" not in llm.prompts_by_variable[_QUERY]
+    assert ("DROPPED QUALIFIERS" in llm.prompts_by_variable[_QUERY]) is (_BREADTH_PHRASE in dropped)
     assert ("DROPPED QUALIFIERS" in llm.prompts_by_variable[second]) is in_bind
     dropped_warning = 'The requested qualifier "multilateral" was not applied.'
     assert [w.message for w in response.parts[1].warnings if w.code == QUERY_QUALIFIER_DROPPED] == (
@@ -370,6 +382,10 @@ def test_a_narrowing_word_is_judged_on_the_part_whose_variable_holds_it(dropped,
     )
     assert not [w for w in response.parts[0].warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert not [w for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED]
+    assert [
+        [d.asked for d in part.departures if d.code == "measure_not_applied"]
+        for part in response.parts
+    ] == departed
 
 
 def test_a_requested_all_claim_on_a_property_the_elected_shape_lacks_keeps_its_warning():

@@ -11,7 +11,7 @@ import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
-from search.models import RoleAxis
+from search.models import ParsedPart, RoleAxis
 
 # Warning for parsed role_text values absent from the lexicon.
 ROLE_TEXT_NOT_RECOGNISED = "role_text_not_recognised"
@@ -418,6 +418,102 @@ def contradicts(query: str, *, span: str, axis: RoleAxis) -> bool:
             continue
         saw_contradiction = True
     return saw_contradiction
+
+
+def parsed_role_query(part: ParsedPart) -> str:
+    """The query the parsed door checks `part`'s role text against: its variable text and
+    each entity's text, space-separated so direction cues stay local."""
+    return " ".join([part.variable_text, *(entity.text for entity in part.entities or ())])
+
+
+def parsed_directions_contradicted(part: ParsedPart) -> bool:
+    """Whether the parsed door would find one of `part`'s stated directions contradicted
+    by its own wording (`contradicts` over `parsed_role_query`), which refuses
+    ``role_not_resolved``."""
+    query = parsed_role_query(part)
+    for entity in part.entities or ():
+        axis = role_axis_for_text(entity.role_text)
+        if axis is not None and contradicts(query, span=entity.text, axis=axis):
+            return True
+    return False
+
+
+# Words that ask for every member of what follows them: "all donors", "every provider".
+_EVERY_WORDS: frozenset[str] = frozenset({"all", "every", "each"})
+# The every-member words that ask for one value per member, a breakdown along the axis:
+# "each recipient". "all recipients" is also met by the total over them.
+_BREAKDOWN_WORDS: frozenset[str] = frozenset({"every", "each"})
+# Nouns that name the places on either side of a flow without naming the side: "all
+# countries". The preposition that governs them names it.
+_PLACE_NOUNS: frozenset[str] = frozenset({"country", "countries"})
+# The axis each role preposition names.
+_ROLE_PREP_AXES: dict[str, RoleAxis] = {
+    prep: _ROLE_TEXT_TO_AXIS[prep] for prep in _DONOR_PREPS | _RECIPIENT_PREPS
+}
+
+
+def _noun_axis(token: str) -> RoleAxis | None:
+    """The axis a role noun names, singular or plural ("donor", "beneficiaries"). A
+    preposition names none here, since it governs the phrase and is no noun of it."""
+    if token in _ROLE_PREP_AXES:
+        return None
+    singular = token[:-3] + "y" if token.endswith("ies") else token.removesuffix("s")
+    return role_axis_for_text(token) or role_axis_for_text(singular)
+
+
+def _governing_axes(query_tokens: list[str], phrase_tokens: list[str]) -> set[RoleAxis]:
+    """The axes the role prepositions directly before each occurrence of the phrase name."""
+    return {
+        axis
+        for start in _span_starts(query_tokens, phrase_tokens)
+        if start > 0 and (axis := _ROLE_PREP_AXES.get(query_tokens[start - 1])) is not None
+    }
+
+
+def _after_role_prep(tokens: list[str]) -> list[str]:
+    """`tokens` past a leading role preposition ("to all recipients" -> "all recipients")."""
+    return tokens[1:] if tokens and tokens[0] in _ROLE_PREP_AXES else tokens
+
+
+def every_member_breakdown(phrase: str) -> bool:
+    """Whether an every-member ``phrase`` (`every_member_axis`) asks for one value per
+    member of its axis: ``each recipient`` and ``to every provider`` do, while ``all
+    recipients`` is also met by the total over them."""
+    rest = _after_role_prep(_tokenize(phrase))
+    return bool(rest) and rest[0] in _BREAKDOWN_WORDS
+
+
+def every_member_axis(phrase: str, *, query: str) -> RoleAxis | None:
+    """The flow axis whose every member ``phrase`` asks for, or None.
+
+    The phrase is an optional ``from`` or ``to``, then ``all``, ``every`` or ``each``, an
+    optional ``the``, and nouns that each name a role (``all donors``, ``every provider``,
+    ``to all creditors``) or a place on either side (``all countries``, ``all donor
+    countries``). A role noun names the axis, so ``to all creditors`` asks for every
+    origin. Place nouns alone take the axis of the preposition that governs them: the
+    phrase's own, else the one before the phrase in ``query``, which must name a single
+    axis. Any other word, two role nouns on opposite axes, or no axis gives None, so ``in
+    all sectors`` and ``all bilateral donors`` ask for no role.
+    """
+    tokens = _tokenize(phrase)
+    prep_axis = _ROLE_PREP_AXES.get(tokens[0]) if tokens else None
+    rest = _after_role_prep(tokens)
+    if not rest or rest[0] not in _EVERY_WORDS:
+        return None
+    nouns = rest[2:] if rest[1:2] == ["the"] else rest[1:]
+    if not nouns:
+        return None
+    named: set[RoleAxis] = set()
+    for token in nouns:
+        if token in _PLACE_NOUNS:
+            continue
+        axis = _noun_axis(token)
+        if axis is None:
+            return None
+        named.add(axis)
+    if not named:
+        named = {prep_axis} if prep_axis is not None else _governing_axes(_tokenize(query), tokens)
+    return next(iter(named)) if len(named) == 1 else None
 
 
 @dataclass(frozen=True, slots=True)
