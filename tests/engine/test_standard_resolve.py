@@ -2803,6 +2803,28 @@ class TestBreakdownDecision:
                 id="opened_slots_leaving_no_member_offer_the_signatures_holding_them",
             ),
             pytest.param(
+                {
+                    _GDP_NOMINAL: _activity_arcs(
+                        activitySource="GrossDomesticProduction",
+                        economicSector="ConstructionSector",
+                    ),
+                    _GVA_CONSTRUCTION: _activity_arcs(
+                        economicSector="ConstructionSector", activityLevel="Gross"
+                    ),
+                },
+                [
+                    _activity_source("unbound", evidence="requested_all"),
+                    SlotBindingDraft(
+                        axis="how",
+                        property_dcid="activityLevel",
+                        kind="unbound",
+                        evidence="requested_all",
+                    ),
+                ],
+                Keep(frozenset({"economicSector"})),
+                id="opened_slots_no_signature_holds_together_keep_every_slot",
+            ),
+            pytest.param(
                 {sv: _ACTIVITY_ARCS[sv] for sv in (_GDP_NOMINAL, _GVA_NOMINAL, _NDP_NOMINAL)},
                 [_activity_source("unbound")],
                 Narrow(_ACTIVITY_ONLY, lone_signature=True),

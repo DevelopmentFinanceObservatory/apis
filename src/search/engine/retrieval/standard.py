@@ -725,7 +725,11 @@ def bind_partition_values(
 @dataclass(frozen=True)
 class Keep:
     """The family holds a total, or the decision has nothing to read: the identity carries
-    every slot of the shape."""
+    every slot of the shape. `unopened` is set when the slots the request opened leave no
+    signature holding them all: the unbound properties outside them that members assert,
+    by which the answer shows the family beside the slots it opened, narrower than asked."""
+
+    unopened: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -772,7 +776,8 @@ def breakdown_decision(
     operation's slot, or a breakdown the phrase names), the identity carries the bound and
     opened properties when a member asserts no other (`Narrow`). When none does, the
     signatures holding every opened slot are `Candidates`, and with no such signature the
-    family keeps every slot. With nothing opened, members asserting only bound properties
+    family keeps every slot, naming the unopened properties its members assert
+    (`Keep.unopened`). With nothing opened, members asserting only bound properties
     narrow to those, one signature narrows to it beside them, and several are `Candidates`.
     A member whose constraints are unknown has no signature, since the mint drops it."""
     if is_role_bearing(shape):
@@ -803,7 +808,9 @@ def breakdown_decision(
         if any(signature <= opened for signature in signatures):
             return Narrow(bound | opened)
         named = tuple(signature for signature in signatures if opened <= signature)
-        return Candidates(named, bound) if named else Keep()
+        if named:
+            return Candidates(named, bound)
+        return Keep(frozenset().union(*signatures) - opened)
     if frozenset() in signatures:
         return Narrow(bound)
     if len(signatures) == 1:

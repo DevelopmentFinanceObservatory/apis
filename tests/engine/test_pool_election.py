@@ -24,7 +24,7 @@ import pytest
 
 from dfo_platform.timings import record_elapsed
 from materialise.errors import UpstreamVersionChangedError
-from origin_catalogue import note_un_blocked_places
+from origin_catalogue import BASE, note_un_blocked_places
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import GeminiBinder
 from search.engine.clients.graph import DetectedSV, Detection
@@ -47,6 +47,8 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_RATING
 from tests.engine.test_ids_index_sourcing import _crs_shape
 from tests.fixtures import FakeGraph, make_resolver
+from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
+from tests.origin_catalogue.support import build_arc_tables
 
 _KEN = "country/KEN"
 _TZA = "country/TZA"
@@ -1372,12 +1374,17 @@ def _with_name(node: dict, name: str) -> dict:
     return node
 
 
+@pytest.mark.parametrize("held", [False, True], ids=["recalled", "held-family"])
 @pytest.mark.parametrize("kind", ["absent", "unbound"])
-def test_a_member_the_answer_excludes_reads_no_word_of_the_variable(search_settings, kind):
+def test_a_member_the_answer_excludes_reads_no_word_of_the_variable(
+    search_settings, bind_catalogue, kind, held
+):
     """ "refugee population" over a family holding the total and a refugee member, scored
     first, answers the total under an absent or open refugee-status binding. The refugee
     member's name reads no word of an answer that excludes it, so the binder rates
-    "refugee" on the total and the part refuses on it."""
+    "refugee" on the total and the part refuses on it. On a family the catalogue holds,
+    recall finds the refugee member alone, and the total it does not recall still decides
+    what the answer serves."""
     search_settings(qualifier_coverage="refuse")
     total, refugees = "Count_Person", "Count_Person_UNHCR"
     query = "refugee population"
@@ -1391,12 +1398,20 @@ def test_a_member_the_answer_excludes_reads_no_word_of_the_variable(search_setti
             "Refugee population",
         ),
     }
+    if held:
+        family = {dcid: nodes[dcid]["arcs"] for dcid in (total, refugees)}
+        bind_catalogue(
+            restrictive_catalogue(
+                provenances=[provenance_row("dc/base/UNHCR", BASE)],
+                base_variables={dcid: (["dc/base/UNHCR"], []) for dcid in family},
+                arcs=build_arc_tables(dfo={}, base=family, schema={}),
+            )
+        )
     llm = _RejectWordsLLM(
         bindings=(SlotBindingDraft(axis="how", property_dcid="refugeeStatus", kind=kind),)
     )
-    graph = _graph(
-        ours=((refugees, 0.95), (total, 0.9)), un=(), data=(total,), query=query, nodes=nodes
-    )
+    recalled = ((refugees, 0.95),) if held else ((refugees, 0.95), (total, 0.9))
+    graph = _graph(ours=recalled, un=(), data=(total,), query=query, nodes=nodes)
 
     result = _resolve(graph, query=query, llm=llm)
 

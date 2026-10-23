@@ -420,6 +420,13 @@ _READER_REFUGEE_COUNT = _reader_shape(
 _READER_HOUSEHOLD_COUNT = _reader_shape(
     "Refugee households", meas_prop="count", pop_type="Household"
 )
+# A UN System series has its own population type and says it counts persons by its unit.
+_READER_UN_PERSON_COUNT = replace(
+    _reader_shape(
+        "Refugees under UNHCR's mandate", meas_prop="value", pop_type="undata/unhcr/REFUGEES"
+    ),
+    place_units=frozenset({"undata/UNIT_MEASURE-COUNT_PERSONS"}),
+)
 _READER_REFUGEE_SHARE = _reader_shape("Refugees, by host country", meas_prop="amount")
 _READER_DEBT_BY_CREDITOR = replace(
     _reader_shape("External debt stocks"),
@@ -483,6 +490,17 @@ _READER_DEBT_BY_CREDITOR = replace(
                 None,
                 [("refugee", "measure"), (noun, "count" if noun == "number" else "unrated")],
                 id=f"count-of-households-{noun}",
+            )
+            for noun in ("number", "population", "populations", "people", "persons")
+        ),
+        *(
+            pytest.param(
+                f"refugee {noun}",
+                _READER_UN_PERSON_COUNT,
+                None,
+                None,
+                [("refugee", "measure"), (noun, "count")],
+                id=f"un-count-of-persons-{noun}",
             )
             for noun in ("number", "population", "populations", "people", "persons")
         ),
@@ -645,6 +663,10 @@ _READER_DEBT_BY_CREDITOR = replace(
         "count-shape-persons",
         *(
             f"count-of-households-{noun}"
+            for noun in ("number", "population", "populations", "people", "persons")
+        ),
+        *(
+            f"un-count-of-persons-{noun}"
             for noun in ("number", "population", "populations", "people", "persons")
         ),
         "no-count-shape-number",
@@ -939,10 +961,16 @@ _GENDER_OPENED = _binding("gender").model_copy(
         (True, (_FEMALE,), (), ("refugee", "camps")),
         (True, (_FEMALE,), ("nominating_1",), ("camps",)),
         (True, (_MALE,), ("nominating_2",), ("refugee",)),
-        # A family with no total whose bindings entail no member reads the members no
-        # binding contradicts, as a later step elects one of them.
-        (False, (), ("nominating_1",), ("camps",)),
+        # A family with no total whose bindings entail no member reads only the words every
+        # member no binding excludes holds, whichever recall scored.
+        (False, (), ("nominating_1",), ("refugee", "camps")),
         (False, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
+        (
+            False,
+            (_binding("gender"),),
+            ("nominating_1", "nominating_2"),
+            ("refugee", "camps"),
+        ),
         # With none, the words every member's name holds still read.
         (
             False,
@@ -962,6 +990,7 @@ _GENDER_OPENED = _binding("gender").model_copy(
         "bound-other",
         "no-total-scored",
         "no-total-absent",
+        "no-total-unbound",
         "no-member-served",
     ],
 )

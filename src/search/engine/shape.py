@@ -16,7 +16,7 @@ from origin_catalogue.origins import UN_ID_PREFIX
 from search.engine.axis import classify_axis
 from search.engine.errors import RoleEntityUnplaced
 from search.engine.reading_coverage import ReadingCoverage
-from search.engine.unit.count import is_count_unit
+from search.engine.unit.count import is_count_unit, is_person_count_unit
 
 # search.models.Axis is the binder's slot axis (what/how/where/when), unrelated
 # to materialise.roles.RoleAxis (origin/destination) imported above.
@@ -329,8 +329,13 @@ def measures_count(shape: ShapeDraft) -> bool:
 
 def counts_persons(shape: ShapeDraft) -> bool:
     """True when the group's values count persons: its population type is ``Person`` and
-    it measures a count (`measures_count`)."""
-    return shape.pop_type_dcid == "Person" and measures_count(shape)
+    it measures a count (`measures_count`), or every facet holding its data at the queried
+    place carries a unit counting persons (`unit.count.is_person_count_unit`), as a UN
+    System series says it does."""
+    if shape.pop_type_dcid == "Person" and measures_count(shape):
+        return True
+    units = shape.place_units
+    return bool(units) and all(is_person_count_unit(unit) for unit in units)
 
 
 def is_un_shape(shape: ShapeDraft) -> bool:

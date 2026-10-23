@@ -21,6 +21,7 @@ from search.engine.region.grounding import (
     role_scope_defaulted_warnings,
 )
 from search.engine.retrieval.bound_values import bound_values_from_bindings
+from search.engine.retrieval.facts import read_declared_constraint_properties
 from search.engine.retrieval.retrieve import (
     FamilyTotalAbsent,
     Materialised,
@@ -29,7 +30,7 @@ from search.engine.retrieval.retrieve import (
     UnsupportedDraft,
     materialise,
 )
-from search.engine.retrieval.standard import BreakdownDecision, FacetBatch, Narrow
+from search.engine.retrieval.standard import BreakdownDecision, FacetBatch, Keep, Narrow
 from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
 from search.models import NoDataReason, RoleAxis, Spec, Warning
@@ -144,16 +145,29 @@ def lone_breakdown_absent(
     served: Sequence[str],
 ) -> FamilyTotalAbsent | None:
     """The `family_total_absent` fact of an answer over `shape` that shows a family with no
-    total by its one breakdown signature (`standard.Narrow.lone_signature`): the labels of
-    the slots `decision` keeps that `bindings` bind to no value (`slot_label`), in slot
-    order, shown by `served[0]`, the answer's first member. `None` for any other decision."""
-    if not isinstance(decision, Narrow) or not decision.lone_signature:
+    total by a breakdown the request did not name: its one breakdown signature
+    (`standard.Narrow.lone_signature`), or the unopened properties of a family whose opened
+    slots no signature holds together (`standard.Keep.unopened`) that a `served` member
+    asserts. The fact names the labels of those slots that `bindings` bind to no value
+    (`slot_label`), in slot order, shown by `served[0]`, the answer's first member. `None`
+    for any other decision."""
+    if isinstance(decision, Narrow) and decision.lone_signature:
+        properties = decision.properties
+    elif isinstance(decision, Keep) and decision.unopened:
+        arcs = shape.sv_arc_facts or {}
+        properties = decision.unopened & {
+            prop
+            for sv in served
+            if sv in arcs
+            for prop in read_declared_constraint_properties(arcs[sv])
+        }
+    else:
         return None
     bound = bound_values_from_bindings(bindings)
     breakdown = tuple(
         slot_label(slot)
         for slot in shape.slot_keys
-        if slot.property_dcid in decision.properties and slot.property_dcid not in bound
+        if slot.property_dcid in properties and slot.property_dcid not in bound
     )
     if not breakdown:
         return None

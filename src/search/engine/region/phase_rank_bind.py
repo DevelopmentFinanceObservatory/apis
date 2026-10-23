@@ -3235,33 +3235,37 @@ def _member_measure_words(
     shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> frozenset[str] | None:
     """The words that name `shape`'s measure in the names of the members the answer serves
-    over `bindings` (`ShapeDraft.sv_arc_facts`, `_label_words`), so "refugees" is among the
-    words of "Refugee population". The answer serves a member when each constraint it
-    asserts is entailed: a value or set binding on its slot holds its value, or, with
-    none, every member of `shape` asserts it or its slot is open (``requested_all``) and
-    serves each value. GDP bound on
-    the activity source serves nominal GDP among the gross value added of each sector, and
-    an absent or unbound slot serves no member asserting a value on it, so "refugee" in
-    "refugee population" is left for the binder on a family holding the total and a
-    refugee member. A family with no total whose bindings entail no member is answered by
-    a member a later step elects (`standard.bind_partition_values`, the stand-in), so on
-    it the members no binding contradicts stand in: none whose value a value or set
-    binding excludes, or whose slot is absent. The words are those every such member
-    asserting the fewest constraints holds, the family's total where it is among them,
-    since its name says least beyond the measure, as "Total population" does among
-    "Population: Years 18 Onwards" and "Count of Households", and those of the first of
-    them retrieval scored against the question (`ShapeDraft.scored_members`), the one
-    recall matched the words best: "Nominal gross domestic product" for "GDP". With none,
-    they are the words every named member holds (`_shape_measure_words`), which whatever
-    the answer serves holds too. None when no member has a name."""
-    members = [
-        (dcid, read_constraints(arcs), _label_words(name))
+    over `bindings` (`_label_words`), so "refugees" is among the words of "Refugee
+    population". Names are those of `shape`'s own members (`ShapeDraft.sv_arc_facts`), and
+    entailment is decided over every member it stands for (`shape_population_arcs`), so a
+    held family's total serves "refugee population" though recall found the refugee member
+    alone. The answer serves a member when each constraint it asserts is entailed: a value
+    or set binding on its slot holds its value, the slot is open (``requested_all``) and
+    serves each value, or, with no binding on it, every member asserts it. An absent or
+    unbound slot entails no value, so "refugee" in "refugee population" is left for the
+    binder on a family holding the total and a refugee member. GDP bound on the activity
+    source serves nominal GDP among the gross value added of each sector. The words are
+    those every served member asserting the fewest constraints holds, the family's total
+    where it is served, since its name says least beyond the measure, as "Total
+    population" does among "Population: Years 18 Onwards" and "Count of Households", or none
+    when no such member is among `shape`'s own, and those of the first served member
+    retrieval scored against the question (`ShapeDraft.scored_members`), the one recall
+    matched the words best: "Nominal gross domestic product" for "GDP".
+
+    On a family whose bindings entail no member, the answer serves some of the members no
+    binding excludes: none whose slot is absent or unbound, or whose value a value or set
+    binding leaves out. The words are those every such member of `shape`'s own holds,
+    which any selection of them holds too. With none, they are the words every named member
+    holds (`_shape_measure_words`). None when no member has a name."""
+    names = {
+        dcid: _label_words(name)
         for dcid, arcs in (shape.sv_arc_facts or {}).items()
         if (name := read_name(arcs)) is not None
-    ]
-    if not members:
+    }
+    if not names:
         return None
-    asserted = [read_constraints(arcs) for arcs in (shape.sv_arc_facts or {}).values()]
+    family = {dcid: read_constraints(arcs) for dcid, arcs in shape_population_arcs(shape).items()}
+    asserted = list(family.values())
     fixed = {
         prop: value
         for prop, value in asserted[0].items()
@@ -3273,32 +3277,50 @@ def _member_measure_words(
         if binding.kind in ("value", "set") and binding.property_dcid is not None
     }
     opened = {binding.property_dcid for binding in bindings if binding.evidence == "requested_all"}
-    absent = {binding.property_dcid for binding in bindings if binding.kind == "absent"}
-    served = [
-        member
-        for member in members
+    closed = {
+        binding.property_dcid
+        for binding in bindings
+        if binding.kind == "absent"
+        or (binding.kind == "unbound" and binding.property_dcid not in opened)
+    }
+    served = {
+        dcid: constraints
+        for dcid, constraints in family.items()
         if all(
-            value in bound[prop] if prop in bound else (fixed.get(prop) == value or prop in opened)
-            for prop, value in member[1].items()
+            value in bound[prop]
+            if prop in bound
+            else prop in opened or (prop not in closed and fixed.get(prop) == value)
+            for prop, value in constraints.items()
         )
-    ] or [
-        member
-        for member in members
-        if not any(
+    }
+    if served:
+        fewest = min(len(constraints) for constraints in served.values())
+        least = [
+            names[dcid]
+            for dcid, constraints in served.items()
+            if len(constraints) == fewest and dcid in names
+        ]
+        best = next(
+            (names[dcid] for dcid in served if dcid in names and dcid in shape.scored_members),
+            frozenset(),
+        )
+        return (frozenset.intersection(*least) if least else frozenset()) | best
+    absent = {binding.property_dcid for binding in bindings if binding.kind == "absent"}
+    kept = {
+        dcid: constraints
+        for dcid, constraints in family.items()
+        if dcid in names
+        and not any(
             prop in absent or (prop in bound and value not in bound[prop])
-            for prop, value in member[1].items()
+            for prop, value in constraints.items()
         )
-    ]
-    if not served:
+    }
+    if not kept:
         return _shape_measure_words(shape)
-    fewest = min(len(constraints) for _dcid, constraints, _words in served)
-    shared = frozenset.intersection(
-        *(words for _dcid, constraints, words in served if len(constraints) == fewest)
-    )
-    best = next(
-        (words for dcid, _constraints, words in served if dcid in shape.scored_members), None
-    )
-    return shared | (best or frozenset())
+    fewest = min(len(c) for c in kept.values())
+    shared = frozenset.intersection(*(names[d] for d, c in kept.items() if len(c) == fewest))
+    best = next((names[d] for d in kept if d in shape.scored_members), frozenset())
+    return shared | best
 
 
 def _label_words(label: str) -> frozenset[str]:

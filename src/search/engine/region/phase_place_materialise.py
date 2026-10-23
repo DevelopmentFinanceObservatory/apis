@@ -35,6 +35,7 @@ from search.engine.quantity import (
     serves_quantity,
     stated_denominator,
 )
+from search.engine.reading_coverage import holds_in
 from search.engine.region.alternate_guard import AlternateJudge, query_pins
 from search.engine.region.availability import (
     _shape_group_key,
@@ -56,6 +57,7 @@ from search.engine.region.codes import (
     SEAM_OFF_INFO_CODE,
     _elect_no_data_reason,
 )
+from search.engine.region.coverage_series import requested_window
 from search.engine.region.decisions import (
     PlaceSetNotAdmittedError,
     PlaceSetRefusedError,
@@ -170,6 +172,7 @@ from search.models import (
     NearestRealSpec,
     NoDataDenominator,
     Relaxation,
+    TimeWindow,
     UnitAlternative,
     Warning,
 )
@@ -452,8 +455,9 @@ def _settle_breakdown(state: ResolveState) -> None:
     none that serves a member (`standard.Candidates`): one copy of the shape per breakdown
     signature, each narrowed to the bound properties and that signature
     (`phase_election.narrowed_to_breakdown`) and bound with the signature's slots open
-    (`_breakdown_bindings`). The copies are ordered by their recalled members with data at
-    the places the part names, then by their recalled members, and capped at
+    (`_breakdown_bindings`). The copies are ordered by their members with data at the
+    places the part names inside the years it asks for, then by their recalled members,
+    and capped at
     `max_candidates`, a cut the candidate set states (`ResolveState.breakdown_truncated`,
     `CandidateSet.truncated`). The first is installed as the elected shape; each other is
     offered beside it as a `breakdown` candidate (`ResolveState.breakdown_rivals`). A lone
@@ -462,7 +466,7 @@ def _settle_breakdown(state: ResolveState) -> None:
     if not isinstance(decision, Candidates):
         return
     shape = state.shape_draft
-    rank = _breakdown_rank(shape, decision.bound)
+    rank = _breakdown_rank(shape, decision.bound, requested_window(state.date_request))
     signatures = sorted(decision.signatures, key=rank)[: settings().max_candidates]
     state.breakdown_truncated = len(signatures) < len(decision.signatures)
     copies = [
@@ -483,13 +487,14 @@ def _settle_breakdown(state: ResolveState) -> None:
 
 
 def _breakdown_rank(
-    shape: ShapeDraft, bound: frozenset[str]
+    shape: ShapeDraft, bound: frozenset[str], window: TimeWindow | None
 ) -> Callable[[frozenset[str]], tuple[int, int]]:
     """The sort key of a breakdown signature of `shape` under its `bound` properties: its
-    recalled members with data at the places the part names
-    (`ShapeDraft.named_place_coverage`, else `ShapeDraft.member_coverage`), then its
-    recalled members (`ShapeDraft.scored_members`), most first. A member's signature is the
-    set of constraint properties it declares outside `bound`."""
+    members with data at the places the part names (`ShapeDraft.named_place_coverage`, else
+    `ShapeDraft.member_coverage`) inside `window`, the years the part asks for
+    (`reading_coverage.holds_in`), then its recalled members (`ShapeDraft.scored_members`),
+    most first. A member's signature is the set of constraint properties it declares
+    outside `bound`."""
     coverage = shape.named_place_coverage or shape.member_coverage or {}
     with_data: dict[frozenset[str], int] = {}
     recalled: dict[frozenset[str], int] = {}
@@ -497,7 +502,7 @@ def _breakdown_rank(
         signature = frozenset(read_declared_constraint_properties(arcs)) - bound
         if sv in shape.scored_members:
             recalled[signature] = recalled.get(signature, 0) + 1
-        if coverage.get(sv):
+        if holds_in(coverage.get(sv) or {}, window):
             with_data[signature] = with_data.get(signature, 0) + 1
     return lambda signature: (-with_data.get(signature, 0), -recalled.get(signature, 0))
 

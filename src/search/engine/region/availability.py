@@ -32,7 +32,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.extract import DateRequest
-from search.engine.reading_coverage import ReadingCoverage, observed_years
+from search.engine.reading_coverage import ReadingCoverage, holds_in, observed_years
 from search.engine.region.coverage_series import holds_series, requested_window
 from search.engine.region.place_roles import PlaceAssignment, bind_place_roles, names_a_place
 from search.engine.region.place_set import PlaceSet
@@ -173,11 +173,7 @@ def series_at_places(state: ResolveState) -> SeriesReader:
 def _in_window(coverage: Mapping[str, ReadingCoverage], window: TimeWindow) -> bool:
     """Whether some member holds a point at some place inside `window`, or may: a span the
     probe states without its years counts when it overlaps the window."""
-    return any(
-        years.requested(window) != frozenset()
-        for by_place in coverage.values()
-        for years in by_place.values()
-    )
+    return any(holds_in(by_place, window) for by_place in coverage.values())
 
 
 def _subject_has_data(
