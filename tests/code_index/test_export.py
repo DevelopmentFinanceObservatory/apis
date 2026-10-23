@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -3203,6 +3204,7 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
 
 
 _OTHER_PROVENANCE = "provenance/OtherDataset"
+_BOTH_PROVENANCES = frozenset({_TEST_PROVENANCE, _OTHER_PROVENANCE})
 
 
 def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_path: Path):
@@ -3210,7 +3212,10 @@ def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_pa
         {"TrustFund": ("Organization",), "Fund": ("Organization",)},
         kind_overrides={
             "TrustFund": KindOverride(
-                "total", "Fund in the test dataset", datasets=frozenset({_TEST_PROVENANCE})
+                "total",
+                "Fund in the test dataset",
+                datasets=frozenset({_TEST_PROVENANCE}),
+                reviewed=_BOTH_PROVENANCES,
             )
         },
         axis="origin",
@@ -3234,25 +3239,36 @@ def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_pa
 
 
 @pytest.mark.parametrize(
-    ("datasets", "match"),
+    ("datasets", "reviewed", "match"),
     [
-        pytest.param(frozenset({"provenance/Unknown"}), "do not publish", id="unknown-dataset"),
-        pytest.param(frozenset(), "or to none", id="no-dataset"),
         pytest.param(
-            frozenset({_TEST_PROVENANCE, _OTHER_PROVENANCE}),
-            "to every dataset",
-            id="every-dataset",
+            frozenset({"provenance/Unknown"}),
+            _BOTH_PROVENANCES,
+            "do not publish",
+            id="unknown-dataset",
+        ),
+        pytest.param(frozenset(), _BOTH_PROVENANCES, "or to none", id="no-dataset"),
+        pytest.param(_BOTH_PROVENANCES, _BOTH_PROVENANCES, "to every dataset", id="every-dataset"),
+        pytest.param(
+            frozenset({_TEST_PROVENANCE}),
+            frozenset({_TEST_PROVENANCE}),
+            re.escape(f"[('TrustFund', '{_OTHER_PROVENANCE}')] (party, dataset)"),
+            id="dataset-not-reviewed",
         ),
     ],
 )
 def test_export_index_refuses_a_kind_override_scoped_to_datasets_it_cannot_name(
-    datasets: frozenset[str], match: str
+    datasets: frozenset[str], reviewed: frozenset[str], match: str
 ):
+    """The last row is a dataset that started publishing the party after the override was
+    reviewed: the export names the party and the dataset until a review adds it."""
     with pytest.raises(ExportRefused, match=match):
         _export_parties(
             {"TrustFund": ("Organization",)},
-            kind_overrides={"TrustFund": KindOverride("total", "a fund", datasets=datasets)},
-            published_in=frozenset({_TEST_PROVENANCE, _OTHER_PROVENANCE}),
+            kind_overrides={
+                "TrustFund": KindOverride("total", "a fund", datasets=datasets, reviewed=reviewed)
+            },
+            published_in=_BOTH_PROVENANCES,
         )
 
 
@@ -3319,6 +3335,7 @@ def test_the_fixture_index_reads_each_imf_trust_fund_a_total_only_beside_the_imf
         name: "total" if name == dataset else "party" for name in row.datasets
     }
     assert row.kind_in("provenance/OECDCreditorReportingSystem") == "party"
+    assert PARTY_KIND_OVERRIDES[trust].reviewed == frozenset(row.datasets)
 
 
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))

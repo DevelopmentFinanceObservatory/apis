@@ -12,6 +12,7 @@ from search.engine.role_text import (
     debt_axes,
     every_member_axis,
     every_member_breakdown,
+    every_member_breakdown_axis,
     receipt_axes,
     role_axis_for_text,
 )
@@ -65,31 +66,35 @@ def test_every_member_axis_reads_the_role_a_phrase_asks_every_member_of(
 
 
 @pytest.mark.parametrize(
-    ("phrase", "axis"),
+    ("phrase", "axis", "every_member"),
     [
-        ("by donor", "origin"),
-        ("by donors", "origin"),
-        ("across the recipients", "destination"),
-        ("by creditor", "origin"),
-        ("each donor", "origin"),
-        ("from each donor", "origin"),
-        ("for each donor", "origin"),
-        ("to every recipient", "destination"),
-        ("by each donor", "origin"),
-        ("all donors", None),
-        ("from all donors", None),
-        ("by country", None),
-        ("by sector", None),
-        ("by donor and recipient", None),
-        ("top donors", None),
-        ("by", None),
-        ("for", None),
+        ("by donor", "origin", None),
+        ("by donors", "origin", None),
+        ("across the recipients", "destination", None),
+        ("by creditor", "origin", None),
+        ("each donor", "origin", "origin"),
+        ("from each donor", "origin", "origin"),
+        ("for each donor", "origin", "origin"),
+        ("to every recipient", "destination", "destination"),
+        ("by each donor", "origin", "origin"),
+        ("all donors", None, None),
+        ("from all donors", None, None),
+        ("by country", None, None),
+        ("by sector", None, None),
+        ("by donor and recipient", None, None),
+        ("top donors", None, None),
+        ("by", None, None),
+        ("for", None, None),
     ],
 )
 def test_breakdown_axis_reads_the_role_a_phrase_lists_member_by_member(
-    phrase: str, axis: RoleAxis | None
+    phrase: str, axis: RoleAxis | None, every_member: RoleAxis | None
 ) -> None:
-    assert breakdown_axis(phrase, query=f"aid to Kenya {phrase}") == axis
+    """`every_member_breakdown_axis` reads only the each and every phrases, which ask for
+    the breakdown under any operation."""
+    query = f"aid to Kenya {phrase}"
+    assert breakdown_axis(phrase, query=query) == axis
+    assert every_member_breakdown_axis(phrase, query=query) == every_member
 
 
 class TestUnrecognised:

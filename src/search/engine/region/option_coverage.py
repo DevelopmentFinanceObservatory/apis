@@ -1167,9 +1167,13 @@ def _stream_slot_options_events(
         entity_warn: Warning | None = None
         if entity_options:
             try:
-                # The streamed probe carries no member StatVars, so a party whose kind differs
-                # between datasets reads no kind here.
-                enriched_entities = _enrich_entity_options(entity_options, graph=graph, datasets=())
+                # `variable_labels` is keyed by the Spec's member StatVars, so a party reads the
+                # kind of the datasets the buffered path reads it in.
+                enriched_entities = _enrich_entity_options(
+                    entity_options,
+                    graph=graph,
+                    datasets=get_index().statvar_provenances(variable_labels),
+                )
             except GraphInfraError:
                 logger.warning(
                     "entity_options label probe failed for spec_id=%r; returning unlabelled "

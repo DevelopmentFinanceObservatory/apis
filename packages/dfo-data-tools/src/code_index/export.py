@@ -322,9 +322,9 @@ def export_parties(
     for a window with a first year, ending in the last year the dataset publishes the total.
 
     Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a
-    `kind_overrides` row naming a dataset that does not publish its party, or none, or every one
-    (`_check_override_datasets`), a dataset-scoped override giving the kind the party's types
-    already give, a party the
+    `kind_overrides` row naming a dataset that does not publish its party, or none, or every one,
+    or whose party a dataset it was not reviewed against publishes (`_check_override_datasets`),
+    a dataset-scoped override giving the kind the party's types already give, a party the
     graph holds no node or type for, a party carrying a type `type_kinds` does not name, a party
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
@@ -425,7 +425,8 @@ def _check_override_datasets(
 ) -> None:
     """Raises `ExportRefused` for a `kind_overrides` row whose `datasets` are empty, name a
     provenance that does not publish its party (an unknown provenance among them), or name
-    every dataset that does, where the override holds everywhere and takes no `datasets`."""
+    every dataset that does, where the override holds everywhere and takes no `datasets`, and
+    for a row with `datasets` whose party a dataset outside its `reviewed` publishes."""
     wrong = sorted(
         (dcid, sorted(override.datasets - parties[dcid].datasets))
         for dcid, override in kind_overrides.items()
@@ -446,6 +447,18 @@ def _check_override_datasets(
         raise ExportRefused(
             f"PARTY_KIND_OVERRIDES scopes {everywhere!r} to every dataset that publishes it; "
             "drop `datasets` so the override holds everywhere"
+        )
+    unreviewed = sorted(
+        (dcid, dataset)
+        for dcid, override in kind_overrides.items()
+        if override.datasets is not None
+        for dataset in parties[dcid].datasets - override.reviewed
+    )
+    if unreviewed:
+        raise ExportRefused(
+            f"PARTY_KIND_OVERRIDES scopes overrides whose party a dataset they were not reviewed "
+            f"against publishes: {unreviewed!r} (party, dataset); check the party's figures "
+            "there and add the dataset to `reviewed`, and to `datasets` if it is a total there"
         )
 
 

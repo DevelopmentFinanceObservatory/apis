@@ -91,7 +91,13 @@ from search.engine.region.result import RegionResult, with_departure_facts, with
 from search.engine.region.sentence_events import answer_events
 from search.engine.region.state import qualifier_dropped_warning
 from search.engine.response_cache_flow import CacheScope
-from search.engine.role_text import DoorRole, breakdown_axis, debt_axes, receipt_axes
+from search.engine.role_text import (
+    DoorRole,
+    breakdown_axis,
+    debt_axes,
+    every_member_breakdown_axis,
+    receipt_axes,
+)
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import scan_sources, source_phrases
 from search.engine.source_scope import (
@@ -569,8 +575,9 @@ class _ExtractionPrep:
     `dropped_qualifier_phrases`. They raise no warning.
     `per_variable_open_axes` runs parallel to `unique` too: the flow roles each part asks
     one value per member of (`role_text.breakdown_axis`), read off its own operations'
-    phrases and the request's dropped phrases and entities that are such a breakdown,
-    which leave those lists.
+    phrases (`every_member_breakdown_axis` for a verb other than `rank`) and the request's
+    dropped phrases and entities that are such a breakdown, which leave
+    those lists.
     `per_variable_date_requests` runs parallel to `unique` too: `date_request`, or a
     forecasting variable's own window without its target years.
     `unit_text` is the dropped phrases that bind as one unit request
@@ -825,14 +832,21 @@ def _prepare_extraction(
 
     # Qualifier sidecars use stripped `unique` keys. Missing entries default to ().
     per_variable_qualifiers = [extract_result.qualifiers.get(v, ()) for v in unique]
-    # An operation whose phrase only asks for one value per member of a flow role ("by
-    # donor", "for each donor") is a breakdown: it opens that role, as `open_roles` does on
-    # the parsed door, and runs no operation.
+    # An operation whose phrase only asks for one value per member of a flow role is a
+    # breakdown: it opens that role, as `open_roles` does on the parsed door, and runs no
+    # operation. An each or every phrase ("for each donor") is one under any verb, and "by"
+    # or "across" a role ("by donor") only under a rank, since "across donors" on a sum
+    # asks for the total.
     per_variable_operations: list[tuple[Operation, ...]] = []
     per_variable_open_axes: list[frozenset[RoleAxis]] = []
     for v in unique:
         read = [
-            (op, breakdown_axis(op.phrase, query=query))
+            (
+                op,
+                breakdown_axis(op.phrase, query=query)
+                if op.verb == "rank"
+                else every_member_breakdown_axis(op.phrase, query=query),
+            )
             for op in extract_result.operations.get(v, ())
         ]
         per_variable_operations.append(tuple(op for op, axis in read if axis is None))

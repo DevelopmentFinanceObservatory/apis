@@ -542,11 +542,23 @@ def breakdown_axis(phrase: str, *, query: str) -> RoleAxis | None:
     phrases ask for no breakdown, since the total over the members meets them.
     """
     tokens = _tokenize(phrase)
-    lead = tokens[0] if tokens else None
-    if lead in _BREAKDOWN_CONNECTIVES and not set(tokens[1:2]) & _BREAKDOWN_WORDS:
+    if (
+        tokens[:1]
+        and tokens[0] in _BREAKDOWN_CONNECTIVES
+        and not set(tokens[1:2]) & _BREAKDOWN_WORDS
+    ):
         named = _nouns_axes(tokens[1:])
         return next(iter(named)) if named is not None and len(named) == 1 else None
-    if lead in _BREAKDOWN_CONNECTIVES or lead == "for":
+    return every_member_breakdown_axis(phrase, query=query)
+
+
+def every_member_breakdown_axis(phrase: str, *, query: str) -> RoleAxis | None:
+    """The flow axis whose members an each or every ``phrase`` asks one value each for, or
+    None: the every-member half of `breakdown_axis` (``each donor``, ``for each donor``, ``by
+    every recipient``), which asks for the breakdown whatever operation carries it. ``by``
+    or ``across`` and role nouns alone (``by donor``) give None."""
+    tokens = _tokenize(phrase)
+    if tokens[:1] and (tokens[0] in _BREAKDOWN_CONNECTIVES or tokens[0] == "for"):
         tokens = tokens[1:]
     rest = " ".join(tokens)
     return every_member_axis(rest, query=query) if every_member_breakdown(rest) else None

@@ -2125,11 +2125,6 @@ def _raw(
             id="by-donor-dropped",
         ),
         pytest.param(
-            "official development assistance to Ethiopia from each donor",
-            {"dropped": ("from each donor",)},
-            id="each-donor-dropped",
-        ),
-        pytest.param(
             "official development assistance to Ethiopia for each donor",
             {
                 "operations": (
@@ -2139,6 +2134,11 @@ def _raw(
                 )
             },
             id="each-donor-read-as-a-sum",
+        ),
+        pytest.param(
+            "official development assistance to Ethiopia from each donor",
+            {"dropped": ("from each donor",)},
+            id="each-donor-dropped",
         ),
         pytest.param(
             "official development assistance to Ethiopia from every donor",
@@ -2173,6 +2173,44 @@ def test_a_raw_text_breakdown_by_a_role_lists_its_members(
     assert _whole_read(answer) is None
     assert [d.code for d in answer.departures if d.code == "operation_not_applied"] == []
     assert [w.code for w in answer.warnings if w.code == "query_qualifier_dropped"] == []
+
+
+@pytest.mark.parametrize(
+    ("query", "phrase"),
+    [
+        pytest.param(
+            "total official development assistance to Ethiopia across donors",
+            "across donors",
+            id="sum-across-donors",
+        ),
+        pytest.param(
+            "official development assistance to Ethiopia by donor",
+            "by donor",
+            id="sum-by-donor",
+        ),
+    ],
+)
+def test_a_raw_text_sum_tagged_with_breakdown_words_keeps_its_operation(
+    monkeypatch: pytest.MonkeyPatch, query: str, phrase: str
+):
+    """ "By" or "across" a role reads as a breakdown only on a rank. A sum tagged with
+    either keeps its operation on the part and departs as not applied, as any operation
+    Search does not run."""
+    _coverage(monkeypatch)
+
+    answer = _raw(
+        query,
+        operations=(
+            ExtractedOperation(verb="aggregate", variable=0, phrase=phrase, over="origin"),
+        ),
+    )
+
+    assert [(op.verb, op.phrase) for op in answer.operations] == [("aggregate", phrase)]
+    assert [
+        departure.asked
+        for departure in answer.departures
+        if departure.code == "operation_not_applied"
+    ] == [phrase]
 
 
 def test_a_raw_text_side_read_whole_names_the_words_that_list_its_members(

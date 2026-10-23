@@ -364,11 +364,14 @@ class KindOverride:
 
     `datasets` are the provenances the override holds in, each publishing the party; in every
     other dataset the party keeps its types' kind (`PartyRow.dataset_kinds`). `None` holds it in
-    every dataset."""
+    every dataset. `reviewed` are the provenances publishing the party whose figures the override
+    was checked against, `datasets` among them; the export refuses a scoped override whose party
+    another dataset publishes, so a dataset that starts publishing it is reviewed first."""
 
     kind: PartyKind
     reason: str
     datasets: frozenset[str] | None = None
+    reviewed: frozenset[str] = frozenset()
 
 
 # The parties whose kind differs from what their graph types give. An organisation is typed
@@ -399,6 +402,7 @@ PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
         "trust funds report (Kenya 1988 to 2024, 19 years, 756.1m in 2020; Bangladesh 1987 to "
         "2024, 18 years); a party in the CRS, which never publishes the IMF",
         datasets=frozenset({_DAC2A}),
+        reviewed=frozenset({_CRS, _DAC2A}),
     ),
     "IMFResilienceAndSustainabilityTrust": KindOverride(
         "total",
@@ -406,6 +410,7 @@ PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
         "one year it reports (Kenya 2024: 180.2m); a party in the CRS, which never publishes "
         "the IMF",
         datasets=frozenset({_DAC2B}),
+        reviewed=frozenset({_CRS, _DAC2B}),
     ),
     "InterAmericanDevelopmentBankGroup": KindOverride(
         "total", "InterAmericanDevelopmentBank plus IDBInvest"

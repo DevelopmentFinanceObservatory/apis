@@ -26,6 +26,7 @@ from search.engine.retrieval.coverage import (
     CoverageForm,
     answer_coverage,
     answer_headline,
+    bare_coverage,
     plan_election,
 )
 from search.engine.retrieval.elected_dataset import elected_datasets, published
@@ -62,7 +63,6 @@ from search.engine.retrieval.role_scope import (
 )
 from search.engine.retrieval.standard import _bind_aware_order
 from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
-from search.models import CoverageBare
 from statvar_members import UNRESOLVED_NODE, constraints_resolve, elect_role_class
 
 if TYPE_CHECKING:
@@ -874,7 +874,7 @@ def _zero_observation_carrier(
         sv_dcids=[representative_sv],
         facets_by_sv={representative_sv: held[representative_sv]} if held else None,
         has_data=False,
-        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
+        coverage=bare_coverage(date_request, has_data=False),
         available_at_place=bool(held),
         window_gap=window_gap(dateless_plan, years) if held and years is not None else None,
         open_origin_dcids=open_origin_dcids,
