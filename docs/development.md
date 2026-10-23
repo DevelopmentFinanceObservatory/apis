@@ -74,17 +74,13 @@ it after merge.
 
 ### Reading the dev graph locally
 
-`just dev`, `just sdmx-live`, and the scripts read the dev Data Commons service on Cloud Run (`SEARCH_GRAPH_BASE`), which admits only callers holding `roles/run.invoker`. `dfo_platform.cloud_run_auth` sends an ID token to every `*.run.app` host and raises `CloudRunAuthError` when it has none. Your own user credentials cannot mint one, so use one of two routes:
+`just dev`, `just sdmx-live`, and the scripts read the dev Data Commons service on Cloud Run (`SEARCH_GRAPH_BASE`), which admits only callers holding `roles/run.invoker`. `dfo_platform.cloud_run_auth` sends an ID token to every `*.run.app` host and raises `CloudRunAuthError` when it has none. Your own user credentials cannot mint one, so sign in as a service account you may impersonate, which mints and refreshes tokens:
 
 ```bash
-# Mints and refreshes tokens as a service account you may impersonate.
 gcloud auth application-default login --impersonate-service-account=<service account>
-
-# Or a token of your own, which expires after an hour.
-export DCP_ID_TOKEN="$(gcloud auth print-identity-token)"
 ```
 
-The first needs `roles/iam.serviceAccountTokenCreator` on the service account, and the account needs `roles/run.invoker` on the service. The second needs `roles/run.invoker` for your own account, and a server started with it fails once the token expires.
+You need `roles/iam.serviceAccountTokenCreator` on the service account, and the account needs `roles/run.invoker` on the service.
 
 ### SDMX live tests
 

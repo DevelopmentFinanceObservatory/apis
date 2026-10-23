@@ -16,9 +16,9 @@
 #
 # The service admits only callers holding roles/run.invoker. The job signs in
 # through eval-gate.yml's workload identity pair (EVAL_WIF_PROVIDER and the
-# EVAL_WIF_SA service account), mints an ID token for SEARCH_GRAPH_BASE, and
-# passes it as DCP_ID_TOKEN, which dfo_platform.cloud_run_auth sends to every
-# *.run.app host.
+# EVAL_WIF_SA service account). For each *.run.app host,
+# dfo_platform.cloud_run_auth mints an ID token from those credentials, which
+# needs roles/iam.serviceAccountOpenIdTokenCreator for the account on itself.
 #
 # DFO_SDMX_LIVE_REQUIRED makes a missing live base a collection error rather
 # than a skip, so the job cannot report green over a suite that skipped every
@@ -118,21 +118,16 @@ jobs:
           [ -n "$GRAPH_TOKEN" ] || { echo "::error::repo secret SEARCH_GRAPH_TOKEN is unset"; exit 1; }
 
       - name: Authenticate to Google Cloud as the eval reader
-        id: gcp
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
           service_account: ${{ secrets.EVAL_WIF_SA }}
-          token_format: id_token
-          id_token_audience: ${{ vars.SEARCH_GRAPH_BASE }}
-          id_token_include_email: true
 
       - name: Run the live-gated dc_sdmx suite against the dev deployment
         env:
           DFO_SDMX_LIVE_BASE: ${{ vars.SEARCH_GRAPH_BASE }}/core/api
           DFO_SDMX_LIVE_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
           DFO_SDMX_LIVE_REQUIRED: "1"
-          DCP_ID_TOKEN: ${{ steps.gcp.outputs.id_token }}
         run: uv run pytest -q tests/dc_sdmx/test_live.py
 
       - name: Check every implied value against the dev graph
@@ -140,5 +135,4 @@ jobs:
           SEARCH_GRAPH_BASE: ${{ vars.SEARCH_GRAPH_BASE }}
           SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
           CODE_INDEX_LIVE_REQUIRED: "1"
-          DCP_ID_TOKEN: ${{ steps.gcp.outputs.id_token }}
         run: uv run pytest -q -m live tests/code_index/test_implied_values_live.py

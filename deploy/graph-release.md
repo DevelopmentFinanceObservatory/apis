@@ -101,5 +101,5 @@ Rolling back the apis service, the datasets worker or the search catalogue job t
 - `GRAPH_RELEASE_URI`: required, `gs://` or `file://`, on the builder and every serving process.
 - `GRAPH_RELEASE_SPANNER_PROJECT`, `GRAPH_RELEASE_SPANNER_INSTANCE`, `GRAPH_RELEASE_SPANNER_DATABASE`: required, the DC Spanner database.
 - `DATACOMMONS_SERVICE_NAME`: required, the DC service as `projects/<p>/locations/<r>/services/<s>`.
-- `DATASETS_GRAPH_BASE_URL`, `DATASETS_SDMX_BASE_URL`: required, our mixer's API root including `/core/api`. The dev graph serves reads anonymously, so the job sends no token.
+- `DATASETS_GRAPH_BASE_URL`, `DATASETS_SDMX_BASE_URL`: required, our mixer's API root including `/core/api`. For a `*.run.app` host the builder mints an ID token from its Application Default Credentials, and its service account needs `roles/run.invoker` on the DC service.
 - `SEARCH_CATALOGUE_JOB_NAME`: optional, the search catalogue job as `projects/<p>/locations/<r>/jobs/<j>`, which the builder starts after each publish. Unset or empty starts nothing. The builder's service account needs `run.jobs.run` on that job (`roles/run.invoker`).
