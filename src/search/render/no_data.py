@@ -766,28 +766,37 @@ def no_data_sentence_plan(
     ``ambiguous_candidates`` are source labels, and ``source_code_refusal`` to the
     source-code reasons (`no_data_phrase`). A part read under a source ``scope``
     closes its verdict on the sources it was read under (`scope_sentence`). The part's
-    ``departures`` follow as departure-segment tokens.
+    ``departures`` follow as departure-segment tokens. On the place-availability gate, a
+    ``direction_discarded`` departure leads in place of the checked heading and the verdict
+    follows it ("You named Bangladesh as a recipient, but this measure has no recipients, so
+    this checked Bangladesh itself. No data was found there."), since the heading's "No data
+    for Bangladesh's ..." would read as a gap in that place's data.
     """
-    plan = _no_data_verdict_plan(
-        reason,
-        gate=gate,
-        flagged_match=flagged_match,
-        alternate_match=alternate_match,
-        nearest_real=nearest_real,
-        elected_stat_vars=elected_stat_vars,
-        variable_term=variable_term,
-        entity_terms=entity_terms,
-        entity_groups=entity_groups,
-        role_axis=role_axis,
-        bound_role_dcids=bound_role_dcids,
-        ambiguous_candidates=ambiguous_candidates,
-        ambiguous_roles=ambiguous_roles,
-        qualifier_terms=qualifier_terms,
-        source_terms=source_terms,
-        scope=scope,
-        denominator=denominator,
-        source_code_refusal=source_code_refusal,
-    )
+    discarded = next((d for d in departures if d.code == "direction_discarded"), None)
+    if gate == "no_member_has_data_at_place" and flagged_match is not None and discarded:
+        plan = [_text(discarded.text), _text(" No data was found there.")]
+        departures = [d for d in departures if d is not discarded]
+    else:
+        plan = _no_data_verdict_plan(
+            reason,
+            gate=gate,
+            flagged_match=flagged_match,
+            alternate_match=alternate_match,
+            nearest_real=nearest_real,
+            elected_stat_vars=elected_stat_vars,
+            variable_term=variable_term,
+            entity_terms=entity_terms,
+            entity_groups=entity_groups,
+            role_axis=role_axis,
+            bound_role_dcids=bound_role_dcids,
+            ambiguous_candidates=ambiguous_candidates,
+            ambiguous_roles=ambiguous_roles,
+            qualifier_terms=qualifier_terms,
+            source_terms=source_terms,
+            scope=scope,
+            denominator=denominator,
+            source_code_refusal=source_code_refusal,
+        )
     if closing := scope_sentence(reason, scope, qualifier_terms):
         plan.append(_text(f" {closing}" if plan else closing))
     plan.extend(departure_tokens([d.text for d in departures], after_text=bool(plan)))

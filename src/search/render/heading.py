@@ -527,7 +527,7 @@ def heading_from_parts(
         if noun.stated
         else " ".join(text for text in (*(v.text for v in modifiers), noun.text, *extras) if text)
     )
-    unit_phrase = _unit_heading_phrase(shape, facets, graph_text)
+    unit_phrase = _unit_heading_phrase(shape, facets, graph_text, wording=wording)
     heading = Heading(
         lead=lead,
         modifiers=tuple(modifiers),

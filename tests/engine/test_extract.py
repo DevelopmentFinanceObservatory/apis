@@ -294,12 +294,62 @@ def test_validate_role_spans_downgrades_an_overlapping_role_span(caplog):
 # _validate_role_spans: the adjectival acceptance route on condition (2)
 
 
-def test_validate_role_spans_keeps_an_adjectival_surface_modifying_a_measure():
-    """A national adjective marks origin when it directly precedes the measure, as in "French aid"."""
-    entities = [_entity("France", span="French", flow_role="origin", role_span="French")]
-    validated = _validate_role_spans("French aid to Senegal", entities, ["aid"])
+@pytest.mark.parametrize(
+    ("query", "text", "span", "variable"),
+    [
+        ("French aid to Senegal", "France", "French", "aid"),
+        ("IMF credit outstanding Argentina", "IMF", "IMF", "credit outstanding"),
+    ],
+)
+def test_validate_role_spans_keeps_a_surface_modifying_a_measure(query, text, span, variable):
+    """A national adjective or an organisation's name directly before the measure is its
+    own cue."""
+    entities = [_entity(text, span=span, flow_role="origin", role_span=span)]
+    validated = _validate_role_spans(query, entities, [variable])
     assert validated[0].flow_role == "origin"
-    assert validated[0].role_span == "French"
+    assert validated[0].role_span == span
+
+
+@pytest.mark.parametrize(
+    ("query", "text", "variable"),
+    [
+        ("Kenya aid", "Kenya", "aid"),
+        ("China loans to Kenya", "China", "loans"),
+    ],
+)
+def test_validate_role_spans_downgrades_a_place_named_before_a_measure(query, text, variable):
+    """A place's own name before the measure states no direction: "Kenya aid" is usually
+    aid to Kenya, and "US aid" aid from the US."""
+    entities = [_entity(text, span=text, flow_role="origin", role_span=text)]
+    validated = _validate_role_spans(query, entities, [variable])
+    assert validated[0].flow_role == "unspecified"
+    assert validated[0].role_span is None
+
+
+@pytest.mark.parametrize(
+    ("query", "flow_role", "role_span", "variable", "expected"),
+    [
+        ("IMF credit outstanding Argentina", "unspecified", None, "credit outstanding", "origin"),
+        (
+            "IMF credit outstanding Argentina",
+            "destination",
+            "Argentina",
+            "credit outstanding",
+            "origin",
+        ),
+        # Named after the measure, the IMF is the source of the numbers.
+        ("Kenya GDP IMF", "unspecified", None, "GDP", "unspecified"),
+    ],
+)
+def test_validate_role_spans_reads_an_organisation_before_the_measure_as_lender(
+    query, flow_role, role_span, variable, expected
+):
+    """An organisation named straight before a measure word is the origin, with its own name
+    as cue, whatever role the model gave it."""
+    entities = [_entity("IMF", span="IMF", flow_role=flow_role, role_span=role_span)]
+    validated = _validate_role_spans(query, entities, [variable])
+    assert validated[0].flow_role == expected
+    assert validated[0].role_span == ("IMF" if expected == "origin" else None)
 
 
 def test_validate_role_spans_downgrades_an_adjectival_surface_with_no_measure_to_modify():
@@ -2857,6 +2907,121 @@ def test_extract_keys_operations_on_the_restored_variable():
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.variables == ["rate of extreme poverty"]
     assert list(result.operations) == ["rate of extreme poverty"]
+
+
+# The unit phrase a variable holds
+
+
+@pytest.mark.parametrize(
+    ("query", "variable", "expected", "unit_text"),
+    [
+        ("GDP of Kenya in euros", "GDP in euros", "GDP", "in euros"),
+        ("GDP in yen", "GDP in yen", "GDP", "in yen"),
+        # A phrase inside the variable ends at a function word.
+        ("GDP per capita in euros", "GDP in euros per capita", "GDP per capita", "in euros"),
+        (
+            "GDP of Kenya in constant 2015 US dollars",
+            "GDP in constant 2015 US dollars",
+            "GDP",
+            "in constant 2015 US dollars",
+        ),
+        (
+            "ODA to Kenya in current US dollars",
+            "ODA in current US dollars",
+            "ODA",
+            "in current US dollars",
+        ),
+        ("aid to Kenya in real terms", "aid in real terms", "aid", "in real terms"),
+        ("GDP at constant prices", "GDP at constant prices", "GDP", "at constant prices"),
+        # A phrase holds one opener, so an observation year binds as no base year.
+        ("GDP in euros in 2020", "GDP in euros in 2020", "GDP in 2020", "in euros"),
+        (
+            "GDP at 2015 prices in euros",
+            "GDP at 2015 prices in euros",
+            "GDP",
+            "at 2015 prices in euros",
+        ),
+        # A run ends before a year once its words bind and name no price basis.
+        ("GDP in euros for 2020", "GDP in euros for 2020", "GDP for 2020", "in euros"),
+        ("GDP in euros, 2020", "GDP in euros, 2020", "GDP 2020", "in euros"),
+        ("GDP in euros 2020", "GDP in euros 2020", "GDP 2020", "in euros"),
+        ("GDP in 2020 euros", "GDP in 2020 euros", "GDP", "in 2020 euros"),
+        ("GDP at 2015 prices", "GDP at 2015 prices", "GDP", "at 2015 prices"),
+        (
+            "GDP in euros, constant 2015",
+            "GDP in euros, constant 2015",
+            "GDP",
+            "in euros, constant 2015",
+        ),
+        # A ratio written without a ratio word divides by an amount the currency names no
+        # part of; the binder departs for it on the ratio it answers.
+        (
+            "debt service in dollars to GDP",
+            "debt service in dollars to GDP",
+            "debt service to GDP",
+            "in dollars",
+        ),
+        # A bare price basis is the measure qualifier's to read, from the variable and query.
+        ("real GDP of Kenya", "real GDP", None, None),
+        ("nominal GDP of Kenya", "nominal GDP", None, None),
+        ("real GDP growth in Kenya", "real GDP growth", None, None),
+        # Currency and price-basis words that name the measure.
+        ("current account balance of Kenya", "current account balance", None, None),
+        ("real interest rate in Kenya", "real interest rate", None, None),
+        ("euro exchange rate", "euro exchange rate", None, None),
+        ("exchange rate of the euro", "exchange rate of the euro", None, None),
+        ("exchange rate in euros", "exchange rate in euros", None, None),
+        ("interest rate in real terms", "interest rate in real terms", None, None),
+        (
+            "share of Kenya's public debt denominated in US dollars",
+            "public debt denominated in US dollars as share of total public debt",
+            None,
+            None,
+        ),
+        # A currency the amount is denominated, issued, held or borrowed in.
+        ("debt denominated in euros", "debt denominated in euros", None, None),
+        ("bonds issued in euros", "bonds issued in euros", None, None),
+        ("loans held in dollars", "loans held in dollars", None, None),
+        ("debt borrowed in yen", "debt borrowed in yen", None, None),
+        # A phrase joined to more of the measure.
+        ("ODA in real terms and in euros", "ODA in real terms and in euros", None, None),
+        ("remittances in dollars and euros", "remittances in dollars and euros", None, None),
+        # A run the binder cannot read to its end, and a phrase that leaves no measure.
+        ("GDP in current US$", "GDP in current US$", None, None),
+        ("in euros", "in euros", None, None),
+    ],
+)
+def test_extract_moves_a_unit_phrase_from_the_variable_to_its_unit_text(
+    query, variable, expected, unit_text
+):
+    llm = _stub_for(query, {"variables": [variable], "entities": [], "dates": []})
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.variables == [expected or variable]
+    assert result.unit_texts == ({expected: unit_text} if expected else {})
+    assert result.extraction.dropped_qualifiers == []
+
+
+@pytest.mark.parametrize(
+    ("variables", "expected", "unit_texts"),
+    [
+        (["GDP in euros", "population"], ["GDP", "population"], {"GDP": "in euros"}),
+        (
+            ["GDP in euros", "debt in dollars"],
+            ["GDP", "debt"],
+            {"GDP": "in euros", "debt": "in dollars"},
+        ),
+        # Peeling would make two measures one.
+        (["GDP in euros", "GDP in dollars"], ["GDP in euros", "GDP in dollars"], {}),
+        (["GDP", "GDP in euros"], ["GDP", "GDP in euros"], {}),
+    ],
+)
+def test_extract_keys_each_peeled_unit_text_on_its_own_variable(variables, expected, unit_texts):
+    query = " and ".join(variables)
+    llm = _stub_for(query, {"variables": variables, "entities": [], "dates": []})
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.variables == expected
+    assert result.unit_texts == unit_texts
+    assert result.extraction.dropped_qualifiers == []
 
 
 def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():

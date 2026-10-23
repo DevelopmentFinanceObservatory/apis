@@ -13147,39 +13147,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:2b75a9c39eca0e89ad3a29080f90a5dbaaf15296": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "dac2aAidType",
-        "kind": "value",
-        "value_dcids": [
-          "DAC2aAidType206"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "dacTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:a36f4ae404be047b168afc2964260212f6a9f430": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -14637,156 +14604,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:a6fff81dac2743550b2a4e1a3ec2c938391edf6e": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "dac2aAidType",
-        "kind": "value",
-        "value_dcids": [
-          "DAC2aAidType206"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "dacTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      1
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      },
-      {
-        "index": 1,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:6bdf0d59eda4c33838810acc8c31b556023c30f2": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "age",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "nativity",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "employment",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "race",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "placeOfResidenceClassification",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "religion",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "literacyStatus",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "gender",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "residenceType",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "educationalAttainment",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "placeOfBirth",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "armedForcesStatus",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:3aadb42855fc0a8cd127f6a29292f32fc10e11f4": {
     "chosen_shape_index": 2,
     "bindings": [
@@ -14840,41 +14657,6 @@
       },
       {
         "index": 5,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:dd8f68b3b9639f083e2ba2bee92283caaa3e4fcb": {
-    "chosen_shape_index": 1,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      2
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      },
-      {
-        "index": 1,
-        "rating": 1.0
-      },
-      {
-        "index": 2,
         "rating": 0.8
       }
     ]
@@ -14987,63 +14769,6 @@
       {
         "index": 0,
         "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:c1a6baeea683a5d936a73b947f4e68e3fcf0bcc3": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.95
-      },
-      {
-        "index": 4,
-        "rating": 0.9
-      },
-      {
-        "index": 5,
-        "rating": 0.9
       }
     ]
   },
@@ -15501,20 +15226,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:9e37c261c85d7c88ef9c7a083e1129255cd14810": {
-    "chosen_shape_index": 0,
-    "bindings": [],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:a55ad4148fc0dc6f04a7282d980d84af5993459a": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -15881,56 +15592,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:0392e8fa587b7680cc9dc96da44577c060f9fd48": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "gender",
-        "kind": "value",
-        "value_dcids": [
-          "Female"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:c72d62c6b359aed947cf57379e053149d2ac26ee": {
-    "chosen_shape_index": 5,
-    "bindings": [],
-    "also_plausible": [
-      2,
-      0
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 0.8
-      },
-      {
-        "index": 2,
-        "rating": 0.9
-      },
-      {
-        "index": 5,
-        "rating": 1.0
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:b4ebc500b7480ea0f2e48221918b725d416fa722": {
     "chosen_shape_index": 2,
     "bindings": [
@@ -15986,70 +15647,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:be7ee1028bd05e4757aaa7f47fd778232b7c25c2": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "gender",
-        "kind": "value",
-        "value_dcids": [
-          "Female"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:7a1f130872d6d4885eac08f714a582944a5b5108": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "dac2aAidType",
-        "kind": "value",
-        "value_dcids": [
-          "DAC2aAidType206"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "dacTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      1
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      },
-      {
-        "index": 1,
-        "rating": 0.8
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:b29936aaf5781935a4eac392172fe742e0bd8b4c": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -16061,39 +15658,6 @@
           "DAC2aAidType206"
         ],
         "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "dacTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:8e8034e0aebd3469c23e005e481b79d391e410a6": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "dac2aAidType",
-        "kind": "value",
-        "value_dcids": [
-          "DAC2aAidType206"
-        ],
-        "evidence": "sole_option",
         "requested_all_phrase": null
       },
       {
@@ -16173,39 +15737,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:4db8240130e128e519c7650f181b3ce8f41252fa": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "dac2aAidType",
-        "kind": "value",
-        "value_dcids": [
-          "DAC2aAidType206"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "dacTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "requested_all",
-        "requested_all_phrase": "DAC2a"
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:55b9ae51cd530ba02a08ef9f499f42d2113162e9": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -16215,31 +15746,6 @@
         "kind": "unbound",
         "value_dcids": [],
         "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:7c56a1356c97b525fb922a224803c0ada0c9118d": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "sdg_sex",
-        "kind": "value",
-        "value_dcids": [
-          "SDG_SexEnum_F"
-        ],
-        "evidence": "sole_option",
         "requested_all_phrase": null
       }
     ],
@@ -17118,35 +16624,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:c91c8db75b44901d5c29a0be8a8d6dc6009c0b21": {
-    "chosen_shape_index": 1,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "sdg_sex",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      0
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 1,
-        "rating": 1.0
-      },
-      {
-        "index": 0,
-        "rating": 0.8
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:059bb78539d0cd63db50f3b26928932e4632d524": {
     "chosen_shape_index": 0,
     "bindings": [],
@@ -17502,63 +16979,6 @@
       },
       {
         "index": 4,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:09b218b1d0d67d705d939807c474841cb48f9550": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      },
-      {
-        "index": 5,
         "rating": 0.8
       }
     ]
@@ -18805,55 +18225,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:379bf7c766edf684e4084ef62b650e8747a6a27f": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode110"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:36cd6439d24524a4fca7b3906b46517157fb840d": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -18872,100 +18243,6 @@
         "value_dcids": [
           "CRSPurposeCode110"
         ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:d5f8360b6d7a3edd0e16253f9f553ab6bde2e2a0": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:131df89df852bba35cb9c547d5351c442d04978e": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "unbound",
-        "value_dcids": [],
         "evidence": "mentioned",
         "requested_all_phrase": null
       },
@@ -19199,31 +18476,6 @@
     ]
   },
   "_UniversalBindOutput@7105c7d81a38:eff74f6c31ad912e97fcdafbc5b6c38edc5bd274": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "gender",
-        "kind": "value",
-        "value_dcids": [
-          "Female"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:6ca5b86cb9b2f0ab5215d74c309b3a16e1fe187d": {
     "chosen_shape_index": 0,
     "bindings": [
       {
@@ -20046,6 +19298,103 @@
       {
         "index": 0,
         "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:696b2ef25f3cb3a92e6e49d24a5f4e3ea0821ec6": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      1
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      },
+      {
+        "index": 1,
+        "rating": 0.85
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:5ced65e8bd8a92732fede036adeead544d6149da": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral aid",
+      "imputed multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "_UniversalBindOutput@7105c7d81a38:ed84013a0df1a260388244dfd38bdba0450838c6": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      1
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      },
+      {
+        "index": 1,
+        "rating": 0.8
       }
     ]
   }

@@ -20,6 +20,7 @@ from origin_catalogue import DFO, ProvenanceRow, SourceRef
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.core import resolve_async
 from search.engine.entry import parsed as parsed_entry
+from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region.pipeline import resolve_variable
@@ -36,7 +37,14 @@ from search.engine.source_code import (
     without_code_words,
 )
 from search.engine.source_scope import SourceReference, SourceScope
-from search.models import ParsedEntity, ParsedInput, ParsedPart, ResolveRequest, SourceMention
+from search.models import (
+    ParsedEntity,
+    ParsedInput,
+    ParsedPart,
+    RawTextInput,
+    ResolveRequest,
+    SourceMention,
+)
 from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import MemberEnumerator
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
@@ -70,6 +78,8 @@ _CONCESSIONAL_NET = {
     "nettingBasis": "Net",
 }
 _KEN = "country/KEN"
+_BRA = "country/BRA"
+_GHA = "country/GHA"
 _YEARS = [2020, 2021, 2022]
 _GG = {
     "financialFlowType": "ServicingPayment",
@@ -189,10 +199,12 @@ def _graph(recalled: Sequence[str] = ()) -> FakeGraph:
                 ),
             },
             _KEN: {"label": "Kenya", "type": "Country"},
+            _BRA: {"label": "Brazil", "type": "Country"},
+            _GHA: {"label": "Ghana", "type": "Country"},
         },
         obs={f"{sv}|{_KEN}": [facet] for sv in _ROLE_NAMES},
         detect={"debt service": {"svs": list(recalled)}} if recalled else {},
-        resolve={"Kenya": _KEN},
+        resolve={"Kenya": _KEN, "Brazil": _BRA, "Ghana": _GHA},
     )
 
 
@@ -227,16 +239,16 @@ def _coverage():
 
 
 def _answer(
-    part: ParsedPart,
+    part: ParsedPart | RawTextInput,
     monkeypatch: pytest.MonkeyPatch,
     llm: _BindLLM | None = None,
     *,
     recalled: Sequence[str] = (),
     read: str = _IDS,
 ):
-    """`part`'s answer through the parsed door, over a graph recalling `recalled` and
-    coverage holding every StatVar's observations under the provenance `read`, IDS as the
-    graph holds them."""
+    """`part`'s answer through the parsed door, or a query's through the raw-text door,
+    over a graph recalling `recalled` and coverage holding every StatVar's observations
+    under the provenance `read`, IDS as the graph holds them."""
     metadata = {
         facet_id: FacetMetadata(provenance_id=read, observation_period="P1Y")
         for _, facet_id, *_ in _COVERAGE_ROWS
@@ -245,7 +257,9 @@ def _answer(
     graph = _graph(recalled)
     response = asyncio.run(
         resolve_async(
-            ResolveRequest(input=ParsedInput(parts=[part])),
+            ResolveRequest(
+                input=part if isinstance(part, RawTextInput) else ParsedInput(parts=[part])
+            ),
             graph=graph,
             resolver=make_resolver(graph),
             llm=llm or _BindLLM(),
@@ -291,6 +305,24 @@ class _BindLLM:
             ask=self.ask,
             measuring=[ShapeRating(index=0, rating=1.0)],
         ), None
+
+
+class _ExtractLLM(_BindLLM):
+    """Extracts the measure `variable` and the place `place` from a raw-text query, then
+    binds as `_BindLLM` does."""
+
+    def __init__(self, variable: str, place: str) -> None:
+        super().__init__()
+        self.extraction = Extraction(
+            kind="resolution",
+            variables=[variable],
+            entities=[ExtractedEntity(text=place, span=place)],
+        )
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is Extraction:
+            return self.extraction, None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
 
 
 _STAMP = IndexStamp(
@@ -377,6 +409,31 @@ def test_the_parsed_door_answers_a_code_from_its_statvars(
     assert answer.no_data.category == "unresolved"
     if source_code is not None:
         assert answer.no_data.source_terms == [source_code]
+
+
+@pytest.mark.parametrize(
+    ("query", "variable", "place", "code"),
+    [
+        ("NY.GDP.MKTP.KD for Brazil", "NY.GDP.MKTP.KD", "Brazil", "NY.GDP.MKTP.KD"),
+        ("SH.DYN.NMRT for Ghana", "SH.DYN.NMRT", "Ghana", "SH.DYN.NMRT"),
+        ("neonatal mortality in Ghana, sh.dyn.nmrt", "neonatal mortality", "Ghana", "SH.DYN.NMRT"),
+        ("DT.TDS.DEGG.CD for Kenya", _DEGG, "Kenya", None),
+    ],
+    ids=["unheld-gdp", "unheld-neonatal", "unheld-beside-words", "held"],
+)
+def test_the_raw_text_door_refuses_a_code_shaped_token_the_index_does_not_hold(
+    query, variable, place, code, monkeypatch
+):
+    """A query writing a World Bank code the index does not hold refuses naming it, where
+    the rest of the phrase would otherwise answer without it. A held code still answers."""
+    answer = _answer(RawTextInput(query=query), monkeypatch, _ExtractLLM(variable, place))
+
+    if code is None:
+        assert answer.status == "definite", answer
+        assert answer.restatement.source_code == _DEGG
+        return
+    assert (answer.no_data.reason, answer.no_data.source_terms) == ("source_code_not_held", [code])
+    assert code in answer.no_data.message
 
 
 def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
@@ -855,6 +912,13 @@ _SCAN_INDEX = _index(
             [_DEGG, None],
         ),
         ("DT.TDS.DEGG.CD by creditor, DT.TDS.DEGG.CD", [_DEGG], [_DEGG]),
+        ("NY.GDP.MKTP.KD for Brazil", ["GDP"], ["NY.GDP.MKTP.KD"]),
+        ("neonatal mortality, sh.dyn.nmrt.", ["neonatal mortality"], ["SH.DYN.NMRT"]),
+        (
+            "aid to the U.S. under SDG 3.3.1, e.g. OECD.DCD.FSD data from www.oecd.org",
+            ["aid"],
+            [None],
+        ),
     ],
     ids=[
         "no-code",
@@ -864,10 +928,27 @@ _SCAN_INDEX = _index(
         "short-capitals",
         "two-measures",
         "code-as-measure",
+        "unheld-code",
+        "unheld-lower-case",
+        "dotted-prose",
     ],
 )
-def test_the_query_scan_fills_a_held_code(query, measures, expected):
+def test_the_query_scan_fills_a_code(query, measures, expected):
+    """A token fills its measure's code when it writes a held code or has a series code's
+    shape; other dotted words fill none."""
     assert scan_source_codes(query, measures=measures, index=_SCAN_INDEX) == expected
+
+
+def test_every_held_code_reads_as_a_code_to_an_index_without_it():
+    """Every code the fixture index holds has the shape the scan reads an unheld code by,
+    so the shape never misses a code a release could hold."""
+    codes = sorted({row.code for row in get_index().source_codes})
+    empty = _index([])
+
+    missed = [c for c in codes if scan_source_codes(c, measures=[c], index=empty) != [c]]
+
+    assert codes
+    assert missed == []
 
 
 @pytest.mark.parametrize(

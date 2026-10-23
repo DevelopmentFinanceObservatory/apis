@@ -6,7 +6,10 @@ import asyncio
 from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING
 
+from code_index.labels import PRICE_BASIS_AXIS
+from code_index.shared import get_index, get_measure_index
 from dfo_platform import Cause
+from materialise.facets import native_currency_iso
 from materialise.recipes import (
     NonCurrencyUnitError,
     RateCoverageGapError,
@@ -15,7 +18,9 @@ from materialise.recipes import (
 )
 from search.engine.bind import SlotBindingDraft
 from search.engine.departures import measure_not_applied, price_basis_not_applied
+from search.engine.qualifier_match import match_qualifiers
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.region.convertibility import served_units
 from search.engine.region.grounding import (
     _build_entity,
     _ground_answer,
@@ -29,6 +34,7 @@ from search.engine.region.place_roles import (
     untold_direction_groups,
     untold_direction_names,
 )
+from search.engine.region.qualifier_readings import shape_carries_measure_match
 from search.engine.region.requirements import refusal_terms, settle_answer, settle_flagged
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
@@ -60,6 +66,7 @@ from search.models import (
     Warning,
     elect_no_data_reason,
 )
+from unit_words.unit_class import classify_unit
 
 if TYPE_CHECKING:
     from materialise.roles import RoleAxis
@@ -223,19 +230,23 @@ def withdraw_typed_unit(state: ResolveState, exc: UnitConversionRefusal) -> bool
 
     The raw-text door's typed unit phrase is best effort (`ResolveState.unit_text_best_effort`):
     the leg drops the request, reads as if no unit were asked, and departs
-    `measure_not_applied` for the phrase. Currency data that cannot convert states its unit on
+    `measure_not_applied` for the phrase, unless the answer already is what the phrase asks
+    (`_answer_states_unit_text`). Currency data that cannot convert states its unit on
     the byline, whose token clears the departure (`price_basis_not_applied`); data in no
     currency (`NonCurrencyUnitError`) has no unit token, so no one slot clears it. Any other
     unit request (the parsed door's, a resubmit's) is explicit, returns False, and refuses
     through `unit_conversion_refusal`."""
     if not state.unit_text_best_effort or state.unit_text is None:
         return False
+    stated = _answer_states_unit_text(state)
     state.unit_request = None
     state.bound_unit_outcome = None
     state.unit_facet_filter = None
     state.bound_facet_axes = {}
     state.unit_request_basis = None
     state.unit_elected_selections = None
+    if stated:
+        return True
     state.depart(
         Warning(
             code=QUERY_QUALIFIER_DROPPED,
@@ -247,6 +258,44 @@ def withdraw_typed_unit(state: ResolveState, exc: UnitConversionRefusal) -> bool
         else price_basis_not_applied(asked=state.unit_text, shown=None),
     )
     return True
+
+
+def _answer_states_unit_text(state: ResolveState) -> bool:
+    """Whether the elected answer already holds every member its typed unit phrase names
+    (`ResolveState.unit_request_basis`), so the conversion it was refused is not needed: a
+    price basis its shape carries (`qualifier_readings.shape_carries_measure_match`, which
+    reads a UN series' declared basis, so UNIDO's GDP at constant 2015 prices in US dollars
+    holds "in constant US dollars"), and a currency every facet it serves is denominated
+    in. A named base year is not checked against the shape, so a phrase naming one always
+    reports dropped."""
+    basis, request, shape = state.unit_request_basis, state.unit_request, state.shape_draft
+    if basis is None or request is None or shape is None:
+        return False
+    if basis.get("base_year") == "bound":
+        return False
+    if basis.get("prices") == "bound":
+        bases = [
+            match
+            for match in match_qualifiers(state.unit_text or "", get_index(), get_measure_index())
+            if match.code_system == PRICE_BASIS_AXIS
+        ]
+        if not bases or not all(shape_carries_measure_match(shape, match) for match in bases):
+            return False
+    if basis.get("currency") == "bound":
+        plan = state.mat_result.read_plan if isinstance(state.mat_result, Materialised) else None
+        units = served_units(plan) if plan is not None else frozenset()
+        return bool(units) and all(_unit_currency(unit) == request.currency for unit in units)
+    return True
+
+
+def _unit_currency(unit: str | None) -> str | None:
+    """The ISO 4217 code facet unit `unit` is denominated in: a currency node's
+    (`native_currency_iso`), or a US-dollar unit no graph node types, such as the UN System
+    Data Commons' `undata/UNIT_MEASURE-CR_USD_K` (`unit_class.classify_unit`)."""
+    return (
+        native_currency_iso(unit)
+        or classify_unit(unit=unit, denominator=None, currency_units={}).currency
+    )
 
 
 async def _elected_flagged_match(
