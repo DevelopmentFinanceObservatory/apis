@@ -2748,7 +2748,7 @@ class TestBreakdownDecision:
             pytest.param(
                 _ACTIVITY_ARCS,
                 [_activity_source("unbound"), _SECTOR_OPENED],
-                Empty(),
+                Empty((_ACTIVITY_ONLY, _ACTIVITY_AND_SECTOR)),
                 id="opened_slots_leaving_no_member_are_empty",
             ),
             pytest.param(

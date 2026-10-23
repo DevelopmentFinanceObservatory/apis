@@ -270,14 +270,15 @@ _Q5 = "undata/who/MORT_U5_RATE.WEALTH_QUANTILE--Q5"
 _WEALTH = "undataWealthQuantile"
 
 
-def test_a_series_with_no_total_states_the_members_a_mint_of_its_definition_serves(
+def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
     bind_catalogue,
 ) -> None:
     """The WHO series holds a highest-quintile member and two by-sex members, each asserting
-    one slot, so none is its total and a mint of the definition, which leaves both slots
-    open, serves all three. The answer serves the same three: its members, its coverage and
-    its download state the mint's three series and their 15 rows in Kenya, and no member
-    stands in for the family."""
+    one slot, so none is its total, and the question names no breakdown. Each breakdown is
+    a candidate whose identity carries its own slot alone, so a mint of its definition
+    serves exactly the members it states: the two by-sex series and their 10 rows in Kenya
+    first, as the breakdown with more members holding data there, then the quintile and
+    its 5 rows, offered on the `breakdown` basis."""
     members = {
         _Q5: ("Under-five mortality rate [Wealth quantile=Highest quintile]", _WEALTH, "Q5"),
         _FEMALE: ("Under-five mortality rate [Sex=Female]", _SEX, "F"),
@@ -334,15 +335,17 @@ def test_a_series_with_no_total_states_the_members_a_mint_of_its_definition_serv
         )
     )
 
-    assert result.status == "definite"
-    (answer,) = result.specs
-    resolved = answer.resolved
-    assert [sv.ref.ref for sv in resolved.members] == list(members)
-    assert resolved.stat_vars.served_count == len(members)
-    assert resolved.coverage.observation_count == 15
-    assert resolved.download is not None
-    assert (resolved.download.rows, resolved.download.series) == (15, len(members))
-    assert "family_total_absent" not in {warning.code for warning in result.warnings}
+    assert result.status == "candidates"
+    assert [
+        (
+            [slot.property for slot in spec.definition.identity.slots],
+            [sv.ref.ref for sv in spec.resolved.members],
+            spec.resolved.stat_vars.served_count,
+            spec.resolved.basis,
+        )
+        for spec in result.specs
+    ] == [([_SEX], [_FEMALE, _MALE], 2, None), ([_WEALTH], [_Q5], 1, "breakdown")]
+    assert [spec.resolved.coverage.observation_count for spec in result.specs] == [10, 5]
 
 
 _QUINTILES = {
@@ -354,20 +357,29 @@ _QUINTILES = {
 } | {_Q5: ("undata/WEALTH-Q5", "Highest quintile")}
 
 
-def _hold_wealth_series(bind_catalogue, *, un_pass: bool) -> FakeGraph:
+_RESIDENCE = "undataResidenceArea"
+_URBAN = ("undata/RES-U", "Urban")
+
+
+def _hold_wealth_series(bind_catalogue, *, un_pass: bool, urban: bool = False) -> FakeGraph:
     """Bind tables holding a WHO series whole: five wealth members, each asserting one
-    quintile, and two by-sex members, each holding five points at Kenya. Return the graph
-    whose recall for "under-five mortality by wealth quintile" scores the highest quintile
-    alone, our resolve's or, with `un_pass`, the UN resolve's, ours recalling nothing."""
+    quintile and, with `urban`, the urban residence area too, and two by-sex members, each
+    holding five points at Kenya. Return the graph whose recall for "under-five mortality by
+    wealth quintile" scores the highest quintile alone, our resolve's or, with `un_pass`,
+    the UN resolve's, ours recalling nothing."""
+    residence = {_RESIDENCE: _URBAN} if urban else {}
     members = {
         **{
-            sv: (f"Under-five mortality rate [Wealth quantile={label}]", _WEALTH, value, label)
+            sv: (
+                f"Under-five mortality rate [Wealth quantile={label}]",
+                {_WEALTH: (value, label), **residence},
+            )
             for sv, (value, label) in _QUINTILES.items()
         },
-        _FEMALE: ("Under-five mortality rate [Sex=Female]", _SEX, "undata/SEX-F", "Female"),
-        _MALE: ("Under-five mortality rate [Sex=Male]", _SEX, "undata/SEX-M", "Male"),
+        _FEMALE: ("Under-five mortality rate [Sex=Female]", {_SEX: ("undata/SEX-F", "Female")}),
+        _MALE: ("Under-five mortality rate [Sex=Male]", {_SEX: ("undata/SEX-M", "Male")}),
     }
-    slot_names = {_WEALTH: "Wealth quantile", _SEX: "Sex"}
+    slot_names = {_WEALTH: "Wealth quantile", _SEX: "Sex", _RESIDENCE: "Residence area"}
     bind_catalogue(
         restrictive_catalogue(
             provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
@@ -376,9 +388,12 @@ def _hold_wealth_series(bind_catalogue, *, un_pass: bool) -> FakeGraph:
                     sv: un_variable(
                         _SERIES,
                         name=name,
-                        constraints={prop: (slot_names[prop], value, label)},
+                        constraints={
+                            prop: (slot_names[prop], value, label)
+                            for prop, (value, label) in constraints.items()
+                        },
                     )
-                    for sv, (name, prop, value, label) in members.items()
+                    for sv, (name, constraints) in members.items()
                 }
             ),
         )
@@ -389,10 +404,16 @@ def _hold_wealth_series(bind_catalogue, *, un_pass: bool) -> FakeGraph:
             "country/KEN": {"label": "Kenya", "type": "Country"},
             _SERIES: {"label": "Under-five mortality rate"},
             **{prop: {"label": name} for prop, name in slot_names.items()},
-            **{value: {"label": label} for _name, _prop, value, label in members.values()},
             **{
-                sv: _member_node(name, {prop: value})
-                for sv, (name, prop, value, _label) in members.items()
+                value: {"label": label}
+                for _name, constraints in members.values()
+                for value, label in constraints.values()
+            },
+            **{
+                sv: _member_node(
+                    name, {prop: value for prop, (value, _label) in constraints.items()}
+                )
+                for sv, (name, constraints) in members.items()
             },
         },
         obs={
@@ -473,39 +494,87 @@ def test_a_resubmit_of_a_breakdown_identity_keeps_its_spec_id(bind_catalogue) ->
     assert spec.resolved.stat_vars.served_count == len(_QUINTILES)
 
 
+def test_a_breakdown_no_member_holds_alone_offers_each_breakdown_as_a_candidate(
+    bind_catalogue,
+) -> None:
+    """Every quintile member of the series also asserts the urban residence area, so "by
+    wealth quintile" opens a slot no member asserts alone and no identity serves the
+    quintiles by themselves. The part offers the family's breakdowns instead: the quintiles
+    by residence area, which recall reached, then the two by-sex series."""
+    result = _resolve_by_wealth_quintile(
+        _hold_wealth_series(bind_catalogue, un_pass=False, urban=True)
+    )
+
+    assert result.status == "candidates"
+    assert [
+        (
+            [slot.property for slot in spec.definition.identity.slots],
+            {sv.ref.ref for sv in spec.resolved.members},
+            spec.resolved.basis,
+        )
+        for spec in result.specs
+    ] == [
+        ([_RESIDENCE, _WEALTH], set(_QUINTILES), None),
+        ([_SEX], {_FEMALE, _MALE}, "breakdown"),
+    ]
+
+
+def test_a_resubmit_of_a_breakdown_candidate_answers_it_under_its_spec_id(
+    bind_catalogue,
+) -> None:
+    """A resubmit of the by-sex candidate's identity reads its slots as posted, so it answers
+    definite over the same two series under the same spec_id."""
+    from search.engine.region import resolve_spec_resubmit
+    from search.models import ResubmitIdentityPayload
+
+    graph = _hold_wealth_series(bind_catalogue, un_pass=False, urban=True)
+    (by_sex,) = [
+        spec
+        for spec in _resolve_by_wealth_quintile(graph).specs
+        if spec.resolved.basis == "breakdown"
+    ]
+
+    resubmitted = resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=by_sex.definition.identity),
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(graph, EngineOptions(deadline=None)),
+    )
+
+    assert resubmitted.status == "definite"
+    (spec,) = resubmitted.specs
+    assert spec.spec_id == by_sex.spec_id
+    assert {sv.ref.ref for sv in spec.resolved.members} == {_FEMALE, _MALE}
+    assert spec.resolved.stat_vars.served_count == 2
+
+
 def test_a_narrowed_part_whose_walk_settles_another_query_raises(bind_catalogue) -> None:
     """A narrowed part's walk must settle its identity's query. A walk keyed by the query
     that still carries the sex slot settled another family than a mint of the identity
     serves, so assembling the answer raises; a walk of the identity's own query passes."""
     from types import SimpleNamespace
 
-    from search.engine.region.phase_answer import _check_breakdown_settled
+    from search.engine.region.grounding import check_breakdown_settled
     from search.engine.retrieval.bound_values import (
         StatedMembers,
         WalkedMembers,
         identity_query,
         walk_key,
     )
-    from search.engine.retrieval.standard import Narrow
 
     (answer,) = _resolve_by_wealth_quintile(
         _hold_wealth_series(bind_catalogue, un_pass=False)
     ).specs
     query = identity_query(answer.definition.identity)
     wider = dataclasses.replace(query, slots={**query.slots, _SEX: ("unbound",)})
-    state = SimpleNamespace(
-        breakdown=Narrow(frozenset({_WEALTH})),
-        walked=WalkedMembers(
-            key=walk_key(wider), stated=StatedMembers(served_count=7, digest=None)
-        ),
-        shape_draft=SimpleNamespace(shape_id="un_wealth"),
-    )
+    shape = SimpleNamespace(shape_id="un_wealth", omitted_slots=frozenset({_SEX}))
+    walked = WalkedMembers(key=walk_key(wider), stated=StatedMembers(served_count=7, digest=None))
 
     with pytest.raises(AssertionError, match="settles no members"):
-        _check_breakdown_settled(state, answer)
+        check_breakdown_settled(shape, walked, answer)
 
-    state.walked = dataclasses.replace(state.walked, key=walk_key(query))
-    _check_breakdown_settled(state, answer)
+    check_breakdown_settled(shape, dataclasses.replace(walked, key=walk_key(query)), answer)
 
 
 def _settle_queued_presence_reads() -> None:

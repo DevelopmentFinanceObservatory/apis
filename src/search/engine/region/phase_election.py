@@ -681,16 +681,25 @@ def _narrow_to_breakdown(state: ResolveState, role_keys: RoleKeys) -> None:
     state.breakdown_shape = shape
     if not isinstance(decision, Narrow):
         return
+    narrowed = narrowed_to_breakdown(shape, decision.properties)
+    state.capped_shapes[state.elected_index] = narrowed
+    state.shape_draft = narrowed
+
+
+def narrowed_to_breakdown(shape: ShapeDraft, properties: frozenset[str]) -> ShapeDraft:
+    """`shape` with every what or how slot outside `properties` left out of its slot keys
+    and recorded as omitted (`ShapeDraft.omitted_slots`), or `shape` itself when it has no
+    such slot."""
     kept = tuple(
         slot
         for slot in shape.slot_keys
         if slot.axis not in ("what", "how")
         or slot.property_dcid is None
-        or slot.property_dcid in decision.properties
+        or slot.property_dcid in properties
     )
     if len(kept) == len(shape.slot_keys):
-        return
-    narrowed = replace(
+        return shape
+    return replace(
         shape,
         slot_keys=kept,
         omitted_slots=frozenset(
@@ -699,8 +708,6 @@ def _narrow_to_breakdown(state: ResolveState, role_keys: RoleKeys) -> None:
             if slot not in kept and slot.property_dcid is not None
         ),
     )
-    state.capped_shapes[state.elected_index] = narrowed
-    state.shape_draft = narrowed
 
 
 def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:

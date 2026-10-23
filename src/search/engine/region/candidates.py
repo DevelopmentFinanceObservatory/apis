@@ -230,6 +230,7 @@ def walk_alternate(
     role_class_walks: RoleClassWalks | None = None,
     scope: SourceScope | None = None,
     stray_values: Mapping[str, frozenset[str]] | None = None,
+    bindings: Sequence[SlotBindingDraft] | None = None,
 ) -> _Alternate | None:
     """Give an alternate the constraint bindings of `rep_sv` and narrow it to the role class
     its entities elect, or return `None` when the mint refuses its identity or no table the
@@ -240,8 +241,9 @@ def walk_alternate(
     The chosen shape alone receives model bindings. An alternate derives constraint bindings
     from its representative StatVar (`alternate_representative`), except on a property the
     bind drafted values on for a slot the elected reading lacks (`stray_values`), which it
-    binds to the drafted values its members apply (`_with_stray_values`), and names the dataset its
-    shape names (`with_named_source`), as the chosen shape does, so its identity is the one
+    binds to the drafted values its members apply (`_with_stray_values`). A breakdown of
+    the elected shape (`ResolveState.breakdown_rivals`) passes its own `bindings` instead.
+    The alternate names the dataset its shape names (`with_named_source`), as the chosen shape does, so its identity is the one
     a question electing it mints. When the shape names none, the alternate names the
     dataset the part, under the source scope `scope`, is served from under those
     bindings and its role keys, where its unnamed identity would resolve to another at the
@@ -261,9 +263,12 @@ def walk_alternate(
     walk can change the roles the shape declares, so the caller assigns the returned
     shape's places (`place_roles.bound_after_election`) and settles them after this call.
     """
-    bindings = _with_stray_values(
-        standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv), shape, stray_values or {}
-    )
+    if bindings is None:
+        bindings = _with_stray_values(
+            standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv), shape, stray_values or {}
+        )
+    else:
+        bindings = list(bindings)
     try:
         source = part_source(shape, bindings, lambda: role_keys, scope=scope)
     except PartNotServed:

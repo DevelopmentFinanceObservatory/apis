@@ -742,15 +742,21 @@ class Narrow:
 @dataclass(frozen=True)
 class Empty:
     """The opened slots leave no member: every member also asserts a slot the request did
-    not open."""
+    not open. The answer offers the family's `signatures` as `Candidates` does, over the
+    `bound` properties."""
+
+    signatures: tuple[frozenset[str], ...]
+    bound: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
 class Candidates:
     """Nothing opened, and the members break down by several `signatures`, each the set
-    of unbound properties some member asserts, in member order."""
+    of unbound properties some member asserts, in member order. Each candidate's identity
+    carries the `bound` properties and one signature."""
 
     signatures: tuple[frozenset[str], ...]
+    bound: frozenset[str] = frozenset()
 
 
 type BreakdownDecision = Keep | Narrow | Empty | Candidates
@@ -771,7 +777,7 @@ def breakdown_decision(
     reads, with the families the code index decides and exact member sets beside it. Otherwise, with slots opened
     as ``requested_all`` (an operation's slot, or a breakdown the phrase names), the
     identity carries the bound and opened properties when a member asserts no other
-    (`Narrow`), and `Empty` when none does. With nothing opened, members asserting only
+    (`Narrow`), and `Empty`, holding every signature, when none does. With nothing opened, members asserting only
     bound properties narrow to those, one signature narrows to it beside them, and several
     are `Candidates`. A member whose constraints are unknown has no signature, since the
     mint drops it."""
@@ -802,12 +808,12 @@ def breakdown_decision(
     if opened:
         if any(signature <= opened for signature in signatures):
             return Narrow(bound | opened)
-        return Empty()
+        return Empty(signatures, bound)
     if frozenset() in signatures:
         return Narrow(bound)
     if len(signatures) == 1:
         return Narrow(bound | signatures[0], lone_signature=True)
-    return Candidates(signatures)
+    return Candidates(signatures, bound)
 
 
 @dataclass(frozen=True)

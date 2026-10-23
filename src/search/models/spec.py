@@ -784,7 +784,9 @@ class ResolvedSpec(StrictModel):
             "a genuine reading of the request's phrase; 'twin', an equivalent reading of the "
             "elected one, offered where the elected one holds no data; 'direction', the same "
             "reading with the other direction for a place the request names without one, "
-            "which a client shows as a direction prompt. The elected reading, listed first, "
+            "which a client shows as a direction prompt; 'breakdown', the same measure broken "
+            "down by another set of slots, offered when its family holds no total and the "
+            "request names no breakdown that serves a member. The elected reading, listed first, "
             "carries none. None on a definite answer and on every Spec outside "
             "CandidateSet.specs."
         ),

@@ -1046,6 +1046,10 @@ class ResolveState:
     # one, by capped-shape index of its copy, when both directions hold data: offered beside
     # it as a `direction` candidate (`phase_place_materialise._settle_direction`).
     direction_rivals: dict[int, PlaceAssignment] = field(default_factory=dict)
+    # The elected shape narrowed to another breakdown of a family with no total, by
+    # capped-shape index of its copy, with its own bindings: offered beside the elected
+    # breakdown as a `breakdown` candidate (`phase_place_materialise._settle_breakdown`).
+    breakdown_rivals: dict[int, list[SlotBindingDraft]] = field(default_factory=dict)
     # The departures a definite answer states that no warning discloses: the direction it
     # reads a place named without one on (`RegionResult.inferred_facts`).
     inferred_facts: list[DepartureFact] = field(default_factory=list)

@@ -61,6 +61,7 @@ from search.engine.region.grounding import (
     _ground_answer,
     _place_confidence,
     build_identity_entities,
+    check_breakdown_settled,
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
@@ -120,14 +121,12 @@ from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
     bound_values_from_bindings,
-    identity_query,
     open_constraint_axes,
     slot_expansions,
 )
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.read_plan import ReadPlan, plan_probes
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft, UnsupportedDraft
-from search.engine.retrieval.standard import Narrow
 from search.engine.spec_build import (
     RoleAxisFactInput,
     bind_when_slot,
@@ -915,21 +914,6 @@ def _cluster_currency_bindings(
     return {"unit": cluster_currency_binding([f for fs in narrowed.values() for f in fs])}
 
 
-def _check_breakdown_settled(state: ResolveState, spec: Spec) -> None:
-    """Raise when the walk that settled a narrowed part's members (`ResolveState.walked`)
-    settles none for the identity of its Spec: the part read a family a mint of the
-    definition does not serve. A part whose family no walk settled answers under the
-    `membership_unverified` warning."""
-    if not isinstance(state.breakdown, Narrow) or state.walked is None:
-        return
-    if not state.walked.settles(identity_query(spec.definition.identity)):
-        raise AssertionError(
-            f"the walk of {state.shape_draft.shape_id!r} settles no members for the identity "
-            f"of {spec.spec_id!r}, which narrows its slots to "
-            f"{sorted(state.breakdown.properties)!r}"
-        )
-
-
 @dataclasses.dataclass(frozen=True)
 class _DefiniteSpec:
     """The assembled Spec and its measure-partition/open-axis facts,
@@ -1017,7 +1001,7 @@ def _build_definite_spec(
         named_groups=request_named_groups(state, state.place.roles),
         measure_served_rows=measure_served_counter(setup.served_filter),
     )
-    _check_breakdown_settled(state, spec)
+    check_breakdown_settled(state.shape_draft, state.walked, spec)
     spec = with_unit_conversion(
         spec,
         members=served_members,
