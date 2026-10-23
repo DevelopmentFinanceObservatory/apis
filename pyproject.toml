@@ -241,14 +241,14 @@ dfo-data-tools = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is 4ef22b7 on spec-kit's dev branch. It registers
+# The pin is d8a8271 on spec-kit's dev branch. It registers
 # slot_default_not_applied, the three source-code refusals and
 # whole_total_available, retires starved_axis_binding_restored, and holds the
 # client contract `dfo-spec-kit-client-contract` reads.
 # Follow-up: move all six to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4ef22b70d0f11af87ed9a78afda841ab66f6230c", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4ef22b70d0f11af87ed9a78afda841ab66f6230c", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "d8a82713d718a23b3ce88844c51741a6f9d96085", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "d8a82713d718a23b3ce88844c51741a6f9d96085", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
