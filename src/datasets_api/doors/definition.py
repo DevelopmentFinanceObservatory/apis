@@ -51,6 +51,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
 from itertools import chain
+from typing import Any
 
 from dfo_frame_grammar import FrameError
 from dfo_spec_kit.identity import IdentityError
@@ -115,6 +116,7 @@ from datasets_api.operation_store import OperationBacklogFull
 from datasets_api.operations.submit import (
     OperationSubmitted,
     operation_submitted_resource,
+    retry_after_headers,
 )
 from datasets_api.query_options import (
     QueryOptionsInvalid,
@@ -122,6 +124,7 @@ from datasets_api.query_options import (
     pointer_for_key,
 )
 from datasets_api.render import check_options_supported, linked_under
+from datasets_api.retention import retaining
 from datasets_api.schema import MembersEnvelope, OperationResource, ServedMember
 from datasets_api.shape import StatVarShape
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -641,7 +644,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
         try:
             head_answer = await _run_retrieval(
                 deps.read_executor,
-                _serve_spec_head,
+                retaining(_serve_spec_head, reader=deps.snapshot_reader, now=deps.now),
                 deps=request_deps,
                 timings=call.timings,
                 spec_id=id,
@@ -651,7 +654,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             manifest = (
                 await _run_retrieval(
                     deps.work_executor,
-                    _serve_spec,
+                    retaining(_serve_spec, reader=deps.snapshot_reader, now=deps.now),
                     timings=call.timings,
                     stored=head_answer.stored,
                     options=options,
@@ -666,7 +669,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             )
         except OperationSubmitted as submitted:
             # Treat a 202 submission as a successful `door_call` outcome.
-            submitted_resource = operation_submitted_resource(submitted)
+            submitted_resource = operation_submitted_resource(submitted, now=deps.now())
     if submitted_resource is not None:
         assert submitted_resource.operation.poll is not None
         return JSONResponse(
@@ -675,6 +678,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             headers={
                 **no_store_headers(server_timing=call.server_timing),
                 "Location": submitted_resource.operation.poll,
+                **retry_after_headers(submitted_resource.operation),
             },
         )
     # The links name the requested id, so a click honours the revocations this request did.
@@ -882,6 +886,31 @@ ROUTE_EXCEPTION_TYPES: Mapping[str, tuple[type[Exception], ...]] = {
 The door's `exception_types` is their union."""
 
 
+OPERATION_SUBMITTED_RESPONSES: dict[int | str, dict[str, Any]] = {
+    202: {
+        "model": OperationResource,
+        "description": (
+            "The build runs as a background operation. Poll `Location` until the operation "
+            "is done; the done poll carries the manifest."
+        ),
+        "headers": {
+            "Location": {
+                "description": "The operation's poll URL, `operation.poll` in the body.",
+                "schema": {"type": "string"},
+            },
+            "Retry-After": {
+                "description": (
+                    "Whole seconds to wait before the next poll, rounded up from "
+                    "`operation.retry_after_ms`. The value grows as the build runs."
+                ),
+                "schema": {"type": "integer", "minimum": 1},
+            },
+        },
+    }
+}
+"""The `202` the mint and definition routes answer when a build exceeds the inline budget."""
+
+
 def build_definition_door(*, deps: DepsCell) -> DoorContribution:
     """Build the retrieval door over the surface's dependency cell.
 
@@ -890,7 +919,11 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
     """
     router = APIRouter()
 
-    @router.get("/api/datasets/{id:dfo_spec_id}", response_model=Manifest)
+    @router.get(
+        "/api/datasets/{id:dfo_spec_id}",
+        response_model=Manifest,
+        responses=OPERATION_SUBMITTED_RESPONSES,
+    )
     async def get_definition(id: str, request: Request) -> JSONResponse:
         return await _get_definition_impl(id, request, deps=deps.get())
 

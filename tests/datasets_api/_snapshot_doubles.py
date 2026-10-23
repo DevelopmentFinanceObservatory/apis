@@ -8,10 +8,12 @@ import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from typing import cast
 
 from fastapi.testclient import TestClient
 
 from artifact_store import Tier
+from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import (
     Revocation,
     StoredArtifactLocation,
@@ -21,6 +23,17 @@ from dataset_store.snapshot import (
 )
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
+from datasets_api.version_store import rendering_key
+from datasets_api.versions import (
+    NULL_VERSION_RECORD_WRITER,
+    ArtifactRecord,
+    NullVersionRecordWriter,
+    VersionRecord,
+    VersionRecordWriter,
+    VersionWrite,
+    WrittenVersion,
+    unlinked_state,
+)
 from dfo_platform.app import Surface, create_app
 from dfo_platform.doors import DoorContribution
 from spec_registry.reader import StoredDefinition
@@ -153,6 +166,85 @@ class StoreBackedSnapshotReader(FakeSnapshotReader):
             and (location.artifact_digest, Tier.pinned.value) not in listed
         ]
         return linked + promoted
+
+
+@dataclass
+class RecordingVersionWriter:
+    """`inner`, whose writes this writer also records into `reader`. `make_app` and `fake_deps`
+    wire it beside a fake reader.
+
+    Every call answers as `inner` does, the null writer by default, so the serve path runs as
+    under it. `reader` gains each written version, keeping one it already holds, and a working
+    location stored at `now()` for each artifact a write links, so a door reading the version
+    it just served (`datasets_api.retention`) finds it, as it does against the live store.
+    """
+
+    reader: FakeSnapshotReader
+    inner: VersionRecordWriter = NULL_VERSION_RECORD_WRITER
+    now: Clock = utc_now
+
+    def _record(self, record: VersionRecord) -> None:
+        self.reader.versions.setdefault(
+            (record.subject_id, record.content_version), unlinked_state(record).version
+        )
+        for artifact in record.artifacts:
+            self._link(record.subject_id, record.content_version, artifact)
+
+    def _link(self, subject_id: str, content_version: str, artifact: ArtifactRecord) -> None:
+        key = rendering_key(artifact.rendering)
+        linked = self.reader.locations.setdefault((subject_id, content_version), [])
+        linked[:] = [location for location in linked if location.rendering_key != key]
+        stored_at = self.now()
+        linked.append(
+            _location(
+                digest=artifact.artifact_digest,
+                stored_at=stored_at,
+                created_at=stored_at,
+                rendering_key=key,
+                rendering=artifact.rendering,
+                media_type=artifact.media_type,
+            )
+        )
+
+    def record_version(self, record: VersionRecord, *, trace_id: str | None = None) -> bool:
+        self._record(record)
+        return self.inner.record_version(record, trace_id=trace_id)
+
+    def record_artifact(
+        self,
+        *,
+        subject_id: str,
+        content_version: str,
+        artifact: ArtifactRecord,
+        trace_id: str | None = None,
+    ) -> str:
+        self._link(subject_id, content_version, artifact)
+        return self.inner.record_artifact(
+            subject_id=subject_id,
+            content_version=content_version,
+            artifact=artifact,
+            trace_id=trace_id,
+        )
+
+    def write_version(self, write: VersionWrite, *, trace_id: str | None = None) -> WrittenVersion:
+        self._record(write.record)
+        for artifact in write.rendered:
+            self._link(write.record.subject_id, write.record.content_version, artifact)
+        if write.collapsed is not None:
+            self._record(write.collapsed)
+        return self.inner.write_version(write, trace_id=trace_id)
+
+
+def offline_version_pair(*, version_writer: object, snapshot_reader: object) -> dict[str, object]:
+    """The `version_writer` and `snapshot_reader` of an offline app or `Deps`. An omitted reader
+    is an empty `FakeSnapshotReader` and an omitted writer the null writer. A fake reader sees
+    what the writer writes (`RecordingVersionWriter`), as the live reader sees the live
+    writer's rows."""
+    reader = snapshot_reader if snapshot_reader is not None else FakeSnapshotReader()
+    writer = version_writer if version_writer is not None else NullVersionRecordWriter()
+    if isinstance(reader, FakeSnapshotReader):
+        writer = RecordingVersionWriter(reader=reader, inner=cast(VersionRecordWriter, writer))
+    return {"version_writer": writer, "snapshot_reader": reader}
 
 
 def version_body(content_version: str = "cv1") -> dict[str, object]:

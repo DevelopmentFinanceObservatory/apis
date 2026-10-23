@@ -779,7 +779,7 @@ def graph_read_problem(exc: GraphReadError) -> ProblemSpec:
     return ProblemSpec(status=503, code="service_unavailable", retryable=True)
 
 
-async def node_endpoint(
+async def get_node(
     dcid: str, deps: GraphDepsDep, request: Request, as_of: date | None = None
 ) -> Response:
     if len(dcid) > routing.DCID_MAX_LENGTH:
@@ -790,7 +790,7 @@ async def node_endpoint(
     return gapped_public_json(node.model_dump(mode="json"), request, transient_gap=transient_gap)
 
 
-async def nodes_endpoint(body: NodesRequest, deps: GraphDepsDep, request: Request) -> JSONResponse:
+async def get_nodes(body: NodesRequest, deps: GraphDepsDep, request: Request) -> JSONResponse:
     response = await asyncio.wait_for(
         _build_batch_response(request, deps, body.dcids), timeout=GRAPH_NODE_TIMEOUT_SECONDS
     )
@@ -804,13 +804,13 @@ def build_node_door() -> DoorContribution:
     # `response_model` documents the union in OpenAPI. The handlers' responses pass through.
     router.add_api_route(
         "/api/graph/node/{dcid:dcid}",
-        node_endpoint,
+        get_node,
         methods=["GET"],
         response_model=NodeResponse,
     )
     router.add_api_route(
         "/api/graph/nodes",
-        nodes_endpoint,
+        get_nodes,
         methods=["POST"],
         response_model=NodesResponse,
     )

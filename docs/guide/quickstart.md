@@ -104,6 +104,7 @@ if jq -e '.operation' response.json > /dev/null; then
       jq '.manifest' operation.json > manifest.json
       break
     fi
+    wait_seconds="$(jq -r '.operation.retry_after_ms / 1000' operation.json)"
   done
 else
   cp response.json manifest.json
@@ -194,6 +195,7 @@ with httpx.Client(base_url=DFO_API, timeout=120) as client:
             if result["operation"]["status"] == "done":
                 manifest = result["manifest"]
                 break
+            wait_seconds = result["operation"]["retry_after_ms"] / 1000
     else:
         manifest = result
 
