@@ -606,9 +606,12 @@ class TestViews:
 
 class TestProcessService:
     @pytest.fixture(autouse=True)
-    def _fresh_singleton(self) -> Iterator[None]:
+    def _fresh_singleton(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         # Restores the session's service on exit, so later tests serve the release
-        # `tests/conftest.py` bound.
+        # `tests/conftest.py` bound. The shared member enumerator would otherwise follow
+        # each test's service and stop caching the session's member groups; a test that
+        # records the follow replaces this stub.
+        monkeypatch.setattr(shared_enumerator(), "follow_swaps", lambda service: None)
         with service_module._singleton.isolated():
             yield
 
