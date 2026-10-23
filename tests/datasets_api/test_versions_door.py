@@ -369,6 +369,9 @@ def test_versions_list_leaves_out_a_revoked_version(
     rig.record_version(content_version=_cv(1))
     rig.record_version(content_version=_cv(2), base_content_version=_cv(1))
     rig.record_version(content_version=_cv(3))
+    if subject_id != "spec_a":
+        # A revocation names a version recorded under its subject.
+        rig.record_version(content_version=revoked, subject_id=subject_id)
     rig.revoke(content_version=revoked, subject_id=subject_id)
     reader = _ServingSpecReader(spec_ids=["spec_a"], served={"spec_a": ("spec_served", "spec_a")})
 
@@ -377,6 +380,98 @@ def test_versions_list_leaves_out_a_revoked_version(
     assert _cv(2) not in listed
     assert _cv(3) in listed
     assert (_cv(1) in listed) is (revoked != _cv(1))
+
+
+_SERVED_FIRST = _ServingSpecReader(
+    spec_ids=["spec_a", "spec_served"], served={"spec_a": ("spec_served", "spec_a")}
+)
+
+
+@pytest.mark.parametrize(
+    ("bases", "revoked", "served"),
+    [
+        pytest.param({"spec_a": _cv(1)}, None, True, id="first-record-missing"),
+        pytest.param({"spec_a": _cv(1)}, _cv(1), False, id="only-record-s-base-revoked"),
+        pytest.param(
+            {"spec_served": _cv(1), "spec_a": _cv(8)},
+            _cv(1),
+            False,
+            id="first-record-s-base-revoked",
+        ),
+        pytest.param(
+            {"spec_served": _cv(1), "spec_a": _cv(8)},
+            _cv(8),
+            True,
+            id="later-record-s-base-revoked",
+        ),
+        pytest.param(
+            {"spec_served": _cv(1), "spec_a": _cv(8)},
+            _cv(2),
+            False,
+            id="version-revoked-under-the-posted-id",
+        ),
+    ],
+)
+def test_versions_list_holds_a_version_exactly_when_the_snapshot_door_serves_it(
+    rig: _Rig, bases: Mapping[str, str], revoked: str | None, served: bool
+) -> None:
+    """`_cv(2)` is recorded as a dataset version under each subject of `bases`, on the base
+    version it names, which is recorded under the posted id, and `revoked`, when set, is
+    revoked under the posted id. The snapshot door reads the first subject in served order
+    that records the version and checks revocation against that record, and the history
+    lists the version exactly when that read serves it, as `served` states."""
+    for base in sorted(set(bases.values())):
+        rig.record_version(content_version=base)
+    for subject_id in ("spec_served", "spec_a"):
+        if subject_id in bases:
+            rig.record_version(
+                subject_id=subject_id,
+                content_version=_cv(2),
+                base_content_version=bases[subject_id],
+                renderings=(_FRAME1_RENDERING,),
+                facts=_dataset_facts("observationAbout"),
+            )
+    if revoked is not None:
+        rig.revoke(content_version=revoked)
+    client = rig.client(_SERVED_FIRST)
+
+    snapshot = client.get(f"/api/datasets/spec_a/{_cv(2)}")
+
+    assert snapshot.status_code == (200 if served else 410), snapshot.text
+    assert (_cv(2) in _listed(client.get(_VERSIONS_PATH))) is served
+
+
+def test_a_version_recorded_under_several_ids_lists_the_chosen_record_s_lineage_and_files(
+    rig: _Rig,
+) -> None:
+    """A version recorded under a served id and the posted id lists the base version and the
+    files of the record the snapshot door reads, the served id's, and none of the other's."""
+    rig.record_version(
+        subject_id="spec_a",
+        content_version=_cv(2),
+        base_content_version=_cv(9),
+        renderings=({**_PLAIN_RENDERING, "groupby": _GROUPBY},),
+        facts=_dataset_facts("observationAbout"),
+    )
+    rig.record_version(
+        subject_id="spec_served",
+        content_version=_cv(2),
+        base_content_version=_cv(1),
+        renderings=(_FRAME1_RENDERING,),
+    )
+
+    response = rig.client(_SERVED_FIRST).get(_VERSIONS_PATH)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["versions"] == [
+        {
+            "content_version": _cv(2),
+            "base_content_version": _cv(1),
+            "rendering": "not_recorded",
+            "groupby": None,
+            "enrichment_stamp": get_index().enrichment_digest,
+        }
+    ]
 
 
 def test_versions_list_reads_under_the_served_ids_bound_to_a_posted_id(rig: _Rig) -> None:

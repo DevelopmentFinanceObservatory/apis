@@ -355,8 +355,9 @@ class VersionLister(Protocol):
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
     ) -> list[ListedVersion]:
         """Return at most `limit` versions recorded under any of `subject_ids`, newest first,
-        starting after `after`, leaving out each version revoked, or whose base version is
-        revoked, under any of them. A version recorded under several of them lists once."""
+        starting after `after`. A version lists once, from its record under the earliest of
+        `subject_ids` that records it, and is left out when that record's version or base
+        version is revoked under any of them."""
         ...
 
 
