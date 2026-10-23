@@ -22,6 +22,7 @@ import pytest
 from code_index.shared import get_index, get_measure_index
 from entity_resolution import Admission, EntityResolver
 from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.extract import DateRequest
@@ -49,6 +50,7 @@ from search.engine.region.alternate_guard import (
 from search.engine.region.candidates import alternate_representative
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, EquivalentCluster
+from search.engine.region.qualifier_readings import shape_carries_measure_match
 from search.engine.region.state import ResolveState
 from search.engine.region.status_rule import CLOSED_AXES, OpenAxes
 from search.engine.retrieval.bound_values import (
@@ -57,9 +59,12 @@ from search.engine.retrieval.bound_values import (
     index_member_rows,
     price_basis_order,
 )
+from search.engine.retrieval.derive import derive_shapes
 from search.engine.role_text import DoorRole
+from search.engine.series_declarations import declared_measurement_qualifier
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.models import CandidatesPart, Operation, Resolution, RoleAxis, TimeWindow
+from search.models import DefinitePart, Operation, Resolution, RoleAxis, TimeWindow
+from tests.engine._binders import FixedBindReplyLLM, ReplyBinder, elected_reply
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -1676,12 +1681,7 @@ class _SoleOptionLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=self._bindings,
-            also_plausible=self._also_plausible,
-            ask=None,
-        ), None
+        return elected_reply(0, bindings=self._bindings, also_plausible=self._also_plausible), None
 
 
 def _resolve_gdp_of_kenya(
@@ -1691,6 +1691,7 @@ def _resolve_gdp_of_kenya(
     also_plausible,
     bindings: Sequence[SlotBindingDraft] = _GDP_SOLE_OPTION,
     *,
+    binder: Binder | None = None,
     places: Mapping[str, str] = _KENYA,
     absent: Collection[tuple[str, str]] = (),
 ):
@@ -1721,6 +1722,7 @@ def _resolve_gdp_of_kenya(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_SoleOptionLLM(also_plausible, bindings),
             base_timing={},
             sdmx=FakeSdmxClient(
@@ -1897,7 +1899,17 @@ _APART = [0.9, 0.85, 0.84]
 
 
 @pytest.mark.parametrize(
-    ("svs", "bindings", "scores", "also_plausible", "places", "absent", "served", "listed"),
+    (
+        "svs",
+        "bindings",
+        "scores",
+        "also_plausible",
+        "places",
+        "absent",
+        "served",
+        "listed",
+        "binder",
+    ),
     [
         pytest.param(
             {**_WB_NOMINAL_GDP_NODES, _IMF_GDP_SV: _IMF_GDP_NODE},
@@ -1908,6 +1920,7 @@ _APART = [0.9, 0.85, 0.84]
             (),
             _NOMINAL_GDP_SV,
             _IMF_GDP_SV,
+            None,
             id="world-bank-elected",
         ),
         pytest.param(
@@ -1919,6 +1932,7 @@ _APART = [0.9, 0.85, 0.84]
             (),
             _NOMINAL_GDP_SV,
             _IMF_GDP_SV,
+            None,
             id="world-bank-elected-not-nominated",
         ),
         pytest.param(
@@ -1930,6 +1944,7 @@ _APART = [0.9, 0.85, 0.84]
             (),
             _NOMINAL_GDP_SV,
             _IMF_GDP_SV,
+            None,
             id="imf-elected-world-bank-preferred",
         ),
         pytest.param(
@@ -1941,6 +1956,7 @@ _APART = [0.9, 0.85, 0.84]
             (),
             _NOMINAL_GDP_SV,
             _IMF_GDP_SV,
+            None,
             id="imf-elected-world-bank-not-nominated",
         ),
         pytest.param(
@@ -1952,6 +1968,7 @@ _APART = [0.9, 0.85, 0.84]
             ((_NOMINAL_GDP_SV, "country/SOM"),),
             _IMF_GDP_SV,
             _NOMINAL_GDP_SV,
+            ReplyBinder(),
             id="imf-elected-world-bank-lacks-a-place",
         ),
         pytest.param(
@@ -1963,6 +1980,7 @@ _APART = [0.9, 0.85, 0.84]
             ((_NOMINAL_GDP_SV, "country/SOM"),),
             _IMF_GDP_SV,
             _NOMINAL_GDP_SV,
+            None,
             id="imf-elected-world-bank-not-nominated-lacks-a-place",
         ),
         pytest.param(
@@ -1974,12 +1992,13 @@ _APART = [0.9, 0.85, 0.84]
             ((_IMF_GDP_SV, "country/CUB"),),
             _NOMINAL_GDP_SV,
             None,
+            None,
             id="imf-elected-without-data-world-bank-answers",
         ),
     ],
 )
 def test_a_bare_gdp_lists_its_registered_twin_as_an_equivalent_reading(
-    svs, bindings, scores, also_plausible, places, absent, served, listed
+    svs, bindings, scores, also_plausible, places, absent, served, listed, binder
 ):
     """A bare GDP answers World Bank nominal GDP, the registry's preferred twin, and lists
     the IMF series under equivalent readings, whichever of the two bind elects and whether or
@@ -1996,6 +2015,7 @@ def test_a_bare_gdp_lists_its_registered_twin_as_an_equivalent_reading(
         bindings=bindings,
         places=places,
         absent=absent,
+        binder=binder,
     )
 
     assert result.status == "definite", result
@@ -2497,18 +2517,45 @@ def test_real_gdp_of_zambia_keeps_its_named_price_basis_in_the_un_pass():
     US dollar series is `worldBank/NY_GDP_MKTP_KD`, which declares no qualifier and is not
     recalled. The qualifier pin refuses every Nominal sibling, so nominal GDP, which has
     Zambia data, is kept out, and the UN pass answers with UNIDO's constant-price
-    series first. UN series declare no qualifier, so "real" reads as not applied and the
-    current-price series stays beside it."""
+    series, whose price basis the origin registry declares RealValue, so "real" reads as
+    applied (`shape_carries_measure_match`). The reply rates
+    the current-price series it nominates below the nomination bar, so it is no rival."""
     result = offline_resolve(make_request("real GDP of Zambia"))
 
     assert isinstance(result, Resolution)
     part = result.parts[0]
-    assert isinstance(part, CandidatesPart)
-    assert [ref_dcid(spec.resolved.shape.population_type) for spec in part.candidates.specs] == [
-        "undata/unido/SERIES-NA_GDPCOD",
-        "undata/unido/SERIES-NA_GDPCUD",
-    ]
-    assert QUERY_QUALIFIER_DROPPED in [warning.code for warning in part.warnings]
+    assert isinstance(part, DefinitePart)
+    assert ref_dcid(part.spec.resolved.shape.population_type) == "undata/unido/SERIES-NA_GDPCOD"
+    assert QUERY_QUALIFIER_DROPPED not in [warning.code for warning in part.warnings]
+
+
+@pytest.mark.parametrize(
+    ("variable", "qualifier"),
+    [
+        pytest.param("undata/unido/NA_GDPCOD", "RealValue", id="constant-2015-dollars"),
+        pytest.param("undata/unido/NA_GDPCUD", None, id="current-prices-undeclared"),
+    ],
+)
+def test_a_un_series_shape_carries_the_price_basis_the_registry_declares(
+    variable: str, qualifier: str | None
+):
+    """UNIDO's "Gross domestic product at constant prices of 2015 in US dollars" asserts no
+    `measurementQualifier`, so its shape's own field is empty and the origin registry's
+    declaration states its price basis, which carries "constant US dollars". The
+    current-price series declares none and carries neither."""
+    (shape,) = derive_shapes(confirmed_svs=[variable], graph=FakeGraph())
+    constant = QualifierMatch(
+        code_system="measurementQualifier",
+        code_dcid="RealValue",
+        label="Real value",
+        source="synonym",
+        matched_text="constant US dollars",
+    )
+
+    assert shape.pop_type_dcid == variable.replace("unido/", "unido/SERIES-")
+    assert shape.meas_qual_dcid is None
+    assert declared_measurement_qualifier(shape) == qualifier
+    assert shape_carries_measure_match(shape, constant) is (qualifier is not None)
 
 
 # Interpretation admissibility: each rule refuses one reading of a corpus question and admits
@@ -2779,10 +2826,16 @@ def test_a_declined_reading_flagged_in_place_of_its_family_names_the_reading_ask
     """corpus nn-05: the model declines every admissible reading of "measles incidence rate"
     and names the reported case counts, refused on the rate the question names. The flagged
     match names measles, the condition the phrase states, and not every condition the
-    family counts."""
-    from tests.engine._harness import make_request, offline_resolve
+    family counts. The bind reply is that decline, held fixed."""
+    llm = FixedBindReplyLLM(
+        _UniversalBindOutput(
+            chosen_shape_index=0, ask="no shape measures the phrase", nearest_refused_index=0
+        )
+    )
+    response = offline_resolve(make_request("measles incidence rate Kenya"), llm=llm)
 
-    response = offline_resolve(make_request("measles incidence rate Kenya"))
+    (prompt,) = llm.bind_prompts
+    assert "  0: Count of Measles incidents" in prompt.partition("NOT ELECTABLE")[2]
 
     (part,) = response.parts
     assert part.status == "no_data"

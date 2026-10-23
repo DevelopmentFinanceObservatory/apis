@@ -13,7 +13,6 @@ from unittest import mock
 
 import pytest
 
-from code_index import default_index_path, load_index
 from code_index.query import CodeIndex
 from code_index.types import DatasetDeclaration, IndexStamp, StatVarRow
 from datasets_api.adapter import (
@@ -47,6 +46,7 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
     imputed_education_aid_identity,
 )
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from ._graph_doubles import FakeMintGraphReader
 from ._member_bounds import mint_bounds
@@ -421,7 +421,7 @@ def test_the_mint_style_resolve_then_adapt_chain_sets_index_sourced_on_the_reque
 
 
 # ---------------------------------------------------------------------------
-# The education-aid identity against the packaged index: a family is one
+# The education-aid identity against the fixture index: a family is one
 # dataset's members.
 # ---------------------------------------------------------------------------
 
@@ -447,7 +447,7 @@ def _provenances(shapes: tuple[StatVarShape, ...], code_index: CodeIndex) -> set
 
 
 def test_the_plain_aid_identity_resolves_the_crs_members():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     resolved = _education_aid_members(education_aid_identity(), code_index)
 
@@ -458,7 +458,7 @@ def test_the_plain_aid_identity_resolves_the_crs_members():
 
 
 def test_the_plain_aid_identity_keeps_its_members_without_a_modality():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     shapes = _education_aid_members(education_aid_identity(), code_index).shapes
 
@@ -467,7 +467,7 @@ def test_the_plain_aid_identity_keeps_its_members_without_a_modality():
 
 
 def test_the_imputed_identity_resolves_the_imputed_members():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     shapes = _education_aid_members(imputed_education_aid_identity(), code_index).shapes
 
@@ -477,7 +477,7 @@ def test_the_imputed_identity_resolves_the_imputed_members():
 
 
 def test_naming_the_imputed_provenance_on_its_own_five_tuple_changes_no_member():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     named = _education_aid_members(
         imputed_education_aid_identity(source=IMPUTED_PROVENANCE), code_index
@@ -491,7 +491,7 @@ def test_naming_the_imputed_provenance_on_its_own_five_tuple_changes_no_member()
 def test_a_named_identity_resolves_with_an_unbound_slot_its_dataset_does_not_carry():
     """Search states a property the graph members carry and the index rows do not as an
     unbound slot. The identity naming its dataset mints the dataset's members with it."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
     identity["slots"].append({"property": "crsCooperationModality", "binding": _UNBOUND})
 
@@ -504,7 +504,7 @@ def test_a_named_identity_resolves_with_an_unbound_slot_its_dataset_does_not_car
 def test_a_stored_identity_binding_the_imputed_aid_type_on_amount_refuses():
     """An identity that binds the imputed aid type on the `amount` five-tuple enumerates no
     member and refuses. The mint does not translate it to `attributedAmount`."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     with pytest.raises(SpecNotExportable):
         _education_aid_members(education_aid_identity(aid_type=IMPUTED_MULTILATERAL), code_index)
@@ -565,7 +565,7 @@ def test_an_identity_that_leaves_a_pinned_slot_unbound_resolves_the_bound_identi
     """Every imputed row holds one aid type, so the election implies it. The identity that
     leaves it unbound resolves, from the index and without a graph read, the members of the
     identity that binds it."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = _aid_type_unbound(imputed_education_aid_identity())
     graph = _imputed_member_graph(code_index)
 
@@ -587,7 +587,7 @@ def test_an_identity_that_omits_a_pinned_slot_refuses():
     """The identity that omits the aid type covers no index row, so the bound release's graph
     reader walks the family it holds, and every imputed member asserts the aid type the
     identity does not key, so the walk confirms none."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = imputed_education_aid_identity()
     identity["slots"] = [slot for slot in identity["slots"] if slot["property"] != AID_TYPE]
     graph = _imputed_member_graph(code_index)
@@ -650,7 +650,7 @@ def test_a_provenance_that_publishes_no_member_refuses_facet_not_available(
     refusal reads the five-tuple alone, so it holds when no row matches the slots either.
     DAC1 publishes the `amount` five-tuple under slots of its own, so it refuses under the
     CRS slots, whichever of them the identity binds."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
 
     with pytest.raises(FacetNotAvailableError) as refusal:
         _education_aid_members(identity, code_index)
@@ -661,7 +661,7 @@ def test_a_provenance_that_publishes_no_member_refuses_facet_not_available(
 
 
 def test_a_scope_naming_another_datasets_provenance_refuses():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     graph = FakeMintGraphReader(arcs={})
     resolve = {
         "spec_id": EDUCATION_AID_SPEC_ID,
@@ -730,7 +730,7 @@ def test_a_pin_on_a_listed_provenance_resolves_the_unpinned_members():
     """A provenance the index does not declare as a dataset names no dataset: the pin
     scopes the reads alone, so members resolve as for the identity that pins nothing,
     though declared datasets publish the five-tuple."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     assert _IDS_PROVENANCE not in code_index.datasets
     graph = FakeMintGraphReader(arcs={})
     resolve = {
@@ -786,7 +786,7 @@ def _selected_provenance(
 
 
 def test_group_facet_selection_on_the_plain_family_picks_the_crs_provenance():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
     shapes = _education_aid_members(identity, code_index).shapes
 
@@ -805,7 +805,7 @@ def test_group_facet_selection_on_the_plain_family_picks_the_crs_provenance():
 def test_every_request_of_an_index_family_carries_the_elected_dataset(
     identity: dict, provenance: str
 ):
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     shapes = _education_aid_members(identity, code_index).shapes
 
     requests = [
@@ -821,7 +821,7 @@ def test_a_member_held_by_another_dataset_alone_does_not_refuse_the_plain_family
     """One member, recorded under both datasets, holds observations at the bound entities
     under the imputed dataset alone. The family's provenance is the elected one, read before
     the members' candidates are compared, so that member is unpopulated."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
     shapes = _education_aid_members(identity, code_index).shapes
     requests = [
@@ -853,7 +853,7 @@ def test_a_member_held_by_another_dataset_alone_does_not_refuse_the_plain_family
 
 def test_group_facet_selection_refuses_a_family_spanning_both_datasets():
     """The members the mint resolved before the election: every row of both datasets."""
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
     spanning = (
         *_education_aid_members(identity, code_index).shapes,
@@ -1011,7 +1011,7 @@ def test_an_identity_naming_the_line_resolves_from_the_index():
 
 
 def test_a_wrong_value_on_covered_slot_keys_refuses_on_the_index_path():
-    code_index = load_index(default_index_path())
+    code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
     purpose = next(slot for slot in identity["slots"] if slot["property"] == "crsPurpose")
     purpose["binding"] = {"state": "value", "ref": "NoSuchPurposeCode"}

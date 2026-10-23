@@ -29,7 +29,7 @@ from ._pipeline_support import _malaria_intent, _stat_card_intent, _stored_resol
 def _release_excluding(release, member):
     """Remove one served member while preserving the grammar's six-member union.
 
-    This creates a valid release mismatch case for a member the packaged release serves.
+    This creates a valid release mismatch case for a member the session release serves.
     """
     return dataclasses.replace(
         release,
@@ -152,7 +152,7 @@ def test_create_with_a_garbage_type_is_schema_invalid_not_release_mismatch(
 def test_create_naming_a_grammar_valid_unshipped_type_is_release_mismatch(
     frame_store, revision_store, release
 ):
-    """The grammar includes `source_card`, and the packaged release serves it.
+    """The grammar includes `source_card`, and the session release serves it.
 
     A synthetic release removes its per-member entry but keeps grammar membership, so the refusal
     names deployment support rather than malformed input.

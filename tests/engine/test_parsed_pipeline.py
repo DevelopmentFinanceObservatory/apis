@@ -16,7 +16,6 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Resolution
 from materialise.rate_tables import RateTableCache
 from materialise.recipes import RecipeNotDeclaredError
-from search.engine.bind import _UniversalBindOutput
 from search.engine.config import settings
 from search.engine.core import resolve_async, resolve_events
 from search.engine.entry.parsed import (
@@ -36,6 +35,7 @@ from search.models import (
     ParsedPart,
     ResolveRequest,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     MATERIALISE_BASE_URL,
@@ -1031,7 +1031,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 class TestRoleBearingThroughTheParsedDoor:

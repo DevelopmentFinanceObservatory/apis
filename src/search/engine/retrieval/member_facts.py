@@ -48,7 +48,7 @@ def asserted_constraint_properties(facts: MemberFacts) -> frozenset[str] | None:
 
 def member_name(facts: MemberFacts) -> str | None:
     """The graph name of a member whose fetched arcs `facts` holds (`ArcsMemberFacts`).
-    None for a member with no name arc and for a packaged index row, which carries none."""
+    None for a member with no name arc and for a code index row, which carries none."""
     return read_name(facts.arcs) if isinstance(facts, ArcsMemberFacts) else None
 
 
@@ -93,7 +93,7 @@ class ArcsMemberFacts:
 
 @dataclass(frozen=True, slots=True)
 class IndexMemberFacts:
-    """Read a packaged index row. Rows have no unresolved-arc state.
+    """Read a code index row. Rows have no unresolved-arc state.
 
     `dataset` is the provenance of the dataset elected for the family the row was read
     into (`code_index.members.DatasetFamily.provenance`), or None for a row read outside

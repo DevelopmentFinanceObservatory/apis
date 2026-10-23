@@ -70,9 +70,6 @@ class FakeCoverageService:
             stamp=stamp,
             build_id=f"{stamp}-build",
             built_at="1970-01-01T00:00:00Z",
-            source="fake",
-            row_counts={},
-            files={},
             horizon=index.horizon,
         )
 

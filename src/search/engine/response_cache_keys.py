@@ -54,7 +54,6 @@ from search.models import (
     Warning,
 )
 
-_INTERNAL_WHITESPACE = re.compile(r"\s+")
 # Warnings that mark an answer a dependency could not complete: the skills index, a UN
 # System Data Commons read that failed (`_is_unstorable_warning`), the member walk that settles a role-bearing answer's members, the
 # role declarations a population re-reads, the conversion catalogue its unit conversion
@@ -78,6 +77,8 @@ _UNSTORABLE_WARNING_CODES = frozenset(
         OBSERVATIONS_BULK_FETCH_FAILED,
     }
 )
+
+_INTERNAL_WHITESPACE = re.compile(r"\s+")
 
 
 def normalise_query(query: str) -> str:
@@ -115,7 +116,9 @@ def scope_document(
     seam_default: bool,
     qualifier_coverage: Literal["log", "refuse"],
     build_commit: str,
+    binder: str,
     model: str,
+    engine_model: str,
     seed: int | None,
     today: str,
     graph_generation: str,
@@ -128,8 +131,11 @@ def scope_document(
     """Build shared key material from caller-supplied values.
 
     Includes the schema, defaulted response options, effective candidate cap,
-    place-as-constraint default, qualifier coverage mode, build/model/seed fingerprint,
-    day, graph and coverage stamps, the revision of the conversion catalogue the request
+    place-as-constraint default, qualifier coverage mode, build commit, the binder the
+    request resolved to and the model it answers with, the engine's Gemini model, which
+    runs extraction and every other model call whichever binder answers, seed, day, graph
+    and coverage
+    stamps, the revision of the conversion catalogue the request
     bound (None when it bound none), and the build of the origin catalogue it bound with
     its UN System setting, which decide what provenances an answer admits. The cap, the
     place default and the coverage mode can change answers without changing the build
@@ -146,7 +152,9 @@ def scope_document(
         "seam_default": seam_default,
         "qualifier_coverage": qualifier_coverage,
         "build_commit": build_commit,
+        "binder": binder,
         "model": model,
+        "engine_model": engine_model,
         "seed": seed,
         "today": today,
         "graph_generation": graph_generation,
@@ -248,9 +256,13 @@ def layer2_key(
     declared_default_slots_named: Sequence[str],
     scope: dict,
     query_text_negated_stated_words: Sequence[str] = (),
+    query_text_value_source: str | None = None,
     source_codes: Sequence[str | None] = (),
+    unit_texts: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
+    extraction_warnings: Sequence[Warning] = (),
+    measure_qualifiers: Sequence[tuple[str, ...]] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -264,7 +276,13 @@ def layer2_key(
     the part echoes them, so "aid to Kenya" and "aid to Kenya excluding the CRS" keep
     separate entries. `source_codes` runs parallel to `variables` when given and holds the
     series code the query writes for each (`source_code.scan_source_codes`). The key states
-    them and adds nothing when none is written.
+    them and adds nothing when none is written. `unit_texts` runs parallel to `variables`
+    when given and holds the unit text extraction peeled from each
+    (`ExtractionResult.unit_texts`), the part's own unit request beside the request-wide
+    one `dropped_qualifiers` holds. The key states them and adds nothing when none is peeled.
+    `measure_qualifiers` runs parallel to `variables` when given and holds the words that
+    narrow each variable's measure, which only its part reads. The key states the
+    variables that have some and adds nothing when none has.
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
     positions and adds nothing when none is marked.
@@ -276,9 +294,13 @@ def layer2_key(
     slots with a declared default whose plain name the query names, the stretch of the query
     that writes each variable (`written_phrase.written_phrase`), which the key states only
     when one is given, and the words a dataset states of its rows that the query negates
-    (`bind_repair.stated_words_negated`), which the key states only when there is one. They keep
-    layer 2 sound when distinct queries produce the same extraction without
-    hashing raw query text, preserving reuse when those readers agree.
+    (`bind_repair.stated_words_negated`), which the key states only when there is one, and the
+    warnings extraction adds to the answer (`extraction_warnings`): a relative date the parser
+    could not read, quoting its wording, and the variable and qualifier caps, counting what
+    the model named before them. The key states those only when there is one.
+    `query_text_value_source` holds the single-variable query whose words ground drafted
+    values. Their names can come from graph taxonomies known only after retrieval, so
+    the whole source participates in the key.
     """
     document = {
         "scope": scope,
@@ -300,12 +322,26 @@ def layer2_key(
     }
     if query_text_negated_stated_words:
         document["query_text_negated_stated_words"] = list(query_text_negated_stated_words)
+    if query_text_value_source is not None:
+        document["query_text_value_source"] = " ".join(query_text_value_source.split())
     if any(code is not None for code in source_codes):
         document["source_codes"] = list(source_codes)
+    if any(text is not None for text in unit_texts):
+        document["unit_texts"] = list(unit_texts)
+    if any(measure_qualifiers):
+        document["measure_qualifiers"] = {
+            variable: list(phrases)
+            for variable, phrases in zip(variables, measure_qualifiers, strict=True)
+            if phrases
+        }
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):
         document["written_variable_phrases"] = list(written_variable_phrases)
+    if extraction_warnings:
+        document["extraction_warnings"] = [
+            warning.model_dump(mode="json") for warning in extraction_warnings
+        ]
     return _digest("l2", document)
 
 
@@ -337,7 +373,9 @@ def part_memo_key(
     `engine_flags` are the four enrichment flags of the call's `EngineOptions`. The build commit covers the
     code index, and the graph generation, coverage stamp, conversion catalogue revision,
     origin catalogue build with its UN System setting, and UTC day cover what the graph,
-    coverage and conversion reads return and what the answer admits."""
+    coverage and conversion reads return and what the answer admits. Its entries come from
+    regions that make no model call (`region.resolve_spec_resubmit`), so the binder a
+    request was routed to is not in the key."""
     document = {
         "payload": payload.model_dump(mode="json"),
         "engine_flags": dict(engine_flags),

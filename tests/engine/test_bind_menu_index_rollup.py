@@ -1,4 +1,4 @@
-"""Index-carried shapes use covering roots from the packaged code index in the bind prompt.
+"""Index-carried shapes use covering roots from the fixture code index in the bind prompt.
 Other shapes keep recall-sourced values unchanged.
 
 The FinancialFlow/amount covering roots are 10 for crsPurpose, 6 for crsTypeOfFinance, 8 for
@@ -13,11 +13,12 @@ import asyncio
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.retrieval.derive import derive_shapes
+from tests.engine._binders import elected_reply
 from tests.engine._discover_fixtures import PROP_PURPOSE as _DEMO_PROP_PURPOSE
 from tests.engine._discover_fixtures import _fake_graph_with_svs, _three_constraint_arcs
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -48,7 +49,7 @@ _PROP_FLOW = "crsTypeOfFlow"
 
 
 def _sv_arcs_from_real_row(dcid: str, *, meas_prop: str) -> dict:
-    """Build graph arcs from the StatVar's packaged-index row."""
+    """Build graph arcs from the StatVar's fixture-index row."""
     index = get_index()
     row = next(r for r in index.statvars if r.dcid == dcid)
     constraint_props = list(row.constraint_properties)
@@ -80,8 +81,8 @@ def _derive_single_shape(recalled_dcid: str, *, meas_prop: str):
     return shapes[0]
 
 
-def test_fixture_matches_the_real_packaged_index():
-    """Confirm the fixture StatVars and their amount-only flow value exist in the packaged index."""
+def test_fixture_matches_the_real_index():
+    """Confirm the fixture StatVars and their amount-only flow value exist in the fixture index."""
     index = get_index()
     amount_row = next(r for r in index.statvars if r.dcid == _AMOUNT_SV)
     grant_row = next(r for r in index.statvars if r.dcid == _GRANT_EQ_SV)
@@ -371,8 +372,8 @@ class _BindPurposeMentionedFlowSoleOption:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -390,7 +391,6 @@ class _BindPurposeMentionedFlowSoleOption:
                 ),
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 

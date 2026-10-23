@@ -34,6 +34,7 @@ from graph_release.platform import PlatformParts, build_platform_parts
 from graph_release.reads import RawInputs
 from origin_catalogue.arc_reads import DfoArcs, dfo_edges_sql, read_dfo_arcs
 from origin_catalogue.arc_tables import ArcTablesBuilder
+from tests.artifact_publication.support import FakeBigQuery
 
 FIXTURES = Path(__file__).parents[1] / "fixtures/graph_release"
 
@@ -99,6 +100,7 @@ SLICE_DECLARATIONS = dataclasses.replace(
     measure_partition_labels=(),
     measure_nouns=(),
     shape_slot_defaults=(),
+    broad_readings=(),
     partly_stated_values=(),
 )
 
@@ -218,7 +220,6 @@ def recorded_dfo_arcs(into: ArcTablesBuilder) -> DfoArcs:
     authored rows, which were recorded from that answer (`graph_release.authored`)."""
     # Imported here: test modules, which `tests.graph_release.support` callers need not load.
     from tests.origin_catalogue.test_job import SPANNER_EDGES, FakeGraph, spanner_rows
-    from tests.series_coverage.test_job import FakeBigQuery
 
     raw = raw_inputs()
     edges = raw.edges_raw.select(["subject_id", "predicate", "object_id"]).to_pylist()

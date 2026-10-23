@@ -14,6 +14,7 @@ import pytest
 
 from entity_resolution import Admission
 from materialise.rate_tables import RateTableCache
+from search.engine.binders import GeminiBinder
 from search.engine.concurrency import scoped_concurrency
 from search.engine.config import settings
 from search.engine.entry import dataset_resubmit, parsed, raw_text
@@ -63,6 +64,7 @@ def _params() -> EntryParams:
         include_skills=False,
         skills_index=None,
         coverage=empty_coverage_snapshot(),
+        binder=GeminiBinder(),
     )
 
 
@@ -227,6 +229,7 @@ def test_identity_entry_forwards_rate_cache_and_full_read_deadline_to_resolve_sp
                     include_skills=False,
                     skills_index=None,
                     coverage=empty_coverage_snapshot(),
+                    binder=GeminiBinder(),
                 ),
                 rate_cache=sentinel,
             )

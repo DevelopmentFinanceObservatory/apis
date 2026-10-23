@@ -294,7 +294,7 @@ def test_no_consistent_partition_yields_no_forced_pair_and_no_sibling():
 
 
 # ---------------------------------------------------------------------------
-# The real packaged index: 4 populated partitions, 2 siblings for the
+# The real fixture index: 4 populated partitions, 2 siblings for the
 # default (gross nominal disbursements) election, grant equivalents never
 # among them.
 # ---------------------------------------------------------------------------

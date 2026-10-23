@@ -1,28 +1,23 @@
-"""Loads `CodeIndex` and measure-axis data from JSON exports.
-
-The index loads through `importlib.resources`, including from an installed wheel.
-Its repetitive fields compress roughly ninety-fold. `load_index` accepts plain or gzip
-JSON, detected by the magic number. `load_measure_axes` returns a separate `MeasureIndex`."""
+"""Parses a code index document into a `CodeIndex` (`parse_index`) and its measure-axis
+blocks into a separate `MeasureIndex` (`parse_measure_axes`)."""
 
 from __future__ import annotations
 
-import gzip
-import importlib.resources
-import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from importlib.resources.abc import Traversable
-from pathlib import Path
-from typing import get_args
+from typing import cast, get_args
 
 from code_index.query import CodeIndex, DuplicateDcid, partly_stated_five_tuples
 from code_index.types import (
     PARTY_KINDS,
     AbsentObservation,
+    BroadReading,
     CodeRow,
     CodeSystemDeclaration,
     DatasetDeclaration,
     DeclaredDefault,
+    HouseDefaultCase,
+    ImpliedValue,
     IndexStamp,
     MeasureAxis,
     MeasureClassDeclaration,
@@ -42,26 +37,13 @@ from code_index.types import (
 )
 from dfo_platform.roles import AXIS_LABELS, FlowAccount
 
-_PACKAGE = __package__
-_DATA_DIR = "data"
-_GZIP_MAGIC = b"\x1f\x8b"
-_INDEX_FILENAME = "index.json.gz"
 _ABSENT_OBSERVATION_VALUES: frozenset[AbsentObservation] = frozenset({"zero", "unknown"})
 _FLOW_ACCOUNTS: frozenset[FlowAccount] = frozenset(get_args(FlowAccount.__value__))
-
-
-def default_index_path() -> Traversable:
-    """The packaged `data/index.json.gz` path."""
-    return importlib.resources.files(_PACKAGE) / _DATA_DIR / _INDEX_FILENAME
+_HOUSE_DEFAULT_CASES: frozenset[HouseDefaultCase] = frozenset(get_args(HouseDefaultCase))
 
 
 class IndexFormatError(ValueError):
     """A `CodeIndex` export has a missing required key or a value of the wrong type."""
-
-
-def load_index(source: Traversable | Path | str) -> CodeIndex:
-    """Reads a `CodeIndex` export and parses it with `parse_index`."""
-    return parse_index(_read_json(source), source=source)
 
 
 def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex:
@@ -82,14 +64,16 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     are optional: an index without the first two declares no party kind, one without the third
     lists no StatVar outside its code systems (`CodeIndex.listed_statvars`), one without the
     fourth holds no series code, and one without the fifth no value parent. So are
-    `shape_slot_defaults`, `partly_stated_values`, `measure_classes`, `variable_aliases`
-    and `stat_type_words`, each reading as empty where absent; a measure class or stat-type
-    pattern that does not compile, or a variable alias or a `no_vocabulary_terms` entry that
-    is not a non-empty lowercase string, raises `IndexFormatError`. A value that two
-    `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
+    `shape_slot_defaults`, `broad_readings`, `partly_stated_values`, `implied_values`,
+    `measure_classes`, `variable_aliases`, `slot_plain_names` and `stat_type_words`, each
+    reading as empty where absent. A measure class or stat-type pattern that does not compile,
+    a variable alias or a `no_vocabulary_terms` entry that is not a non-empty lowercase string,
+    or a slot plain name that is not a non-empty string raises `IndexFormatError`. A value
+    that two `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
     `CyclicParent`. A `source_codes` row the StatVar rows contradict raises `IndexFormatError`
     (`_check_source_codes`), as does a `partly_stated_values` row they contradict
-    (`_check_partly_stated_values`). A kind outside `PartyKind`, a type declared twice, a
+    (`_check_partly_stated_values`), and an `implied_values` row the code or StatVar rows
+    contradict (`_check_implied_values`). A kind outside `PartyKind`, a type declared twice, a
     `totals` on a party that is not a total, or a false `sums_members` on a party holding no
     group raises `IndexFormatError`. A code row without a `definition` carries none, as does
     a measure value or measure label in `parse_measure_axes`."""
@@ -105,11 +89,14 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         shape_slot_defaults = [
             _parse_shape_slot_default(row) for row in payload.get("shape_slot_defaults", ())
         ]
+        broad_readings = [_parse_broad_reading(row) for row in payload.get("broad_readings", ())]
         partly_stated_values = [
             _parse_partly_stated_value(row) for row in payload.get("partly_stated_values", ())
         ]
+        implied_values = [_parse_implied_value(row) for row in payload.get("implied_values", ())]
         measure_classes = [_parse_measure_class(row) for row in payload.get("measure_classes", ())]
         variable_aliases = _parse_variable_aliases(payload.get("variable_aliases", {}))
+        slot_plain_names = _parse_slot_plain_names(payload.get("slot_plain_names", {}))
         stat_type_words = [_parse_stat_type_word(row) for row in payload.get("stat_type_words", ())]
         source_codes = [_parse_source_code(row) for row in payload.get("source_codes", ())]
         value_parents = _parse_value_parents(payload.get("value_parents", ()))
@@ -119,6 +106,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     _check_party_words(datasets, parties)
     _check_source_codes(source_codes, [*statvars, *listed_statvars])
     _check_partly_stated_values(partly_stated_values, [*statvars, *listed_statvars])
+    _check_implied_values(implied_values, declarations, codes, [*statvars, *listed_statvars])
     return CodeIndex(
         stamp=stamp,
         declarations=declarations,
@@ -129,9 +117,12 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         parties=parties,
         listed_statvars=listed_statvars,
         shape_slot_defaults=shape_slot_defaults,
+        broad_readings=broad_readings,
         partly_stated_values=partly_stated_values,
+        implied_values=implied_values,
         measure_classes=measure_classes,
         variable_aliases=variable_aliases,
+        slot_plain_names=slot_plain_names,
         stat_type_words=stat_type_words,
         source_codes=source_codes,
         value_parents=value_parents,
@@ -146,9 +137,29 @@ def _parse_shape_slot_default(row: Mapping) -> ShapeSlotDefault:
     )
 
 
+def _parse_broad_reading(row: Mapping) -> BroadReading:
+    return BroadReading(
+        property_dcid=row["property"],
+        value_dcid=row["value"],
+        reads_as=row["reads_as"],
+        unless_bound=row["unless_bound"],
+        held_with=row["held_with"],
+        note=row["note"],
+    )
+
+
 def _parse_partly_stated_value(row: Mapping) -> PartlyStatedValue:
     return PartlyStatedValue(
         provenance=row["provenance"],
+        property_dcid=row["property"],
+        value_dcid=row["value"],
+    )
+
+
+def _parse_implied_value(row: Mapping) -> ImpliedValue:
+    return ImpliedValue(
+        population_type=row["population_type"],
+        measured_property=row["measured_property"],
         property_dcid=row["property"],
         value_dcid=row["value"],
     )
@@ -194,6 +205,16 @@ def _parse_variable_aliases(payload: Mapping) -> dict[str, str]:
         if not isinstance(expansion, str) or not expansion.strip():
             raise IndexFormatError(f"variable alias {alias!r} expands to {expansion!r}")
     return aliases
+
+
+def _parse_slot_plain_names(payload: Mapping) -> dict[str, str]:
+    """The `slot_plain_names` block, refusing a name that is not a non-empty string without
+    surrounding space."""
+    names = dict(payload)
+    for prop, name in names.items():
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise IndexFormatError(f"slot {prop!r} has plain name {name!r}")
+    return names
 
 
 def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
@@ -246,17 +267,6 @@ def _parse_party(row: Mapping) -> PartyRow:
             "residuals; only a total that holds a group and counts no residual makes no claim"
         )
     return party
-
-
-def _read_json(source: Traversable | Path | str) -> dict:
-    """Reads `source` as JSON, decompressing it first when it carries the
-    gzip magic number. Reading the bytes and sniffing them keeps a plain
-    `.json` fixture and the packaged `.json.gz` on one code path.
-    """
-    raw = Path(source).read_bytes() if isinstance(source, Path | str) else source.read_bytes()
-    if raw[:2] == _GZIP_MAGIC:
-        raw = gzip.decompress(raw)
-    return json.loads(raw.decode("utf-8"))
 
 
 def _parse_stamp(payload: Mapping) -> IndexStamp:
@@ -317,7 +327,21 @@ def _parse_declaration(payload: Mapping) -> CodeSystemDeclaration:
         default=_parse_declared_default(payload["default"]),
         enum_dcid=payload["enum_dcid"],
         no_vocabulary_terms=_parse_no_vocabulary_terms(payload.get("no_vocabulary_terms", ())),
+        house_case=_parse_house_case(payload["code_system"], payload.get("house_case")),
     )
+
+
+def _parse_house_case(code_system: str, case: object) -> HouseDefaultCase | None:
+    """A declaration's `house_case`, refusing a value outside `HouseDefaultCase`. Absent
+    reads as none."""
+    if case is None:
+        return None
+    if case not in _HOUSE_DEFAULT_CASES:
+        raise IndexFormatError(
+            f"declaration for {code_system!r} carries house_case={case!r}, outside the "
+            f"vocabulary {sorted(_HOUSE_DEFAULT_CASES)!r}"
+        )
+    return cast(HouseDefaultCase, case)
 
 
 def _parse_no_vocabulary_terms(terms: Sequence[str]) -> tuple[str, ...]:
@@ -418,7 +442,9 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
     a `stated_words` row `_parse_stated_words` refuses or a `party_words` row
-    `_parse_party_words` refuses (both keys are optional), or a
+    `_parse_party_words` refuses (both keys are optional), a `house_default_for`
+    (optional) that is not a list of `HouseDefaultCase` values, a `ratio_base_axis`
+    (optional, absent reads as `None`) outside `AXIS_LABELS`, or a
     `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
@@ -437,6 +463,8 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 invariants=dict(row["invariants"]),
                 stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
                 party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
+                house_default_for=tuple(row.get("house_default_for", ())),
+                ratio_base_axis=row.get("ratio_base_axis"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
@@ -461,6 +489,17 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
             raise IndexFormatError(
                 f"datasets row for {dataset.provenance!r} carries rank={dataset.rank!r}, "
                 "which is not an integer"
+            )
+        if not set(dataset.house_default_for) <= _HOUSE_DEFAULT_CASES:
+            raise IndexFormatError(
+                f"datasets row for {dataset.provenance!r} carries "
+                f"house_default_for={list(dataset.house_default_for)!r}, outside the "
+                f"vocabulary {sorted(_HOUSE_DEFAULT_CASES)!r}"
+            )
+        if dataset.ratio_base_axis is not None and dataset.ratio_base_axis not in AXIS_LABELS:
+            raise IndexFormatError(
+                f"datasets row for {dataset.provenance!r} carries "
+                f"ratio_base_axis={dataset.ratio_base_axis!r}, outside {sorted(AXIS_LABELS)!r}"
             )
         if not dataset.label:
             raise IndexFormatError(f"datasets row for {dataset.provenance!r} carries no label")
@@ -491,7 +530,17 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
     `absent_reading`), a declared dataset has no row, or a dataset states a
     word (`DatasetDeclaration.stated_words`) or names a party for one
     (`DatasetDeclaration.party_words`) of a measured property none of its rows
-    has. A row with no provenance belongs to no dataset and passes."""
+    has, or two datasets claim one kind of question as its house default
+    (`DatasetDeclaration.house_default_for`). A row with no provenance belongs to no
+    dataset and passes."""
+    claimed: dict[str, str] = {}
+    for dataset in datasets:
+        for case in dataset.house_default_for:
+            if (holder := claimed.setdefault(case, dataset.provenance)) != dataset.provenance:
+                raise IndexFormatError(
+                    f"datasets {holder!r} and {dataset.provenance!r} both claim "
+                    f"house_default_for {case!r}"
+                )
     invariants = {dataset.provenance: dataset.invariants for dataset in datasets}
     populated: set[str] = set()
     measured: dict[str, set[str]] = {}
@@ -658,6 +707,48 @@ def _check_partly_stated_values(
             )
 
 
+def _check_implied_values(
+    rows: Sequence[ImpliedValue],
+    declarations: Sequence[CodeSystemDeclaration],
+    codes: Sequence[CodeRow],
+    statvars: Sequence[StatVarRow],
+) -> None:
+    """Checks the `implied_values` rows against what the index holds of each.
+
+    Raises `IndexFormatError` for two rows on one measure's property, for a value that is
+    not a code of the property where a code system of the index is the property, and for a
+    measure the index holds rows of where no row states the value. A measure the index
+    holds no row of, such as a catalogue family, is checked against the live graph by
+    `tests/code_index/test_implied_values_live.py`."""
+    systems = {declaration.code_system for declaration in declarations}
+    seen: set[tuple[str, str, str]] = set()
+    for declared in rows:
+        prop, value = declared.property_dcid, declared.value_dcid
+        measure = f"{declared.population_type}/{declared.measured_property}"
+        key = (declared.population_type, declared.measured_property, prop)
+        if key in seen:
+            raise IndexFormatError(f"{measure} declares an implied {prop} more than once")
+        seen.add(key)
+        if prop in systems and not any(
+            code.code_system == prop and code.dcid == value for code in codes
+        ):
+            raise IndexFormatError(
+                f"{measure} declares {prop}={value} implied, but {value!r} is not a code of {prop}"
+            )
+        measure_rows = [
+            row
+            for row in statvars
+            if (row.population_type, row.measured_property)
+            == (declared.population_type, declared.measured_property)
+        ]
+        if measure_rows and not any(
+            row.constraint_properties.get(prop) == value for row in measure_rows
+        ):
+            raise IndexFormatError(
+                f"{measure} declares {prop}={value} implied, but no row of it states the value"
+            )
+
+
 def _parse_measure_axis(payload: Mapping) -> MeasureAxis:
     return MeasureAxis(
         axis=payload["axis"],
@@ -733,16 +824,8 @@ def parse_measure_axes(payload: Mapping, *, source: object = "<document>") -> Me
     return MeasureIndex(axes=axes, values=values, partition_labels=partition_labels, nouns=nouns)
 
 
-def load_measure_axes(source: Traversable | Path | str) -> MeasureIndex:
-    """Reads an export and parses its measure-axis blocks with `parse_measure_axes`."""
-    return parse_measure_axes(_read_json(source), source=source)
-
-
 __all__ = [
     "IndexFormatError",
-    "default_index_path",
-    "load_index",
-    "load_measure_axes",
     "parse_index",
     "parse_measure_axes",
 ]

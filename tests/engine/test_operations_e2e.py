@@ -3,7 +3,7 @@ data_query and slot token an entity_ambiguous part carries.
 
 An operation rides on the part of the variable extract assigned it, and its phrase
 reaches that variable's bind the way a dropped qualifier's does, with no
-query_qualifier_dropped warning and no sentence note. The fixture is the packaged CRS
+query_qualifier_dropped warning and no sentence note. The fixture is the fixture CRS
 index with the query "standard grants", which leaves crsTypeOfFlow open for the binder.
 """
 
@@ -14,7 +14,7 @@ import asyncio
 import pytest
 from dfo_spec_kit.registry import load_registry
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_events
 from search.engine.events import ResponseEvent, SentenceEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity, ExtractedOperation, Extraction
@@ -34,6 +34,7 @@ from search.models import (
     ResubmitIdentityEntry,
     ResubmitParsedEntry,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
@@ -90,9 +91,7 @@ class _ScriptedLLM:
                     requested_all_phrase=self._phrase,
                 )
             )
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=bindings, also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, bindings=bindings, also_plausible=[]), None
 
 
 def _extraction(**fields) -> Extraction:
@@ -159,9 +158,9 @@ def test_a_rank_operation_rides_on_its_part_with_the_donor_axis_open_and_no_warn
 
 
 def test_the_recorded_top_5_donors_reading_carries_its_rank_with_no_warning():
-    """The recorded model output for the design's headline query lists the whole query
-    as a dropped qualifier beside the rank; the rank and the variable account for every
-    word of it, so the answer carries the rank and no unapplied-qualifier warning."""
+    """The recorded model output for the design's headline query reads "Top 5" as a rank
+    over origin on "education aid"; the rank and the variable account for every word of
+    it, so the answer carries the rank and no unapplied-qualifier warning."""
     response = offline_resolve(make_request("Top 5 donors for education aid"))
 
     assert [p.operations for p in response.parts] == [

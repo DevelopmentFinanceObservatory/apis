@@ -141,6 +141,10 @@ class CodeSystemDeclaration:
     `no_vocabulary_terms` lists lowercase words naming a distinction of this axis that no
     code of the system expresses. A question naming one on a shape declaring the system
     reads it as a qualifier with no vocabulary, and the answer refuses it.
+
+    `house_case` is the kind of question (`HouseDefaultCase`) a part is when one of the
+    system's codes is admitted on a shape of its pool: `sector` for the CRS purpose codes.
+    `None` for a system whose codes say nothing of the kind.
     """
 
     code_system: str
@@ -152,6 +156,7 @@ class CodeSystemDeclaration:
     default: DeclaredDefault | None = None
     enum_dcid: str | None = None
     no_vocabulary_terms: tuple[str, ...] = ()
+    house_case: HouseDefaultCase | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +168,47 @@ class ShapeSlotDefault:
     """
 
     population_type: str
+    property_dcid: str
+    value_dcid: str
+
+
+@dataclass(frozen=True, slots=True)
+class BroadReading:
+    """A constraint value a question's words read as a broader value of the same property,
+    unless the question also names a value on another property.
+
+    A binding holding `value_dcid` on `property_dcid` holds `reads_as` in its place unless a
+    binding on `unless_bound` holds `held_with`. Every series holding `value_dcid` holds
+    `unless_bound=held_with`, which the export checks, so a question names the narrow value
+    exactly when it names that value on `unless_bound`. The World Bank's "publicly
+    guaranteed" debt is private-sector debt under a public guarantee, and the words alone
+    read as public and publicly guaranteed debt.
+
+    `note` is the sentence an answer states whenever the reading fires.
+    """
+
+    property_dcid: str
+    value_dcid: str
+    reads_as: str
+    unless_bound: str
+    held_with: str
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImpliedValue:
+    """A constraint value the headline series of one measure already means.
+
+    The measure is a `populationType` and `measuredProperty` pair, whatever its statType,
+    qualifier or denominator. Its headline series states nothing on the property, and the
+    series stating the value read the same thing: life expectancy is life expectancy at
+    age 0, and gross domestic product is the product of all economic activities. A binding
+    of the value adds nothing where the family's totals state nothing on the property, so
+    election releases it and the headline answers.
+    """
+
+    population_type: str
+    measured_property: str
     property_dcid: str
     value_dcid: str
 
@@ -289,6 +335,13 @@ class PartyWord:
     where: Mapping[RoleAxis, str] = field(default_factory=dict)
 
 
+HouseDefaultCase = Literal["sector", "recipient", "donor"]
+"""A kind of development-finance question that names no dataset, by what it names: a
+sector or purpose (`sector`), a recipient, a place on both flow axes or a place named on
+no flow axis (`recipient`), or only donors (`donor`). Each kind has one house default dataset
+(`DatasetDeclaration.house_default_for`)."""
+
+
 @dataclass(frozen=True, slots=True)
 class DatasetDeclaration:
     """One published table, keyed by the provenance its observations carry.
@@ -343,6 +396,16 @@ class DatasetDeclaration:
     published total of the multilateral organisations, on `amount` rows to a country. Such
     a word restricts the rows, so a query that states it and leaves the axis unnamed binds
     the party there.
+
+    `house_default_for` lists the kinds of question (`HouseDefaultCase`) the table answers
+    by house convention when several datasets' shapes measure the phrase: the CRS for a
+    sector, DAC2a for a recipient total, DAC1 for a donor total. The loader refuses an
+    index where two datasets claim one kind (`code_index.loader._check_datasets`).
+
+    `ratio_base_axis` names the flow axis whose party's own total a ratio of the table
+    divides by: DAC1 states ODA as a share of the donor's GNI (`origin`), DAC2a as a share
+    of the recipient's GNI (`destination`). `None` declares nothing, as in a
+    release exported without the field.
     """
 
     provenance: str
@@ -355,6 +418,8 @@ class DatasetDeclaration:
     invariants: Mapping[str, str] = field(default_factory=dict)
     stated_words: tuple[StatedWord, ...] = ()
     party_words: tuple[PartyWord, ...] = ()
+    house_default_for: tuple[HouseDefaultCase, ...] = ()
+    ratio_base_axis: RoleAxis | None = None
 
 
 PartyKind = Literal["party", "total", "residual"]
@@ -628,7 +693,7 @@ def label_for_pairs(
 class MeasureIndex:
     """The measure-axis declarations, their values, their partition labels, and
     the measure nouns parsed from one export -- everything `code_index.loader.
-    load_measure_axes` reads beyond the `CodeIndex` itself. `axes` is empty
+    parse_measure_axes` reads beyond the `CodeIndex` itself. `axes` is empty
     for a deployment that declares no measure family at all, which is a
     supported state.
 

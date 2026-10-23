@@ -160,7 +160,7 @@ _EDU_ODA_SLOTS: dict[str, SlotBinding] = {
     "nettingBasis": ("value", "Gross"),
     "crsCooperationModality": ("unbound",),
 }
-# Education ODA disbursements, modality unbound: 15 rows of the packaged index.
+# Education ODA disbursements, modality unbound: 15 rows of the fixture index.
 _EDU_ODA = FamilyQuery(
     five_tuple=FiveTuple(
         population_type="FinancialFlow",

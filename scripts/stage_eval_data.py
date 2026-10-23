@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""Download the deployed graph release, origin catalogue and coverage builds for the paired eval.
+"""Download the deployed graph release and origin catalogue build for the paired eval.
 
 Each ``--checkout`` names a dfo-apis tree with a synced environment. The script asks every
-checkout, through its own environment, for ``origin_catalogue.schema.FORMAT_ROOT`` and, when
-the checkout still serves coverage from the coverage artifact
-(``series_coverage.shared.CoverageService``), ``series_coverage.schema.FORMAT_ROOT``, so a
-base and a head on different artifact formats each get the root they read. For every
-distinct root it reads the deployed ``current.json``, copies the one build that pointer
-names, and writes the pointer beside it. It copies the graph release the deployed pointer
-names, in this tree's release format, with its manifest and parts. Both apps and the runner
-then read the same bytes from ``--dest``.
+checkout, through its own environment, for ``origin_catalogue.schema.FORMAT_ROOT``, so a base
+and a head on different artifact formats each get the root they read. For every distinct
+root it reads the deployed ``current.json``, copies the one build that pointer names, and
+writes the pointer beside it. It copies the graph release the deployed pointer names, in this
+tree's release format, with its manifest and parts. Both apps and the runner then read the
+same bytes from ``--dest``.
 
-It prints ``GRAPH_RELEASE_URI=file://...``, ``ORIGIN_CATALOGUE_URI=file://...`` and, when a
-checkout reads coverage, ``COVERAGE_ARTIFACT_URI=file://...``, ready to append to
-``$GITHUB_ENV``. The sources default to those three variables, so a shell that already
+It prints ``GRAPH_RELEASE_URI=file://...`` and ``ORIGIN_CATALOGUE_URI=file://...``, ready to
+append to ``$GITHUB_ENV``. The sources default to those two variables, so a shell that already
 points at the deployed buckets stages them with no flags. It exits 3 when a root or the
 release has no pointer, or a pointer names a build with no objects.
 
@@ -29,7 +26,6 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
 from artifact_publication import POINTER_FILE, VERSIONS_PREFIX
@@ -51,37 +47,9 @@ from graph_release.format import (
     read_pointer,
 )
 
-COVERAGE_ENV = "COVERAGE_ARTIFACT_URI"
 CATALOGUE_ENV = "ORIGIN_CATALOGUE_URI"
 
-_NO_COVERAGE = "-"
-"""What `_ROOTS_PROGRAM` prints for the coverage root of a checkout that reads coverage from
-the graph release."""
-
-# Printed one per line, coverage first, in the order `checkout_format_roots` reads them.
-_ROOTS_PROGRAM = (
-    "import series_coverage.shared as shared\n"
-    "from origin_catalogue.schema import FORMAT_ROOT as catalogue\n"
-    "if hasattr(shared, 'CoverageService'):\n"
-    "    from series_coverage.schema import FORMAT_ROOT as coverage\n"
-    "else:\n"
-    f"    coverage = {_NO_COVERAGE!r}\n"
-    "print(coverage)\n"
-    "print(catalogue)\n"
-)
-
-
-@dataclass(frozen=True, slots=True)
-class FormatRoots:
-    """The format roots one checkout reads under each artifact base URI. `coverage` is
-    `None` for a checkout that reads coverage from the graph release."""
-
-    coverage: str | None
-    catalogue: str
-
-
-class CoverageUriMissingError(Exception):
-    """A checkout reads the coverage artifact and no coverage URI was given."""
+_ROOT_PROGRAM = "from origin_catalogue.schema import FORMAT_ROOT\nprint(FORMAT_ROOT)\n"
 
 
 class MissingRootError(Exception):
@@ -89,22 +57,19 @@ class MissingRootError(Exception):
     objects."""
 
 
-def checkout_format_roots(checkout: Path) -> FormatRoots:
-    """Ask ``checkout``'s own environment which format roots its code reads.
+def checkout_catalogue_root(checkout: Path) -> str:
+    """Ask ``checkout``'s own environment which origin catalogue format root its code reads.
 
     Raises:
-        subprocess.CalledProcessError: the checkout's environment cannot import the schemas.
+        subprocess.CalledProcessError: the checkout's environment cannot import the schema.
     """
-    out = subprocess.run(
-        ["uv", "run", "--no-sync", "python", "-c", _ROOTS_PROGRAM],
+    return subprocess.run(
+        ["uv", "run", "--no-sync", "python", "-c", _ROOT_PROGRAM],
         cwd=checkout,
         check=True,
         capture_output=True,
         text=True,
-    ).stdout.split()
-    if len(out) != 2:
-        raise ValueError(f"{checkout}: expected two format roots, got {out!r}")
-    return FormatRoots(coverage=None if out[0] == _NO_COVERAGE else out[0], catalogue=out[1])
+    ).stdout.strip()
 
 
 def stage_root(source_uri: str, root: str, dest: Path) -> str:
@@ -120,8 +85,7 @@ def stage_root(source_uri: str, root: str, dest: Path) -> str:
         pointer = read_uri_bytes(join_uri(source_root, POINTER_FILE))
     except FileNotFoundError as exc:
         raise MissingRootError(f"no {POINTER_FILE} at {source_root}") from exc
-    # Both artifacts' pointers name their build directory by `build_id`; the other fields
-    # differ by artifact and stay as published.
+    # The pointer names its build directory by `build_id`; its other fields stay as published.
     build_id = json.loads(pointer)["build_id"]
     build_uri = join_uri(source_root, VERSIONS_PREFIX, build_id)
     objects = sorted(list_uri_object_times(build_uri))
@@ -164,41 +128,29 @@ def stage(
     *,
     release_uri: str,
     catalogue_uri: str,
-    coverage_uri: str | None,
     dest: Path,
-    roots_of: Callable[[Path], FormatRoots],
+    root_of: Callable[[Path], str],
 ) -> dict[str, str]:
-    """Stage the graph release and every root the checkouts read, and return the environment
-    that reads them.
+    """Stage the graph release and every catalogue root the checkouts read, and return the
+    environment that reads them.
 
-    The release stages under ``dest/graph-release``, the catalogue under
-    ``dest/origin-catalogue`` and coverage, for checkouts that read it, under
-    ``dest/coverage``. A root two checkouts share is copied once.
+    The release stages under ``dest/graph-release`` and the catalogue under
+    ``dest/origin-catalogue``. A root two checkouts share is copied once.
 
     Raises:
         MissingRootError: see ``stage_root`` and ``stage_release``.
-        CoverageUriMissingError: a checkout reads coverage and ``coverage_uri`` is unset.
     """
-    roots = [roots_of(checkout) for checkout in checkouts]
+    roots = sorted({root_of(checkout) for checkout in checkouts})
     release_dir = dest / "graph-release"
     release_id = stage_release(release_uri, release_dir)
     print(f"staged {release_uri} release {release_id}", file=sys.stderr)
     env = {RELEASE_ENV: release_dir.resolve().as_uri()}
 
-    targets = {
-        CATALOGUE_ENV: (catalogue_uri, dest / "origin-catalogue", {r.catalogue for r in roots})
-    }
-    if coverage := {r.coverage for r in roots if r.coverage is not None}:
-        if coverage_uri is None:
-            raise CoverageUriMissingError(
-                f"a checkout reads the coverage artifact and {COVERAGE_ENV} is unset"
-            )
-        targets[COVERAGE_ENV] = (coverage_uri, dest / "coverage", coverage)
-    for name, (source_uri, local, wanted) in targets.items():
-        for root in sorted(wanted):
-            build_id = stage_root(source_uri, root, local)
-            print(f"staged {join_uri(source_uri, root)} build {build_id}", file=sys.stderr)
-        env[name] = local.resolve().as_uri()
+    catalogue_dir = dest / "origin-catalogue"
+    for root in roots:
+        build_id = stage_root(catalogue_uri, root, catalogue_dir)
+        print(f"staged {join_uri(catalogue_uri, root)} build {build_id}", file=sys.stderr)
+    env[CATALOGUE_ENV] = catalogue_dir.resolve().as_uri()
     return env
 
 
@@ -218,14 +170,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=os.environ.get(CATALOGUE_ENV),
         help=f"the deployed origin catalogue base URI (default: ${CATALOGUE_ENV})",
     )
-    parser.add_argument(
-        "--coverage-uri",
-        default=os.environ.get(COVERAGE_ENV) or None,
-        help=(
-            f"the deployed coverage base URI, for a checkout that reads it "
-            f"(default: ${COVERAGE_ENV})"
-        ),
-    )
     args = parser.parse_args(argv)
     if not (args.release_uri and args.catalogue_uri):
         parser.error(f"set --release-uri and --catalogue-uri, or {RELEASE_ENV} and {CATALOGUE_ENV}")
@@ -234,12 +178,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.checkout,
             release_uri=args.release_uri,
             catalogue_uri=args.catalogue_uri,
-            coverage_uri=args.coverage_uri,
             dest=args.dest,
-            roots_of=checkout_format_roots,
+            root_of=checkout_catalogue_root,
         )
-    except CoverageUriMissingError as exc:
-        parser.error(str(exc))
     except MissingRootError as exc:
         print(f"stage_eval_data: {exc}", file=sys.stderr)
         return 3

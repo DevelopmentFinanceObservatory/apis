@@ -162,7 +162,7 @@ def _body(req: OptionsRequest) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The coverage artifact stamp participates in the key.
+# The coverage view's stamp participates in the key.
 # ---------------------------------------------------------------------------
 
 

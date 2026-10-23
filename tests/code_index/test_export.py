@@ -1,4 +1,4 @@
-"""Offline tests for code_index/export.py and scripts/export_code_index.py. Drives a small in-memory
+"""Offline tests for code_index/export.py. Drives a small in-memory
 fake reader (`_FakeGraph`) implementing only the `ExportReader` surface the
 export actually calls (`node_subjects`, `node_arcs_many` and `node_arcs_batch`).
 Nothing here opens a socket.
@@ -9,40 +9,32 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import json
-import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from code_index.declarations import (
+    BROAD_READINGS,
     CODE_SYSTEMS,
     CONCEPT_GROUPS,
     DATASETS,
-    MEASURE_CLASSES,
     MEASURE_VALUE_TEXT,
-    PARTLY_STATED_VALUES,
     PARTY_KIND_OVERRIDES,
     PARTY_TYPE_KINDS,
-    SHAPE_SLOT_DEFAULTS,
-    STAT_TYPE_WORDS,
     TOTAL_GROUPS,
-    VARIABLE_ALIASES,
     CodeSystemConfig,
     KindOverride,
     MeasureValueText,
     TotalGroup,
 )
 from code_index.export import (
+    CoverageJoin,
     ExportRefused,
     PartyPublication,
     _apply_concept_groups,
-    _measure_class_to_dict,
     _minimal_system_sets,
     _partly_stated_value_to_dict,
-    _shape_slot_default_to_dict,
-    _stat_type_word_to_dict,
     _validate_declared_defaults,
     _verify_axis_coverage,
     _verify_measure_label_named_values,
@@ -52,6 +44,7 @@ from code_index.export import (
     enumerate_statvar_dcids,
     export_code_system,
     export_graph_blocks,
+    export_index,
     export_measure_values,
     export_source_codes,
     export_statvars,
@@ -59,37 +52,32 @@ from code_index.export import (
     stamp_counts,
     strip_system_suffix,
 )
-from code_index.loader import (
-    IndexFormatError,
-    default_index_path,
-    load_index,
-    load_measure_axes,
-    parse_index,
-    parse_measure_axes,
-)
+from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.shared import get_index
 from code_index.types import (
+    BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
+    ImpliedValue,
     MeasureAxis,
     MeasurePartitionLabel,
     PartlyStatedValue,
     PartyRow,
+    ShapeSlotDefault,
 )
+from dfo_platform.roles import RoleAxis
 from materialise.graph import (
     UNRESOLVED_NODE,
     GraphNotAdvancingError,
     GraphReadError,
     SubjectPage,
 )
-from scripts.export_code_index import (
-    CoverageJoin,
-    export_index,
-    load_coverage_join,
+from tests.code_index.support import (
+    INDEX_FIXTURE,
+    load_index,
+    load_measure_axes,
+    unstated_implied_values,
 )
-from series_coverage.loader import load_coverage
-
-_NOW = datetime(2026, 9, 9, 12, 0, 0, tzinfo=UTC)
 
 
 @dataclass
@@ -190,9 +178,7 @@ _TEST_DATASETS = (
 
 def _covered(graph: _FakeGraph, provenance: str = _TEST_PROVENANCE) -> CoverageJoin:
     """A coverage build that holds series under `provenance` for every node of `graph`."""
-    return CoverageJoin(
-        build_id="test-build", provenances=dict.fromkeys(graph.forward_arcs, (provenance,))
-    )
+    return CoverageJoin(provenances=dict.fromkeys(graph.forward_arcs, (provenance,)), parties={})
 
 
 _HIERARCHICAL = CodeSystemConfig(
@@ -313,11 +299,11 @@ def test_export_index_round_trips_through_load_index(tmp_path: Path):
     graph = _two_system_graph()
     document = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
@@ -1205,11 +1191,11 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
     graph = _two_system_graph()
     first = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
@@ -1217,28 +1203,27 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
     )
     later = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=datetime(2026, 9, 9, 13, 0, 0, tzinfo=UTC),
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
         party_kind_overrides={},
     )
-    assert first["stamp"]["exported_at"] != later["stamp"]["exported_at"]
-    assert first["stamp"]["content_hash"] == later["stamp"]["content_hash"]
+    assert later == first
 
     changed_graph = _two_system_graph()
     changed_graph.forward_arcs["SysHierRoot"]["alternateName"] = ("Root Sector", "Extra Alias")
     changed = export_index(
         changed_graph,
+        party_reader=changed_graph,
         coverage=_covered(changed_graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
@@ -1442,7 +1427,7 @@ def test_export_measure_values_exports_declared_price_bases_no_statvar_carries()
     assert "PPP" in by_dcid["PurchasingPowerParity"]["synonyms"]
 
 
-def test_export_index_refuses_an_alias_whose_canonical_value_is_not_exported(
+def test_an_export_whose_alias_names_an_unexported_canonical_value_does_not_load(
     monkeypatch: pytest.MonkeyPatch,
 ):
     graph = _two_system_graph_with_measure_labels()
@@ -1451,20 +1436,22 @@ def test_export_index_refuses_an_alias_whose_canonical_value_is_not_exported(
         "Gross",
         MeasureValueText(same_reading_as="NotAMeasureValue"),
     )
-    with pytest.raises(ExportRefused, match=r"does not load.*NotAMeasureValue"):
-        export_index(
-            graph,
-            coverage=_covered(graph),
-            datasets=_TEST_DATASETS,
-            partly_stated_values=(),
-            graph_endpoint="https://fake.example",
-            now=_NOW,
-            code_systems=(_HIERARCHICAL, _FLAT),
-            measure_axes=_MEASURE_AXES_FOR_TEST,
-            measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
-            total_groups={},
-            party_kind_overrides={},
-        )
+    document = export_index(
+        graph,
+        party_reader=graph,
+        coverage=_covered(graph),
+        datasets=_TEST_DATASETS,
+        partly_stated_values=(),
+        graph_endpoint="https://fake.example",
+        code_systems=(_HIERARCHICAL, _FLAT),
+        measure_axes=_MEASURE_AXES_FOR_TEST,
+        measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
+        total_groups={},
+        party_kind_overrides={},
+    )
+
+    with pytest.raises(IndexFormatError, match="NotAMeasureValue"):
+        parse_measure_axes(document)
 
 
 def test_export_measure_values_raises_on_a_value_with_no_name_arc():
@@ -1492,11 +1479,11 @@ def test_export_index_empty_measure_axes_exports_no_measure_values():
     graph = _two_system_graph()
     document = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         measure_partition_labels=(),
@@ -1512,11 +1499,11 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
     graph = _two_system_graph_with_measure_labels()
     document = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=_MEASURE_AXES_FOR_TEST,
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
@@ -1670,11 +1657,11 @@ def test_content_hash_moves_when_only_measure_axes_change():
     graph = _two_system_graph_with_measure_labels()
     with_axes = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=_MEASURE_AXES_FOR_TEST,
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
@@ -1683,11 +1670,11 @@ def test_content_hash_moves_when_only_measure_axes_change():
     )
     without_axes = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
@@ -1798,11 +1785,11 @@ def test_export_index_refuses_when_the_guard_fails():
     with pytest.raises(ExportRefused, match="resolve to no single authored label"):
         export_index(
             graph,
+            party_reader=graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
             partly_stated_values=(),
             graph_endpoint="https://fake.example",
-            now=_NOW,
             code_systems=(_HIERARCHICAL, _FLAT),
             measure_axes=_MEASURE_AXES_FOR_TEST,
             measure_partition_labels=(),
@@ -1811,8 +1798,8 @@ def test_export_index_refuses_when_the_guard_fails():
         )
 
 
-def test_committed_packaged_index_passes_the_measure_partition_label_guard():
-    source = default_index_path()
+def test_committed_fixture_index_passes_the_measure_partition_label_guard():
+    source = INDEX_FIXTURE
     payload = json.loads(gzip.decompress(source.read_bytes()))
     measure_index = load_measure_axes(source)
 
@@ -1823,25 +1810,6 @@ def test_committed_packaged_index_passes_the_measure_partition_label_guard():
     _verify_measure_label_named_values(
         payload["statvars"], payload["codes"], measure_index.axes, measure_index.partition_labels
     )  # raises nothing
-
-
-def test_committed_packaged_index_carries_the_authored_declarations():
-    """The authored tables no graph read checks match the committed export, so an edit to one
-    without a re-export fails here rather than in the live drift check."""
-    payload = json.loads(gzip.decompress(default_index_path().read_bytes()))
-
-    assert payload["shape_slot_defaults"] == [
-        _shape_slot_default_to_dict(d) for d in SHAPE_SLOT_DEFAULTS
-    ]
-    assert payload["partly_stated_values"] == [
-        _partly_stated_value_to_dict(v) for v in PARTLY_STATED_VALUES
-    ]
-    assert payload["measure_classes"] == [_measure_class_to_dict(d) for d in MEASURE_CLASSES]
-    assert payload["variable_aliases"] == dict(VARIABLE_ALIASES)
-    assert payload["stat_type_words"] == [_stat_type_word_to_dict(d) for d in STAT_TYPE_WORDS]
-    assert {d["code_system"]: d["no_vocabulary_terms"] for d in payload["declarations"]} == {
-        config.code_system: list(config.no_vocabulary_terms) for config in CODE_SYSTEMS
-    }
 
 
 def test_a_statvar_row_matching_a_measure_noun_aborts_the_export():
@@ -1904,11 +1872,11 @@ def test_export_index_stamps_plain_name_and_enum_dcid_from_the_code_system_table
     graph = _two_system_graph()
     document = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
@@ -1943,11 +1911,11 @@ def test_export_index_stamps_a_declared_default_and_it_round_trips(tmp_path: Pat
     graph = _two_system_graph()
     document = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL_WITH_DEFAULT, _FLAT),
         measure_axes=(),
         total_groups={},
@@ -1994,11 +1962,11 @@ def test_export_index_stamps_when_named_and_it_round_trips(tmp_path: Path):
     graph = _two_system_graph()
     document = export_index(
         graph,
+        party_reader=graph,
         coverage=_covered(graph),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         graph_endpoint="https://fake.example",
-        now=_NOW,
         code_systems=(_HIERARCHICAL_WITH_NAMED_DEFAULT, _FLAT),
         measure_axes=(),
         total_groups={},
@@ -2032,11 +2000,11 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_not_lo
     with pytest.raises(ExportRefused, match="when_named entry 'Aid' must be a non-empty lowercase"):
         export_index(
             graph,
+            party_reader=graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
             partly_stated_values=(),
             graph_endpoint="https://fake.example",
-            now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
@@ -2063,11 +2031,11 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_empty(
     with pytest.raises(ExportRefused, match="when_named entry '' must be a non-empty lowercase"):
         export_index(
             graph,
+            party_reader=graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
             partly_stated_values=(),
             graph_endpoint="https://fake.example",
-            now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
@@ -2097,11 +2065,11 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_null()
     with pytest.raises(ExportRefused, match="when_named entry None must be a non-empty lowercase"):
         export_index(
             graph,
+            party_reader=graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
             partly_stated_values=(),
             graph_endpoint="https://fake.example",
-            now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
@@ -2127,11 +2095,11 @@ def test_export_index_refuses_a_declared_default_code_outside_its_own_system():
     with pytest.raises(ExportRefused, match="declared default code 'SysFlatA' is not a row"):
         export_index(
             graph,
+            party_reader=graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
             partly_stated_values=(),
             graph_endpoint="https://fake.example",
-            now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
@@ -2156,11 +2124,11 @@ def test_export_index_refuses_a_declared_default_scoped_under_an_unknown_dcid():
     with pytest.raises(ExportRefused, match=r"NotARealDcid.*not a row of any exported code system"):
         export_index(
             graph,
+            party_reader=graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
             partly_stated_values=(),
             graph_endpoint="https://fake.example",
-            now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
@@ -2186,11 +2154,11 @@ def test_export_index_refuses_a_declared_default_scoped_under_its_own_code_syste
     with pytest.raises(ExportRefused, match="belongs to its own code system"):
         export_index(
             graph,
+            party_reader=graph,
             coverage=_covered(graph),
             datasets=_TEST_DATASETS,
             partly_stated_values=(),
             graph_endpoint="https://fake.example",
-            now=_NOW,
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
@@ -2218,29 +2186,31 @@ _OPT_IN = DatasetDeclaration(
 
 
 def _export_two_system_graph(coverage: CoverageJoin, **overrides) -> dict:
+    graph = _two_system_graph()
     return export_index(
-        _two_system_graph(),
+        graph,
+        party_reader=graph,
         graph_endpoint="https://fake.example",
-        now=_NOW,
         coverage=coverage,
         code_systems=overrides.pop("code_systems", (_HIERARCHICAL, _FLAT)),
         measure_axes=(),
         datasets=overrides.pop("datasets", _TEST_DATASETS),
         partly_stated_values=overrides.pop("partly_stated_values", ()),
+        broad_readings=overrides.pop("broad_readings", BROAD_READINGS),
         total_groups={},
         party_kind_overrides={},
     )
 
 
-def test_export_index_joins_each_rows_sorted_provenances_and_stamps_the_build():
+def test_export_index_joins_each_rows_sorted_provenances_and_stamps_no_build():
     coverage = CoverageJoin(
-        build_id="20260101T000000Z-0a1b2c3d",
         provenances={
             "SV_Disbursement_Gross": (_TEST_PROVENANCE,),
             "SV_Disbursement_NoNetting": (_TEST_PROVENANCE,),
             "SV_Commitment_Obligation": (_TEST_PROVENANCE,),
             "SV_Not_In_The_Graph": (_TEST_PROVENANCE,),
         },
+        parties={},
     )
 
     document = _export_two_system_graph(coverage)
@@ -2252,16 +2222,24 @@ def test_export_index_joins_each_rows_sorted_provenances_and_stamps_the_build():
         "SV_Commitment_Obligation": [_TEST_PROVENANCE],
         "SV_Commitment_NoFlow": [],
     }
-    assert document["stamp"]["coverage_build"] == "20260101T000000Z-0a1b2c3d"
+    assert document["stamp"]["coverage_build"] is None
+    assert document["stamp"]["exported_at"] == ""
     assert document["stamp"]["statvars_without_coverage"] == 1
 
 
-def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("ratio_base_axis", "written"),
+    [(None, {}), ("destination", {"ratio_base_axis": "destination"})],
+)
+def test_export_index_writes_dataset_declarations_and_they_round_trip(
+    tmp_path: Path, ratio_base_axis: RoleAxis | None, written: dict
+):
+    declared = dataclasses.replace(_OPT_IN, ratio_base_axis=ratio_base_axis)
     graph = _two_system_graph()
     document = export_index(
         graph,
+        party_reader=graph,
         graph_endpoint="https://fake.example",
-        now=_NOW,
         coverage=_covered(graph, _OPT_IN_PROVENANCE),
         code_systems=(
             _HIERARCHICAL,
@@ -2270,7 +2248,7 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
             ),
         ),
         measure_axes=(),
-        datasets=(_OPT_IN,),
+        datasets=(declared,),
         partly_stated_values=(),
         total_groups={},
         party_kind_overrides={},
@@ -2286,21 +2264,86 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
             "account": "provider",
             "rank": 10,
             "invariants": {},
+            **written,
         }
     ]
     out = tmp_path / "with_datasets.json"
     out.write_text(json.dumps(document))
     index = load_index(out)
-    assert index.datasets[_OPT_IN_PROVENANCE] == _OPT_IN
+    assert index.datasets[_OPT_IN_PROVENANCE] == declared
     assert {row.provenances for row in index.statvars} == {(_OPT_IN_PROVENANCE,)}
 
 
-def test_export_index_refuses_a_row_without_its_datasets_declared_invariant():
+def test_export_index_writes_the_declared_slot_defaults_and_broad_readings_and_they_round_trip():
+    document = _export_two_system_graph(_covered(_two_system_graph()))
+
+    assert parse_index(document).broad_readings == BROAD_READINGS
+
+    assert parse_index(document).shape_slot_defaults == (
+        ShapeSlotDefault(
+            population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
+        ),
+        ShapeSlotDefault(
+            population_type="FinancialPosition",
+            property_dcid="financialPositionType",
+            value_dcid="AmountOutstanding",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "unless_bound", "held_with", "refused"),
+    [
+        ("Commitment", "sysFlat", "SysFlatB", False),
+        ("Disbursement", "nettingBasis", "Gross", True),
+        ("Disbursement", "sysFlat", "SysFlatB", True),
+    ],
+    ids=["every-row-holds-it", "a-row-states-nothing", "a-row-holds-another-value"],
+)
+def test_a_broad_reading_is_refused_where_a_row_of_its_value_lacks_the_value_it_holds_with(
+    value: str, unless_bound: str, held_with: str, refused: bool
+):
+    """Naming a value on `unless_bound` names the narrow value only where every row holding
+    it holds `held_with`. A disbursement row states no netting basis, and both state flat
+    alpha, so a reading of the disbursement flow type unless either is named is refused."""
+    reading = BroadReading(
+        property_dcid="financialFlowType" if value == "Disbursement" else "financialObligationType",
+        value_dcid=value,
+        reads_as="Total",
+        unless_bound=unless_bound,
+        held_with=held_with,
+        note="Read broadly.",
+    )
+    coverage = _covered(_two_system_graph())
+
+    if refused:
+        with pytest.raises(ExportRefused, match=f"without {unless_bound}={held_with}"):
+            _export_two_system_graph(coverage, broad_readings=(reading,))
+    else:
+        document = _export_two_system_graph(coverage, broad_readings=(reading,))
+        assert parse_index(document).broad_readings == (reading,)
+
+
+def test_the_aid_tables_declare_whose_base_a_ratio_divides_by():
+    """DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the recipient's."""
+    crs, imputed, dac1, dac2a, dac2b = (dataset.provenance for dataset in DATASETS)
+
+    assert {dataset.provenance: dataset.ratio_base_axis for dataset in DATASETS} == {
+        crs: None,
+        imputed: None,
+        dac1: "origin",
+        dac2a: "destination",
+        dac2b: None,
+    }
+
+
+def test_an_export_with_a_row_without_its_datasets_declared_invariant_does_not_load():
     graph = _two_system_graph()
     declared = dataclasses.replace(_TEST_DATASETS[0], invariants={"sysHier": "SysHierRoot"})
+    document = _export_two_system_graph(_covered(graph), datasets=(declared,))
 
-    with pytest.raises(ExportRefused, match=r"sysHier=.*declares sysHier='SysHierRoot'"):
-        _export_two_system_graph(_covered(graph), datasets=(declared,))
+    with pytest.raises(IndexFormatError, match=r"sysHier=.*declares sysHier='SysHierRoot'"):
+        parse_index(document)
 
 
 def test_content_hash_moves_with_a_dataset_declaration_and_with_a_rows_provenances():
@@ -2311,22 +2354,17 @@ def test_content_hash_moves_with_a_dataset_declaration_and_with_a_rows_provenanc
     )
     uncovered_row = _export_two_system_graph(
         CoverageJoin(
-            build_id="test-build",
             provenances={
                 dcid: (_TEST_PROVENANCE,)
                 for dcid in graph.forward_arcs
                 if dcid != "SV_Commitment_NoFlow"
             },
+            parties={},
         )
-    )
-    rebuilt = _export_two_system_graph(
-        dataclasses.replace(_covered(graph), build_id="another-build")
     )
 
     assert relabelled["stamp"]["content_hash"] != base["stamp"]["content_hash"]
     assert uncovered_row["stamp"]["content_hash"] != base["stamp"]["content_hash"]
-    assert rebuilt["stamp"]["content_hash"] == base["stamp"]["content_hash"]
-    assert rebuilt["stamp"]["coverage_build"] == "another-build"
 
 
 def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_parties_or_stamp():
@@ -2379,39 +2417,55 @@ def test_export_graph_blocks_emits_the_partly_stated_values_it_is_given():
     assert blocks["partly_stated_values"] == [_partly_stated_value_to_dict(_NEVER_STATED[0])]
 
 
-def test_export_index_refuses_a_partly_stated_value_no_row_bears_out():
-    """The finished document must load, so a declaration the rows contradict stops the export."""
-    coverage = _covered(_two_system_graph())
-
-    with pytest.raises(ExportRefused):
-        _export_two_system_graph(coverage, partly_stated_values=_NEVER_STATED)
-
-
-def test_main_exits_non_zero_with_the_refusal_when_the_export_refuses(monkeypatch, tmp_path):
-    import scripts.export_code_index as script
-
-    def refuse(*args, **kwargs):
-        raise ExportRefused("provenance/TestDataset has no StatVar row")
-
-    out = tmp_path / "index.json.gz"
-    monkeypatch.setenv("SEARCH_GRAPH_BASE", "http://graph.test")
-    monkeypatch.setenv("COVERAGE_ARTIFACT_URI", "file:///unused")
-    monkeypatch.setattr(
-        script, "load_coverage_join", lambda uri, *, datasets: CoverageJoin("b", {})
+def test_an_export_declaring_a_partly_stated_value_no_row_bears_out_does_not_load():
+    """A declaration the rows contradict leaves a document `parse_index` refuses."""
+    document = _export_two_system_graph(
+        _covered(_two_system_graph()), partly_stated_values=_NEVER_STATED
     )
-    monkeypatch.setattr(script, "export_index", refuse)
-    monkeypatch.setattr(sys, "argv", ["export_code_index.py", "--out", str(out)])
 
-    with pytest.raises(SystemExit) as exited:
-        script.main()
-
-    assert exited.value.code == "provenance/TestDataset has no StatVar row"
-    assert not out.exists()
+    with pytest.raises(IndexFormatError):
+        parse_index(document)
 
 
-def test_export_index_refuses_a_declared_dataset_with_no_row():
-    with pytest.raises(ExportRefused, match=r"provenance/TestDataset.*no StatVar row"):
-        _export_two_system_graph(CoverageJoin(build_id="empty-build", provenances={}))
+_AT_BIRTH = ImpliedValue(
+    population_type="Person",
+    measured_property="lifeExpectancy",
+    property_dcid="age",
+    value_dcid="Years0",
+)
+
+
+@pytest.mark.parametrize(
+    ("arcs", "refused"),
+    [
+        pytest.param(
+            {"populationType": ("Person",), "measuredProperty": ("lifeExpectancy",)},
+            False,
+            id="a-statvar-of-the-measure-states-the-value",
+        ),
+        pytest.param(
+            {"populationType": ("Person",), "measuredProperty": ("count",)},
+            True,
+            id="only-another-measure-states-it",
+        ),
+    ],
+)
+def test_an_implied_value_no_statvar_of_its_measure_states_is_unstated(arcs, refused):
+    """The index holds no row of a catalogue family, so the live check reads the graph: some
+    StatVar of the measure must state the value on the property."""
+    graph = _FakeGraph(forward_arcs={"LifeExpectancy_Person_0Years": {**arcs, "age": ("Years0",)}})
+
+    assert unstated_implied_values(graph, [_AT_BIRTH]) == ([_AT_BIRTH] if refused else [])
+    assert graph.calls == [
+        ("Years0", "age", (("measuredProperty", "lifeExpectancy"), ("populationType", "Person")))
+    ]
+
+
+def test_an_export_with_a_declared_dataset_with_no_row_does_not_load():
+    document = _export_two_system_graph(CoverageJoin(provenances={}, parties={}))
+
+    with pytest.raises(IndexFormatError, match=r"provenance/TestDataset.*no StatVar row"):
+        parse_index(document)
 
 
 _LISTED_PROVENANCE = "provenance/ListedDataset"
@@ -2450,11 +2504,11 @@ def _graph_with_listed(*extra: str) -> _FakeGraph:
 def _export_with_listed(graph: _FakeGraph, provenances: dict[str, tuple[str, ...]]) -> dict:
     return export_index(
         graph,
+        party_reader=graph,
         graph_endpoint="https://fake.example",
-        now=_NOW,
         coverage=CoverageJoin(
-            build_id="test-build",
             provenances={**_covered(_two_system_graph()).provenances, **provenances},
+            parties={},
         ),
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
@@ -2522,11 +2576,13 @@ def test_export_index_refuses_a_listed_statvar_with_no_series_code():
         _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
 
 
-def test_export_index_refuses_a_code_whose_arc_provenance_the_coverage_build_does_not_give():
+def test_an_export_with_a_code_whose_arc_provenance_the_coverage_does_not_give_does_not_load():
     graph = _graph_with_listed()
     graph.wire_arcs["SV_Listed_Disbursement"] = _code_arcs(("provenance/Elsewhere", "LST.DISB"))
-    with pytest.raises(ExportRefused, match=r"does not load.*provenance/Elsewhere"):
-        _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
+    document = _export_with_listed(graph, {"SV_Listed_Disbursement": (_LISTED_PROVENANCE,)})
+
+    with pytest.raises(IndexFormatError, match="provenance/Elsewhere"):
+        parse_index(document)
 
 
 def test_export_source_codes_keys_a_recorded_ids_read_on_its_arc_provenance():
@@ -2582,15 +2638,17 @@ def test_export_value_parents_writes_each_chain_and_refuses_two_parents_or_a_cyc
         export_value_parents(graph, statvars)
 
 
-def test_export_index_refuses_a_provenance_no_dataset_declares():
+def test_an_export_with_a_provenance_no_dataset_declares_does_not_load():
     graph = _two_system_graph()
     coverage = CoverageJoin(
-        build_id="test-build",
         provenances=dict.fromkeys(graph.forward_arcs, ("provenance/ThirdSource", _TEST_PROVENANCE)),
+        parties={},
     )
 
-    with pytest.raises(ExportRefused, match=r"provenance/ThirdSource.*no dataset declares"):
-        _export_two_system_graph(coverage)
+    document = _export_two_system_graph(coverage)
+
+    with pytest.raises(IndexFormatError, match=r"provenance/ThirdSource.*no dataset declares"):
+        parse_index(document)
 
 
 def test_export_index_refuses_a_row_lacking_a_system_its_dataset_always_declares():
@@ -2604,8 +2662,8 @@ def test_export_index_refuses_a_row_lacking_a_system_its_dataset_always_declares
     with pytest.raises(ExportRefused, match=r"SV_Commitment_NoFlow.*does not declare 'sysFlat'"):
         export_index(
             graph,
+            party_reader=graph,
             graph_endpoint="https://fake.example",
-            now=_NOW,
             coverage=_covered(graph),
             code_systems=(_HIERARCHICAL, _FLAT),
             measure_axes=(),
@@ -2675,7 +2733,7 @@ def test_a_dataset_no_code_system_lists_refuses_enumeration():
         )
 
 
-def test_the_packaged_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
+def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
     crs, imputed, dac1, dac2a, dac2b = (dataset.provenance for dataset in DATASETS)
     assert [dataset.opt_in for dataset in DATASETS] == [False, True, False, False, False]
 
@@ -2690,27 +2748,6 @@ def test_the_packaged_configuration_lists_each_system_under_the_datasets_that_al
         "dac1AidType": {dac1},
         "dac2bAidType": {dac2b},
     }
-
-
-def test_load_coverage_join_reads_the_build_id_and_variable_provenances():
-    slice_uri = (Path(__file__).parents[1] / "fixtures" / "coverage_slice").as_uri()
-    loaded = load_coverage(slice_uri)
-
-    join = load_coverage_join(slice_uri, datasets={"provenance/OECDCreditorReportingSystem"})
-
-    assert join.build_id == loaded.manifest.build_id
-    assert join.provenances == loaded.index.variable_provenances()
-    assert join.provenances
-    assert all(
-        provenances == tuple(sorted(provenances)) for provenances in join.provenances.values()
-    )
-    # A donor and a recipient of the slice's one CRS facet, each with the dataset publishing
-    # it and the axis it is published on, and no empty cell of a one-role row.
-    crs = frozenset({"provenance/OECDCreditorReportingSystem"})
-    assert join.parties["AdaptationFund"] == PartyPublication(crs, frozenset({"origin"}))
-    assert join.parties["DACAfricaUnallocated"] == PartyPublication(crs, frozenset({"destination"}))
-    assert "" not in join.parties
-    assert load_coverage_join(slice_uri, datasets=()).parties == {}
 
 
 # --- A StatVar the index would decide must be an exported row ---
@@ -2832,8 +2869,8 @@ def test_export_refuses_a_five_tuple_read_still_truncated_after_every_code_axis(
 @pytest.mark.parametrize("group", CONCEPT_GROUPS, ids=lambda group: "+".join(d for _s, d in group))
 def test_every_code_of_a_concept_group_reads_the_same_texts(group):
     """Codes of different tables that name one concept carry one set of texts in the
-    packaged index, so a query phrase reads on all of them or none."""
-    index = load_index(default_index_path())
+    fixture index, so a query phrase reads on all of them or none."""
+    index = load_index(INDEX_FIXTURE)
     rows = [index.code_by_dcid(dcid) for _system, dcid in group]
     assert all(row is not None for row in rows)
     texts = [
@@ -2894,8 +2931,8 @@ def _export_parties(
     coverage = dataclasses.replace(_covered(graph), parties=dict.fromkeys(published, publication))
     return export_index(
         graph,
+        party_reader=graph,
         graph_endpoint="https://fake.example",
-        now=_NOW,
         coverage=coverage,
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
@@ -3001,15 +3038,6 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             {"DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",))},
             "as residuals",
         ),
-        (
-            {
-                "DACAfrica": ("DACGroup",),
-                "DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",),
-            },
-            None,
-            {"DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",), sums_members=False)},
-            "claims no sum",
-        ),
     ],
     ids=[
         "undeclared-type",
@@ -3020,7 +3048,6 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
         "group-on-an-unpublished-total",
         "residual-is-a-party",
         "residual-unpublished",
-        "residuals-beside-a-published-total",
     ],
 )
 def test_export_index_refuses_a_party_it_cannot_declare(
@@ -3028,6 +3055,21 @@ def test_export_index_refuses_a_party_it_cannot_declare(
 ):
     with pytest.raises(ExportRefused, match=message):
         _export_parties(types_by_party, parties=parties, total_groups=total_groups)
+
+
+def test_an_export_whose_total_counts_residuals_and_claims_no_sum_does_not_load():
+    document = _export_parties(
+        {
+            "DACAfrica": ("DACGroup",),
+            "DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",),
+        },
+        total_groups={
+            "DACAfrica": TotalGroup("africa", ("DACAfricaUnallocated",), sums_members=False)
+        },
+    )
+
+    with pytest.raises(IndexFormatError, match="claims no sum"):
+        parse_index(document)
 
 
 def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
@@ -3102,7 +3144,7 @@ def test_party_kind_overrides_holds_only_reviewed_total_rows():
 
 
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))
-def test_the_packaged_index_carries_each_reviewed_kind_override(group: str, members: tuple[str]):
+def test_the_fixture_index_carries_each_reviewed_kind_override(group: str, members: tuple[str]):
     index = get_index()
     assert (index.parties[group].kind, index.parties[group].totals) == ("total", None)
     assert {member: index.parties[member].kind for member in members} == dict.fromkeys(
@@ -3205,7 +3247,7 @@ def test_total_groups_holds_only_reviewed_rows():
 
 
 @pytest.mark.parametrize(("party", "total"), sorted(_REVIEWED_TOTAL_GROUPS.items()))
-def test_the_packaged_index_carries_each_reviewed_total_group(party: str, total: TotalGroup):
+def test_the_fixture_index_carries_each_reviewed_total_group(party: str, total: TotalGroup):
     index = get_index()
     row = index.parties[party]
     assert (row.kind, row.totals, row.residuals, row.sums_members) == (
@@ -3228,7 +3270,7 @@ def test_the_packaged_index_carries_each_reviewed_total_group(party: str, total:
         ("EUROFIMA", "party", "origin"),
     ],
 )
-def test_the_packaged_index_declares_the_ids_parties(party: str, kind: str, axis: str):
+def test_the_fixture_index_declares_the_ids_parties(party: str, kind: str, axis: str):
     """IDS is a listed dataset, outside `DATASETS`, and its debtors and creditors still need
     a kind for a sum across them."""
     row = get_index().parties[party]
@@ -3239,7 +3281,7 @@ def test_the_packaged_index_declares_the_ids_parties(party: str, kind: str, axis
     )
 
 
-def test_the_packaged_index_declares_the_exporters_party_types():
+def test_the_fixture_index_declares_the_exporters_party_types():
     index = get_index()
     assert index.party_types == PARTY_TYPE_KINDS
     assert index.parties

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from code_index import CodeIndex, default_index_path, load_index
+from code_index import CodeIndex
 from code_index.query import CANDIDATE_HITS, CANDIDATE_LIMIT, CandidateCodes
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 
 @pytest.fixture(scope="module")
 def committed() -> CodeIndex:
     """The committed index, whose CRS labels and synonyms these menus read."""
-    return load_index(default_index_path())
+    return load_index(INDEX_FIXTURE)
 
 
 _CRS = frozenset({"crsPurpose", "crsTypeOfFlow", "crsTypeOfFinance", "crsCooperationModality"})

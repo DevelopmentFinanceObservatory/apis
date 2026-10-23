@@ -113,6 +113,26 @@ def test_un_agencies_exclude_the_series_derived_from_dfo_data() -> None:
     }
 
 
+def test_un_agencies_declare_the_side_and_price_basis_of_their_series() -> None:
+    """Climate finance provided sits on the provider, TOSSD receipts on the recipient, and
+    UNIDO's GDP at constant 2015 prices is real. No excluded series declares a fact."""
+    registry = load_registry()
+    declarations = registry.series_declarations()
+    facts = {
+        series: (declaration.side, declaration.measurement_qualifier)
+        for series, declaration in declarations.items()
+    }
+
+    assert facts["undata/sdg/SERIES-DC_FIN_CLIMT"] == ("provider", None)
+    assert facts["undata/sdg/SERIES-DC_OSSD_MPF"] == ("recipient", None)
+    assert facts["undata/unido/SERIES-NA_GDPCOD"] == (None, "RealValue")
+    assert "undata/unido/SERIES-NA_GDPCUD" not in facts
+    assert Counter(side for side, _ in facts.values() if side) == {"provider": 6, "recipient": 10}
+    assert Counter(qualifier for _, qualifier in facts.values() if qualifier) == {"RealValue": 8}
+    excluded = {e.series for agency in registry.un_system for e in agency.exclusions}
+    assert not excluded & declarations.keys()
+
+
 def test_sources_name_the_level_they_scan() -> None:
     registry = load_registry()
     by_source = {entry.source: entry for entry in registry.base}
@@ -193,6 +213,11 @@ def _series(*series: str, reason: str = "superseded_by_dfo", extra: str = "") ->
         for one in series
     )
     return _UN + f"exclusions = [{rows}]\n"
+
+
+def _declared(*rows: str) -> str:
+    """The SDG agency declaring `rows`, each an inline table."""
+    return _UN + f"declarations = [{', '.join(rows)}]\n"
 
 
 def _alias(refs: str | list[str], *names: str) -> str:
@@ -300,6 +325,33 @@ def _alias(refs: str | list[str], *names: str) -> str:
             _BASE + _UN + 'exclusions = [{ series = "undata/sdg/SERIES-A", '
             'reason = "superseded_by_dfo", dfo_provenance = "dc/base/WorldBank_IDS" }]\n',
             "dfo_provenance",
+        ),
+        (_BASE + _declared('{ series = "undata/sdg/SERIES-A" }'), "states no fact"),
+        (
+            _BASE + _declared('{ series = "undata/sdg/SERIES-A", side = "donor" }'),
+            r"declarations\.0\.side\n  Input should be 'provider' or 'recipient'",
+        ),
+        (
+            _BASE + _declared('{ series = "undata/sdg/SERIES-A", measurement_qualifier = "Real" }'),
+            r"declarations\.0\.measurement_qualifier",
+        ),
+        (
+            _BASE + _declared('{ series = "undata/who/SERIES-A", side = "provider" }'),
+            r"'undata/p/SDG' declares \['undata/who/SERIES-A'\], outside its own series",
+        ),
+        (
+            _BASE
+            + _declared(
+                '{ series = "undata/sdg/SERIES-A", side = "provider" }',
+                '{ series = "undata/sdg/SERIES-A", measurement_qualifier = "RealValue" }',
+            ),
+            "duplicate declared series",
+        ),
+        (
+            _series("undata/sdg/SERIES-A")
+            + 'declarations = [{ series = "undata/sdg/SERIES-A", side = "provider" }]\n'
+            + _BASE,
+            r"declares excluded series \['undata/sdg/SERIES-A'\]",
         ),
         ('[[base]]\nsource = "WorldBank"\nlabel = "World Bank"\n' + _UN, "source"),
         ('[[base]]\nsource = "dc/s/A"\nlabel = "A"\ncountry = "USA"\n' + _UN, "country"),

@@ -66,7 +66,7 @@ def _resolve_standard_promote(
     """Resolve a resubmit from the identity alone.
 
     The identity's members are elected as the Datasets mint elects them
-    (`promote_reread._elected_members`): the packaged index for a named measure family or
+    (`promote_reread._elected_members`): the release's code index for a named measure family or
     an identity it decides, else the mint's graph walk, with its first page under
     `deadline` and its full read of a deep-root family under `full_read_deadline`, which
     defaults to `deadline`. A walk that ran the full read moves every later phase to

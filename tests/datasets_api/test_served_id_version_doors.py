@@ -70,7 +70,7 @@ _POSTED = recompute_identity(_posted_identity())
 
 @functools.cache
 def _prior_index() -> CodeIndex:
-    """The packaged index as an export before any dataset declared the aid-type invariant, so
+    """The fixture index as an export before any dataset declared the aid-type invariant, so
     the posted identity's canonical form under it leaves that slot unbound."""
     index = get_index()
     return CodeIndex(
@@ -112,7 +112,7 @@ def _registered(*indexes: CodeIndex) -> tuple[FakeDatasetStore, list[str]]:
 
 @functools.cache
 def _bound() -> tuple[SpecReader, str]:
-    """A reader of a registry binding the posted id to its served id under the packaged
+    """A reader of a registry binding the posted id to its served id under the fixture
     index, and that served id."""
     store, [served] = _registered(get_index())
     assert served != _POSTED.spec_id

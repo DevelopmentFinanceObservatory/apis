@@ -14,7 +14,6 @@ from concurrent.futures import Future
 import pytest
 
 from origin_catalogue import BASE, UN_SYSTEM, CatalogueSnapshot
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import DetectedSV, Detection, admit_candidates, standing_dcid
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_intake
@@ -22,6 +21,7 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.topics import expand_topics
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -166,7 +166,7 @@ class _ElectFirstLLM:
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         usage = {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[], ask=None), usage
+        return elected_reply(0), usage
 
 
 async def _resolving(graph: FakeGraph, *, llm: _ElectFirstLLM | None = None) -> RegionResult:

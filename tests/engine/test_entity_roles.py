@@ -6,7 +6,6 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.entry.dataset_entries import interpret_parts as dataset_door_interpretation
 from search.engine.entry.parsed import (
     _entity_roles_for_part,
@@ -21,6 +20,7 @@ from search.engine.role_text import DoorRole, contradicts
 from search.models import ParsedEntity, ParsedPart, RoleAxis
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -163,6 +163,62 @@ class TestRawTextDoorCarriesEveryOccurrence:
             "China": [DoorRole(axis="origin", span="China", stated=True)],
         }
 
+    @pytest.mark.parametrize(
+        ("query", "measure", "entities", "expected"),
+        [
+            # Stored readings whose cues are paraphrases ("owes", "to") or not cues at all
+            # ("does"): validation drops each role, and the query's own wording sets it.
+            (
+                "how much does China owe India",
+                "external debt",
+                [("China", "destination", "owes"), ("India", "origin", "to")],
+                {"China": "destination", "India": "origin"},
+            ),
+            (
+                "what does Zambia owe the IMF",
+                "IMF debt",
+                [("Zambia", "destination", "owes"), ("IMF", "origin", "owes")],
+                {"Zambia": "destination", "IMF": "origin"},
+            ),
+            (
+                "how much does Kenya owe China",
+                "external debt",
+                [("Kenya", "unspecified", None), ("China", "origin", "does")],
+                {"Kenya": "destination", "China": "origin"},
+            ),
+            (
+                "net ODA received by Ethiopia in 1965",
+                "net ODA received",
+                [("Ethiopia", "destination", "to")],
+                {"Ethiopia": "destination"},
+            ),
+            (
+                "By what percentage did the total ODA Ghana received from all donors change "
+                "between 2012 and 2021?",
+                "total ODA",
+                [("Ghana", "destination", "to")],
+                {"Ghana": "destination"},
+            ),
+        ],
+    )
+    def test_query_wording_directs_a_place_whose_cue_failed_validation(
+        self,
+        query: str,
+        measure: str,
+        entities: list[tuple[str, RoleAxis, str | None]],
+        expected: dict[str, RoleAxis],
+    ):
+        extracted = [
+            ExtractedEntity(text=text, span=text, flow_role=axis, role_span=cue)
+            for text, axis, cue in entities
+        ]
+        validated = _validate_role_spans(query, extracted, [measure])
+        assert {e.flow_role for e in validated} == {"unspecified"}
+        roles = _entity_roles(validated, query=query, measures=[measure])
+        assert roles == {
+            name: [DoorRole(axis=axis, span=name, stated=True)] for name, axis in expected.items()
+        }
+
     def test_an_exact_repeat_collapses_to_one_occurrence(self):
         roles = _entity_roles(
             [
@@ -253,8 +309,8 @@ class TestRawTextDoorReadsDebtWording:
     @pytest.mark.parametrize(
         ("query", "uncued"),
         [
-            ("how much does Kenya owe to China", "Kenya"),
             ("Kenya debt owed to China", "Kenya"),
+            ("Kenya debt to China", "Kenya"),
         ],
     )
     @pytest.mark.parametrize(("kenya", "china"), _AXIS_COMBINATIONS)
@@ -550,7 +606,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0, bindings=[]), None
 
 
 def _run_self_flow_occurrences(
@@ -705,3 +761,22 @@ def _assert_binds_china_as_creditor(
         (_KEN, "destination"),
     }
     assert spec.definition.identity.entities == {"origin": [_CHN], "destination": [_KEN]}
+
+
+def test_a_country_before_the_measure_takes_the_end_the_other_place_leaves(monkeypatch):
+    """ "China loans to Kenya": China's own name before "loans" states no direction, so
+    validation leaves it unspecified, and Kenya's cue makes Kenya the debtor. A by-creditor
+    series places China on the end Kenya leaves open."""
+    query = "China loans to Kenya"
+    extracted = _validate_role_spans(
+        query,
+        [
+            ExtractedEntity(text="China", span="China", flow_role="origin", role_span="China"),
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to"),
+        ],
+        ["loans"],
+    )
+    assert [entity.flow_role for entity in extracted] == ["unspecified", "destination"]
+    door_roles = _entity_roles(extracted, query=query, measures=["loans"])
+
+    _assert_binds_china_as_creditor(monkeypatch, query, door_roles)

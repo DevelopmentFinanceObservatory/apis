@@ -3,8 +3,8 @@ from one code index.
 
 Both indexes are the serving views of the graph release bound to the current context
 (`graph_release.service.ReleaseViews`), so a request reads its release's indexes and none
-outlives the release. A producer or script that reads the packaged export calls
-`code_index.loader.load_index(default_index_path())` itself.
+outlives the release. A script reads them the same way, under the release `GRAPH_RELEASE_URI`
+names (`graph_release.context.bound_served_release`).
 """
 
 from __future__ import annotations

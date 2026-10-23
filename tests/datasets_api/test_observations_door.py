@@ -804,7 +804,7 @@ def test_the_door_and_the_live_role_bulk_preview_agree_on_each_series_axes(
     the same series and state the same order, ranked or fixed, on every window. The live
     path takes constraints from member facts (the health index row, the education graph
     arcs); the door from its code index, else graph arcs. Both label through one code
-    index, as both read the packaged index in production."""
+    index, as both read the fixture index in production."""
     search_settings(role_bulk_rank_max_rows=gate)
     monkeypatch.setattr(tests.fixtures, "get_index", _index)
     monkeypatch.setattr(search.engine.region.observations.bulk_role_series, "get_index", _index)

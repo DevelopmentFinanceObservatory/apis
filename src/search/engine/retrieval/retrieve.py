@@ -164,7 +164,7 @@ class Materialised:
     population: MemberPopulation | None = None
     # Latest-year summary from the role coverage index; None without role data.
     headline: Headline | None = None
-    # Coverage artifact stamp used for this result's population and headline.
+    # Coverage view stamp used for this result's population and headline.
     coverage_stamp: str | None = None
 
     @property

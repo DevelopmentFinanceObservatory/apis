@@ -41,7 +41,7 @@ _FERTILITY_SV = "FertilityRate_Person_Female"
 # this shape. Reusing that same facets mapping (grounding/coverage keep
 # working unchanged) plus a self-authored arcs/subjects pair for
 # FertilityRate_Person_Female -- mirroring test_place_options_event.py's own
-# convention for a shape the packaged code index does not carry -- gives
+# convention for a shape the fixture code index does not carry -- gives
 # build_place_options_events' own resolve_options_target call something real
 # to enumerate, without touching the query's own definite resolution at all.
 _FERTILITY_ARCS: dict[str, dict[str, tuple[str, ...]]] = {

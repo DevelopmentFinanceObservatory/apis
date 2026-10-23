@@ -1,4 +1,4 @@
-"""Public API for coverage schemas, Parquet I/O, lookups, and loading.
+"""Public API for coverage schemas, lookups, and the served coverage.
 
 Exports backed by numpy-dependent modules resolve on first access, since
 `numpy` is installed only with the `coverage` extra. Other types and schema
@@ -20,25 +20,17 @@ from series_coverage.coverage_types import (
     YearCount,
 )
 from series_coverage.facets import FacetCandidate, FacetMetadata, facet_candidates, rank_candidates
-from series_coverage.schema import (
-    VERSIONS_PREFIX,
-    CoverageManifest,
-    CoveragePointer,
-    RoleNames,
-    YearHorizon,
-)
+from series_coverage.schema import CoverageManifest, RoleNames, YearHorizon
 
 if TYPE_CHECKING:
     from series_coverage.index import CoverageIndex
-    from series_coverage.loader import CoverageArtifactError, LoadedCoverage, load_coverage
+    from series_coverage.loader import CoverageArtifactError
     from series_coverage.shared import get_coverage_service
 
 # Export names resolved on first access.
 _LAZY: dict[str, tuple[str, str]] = {
     "CoverageIndex": ("series_coverage.index", "CoverageIndex"),
     "CoverageArtifactError": ("series_coverage.loader", "CoverageArtifactError"),
-    "LoadedCoverage": ("series_coverage.loader", "LoadedCoverage"),
-    "load_coverage": ("series_coverage.loader", "load_coverage"),
     "get_coverage_service": ("series_coverage.shared", "get_coverage_service"),
 }
 
@@ -58,18 +50,15 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
-    "VERSIONS_PREFIX",
     "BoundRoles",
     "CoverageArtifactError",
     "CoverageIndex",
     "CoverageManifest",
-    "CoveragePointer",
     "Estimate",
     "FacetCandidate",
     "FacetCoverage",
     "FacetMetadata",
     "Headline",
-    "LoadedCoverage",
     "Role",
     "RoleNames",
     "VariableCoverage",
@@ -77,6 +66,5 @@ __all__ = [
     "YearHorizon",
     "facet_candidates",
     "get_coverage_service",
-    "load_coverage",
     "rank_candidates",
 ]

@@ -14,7 +14,6 @@ import sys
 import pytest
 
 from code_index.shared import get_measure_index
-from search.engine.bind import _UniversalBindOutput
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.quantity import (
     DenominatorRead,
@@ -43,6 +42,7 @@ from search.engine.region.requirements import judge, meets_stray_values
 from search.engine.region.state import Requirement, ValueRule, unapplied_departure
 from search.engine.shape import ShapeDraft
 from search.models import GraphRef, ResolvedQualifier
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -755,6 +755,10 @@ def test_an_unresolved_denominator_arc_reads_its_schema_term(denominator, expect
 
 
 _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+# The registered twin of `_GDP` (`equivalent_series.json`).
+_GDP_TWIN = (
+    "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal"
+)
 
 
 @pytest.mark.parametrize(
@@ -762,6 +766,19 @@ _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
     [
         (
             _shape("x", "Debt", "amount", "measuredValue", None, _GDP),
+            NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
+            "matches",
+            None,
+        ),
+        # A registered twin of the named denominator matches, in either direction.
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, _GDP),
+            NamedDenominator(ref=GraphRef(ref=_GDP_TWIN, label="GDP"), base_words="GDP"),
+            "matches",
+            None,
+        ),
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, _GDP_TWIN),
             NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
             "matches",
             None,
@@ -821,6 +838,8 @@ _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
     ],
     ids=[
         "arc-matches",
+        "arc-matches-named-twin",
+        "twin-arc-matches-named",
         "arc-differs",
         "none-of-these-leaves-an-arc-unverified",
         "schema-term-arc-differs",
@@ -1608,11 +1627,8 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen_shape_index,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
+        return elected_reply(
+            self._chosen_shape_index, bindings=[], also_plausible=self._also_plausible
         ), None
 
 

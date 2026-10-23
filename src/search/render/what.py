@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
 from code_index.shared import get_index
+from dfo_platform.roles import RoleWording
 from search.heading.measure_noun import MeasureNoun as AuthoredNoun
 from search.heading.measure_noun import denominator_noun, measure_noun
 from search.models import ResolvedFacet, Slot
@@ -379,6 +380,8 @@ def _unit_heading_phrase(
     shape: ShapeLike,
     facets: Mapping[str, ResolvedFacet] | None,
     graph_heading_text: str | None,
+    *,
+    wording: RoleWording,
 ) -> UnitPhrase:
     """Return the unit phrase a heading states, empty when the unit leaves it alone.
 
@@ -394,6 +397,9 @@ def _unit_heading_phrase(
     noun never names a unit, so it is not inspected. Before facets resolve (``facets``
     None) only the per-head reading applies, since the shape alone fixes it. A unit whose
     series disagree (``per_series``) has no class, though its denominator still reads.
+    A ratio whose dataset declares whose total it divides by (`_ratio_base_owner`) names
+    that party in ``wording``'s noun: DAC2a's "as a share of the recipient's GNI", DAC1's
+    "as a share of the provider's GNI".
 
     The phrase names the unit (`UnitPhrase.names_unit`) when it states a percent ("in
     percent", "as a share of ...") or a purchasing-power unit. "per capita" and "relative
@@ -417,6 +423,8 @@ def _unit_heading_phrase(
         base = denominator_noun(denominator.ref) or _recase_words(
             _normalize_what_label(_humanize(denominator))
         )
+        if (owner := _ratio_base_owner(facets, wording)) is not None:
+            base = f"the {owner}'s {base}"
         is_percent = unit_class.kind == "percent"
         phrases.append(f"{'as a share of' if is_percent else 'relative to'} {base}")
         names_unit = is_percent
@@ -428,3 +436,16 @@ def _unit_heading_phrase(
         phrases.append(f"in {_PURCHASING_POWER_PHRASES.get(unit_class.unit or '', unit_text)}")
         names_unit = True
     return UnitPhrase(" ".join(phrases), names_unit=names_unit)
+
+
+def _ratio_base_owner(facets: Mapping[str, ResolvedFacet], wording: RoleWording) -> str | None:
+    """The noun of the party whose own total the answer's ratio divides by, as the one
+    dataset it serves from declares it (`DatasetDeclaration.ratio_base_axis`), else `None`:
+    for a dataset that declares none, and for series of several datasets."""
+    provenance = facets.get("provenance")
+    if provenance is None or provenance.ref is None:
+        return None
+    dataset = get_index().datasets.get(provenance.ref)
+    if dataset is None or dataset.ratio_base_axis is None:
+        return None
+    return wording.noun(dataset.ratio_base_axis).singular

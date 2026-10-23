@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from code_index.members import FamilyQuery
 from code_index.shared import get_index
+from code_index.types import BroadReading
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import Cause
 from entity_resolution import Admission, EntityResolver, Resolution
@@ -24,6 +25,7 @@ from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import UnUnserved
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder, BindResult, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -437,6 +439,19 @@ class ValueRule:
     code_systems: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class MeasureRule:
+    """A measure value the request's words name (`match`) that the elected shape does not
+    carry under the bindings it was elected with. An answer meets the rule when its shape
+    carries the value or a value its settled bindings bind reads it
+    (`qualifier_readings.answer_reads_measure`), which binding repair can bind after
+    election: activitySource GrossDomesticProduction reads "gross". Otherwise it is judged
+    as `code`, the `CodeRule` on the measure axis."""
+
+    match: QualifierMatch
+    code: CodeRule
+
+
 # Where a requirement was recorded: a model tie the bindings leave unresolved ("tie"), the
 # elected reading's own measure phrases, coverage words and query records ("bind"), a run
 # naming a value by its graph label ("value"), a value the bind drafted on a slot the
@@ -447,11 +462,11 @@ type RequirementOrigin = Literal[
     "tie", "bind", "value", "stray", "set_value", "unbinding", "posted"
 ]
 
-# How an answer is judged on a requirement: by its codes (`CodeRule`), by the values its
-# words name (`ValueRule`), as unmet on every answer ("unbound", a query record of the
-# elected reading no binding covers), or on none (`None`, a term no one slot clears, which
+# How an answer is judged on a requirement: by its codes (`CodeRule`), by the measure value
+# its words name (`MeasureRule`), by the values its words name (`ValueRule`), as unmet on
+# every answer ("unbound", a query record of the elected reading no binding covers), or on none (`None`, a term no one slot clears, which
 # departs unless a refusal names it).
-type RequirementRule = CodeRule | ValueRule | Literal["unbound"] | None
+type RequirementRule = CodeRule | MeasureRule | ValueRule | Literal["unbound"] | None
 
 
 @dataclass(frozen=True)
@@ -469,7 +484,9 @@ class Requirement:
     phrase without the others, for when some of them need no disclosure. `generic` is a
     departure naming no phrase in particular ("A requested gender value was not applied."),
     true of any of its requirements left unapplied, so it discloses those of its phrases
-    that need it whatever the others."""
+    that need it whatever the others. `refuses` is `False` for a value only the bind model
+    read (`phase_rank_bind.model_only_values`). An answer is judged on it, and one leaving
+    it unapplied discloses it and stands."""
 
     term: ResolvedQualifier
     origin: RequirementOrigin
@@ -477,6 +494,7 @@ class Requirement:
     departure: Departed | None = None
     alone: Departed | None = None
     generic: Departed | None = None
+    refuses: bool = True
 
     @property
     def phrase(self) -> str:
@@ -493,11 +511,12 @@ def code_requirement(
     origin: RequirementOrigin,
     alone: Departed | None = None,
     generic: Departed | None = None,
+    refuses: bool = True,
 ) -> Requirement:
     """A requirement that an answer apply `codes` on `property_dcid` (`CodeRule`), named by
     `asked`, the request's words, and `named`, the code rows they read as. A value no name
-    exists for (`asked` `None`) is named by its dcid. `departure`, `alone` and `generic`
-    are the `Requirement`'s."""
+    exists for (`asked` `None`) is named by its dcid. `departure`, `alone`, `generic` and
+    `refuses` are the `Requirement`'s."""
     if asked is None:
         term = ResolvedQualifier(
             text=" and ".join(codes),
@@ -516,6 +535,7 @@ def code_requirement(
         departure=departure,
         alone=alone,
         generic=generic,
+        refuses=refuses,
     )
 
 
@@ -578,8 +598,8 @@ class UnPool:
     has none to fill a gap with (`None` when it need not), and what the leg's own reads could
     not serve, the UN places they named that the UN front door refuses and their failed UN
     reads (`unserved`), and the reads they swallowed (`lost`). Those reads describe the UN
-    pool alone, so they join the part's records only when the UN pass runs
-    (`pipeline._fill_gap`)."""
+    pool alone, so they join the part's records only when the pool reaches a menu: on the
+    UN pass (`pipeline._fill_gap`), or merged onto ours (`phase_intake._merge_un_pool`)."""
 
     shapes: list[ShapeDraft]
     missed: str | None = None
@@ -600,11 +620,14 @@ class UnLeg:
 @dataclass(frozen=True, slots=True)
 class SlotDefaultDisclosure:
     """What one declared default that fired states (`phase_election._repair_bindings`): its
-    `slot_defaulted` warnings, and the normalised dropped phrases it answers, whose
-    entry-level warning those replace."""
+    `slot_defaulted` warnings, the normalised dropped phrases it answers, whose
+    entry-level warning those replace, and the broad reading it is, if any
+    (`bind_repair.apply_broad_readings`), whose broader value applies the words of its
+    narrow one (`phase_rank_bind.judge_value_requirements`)."""
 
     warnings: tuple[Warning, ...] = ()
     phrases: frozenset[str] = frozenset()
+    reading: BroadReading | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -651,6 +674,8 @@ class ResolveState:
     resolver: EntityResolver
     admission: Admission
     llm: SupportsLLM
+    # The binder the part's quantity read and bind call go through, on `llm`.
+    binder: Binder = field(default_factory=GeminiBinder)
     sdmx: EngineSdmxClient
     deadline: float | None
     pre_resolved: dict[str, Resolution] | None
@@ -845,6 +870,11 @@ class ResolveState:
     # derivation (`phase_intake._phase_derive_shapes`), `None` on the UN pass and on a part
     # whose scope allows no UN provenance or that ended before derivation.
     un_leg: UnLeg | None = None
+    # The UN leg's pool when our pass took it under `SEARCH_UN_ON_FIRST_MENU`
+    # (`phase_intake._merge_un_pool`): merged onto its menu, or late or failed after the
+    # pass waited for it, which `pipeline._fill_gap` warns on. `None` when the pass left the
+    # leg to the UN pass.
+    un_pool: UnPool | None = None
     # Whether the part posted source mentions, so each answer's identity binds the
     # provenances that served it (`spec_build.build_spec`'s `pin_served_provenance`).
     pin_served_provenance: bool = False
@@ -897,6 +927,9 @@ class ResolveState:
     menu_choices: tuple[QualifierMatch, ...] = ()
     # Bind assigns this before any reader; `cast(None)` avoids an invalid sentinel or Optional checks.
     bind_result: _UniversalBindOutput = field(default=cast(_UniversalBindOutput, None))
+    # The binder's whole answer to the bind call (`binders.BindResult`): its reply before
+    # `split_stray_bindings`, with what the engine reads beside it. `None` before bind.
+    bind_decision: BindResult | None = None
     # Shape selected by the bind call.
     shape_draft: ShapeDraft = field(default=cast(ShapeDraft, None))
     # What each bind menu shape stated of data at the places the part names, in
@@ -915,10 +948,11 @@ class ResolveState:
     # One requirement per value the bind drafted on a property the elected shape has no
     # slot for, judged as a value the request names and named by its label
     # (`phase_rank_bind._stray_requirements`). The drafts leave the bind output, bind
-    # records these in the ledger, and `_resolve_query_qualifiers` records their terms. A
-    # part whose answer leaves one unapplied refuses `qualifier_not_bound` naming it, and a
-    # `qualifier_not_bound` refusal of settlement, which judges no answer, names it too
-    # (`requirements.settle_unanswered`).
+    # records these in the ledger, and `_resolve_query_qualifiers` records the terms of
+    # those that refuse. A part whose answer leaves one a recorded term supports unapplied
+    # refuses `qualifier_not_bound` naming it, and a `qualifier_not_bound` refusal of
+    # settlement, which judges no answer, names it too (`requirements.settle_unanswered`).
+    # One only the model read departs instead (`Requirement.refuses`).
     stray_requirements: tuple[Requirement, ...] = ()
     # Open constraint axes the elected measure's members do not declare; added to
     # `inapplicable_slots` because they are absent from the shape's slot keys.
@@ -1258,6 +1292,30 @@ class ResolveState:
                 origin=origin,
             )
         self.requirements = with_requirement(self.requirements, requirement)
+
+    def require_measure(self, phrase: str, match: QualifierMatch, *, discloses: bool) -> None:
+        """Record that the elected shape does not carry the measure value `match` names, by
+        the request's words of normalised `phrase`, as a requirement each final answer is
+        judged on by its own shape and settled bindings (`MeasureRule`). When the part
+        `discloses` the phrase it departs as the code requirement `require_unapplied`
+        records on the measure axis. A phrase the raw text owns (a dropped qualifier) departs
+        and refuses nothing: its raw-text warning discloses it, and the part admits it when
+        every final answer meets it (`requirements.met_measure_phrases`)."""
+        asked, prop = match.matched_text, match.code_system
+        named = tuple(self.codes_named(asked, prop))
+        codes = tuple(ref.ref for ref in named)
+        requirement = code_requirement(
+            property_dcid=prop,
+            codes=codes,
+            asked=asked,
+            named=named,
+            departure=unapplied_departure(phrase, asked=asked, property_dcid=prop),
+            origin="bind",
+        )
+        rule = MeasureRule(match=match, code=CodeRule(property_dcid=prop, codes=codes))
+        if not discloses:
+            requirement = replace(requirement, departure=None, refuses=False)
+        self.requirements = with_requirement(self.requirements, replace(requirement, rule=rule))
 
     def label_dcids(self, dcids: Sequence[str]) -> list[str]:
         """Label DCIDs from query text, one batched graph lookup, or the DCID fallback."""

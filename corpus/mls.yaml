@@ -45,7 +45,6 @@
   why: Adaptation is a Rio marker outside the purpose codes, so the answer is qualifier_not_bound; a definite answer must bind environmental policy (41010).
   reuse: panel/mls-008
   tags: {theme: climate_energy, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: technical, probe: [missing_data]}
-  known_failure: {issue: 1156, checks: [measure]}
   expect:
     entities: [{dcid: country/SWE, role: origin}]
     definite: {measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode41010}}}
@@ -275,3 +274,16 @@
           measure: {family: dac2a.imputed_multilateral}
           entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-mls-027
+  query: total bilateral and imputed multilateral aid to Ethiopia
+  why: DAC2a holds no bilateral aid type, so part 0 answers total ODA and discloses "bilateral" on that part alone; part 1 is DAC2a imputed multilateral.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual, overlap: [crs]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: dac2a.oda_gross_received}
+          entities: [{dcid: country/ETH, role: destination}]
+      - definite:
+          measure: {family: dac2a.imputed_multilateral}
+          entities: [{dcid: country/ETH, role: destination}]

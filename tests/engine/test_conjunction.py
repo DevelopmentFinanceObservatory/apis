@@ -9,7 +9,6 @@ import dataclasses
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.config import settings
 from search.engine.conjoin import BINDING_FOLDED, VARIABLES_CLAMPED, combine_regions
 from search.engine.envelope import now_ms
@@ -29,6 +28,7 @@ from search.models import (
     StatVar,
     Warning,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._builders import (
     conjoin_spec as _spec,
 )
@@ -41,7 +41,7 @@ from tests.engine._builders import (
 from tests.engine._builders import (
     shape_five_tuple as _shape,
 )
-from tests.engine._harness import PINNED_DATE, make_request, offline_resolve
+from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, FakeLLM, _load_json
 from tests.fixtures.keys import fixture_key
@@ -50,11 +50,9 @@ from tests.fixtures.keys import fixture_key
 # Extraction key helper for per-test FakeLLM fixtures
 # ---------------------------------------------------------------------------
 
-_EXTRACT_SYS = _EXTRACTION_SYSTEM_PROMPT.replace("[[TODAY]]", PINNED_DATE.isoformat())
-
 
 def _extract_key(query: str) -> str:
-    return fixture_key(Extraction, _EXTRACT_SYS, query)
+    return fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
 
 
 def _rr(
@@ -637,12 +635,7 @@ class _DedupLLM:
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "_UniversalBindOutput":
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[],
-                also_plausible=None,
-                ask=None,
-            ), None
+            return elected_reply(0, bindings=[], also_plausible=None), None
         if schema is QuantityOutput:
             return NO_QUANTITY
         return await self._fake.generate_structured(prompt=prompt, system=system, schema=schema)

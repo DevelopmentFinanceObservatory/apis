@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.config import settings
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -93,12 +93,7 @@ class _RecordingBindLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=None,
-            ask=None,
-        ), None
+        return elected_reply(0, also_plausible=None), None
 
 
 # ---------------------------------------------------------------------------

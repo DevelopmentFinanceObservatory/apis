@@ -1,6 +1,6 @@
 """Slot menus count the rows each option would serve and drop the options serving none.
 
-The resubmit cases resolve a CRS aid identity from Germany to Guatemala against the packaged
+The resubmit cases resolve a CRS aid identity from Germany to Guatemala against the fixture
 code index, with a coverage index holding rows for a handful of its members. Each count is
 the rows a resubmit binding that option would download, one per series and year, so every
 assertion below states the fixture rows behind it.
@@ -105,7 +105,7 @@ _SECTOR_BUDGET_SUPPORT = "CRSCooperationModalityA02"
 
 
 def _member(population: str = "FinancialFlow", **values: str) -> str:
-    """The one packaged-index row of the aid five-tuple with exactly `values`."""
+    """The one fixture-index row of the aid five-tuple with exactly `values`."""
     rows = [
         row
         for row in get_index().statvars
@@ -241,7 +241,7 @@ _CRS_SLOTS: dict[str, str | None] = {
 
 @functools.cache
 def _index_member_nodes() -> dict[str, dict]:
-    """A graph node for every StatVar the packaged index lists, as the live graph holds
+    """A graph node for every StatVar the fixture index lists, as the live graph holds
     them, so an answer whose index election spans the whole family re-reads every member's
     arcs and drops none under `members_absent_from_graph`."""
     return {
@@ -629,7 +629,7 @@ def test_a_merged_menu_counts_a_series_two_members_serve_once():
 # and every counted option is reachable by a resubmit of the client's member list
 # ---------------------------------------------------------------------------
 
-# Debt service, a family the packaged index carries no row of, so the mint's graph walk
+# Debt service, a family the fixture index carries no row of, so the mint's graph walk
 # decides it. It has a total. A pick of a creditor reads the parts under it.
 _DS_TOTAL = "Amount_FinancialFlow_ServicingPayment_Nominal"
 _DS_OFFICIAL = "Amount_FinancialFlow_ServicingPayment_IDSCreditorTypeOFFT_Nominal"

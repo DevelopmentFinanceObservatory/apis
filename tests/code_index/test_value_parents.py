@@ -7,7 +7,8 @@ import json
 
 import pytest
 
-from code_index import CyclicParent, DuplicateDcid, default_index_path, load_index, parse_index
+from code_index import CyclicParent, DuplicateDcid, parse_index
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from .conftest import FIXTURE_PATH
 
@@ -48,8 +49,8 @@ def test_refuses_a_parent_chain_that_cycles():
         parse_index(_document([{"dcid": "A", "parent": "B"}, {"dcid": "B", "parent": "A"}]))
 
 
-def test_the_packaged_index_reads_the_general_government_debtor_as_public_sector():
-    index = load_index(default_index_path())
+def test_the_fixture_index_reads_the_general_government_debtor_as_public_sector():
+    index = load_index(INDEX_FIXTURE)
 
     assert index.value_ancestors("IDSDebtorTypeGG") == ("IDSDebtorTypePS",)
     assert index.value_ancestors("IDSDebtorTypePrivateSector") == ()
