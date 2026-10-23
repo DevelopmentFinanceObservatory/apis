@@ -3202,6 +3202,60 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
     }
 
 
+_OTHER_PROVENANCE = "provenance/OtherDataset"
+
+
+def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_path: Path):
+    document = _export_parties(
+        {"TrustFund": ("Organization",), "Fund": ("Organization",)},
+        kind_overrides={
+            "TrustFund": KindOverride(
+                "total", "Fund in the test dataset", datasets=frozenset({_TEST_PROVENANCE})
+            )
+        },
+        axis="origin",
+        published_in=frozenset({_TEST_PROVENANCE, _OTHER_PROVENANCE}),
+    )
+    out = tmp_path / "index.json"
+    out.write_text(json.dumps(document))
+
+    parties = load_index(out).parties
+    published, donor = tuple(sorted((_TEST_PROVENANCE, _OTHER_PROVENANCE))), ("origin",)
+    assert parties["TrustFund"] == PartyRow(
+        dcid="TrustFund",
+        kind="party",
+        party_class="official",
+        datasets=published,
+        axes=donor,
+        dataset_kinds=((_TEST_PROVENANCE, "total"),),
+    )
+    assert [parties["TrustFund"].kind_in(dataset) for dataset in published] == ["party", "total"]
+    assert parties["Fund"].dataset_kinds == ()
+
+
+@pytest.mark.parametrize(
+    ("datasets", "match"),
+    [
+        pytest.param(frozenset({"provenance/Unknown"}), "do not publish", id="unknown-dataset"),
+        pytest.param(frozenset(), "or to none", id="no-dataset"),
+        pytest.param(
+            frozenset({_TEST_PROVENANCE, _OTHER_PROVENANCE}),
+            "to every dataset",
+            id="every-dataset",
+        ),
+    ],
+)
+def test_export_index_refuses_a_kind_override_scoped_to_datasets_it_cannot_name(
+    datasets: frozenset[str], match: str
+):
+    with pytest.raises(ExportRefused, match=match):
+        _export_parties(
+            {"TrustFund": ("Organization",)},
+            kind_overrides={"TrustFund": KindOverride("total", "a fund", datasets=datasets)},
+            published_in=frozenset({_TEST_PROVENANCE, _OTHER_PROVENANCE}),
+        )
+
+
 def test_export_index_refuses_a_kind_override_naming_a_party_no_dataset_publishes():
     with pytest.raises(ExportRefused, match=r"PARTY_KIND_OVERRIDES names .*Ghost"):
         _export_parties(
@@ -3231,13 +3285,40 @@ _REVIEWED_KIND_OVERRIDES = {
 }
 
 
+# Each IMF trust fund that equals the IMF in a dataset publishing both, with that dataset. The
+# CRS publishes the trust funds and never the IMF, so there they stay parties.
+_REVIEWED_DATASET_KIND_OVERRIDES = {
+    "IMFConcessionalTrustFunds": ("InternationalMonetaryFund", "provenance/OECDDAC2A"),
+    "IMFResilienceAndSustainabilityTrust": ("InternationalMonetaryFund", "provenance/OECDDAC2B"),
+}
+
+
 def test_party_kind_overrides_holds_only_reviewed_total_rows():
     # A row joins PARTY_KIND_OVERRIDES only after the sum check its comment describes, and is
     # added here with the members it was checked against.
-    assert {party: row.kind for party, row in PARTY_KIND_OVERRIDES.items()} == dict.fromkeys(
-        _REVIEWED_KIND_OVERRIDES, "total"
-    )
+    assert {
+        party: (row.kind, row.datasets) for party, row in PARTY_KIND_OVERRIDES.items()
+    } == dict.fromkeys(_REVIEWED_KIND_OVERRIDES, ("total", None)) | {
+        party: ("total", frozenset({dataset}))
+        for party, (_, dataset) in _REVIEWED_DATASET_KIND_OVERRIDES.items()
+    }
     assert all(row.reason for row in PARTY_KIND_OVERRIDES.values())
+
+
+@pytest.mark.parametrize(
+    ("trust", "equals", "dataset"),
+    [(trust, *row) for trust, row in sorted(_REVIEWED_DATASET_KIND_OVERRIDES.items())],
+)
+def test_the_fixture_index_reads_each_imf_trust_fund_a_total_only_beside_the_imf(
+    trust: str, equals: str, dataset: str
+):
+    index = get_index()
+    row = index.parties[trust]
+    assert dataset in index.parties[equals].datasets
+    assert {name: row.kind_in(name) for name in row.datasets} == {
+        name: "total" if name == dataset else "party" for name in row.datasets
+    }
+    assert row.kind_in("provenance/OECDCreditorReportingSystem") == "party"
 
 
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))

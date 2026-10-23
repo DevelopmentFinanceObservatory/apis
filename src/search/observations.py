@@ -20,7 +20,7 @@ alone (`materialise.enrichment.read_party_kinds`), with no read.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -520,13 +520,18 @@ def _read_labels(
 
 
 def _read_party_kinds(
-    keys: Iterable[SeriesKey], *, index: CodeIndex
-) -> dict[tuple[str, str], PartyKind]:
-    """The party kind of each `(role, entity)` of `keys` on a flow role, from `index`
-    (`materialise.enrichment.read_party_kinds`)."""
-    return read_party_kinds(
-        (pair for _sv, role_tuple in keys for pair in role_tuple), parties=index.parties
-    )
+    reads: Mapping[SeriesKey, SeriesRead], *, index: CodeIndex
+) -> dict[SeriesKey, dict[tuple[str, str], PartyKind]]:
+    """The party kind of each `(role, entity)` on a flow role of each series of `reads`, in the
+    series' provenance (`materialise.enrichment.read_party_kinds`), or in every dataset for a
+    series whose facet names none."""
+    kinds: dict[SeriesKey, dict[tuple[str, str], PartyKind]] = {}
+    for key, read in reads.items():
+        provenance = read.facets.get("provenance")
+        kinds[key] = read_party_kinds(
+            key[1], parties=index.parties, datasets=() if provenance is None else (provenance,)
+        )
+    return kinds
 
 
 def _series(
@@ -539,7 +544,8 @@ def _series(
     member_constraints: Mapping[str, Mapping[str, str]],
     target_currency_ref: str | None = None,
 ) -> ObservationSeries:
-    """One wire series for `read`, showing `points`. Its entities carry their `party_kinds`.
+    """One wire series for `read`, showing `points`. Its entities carry their `party_kinds`,
+    read in the series' provenance (`_read_party_kinds`).
     Its axes are its StatVar's `member_constraints`, each value labelled from `labels`, else by
     its humanised dcid (`_humanize_ref`), as the StatVar's row label names it. A converted
     series reports the target currency as its unit when there is one, and no unit otherwise.
@@ -646,7 +652,7 @@ def assemble_per_series(
                     read,
                     read.points[-settings.obs_preview_points :] if over_inline else read.points,
                     labels=labels,
-                    party_kinds=party_kinds,
+                    party_kinds=party_kinds[key],
                     member_constraints=member_constraints,
                     target_currency_ref=target_currency_ref,
                 ),
@@ -733,7 +739,7 @@ def assemble_role_bulk(
             read,
             read.points[-settings.obs_preview_points :] if truncated else read.points,
             labels=labels,
-            party_kinds=party_kinds,
+            party_kinds=party_kinds[key],
             member_constraints=member_constraints,
             target_currency_ref=target_currency_ref,
         )
@@ -782,7 +788,7 @@ def assemble_scope_bulk(
                     read,
                     read.points[-1:],
                     labels=labels,
-                    party_kinds=party_kinds,
+                    party_kinds=party_kinds[key],
                     member_constraints=member_constraints,
                     target_currency_ref=target_currency_ref,
                 ),

@@ -126,6 +126,24 @@ def test_refuses_a_document_missing_a_required_key(tmp_path, block, key):
         load_index(broken)
 
 
+_CRS = "provenance/OECDCreditorReportingSystem"
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
+
+
+def _scoped_party(**fields: object) -> dict[str, object]:
+    """A `parties` row for a trust fund the CRS and DAC2A publish, with `fields` over it."""
+    return {
+        "dcid": "IMFConcessionalTrustFunds",
+        "kind": "party",
+        "party_class": "official",
+        "totals": None,
+        "datasets": [_CRS, _DAC2A],
+        "axes": ["origin"],
+        **fields,
+    }
+
+
 @pytest.mark.parametrize(
     ("party_types", "parties", "error", "message"),
     [
@@ -178,6 +196,57 @@ def test_refuses_a_document_missing_a_required_key(tmp_path, block, key):
             IndexFormatError,
             "claims no sum",
         ),
+        (
+            [],
+            [_scoped_party(dataset_kinds=[{"dataset": _DAC2A, "kind": "party"}])],
+            IndexFormatError,
+            "other than the row's kind",
+        ),
+        (
+            [],
+            [_scoped_party(dataset_kinds=[{"dataset": _DAC2B, "kind": "total"}])],
+            IndexFormatError,
+            "does not publish it",
+        ),
+        (
+            [],
+            [
+                _scoped_party(
+                    dataset_kinds=[
+                        {"dataset": _DAC2A, "kind": "total"},
+                        {"dataset": _CRS, "kind": "total"},
+                    ]
+                )
+            ],
+            IndexFormatError,
+            "every dataset that publishes it",
+        ),
+        (
+            [],
+            [
+                _scoped_party(
+                    kind="total",
+                    party_class=None,
+                    totals="groups/IMF",
+                    dataset_kinds=[{"dataset": _CRS, "kind": "party"}],
+                )
+            ],
+            IndexFormatError,
+            "total in every dataset",
+        ),
+        (
+            [],
+            [
+                _scoped_party(
+                    kind="total",
+                    party_class="official",
+                    dataset_kinds=[{"dataset": _CRS, "kind": "party"}],
+                    whole=[{"dataset": _CRS, "covers": ["official"]}],
+                )
+            ],
+            IndexFormatError,
+            "where it takes the kind 'party'",
+        ),
     ],
     ids=[
         "type-kind",
@@ -188,6 +257,11 @@ def test_refuses_a_document_missing_a_required_key(tmp_path, block, key):
         "party-twice",
         "no-sum-without-a-group",
         "no-sum-beside-residuals",
+        "dataset-kind-equal-to-kind",
+        "dataset-kind-unpublished",
+        "dataset-kind-everywhere",
+        "dataset-kind-on-a-group",
+        "whole-where-not-a-total",
     ],
 )
 def test_refuses_a_malformed_party_declaration(tmp_path, party_types, parties, error, message):

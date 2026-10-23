@@ -129,12 +129,14 @@ def _exported_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[
     axis, keyed by dcid, and the dcids of the totals that hold a resolver group.
 
     An ungrouped total is exported with its names. Organization totals are already covered by the
-    organization export; the remaining ungrouped records must be graph `DACGroup` nodes.
+    organization export; the remaining ungrouped records must be graph `DACGroup` nodes. A party
+    that is a total in some datasets only (`PartyRow.kind_over` is `None`) is an organisation the
+    organization export covers.
     """
     labels = {}
     grouped = set()
     for dcid, party in index.parties.items():
-        if party.kind != "total" or not ("origin" in party.axes or party.whole):
+        if party.kind_over() != "total" or not ("origin" in party.axes or party.whole):
             continue
         if party.label is None:
             raise SystemExit(

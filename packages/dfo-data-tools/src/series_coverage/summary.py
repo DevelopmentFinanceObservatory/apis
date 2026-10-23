@@ -16,7 +16,7 @@ does not carry, so `VariableSummary.party_counts` takes it at read time.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -51,7 +51,9 @@ class PartyCounts:
     `totals` parties that hold other parties' figures ("Africa, Total"; a whole total such as
     "Official Donors, Total" is one), and `residual` parties holding figures no other party
     does ("Africa, unallocated by country"). `unclassified` counts parties the code index
-    does not list.
+    does not list. A party counts under each kind it takes in the datasets of the facets that
+    hold it (`PartyRow.kinds_over`), so one that is a total in DAC2A and a party in the CRS
+    counts in `parties` and in `totals` across both.
     """
 
     parties: int = 0
@@ -117,29 +119,43 @@ class VariableSummary:
     ) -> dict[Role, PartyCounts]:
         """The distinct parties of each declared role across `facet_ids` (every facet when
         `None`), split by kind through `parties`, the code index's party rows
-        (`CodeIndex.parties`). A party sits in several facets counts once.
+        (`CodeIndex.parties`), each read for the provenances of the facets that hold it. A party
+        that sits in several facets counts once for each kind it takes there.
         """
         selected = [
             facet for facet in self.facets if facet_ids is None or facet.facet_id in facet_ids
         ]
-        roles = {role for facet in selected for role in facet.parties}
-        return {
-            role: _split_by_kind(
-                frozenset().union(*(facet.parties.get(role, frozenset()) for facet in selected)),
-                parties,
-            )
-            for role in sorted(roles)
-        }
+        roles = sorted({role for facet in selected for role in facet.parties})
+        held: dict[Role, dict[str, set[str]]] = {role: defaultdict(set) for role in roles}
+        for facet in selected:
+            provenance = facet.metadata.provenance_id
+            for role, dcids in facet.parties.items():
+                for dcid in dcids:
+                    datasets = held[role][dcid]
+                    if provenance is not None:
+                        datasets.add(provenance)
+        return {role: _split_by_kind(held[role], parties) for role in roles}
 
 
-def _split_by_kind(dcids: frozenset[str], parties: Mapping[str, PartyRow]) -> PartyCounts:
-    rows = [parties.get(dcid) for dcid in dcids]
-    kinds = Counter(row.kind if row else None for row in rows)
+def _split_by_kind(
+    held: Mapping[str, Collection[str]], parties: Mapping[str, PartyRow]
+) -> PartyCounts:
+    """`held`'s parties, each mapped to the provenances of the facets holding it, counted under
+    each kind it takes there."""
+    kinds: Counter[str | None] = Counter()
+    private = 0
+    for dcid, datasets in held.items():
+        row = parties.get(dcid)
+        if row is None:
+            kinds[None] += 1
+            continue
+        taken = row.kinds_over(datasets)
+        kinds.update(taken)
+        if "party" in taken and row.party_class == "private":
+            private += 1
     return PartyCounts(
         parties=kinds["party"],
-        private=sum(
-            1 for row in rows if row and row.kind == "party" and row.party_class == "private"
-        ),
+        private=private,
         totals=kinds["total"],
         residual=kinds["residual"],
         unclassified=kinds[None],

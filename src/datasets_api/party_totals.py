@@ -9,8 +9,11 @@ bound when the served identity's `entities` name an entity on its axis
 (`datasets_api.surgery.apply_scope_surgery`); every other party role of the frame is open.
 
 For each open party role, in column-name order, the rows whose party the code index declares a
-`total` (`materialise.enrichment.party_kind_of`) are left out, each role reading the rows the
-roles before it kept. Parties of kind `party` or `residual`, and parties the index declares no
+`total` in the row's dataset (`materialise.enrichment.party_kind_of` for the row's `provenance`)
+are left out, each role reading the rows the roles before it kept. A party can be a total in one
+dataset and a party in another (`code_index.types.PartyRow.dataset_kinds`), so the cut keys on
+the party and the dataset together. A row with no provenance reads the kind of every dataset,
+and keeps a party whose kind differs between datasets. Parties of kind `party` or `residual`, and parties the index declares no
 kind for, stay. A role on which every row holds a total keeps its rows, since the totals are
 then the only parties there are. A bound role is left alone whatever its parties' kinds.
 
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -32,6 +36,9 @@ from dfo_platform.roles import role_key_axis
 from materialise.enrichment import is_party_role, party_kind_of
 
 _TOTAL_KIND = "total"
+
+PROVENANCE_COLUMN = "provenance"
+"""The frame column naming each row's dataset."""
 
 YEARS_DIMENSION = "years"
 """The coverage dimension counting a frame's distinct leading years
@@ -66,9 +73,11 @@ def open_party_roles(identity: object, entity_columns: Sequence[str]) -> tuple[s
 @dataclass(frozen=True)
 class PartyTotalsCut:
     """The totals a cut leaves out of a frame: each open party role that lost rows, mapped to
-    the sorted refs of the totals it lost."""
+    each provenance it lost rows in and the sorted refs of the totals it lost there. The
+    provenance is `None` for the rows of a frame without a `provenance` column and the rows
+    whose cell is null."""
 
-    left_out: Mapping[str, tuple[str, ...]]
+    left_out: Mapping[str, Mapping[str | None, tuple[str, ...]]]
 
     def chunks(self, frame_chunks: Callable[[], Iterator[Frame]]) -> Callable[[], Iterator[Frame]]:
         """A fresh pass over `frame_chunks` less the rows `left_out` names, on each call. A
@@ -84,9 +93,14 @@ class PartyTotalsCut:
 
     def trace_entries(self) -> list[dict[str, object]]:
         """The trace's `party_totals_left_out` entries: one `{role, entities}` per role that lost
-        rows, in role order, its entities in ref order."""
+        rows, in role order, its entities in ref order, each named once whatever datasets it
+        lost rows in."""
         return [
-            {"role": role, "entities": list(refs)} for role, refs in sorted(self.left_out.items())
+            {
+                "role": role,
+                "entities": sorted({ref for refs in by_dataset.values() for ref in refs}),
+            }
+            for role, by_dataset in sorted(self.left_out.items())
         ]
 
 
@@ -145,24 +159,46 @@ def cut_party_totals(
     parties: Mapping[str, PartyRow],
 ) -> PartyTotalsCut:
     """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds
-    from the code index's `parties`. Reads the frame once per role, each pass after the cuts of
-    the roles before it."""
-    left_out: dict[str, tuple[str, ...]] = {}
+    from the code index's `parties` for each row's dataset. Reads the frame once per role, each
+    pass after the cuts of the roles before it."""
+    left_out: dict[str, dict[str | None, tuple[str, ...]]] = {}
     for role in roles:
-        totals: set[str] = set()
+        totals: dict[str | None, set[str]] = {}
         others = False
         for chunk in frame_chunks():
             if role not in chunk.columns:
                 break
             kept = _without(chunk, left_out)
-            for ref in pc.unique(kept.table.column(role)).to_pylist():
-                if isinstance(ref, str) and party_kind_of(ref, parties=parties) == _TOTAL_KIND:
-                    totals.add(ref)
+            for ref, dataset in _parties_by_dataset(kept, role):
+                datasets = () if dataset is None else (dataset,)
+                if (
+                    isinstance(ref, str)
+                    and party_kind_of(ref, parties=parties, datasets=datasets) == _TOTAL_KIND
+                ):
+                    totals.setdefault(dataset, set()).add(ref)
                 else:
                     others = True
         if totals and others:
-            left_out[role] = tuple(sorted(totals))
+            left_out[role] = {dataset: tuple(sorted(refs)) for dataset, refs in totals.items()}
     return PartyTotalsCut(left_out=left_out)
+
+
+def _parties_by_dataset(chunk: Frame, role: str) -> list[tuple[object, str | None]]:
+    """The distinct `(ref, provenance)` pairs of `chunk`'s `role` column, the provenance `None`
+    for a frame without a `provenance` column and for a null cell."""
+    table = chunk.table
+    if PROVENANCE_COLUMN not in table.column_names:
+        return [(ref, None) for ref in pc.unique(table.column(role)).to_pylist()]
+    pairs = (
+        table.select([role, PROVENANCE_COLUMN]).group_by([role, PROVENANCE_COLUMN]).aggregate([])
+    )
+    return list(
+        zip(
+            pairs.column(role).to_pylist(),
+            pairs.column(PROVENANCE_COLUMN).to_pylist(),
+            strict=True,
+        )
+    )
 
 
 def _distinct(values: pa.Array | pa.ChunkedArray) -> list[object]:
@@ -170,17 +206,29 @@ def _distinct(values: pa.Array | pa.ChunkedArray) -> list[object]:
     return pc.unique(values).drop_null().to_pylist()
 
 
-def _without(chunk: Frame, left_out: Mapping[str, tuple[str, ...]]) -> Frame:
+def _without(chunk: Frame, left_out: Mapping[str, Mapping[str | None, tuple[str, ...]]]) -> Frame:
     """`chunk` less each row whose party on a role of `left_out` is one of that role's refs. A
-    null cell matches no ref."""
+    null cell matches no ref. A ref left out in a provenance leaves out its rows of that
+    provenance alone, and one left out for `None` its rows with no provenance."""
     if not left_out:
         return chunk
     table = chunk.table
-    for role, refs in left_out.items():
-        column = table.column(role)
-        table = table.filter(
-            pc.invert(pc.is_in(column, value_set=pa.array(refs, type=column.type)))
-        )
+    for role, by_dataset in left_out.items():
+        for dataset, refs in by_dataset.items():
+            column = table.column(role)
+            match = pc.is_in(column, value_set=pa.array(refs, type=column.type))
+            if PROVENANCE_COLUMN in table.column_names:
+                provenance = table.column(PROVENANCE_COLUMN)
+                in_dataset = (
+                    pc.is_null(provenance)
+                    if dataset is None
+                    else pc.equal(pc.fill_null(provenance, pa.scalar("")), pa.scalar(dataset))
+                )
+                match = pc.and_(match, in_dataset)
+            elif dataset is not None:
+                continue
+            # Two column operands give a column; the stubs widen it to a scalar too.
+            table = table.filter(cast("pa.ChunkedArray", pc.invert(match)))
     return Frame(columns=chunk.columns, table=table)
 
 
