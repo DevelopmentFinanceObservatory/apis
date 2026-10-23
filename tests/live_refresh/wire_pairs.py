@@ -297,7 +297,7 @@ def record_wire_pairs(*, composed: ComposedApp, client: TestClient) -> dict[str,
     composed.move(add_stat_var=True)
     call("frame_refresh.rendering_not_recorded", "POST", _REFRESH, principal=live, body=target)
     assert call(None, "POST", "/api/datasets", body=composed.mint_body(summed)).status_code == 200
-    call("versions_list", "GET", f"/api/datasets/{DATASET}/versions", principal=publish)
+    call("versions_list", "GET", f"/api/datasets/{DATASET}/versions")
 
     return {"about": _ABOUT, "pairs": _stable(recorder.pairs)}
 

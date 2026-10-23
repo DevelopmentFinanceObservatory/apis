@@ -1137,9 +1137,7 @@
       "request": {
         "method": "GET",
         "path": "/api/datasets/spec_176b1b132147fff98b37810b759f6f90/versions",
-        "headers": {
-          "x-dfo-principal": "<DATASETS_FIRST_PARTY_PRINCIPAL>"
-        }
+        "headers": {}
       },
       "response": {
         "status": 200,
@@ -1180,7 +1178,9 @@
               "rendering": "plain",
               "groupby": null
             }
-          ]
+          ],
+          "next_cursor": null,
+          "complete": true
         }
       }
     }

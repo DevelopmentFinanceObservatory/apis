@@ -334,7 +334,7 @@ class ColumnOptionModel(BaseModel):
     name: str
     kind: str
     droppable: bool
-    distinct: int | None
+    distinct: int | None = Field(default=None, exclude_if=_is_none)
 
 
 class FormatOptionModel(BaseModel):
@@ -470,6 +470,28 @@ class DefinitionModel(BaseModel):
     )
 
 
+class RetentionModel(BaseModel):
+    """How long a version can still be fetched, which `datasets_api.retention` computes when a
+    door serves the version. No stored body holds it."""
+
+    model_config = ConfigDict(extra="forbid")
+    pinned: bool = Field(
+        description="whether the frame the version's files render from is in the pinned tier, "
+        "which has no expiry"
+    )
+    held_until: AwareDatetime | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="when the working-tier frame stops being guaranteed, 30 days after it was "
+        "stored. A download of the frame after `held_until`, while its bytes survive, renews it "
+        "for 30 days. After it, a file selector or download link request "
+        "that must render its file again renews the frame for 30 days if the frame's bytes "
+        "survive, and otherwise refuses `artifact_expired`. A rebuild of unchanged data through "
+        "`GET /api/datasets/{id}` or `POST /api/datasets` stores the frame again. Absent when "
+        "pinned. It can be in the past",
+    )
+
+
 class Manifest(BaseModel):
     """`trace` stays a plain dict, since `materialise.trace.ManifestTrace.to_dict()`
     is already this field's exact wire shape.
@@ -525,6 +547,13 @@ class Manifest(BaseModel):
             "Not the same coverage as the 'coverage' "
             "field above (materialise.window.Coverage's row/dimension/window report)"
         ),
+    )
+    retention: RetentionModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="how long this version can still be fetched: the retention of the frame "
+        "every file renders from (a derived version's base frame). Each door sets it on its "
+        "response",
     )
 
 

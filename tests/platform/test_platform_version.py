@@ -33,7 +33,7 @@ from search.engine.config import settings
 def test_platform_capability_version_is_pinned():
     """Pins the token so changes to the platform wire contract require an explicit version update."""
     # The digest includes the `cause` extension and registry mappings rendered by `registry_entry_body`.
-    assert PLATFORM_CAPABILITY_VERSION == "plat_d7ee5b322724acb9"
+    assert PLATFORM_CAPABILITY_VERSION == "plat_8009c726d9d9b907"
     assert PLATFORM_CAPABILITY_VERSION.startswith("plat_")
     assert settings().capability_version != PLATFORM_CAPABILITY_VERSION
 

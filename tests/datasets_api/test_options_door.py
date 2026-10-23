@@ -459,6 +459,9 @@ def test_a_posted_definition_for_another_spec_refuses_even_when_the_path_id_has_
     version_store = FakeVersionRecordDatasetStore()
     head_store = LiveHeadStore(store=version_store)
     client = _client(
+        artifact_store=_InventoryRecordingArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
         version_writer=LiveVersionRecordWriter(store=version_store),
         head_writer=head_store,
         snapshot_reader=LiveSnapshotReader(store=version_store),

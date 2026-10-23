@@ -22,7 +22,7 @@ def build_meta_door(*, capability_version: str, catalog_version: str) -> DoorCon
     router = APIRouter()
 
     @router.get("/api/presentation/healthz", response_model=HealthResponse)
-    async def healthz() -> HealthResponse:
+    async def get_health() -> HealthResponse:
         return health_response(capability_version=capability_version)
 
     capabilities_document = freeze_public_json(
@@ -35,7 +35,7 @@ def build_meta_door(*, capability_version: str, catalog_version: str) -> DoorCon
     )
 
     @router.get("/api/presentation/capabilities", responses={200: {"model": CapabilitiesResponse}})
-    async def capabilities(request: Request) -> Response:
+    async def get_capabilities(request: Request) -> Response:
         return capabilities_document.respond(request)
 
     return DoorContribution(router=router, classify=classify_meta_exception)

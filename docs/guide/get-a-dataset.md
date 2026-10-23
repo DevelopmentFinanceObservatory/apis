@@ -95,12 +95,13 @@ This page stores the Search response in `resolve.json`, the response to the crea
                if result["operation"]["status"] == "done":
                    manifest = result["manifest"]
                    break
+               wait_seconds = result["operation"]["retry_after_ms"] / 1000
        else:
            manifest = result
    Path("manifest.json").write_text(json.dumps(manifest))
    ```
 
-   Operations can be `pending`, `running`, `done`, or `failed`. Poll responses for pending and running work omit `retry_after_ms`. A done response omits `poll` and places the manifest beside `operation`. A failed poll returns `500 operation_failed`, so `raise_for_status()` stops the script.
+   Operations can be `pending`, `running`, `done`, or `failed`. Poll responses for pending and running work carry `retry_after_ms`, which grows from 1,500 to 8,000 as the build runs (a resubmission that restarts a failed build starts again at 1,500), and a `Retry-After` header with the same wait in whole seconds, rounded up. Wait that long between polls. A done response omits `poll` and places the manifest beside `operation`. A failed poll returns `500 operation_failed`, so `raise_for_status()` stops the script.
 
 5. Select the data artifact by `rendering`, then download it from its link.
 
@@ -141,13 +142,15 @@ This page stores the Search response in `resolve.json`, the response to the crea
 
    A snapshot reads the stored version and lists the same download links while its artifacts remain servable.
 
+   To fetch a stored version in another format, ask the file selector. `GET /api/v1/datasets/$spec_id/$content_version/file?format=csv&bundle=false` answers `302` with a signed URL for that rendering, laid over the version's own options, and renders it from the stored frame when the version holds none yet. `layout` takes `frame`, and any other query key answers `400 request_invalid`. `GET /api/v1/datasets/$spec_id/versions` lists the dataset's stored versions, newest first, with their `rendering`. It takes `limit` (1 to 500, default 100) and `cursor`, and the body carries `next_cursor` and `complete`.
+
 ## Verify it worked
 
 A manifest has a `content_version`, coverage, and an artifact whose rendering matches the requested format. The selected link downloads a file whose SHA-256 digest equals its `artifact_digest`.
 
 ## Retention and capacity
 
-Generated artifacts are working-tier by default and expire after the retention period published by `GET /api/v1/datasets/capabilities` (30 days), measured from `stored_at`. A pinned artifact is kept indefinitely. After a working-tier artifact expires, its download link renders the file again from the version's stored frame while that frame is present, and otherwise answers `410 artifact_expired`. A snapshot can return `410 artifact_expired` when no listable artifact location is servable, or `410 snapshot_revoked` for a revoked version.
+Generated artifacts are working-tier by default and expire after the retention period published by `GET /api/v1/datasets/capabilities` (30 days), measured from `stored_at`. A pinned artifact is kept indefinitely. After a working-tier artifact expires, its download link renews the file while the file's bytes survive, renders it again from the version's stored frame when they are gone, and answers `410 artifact_expired` when the frame is gone too. Only a csv, xlsx or parquet data file in the current bundle rendition and layout renders again, so a statistics file, a superseded bundle and a bare file in an old layout answer `410 artifact_expired` with the frame intact. A snapshot can return `410 artifact_expired` when no listable artifact location is servable, or `410 snapshot_revoked` for a revoked version.
 
 Terminal operations are guaranteed pollable for the retention period in the Datasets capabilities response. An older operation can still be present. `404 operation_not_found` means the API does not know that operation.
 

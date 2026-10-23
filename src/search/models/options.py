@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import (
     Field,
@@ -114,9 +114,9 @@ class SlotOption(StrictModel):
     )
 
     @model_serializer(mode="wrap")
-    def _serialize(
-        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
-    ) -> dict[str, Any]:
+    def _serialize(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):
+        # Unannotated on purpose. Pydantic publishes a wrap serializer's return annotation as
+        # the model's serialization schema, and `dict[str, Any]` reads as an open object.
         # coverage=null carries two different meanings depending on surface, and a
         # bare field value can't distinguish them -- so the serialisation context
         # has to. On the SSE trailing slot_options/entity_options events, the

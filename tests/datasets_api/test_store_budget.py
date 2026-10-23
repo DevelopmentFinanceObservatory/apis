@@ -1,7 +1,8 @@
 """I14: the store budget of a request, counted on fake stores.
 
-A head-hit GET under a canonical id makes at most three transactions: the definition read, the
-head read and the version read. A GET under a non-canonical posted id, which resolves to its
+A head-hit GET under a canonical id makes at most four transactions: the definition read, the
+head read, the version read and the retention read (`datasets_api.retention`), which every
+Manifest response makes once. A GET under a non-canonical posted id, which resolves to its
 canonical served id, makes one more, the transaction that reads the served definition and
 binds it to the posted id (`kinds.spec_id.resolve_served_definition`).
 
@@ -44,16 +45,16 @@ from .conftest import FakeDatasetStore
 from .test_definition_door import _coverage_service as _definition_coverage_service
 from .test_pin_door import FakeArtifactReferenceWriter
 
-_MINT_TRANSACTIONS = 6
-_HEAD_HIT_TRANSACTIONS = 3
+_MINT_TRANSACTIONS = 7
+_HEAD_HIT_TRANSACTIONS = 4
 # A first mint under a non-canonical posted id adds the served definition's registration and
 # binding.
-_ALIAS_MINT_TRANSACTIONS = 7
+_ALIAS_MINT_TRANSACTIONS = 8
 # A head hit under a non-canonical posted id adds the served definition's read and binding.
-_ALIAS_HEAD_HIT_TRANSACTIONS = 4
+_ALIAS_HEAD_HIT_TRANSACTIONS = 5
 # Past the recheck window a head hit also confirms the head: the definition read, the head read,
-# the confirmation and the version read.
-_CONFIRMED_HEAD_HIT_TRANSACTIONS = 4
+# the confirmation, the version read and the retention read.
+_CONFIRMED_HEAD_HIT_TRANSACTIONS = 5
 # The served ids the posted id of the version-addressed read is bound to.
 _BOUND_SERVED_IDS = 2
 # Past the 15-minute recheck window and inside the 24-hour maximum age.
@@ -179,7 +180,7 @@ def _counted(budget: _Budget) -> str:
     return "\n".join(budget.transactions)
 
 
-def test_a_first_mint_makes_at_most_six_transactions_one_borrow_at_a_time(surface):
+def test_a_first_mint_makes_at_most_seven_transactions_one_borrow_at_a_time(surface):
     budget = surface.budget
     budget.reset()
 
@@ -193,7 +194,7 @@ def test_a_first_mint_makes_at_most_six_transactions_one_borrow_at_a_time(surfac
     assert budget.signings == 0
 
 
-def test_a_first_mint_of_a_spec_id_with_its_definition_makes_at_most_six_transactions(surface):
+def test_a_first_mint_of_a_spec_id_with_its_definition_makes_at_most_seven_transactions(surface):
     """The mint a Search answer hands over: an unregistered `spec_id` with its definition
     sidecar, whose read, registration and read-back precede the serve."""
     budget = surface.budget
@@ -221,7 +222,7 @@ def test_a_first_mint_of_a_spec_id_with_its_definition_makes_at_most_six_transac
     assert budget.signings == 0
 
 
-def test_a_head_hit_get_makes_at_most_three_transactions_and_signs_nothing(surface):
+def test_a_head_hit_get_makes_at_most_four_transactions_and_signs_nothing(surface):
     budget = surface.budget
     minted = surface.client.post("/api/datasets", json=_body(format="csv", bundle=False))
     assert minted.status_code == 200, minted.text
@@ -281,10 +282,10 @@ def _alias_surface(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[_Surface, 
         yield built, {"schema_version": 1, "input": posted, "options": {"bundle": False}}
 
 
-def test_a_first_mint_under_a_non_canonical_posted_id_makes_at_most_seven_transactions(
+def test_a_first_mint_under_a_non_canonical_posted_id_makes_at_most_eight_transactions(
     monkeypatch,
 ):
-    """The six of a first mint, and the transaction that registers the served definition and
+    """The seven of a first mint, and the transaction that registers the served definition and
     binds it to the posted id."""
     with _alias_surface(monkeypatch) as (built, mint):
         built.budget.reset()
@@ -299,12 +300,12 @@ def test_a_first_mint_under_a_non_canonical_posted_id_makes_at_most_seven_transa
     assert built.budget.signings == 0
 
 
-def test_a_head_hit_get_under_a_non_canonical_posted_id_makes_at_most_four_transactions(
+def test_a_head_hit_get_under_a_non_canonical_posted_id_makes_at_most_five_transactions(
     monkeypatch,
 ):
     """The GET a client makes with the id it posted after a mint served the canonical id: the
-    posted definition's read, the served definition's read and binding, the head read and the
-    version read."""
+    posted definition's read, the served definition's read and binding, the head read, the
+    version read and the retention read."""
     with _alias_surface(monkeypatch) as (built, mint):
         minted = built.client.post("/api/datasets", json=mint)
         assert minted.status_code == 200, minted.text
@@ -323,7 +324,7 @@ def test_a_head_hit_get_under_a_non_canonical_posted_id_makes_at_most_four_trans
 def test_a_snapshot_under_a_posted_id_makes_one_version_read_per_bound_served_id(monkeypatch):
     """The posted id is bound to two served ids and the version is recorded under the older
     binding, so the read makes the bindings' transaction, a version read under the newer
-    served id that finds nothing, and the one that finds the version."""
+    served id that finds nothing, the one that finds the version, and the retention read."""
     with _alias_surface(monkeypatch) as (built, mint):
         minted = built.client.post("/api/datasets", json=mint)
         assert minted.status_code == 200, minted.text
@@ -340,5 +341,5 @@ def test_a_snapshot_under_a_posted_id_makes_one_version_read_per_bound_served_id
     assert resp.json()["content_version"] == content_version
     version_reads = [c for c in built.budget.transactions if "read_servable_version" in c]
     assert len(version_reads) == _BOUND_SERVED_IDS, _counted(built.budget)
-    assert len(built.budget.transactions) == 1 + _BOUND_SERVED_IDS, _counted(built.budget)
+    assert len(built.budget.transactions) == 1 + _BOUND_SERVED_IDS + 1, _counted(built.budget)
     assert built.budget.max_in_flight == 1, _counted(built.budget)
