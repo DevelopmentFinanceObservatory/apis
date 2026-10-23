@@ -1,7 +1,7 @@
 """Render the eval driver's JSON report as a Markdown summary or terminal text.
 
-``paired_markdown`` lists the blocking verdicts first, then what the change did to the case
-set against base. ``single_text`` prints, case by case, every check that did not pass on
+``paired_markdown`` lists the blocking verdicts first, then the checks base passed on a
+wrong answer, then what the change did to the case set against base. ``single_text`` prints, case by case, every check that did not pass on
 every sample. ``single_markdown`` is its Markdown form for a job summary. All three read
 the report ``scripts/eval_paired.py`` writes. Both Markdown forms name the report's shard,
 and say so when the selection holds no eligible case.
@@ -12,6 +12,8 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any
+
+from search.eval.gate import CONTENT_CHECKS, Outcome
 
 # A list longer than this folds into a <details> block.
 _FOLD_AFTER = 15
@@ -63,6 +65,14 @@ def paired_markdown(report: Report) -> str:
             "Infrastructure failures",
             [f"`{c}` {n}: {_detail(e) or _infra_error(cases[c])}" for c, n, e in infra],
         )
+    lines += _section(
+        "Wrong answers at base",
+        [
+            f"`{c}` {n}: head {_detail(e)}; base {_base_content_detail(cases[c])}"
+            for c, n, e in checks
+            if e["verdict"] == Outcome.WRONG_ANSWER_AT_BASE
+        ],
+    )
 
     changes = report["case_set"]
     lines += _section("Deleted cases", [f"`{c}`" for c in changes["deleted"]])
@@ -205,6 +215,18 @@ def _detail(entry: Mapping[str, Any]) -> str:
     seen = [r for r in _rounds(entry) if r and r["verdict"] != "pass" and r["detail"]]
     seen.sort(key=lambda r: r["verdict"] in _CLEAN)
     return seen[0]["detail"] if seen else ""
+
+
+def _base_content_detail(case: Mapping[str, Any]) -> str:
+    """The first base-side failure of a content check (``search.eval.gate.CONTENT_CHECKS``),
+    named by its check: ``measure: parts[0]: shape population_type: ...``."""
+    for name in sorted(CONTENT_CHECKS & case["checks"].keys()):
+        entry = case["checks"][name]
+        for round_ in ("base", "confirm_base"):
+            for result in entry.get(round_, ()):
+                if result and result["verdict"] == "fail":
+                    return f"{name}: {result['detail']}"
+    return ""
 
 
 def _distinct_details(results: Iterable[Mapping[str, Any] | None]) -> list[str]:

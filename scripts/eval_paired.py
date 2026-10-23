@@ -18,6 +18,11 @@ has code ``timeout``), which a retry would only repeat. A sample still failing f
 when base answers and the confirm round agrees. On a case whose ``known_failure.checks``
 holds ``task_outcome`` it is a known failure.
 
+A base sample that answers in the expected status on the wrong series or places, failing
+``measure``, ``entities`` or ``provenance``, gives a head that stops answering it nothing
+to regress from on ``disposition`` and ``answer``: those verdicts read
+``wrong_answer_at_base``, which does not block and which the summary lists.
+
 Head sampling is adaptive. Each case runs once at head. A case takes the rest of its
 ``--samples`` and is judged on all of them when a check outside its
 ``known_failure.checks`` did not pass or passed only because no sample reached it, or when
@@ -100,6 +105,8 @@ from search.eval.checks import (
     score_with_answer,
 )
 from search.eval.gate import (
+    CONTENT_CHECKS,
+    WRONG_ANSWER_CHECKS,
     Judgement,
     Observation,
     Outcome,
@@ -173,10 +180,19 @@ class SampleScore:
 
     def observation(self, check: str, side: Side) -> Observation | None:
         """The check's observation on this sample. A failed run is infra at base and a
-        scored sample at head, where the PR may be what made it fail."""
+        scored sample at head, where the PR may be what made it fail. A base observation of
+        a check a wrong answer can pass carries the sample's content checks
+        (``search.eval.gate.WRONG_ANSWER_CHECKS``)."""
         result = self.results.get(check)
         if result is None:
             return None
+        content = {}
+        if side == "base" and check in WRONG_ANSWER_CHECKS:
+            content = {
+                name: o
+                for name in CONTENT_CHECKS
+                if (o := self.observation(name, side)) is not None
+            }
         return Observation(
             verdict=result.verdict,
             infra="run" if self.infra and side == "base" else ("read" if result.infra else None),
@@ -184,6 +200,7 @@ class SampleScore:
             degraded=self.sample is not None and self.sample.degraded,
             run_failed=self.infra and side == "head",
             parts=result.parts,
+            content=content,
         )
 
 

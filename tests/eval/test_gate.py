@@ -14,7 +14,8 @@ P, F, U, NA = Verdict.PASS, Verdict.FAIL, Verdict.UNVERIFIABLE, Verdict.NA
 # the app refused as a malformed request, X a head run that failed, scored n/a on a check
 # other than `task_outcome`, ~ a check the expectation asserts that the sample's status
 # left unscored, on the whole answer. On a case with two expected parts: 0 and 1 a sample that failed only that
-# part, a a sample that reached and passed part 0 and never reached part 1.
+# part, a a sample that reached and passed part 0 and never reached part 1. A base pass on
+# `disposition` or `answer` whose sample's `measure`: C passes, W fails, w fails on part 1.
 _SAMPLE = {
     "P": Observation(P),
     "F": Observation(F),
@@ -28,6 +29,9 @@ _SAMPLE = {
     "0": Observation(F, parts={0: F}),
     "1": Observation(F, parts={1: F}),
     "a": Observation(Verdict.UNREACHED, parts={1: Verdict.UNREACHED}),
+    "C": Observation(P, content={"measure": Observation(P)}),
+    "W": Observation(P, content={"measure": Observation(F)}),
+    "w": Observation(P, content={"measure": Observation(F, parts={1: F})}),
 }
 
 
@@ -197,6 +201,86 @@ ROWS = [
         check="answer",
         blocks=True,
     ),
+    # A base sample that passes `disposition` or `answer` on the wrong series has no right
+    # answer for the head to regress from.
+    row(
+        "wrong answer at base",
+        Outcome.WRONG_ANSWER_AT_BASE,
+        head="FFF",
+        base="WWW",
+        check="disposition",
+    ),
+    row(
+        "right answer at base",
+        Outcome.REGRESSION,
+        head="FFF",
+        base="CCC",
+        confirm="FC",
+        check="disposition",
+        blocks=True,
+    ),
+    row(
+        "a right base sample goes to confirm",
+        Outcome.NEEDS_CONFIRM,
+        head="FFF",
+        base="CWW",
+        check="disposition",
+    ),
+    row(
+        "confirm base wrong",
+        Outcome.WRONG_ANSWER_AT_BASE,
+        head="FFF",
+        base="CWW",
+        confirm="FW",
+        check="disposition",
+    ),
+    row(
+        "confirm base right",
+        Outcome.REGRESSION,
+        head="FFF",
+        base="WWC",
+        confirm="FC",
+        check="disposition",
+        blocks=True,
+    ),
+    row(
+        "wrong answer, some base unreached",
+        Outcome.WRONG_ANSWER_AT_BASE,
+        head="FFF",
+        base="W~W",
+        check="disposition",
+    ),
+    # `answer` leaves a known-failure `measure` out, so base passes it on a series the case
+    # knows is wrong; the sample's own `measure` verdict still counts.
+    row(
+        "wrong answer at base, answer",
+        Outcome.WRONG_ANSWER_AT_BASE,
+        head="FFF",
+        base="WWW",
+        check="answer",
+    ),
+    # Content is read over the parts the head failed.
+    row(
+        "wrong only on a part the head passed",
+        Outcome.NEEDS_CONFIRM,
+        head="000",
+        base="www",
+        check="disposition",
+    ),
+    row(
+        "wrong on the part the head failed",
+        Outcome.WRONG_ANSWER_AT_BASE,
+        head="111",
+        base="www",
+        check="disposition",
+    ),
+    row(
+        "other checks ignore content",
+        Outcome.NEEDS_CONFIRM,
+        head="FFF",
+        base="WWW",
+        check="warnings",
+    ),
 ]
 
 
@@ -282,6 +366,7 @@ def test_new_case(base_hashes, new):
         ([Outcome.PASS, Outcome.KNOWN_FAILURE, Outcome.PRE_EXISTING, Outcome.UNSTABLE], 0),
         ([Outcome.PASS, Outcome.REGRESSION], 1),
         ([Outcome.UNVERIFIABLE_AT_BASE], 1),
+        ([Outcome.PASS, Outcome.WRONG_ANSWER_AT_BASE], 0),
         ([Outcome.PASS, Outcome.INFRA], 3),
         ([Outcome.INFRA, Outcome.NEW_CASE_FAILURE], 1),
     ],
