@@ -1184,7 +1184,7 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
             "aid to Kenya and Uganda over the last five years",
             ["aid", "aid"],
             [{"kind": "range", "relative": "over the last five years"}],
-            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [{"kind": "range", "start": "2022", "end": "2026", "trailing_years": 5}],
             [],
         ),
     ],
@@ -3049,17 +3049,17 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
     [
         (
             [{"kind": "range", "relative": "over the last decade"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         (
             [{"kind": "range", "relative": "in the last 5 years"}],
-            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [{"kind": "range", "start": "2022", "end": "2026", "trailing_years": 5}],
             [],
         ),
         (
             [{"kind": "range", "relative": "the past decade"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         (
@@ -3069,7 +3069,7 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
         ),
         (
             [{"kind": "range", "relative": "los últimos 10 años"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         ([{"kind": "range", "relative": "last 0 years"}], [], ["time_text_not_parsed"]),

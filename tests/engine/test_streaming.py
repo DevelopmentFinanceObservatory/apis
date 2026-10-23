@@ -425,8 +425,9 @@ def test_soft_deadline_single_variable_n1_path(monkeypatch, search_settings):
 
 
 def test_resolve_async_surfaces_timed_out_in_diagnostics(monkeypatch, search_settings):
-    """Buffered responses expose the stream's timeout state in diagnostics. The fake clock
-    passes the deadline once the fast leg has finished."""
+    """Buffered responses expose the stream's timeout state in diagnostics, and the part
+    the deadline cut short says it timed out, in its reason and its sentence. The fake
+    clock passes the deadline once the fast leg has finished."""
     clock = frozen_monotonic_clock(monkeypatch)
     search_settings(request_timeout_s=DEADLINE_TIMEOUT_S)
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["fast", "slow"]))
@@ -451,6 +452,13 @@ def test_resolve_async_surfaces_timed_out_in_diagnostics(monkeypatch, search_set
             sdmx=EMPTY_SDMX,
         )
         assert result.diagnostics.timed_out is True
+        assert [part.no_data.reason for part in result.parts] == [
+            "variable_not_resolved",
+            "timeout",
+        ]
+        assert result.parts[1].no_data.category == "unresolved"
+        assert "time limit" in (result.parts[1].no_data.message or "")
+        assert "Could not match" not in (result.parts[1].no_data.message or "")
 
         await asyncio.sleep(0.1)  # let the cancelled "slow" leg finalize
         _assert_no_orphaned_tasks({asyncio.current_task()})

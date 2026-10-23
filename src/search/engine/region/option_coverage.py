@@ -79,6 +79,7 @@ from search.engine.retrieval.read_plan import (
     ReadPlan,
     minimal_constraint_svs,
     points_in_years,
+    served_role_entities,
 )
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_scope import open_role_axis_members
@@ -119,41 +120,49 @@ logger = logging.getLogger(__name__)
 
 
 def role_axis_facts_for_materialised(
-    mat: Materialised, *, shape: ShapeDraft
+    mat: Materialised, *, shape: ShapeDraft, plan: ReadPlan | None
 ) -> list[RoleAxisFactInput]:
     """Return one fact per open directional role axis, reusing `mat`'s resolved populations.
 
     An open origin uses `open_origin_dcids`. Discovered scope supplies its axis and members.
     When both axes are open, the companion population comes from `role_index_by_sv`.
-    Unknown role-index data yields `member_dcids=None`. A known empty population is an empty
-    set. Returns `[]` when no role axis is open. These facts add no SDMX reads and feed both
-    the resolved spec and entity options.
+    Each population is the one the answer's `plan` serves on the axis's role
+    (`read_plan.served_role_entities`), so the count the sentence states is the count of
+    parties its data holds; a population the resolver found holds parties in years or
+    series the plan does not read. Without a plan, or for an axis the shape names no role
+    on, the resolver's population stands. Unknown role-index data yields
+    `member_dcids=None`. A known empty population is an empty set. Returns `[]` when no
+    role axis is open. These facts add no SDMX reads and feed both the resolved spec and
+    entity options.
     """
+    role_names = role_names_by_axis(shape)
+
+    def fact(axis: RoleAxis, population: frozenset[str] | None) -> RoleAxisFactInput:
+        role_name = role_names.get(axis)
+        if plan is not None and population is not None and role_name is not None:
+            population = served_role_entities(plan, role_name)
+        return RoleAxisFactInput(role=axis, member_dcids=population)
+
     if mat.open_origin_dcids is not None:
-        return [RoleAxisFactInput(role="origin", member_dcids=mat.open_origin_dcids)]
+        return [fact("origin", mat.open_origin_dcids)]
     if mat.discovered_scope is None:
         return []
     facts: list[RoleAxisFactInput] = []
     discovered_axis = mat.discovered_scope.axis
     if discovered_axis in ("origin", "destination"):
-        facts.append(
-            RoleAxisFactInput(
-                # Materialised.discovered_scope exists only for role-bearing resolves.
-                # This check narrows its EntityRoleKey to the two accepted axes.
-                role=discovered_axis,
-                member_dcids=frozenset(mat.discovered_scope.member_dcids),
-            )
-        )
+        # Materialised.discovered_scope exists only for role-bearing resolves. This check
+        # narrows its EntityRoleKey to the two accepted axes.
+        facts.append(fact(discovered_axis, frozenset(mat.discovered_scope.member_dcids)))
     companion_axis = mat.also_defaulted_axis
     if companion_axis is not None:
         companion_dcids: frozenset[str] | None = None
         if mat.role_index_by_sv is not None:
-            companion_role_name = role_names_by_axis(shape).get(companion_axis)
+            companion_role_name = role_names.get(companion_axis)
             if companion_role_name is not None:
                 companion_dcids = open_role_axis_members(
                     mat.role_index_by_sv, role_name=companion_role_name, svs=mat.sv_dcids
                 )
-        facts.append(RoleAxisFactInput(role=companion_axis, member_dcids=companion_dcids))
+        facts.append(fact(companion_axis, companion_dcids))
     return facts
 
 

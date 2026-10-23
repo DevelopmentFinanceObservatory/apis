@@ -110,6 +110,10 @@ _NO_DATA_PHRASES: dict[str, str] = {
     "qualifier_not_bound": (
         "A category or condition named in this query could not be applied to the matching series."
     ),
+    "timeout": (
+        "Search reached its time limit before answering this part. "
+        "Try again, or ask a narrower question."
+    ),
 }
 _GENERIC_NO_DATA = "No data is available for this query."
 
@@ -503,6 +507,7 @@ _REASONS_WITH_TRAILING_IMPERATIVE = frozenset(
         "entity_set_too_large",
         "variable_not_resolved",
         "role_not_resolved",
+        "timeout",
     }
 )
 

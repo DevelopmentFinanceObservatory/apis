@@ -90,3 +90,25 @@ def test_date_request_post_init_rejects_window_and_latest() -> None:
     """Both a window and ``latest=True`` raise ``ValueError``."""
     with pytest.raises(ValueError, match="window or latest"):
         DateRequest(window=TimeWindow(start_year=2010, end_year=2020), latest=True)
+
+
+def test_trailing_span_reads_up_to_its_end_until_the_data_settles_it() -> None:
+    """A lone span counted back reads every year up to its end, states its calendar years
+    until an answer settles it, and settles to its count of years ending at the newest
+    year the data holds."""
+    span = ExtractedDate(kind="range", start="2022", end="2026", trailing_years=5)
+    req = dates_to_request([span])
+    assert req == DateRequest(
+        window=TimeWindow(start_year=None, end_year=2026), latest=False, trailing_years=5
+    )
+    assert req.asked_window == TimeWindow(start_year=2022, end_year=2026)
+    assert req.anchored(2024) == DateRequest(
+        window=TimeWindow(start_year=2020, end_year=2024), latest=False
+    )
+
+
+def test_trailing_span_beside_another_date_reads_their_years() -> None:
+    """A span combined with another date reads the years both name, as dates combine."""
+    span = ExtractedDate(kind="range", start="2022", end="2026", trailing_years=5)
+    req = dates_to_request([span, _point("2015")])
+    assert req == DateRequest(window=TimeWindow(start_year=2015, end_year=2026), latest=False)

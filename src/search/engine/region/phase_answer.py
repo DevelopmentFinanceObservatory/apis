@@ -397,6 +397,10 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     # The phase spine narrows this result to ``Materialised``. The attribute loses that
     # narrowing here.
     mat_result = cast(Materialised, state.mat_result)
+    # A trailing span reads, and the answer states, the years it settled to over this
+    # answer's data (`retrieve.materialise`).
+    if mat_result.anchored_request is not None:
+        state.date_request = mat_result.anchored_request
     start_elected_related_read(state, mat_result)
 
     early = await _decide_bound_unit_convertibility(state, mat_result)
@@ -661,7 +665,9 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
     # Entity options have no bound-unit gate, so launch them immediately. Their raw
     # values feed relaunch. Shared role-axis facts keep options and Spec aligned.
     t0 = now_ms()
-    role_axis_facts = role_axis_facts_for_materialised(mat_result, shape=state.shape_draft)
+    role_axis_facts = role_axis_facts_for_materialised(
+        mat_result, shape=state.shape_draft, plan=state.elected_plan
+    )
     entity_task = asyncio.create_task(
         asyncio.to_thread(
             _build_and_enrich_entity_options,

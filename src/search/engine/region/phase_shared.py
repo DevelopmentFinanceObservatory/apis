@@ -375,7 +375,7 @@ async def _elected_flagged_match(
         entities=entities,
         coverage=CoverageBare(
             has_data=False,
-            window=state.date_request.window if state.date_request is not None else None,
+            window=state.date_request.asked_window if state.date_request is not None else None,
         ),
         default_reading=state.default_reading,
         stated_form=state.stated_form,
