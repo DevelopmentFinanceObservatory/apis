@@ -54,6 +54,7 @@ from search.engine.region.codes import (
 )
 from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.equivalent_series import shared_cluster
+from search.engine.region.materialise_step import lone_breakdown_absent
 from search.engine.region.observations.dispatch import (
     _attach_observations,
     _resolve_spec_observations,
@@ -278,20 +279,29 @@ def _handle_sparse_survivors(
 def _note_lone_breakdown(state: ResolveState, grounded: _GroundedCandidates, spec: Spec) -> None:
     """Record that a family with no total answers by one breakdown, narrower than asked
     (`standard.Narrow.lone_signature`), when `spec`, the lone survivor, is the elected
-    breakdown or one offered beside it (`ResolveState.breakdown_rivals`)."""
+    breakdown or one offered beside it (`ResolveState.breakdown_rivals`). The survivor then
+    carries the `family_total_absent` fact naming that breakdown (`lone_breakdown_absent`)
+    unless its own fact names its single member."""
     survivor = grounded.cand_candidates[spec.spec_id]
-    if not state.breakdown_rivals or (
-        spec.spec_id != grounded.elected_spec_id and survivor.basis != "breakdown"
-    ):
+    if spec.spec_id != grounded.elected_spec_id and survivor.basis != "breakdown":
         return
-    state.breakdown = Narrow(
-        frozenset(
-            slot.property_dcid
-            for slot in survivor.shape.slot_keys
-            if slot.axis in ("what", "how") and slot.property_dcid is not None
-        ),
-        lone_signature=True,
+    if state.breakdown_rivals:
+        state.breakdown = Narrow(
+            frozenset(
+                slot.property_dcid
+                for slot in survivor.shape.slot_keys
+                if slot.axis in ("what", "how") and slot.property_dcid is not None
+            ),
+            lone_signature=True,
+        )
+    fact = lone_breakdown_absent(
+        state.breakdown,
+        shape=survivor.shape,
+        bindings=survivor.bindings,
+        shown=survivor.mat.sv_dcids[0],
     )
+    if fact is not None:
+        state.family_total_absent.setdefault(spec.spec_id, fact)
 
 
 def _settle_lone_survivor(state: ResolveState, grounded: _GroundedCandidates, spec: Spec) -> None:

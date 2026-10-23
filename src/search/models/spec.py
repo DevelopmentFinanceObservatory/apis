@@ -607,7 +607,11 @@ class ResolvedSpec(StrictModel):
 
     shape: Shape = Field(description="the structural family chosen")
     slots: list[Slot] = Field(
-        description="one entry per slot the shape defines, each in a binding state"
+        description=(
+            "one entry per slot the shape defines, each in a binding state. Its what/how "
+            "entries are the identity's slots, so a what/how property it leaves out is one "
+            "no served member asserts"
+        )
     )
     inapplicable_slots: list[str] = Field(
         default_factory=list,

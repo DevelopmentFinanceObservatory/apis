@@ -243,6 +243,13 @@ ROWS = [
         panel("crs-001"),
         FAIL,
     ),
+    # A slot the identity leaves out excludes every member asserting it, so it is not open.
+    (
+        "measure",
+        {"definite": {"measure": {"shape": {"population_type": "FinancialFlow"}, "open": ["sex"]}}},
+        panel("crs-001"),
+        FAIL,
+    ),
     # A set binding matches in any order.
     (
         "measure",

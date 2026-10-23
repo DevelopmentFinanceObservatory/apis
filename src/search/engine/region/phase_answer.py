@@ -65,7 +65,10 @@ from search.engine.region.grounding import (
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
-from search.engine.region.materialise_step import family_total_absent_departure
+from search.engine.region.materialise_step import (
+    family_total_absent_departure,
+    lone_breakdown_absent,
+)
 from search.engine.region.observations.bulk_scope import BulkScope, bulk_scope_for
 from search.engine.region.observations.dispatch import (
     _attach_observations,
@@ -1013,8 +1016,14 @@ def _build_definite_spec(
     if state.bound_unit_outcome is not None:
         spec = with_unit_lexicon_version(spec, state.bound_unit_outcome)
     spec = apply_declaration_version(spec, state.bindings)
-    if mat_result.family_total_absent is not None:
-        state.family_total_absent[spec.spec_id] = mat_result.family_total_absent
+    family_total_absent = mat_result.family_total_absent or lone_breakdown_absent(
+        state.breakdown,
+        shape=state.shape_draft,
+        bindings=state.bindings,
+        shown=mat_result.sv_dcids[0],
+    )
+    if family_total_absent is not None:
+        state.family_total_absent[spec.spec_id] = family_total_absent
 
     return _DefiniteSpec(
         spec=spec,

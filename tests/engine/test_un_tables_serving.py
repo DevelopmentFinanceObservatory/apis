@@ -270,20 +270,18 @@ _Q5 = "undata/who/MORT_U5_RATE.WEALTH_QUANTILE--Q5"
 _WEALTH = "undataWealthQuantile"
 
 
-def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
-    bind_catalogue,
-) -> None:
-    """The WHO series holds a highest-quintile member and two by-sex members, each asserting
-    one slot, so none is its total, and the question names no breakdown. Each breakdown is
-    a candidate whose identity carries its own slot alone, so a mint of its definition
-    serves exactly the members it states: the two by-sex series and their 10 rows in Kenya
-    first, as the breakdown with more members holding data there, then the quintile and
-    its 5 rows, offered on the `breakdown` basis."""
-    members = {
-        _Q5: ("Under-five mortality rate [Wealth quantile=Highest quintile]", _WEALTH, "Q5"),
-        _FEMALE: ("Under-five mortality rate [Sex=Female]", _SEX, "F"),
-        _MALE: ("Under-five mortality rate [Sex=Male]", _SEX, "M"),
-    }
+_TWO_BREAKDOWNS = {
+    _Q5: ("Under-five mortality rate [Wealth quantile=Highest quintile]", _WEALTH, "Q5"),
+    _FEMALE: ("Under-five mortality rate [Sex=Female]", _SEX, "F"),
+    _MALE: ("Under-five mortality rate [Sex=Male]", _SEX, "M"),
+}
+
+
+def _resolve_two_breakdowns(bind_catalogue, *, with_data: frozenset[str]):
+    """Bind tables holding a WHO series with a highest-quintile member and two by-sex
+    members, each asserting one slot, so none is its total, and resolve "under-five
+    mortality by wealth quintile" in Kenya, naming no breakdown the binder opens. Each
+    member in `with_data` holds five points at Kenya."""
     bind_catalogue(
         restrictive_catalogue(
             provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
@@ -294,7 +292,7 @@ def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
                         name=name,
                         constraints={prop: (prop, f"undata/{prop}-{value}", value)},
                     )
-                    for sv, (name, prop, value) in members.items()
+                    for sv, (name, prop, value) in _TWO_BREAKDOWNS.items()
                 }
             ),
         )
@@ -306,18 +304,17 @@ def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
             _SERIES: {"label": "Under-five mortality rate"},
             **{
                 sv: _member_node(name, {prop: f"undata/{prop}-{value}"})
-                for sv, (name, prop, value) in members.items()
+                for sv, (name, prop, value) in _TWO_BREAKDOWNS.items()
             },
         },
         obs={
             f"{sv}|country/KEN": [{"earliestDate": "2010", "latestDate": "2014", "obsCount": 5}]
-            for sv in members
+            for sv in with_data
         },
-        detect={query: {"svs": list(members), "cosine_scores": [0.9, 0.89, 0.88]}},
+        detect={query: {"svs": list(_TWO_BREAKDOWNS), "cosine_scores": [0.9, 0.89, 0.88]}},
         resolve={"Kenya": "country/KEN"},
     )
-
-    result = asyncio.run(
+    return asyncio.run(
         resolve_variable(
             query,
             entities=["Kenya"],
@@ -335,6 +332,17 @@ def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
         )
     )
 
+
+def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
+    bind_catalogue,
+) -> None:
+    """The WHO series has no total, and the question names no breakdown. Each breakdown is
+    a candidate whose identity carries its own slot alone, so a mint of its definition
+    serves exactly the members it states: the two by-sex series and their 10 rows in Kenya
+    first, as the breakdown with more members holding data there, then the quintile and
+    its 5 rows, offered on the `breakdown` basis."""
+    result = _resolve_two_breakdowns(bind_catalogue, with_data=frozenset(_TWO_BREAKDOWNS))
+
     assert result.status == "candidates"
     assert [
         (
@@ -346,6 +354,151 @@ def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
         for spec in result.specs
     ] == [([_SEX], [_FEMALE, _MALE], 2, None), ([_WEALTH], [_Q5], 1, "breakdown")]
     assert [spec.resolved.coverage.observation_count for spec in result.specs] == [10, 5]
+    assert "family_total_absent" not in {warning.code for warning in result.warnings}
+
+
+def test_one_breakdown_left_with_data_answers_by_it_with_a_departure(bind_catalogue) -> None:
+    """Of the series' two breakdowns only the by-sex members hold data in Kenya, so the
+    quintile candidate drops and the by-sex one answers alone, definite, warning that the
+    family has no total with the `closest_match` departure."""
+    result = _resolve_two_breakdowns(bind_catalogue, with_data=frozenset({_FEMALE, _MALE}))
+
+    assert result.status == "definite"
+    (answer,) = result.specs
+    assert [slot.property for slot in answer.definition.identity.slots] == [_SEX]
+    assert [w.spec_id for w in result.warnings if w.code == "family_total_absent"] == [
+        answer.spec_id
+    ]
+    assert [departure.code for departure in result.departure_facts.values()] == ["closest_match"]
+
+
+def test_a_series_with_no_total_and_one_breakdown_answers_by_it_with_a_departure(
+    bind_catalogue,
+) -> None:
+    """The WHO series holds two by-sex members and no total, and the question names no
+    breakdown. Its one breakdown answers definite, the identity carrying the sex slot alone,
+    and the part discloses that the family has no total and the answer shows it by sex,
+    with the `closest_match` departure."""
+    members = {
+        _FEMALE: ("Under-five mortality rate [Sex=Female]", "undata/SEX-F"),
+        _MALE: ("Under-five mortality rate [Sex=Male]", "undata/SEX-M"),
+    }
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
+            un_mirror=un_mirror(
+                {
+                    sv: un_variable(
+                        _SERIES, name=name, constraints={_SEX: ("Sex", value, value[-1])}
+                    )
+                    for sv, (name, value) in members.items()
+                }
+            ),
+        )
+    )
+    query = "under-five mortality"
+    graph = FakeGraph(
+        nodes={
+            "country/KEN": {"label": "Kenya", "type": "Country"},
+            _SERIES: {"label": "Under-five mortality rate"},
+            _SEX: {"label": "Sex"},
+            **{sv: _member_node(name, {_SEX: value}) for sv, (name, value) in members.items()},
+        },
+        obs={
+            f"{sv}|country/KEN": [{"earliestDate": "2010", "latestDate": "2014", "obsCount": 5}]
+            for sv in members
+        },
+        detect={query: {"svs": list(members), "cosine_scores": [0.9, 0.89]}},
+        resolve={"Kenya": "country/KEN"},
+    )
+
+    result = asyncio.run(
+        resolve_variable(
+            query,
+            entities=["Kenya"],
+            date_request=None,
+            detect_query=query,
+            role_query=f"{query} in Kenya",
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            llm=_BindNothingLLM(),
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+            options=EngineOptions(deadline=None),
+        )
+    )
+
+    assert result.status == "definite"
+    (answer,) = result.specs
+    assert [slot.property for slot in answer.definition.identity.slots] == [_SEX]
+    assert {sv.ref.ref for sv in answer.resolved.members} == set(members)
+    assert [w.spec_id for w in result.warnings if w.code == "family_total_absent"] == [
+        answer.spec_id
+    ]
+    assert [departure.code for departure in result.departure_facts.values()] == ["closest_match"]
+
+
+@pytest.mark.parametrize(
+    ("labels", "bound", "message"),
+    [
+        (("Sex",), (), "This indicator has no overall figure, so the answer shows it by sex."),
+        (
+            ("Sex", "Age"),
+            (),
+            "This indicator has no overall figure, so the answer shows it by sex and age.",
+        ),
+        (
+            ("Sex", "Age"),
+            ("p0",),
+            "This indicator has no overall figure, so the answer shows it by age.",
+        ),
+        (
+            ("HIV status",),
+            (),
+            "This indicator has no overall figure, so the answer shows it by HIV status.",
+        ),
+    ],
+    ids=["one_slot", "two_slots", "bound_slot_left_out", "acronym_kept"],
+)
+def test_a_lone_breakdown_warning_names_its_unbound_slots(
+    labels: tuple[str, ...], bound: tuple[str, ...], message: str
+) -> None:
+    from search.engine.region.materialise_step import (
+        lone_breakdown_absent,
+        resubmit_family_total_absent_departure,
+    )
+    from search.engine.retrieval.standard import Narrow
+    from search.engine.shape import ShapeDraft, SlotKeyDraft
+
+    slots = tuple(
+        SlotKeyDraft(axis="how", property_dcid=f"p{i}", label=label)
+        for i, label in enumerate(labels)
+    )
+    shape = ShapeDraft(
+        shape_id="s",
+        label="s",
+        pop_type_dcid=_SERIES,
+        meas_prop_dcid="value",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=slots,
+    )
+    bindings = [
+        SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=["v"])
+        for prop in bound
+    ]
+    decision = Narrow(frozenset(slot.property_dcid for slot in slots), lone_signature=True)
+
+    fact = lone_breakdown_absent(decision, shape=shape, bindings=bindings, shown=_FEMALE)
+
+    assert fact is not None
+    warning, _departure = resubmit_family_total_absent_departure(
+        fact, spec=None, label_of=lambda dcids: list(dcids)
+    )
+    assert (warning.code, warning.message) == ("family_total_absent", message)
 
 
 _QUINTILES = {
