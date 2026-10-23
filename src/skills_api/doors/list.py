@@ -13,7 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from skills_api.deps import (
     CACHE_CONTROL,
     INDEX_NOT_BUILT_PROBLEM,
@@ -60,6 +60,7 @@ def build_list_door() -> DoorContribution:
     )
     return DoorContribution(
         router=router,
+        registry_endpoints=route_registry_endpoints(router, "skills.list"),
         classify=classify_list_exception,
         exception_types=(SkillsIndexNotBuilt,),
         exception_exemplars=(SkillsIndexNotBuilt(),),

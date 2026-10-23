@@ -72,7 +72,7 @@ def compute_presentation_capability_version(
     release: CatalogueRelease,
     code_catalogue: CodeCatalogue = PRESENTATION_CODE_CATALOGUE,
     retry_modes: Mapping[str, str] = CODE_RETRY_MODE,
-    frame_unavailable_outcome: Mapping[str, tuple[int, bool]] = _FRAME_UNAVAILABLE_OUTCOME,
+    frame_unavailable_outcome: Mapping[str, tuple[str, int, bool]] = _FRAME_UNAVAILABLE_OUTCOME,
 ) -> str:
     """Return the capability hash for `release` and the supplied refusal data."""
     refusal_exemplars = contextvars.copy_context().run(

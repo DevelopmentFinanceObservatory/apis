@@ -19,12 +19,12 @@ stored one with `render_target_mismatch` (409). They serve `binding_invalid` and
 intent and cannot correct it, so there `retryable` is true only when the same request may
 succeed later: `replay_retryable` keeps an occurrence's value for a `retry_after_delay` or
 `refresh_then_retry` code and answers false for every other mode.
-Frame unavailability returns 404 or transient 503. Release mismatch and service unavailability
-return 503. Timeout returns 504, and internal errors return 500.
+Frame unavailability returns 404, and a frame store that fails to answer returns
+`service_unavailable`. Release mismatch and service unavailability return 503. Timeout returns 504, and internal errors return 500.
 
 Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
 `correct_and_retry`. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
-refresh. Transient frame, release, service, and timeout failures retry after a delay. `not_found`,
+refresh. Transient release, service, and timeout failures retry after a delay. `not_found`,
 `write_refused`, `resource_exhausted`, `refresh_not_permitted`, `render_target_mismatch`, and
 `internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
 release manifest.
