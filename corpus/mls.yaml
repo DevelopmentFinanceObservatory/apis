@@ -286,4 +286,4 @@
           entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
       - definite:
           measure: {family: dac2a.imputed_multilateral}
-          entities: [{dcid: country/ETH, role: destination}]
+          entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
