@@ -217,9 +217,7 @@ def classify_resolve_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def resolve_endpoint(
-    body: ResolveRequest, deps: GraphDepsDep, request: Request
-) -> JSONResponse:
+async def resolve(body: ResolveRequest, deps: GraphDepsDep, request: Request) -> JSONResponse:
     response = await asyncio.wait_for(
         _run_resolve(deps, body, policy=published_membership(request)),
         timeout=GRAPH_RESOLVE_TIMEOUT_SECONDS,
@@ -232,7 +230,7 @@ def build_resolve_door() -> DoorContribution:
     # `response_model` documents the results list. JSONResponse passes it through unchanged.
     router.add_api_route(
         "/api/graph/resolve",
-        resolve_endpoint,
+        resolve,
         methods=["POST"],
         response_model=ResolveResponse,
     )

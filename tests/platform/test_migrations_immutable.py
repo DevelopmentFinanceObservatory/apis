@@ -89,6 +89,9 @@ _DATASET_STORE = {
     "0036_version_record_continuations.sql": (
         "034edded49a5cc08f3c5c55c65d1523b618d896332d598e333a02fca40336511"
     ),
+    "0037_version_record_recency.sql": (
+        "6c9fe2aeeacc2ddc0be5972b4ae6ecab59bf2db0a36c0478f5d68000344ff7e8"
+    ),
 }
 
 _PRESENTATION_STORE = {

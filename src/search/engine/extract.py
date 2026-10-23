@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
+from entity_resolution.pack import is_organisation_name
 from search.engine.clients.llm import (
     LLM,
     MEMO_HIT_USAGE,
@@ -777,10 +778,14 @@ def role_cue_pairing(
 def _validate_role_spans(
     query: str, entities: list[ExtractedEntity], variables: list[str]
 ) -> list[ExtractedEntity]:
-    """Downgrade invalid roles to `unspecified`. Keep unspecified entities unchanged.
+    """Downgrade invalid roles to `unspecified`, then read a lender named before the measure
+    as the origin.
 
     A missing or blank `role_span` fails. Other cues are checked against the query.
-    `variables` supports the national-adjective measure check.
+    `variables` supports the national-adjective measure check and the lender rule
+    (`_lends_the_measure`): an organisation whose own words stand straight before a measure
+    word, as "IMF" in "IMF credit outstanding Argentina", is the origin with its own words
+    as cue, whatever role the model gave it.
 
     Warning logs include the reason and trace id. Query-derived text appears only
     in the matching debug log.
@@ -788,6 +793,10 @@ def _validate_role_spans(
     normalized_query = _normalize(query)
     validated: list[ExtractedEntity] = []
     for entity in entities:
+        if _lends_the_measure(normalized_query, entity, variables):
+            span = (entity.span or entity.text).strip()
+            validated.append(entity.model_copy(update={"flow_role": "origin", "role_span": span}))
+            continue
         if entity.flow_role == "unspecified":
             validated.append(entity)
             continue
@@ -813,6 +822,20 @@ def _validate_role_spans(
         )
         validated.append(entity.model_copy(update={"flow_role": "unspecified", "role_span": None}))
     return validated
+
+
+def _lends_the_measure(
+    normalized_query: str, entity: ExtractedEntity, variables: list[str]
+) -> bool:
+    """Whether `entity` is an organisation (`entity_resolution.pack.is_organisation_name`)
+    whose words in the query stand straight before a measure word (`_modifies_measure_word`):
+    "IMF credit outstanding", "World Bank IDA concessional flows". A country's name there
+    states no direction ("Kenya aid" is usually aid to Kenya), so only an organisation
+    qualifies."""
+    if not is_organisation_name(entity.text):
+        return False
+    ranges = _all_normalized_text_ranges((entity.span or entity.text).strip(), normalized_query)
+    return bool(ranges) and _modifies_measure_word(ranges, normalized_query, variables)
 
 
 # Keep caps offline so Gemini receives the unchanged schema. Bound output before scans.

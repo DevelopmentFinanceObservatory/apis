@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from scripts.sentence_golden import spec_dicts
+from search.eval.cases import CheckName
 from search.eval.checks import CHECKS, PART_CHECKS, ScoreContext, Verdict, WireSchema
 from search.eval.gate import Observation, Outcome, judge
 from tests.eval.checks.conftest import (
@@ -20,6 +22,7 @@ from tests.eval.checks.conftest import (
     no_members_door,
     panel,
     panel_members,
+    refusing_members_door,
     response_schema,
     schema_listing_members,
     serve,
@@ -28,14 +31,14 @@ from tests.eval.checks.conftest import (
 PASS, FAIL, NA, U = Verdict.PASS, Verdict.FAIL, Verdict.NA, Verdict.UNVERIFIABLE
 UNREACHED = Verdict.UNREACHED
 
-CRS_001_ENTITIES = [
+CRS_032_ENTITIES = [
     {"dcid": "country/DEU", "role": "origin"},
-    {"dcid": "country/KEN", "role": "destination"},
+    {"dcid": "country/BRA", "role": "destination"},
 ]
 OECD_CRS = "provenance/OECDCreditorReportingSystem"
-CRS_001_FIRST_STAT_VAR = (
-    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110"
-    "_CRSPurposeCode11120_Nominal"
+CRS_032_FIRST_STAT_VAR = (
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow21_CRSTypeOfFinance421"
+    "_CRSPurposeCode23230_Nominal"
 )
 
 
@@ -53,6 +56,15 @@ def with_spec_identity(row_id: str, **identity: Any) -> dict[str, Any]:
 def with_operations(row_id: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
     response = panel(row_id)
     response["parts"][0]["operations"] = operations
+    return response
+
+
+_EVERY_PROVIDER = {"kind": "open_role", "binding_ref": "origin:", "text": "every provider"}
+
+
+def with_assumptions(row_id: str, assumptions: list[dict[str, Any]]) -> dict[str, Any]:
+    response = panel(row_id)
+    response["parts"][0]["assumptions"] = assumptions
     return response
 
 
@@ -108,6 +120,20 @@ def as_candidates(row_id: str, *, second_dataset: str | None = None) -> dict[str
     return response
 
 
+def candidates_of(*readings: tuple[str, int]) -> dict[str, Any]:
+    """A candidates response whose readings are recorded Specs. Each ``(row id, index)``
+    names the Spec at ``index`` among the specs of that row's first part (`spec_dicts`)."""
+    specs = [
+        copy.deepcopy(spec_dicts(panel(row_id)["parts"][0])[index]) for row_id, index in readings
+    ]
+    part = {"status": "candidates", "candidates": {"specs": specs}, "warnings": []}
+    return {"kind": "resolution", "status": "candidates", "parts": [part], "diagnostics": {}}
+
+
+# A WDI GDP reading beside an IMF GDP and an IMF GDP per capita reading.
+GDP_READINGS = candidates_of(("weo-002", 0), ("weo-004", 0), ("weo-034", 1))
+
+
 def no_data(**body: Any) -> dict[str, Any]:
     part = {"status": "no_data", "no_data": body}
     return {"kind": "resolution", "status": "no_data", "parts": [part], "diagnostics": {}}
@@ -135,6 +161,7 @@ def unsupported(code: str) -> dict[str, Any]:
 
 
 WDI_GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+WDI_GDP_PER_CAPITA = "Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita"
 IMF_GDP_PER_CAPITA = (
     "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal"
     "_AsAFractionOf_Count_Person"
@@ -157,9 +184,9 @@ UNIT_EUR = {"currency": "EUR", "prices": "constant", "base_year": 2022}
 
 ROWS = [
     # disposition: kind, status, scope place. Every case asserts it, so it is never n/a.
-    ("disposition", {"definite": {}}, panel("crs-001"), PASS),
-    ("disposition", {"no_data": {}, "candidates": {}}, panel("crs-001"), FAIL),
-    ("disposition", {"mixed": {}}, panel("ids-038"), PASS),
+    ("disposition", {"definite": {}}, panel("crs-032"), PASS),
+    ("disposition", {"no_data": {}, "candidates": {}}, panel("crs-032"), FAIL),
+    ("disposition", {"mixed": {}}, panel("weo-008"), PASS),
     ("disposition", {"kind": "catalogue", "scope_place": None}, answer("catalogue"), PASS),
     (
         "disposition",
@@ -167,7 +194,7 @@ ROWS = [
         answer("catalogue"),
         FAIL,
     ),
-    ("disposition", {"kind": "catalogue"}, panel("crs-001"), FAIL),
+    ("disposition", {"kind": "catalogue"}, panel("crs-032"), FAIL),
     # A door that refuses the request answers with a problem document.
     (
         "disposition",
@@ -185,10 +212,10 @@ ROWS = [
     (
         "disposition",
         {"kind": ["resolution", "problem"], "definite": {}, "problem": {"code": "x"}},
-        panel("crs-001"),
+        panel("crs-032"),
         PASS,
     ),
-    ("disposition", {"kind": "problem", "problem": {"code": "x"}}, panel("crs-001"), FAIL),
+    ("disposition", {"kind": "problem", "problem": {"code": "x"}}, panel("crs-032"), FAIL),
     # measure: shape keys, bound and open slots, StatVars, families.
     (
         "measure",
@@ -198,26 +225,26 @@ ROWS = [
                     "shape": {"population_type": "FinancialFlow", "measurement_denominator": None},
                     "bound": {
                         "financialFlowType": "Disbursement",
-                        "crsTypeOfFlow": "CRSTypeOfFlow10",
+                        "crsTypeOfFlow": "CRSTypeOfFlow21",
                     },
                     "open": ["crsPurpose"],
                 }
             }
         },
-        panel("crs-001"),
+        panel("crs-032"),
         PASS,
     ),
     (
         "measure",
         {"definite": {"measure": {"family": "crs.disbursement_gross"}}},
-        panel("crs-001"),
+        panel("crs-032"),
         PASS,
     ),
-    ("measure", {"definite": {"measure": {"family": "crs.commitment"}}}, panel("crs-001"), FAIL),
+    ("measure", {"definite": {"measure": {"family": "crs.commitment"}}}, panel("crs-032"), FAIL),
     (
         "measure",
         {"definite": {"measure": {"family": ["crs.commitment", "crs.disbursement_gross"]}}},
-        panel("crs-001"),
+        panel("crs-032"),
         PASS,
     ),
     (
@@ -230,7 +257,7 @@ ROWS = [
                 }
             }
         },
-        panel("crs-001"),
+        panel("crs-032"),
         FAIL,
     ),
     (
@@ -240,7 +267,7 @@ ROWS = [
                 "measure": {"shape": {"population_type": "FinancialFlow"}, "open": ["nettingBasis"]}
             }
         },
-        panel("crs-001"),
+        panel("crs-032"),
         FAIL,
     ),
     # A set binding matches in any order.
@@ -285,33 +312,33 @@ ROWS = [
         PASS,
     ),
     ("measure", {"definite": {"measure": {"stat_vars": ["Count_Person"]}}}, panel("weo-033"), FAIL),
-    # weo-034's identity marks the PerCapita denominator unresolved; the dcid is resolved.
+    # weo-014's identity marks the PerCapita denominator unresolved, and the dcid is resolved.
     (
         "measure",
         {"definite": {"measure": {"shape": {"measurement_denominator": "PerCapita"}}}},
-        panel("weo-034"),
+        panel("weo-014"),
         PASS,
     ),
     (
         "measure",
         {"definite": {"measure": {"shape": {"measurement_denominator": "Count_Person"}}}},
-        panel("weo-034"),
+        panel("weo-014"),
         FAIL,
     ),
     (
         "measure",
         {"definite": {"measure": {"shape": {"measurement_denominator": None}}}},
-        panel("weo-034"),
+        panel("weo-014"),
         FAIL,
     ),
     # A resolved denominator reads from the identity's ref.
     (
         "measure",
         {"candidates": {"measure": {"shape": {"measurement_denominator": "Count_Person"}}}},
-        panel("weo-002"),
+        panel("weo-034"),
         PASS,
     ),
-    ("measure", {"definite": {}}, panel("crs-001"), NA),
+    ("measure", {"definite": {}}, panel("crs-032"), NA),
     # A status the expectation does not accept leaves the check unscored: unreached when a
     # block asserts it, n/a when none does.
     ("measure", {"definite": {"measure": {"family": "wdi.gdp"}}}, panel("weo-045"), UNREACHED),
@@ -330,22 +357,22 @@ ROWS = [
     (
         "measure",
         {"candidates": {"measure": {"family": "weo.gdp_per_capita"}}},
-        panel("weo-002"),
+        panel("weo-034"),
         PASS,
     ),
-    ("measure", {"candidates": {"measure": {"family": "crs.commitment"}}}, panel("weo-002"), FAIL),
+    ("measure", {"candidates": {"measure": {"family": "crs.commitment"}}}, panel("weo-034"), FAIL),
     # Under candidates, each pinned StatVar is served by its own candidate; extras pass.
     (
         "measure",
-        {"candidates": {"measure": {"stat_vars": [IMF_GDP_PER_CAPITA, WDI_GDP]}}},
-        panel("weo-002"),
+        {"candidates": {"measure": {"stat_vars": [IMF_GDP_PER_CAPITA, WDI_GDP_PER_CAPITA]}}},
+        panel("weo-034"),
         PASS,
     ),
-    ("measure", {"candidates": {"measure": {"stat_vars": [WDI_GDP]}}}, panel("weo-030"), PASS),
+    ("measure", {"candidates": {"measure": {"stat_vars": [WDI_GDP]}}}, GDP_READINGS, PASS),
     (
         "measure",
-        {"candidates": {"measure": {"stat_vars": [WDI_GDP, "Count_Person"]}}},
-        panel("weo-002"),
+        {"candidates": {"measure": {"stat_vars": [WDI_GDP_PER_CAPITA, "Count_Person"]}}},
+        panel("weo-034"),
         FAIL,
     ),
     (
@@ -358,7 +385,7 @@ ROWS = [
                 }
             }
         },
-        panel("weo-030"),
+        GDP_READINGS,
         PASS,
     ),
     (
@@ -368,7 +395,7 @@ ROWS = [
                 "measure": {"shape": {"population_type": "FinancialFlow"}, "stat_vars": [WDI_GDP]}
             }
         },
-        panel("weo-030"),
+        GDP_READINGS,
         FAIL,
     ),
     # An unsupported part's definition carries the identity, without StatVars.
@@ -396,12 +423,12 @@ ROWS = [
         NA,
     ),
     # entities: the exact (dcid, role) set; a group read as members.
-    ("entities", {"definite": {"entities": CRS_001_ENTITIES}}, panel("crs-001"), PASS),
-    ("entities", {"definite": {"entities": CRS_001_ENTITIES[:1]}}, panel("crs-001"), FAIL),
+    ("entities", {"definite": {"entities": CRS_032_ENTITIES}}, panel("crs-032"), PASS),
+    ("entities", {"definite": {"entities": CRS_032_ENTITIES[:1]}}, panel("crs-032"), FAIL),
     (
         "entities",
-        {"definite": {"entities": [{"dcid": "country/KEN", "role": "observationAbout"}]}},
-        panel("crs-001"),
+        {"definite": {"entities": [{"dcid": "country/BRA", "role": "observationAbout"}]}},
+        panel("crs-032"),
         FAIL,
     ),
     (
@@ -480,52 +507,52 @@ ROWS = [
         unsupported("x"),
         FAIL,
     ),
-    ("entities", {"definite": {}}, panel("crs-001"), NA),
+    ("entities", {"definite": {}}, panel("crs-032"), NA),
     # provenance: the family's, or an override.
     (
         "provenance",
         {"definite": {"measure": {"family": "crs.disbursement_gross"}}},
-        panel("crs-001"),
+        panel("crs-032"),
         PASS,
     ),
     (
         "provenance",
         {"definite": {"provenance": {"origin": "dfo", "dataset": OECD_CRS}}},
-        panel("crs-001"),
+        panel("crs-032"),
         PASS,
     ),
-    ("provenance", {"definite": {"provenance": {"origin": "base"}}}, panel("crs-001"), FAIL),
+    ("provenance", {"definite": {"provenance": {"origin": "base"}}}, panel("crs-032"), FAIL),
     (
         "provenance",
         {"definite": {"provenance": {"dataset": "dc/base/UN_SDG"}}},
-        panel("crs-001"),
+        panel("crs-032"),
         FAIL,
     ),
-    ("provenance", {"candidates": {"provenance": {"origin": "dfo"}}}, panel("weo-002"), PASS),
+    ("provenance", {"candidates": {"provenance": {"origin": "dfo"}}}, panel("weo-034"), PASS),
     (
         "provenance",
         {"definite": {"measure": {"shape": {"population_type": "FinancialFlow"}}}},
-        panel("crs-001"),
+        panel("crs-032"),
         NA,
     ),
     ("provenance", {"unsupported": {"provenance": {"origin": "dfo"}}}, unsupported("x"), NA),
     # With several families, the provenance is the one of the family the answer matches.
     (
         "provenance",
-        {"candidates": {"measure": {"family": ["wdi.gdp", "weo.gdp_per_capita"]}}},
-        panel("weo-002"),
+        {"candidates": {"measure": {"family": ["wdi.gdp_per_capita", "weo.gdp_per_capita"]}}},
+        panel("weo-034"),
         PASS,
     ),
     (
         "provenance",
-        {"candidates": {"measure": {"family": ["wdi.gdp", "weo.gdp_per_capita"]}}},
-        with_swapped_provenance("weo-002"),
+        {"candidates": {"measure": {"family": ["wdi.gdp_per_capita", "weo.gdp_per_capita"]}}},
+        with_swapped_provenance("weo-034"),
         FAIL,
     ),
     (
         "provenance",
-        {"definite": {"measure": {"family": ["crs.disbursement_gross", "wdi.gdp"]}}},
-        with_provenance_of("crs-001", "weo-002"),
+        {"definite": {"measure": {"family": ["crs.disbursement_gross", "wdi.gdp_per_capita"]}}},
+        with_provenance_of("crs-032", "weo-034"),
         FAIL,
     ),
     # On a definite part a family pairs only when its StatVar pin matches too.
@@ -536,7 +563,7 @@ ROWS = [
                 "measure": {"family": ["crs.disbursement_gross", "ids.disbursement_unserved"]}
             }
         },
-        with_ids_provenance("crs-001"),
+        with_ids_provenance("crs-032"),
         FAIL,
     ),
     # Under candidates, measure passes through the IDS family's pin, and the OECD
@@ -548,7 +575,7 @@ ROWS = [
                 "measure": {"family": ["crs.disbursement_unserved", "ids.disbursement_served"]}
             }
         },
-        as_candidates("crs-001"),
+        as_candidates("crs-032"),
         FAIL,
     ),
     # The candidate serving the IDS family's pin carries OECD; the IDS candidate does not
@@ -560,19 +587,19 @@ ROWS = [
                 "measure": {"family": ["crs.disbursement_unserved", "ids.disbursement_served"]}
             }
         },
-        as_candidates("crs-001", second_dataset=IDS),
+        as_candidates("crs-032", second_dataset=IDS),
         FAIL,
     ),
     (
         "provenance",
         {"candidates": {"measure": {"family": "crs.disbursement_pin_unconfirmed"}}},
-        as_candidates("crs-001"),
+        as_candidates("crs-032"),
         U,
     ),
     (
         "provenance",
         {"definite": {"measure": {"family": "crs.disbursement_gl_dataset"}}},
-        panel("crs-001"),
+        panel("crs-032"),
         U,
     ),
     # A block's own provenance replaces the family's: the IDS candidate must be the measure.
@@ -582,12 +609,12 @@ ROWS = [
             "candidates": {
                 "measure": {
                     "shape": {"population_type": "FinancialFlow"},
-                    "stat_vars": [CRS_001_FIRST_STAT_VAR],
+                    "stat_vars": [CRS_032_FIRST_STAT_VAR],
                 },
                 "provenance": {"dataset": IDS},
             }
         },
-        as_candidates("crs-001", second_dataset=IDS),
+        as_candidates("crs-032", second_dataset=IDS),
         FAIL,
     ),
     (
@@ -606,10 +633,10 @@ ROWS = [
                 "provenance": {"bound": False},
             }
         },
-        panel("crs-001"),
+        panel("crs-032"),
         PASS,
     ),
-    ("provenance", {"definite": {"provenance": {"bound": True}}}, panel("crs-001"), FAIL),
+    ("provenance", {"definite": {"provenance": {"bound": True}}}, panel("crs-032"), FAIL),
     (
         "provenance",
         {
@@ -618,13 +645,13 @@ ROWS = [
                 "provenance": {"bound": True},
             }
         },
-        with_bound_provenance(panel("crs-001")),
+        with_bound_provenance(panel("crs-032")),
         PASS,
     ),
     (
         "provenance",
         {"definite": {"provenance": {"origin": "dfo", "bound": False}}},
-        with_bound_provenance(panel("crs-001")),
+        with_bound_provenance(panel("crs-032")),
         FAIL,
     ),
     (
@@ -635,7 +662,7 @@ ROWS = [
                 "provenance": {"bound": True},
             }
         },
-        with_bound_provenance(with_ids_provenance("crs-001")),
+        with_bound_provenance(with_ids_provenance("crs-032")),
         FAIL,
     ),
     # A family whose slots are unconfirmed pairs as unverifiable.
@@ -646,19 +673,19 @@ ROWS = [
                 "measure": {"family": ["crs.disbursement_gross", "ids.disbursement_unconfirmed"]}
             }
         },
-        with_ids_provenance("crs-001"),
+        with_ids_provenance("crs-032"),
         U,
     ),
     # An answer matching no family is held to any family's provenance.
     (
         "provenance",
         {"definite": {"measure": {"family": ["crs.commitment", "wdi.gdp"]}}},
-        panel("crs-001"),
+        panel("crs-032"),
         PASS,
     ),
     # request: window and unit.
-    ("request", {"definite": {"window": {"kind": "all"}}}, panel("crs-001"), PASS),
-    ("request", {"definite": {"window": {"kind": "latest"}}}, panel("crs-001"), FAIL),
+    ("request", {"definite": {"window": {"kind": "all"}}}, panel("crs-032"), PASS),
+    ("request", {"definite": {"window": {"kind": "latest"}}}, panel("crs-032"), FAIL),
     (
         "request",
         {"definite": {"window": {"kind": "range", "start": 2015, "end": 2026}}},
@@ -669,65 +696,86 @@ ROWS = [
     (
         "request",
         {"definite": {"unit": UNIT_EUR}},
-        with_spec_identity("crs-001", facets={"unit": {"state": "value", "request": UNIT_EUR}}),
+        with_spec_identity("crs-032", facets={"unit": {"state": "value", "request": UNIT_EUR}}),
         PASS,
     ),
     (
         "request",
         {"definite": {"unit": {**UNIT_EUR, "currency": "USD"}}},
-        with_spec_identity("crs-001", facets={"unit": {"state": "value", "request": UNIT_EUR}}),
+        with_spec_identity("crs-032", facets={"unit": {"state": "value", "request": UNIT_EUR}}),
         FAIL,
     ),
     (
         "request",
         {"definite": {"unit": "none"}},
-        with_spec_identity("crs-001", facets={"unit": {"state": "value", "request": UNIT_EUR}}),
+        with_spec_identity("crs-032", facets={"unit": {"state": "value", "request": UNIT_EUR}}),
         FAIL,
     ),
-    ("request", {"definite": {"unit": UNIT_EUR}}, panel("crs-001"), FAIL),
+    ("request", {"definite": {"unit": UNIT_EUR}}, panel("crs-032"), FAIL),
     # An omitted unit field is not asserted.
     (
         "request",
         {"definite": {"unit": {"currency": "EUR"}}},
-        with_spec_identity("crs-001", facets={"unit": {"state": "value", "request": UNIT_EUR}}),
+        with_spec_identity("crs-032", facets={"unit": {"state": "value", "request": UNIT_EUR}}),
         PASS,
     ),
-    ("request", {"definite": {}}, panel("crs-001"), NA),
+    ("request", {"definite": {}}, panel("crs-032"), NA),
     # operations: verb and, where set, axis and target year, in order.
-    ("operations", {"definite": {"operations": []}}, panel("crs-001"), PASS),
+    ("operations", {"definite": {"operations": []}}, panel("crs-032"), PASS),
     (
         "operations",
         {"definite": {"operations": [{"verb": "rank", "over": "origin"}]}},
-        with_operations("crs-001", [{"verb": "rank", "phrase": "top donors", "over": "origin"}]),
+        with_operations("crs-032", [{"verb": "rank", "phrase": "top donors", "over": "origin"}]),
         PASS,
     ),
     (
         "operations",
         {"definite": {"operations": [{"verb": "rank"}]}},
-        with_operations("crs-001", [{"verb": "rank", "phrase": "top", "over": "origin"}]),
+        with_operations("crs-032", [{"verb": "rank", "phrase": "top", "over": "origin"}]),
         PASS,
     ),
     (
         "operations",
         {"definite": {"operations": [{"verb": "rank", "over": "destination"}]}},
-        with_operations("crs-001", [{"verb": "rank", "phrase": "top", "over": "origin"}]),
+        with_operations("crs-032", [{"verb": "rank", "phrase": "top", "over": "origin"}]),
         FAIL,
     ),
     (
         "operations",
         {"definite": {"operations": [{"verb": "forecast", "target_year": 2030}]}},
         with_operations(
-            "crs-001", [{"verb": "forecast", "phrase": "in 2030", "target_year": 2031}]
+            "crs-032", [{"verb": "forecast", "phrase": "in 2030", "target_year": 2031}]
         ),
         FAIL,
     ),
     (
         "operations",
         {"definite": {"operations": []}},
-        with_operations("crs-001", [{"verb": "growth", "phrase": "change"}]),
+        with_operations("crs-032", [{"verb": "growth", "phrase": "change"}]),
         FAIL,
     ),
-    ("operations", {"definite": {}}, panel("crs-001"), NA),
+    ("operations", {"definite": {}}, panel("crs-032"), NA),
+    # assumptions: kind and, where set, binding ref and text, in clause order.
+    ("assumptions", {"definite": {"assumptions": []}}, panel("crs-032"), PASS),
+    (
+        "assumptions",
+        {"definite": {"assumptions": [{"kind": "open_role", "text": "every provider"}]}},
+        with_assumptions("crs-002", [_EVERY_PROVIDER]),
+        PASS,
+    ),
+    (
+        "assumptions",
+        {"definite": {"assumptions": [{"kind": "open_role", "binding_ref": "where:"}]}},
+        with_assumptions("crs-002", [_EVERY_PROVIDER]),
+        FAIL,
+    ),
+    (
+        "assumptions",
+        {"definite": {"assumptions": []}},
+        with_assumptions("crs-002", [_EVERY_PROVIDER]),
+        FAIL,
+    ),
+    ("assumptions", {"definite": {}}, panel("crs-032"), NA),
     # warnings: required codes on the part or the request; extras pass.
     ("warnings", {"definite": {"warnings": ["role_scope_defaulted"]}}, panel("crs-002"), PASS),
     ("warnings", {"definite": {"warnings": ["binding_folded"]}}, panel("crs-002"), FAIL),
@@ -800,12 +848,12 @@ ROWS = [
         answer("catalogue"),
         NA,
     ),
-    ("refusal", {"definite": {}, "no_data": {"reason": "no_observations"}}, panel("crs-001"), NA),
+    ("refusal", {"definite": {}, "no_data": {"reason": "no_observations"}}, panel("crs-032"), NA),
     # A declined-only case answered with a resolution never reads the reason.
     (
         "refusal",
         {"kind": "declined", "declined": {"reason": "out_of_scope"}},
-        panel("crs-001"),
+        panel("crs-032"),
         UNREACHED,
     ),
     # A resolution in a status the case does not accept reaches no block, so the declined
@@ -818,7 +866,7 @@ ROWS = [
             "declined": {"reason": "out_of_scope"},
             "definite": {},
         },
-        panel("weo-002"),
+        panel("weo-034"),
         UNREACHED,
     ),
     (
@@ -828,7 +876,7 @@ ROWS = [
             "declined": {"reason": "out_of_scope"},
             "definite": {},
         },
-        panel("crs-001"),
+        panel("crs-032"),
         NA,
     ),
     # A problem document returns no part for the asserted no-data block to score.
@@ -841,34 +889,34 @@ ROWS = [
     # candidates: every family pairs with its own candidate.
     (
         "candidates",
-        {"candidates": {"include_families": ["wdi.gdp", "weo.gdp_per_capita"]}},
-        panel("weo-002"),
+        {"candidates": {"include_families": ["wdi.gdp_per_capita", "weo.gdp_per_capita"]}},
+        panel("weo-034"),
         PASS,
     ),
     (
         "candidates",
-        {"candidates": {"include_families": ["wdi.gdp", "crs.commitment"]}},
-        panel("weo-002"),
+        {"candidates": {"include_families": ["wdi.gdp_per_capita", "crs.commitment"]}},
+        panel("weo-034"),
         FAIL,
     ),
     # Both IMF families match only the one IMF candidate, so they cannot both be included.
     (
         "candidates",
         {"candidates": {"include_families": ["weo.gdp_per_capita", "weo.gdp_any"]}},
-        panel("weo-002"),
+        panel("weo-034"),
         FAIL,
     ),
-    # weo-030 offers two IMF readings, so both IMF families pair.
+    # GDP_READINGS offers two IMF readings, so both IMF families pair.
     (
         "candidates",
         {"candidates": {"include_families": ["weo.gdp_per_capita", "weo.gdp_any"]}},
-        panel("weo-030"),
+        GDP_READINGS,
         PASS,
     ),
     (
         "candidates",
         {"definite": {}, "candidates": {"include_families": ["wdi.gdp"]}},
-        panel("crs-001"),
+        panel("crs-032"),
         NA,
     ),
     # parts: each expected part in order, with every part check.
@@ -891,11 +939,11 @@ ROWS = [
     ),
     (
         "parts",
-        {"parts": [{"definite": {}}, {"no_data": {"reason": "role_not_resolved"}}]},
-        panel("ids-038"),
+        {"parts": [{"no_data": {"reason": "no_observations"}}, {"definite": {}}]},
+        panel("weo-008"),
         PASS,
     ),
-    ("parts", {"parts": [{"definite": {}}, {"definite": {}}]}, panel("ids-038"), FAIL),
+    ("parts", {"parts": [{"definite": {}}, {"definite": {}}]}, panel("weo-008"), FAIL),
     (
         "parts",
         {"parts": [{"definite": {}}, {"definite": {}}, {"definite": {}}]},
@@ -946,17 +994,35 @@ def test_an_app_listing_its_members_on_the_wire_is_scored_from_them(listed: bool
     assert result.verdict == verdict, result.detail
 
 
-def test_a_failed_members_read_leaves_candidates_to_infrastructure():
-    """A family that pins its StatVars pairs only through the members door, so a door that
-    answers 404 makes the check an infrastructure loss."""
+@pytest.mark.parametrize(
+    ("door", "verdict", "infra"),
+    [(no_members_door, U, True), (refusing_members_door, FAIL, False)],
+    ids=["failed_read", "refused_definition"],
+)
+@pytest.mark.parametrize(
+    ("check", "expect", "response"),
+    [
+        (
+            "candidates",
+            {"candidates": {"include_families": ["crs.disbursement_unserved"]}},
+            as_candidates("crs-032"),
+        ),
+        ("measure", {"definite": {"measure": {"stat_vars": ["Count_Person"]}}}, panel("weo-033")),
+    ],
+    ids=["candidates", "measure"],
+)
+def test_a_members_read_that_fails_is_infrastructure_and_one_refused_fails_the_answer(
+    check: CheckName, expect: dict, response: dict, door, verdict, infra: bool
+):
+    """StatVars pair only through the members door here. A door that answers 404 makes the
+    check an infrastructure loss, and one refusing the definition fails the answer."""
     ctx = ScoreContext(
-        schema=WireSchema.from_document({"response": response_schema()}), members=no_members_door
+        schema=WireSchema.from_document({"response": response_schema()}), members=door
     )
-    case = make_case({"candidates": {"include_families": ["crs.disbursement_unserved"]}})
 
-    result = CHECKS["candidates"](case, as_candidates("crs-001"), ctx)
+    result = CHECKS[check](make_case(expect), response, ctx)
 
-    assert (result.verdict, result.infra) == (U, True), result.detail
+    assert (result.verdict, result.infra) == (verdict, infra), result.detail
 
 
 GROUP_A = (
@@ -984,7 +1050,7 @@ def test_every_check_has_pass_fail_and_na_rows():
 def test_unit_none_passes_when_the_wire_omits_the_unit_facet(ctx: ScoreContext):
     """`exclude_none` drops the identity's facets map; the schema still declares it, so the
     read is None and `unit: none` holds."""
-    response = panel("crs-001")
+    response = panel("crs-032")
     assert "facets" not in response["parts"][0]["spec"]["definition"]["identity"]
     case = make_case({"definite": {"unit": "none"}})
     assert CHECKS["request"](case, response, ctx).verdict == PASS
@@ -1001,18 +1067,18 @@ def test_an_unconfirmed_value_is_unverifiable(ctx: ScoreContext):
             }
         }
     )
-    assert CHECKS["measure"](case, panel("crs-001"), ctx).verdict == U
+    assert CHECKS["measure"](case, panel("crs-032"), ctx).verdict == U
 
 
 def test_a_failure_names_the_part_and_the_field(ctx: ScoreContext):
     case = make_case({"definite": {"measure": {"family": "crs.commitment"}}})
-    result = CHECKS["measure"](case, panel("crs-001"), ctx)
+    result = CHECKS["measure"](case, panel("crs-032"), ctx)
     assert result.detail.startswith("parts[0]: shape population_type")
 
 
 def test_a_shared_field_applies_under_each_accepted_status(ctx: ScoreContext):
-    case = make_case({"entities": CRS_001_ENTITIES, "definite": {}, "no_data": {}})
-    assert CHECKS["entities"](case, panel("crs-001"), ctx).verdict == PASS
+    case = make_case({"entities": CRS_032_ENTITIES, "definite": {}, "no_data": {}})
+    assert CHECKS["entities"](case, panel("crs-032"), ctx).verdict == PASS
     assert CHECKS["entities"](case, panel("crs-013"), ctx).verdict == NA
 
 
@@ -1038,21 +1104,21 @@ def with_part_from(row_id: str, index: int, source_id: str) -> dict[str, Any]:
     [
         pytest.param(
             {"definite": COMMITMENT},
-            panel("crs-001"),
-            panel("weo-002"),
+            panel("crs-032"),
+            panel("weo-034"),
             Outcome.PRE_EXISTING,
             id="other-status",
         ),
         pytest.param(
             {"definite": COMMITMENT},
-            panel("crs-001"),
+            panel("crs-032"),
             answer("catalogue"),
             Outcome.PRE_EXISTING,
             id="other-kind",
         ),
         pytest.param(
             {"definite": COMMITMENT},
-            panel("crs-001"),
+            panel("crs-032"),
             problem("x"),
             Outcome.PRE_EXISTING,
             id="problem",
@@ -1060,7 +1126,7 @@ def with_part_from(row_id: str, index: int, source_id: str) -> dict[str, Any]:
         pytest.param(
             {"parts": [{"definite": {}}, {"definite": COMMITMENT}]},
             panel("crs-048"),
-            panel("crs-001"),
+            panel("crs-032"),
             Outcome.PRE_EXISTING,
             id="missing-part",
         ),
@@ -1103,10 +1169,11 @@ def test_a_head_that_fixes_the_disposition_and_fails_the_measure(
 ASSERTING = {
     "measure": {"definite": COMMITMENT},
     "provenance": {"definite": {"provenance": {"origin": "dfo"}}},
-    "entities": {"definite": {"entities": CRS_001_ENTITIES}},
+    "entities": {"definite": {"entities": CRS_032_ENTITIES}},
     "request": {"definite": {"window": {"kind": "all"}}},
     "operations": {"definite": {"operations": []}},
     "warnings": {"definite": {"warnings": ["role_scope_defaulted"]}},
+    "assumptions": {"definite": {"assumptions": []}},
     "skills": {"definite": {"skills": {"present": True}}},
     "candidates": {"candidates": {"include_families": ["crs.flow"]}},
     "refusal": {"no_data": {"reason": "no_observations"}},
@@ -1122,8 +1189,8 @@ def test_an_unpaired_part_is_unreached_only_for_a_check_its_blocks_assert(check,
     """The asserting block reads unreached; a block under the same status asserting another
     check alone, on the same unpaired answer, reads n/a."""
     status = next(iter(ASSERTING[check]))
-    unpaired = panel("weo-002") if status == "definite" else panel("crs-001")
-    other = {"entities": CRS_001_ENTITIES} if check == "warnings" else {"warnings": []}
+    unpaired = panel("weo-034") if status == "definite" else panel("crs-032")
+    other = {"entities": CRS_032_ENTITIES} if check == "warnings" else {"warnings": []}
     assert CHECKS[check](make_case(ASSERTING[check]), unpaired, ctx).verdict == UNREACHED
     assert CHECKS[check](make_case({status: other}), unpaired, ctx).verdict == NA
 

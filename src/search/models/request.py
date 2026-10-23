@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Collection, Sequence
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -9,6 +10,7 @@ from pydantic import (
     model_validator,
 )
 
+from .assumption import Assumption
 from .base import StrictModel
 from .entity import EntityGroup
 from .identity import BaseIdentity
@@ -19,6 +21,7 @@ from .vocab import (
     OperationAxis,
     OperationVerb,
     Ordering,
+    RoleAxis,
     SourcePolarity,
     _require_schema_version_int,
 )
@@ -67,6 +70,9 @@ _PARSED_MAX_RAW_QUERY_CHARS = 2000
 # At least extract's MAX_OPERATIONS, the most one query can carry, so every part
 # the engine echoes posts back unrefused. A test pins the relation.
 _PARSED_MAX_PART_OPERATIONS = 8
+# One declared default per identity slot (BaseIdentity.slots holds at most 64), two flow
+# roles and the place scope: the most assumptions one part carries.
+_RESUBMIT_MAX_ASSUMPTIONS = 67
 # Equal to config's max_dropped_qualifier_length, the length a dropped qualifier keeps;
 # extract discards an operation whose phrase is longer. A test pins the relation.
 _PARSED_MAX_OPERATION_PHRASE_CHARS = 200
@@ -144,6 +150,20 @@ class Operation(StrictModel):
         if not phrase.strip():
             raise ValueError("phrase must not be blank")
         return phrase
+
+
+def asked_open_axes(
+    open_axes: Collection[RoleAxis], operations: Sequence[Operation]
+) -> frozenset[RoleAxis]:
+    """The flow axes a part asks every member of: ``open_axes``, the roles its request
+    leaves open, and each flow axis one of its ``operations`` runs over (origin or
+    destination). An operation over `place` asks no flow axis. Resolution leaves these axes
+    open, and the part states no open-role assumption on them."""
+    return frozenset(open_axes) | {
+        operation.over
+        for operation in operations
+        if operation.over == "origin" or operation.over == "destination"
+    }
 
 
 _OPERATIONS_DESCRIPTION = (
@@ -399,7 +419,9 @@ class ParsedPart(StrictModel):
             "true when this part is asked beside the others to be compared with them, "
             "as in 'health ODA versus education ODA': it answers as its own part and "
             "never folds into another part of the same shape (binding_folded). False, "
-            "the default, folds parts that share a shape into one set answer"
+            "the default, folds parts that share a shape into one set answer. Two parts "
+            "marked separate that resolve to one reading carry the same spec_id and stay "
+            "two parts"
         ),
     )
 
@@ -559,6 +581,29 @@ class ResubmitIdentityEntry(StrictModel):
         max_length=_PARSED_MAX_PART_OPERATIONS,
         description=_OPERATIONS_DESCRIPTION,
     )
+    assumptions: list[Assumption] | None = Field(
+        default=None,
+        max_length=_RESUBMIT_MAX_ASSUMPTIONS,
+        description=(
+            "the assumptions of the part this entry rebuilds, echoed as the response "
+            "gave them. For a definite part these are its assumptions. For a reading "
+            "picked from a candidates part they are that part's reading_assumptions "
+            "under the reading's spec_id. The rebuilt part states the echoed items that "
+            "still hold, each worded from the rebuilt answer: a declared_default whose "
+            "slot (binding_ref) still binds the echoed refs, an open_role whose axis the "
+            "answer still reads across every member with no entity of the identity's, "
+            "and a place_scope on an answer that still names no place. An item the echo "
+            "lacks is not stated, since the posted identity or its edit asked for it. An "
+            "edit of a defaulted slot to another value therefore drops that default, and "
+            "[], the echo of a part that stated none, states none. None, the default, "
+            "means the client echoes nothing, and the part states what a fresh request "
+            "would: no declared default, since the posted identity binds every slot, and "
+            "the open roles and place scope the answer reads. The engine cannot tell an "
+            "echoed default from one the caller writes for a slot it chose itself, and "
+            "states such an item while the slot binds its refs. An echo shapes only the "
+            "caller's own response"
+        ),
+    )
 
 
 class ResubmitCandidate(StrictModel):
@@ -567,6 +612,24 @@ class ResubmitCandidate(StrictModel):
 
     identity: BaseIdentity = Field(description="this candidate's complete identity")
     entity_groups: ResubmitEntityGroups
+    assumptions: list[Assumption] | None = Field(
+        default=None,
+        max_length=_RESUBMIT_MAX_ASSUMPTIONS,
+        description=(
+            "the assumptions of the reading this candidate rebuilds, echoed as the "
+            "response gave them, which are the candidates part's reading_assumptions "
+            "under the reading's spec_id. The rebuilt reading's reading_assumptions "
+            "entry states the echoed items that still hold, each worded from the "
+            "rebuilt reading by the rule ResubmitIdentityEntry.assumptions states, and "
+            "the rebuilt part's assumptions are the items every reading_assumptions "
+            "list holds alike. An item the echo lacks is not stated, so an edit of a "
+            "defaulted slot to another value drops that default, and [], the echo of a "
+            "reading that stated none, states none. None, the default, means the client "
+            "echoes nothing for this reading, which yields what a fresh request would: "
+            "no declared default, since the posted identity binds every slot, and the "
+            "open roles and place scope the reading reads"
+        ),
+    )
 
 
 _RESUBMIT_MAX_CANDIDATES = 50

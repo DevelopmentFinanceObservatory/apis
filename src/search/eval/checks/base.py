@@ -224,6 +224,17 @@ class MembersReader(Protocol):
     def __call__(self, spec_id: str, definition: Mapping[str, Any]) -> list[str]: ...
 
 
+class MembersRefused(Exception):
+    """The members door refused a Spec's definition itself: the app answered with a Spec its
+    own Datasets door will not mint. A check scores it as a failure of the answer, naming the
+    problem ``code`` and ``detail``."""
+
+    def __init__(self, *, code: str, detail: str) -> None:
+        super().__init__(f"the members door refuses the definition: {code}: {detail}")
+        self.code = code
+        self.detail = detail
+
+
 @dataclass(frozen=True)
 class ScoreContext:
     schema: WireSchema
@@ -258,7 +269,8 @@ def served_stat_vars(spec: SpecRead, ctx: ScoreContext) -> list[str] | None:
     An app whose schema declares ``resolved.stat_vars.items`` lists them in the answer, and
     its ``ref``s are read there. Any other app names them through its members door
     (``ScoreContext.members``), so each side of a paired run is scored by its own wire.
-    A failed door read raises one of ``READ_ERRORS``.
+    A failed door read raises one of ``READ_ERRORS``, and a refusal of the definition
+    ``MembersRefused``.
     """
     items_at = join(spec.at, _WIRE_MEMBERS)
     if ctx.schema.has(items_at):

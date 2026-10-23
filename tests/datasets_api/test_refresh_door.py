@@ -1173,7 +1173,6 @@ def test_the_publish_and_live_refresh_principals_open_only_their_own_routes():
         ("POST", "/api/datasets/frames/publish"),
         ("GET", recipe_path),
         ("PUT", recipe_path),
-        ("GET", f"/api/datasets/{plain.spec_id}/versions"),
     ):
         refused = plain.rig.client.request(method, path, json={}, headers=_LIVE)
         assert refused.status_code == 403, (method, path, refused.text)
@@ -1181,8 +1180,9 @@ def test_the_publish_and_live_refresh_principals_open_only_their_own_routes():
 
     # Each principal opens its own surface.
     assert plain.rig.client.post(_ROUTE, json=frame, headers=_LIVE).status_code == 200
-    versions = plain.rig.client.get(f"/api/datasets/{plain.spec_id}/versions", headers=publish)
-    assert versions.status_code == 200, versions.text
+    recipe = plain.rig.client.get(recipe_path, headers=publish)
+    assert recipe.status_code == 404, recipe.text
+    assert recipe.json()["code"] == "recipe_not_found"
 
 
 @pytest.mark.parametrize("presented", ["", _LIVE_PRINCIPAL], ids=["empty", "any-value"])

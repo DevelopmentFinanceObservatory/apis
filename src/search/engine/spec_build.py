@@ -19,7 +19,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import label_for_pairs
 from description.blocks import ranked_values
 from origin_catalogue import ORIGINS, current_catalogue
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
@@ -111,7 +111,6 @@ from search.models import (
     TraceDefaultReading,
     served_date_range,
 )
-from search.render.labels import _humanize_ref
 from unit_words.price_basis import price_basis_option_label
 
 if TYPE_CHECKING:
@@ -180,19 +179,6 @@ def with_served_provenance(slots: Sequence[Slot], provenances: Sequence[str]) ->
         *slots,
         Slot(key=SlotKey(axis="source", property=None, label="data source"), binding=binding),
     ]
-
-
-def slot_label(slot_key_draft: SlotKeyDraft) -> str:
-    """The label a slot carries for people: an indexed code system's declared plain_name,
-    else the draft's graph label with a dcid echo humanised. The draft keeps the graph's
-    label for binding."""
-    prop = slot_key_draft.property_dcid
-    if prop is None:
-        return slot_key_draft.label
-    declaration = get_index().declarations.get(prop)
-    if declaration is not None:
-        return declaration.plain_name
-    return _humanize_ref(prop, slot_key_draft.label)
 
 
 def build_slot(

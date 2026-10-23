@@ -173,6 +173,29 @@ class ShapeSlotDefault:
 
 
 @dataclass(frozen=True, slots=True)
+class BroadReading:
+    """A constraint value a question's words read as a broader value of the same property,
+    unless the question also names a value on another property.
+
+    A binding holding `value_dcid` on `property_dcid` holds `reads_as` in its place unless a
+    binding on `unless_bound` holds `held_with`. Every series holding `value_dcid` holds
+    `unless_bound=held_with`, which the export checks, so a question names the narrow value
+    exactly when it names that value on `unless_bound`. The World Bank's "publicly
+    guaranteed" debt is private-sector debt under a public guarantee, and the words alone
+    read as public and publicly guaranteed debt.
+
+    `note` is the sentence an answer states whenever the reading fires.
+    """
+
+    property_dcid: str
+    value_dcid: str
+    reads_as: str
+    unless_bound: str
+    held_with: str
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
 class ImpliedValue:
     """A constraint value the headline series of one measure already means.
 
@@ -378,6 +401,11 @@ class DatasetDeclaration:
     by house convention when several datasets' shapes measure the phrase: the CRS for a
     sector, DAC2a for a recipient total, DAC1 for a donor total. The loader refuses an
     index where two datasets claim one kind (`code_index.loader._check_datasets`).
+
+    `ratio_base_axis` names the flow axis whose party's own total a ratio of the table
+    divides by: DAC1 states ODA as a share of the donor's GNI (`origin`), DAC2a as a share
+    of the recipient's GNI (`destination`). `None` declares nothing, as in a
+    release exported without the field.
     """
 
     provenance: str
@@ -391,6 +419,7 @@ class DatasetDeclaration:
     stated_words: tuple[StatedWord, ...] = ()
     party_words: tuple[PartyWord, ...] = ()
     house_default_for: tuple[HouseDefaultCase, ...] = ()
+    ratio_base_axis: RoleAxis | None = None
 
 
 PartyKind = Literal["party", "total", "residual"]

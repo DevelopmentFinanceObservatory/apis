@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import (
+    ConfigDict,
     Field,
     PrivateAttr,
     SerializerFunctionWrapHandler,
@@ -21,6 +20,9 @@ from .vocab import EntityRoleKey, ObservationsOmissionReason, PartyKind, Preview
 class ObservationPoint(StrictModel):
     """One (date, value) pair from a resolved StatVar's observation series."""
 
+    # `_serialize` writes `value` on every dump, so the served schema requires it.
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
     date: str = Field(description="the observation date, e.g. '2018'")
     value: float | None = Field(
         default=None,
@@ -28,7 +30,9 @@ class ObservationPoint(StrictModel):
     )
 
     @model_serializer(mode="wrap")
-    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+    def _serialize(self, handler: SerializerFunctionWrapHandler):
+        # Unannotated on purpose. Pydantic publishes a wrap serializer's return annotation as
+        # the model's serialization schema, and `dict[str, Any]` reads as an open object.
         # Null marks a reported observation point without a measurement. Both serializers
         # use exclude_none, so restore it to preserve series length and gaps.
         data = handler(self)

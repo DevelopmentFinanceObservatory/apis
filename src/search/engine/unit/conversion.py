@@ -516,12 +516,23 @@ def conversion_period(*, served: YearRun, converted: ConvertedYears) -> Conversi
     return ConversionPeriod(served=served, years=run, limited_by=limited_by)
 
 
+def served_prices(spec: Spec) -> PriceBasis | None:
+    """The price basis of the unit request the answer's identity binds its unit through,
+    served natively or converted. None when no unit request binds it."""
+    return bound_prices(spec.definition.identity.facets)
+
+
+def bound_prices(facets: Mapping[str, IdentityFacetBinding] | None) -> PriceBasis | None:
+    """The price basis of the unit request identity `facets` bind the unit through, None
+    when no unit request binds it."""
+    unit = (facets or {}).get("unit")
+    return unit.request.prices if isinstance(unit, IdentityFacetValueRequest) else None
+
+
 def _unit_requested(spec: Spec) -> bool:
     """Whether the answer's identity binds its unit through a unit request, served natively
     or converted."""
-    return isinstance(
-        (spec.definition.identity.facets or {}).get("unit"), IdentityFacetValueRequest
-    )
+    return served_prices(spec) is not None
 
 
 def _states_currency(spec: Spec) -> bool:

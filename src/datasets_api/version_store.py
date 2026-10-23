@@ -26,7 +26,9 @@ holds the body they were rendered from, and the served version read back.
 `LiveVersionLister.list_versions` reads a subject's versions by `recorded_at`, newest first,
 each with the renderings of the files linked under it. The second statement selects and orders
 those files as `LiveSnapshotReader.read_artifact_locations` does, so a rendering read from the
-list is the one a read of that version's locations gives.
+list is the one a read of that version's locations gives. `list_servable_versions` reads one
+page of the versions recorded under a set of subject ids in the same order, leaving out the
+versions revoked under any of them, as the snapshot door's read does.
 
 An artifact link keeps its digest while that digest is servable, and a new rendering under
 the same key replaces it once it is not (`_insert_artifact`). Every link write and every pin
@@ -95,6 +97,7 @@ from datasets_api.versions import (
     SubjectHead,
     VersionDescriber,
     VersionRecord,
+    VersionsPageKey,
     VersionWrite,
     WrittenVersion,
     log_description_build_failure,
@@ -555,6 +558,91 @@ class LiveVersionRecordWriter:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
 
 
+_LINKED_RENDERINGS_SQL = (
+    "SELECT va.content_version AS content_version, va.rendering AS rendering "
+    "FROM datasets.version_artifact va "
+    "JOIN datasets.artifact_inventory ai "
+    "ON ai.artifact_digest = va.artifact_digest "
+    "JOIN datasets.artifact_location al "
+    "ON al.artifact_digest = va.artifact_digest "
+    "WHERE {where} "
+    "ORDER BY COALESCE((va.rendering ->> 'statistics') = 'series', false), "
+    "va.artifact_digest, va.rendering_key, al.tier"
+)
+
+
+def _placeholders(count: int) -> str:
+    return ", ".join(["%s"] * count)
+
+
+def _listed_versions(
+    rows: Sequence[Mapping[str, object]], linked: Sequence[Mapping[str, object]]
+) -> list[ListedVersion]:
+    """The versions `rows` hold, in their order, each with the renderings `linked` holds for
+    its content version, in theirs."""
+    renderings: dict[str, list[Mapping[str, object]]] = {}
+    for link in linked:
+        renderings.setdefault(cast(str, link["content_version"]), []).append(
+            cast("Mapping[str, object]", link["rendering"])
+        )
+    return [
+        ListedVersion(
+            content_version=cast(str, row["content_version"]),
+            base_content_version=cast("str | None", row["base_content_version"]),
+            recorded_at=cast(datetime, row["recorded_at"]),
+            renderings=tuple(renderings.get(cast(str, row["content_version"]), ())),
+        )
+        for row in rows
+    ]
+
+
+def _servable_page_query(
+    subjects: Sequence[str], *, after: VersionsPageKey | None, limit: int
+) -> tuple[str, tuple[object, ...]]:
+    """The statement and parameters reading the page of `subjects`' unrevoked versions after
+    `after`, newest first, with `content_version` ordering versions recorded at one instant.
+
+    One subject reads its rows through `version_record_recency` (migration 0037): the primary
+    key makes `content_version` unique within a subject, so no grouping is needed, and the row
+    comparison bounds the index scan at the cursor and ends it at `limit`. Several subjects
+    group their rows by `content_version` first, so a version recorded under two of them lists
+    once, at its latest `recorded_at`."""
+    in_subjects = _placeholders(len(subjects))
+    revocation = (
+        "NOT EXISTS (SELECT 1 FROM datasets.version_revocation r "
+        f"WHERE r.subject_id IN ({in_subjects}) "
+        "AND (r.content_version = vr.content_version "
+        "OR r.content_version = vr.base_content_version))"
+    )
+    keyset_params = () if after is None else (after.recorded_at, after.content_version)
+    if len(subjects) == 1:
+        keyset = "" if after is None else "AND (vr.recorded_at, vr.content_version) < (%s, %s) "
+        return (
+            "SELECT vr.content_version, vr.base_content_version, vr.recorded_at "
+            "FROM datasets.version_record vr "
+            f"WHERE vr.subject_id = %s AND {revocation} "
+            f"{keyset}"
+            "ORDER BY vr.recorded_at DESC, vr.content_version DESC LIMIT %s",
+            (*subjects, *subjects, *keyset_params, limit),
+        )
+    keyset = (
+        "" if after is None else "WHERE (listed.recorded_at, listed.content_version) < (%s, %s) "
+    )
+    return (
+        "SELECT listed.content_version, listed.base_content_version, "
+        "listed.recorded_at FROM ("
+        "SELECT vr.content_version AS content_version, "
+        "MAX(vr.base_content_version) AS base_content_version, "
+        "MAX(vr.recorded_at) AS recorded_at "
+        "FROM datasets.version_record vr "
+        f"WHERE vr.subject_id IN ({in_subjects}) AND {revocation} "
+        "GROUP BY vr.content_version) listed "
+        f"{keyset}"
+        "ORDER BY listed.recorded_at DESC, listed.content_version DESC LIMIT %s",
+        (*subjects, *subjects, *keyset_params, limit),
+    )
+
+
 class LiveVersionLister:
     def __init__(self, *, store: DatasetStore) -> None:
         self._store = store
@@ -567,42 +655,57 @@ class LiveVersionLister:
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(
-                    "SELECT content_version, base_content_version "
+                    "SELECT content_version, base_content_version, recorded_at "
                     "FROM datasets.version_record WHERE subject_id = %s "
                     # `content_version` orders versions recorded at one instant.
                     "ORDER BY recorded_at DESC, content_version DESC",
                     (subject_id,),
                 )
                 linked = tx.fetch_all(
-                    "SELECT va.content_version AS content_version, va.rendering AS rendering "
-                    "FROM datasets.version_artifact va "
-                    "JOIN datasets.artifact_inventory ai "
-                    "ON ai.artifact_digest = va.artifact_digest "
-                    "JOIN datasets.artifact_location al "
-                    "ON al.artifact_digest = va.artifact_digest "
-                    "WHERE va.subject_id = %s "
-                    "ORDER BY COALESCE((va.rendering ->> 'statistics') = 'series', false), "
-                    "va.artifact_digest, va.rendering_key, al.tier",
-                    (subject_id,),
+                    _LINKED_RENDERINGS_SQL.format(where="va.subject_id = %s"), (subject_id,)
                 )
         except Exception as exc:
             failure = f"listing versions subject_id {subject_id!r} failed: {safe_diagnostics(exc)}"
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        renderings: dict[str, list[Mapping[str, object]]] = {}
-        for link in linked:
-            renderings.setdefault(cast(str, link["content_version"]), []).append(
-                cast("Mapping[str, object]", link["rendering"])
-            )
-        return [
-            ListedVersion(
-                content_version=cast(str, row["content_version"]),
-                base_content_version=cast("str | None", row["base_content_version"]),
-                renderings=tuple(renderings.get(cast(str, row["content_version"]), ())),
-            )
-            for row in rows
-        ]
+        return _listed_versions(rows, linked)
+
+    def list_servable_versions(
+        self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
+    ) -> list[ListedVersion]:
+        """The page of `subject_ids`' versions after `after`, as `VersionLister` states, read in
+        one transaction. It reads the page's rows, then the renderings linked under its versions.
+
+        A version recorded under several of the ids lists once, at its latest `recorded_at`.
+        The revocation filter reads `datasets.version_revocation` in the statement that reads
+        the rows, so a revocation that statement sees removes the version from the page."""
+        subjects = list(dict.fromkeys(subject_ids))
+        in_subjects = _placeholders(len(subjects))
+        failure: str | None = None
+        sqlstate: str | None = None
+        rows: list[Mapping[str, object]] = []
+        linked: list[Mapping[str, object]] = []
+        try:
+            with self._store.transaction() as tx:
+                rows = tx.fetch_all(*_servable_page_query(subjects, after=after, limit=limit))
+                page = [cast(str, row["content_version"]) for row in rows]
+                if page:
+                    linked = tx.fetch_all(
+                        _LINKED_RENDERINGS_SQL.format(
+                            where=(
+                                f"va.subject_id IN ({in_subjects}) "
+                                f"AND va.content_version IN ({_placeholders(len(page))})"
+                            )
+                        ),
+                        (*subjects, *page),
+                    )
+        except Exception as exc:
+            failure = f"listing versions subject_ids {subjects!r} failed: {safe_diagnostics(exc)}"
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        return _listed_versions(rows, linked)
 
 
 _HEAD_COLUMNS = "content_version, confirmed_at, materialised_at, materialisation_id, dependencies"

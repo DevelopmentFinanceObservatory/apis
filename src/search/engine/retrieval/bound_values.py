@@ -2129,6 +2129,22 @@ def shape_part_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
     return _publishing_datasets(shape, index)
 
 
+def ratio_base_axis(shape: ShapeDraft, index: CodeIndex) -> RoleAxis | None:
+    """The flow axis whose party's own total ratio `shape` divides by, as the datasets it
+    answers from (`shape_part_datasets`) declare it (`DatasetDeclaration.ratio_base_axis`):
+    `origin` for DAC1's ODA as a share of the donor's GNI, `destination` for DAC2a's share
+    of the recipient's. `None` for a shape that divides by nothing, and where the datasets
+    declare no axis or disagree."""
+    if shape.meas_denom_dcid is None and not shape.meas_denom_unresolved:
+        return None
+    axes = {
+        dataset.ratio_base_axis
+        for provenance in shape_part_datasets(shape, index)
+        if (dataset := index.datasets.get(provenance)) is not None
+    }
+    return next(iter(axes)) if len(axes) == 1 else None
+
+
 def _publishing_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
     """Every dataset publishing `shape`'s family (`shape_family`), else, for a shape the
     index does not carry, every dataset publishing its five-tuple, in serving order."""

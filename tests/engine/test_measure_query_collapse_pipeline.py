@@ -15,6 +15,7 @@ import pytest
 from code_index.shared import get_index, get_measure_index
 from code_index.types import MeasureAxis
 from entity_resolution import Admission, EntityResolver
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.departures import warning_key
@@ -24,7 +25,10 @@ from search.engine.region.alternate_guard import leaves_price_basis_unread
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.phase_election import _vet_election
 from search.engine.region.phase_rank_bind import _measure_query_matches, _phase_prune_and_rank
+from search.engine.region.pipeline import _admitted_phrases
 from search.engine.region.qualifier_readings import match_query_readings
+from search.engine.region.requirements import judge, settle_answer
+from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import _named_free_values
 from search.engine.shape import ShapeDraft, SlotKeyDraft
@@ -186,6 +190,9 @@ def test_net_grant_equivalent_keeps_grant_equivalent_shape_and_warns():
             code="measure_not_applied", binding_ref="how:nettingBasis", asked="net"
         )
     }
+    # The final answer is judged the same way: no grant-equivalent row reads "net".
+    (departed,) = judge(state.requirements, [(_GRANT_EQ_NOMINAL, [])]).departures()
+    assert departed[0] == dropped[0]
 
 
 # Basis matches can warn or be admitted, but do not steer collapse.
@@ -392,6 +399,69 @@ def test_real_gdp_of_zambia_warns_only_when_the_unindexed_shape_lacks_the_readin
     dropped = [w for w in state.warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert bool(dropped) is warned
     assert ("real" in state.satisfied_measure_phrases) is not warned
+
+
+# "gross domestic product" names the measure value Gross, which a GDP shape does not carry.
+# Binding repair binds activitySource after election, and the settled binding's label
+# "Gross domestic production" reads "gross", so the final answer meets it.
+
+_GDP_BY_ACTIVITY = replace(
+    _gdp_shape("Nominal"),
+    slot_keys=(SlotKeyDraft(axis="how", property_dcid="activitySource", label="activity"),),
+    value_labels={"GrossDomesticProduction": "Gross domestic production"},
+)
+
+
+def test_gross_is_met_by_the_activity_source_binding_repair_settles():
+    state = _state(variable="gross domestic product of Kenya", shapes_found=[_GDP_BY_ACTIVITY])
+    assert asyncio.run(_phase_prune_and_rank(state)) is None
+    state.bind_result = elected_reply(0, bindings=[], also_plausible=[])
+    assert _vet_election(state) is None
+    settled = SlotBindingDraft(
+        axis="how",
+        property_dcid="activitySource",
+        kind="value",
+        value_dcids=["GrossDomesticProduction"],
+    )
+
+    assert "gross" not in state.satisfied_measure_phrases
+    assert judge(state.requirements, [(_GDP_BY_ACTIVITY, [settled])]).departures() == ()
+    (departed,) = judge(state.requirements, [(_GDP_BY_ACTIVITY, [])]).departures()
+    assert departed[0].message == 'The requested qualifier "gross" was not applied.'
+
+
+def test_dropped_gross_is_admitted_when_the_final_answer_meets_it():
+    # A dropped "gross" is the raw text's to warn on, so the part departs nothing for it,
+    # and admits it once the settled activitySource binding reads it.
+    state = _state(
+        variable="GDP of Kenya",
+        dropped_qualifier_phrases=["gross"],
+        shapes_found=[_GDP_BY_ACTIVITY],
+    )
+    assert asyncio.run(_phase_prune_and_rank(state)) is None
+    state.bind_result = elected_reply(0, bindings=[], also_plausible=[])
+    assert _vet_election(state) is None
+    result = RegionResult(
+        variable_text=state.variable,
+        status="definite",
+        specs=(),
+        no_data_reason=None,
+        warnings=(),
+        timing_by_step={},
+    )
+    settled = SlotBindingDraft(
+        axis="how",
+        property_dcid="activitySource",
+        kind="value",
+        value_dcids=["GrossDomesticProduction"],
+    )
+
+    assert "gross" not in state.satisfied_measure_phrases
+    assert settle_answer(state, _GDP_BY_ACTIVITY, [settled]) == ()
+    assert state.judgement is not None and state.judgement.departures() == ()
+    assert "gross" in _admitted_phrases(state, result, {})
+    assert settle_answer(state, _GDP_BY_ACTIVITY, []) == ()
+    assert "gross" not in _admitted_phrases(state, result, {})
 
 
 @pytest.mark.parametrize(

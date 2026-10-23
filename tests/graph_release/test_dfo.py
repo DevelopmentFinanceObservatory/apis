@@ -21,6 +21,7 @@ import pytest
 
 from code_index import declarations as code_index_declarations
 from code_index.export import content_hash
+from code_index.loader import parse_index
 from dc_graph import GraphClient, parse_arcs
 from graph_release import declarations as release_declarations
 from graph_release.declarations import DECLARATIONS, Declarations
@@ -244,6 +245,30 @@ def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() ->
         )
 
     assert refused.value.code == "code_index_export_refused"
+
+
+def test_dfo_parts_carry_the_ratio_base_shape_slot_defaults_and_broad_readings() -> None:
+    """The code index the release serves reads the declarations back, and a dataset that
+    declares no ratio base writes no key."""
+    crs, imputed = SLICE_DECLARATIONS.datasets
+    declarations = dataclasses.replace(
+        SLICE_DECLARATIONS,
+        datasets=(dataclasses.replace(crs, ratio_base_axis="destination"), imputed),
+        shape_slot_defaults=code_index_declarations.SHAPE_SLOT_DEFAULTS,
+        broad_readings=code_index_declarations.BROAD_READINGS,
+    )
+
+    built = build_dfo_parts(dfo_inputs(slice_platform_parts(), declarations), SLICE_BASE_PARTIES)
+    document = json.loads(gzip.decompress(built.code_index_blocks))
+    index = parse_index(document)
+
+    assert [row.get("ratio_base_axis") for row in document["datasets"]] == ["destination", None]
+    assert "ratio_base_axis" not in document["datasets"][1]
+    assert index.datasets[crs.provenance].ratio_base_axis == "destination"
+    assert index.datasets[imputed.provenance].ratio_base_axis is None
+    assert index.shape_slot_defaults == code_index_declarations.SHAPE_SLOT_DEFAULTS
+    assert index.broad_readings == code_index_declarations.BROAD_READINGS
+    assert built.declarations == declarations.declarations_json()
 
 
 @pytest.mark.parametrize(
