@@ -19,6 +19,7 @@ from search.engine.retrieval.retrieve import (
     NoDataDraft,
     materialise,
 )
+from search.engine.retrieval.standard import Candidates, Keep, Narrow, breakdown_decision
 from search.engine.shape import ShapeDraft
 from search.models import CoverageBare, TimeWindow
 from tests.engine._binders import elected_reply
@@ -1059,7 +1060,7 @@ def _bare_plus_female_shape() -> ShapeDraft:
                 ),
             ],
             _graph_with_data_for(_SET_SV_A, _SET_SV_B),
-            [_SET_SV_A],
+            [_SET_SV_A, _SET_SV_B],
             id="source-a-plus-source-b",
         ),
     ],
@@ -1475,10 +1476,11 @@ def _resolve_at_recipient(shape: ShapeDraft, bindings: list[SlotBindingDraft], g
     )
 
 
-def test_un_family_serves_the_both_sexes_member_of_the_first_reading_with_a_notice():
-    """The mint keeps the two age-only members. The under-5 one holds recall's first
-    member, so it answers ahead of the neonatal one, and since the two differ on the
-    unbound age neither is the family's total."""
+def test_un_family_without_a_total_serves_every_kept_member_without_a_notice():
+    """The mint keeps the two age-only members, which differ on the unbound age, so neither
+    is the family's total and a mint of the definition serves both. The answer serves both
+    too, the under-5 one first since it holds recall's first member, and names no single
+    member that could fall short of a total."""
     result = _resolve_at_recipient(
         _child_mortality_shape(_un_family_with_total()),
         [_unbound("undataAge"), _unbound("undataSex")],
@@ -1486,10 +1488,8 @@ def test_un_family_serves_the_both_sexes_member_of_the_first_reading_with_a_noti
     )
 
     assert isinstance(result, Materialised)
-    assert result.sv_dcids == [_UN_U5]
-    assert result.family_total_absent == FamilyTotalAbsent(
-        total=None, shown=_UN_U5, places=(_RECIPIENT,)
-    )
+    assert result.sv_dcids == [_UN_U5, _UN_NEONATAL]
+    assert result.family_total_absent is None
 
 
 def test_un_family_whose_members_share_an_unbound_value_serves_its_total_without_a_notice():
@@ -1575,12 +1575,12 @@ def test_un_family_without_a_total_keeps_recall_order():
     )
 
     assert isinstance(result, Materialised)
-    assert result.sv_dcids == [_UN_MALE_U5]
+    assert result.sv_dcids == [_UN_MALE_U5, _UN_FEMALE_U5]
 
 
-def test_un_family_without_a_place_names_the_first_kept_member_with_a_notice():
-    """The family holds under-5 and neonatal members, so the under-5 one it names is
-    not the total."""
+def test_un_family_without_a_place_names_every_kept_member_without_a_notice():
+    """The family keeps its under-5 and neonatal members, and with no place to probe the
+    answer names both, as a mint of its definition serves them."""
     result = materialise(
         _child_mortality_shape(_un_family_with_total()),
         [_unbound("undataSex")],
@@ -1591,13 +1591,13 @@ def test_un_family_without_a_place_names_the_first_kept_member_with_a_notice():
     )
 
     assert isinstance(result, Materialised)
-    assert result.sv_dcids == [_UN_U5]
-    assert result.family_total_absent == FamilyTotalAbsent(total=None, shown=_UN_U5, places=())
+    assert result.sv_dcids == [_UN_U5, _UN_NEONATAL]
+    assert result.family_total_absent is None
 
 
-def test_base_family_elects_the_kept_member_holding_the_first_reading():
+def test_base_family_orders_the_kept_members_by_the_first_reading():
     """Election order applies to every shape: the male member is dominated, and of the
-    two age-only members the under-5 one holds recall's first pick, so it answers."""
+    two age-only members the under-5 one holds recall's first pick, so it comes first."""
     base_male, base_neonatal, base_total = (
         "ChildMortality_Under5_Male",
         "ChildMortality_Neonatal",
@@ -1617,10 +1617,8 @@ def test_base_family_elects_the_kept_member_holding_the_first_reading():
     )
 
     assert isinstance(result, Materialised)
-    assert result.sv_dcids == [base_total]
-    assert result.family_total_absent == FamilyTotalAbsent(
-        total=None, shown=base_total, places=(_RECIPIENT,)
-    )
+    assert result.sv_dcids == [base_total, base_neonatal]
+    assert result.family_total_absent is None
 
 
 # Election prefers the family's root, the member the datasets mint keeps.
@@ -1679,6 +1677,52 @@ def _resolve_in_years(graph: FakeGraph):
         date_request=DateRequest(window=TimeWindow(start_year=2022, end_year=2024), latest=False),
         coverage=empty_coverage_snapshot(),
     )
+
+
+_PERSON = "Count_Person"
+
+
+@pytest.mark.parametrize(
+    ("with_data", "served", "absent"),
+    [
+        pytest.param(
+            (_PERSON, _PERSON_FEMALE, "sv_unknown"),
+            [_PERSON],
+            None,
+            id="a_total_with_data_answers_alone",
+        ),
+        pytest.param(
+            (_PERSON_FEMALE, _PERSON_MALE, "sv_unknown"),
+            [_PERSON_FEMALE],
+            FamilyTotalAbsent(total=_PERSON, shown=_PERSON_FEMALE, places=(_RECIPIENT,)),
+            id="a_total_without_data_names_it_and_the_member_shown",
+        ),
+    ],
+)
+def test_a_family_with_a_total_answers_by_one_member(monkeypatch, with_data, served, absent):
+    """A recall sample holds the population total, the two by-gender members, which the
+    total does not dominate since an absent gender reads as not declared, and a member
+    whose arcs are empty. The total answers alone where it holds data, though the mint
+    keeps the other three. With no data for it, the first member holding data answers in
+    its place, and the result names both, so the part warns that the total had no data."""
+    from search.engine.retrieval import standard
+
+    monkeypatch.setattr(standard, "absent_readings", lambda _index: {"gender": "not_declared"})
+    shape = replace(
+        _person_shape(),
+        sv_arc_facts={
+            _PERSON: _person_arcs(),
+            _PERSON_FEMALE: _person_arcs(gender="Female"),
+            _PERSON_MALE: _person_arcs(gender="Male"),
+            "sv_unknown": {},
+        },
+    )
+
+    result = _resolve_at_recipient(shape, [_unbound("gender")], _graph_with_data_for(*with_data))
+
+    assert isinstance(result, Materialised)
+    assert result.sv_dcids == served
+    assert result.family_total_absent == absent
 
 
 class TestRootElection:
@@ -2114,9 +2158,9 @@ class TestFamilyTotalRule:
             total=None, shown=_PERSON_FEMALE, places=(_RECIPIENT,)
         )
 
-    def test_a_family_without_a_both_sexes_member_warns(self):
+    def test_a_family_without_a_both_sexes_member_serves_both(self):
         """Age is bound and the family holds only the male and female members, so the
-        male one answers as one part of the family."""
+        answer serves both, the male one first, and names no single member."""
         members = {
             _UN_MALE_U5: _un_arcs(age="undata/AGE-Y0T4", sex="undata/SEX-M"),
             _UN_FEMALE_U5: _un_arcs(age="undata/AGE-Y0T4", sex="undata/SEX-F"),
@@ -2131,13 +2175,11 @@ class TestFamilyTotalRule:
         )
 
         assert isinstance(result, Materialised)
-        assert result.sv_dcids == [_UN_MALE_U5]
-        assert result.family_total_absent == FamilyTotalAbsent(
-            total=None, shown=_UN_MALE_U5, places=(_RECIPIENT,)
-        )
+        assert result.sv_dcids == [_UN_MALE_U5, _UN_FEMALE_U5]
+        assert result.family_total_absent is None
 
     @pytest.mark.parametrize(
-        ("shape", "bindings", "elected"),
+        ("shape", "bindings", "order"),
         [
             pytest.param(
                 _child_mortality_shape(
@@ -2148,7 +2190,7 @@ class TestFamilyTotalRule:
                     }
                 ),
                 [_unbound("undataAge"), _unbound("undataSex")],
-                _UN_NEONATAL,
+                [_UN_NEONATAL, _UN_U5],
                 id="recall_breaks_a_tie_in_narrowness",
             ),
             pytest.param(
@@ -2162,28 +2204,26 @@ class TestFamilyTotalRule:
                     },
                 ),
                 [_unbound("gender")],
-                "Count_Person_15OrMoreYears",
-                id="the_broader_member_listed_second_stands_in",
+                ["Count_Person_15OrMoreYears", _PERSON_FEMALE_URBAN],
+                id="the_broader_member_listed_second_comes_first",
             ),
         ],
     )
-    def test_with_no_total_the_member_narrowing_the_family_least_stands_in(
-        self, shape, bindings, elected
+    def test_with_no_total_the_member_narrowing_the_family_least_comes_first(
+        self, shape, bindings, order
     ):
-        """No member is the family's total, so the one asserting the fewest unbound
-        properties answers, with the notice. The neonatal and under-5 members assert one
-        each and recall lists the neonatal one first. The age member asserts one property
-        and the urban female member two, so the age member answers though recall lists it
-        second."""
+        """No member is the family's total, so the answer serves every kept member, the one
+        asserting the fewest unbound properties first, with no notice. The neonatal and
+        under-5 members assert one each and recall lists the neonatal one first. The age
+        member asserts one property and the urban female member two, so the age member
+        comes first though recall lists it second."""
         result = _resolve_at_recipient(shape, bindings, _graph_with_data_for(*shape.sv_arc_facts))
 
         assert isinstance(result, Materialised)
-        assert result.sv_dcids == [elected]
-        assert result.family_total_absent == FamilyTotalAbsent(
-            total=None, shown=elected, places=(_RECIPIENT,)
-        )
+        assert result.sv_dcids == order
+        assert result.family_total_absent is None
 
-    def test_a_recall_sample_without_the_root_warns(self):
+    def test_a_recall_sample_without_the_root_serves_its_kept_members(self):
         shape = _person_shape()
         del shape.sv_arc_facts[_PERSON_FEMALE]
         rural = "Count_Person_Female_Rural"
@@ -2197,10 +2237,8 @@ class TestFamilyTotalRule:
         )
 
         assert isinstance(result, Materialised)
-        assert result.sv_dcids == [_PERSON_FEMALE_URBAN]
-        assert result.family_total_absent == FamilyTotalAbsent(
-            total=None, shown=_PERSON_FEMALE_URBAN, places=(_RECIPIENT,)
-        )
+        assert result.sv_dcids == [_PERSON_FEMALE_URBAN, rural]
+        assert result.family_total_absent is None
 
     def test_the_root_of_a_value_binding_answers_without_a_notice(self):
         result = _resolve_at_recipient(
@@ -2242,7 +2280,7 @@ class TestFamilyTotalRule:
             total=None, shown=_UN_NEONATAL, places=(_RECIPIENT,)
         )
 
-    def test_the_no_place_path_warns_when_the_named_member_is_not_the_total(self):
+    def test_the_no_place_path_names_every_kept_member(self):
         members = {
             _UN_MALE_U5: _un_arcs(age="undata/AGE-Y0T4", sex="undata/SEX-M"),
             _UN_FEMALE_U5: _un_arcs(age="undata/AGE-Y0T4", sex="undata/SEX-F"),
@@ -2257,10 +2295,8 @@ class TestFamilyTotalRule:
         )
 
         assert isinstance(result, Materialised)
-        assert result.sv_dcids == [_UN_MALE_U5]
-        assert result.family_total_absent == FamilyTotalAbsent(
-            total=None, shown=_UN_MALE_U5, places=()
-        )
+        assert result.sv_dcids == [_UN_MALE_U5, _UN_FEMALE_U5]
+        assert result.family_total_absent is None
 
     def test_an_unconstrained_root_with_arcs_answers_as_the_total_without_a_notice(self):
         """The root's arcs carry no constraintProperties arc, which reads as no constraint,
@@ -2286,7 +2322,8 @@ class TestFamilyTotalRule:
 
     def test_a_member_with_an_empty_arcs_mapping_stands_in_after_a_known_one(self):
         """A member whose constraints are unknown may be narrower than any known one, so the
-        female member answers though recall lists the unknown one first."""
+        female member answers though recall lists the unknown one first. The mint drops the
+        unknown member, so the answer leaves it out though it holds data."""
         shape = replace(
             _person_shape(),
             sv_arc_facts={"sv_unknown": {}, _PERSON_FEMALE: _person_arcs(gender="Female")},
@@ -2344,8 +2381,8 @@ class TestFamilyTotalRule:
         assert result.sv_dcids == [_PERSON_FEMALE, _PERSON_MALE]
         assert result.family_total_absent is None
 
-    def test_one_member_answering_a_binding_that_states_several_values_warns(self):
-        """The binding states Female and Male, and the answer names the male member alone."""
+    def test_a_binding_that_states_several_values_serves_each_member(self):
+        """The binding states Female and Male, and the answer serves both members."""
         shape = replace(
             _person_shape(),
             sv_arc_facts={
@@ -2360,10 +2397,8 @@ class TestFamilyTotalRule:
         )
 
         assert isinstance(result, Materialised)
-        assert result.sv_dcids == [_PERSON_MALE]
-        assert result.family_total_absent == FamilyTotalAbsent(
-            total=None, shown=_PERSON_MALE, places=(_RECIPIENT,)
-        )
+        assert result.sv_dcids == [_PERSON_MALE, _PERSON_FEMALE]
+        assert result.family_total_absent is None
 
     def test_a_member_asserting_the_stated_value_is_the_total_ahead_of_a_descendant(self):
         """A hierarchical binding admits the stated value and its descendants. Only the
@@ -2472,9 +2507,9 @@ def _old_and_new_members(date_request):
 
 
 def test_a_single_collect_elects_the_first_member_with_points_in_the_years_read():
-    """`sv_old` holds 2000 to 2015 and `sv_new` 2015 to 2024 at Kenya. Dateless elects
-    `sv_old`, the first confirmed; "since 2021" confirms only `sv_new`, which holds points
-    there, and serves it."""
+    """`sv_old` holds 2000 to 2015 and `sv_new` 2015 to 2024 at Kenya, and neither's
+    constraints are known. Dateless elects `sv_old`, the first confirmed; "since 2021"
+    confirms only `sv_new`, which holds points there, and serves it."""
     dateless = _old_and_new_members(None)
     assert isinstance(dateless, Materialised) and dateless.sv_dcids == ["sv_old"]
 
@@ -2726,6 +2761,114 @@ class TestPartitionSlotBinding:
 
         assert _served(region) == [_GVA_NOMINAL]
         assert _bound_slot(region, "activitySource").value.ref.ref == "GrossValueAdded"
+
+
+_ACTIVITY_ONLY = frozenset({"activitySource"})
+_ACTIVITY_AND_SECTOR = frozenset({"activitySource", "economicSector"})
+_SECTOR_OPENED = SlotBindingDraft(
+    axis="how", property_dcid="economicSector", kind="unbound", evidence="requested_all"
+)
+
+
+class TestBreakdownDecision:
+    """Which slots the identity of a part over a held family with no total carries once its
+    bindings settle (`breakdown_decision`)."""
+
+    @pytest.mark.parametrize(
+        ("arcs", "bindings", "decision"),
+        [
+            pytest.param(
+                {**_ACTIVITY_ARCS, "Amount_EconomicActivity_Nominal": _activity_arcs()},
+                [_activity_source("unbound")],
+                Keep(),
+                id="a_family_with_a_total_keeps_every_slot",
+            ),
+            pytest.param(
+                _ACTIVITY_ARCS,
+                [_activity_source("unbound", evidence="requested_all")],
+                Narrow(_ACTIVITY_ONLY),
+                id="an_opened_slot_narrows_to_it",
+            ),
+            pytest.param(
+                {sv: _ACTIVITY_ARCS[sv] for sv in (_GDP_NOMINAL, _GVA_CONSTRUCTION, _NDP_NOMINAL)},
+                [_activity_source("set", "GrossDomesticProduction", "GrossValueAdded")],
+                Narrow(_ACTIVITY_ONLY),
+                id="a_bound_slot_leaving_one_member_narrows_to_it",
+            ),
+            pytest.param(
+                _ACTIVITY_ARCS,
+                [_activity_source("unbound"), _SECTOR_OPENED],
+                Candidates((_ACTIVITY_AND_SECTOR,)),
+                id="opened_slots_leaving_no_member_offer_the_signatures_holding_them",
+            ),
+            pytest.param(
+                {sv: _ACTIVITY_ARCS[sv] for sv in (_GDP_NOMINAL, _GVA_NOMINAL, _NDP_NOMINAL)},
+                [_activity_source("unbound")],
+                Narrow(_ACTIVITY_ONLY, lone_signature=True),
+                id="one_signature_with_nothing_opened_narrows_to_it",
+            ),
+            pytest.param(
+                _ACTIVITY_ARCS,
+                [_activity_source("unbound")],
+                Candidates((_ACTIVITY_ONLY, _ACTIVITY_AND_SECTOR)),
+                id="several_signatures_with_nothing_opened_are_candidates",
+            ),
+        ],
+    )
+    def test_decides_the_slots_of_a_held_family(self, bind_catalogue, arcs, bindings, decision):
+        shape = _activity_shape(bind_catalogue, arcs)
+
+        assert breakdown_decision(shape, bindings, ()) == decision
+
+    def test_a_recall_sample_keeps_every_slot(self):
+        """A recall sample with no catalogue family may lack the family's total, so its two
+        signatures decide nothing."""
+        shape = replace(
+            _child_mortality_shape(
+                {
+                    _UN_MALE_U5: _un_arcs(age="undata/AGE-Y0T4", sex="undata/SEX-M"),
+                    _UN_NEONATAL: _un_arcs(age="undata/AGE-M0", sex=None),
+                }
+            ),
+            sv_arc_facts_complete=False,
+        )
+
+        assert breakdown_decision(shape, [_unbound("undataSex")], ()) == Keep()
+
+    def test_a_narrowed_shape_reads_qualifiers_in_the_familys_vocabulary(self, bind_catalogue):
+        """The query's qualifier matches are keyed by the vocabulary each menu shape was read
+        in, so a shape whose sector slot a decision left out still finds them, and reads a
+        sector code as one its answer leaves unapplied."""
+        from search.engine.region.state import shape_vocabulary
+
+        shape = _activity_shape(bind_catalogue)
+        narrowed = replace(
+            shape,
+            slot_keys=tuple(k for k in shape.slot_keys if k.property_dcid != "economicSector"),
+            omitted_slots=frozenset({"economicSector"}),
+        )
+
+        assert shape_vocabulary(narrowed) == shape_vocabulary(shape)
+
+    def test_an_opened_slot_leaves_every_other_slot_out_of_the_identity(self, bind_catalogue):
+        """ "By activity source" opens that slot on a family with no total. The identity
+        carries it alone, so a mint of the definition serves the members asserting nothing
+        else, the ones the answer reads, and the construction-sector member is no member of
+        either."""
+        region = _resolve_gdp(
+            bind_catalogue,
+            "India",
+            "country/IND",
+            _activity_source("unbound"),
+            variable="GDP by activity source",
+            recalled=[_GDP_NOMINAL],
+        )
+
+        assert region.status == "definite"
+        assert [slot.property for slot in region.specs[0].definition.identity.slots] == [
+            "activitySource"
+        ]
+        assert _served(region) == [_GDP_NOMINAL, _GVA_NOMINAL, _NDP_NOMINAL]
 
 
 _NET_TRANSFERS = "Amount_DebtFlow_Net_ServicingPayment"

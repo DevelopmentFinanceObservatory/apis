@@ -108,6 +108,11 @@ class ShapeDraft:
     # stood for (`bound_values.narrowed_to`), the ones it held before, so a walk is seeded
     # with recalled members and never with a held family's. None seeds every member.
     walk_seeds: frozenset[str] | None = field(default=None, compare=False)
+    # The what and how slot properties a breakdown decision left out of slot_keys
+    # (`phase_election._narrow_to_breakdown`). A member asserting one is no member of the
+    # identity minted from the shape, so admission leaves it out
+    # (`standard._admit_standard_members`). Empty on a shape no decision narrowed.
+    omitted_slots: frozenset[str] = field(default=frozenset(), compare=False)
     # Per-shape bind taxonomy: "axis:property_dcid" -> a list of values a
     # member asserts (facts.read_slot_taxonomy).
     slot_taxonomy: dict[str, list[str]] | None = field(default=None, compare=False)

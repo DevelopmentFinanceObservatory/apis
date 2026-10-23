@@ -740,7 +740,10 @@ def _beside_words_read(variable: str, shape: ShapeDraft, word: str) -> bool:
     not read."""
     index = get_index()
     # `state.shape_vocabulary`, which this module cannot import.
-    vocabulary = frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+    vocabulary = (
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        | shape.omitted_slots
+    )
     (reading,) = read_by_vocabulary(
         [variable], index, get_measure_index(), vocabularies=[vocabulary]
     )

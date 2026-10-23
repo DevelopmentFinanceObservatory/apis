@@ -6,12 +6,13 @@ from dataclasses import replace
 
 import pytest
 
-from code_index.members import antichain_minimal_rows, index_family
+from code_index.members import antichain_minimal_rows
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.retrieval.bound_values import (
     StatedMembers,
     WalkedMembers,
+    _identity_family,
     identity_query,
     index_decides_membership,
     source_binding,
@@ -48,6 +49,7 @@ from search.models import (
 from statvar_members import member_digest
 from tests.code_index.aid_identity import (
     CRS_MEMBER_COUNT,
+    CRS_MEMBERS_WITHOUT_MODALITY,
     IMPUTED_PROVENANCE,
     education_aid_identity,
 )
@@ -281,10 +283,26 @@ class TestStatedMembers:
     """What a Spec states of the mint's members (`stated_members`): the family the code index
     resolves for its identity, else the one the walk of its own query settled."""
 
-    def test_an_index_family_states_its_antichain_count_and_every_rows_digest(self):
-        _, identity = mint_identity(education_aid_identity())
-        family = index_family(get_index(), identity_query(identity))
-        assert family is not None and len(family.rows) == CRS_MEMBER_COUNT
+    @pytest.mark.parametrize(
+        ("omitted", "rows"),
+        [
+            pytest.param((), CRS_MEMBER_COUNT, id="every_slot"),
+            pytest.param(
+                ("crsCooperationModality",),
+                CRS_MEMBERS_WITHOUT_MODALITY,
+                id="a_subset_identity_holds_the_rows_declaring_its_slots_alone",
+            ),
+        ],
+    )
+    def test_an_index_family_states_its_antichain_count_and_every_rows_digest(self, omitted, rows):
+        """An identity leaving a slot out, as a breakdown decision mints it, resolves the
+        rows that declare none of it (`bound_values._identity_family`)."""
+        document = education_aid_identity()
+        document["slots"] = [slot for slot in document["slots"] if slot["property"] not in omitted]
+        _, identity = mint_identity(document)
+        family = _identity_family(identity)
+        assert family is not None and len(family.rows) == rows
+        assert all(row.constraint_properties.keys().isdisjoint(omitted) for row in family.rows)
 
         assert stated_members(identity, None) == StatedMembers(
             served_count=len(antichain_minimal_rows(get_index(), family.rows)),

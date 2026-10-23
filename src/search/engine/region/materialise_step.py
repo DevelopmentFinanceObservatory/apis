@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from materialise.place_scope import DefaultPresence
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.closest_match import substituted_measure_fact
@@ -20,6 +20,7 @@ from search.engine.region.grounding import (
     carrier_flag_warnings,
     role_scope_defaulted_warnings,
 )
+from search.engine.retrieval.bound_values import bound_values_from_bindings
 from search.engine.retrieval.retrieve import (
     FamilyTotalAbsent,
     Materialised,
@@ -28,11 +29,12 @@ from search.engine.retrieval.retrieve import (
     UnsupportedDraft,
     materialise,
 )
-from search.engine.retrieval.standard import FacetBatch
+from search.engine.retrieval.standard import BreakdownDecision, FacetBatch, Narrow
 from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
 from search.models import NoDataReason, RoleAxis, Spec, Warning
 from search.render.heading import heading_for
+from search.render.what import breakdown_phrase
 from series_coverage.shared import CoverageSnapshot
 
 __all__ = [
@@ -42,6 +44,7 @@ __all__ = [
     "family_total_absent_departure",
     "family_total_absent_departures",
     "interpret_materialised",
+    "lone_breakdown_absent",
     "resubmit_family_total_absent_departure",
     "run_materialise",
 ]
@@ -109,7 +112,15 @@ def _family_total_absent_message(
     """The warning's message and the label of the member shown. The message names the
     member shown and, when the family holds a total, the total that had no data where the
     read plan read: at the places, and under a year range in the years asked, since the
-    total can hold data there in other years."""
+    total can hold data there in other years. For a family with no total shown by its one
+    breakdown, the message names that breakdown's slots (`breakdown_phrase`)."""
+    if fact.breakdown:
+        (shown,) = label_of([fact.shown])
+        return (
+            "This indicator has no overall figure, so the answer shows it by "
+            f"{breakdown_phrase(fact.breakdown)}.",
+            shown,
+        )
     if fact.total is None:
         (shown,) = label_of([fact.shown])
         return (
@@ -123,6 +134,30 @@ def _family_total_absent_message(
     where = named[0] if named else f"any of the {len(fact.places)} places"
     when = " in the years asked" if fact.in_years_asked else ""
     return f"No data for {total} was found for {where}{when}, so the answer shows {shown}.", shown
+
+
+def lone_breakdown_absent(
+    decision: BreakdownDecision,
+    *,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    served: Sequence[str],
+) -> FamilyTotalAbsent | None:
+    """The `family_total_absent` fact of an answer over `shape` that shows a family with no
+    total by its one breakdown signature (`standard.Narrow.lone_signature`): the labels of
+    the slots `decision` keeps that `bindings` bind to no value (`slot_label`), in slot
+    order, shown by `served[0]`, the answer's first member. `None` for any other decision."""
+    if not isinstance(decision, Narrow) or not decision.lone_signature:
+        return None
+    bound = bound_values_from_bindings(bindings)
+    breakdown = tuple(
+        slot_label(slot)
+        for slot in shape.slot_keys
+        if slot.property_dcid in decision.properties and slot.property_dcid not in bound
+    )
+    if not breakdown:
+        return None
+    return FamilyTotalAbsent(total=None, shown=served[0], places=(), breakdown=breakdown)
 
 
 def family_total_absent_departure(
