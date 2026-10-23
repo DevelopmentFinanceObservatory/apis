@@ -88,10 +88,10 @@ graph-release = ["google-cloud-spanner>=3.57", "dfo-data-tools[coverage]"]
 [tool.uv.sources]
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4ef22b70d0f11af87ed9a78afda841ab66f6230c", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4ef22b70d0f11af87ed9a78afda841ab66f6230c", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4ef22b70d0f11af87ed9a78afda841ab66f6230c", subdirectory = "python/provenance-docs" }
-dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4ef22b70d0f11af87ed9a78afda841ab66f6230c", subdirectory = "python/descriptions" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "d8a82713d718a23b3ce88844c51741a6f9d96085", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "d8a82713d718a23b3ce88844c51741a6f9d96085", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "d8a82713d718a23b3ce88844c51741a6f9d96085", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "d8a82713d718a23b3ce88844c51741a6f9d96085", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
