@@ -265,12 +265,20 @@ jobs:
       # Application Default Credentials. For each *.run.app host,
       # dfo_platform.cloud_run_auth mints an ID token as the eval reader, which
       # holds roles/iam.serviceAccountOpenIdTokenCreator on itself, and
-      # refreshes it before it expires.
+      # refreshes it before it expires. This tree ignores DCP_ID_TOKEN. The ID
+      # token minted here for SEARCH_GRAPH_BASE serves the base tree, whose
+      # cloud_run_auth still reads DCP_ID_TOKEN and cannot mint from these
+      # credentials; it goes with the coverage staging once the base branches
+      # carry the minter. It lasts an hour, longer than the job's timeout.
       - name: Authenticate to Google Cloud as the eval reader
+        id: gcp
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
           service_account: ${{ secrets.EVAL_WIF_SA }}
+          token_format: id_token
+          id_token_audience: ${{ vars.SEARCH_GRAPH_BASE }}
+          id_token_include_email: true
 
       # Both apps refuse to start without a resolvekit cache directory. Each side
       # has its own, keyed by that tree's entity_resolution sources and lock file
@@ -310,6 +318,8 @@ jobs:
           # WAF bypass for the graph: CI runner IPs are datacenter ranges the
           # graph's bot protection challenges, and this header exempts them.
           SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
+          # For the base tree only; see the authentication step.
+          DCP_ID_TOKEN: ${{ steps.gcp.outputs.id_token }}
           HEAD_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-head
           BASE_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-base
           # The eval profile: every request reaches the engine and the LLM. A
