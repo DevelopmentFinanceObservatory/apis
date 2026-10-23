@@ -27,7 +27,7 @@
   why: Imputed multilateral aid to Kenya names no sector, so DAC2a's imputed multilateral line answers it.
   reuse: panel/mls-003
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  expect: {definite: {measure: {family: dac2a.imputed_multilateral}, entities: [{dcid: country/KEN, role: destination}]}}
+  expect: {definite: {measure: {family: dac2a.imputed_multilateral}, entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]}}
 
 - id: dq-mls-004
   query: Imputed multilateral ODA from Germany to basic education in 2020
@@ -120,7 +120,7 @@
   expect:
     definite:
       measure: {family: dac2a.imputed_multilateral}
-      entities: [{dcid: country/NOR, role: origin}]
+      entities: [{dcid: country/NOR, role: origin}, {dcid: DACAllRecipients, role: destination}]
       window: {kind: range, start: 2010, end: 2010}
 
 - id: dq-mls-013
@@ -283,7 +283,7 @@
     parts:
       - definite:
           measure: {family: dac2a.oda_gross_received}
-          entities: [{dcid: country/ETH, role: destination}]
+          entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
       - definite:
           measure: {family: dac2a.imputed_multilateral}
           entities: [{dcid: country/ETH, role: destination}]

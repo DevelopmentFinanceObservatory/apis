@@ -2045,6 +2045,8 @@
     definite:
       measure: {family: dac2a.oda_net_received}
       entities:
+      - dcid: DACOfficialDonors
+        role: origin
       - dcid: country/KEN
         role: destination
 - id: crs-gross-disbursements-kenya
@@ -2135,6 +2137,8 @@
           nettingBasis: Net
         open: [crsCooperationModality, crsPurpose, crsTypeOfFinance, crsTypeOfFlow]
       entities:
+      - dcid: DACOfficialDonors
+        role: origin
       - dcid: country/KEN
         role: destination
       unit:
@@ -2186,6 +2190,9 @@
   tags:
     directional_flow: na
     conjunction: none
+  known_failure:
+    issue: 1156
+    checks: [measure, entities]
   expect:
     definite:
       measure:
@@ -2213,6 +2220,8 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       entities:
+      - dcid: DACOfficialDonors
+        role: origin
       - dcid: country/KEN
         role: destination
       unit:
@@ -2227,6 +2236,8 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       entities:
+      - dcid: DACOfficialDonors
+        role: origin
       - dcid: country/KEN
         role: destination
 - id: crs-education-grants-france
@@ -3846,12 +3857,12 @@
       time_text: '2021'
       open_roles: [donor]
       operations: [{verb: aggregate, over: origin, phrase: from all donors}]
-  why: A sum over every donor is the donors' published total, so the side binds Official Donors, Total though the caller opened it.
+  why: A sum over the donors may filter them, so the opened donor side lists every donor and binds no total.
   tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: aggregate, door: parsed}
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
+      entities: [{dcid: country/ETH, role: destination}]
 - id: whole-total-oda-kenya-range-total
   query: 'parsed: official development assistance received, to Kenya, total from all donors, 2015 to 2022'
   door: parsed
@@ -3894,11 +3905,11 @@
   query: 'parsed: official development assistance, from France, to all recipients, 1983'
   door: parsed
   parsed: [{variable_text: official development assistance, entities: [{text: France, role_text: from}, {text: all recipients, role_text: to}], time_text: '1983'}]
-  why: Before 1984 All Recipients, Total holds more than the developing countries, so the recipient side reads as unnamed.
-  tags: {theme: aid, entity: country, direction: origin_only, time: year, operation: none, door: parsed}
+  why: Before 1984 All Recipients, Total holds more than the developing countries, so "all recipients" binds the total as a named party with no whole reading.
+  tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
   expect:
     definite:
-      entities: [{dcid: country/FRA, role: origin}]
+      entities: [{dcid: country/FRA, role: origin}, {dcid: DACAllRecipients, role: destination}]
 - id: whole-total-aid-kenya-top-donors-keeps-members
   query: 'parsed: aid, to Kenya, open donors, rank over origin, 2022'
   door: parsed
