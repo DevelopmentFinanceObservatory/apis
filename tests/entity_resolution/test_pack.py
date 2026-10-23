@@ -63,7 +63,7 @@ def test_committed_records_have_expected_population():
     organisations = [r for r in records if r["kind"] == "organisation"]
     aggregates = [r for r in records if r["kind"] == "aggregate"]
     assert len(organisations) == 195
-    assert len(aggregates) == 50
+    assert len(aggregates) == 51
 
     dcids = [r["dcid"] for r in records]
     assert len(dcids) == len(set(dcids)), "committed records carry a duplicate dcid"

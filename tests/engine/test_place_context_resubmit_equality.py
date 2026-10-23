@@ -411,16 +411,21 @@ def _presence(case: _Case) -> dict[str, frozenset[str]]:
 
 @dataclass(frozen=True)
 class _Expected:
-    """One subject-only reading's answer under the placements: the StatVar it serves (or
-    names when it has none), whether it has data, whether data sat at its probe places, its
-    settled scope, its coverage label and the places its coverage counts."""
+    """One subject-only reading's answer under the placements: the StatVars it serves (or
+    the one it names when it has none), whether it has data, whether data sat at its probe
+    places, its settled scope, its coverage label and the places its coverage counts."""
 
-    stat_var: str
+    stat_vars: tuple[str, ...]
     has_data: bool
     held: bool
     scope: DefaultPlaceScope
     label: str | None
     served: tuple[str, ...]
+
+    @property
+    def stat_var(self) -> str:
+        """The first StatVar, which keys the reading."""
+        return self.stat_vars[0]
 
 
 def _scope(presence: Mapping[str, frozenset[str]], stat_vars: Sequence[str]) -> DefaultPlaceScope:
@@ -434,22 +439,23 @@ def _points(case: _Case, stat_var: str, place: str) -> bool:
 
 def _reading(case: _Case, members: Sequence[str]) -> _Expected:
     """A subject-only reading of `members`, the members the mint's family election keeps.
-    Each member is read at its own default scope, and the reading elects the first member
-    with a point there. Without one, it names the first member holding data at its scope
-    in other years, else the first member, and states the scope of the member it names."""
+    Each member is read at its own default scope, and the reading serves every member with
+    a point there, as a mint of it does, over the union of their scopes. Without one, it
+    names the first member holding data at its scope in other years, else the first member,
+    and states the scope of the member it names."""
     presence = _presence(case)
     own = {sv: _scope(presence, [sv]) for sv in members}
     holding = [sv for sv in members if any(p in case.facts.get(sv, ()) for p in own[sv].places)]
-    elected = next(
-        (sv for sv in members if any(_points(case, sv, p) for p in own[sv].places)), None
-    )
-    if elected is None:
+    served = tuple(sv for sv in members if any(_points(case, sv, p) for p in own[sv].places))
+    if not served:
         named = holding[0] if holding else members[0]
-        return _Expected(named, False, bool(holding), own[named], None, ())
-    probe = own[elected].places
+        return _Expected((named,), False, bool(holding), own[named], None, ())
+    probe = tuple(dict.fromkeys(p for sv in served for p in own[sv].places))
     label = "worldwide" if probe == (_EARTH,) else "places" if len(probe) > 1 else "sources"
-    served_places = tuple(p for p in probe if _points(case, elected, p))
-    return _Expected(elected, True, True, own[elected], label, served_places)
+    served_places = tuple(
+        p for p in probe if any(_points(case, sv, p) for sv in served if p in own[sv].places)
+    )
+    return _Expected(served, True, True, _scope(presence, served), label, served_places)
 
 
 def _role_has_data(case: _Case) -> bool:
@@ -555,10 +561,10 @@ def _with_alternates(
         with_data = [r for r in (elected, *rivals) if r.has_data]
         readings = {r.stat_var: r for r in with_data}
         kind = "definite" if len(with_data) == 1 else "candidates"
-        return _Answer(kind, frozenset(readings), readings)
+        return _Answer(kind, frozenset(sv for r in with_data for sv in r.stat_vars), readings)
     rider = next((r for r in riders if r.has_data), None)
     if rider is not None:
-        return _Answer("alternate_match", frozenset({rider.stat_var}), {rider.stat_var: rider})
+        return _Answer("alternate_match", frozenset(rider.stat_vars), {rider.stat_var: rider})
     kind = "no_data" if elected.held else "flagged_match"
     return _Answer(kind, frozenset(), {elected.stat_var: elected})
 
@@ -584,7 +590,7 @@ def _reelection(
         return _with_alternates(elected, [], riders=riders)
     return _Answer(
         "candidates",
-        frozenset(r.stat_var for r in found),
+        frozenset(sv for r in found for sv in r.stat_vars),
         {r.stat_var: r for r in found},
     )
 
@@ -1056,9 +1062,9 @@ def test_each_route_reaches_the_answers_it_implies(monkeypatch) -> None:
 
 
 def test_a_resubmit_settles_on_the_members_it_serves() -> None:
-    """Female has data in Kenya and male in Tanzania. A resubmit posting both reads both
-    countries and serves female, so it settles on Kenya and states what a resubmit posting
-    female alone states."""
+    """Female has data in Kenya and male in Tanzania. A resubmit whose family holds both
+    reads both countries and serves both, so it settles on Kenya and Tanzania; one whose
+    family holds female alone serves female and settles on Kenya."""
     case = next(
         c
         for c in _CASES
@@ -1072,9 +1078,10 @@ def test_a_resubmit_settles_on_the_members_it_serves() -> None:
     both = _answered(_resubmit(case, spec, _Graph(case), [_FEMALE, _MALE]))
     female = _answered(_resubmit(case, spec, _Graph(case), [_FEMALE]))
 
-    assert _stat_vars(both) == _stat_vars(female) == (_FEMALE,)
-    assert _place_facts(both) == _place_facts(female)
-    assert [m.ref for m in both.resolved.scope.members] == [_KEN]
+    assert _stat_vars(both) == (_FEMALE, _MALE)
+    assert sorted(m.ref for m in both.resolved.scope.members) == sorted([_KEN, _TZA])
+    assert _stat_vars(female) == (_FEMALE,)
+    assert [m.ref for m in female.resolved.scope.members] == [_KEN]
 
 
 def test_a_placeless_nearest_real_suggestion_is_read_over_its_own_places(monkeypatch) -> None:

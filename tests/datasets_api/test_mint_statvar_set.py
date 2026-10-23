@@ -174,7 +174,7 @@ class TestMilestoneStatVarSetMintServesACorrectCsvFromASignedUrl:
             "stat_var_label",
             "recipient",
             "recipient_label",
-            "recipient_party_kind",
+            "recipient_kind",
             "time_period",
             "value",
             "unit",

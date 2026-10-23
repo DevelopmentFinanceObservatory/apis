@@ -61,10 +61,14 @@ from search.engine.region.grounding import (
     _ground_answer,
     _place_confidence,
     build_identity_entities,
+    check_breakdown_settled,
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
-from search.engine.region.materialise_step import family_total_absent_departure
+from search.engine.region.materialise_step import (
+    family_total_absent_departure,
+    lone_breakdown_absent,
+)
 from search.engine.region.observations.bulk_scope import BulkScope, bulk_scope_for
 from search.engine.region.observations.dispatch import (
     _attach_observations,
@@ -113,6 +117,7 @@ from search.engine.region.scope import (
 )
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
 from search.engine.region.un_system import member_labels
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     OpenAxisFact,
@@ -328,6 +333,7 @@ def _install_filtered_answer(
             members=stated_scope_members(mat_result, filtered.plan),
             boundary_roles=state.place.roles.roles,
             label_of=state.opposite_labels,
+            unnamed_wholes=state.place.roles.unnamed_wholes,
         )
 
 
@@ -1009,6 +1015,7 @@ def _build_definite_spec(
         named_groups=request_named_groups(state, state.place.roles),
         measure_served_rows=measure_served_counter(setup.served_filter),
     )
+    check_breakdown_settled(state.shape_draft, state.walked, spec)
     spec = with_unit_conversion(
         spec,
         members=served_members,
@@ -1020,8 +1027,14 @@ def _build_definite_spec(
     if state.bound_unit_outcome is not None:
         spec = with_unit_lexicon_version(spec, state.bound_unit_outcome)
     spec = apply_declaration_version(spec, state.bindings)
-    if mat_result.family_total_absent is not None:
-        state.family_total_absent[spec.spec_id] = mat_result.family_total_absent
+    family_total_absent = mat_result.family_total_absent or lone_breakdown_absent(
+        state.breakdown,
+        shape=state.shape_draft,
+        bindings=state.bindings,
+        served=mat_result.sv_dcids,
+    )
+    if family_total_absent is not None:
+        state.family_total_absent[spec.spec_id] = family_total_absent
 
     return _DefiniteSpec(
         spec=spec,
@@ -1174,7 +1187,11 @@ async def _finalize_definite_result(
         status="definite",
         specs=(spec,),
         no_data_reason=None,
-        warnings=(*state.warnings, *(warning for warning, _fact in family)),
+        warnings=(
+            *state.warnings,
+            *(warning for warning, _fact in family),
+            *whole_total_warnings(spec, coverage=state.coverage.index),
+        ),
         departure_facts={**state.departure_facts, **raised_facts(family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,

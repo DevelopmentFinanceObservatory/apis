@@ -7,6 +7,7 @@ itself, under its own recorded minting options.
 
 from __future__ import annotations
 
+import contextvars
 import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -21,7 +22,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import files as files_module
 from datasets_api.doors.files import build_files_door
 from datasets_api.mint_models import MintOptions
-from datasets_api.render import artifact_rendering, artifact_rendering_key
+from datasets_api.render import artifact_rendering
 from datasets_api.retention import version_retention
 from materialise.formats import EXCEL_MAX_ROWS
 from spec_registry import IdentityQuarantined
@@ -424,7 +425,6 @@ def test_a_full_read_executor_refuses_a_selector_retryable_503():
         store,
         b"csv-bytes",
         rendering=artifact_rendering(options, site=_SITE),
-        rendering_key=artifact_rendering_key(options, site=_SITE),
     )
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): [location]}
@@ -446,8 +446,10 @@ def test_a_full_read_executor_refuses_a_selector_retryable_503():
     first: list = []
 
     with client:
+        # The thread reads under this context's bound graph release, as a request does.
+        context = contextvars.copy_context()
         thread = threading.Thread(
-            target=lambda: first.append(client.get(path, follow_redirects=False))
+            target=lambda: first.append(context.run(client.get, path, follow_redirects=False))
         )
         thread.start()
         assert blocking.entered.wait(timeout=5.0)

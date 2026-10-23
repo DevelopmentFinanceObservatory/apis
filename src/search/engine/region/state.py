@@ -68,7 +68,12 @@ from search.engine.region.place_context import (
     default_scope_stat_vars,
     empty_place_context,
 )
-from search.engine.region.place_roles import PlaceAssignment, place_order, place_texts
+from search.engine.region.place_roles import (
+    PlaceAssignment,
+    PlaceRoleRefusal,
+    place_order,
+    place_texts,
+)
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.result import (
     AmbiguousEntity,
@@ -78,6 +83,7 @@ from search.engine.region.result import (
     source_code_refusal_result,
 )
 from search.engine.region.status_rule import CLOSED_AXES, OpenAxes, StatusPlan
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     RoleClassWalks,
@@ -102,7 +108,7 @@ from search.engine.retrieval.retrieve import (
     UnsupportedDraft,
 )
 from search.engine.retrieval.role_resolve import role_members_served
-from search.engine.retrieval.standard import default_scope_members
+from search.engine.retrieval.standard import BreakdownDecision, Keep, default_scope_members
 from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft, is_role_bearing, role_names_by_axis
 from search.engine.source_code import SeriesCodeMembers, not_held
@@ -401,8 +407,13 @@ AlternateUnevaluatedReason = Literal["no_capacity", "upstream_error", "timed_out
 
 def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
     """The constraint properties `shape` can carry into binding, its slots' properties, which
-    are also the code systems it reads qualifier text in."""
-    return frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+    are also the code systems it reads qualifier text in. A slot a breakdown decision left out
+    (`ShapeDraft.omitted_slots`) stays in it: the query was read in the family's vocabulary,
+    and a term on that slot is one the answer leaves unapplied."""
+    return (
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        | shape.omitted_slots
+    )
 
 
 def qualifier_dropped_warning(phrase: str) -> Warning:
@@ -765,6 +776,28 @@ class ResolveState:
     # `pipeline.resolve_variable` falls back to when the party reading binds no party, and
     # the reading of every UN pass.
     party_words_off: bool = False
+    # The place set of each whole total the part can bind (`whole_totals`), by dcid: the
+    # parties a text of the part names as a whole population (`whole_named`) and the totals
+    # of every party on each side the part totals (`place_roles.totalled_axes`). Set by
+    # `_phase_resolve_places`; binding repair binds a side's total on a shape whose datasets
+    # read it whole (`place_roles.whole_total_candidates`), and a named one binds as a party
+    # on its side (`place_roles.bind_place_roles`).
+    whole_sets: dict[str, PlaceSet] = field(default_factory=dict)
+    # Each text of the part naming a whole population ("all donors"), with the dcids it
+    # names, in query order. Such a text holds no place set: its parties bind as named
+    # parties on its side, read whole where the shape's datasets mark them, and its side
+    # stays unnamed only on a shape that publishes no total of a population covering it
+    # (`place_roles._named_wholes`).
+    whole_named: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Each text of the part naming a whole population that the part asks for member by
+    # member (`member_entities`), with the side it names: it holds no place set and names
+    # no total, and the side is among `open_axes`, so the answer lists that side's parties.
+    whole_listed: dict[str, RoleAxis] = field(default_factory=dict)
+    # The texts of the part naming a whole population, listed or not, that the request
+    # directs to the side other than the one its parties are published on, in query order.
+    # They refuse the part `role_incompatible` before any shape is derived, which names
+    # them (`_phase_check_entities`). Set by `_phase_resolve_places`.
+    whole_misdirected: tuple[str, ...] = ()
     # Start tick for the shape timing span, including derivation and ranking.
     shape_t0: int = 0
     # All confirmed shapes, before eligibility and ranking filters.
@@ -954,6 +987,13 @@ class ResolveState:
     # settlement, which judges no answer, names it too (`requirements.settle_unanswered`).
     # One only the model read departs instead (`Requirement.refuses`).
     stray_requirements: tuple[Requirement, ...] = ()
+    # Which what and how slots the elected shape's identity carries, decided once its
+    # bindings settle (`standard.breakdown_decision`, `phase_election._narrow_to_breakdown`).
+    # A `Narrow` decision has narrowed the elected shape's slot keys to its properties.
+    breakdown: BreakdownDecision = field(default_factory=Keep)
+    # The elected shape the decision read, with every slot key: the shape itself unless a
+    # `Narrow` decision narrowed it. None before the decision runs.
+    breakdown_shape: ShapeDraft | None = None
     # Open constraint axes the elected measure's members do not declare; added to
     # `inapplicable_slots` because they are absent from the shape's slot keys.
     measure_dropped_axes: tuple[str, ...] = ()
@@ -1010,6 +1050,12 @@ class ResolveState:
     # Where the StatVars of the last default-scope read have data; the default scope of the
     # shape in play, when it has one, is taken from it. `None` until a shape needs one.
     default_presence: DefaultPresence | None = None
+    # The elected shape's assignment of the query's place sets, or its refusal, taken once
+    # by binding repair (`phase_election._bind_query_places`): with a whole total only where
+    # the bindings settled under its role keys hold the total's series, and those are the
+    # bindings installed. Place binding (`phase_place_materialise._phase_place_bindings`)
+    # reads it. `None` before repair.
+    query_place_roles: PlaceAssignment | PlaceRoleRefusal | None = None
     # The elected shape's assignment of the query's place sets as admitted, before the
     # role-class election narrows it. An alternate puts a place named with no direction on
     # the axis this assignment gives it (`place_roles._undirected_place_axis`).
@@ -1034,6 +1080,13 @@ class ResolveState:
     # one, by capped-shape index of its copy, when both directions hold data: offered beside
     # it as a `direction` candidate (`phase_place_materialise._settle_direction`).
     direction_rivals: dict[int, PlaceAssignment] = field(default_factory=dict)
+    # The elected shape narrowed to another breakdown of a family with no total, by
+    # capped-shape index of its copy, with its own bindings: offered beside the elected
+    # breakdown as a `breakdown` candidate (`phase_place_materialise._settle_breakdown`).
+    breakdown_rivals: dict[int, list[SlotBindingDraft]] = field(default_factory=dict)
+    # Whether `max_candidates` cut breakdown signatures before their copies were made, so
+    # the candidate set states the cut (`CandidateSet.truncated`).
+    breakdown_truncated: bool = False
     # The departures a definite answer states that no warning discloses: the direction it
     # reads a place named without one on (`RegionResult.inferred_facts`).
     inferred_facts: list[DepartureFact] = field(default_factory=list)
@@ -1068,6 +1121,9 @@ class ResolveState:
     alternate_walks: dict[tuple[object, ...], Future[_Alternate | None]] = field(
         default_factory=dict
     )
+    # The assignment each alternate is walked under, keyed by the walk key of the
+    # alternate as bound (`phase_place_materialise._walk_plan`).
+    alternate_walk_plans: dict[tuple[object, ...], PlaceAssignment] = field(default_factory=dict)
     # The alternate guard's judges of the elected shape this pass, one per set of pins
     # (`phase_place_materialise._guard_judge`), so admission, re-election and the walks read
     # each alternate's members once.
@@ -1401,8 +1457,8 @@ class ResolveState:
         `unanswerable` when one did and the part still could not be answered from it.
 
         The part holds `flagged_match` and `alternate_match`, so those Specs raise
-        `family_total_absent`. `elected_stat_vars` names members without a
-        Spec and raises none.
+        `family_total_absent` and `whole_total_available` (`whole_totals.whole_total_warnings`).
+        `elected_stat_vars` names members without a Spec and raises none.
         """
         if (refused := self.source_code_no_data(reason, llm_usage=llm_usage)) is not None:
             return refused
@@ -1410,9 +1466,8 @@ class ResolveState:
             _shape, _mat_result, _place = self.shape_draft, self.mat_result, self.place
         else:
             _shape, _mat_result, _place = candidate.shape, candidate.mat, candidate.place
-        family = self.family_total_absent_departures(
-            [*(flagged_match or ()), *([alternate_match] if alternate_match else [])]
-        )
+        matches = [*(flagged_match or ()), *([alternate_match] if alternate_match else [])]
+        family = self.family_total_absent_departures(matches)
         # Report an open role axis only when materialisation's own no-observation
         # result confirms the discovery gap; later refusals may follow successful discovery.
         return RegionResult(
@@ -1420,7 +1475,15 @@ class ResolveState:
             status="no_data",
             specs=(),
             no_data_reason=reason,
-            warnings=(*self.warnings, *(warning for warning, _fact in family)),
+            warnings=(
+                *self.warnings,
+                *(warning for warning, _fact in family),
+                *(
+                    warning
+                    for match in matches
+                    for warning in whole_total_warnings(match, coverage=self.coverage.index)
+                ),
+            ),
             departure_facts={**self.departure_facts, **raised_facts(family)},
             timing_by_step=dict(self.timing),
             flagged_match=flagged_match,

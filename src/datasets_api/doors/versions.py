@@ -13,7 +13,11 @@ Each version states its `rendering`: `plain` for a raw version, `groupby` with t
 collapse was summed by, `without_party_totals` for a party-totals cut that sums nothing, and
 `not_recorded` for a derived version with no linked file recording its options. A version
 whose frame leaves party totals out says so in `without_party_totals`. The options are read as
-the frame refresh reads them (`datasets_api.recorded_rendering`).
+the frame refresh reads them (`datasets_api.recorded_rendering`). The page's
+`enrichment_stamp` is the serving code index's `enrichment_digest`, the one a current
+party-kind file in a manifest carries as its own `enrichment_stamp`. Each version carries the
+stamp a party-kind file of it rendered now carries: none when its frame holds no party role
+(`ListedVersion.holds_party_role` is `False`), and that digest otherwise.
 
 `limit` runs from 1 to `VERSIONS_PAGE_MAX` and defaults to `VERSIONS_PAGE_DEFAULT`. The cursor
 holds the last listed version's `recorded_at` and `content_version`, the list's sort key, and
@@ -127,14 +131,27 @@ class DatasetVersion(BaseModel):
             "party roles, as its file's rendering records it. Absent when false"
         ),
     )
+    enrichment_stamp: str | None = Field(
+        default=None,
+        description=(
+            "the `enrichment_stamp` a file of this version holding party-kind cells, rendered "
+            "now, carries (`ArtifactEntryModel.enrichment_stamp`): the answering code index's "
+            "digest, the page's `enrichment_stamp`, when the version's frame holds a party "
+            "role. Absent when it holds none, since a file of it then holds no party-kind cell "
+            "and carries no stamp under any code index. A version that stored neither an "
+            "output profile nor a party-free link lists the digest"
+        ),
+    )
 
     @model_serializer(mode="wrap")
-    def _without_party_totals_when_true(self, handler: SerializerFunctionWrapHandler):
-        """Leave a false `without_party_totals` out, so a version that keeps its party totals
-        lists without the field."""
+    def _optional_members_when_set(self, handler: SerializerFunctionWrapHandler):
+        """Leave a false `without_party_totals` and a null `enrichment_stamp` out, so a version
+        that keeps its party totals or holds no party role lists without the field."""
         dumped = handler(self)
         if not self.without_party_totals:
             dumped.pop("without_party_totals", None)
+        if self.enrichment_stamp is None:
+            dumped.pop("enrichment_stamp", None)
         return dumped
 
     @field_serializer("groupby")
@@ -149,6 +166,15 @@ class DatasetVersionsPage(BaseModel):
 
     schema_version: Literal[1] = 1
     spec_id: str
+    enrichment_stamp: str = Field(
+        description=(
+            "the digest of the party kinds, classes and whole-total markers the answering code "
+            "index holds, the one a file rendered now carries "
+            "(`ArtifactEntryModel.enrichment_stamp`). A frame naming a file that asks for a "
+            "party-kind column adds it to its name, so a frame named under another stamp does "
+            "not match"
+        )
+    )
     versions: list[DatasetVersion] = Field(
         description="stored versions that are not revoked, newest first"
     )
@@ -165,8 +191,10 @@ def read_versions_page(
     cursor: str | None,
     spec_reader: SpecReader,
     version_lister: VersionLister,
+    enrichment_stamp: str,
 ) -> DatasetVersionsPage:
-    """One page of the versions `id` serves, newest first, revoked versions left out.
+    """One page of the versions `id` serves, newest first, revoked versions left out, under
+    the serving code index's `enrichment_stamp`.
 
     Raises:
         VersionsRequestInvalid: `limit` is out of range, or `cursor` does not decode or
@@ -184,13 +212,14 @@ def read_versions_page(
     page, complete = listed[:limit], len(listed) <= limit
     return DatasetVersionsPage(
         spec_id=id,
-        versions=[_dataset_version(version) for version in page],
+        enrichment_stamp=enrichment_stamp,
+        versions=[_dataset_version(version, enrichment_stamp=enrichment_stamp) for version in page],
         next_cursor=None if complete else _encode_cursor(binding, page[-1]),
         complete=complete,
     )
 
 
-def _dataset_version(version: ListedVersion) -> DatasetVersion:
+def _dataset_version(version: ListedVersion, *, enrichment_stamp: str) -> DatasetVersion:
     minting = (
         recorded_minting(version.renderings) if version.base_content_version is not None else None
     )
@@ -206,6 +235,7 @@ def _dataset_version(version: ListedVersion) -> DatasetVersion:
         rendering=rendering,
         groupby=minting.groupby if minting is not None else None,
         without_party_totals=minting is not None and minting.without_party_totals,
+        enrichment_stamp=None if version.holds_party_role is False else enrichment_stamp,
     )
 
 
@@ -269,6 +299,7 @@ def build_versions_door(*, deps: DepsCell) -> DoorContribution:
                     cursor=cursor,
                     spec_reader=current.spec_reader,
                     version_lister=current.version_lister,
+                    enrichment_stamp=current.code_index.enrichment_digest,
                 ),
                 refuse=VersionsBackpressure,
             )

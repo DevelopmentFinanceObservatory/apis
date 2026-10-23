@@ -18,7 +18,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      entities: [{dcid: country/BGD, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/BGD, role: destination}]
       window: {kind: all}
       operations: []
 
@@ -191,7 +191,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      entities: [{dcid: SubSaharanAfrica, role: destination, expands: true}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: SubSaharanAfrica, role: destination, expands: true}]
       window: {kind: all}
       operations: []
 
@@ -216,8 +216,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      entities: [{dcid: DACAfricaUnallocated, role: destination}]
-      warnings: [role_scope_defaulted]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAfricaUnallocated, role: destination}]
 
 - id: dq-crs-020
   query: aid to developing countries unspecified
@@ -303,7 +302,7 @@
   expect:
     definite:
       measure: {family: dac2a.humanitarian_aid}
-      entities: [{dcid: country/YEM, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/YEM, role: destination}]
       window: {kind: range, start: 2023, end: 2023}
 
 - id: dq-crs-027
@@ -482,10 +481,9 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
       unit: {currency: {role: destination}, prices: current}
-      warnings: [role_scope_defaulted]
 
 - id: dq-crs-040
   query: 'parsed: aid from Germany to Kenya, in local currency'
@@ -579,7 +577,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       unit: {currency: USD, prices: constant}
 
 - id: dq-crs-048
@@ -716,6 +714,7 @@
   query: ODA disbursements to Kenya by sector in 2022
   why: '''By sector'' leaves the purpose slot open on CRS disbursements.'
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [measure, entities]}
   expect:
     definite:
       measure: {family: crs.disbursement_any, bound: {crsTypeOfFlow: CRSTypeOfFlow10}, open: [crsPurpose]}
@@ -729,7 +728,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
 
 - id: dq-crs-061

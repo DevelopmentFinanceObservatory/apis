@@ -41,10 +41,12 @@ from dfo_frame_grammar import (
 
 from dc_graph import GraphReadError
 from dfo_platform.columns import column_noun, column_title, role_noun
+from dfo_platform.roles import role_key_axis
 from materialise.bundle import CODES_PATH, CodeEntry, ColumnDoc
 from materialise.bundle_naming import years_text
 from materialise.cell_safety import spreadsheet_safe
 from materialise.formats import Rendering, written_header
+from materialise.projection import KIND_SUFFIX
 
 if TYPE_CHECKING:
     from materialise.formats import Table
@@ -132,7 +134,35 @@ _ENRICHMENT_COLUMNS: Mapping[str, tuple[str, str]] = {
         "make every sum exact: two parties can report the same money, such as a fund and the "
         "organisation that runs it.",
     ),
+    "party_class": (
+        "class",
+        "Whose money the {noun}'s figures count: `official`, `private` (a foundation or other "
+        "private body), or `residual` for a {noun} that holds figures no other {noun} holds. "
+        "A total reads the one class its whole markers cover, and reads empty otherwise.",
+    ),
+    "party_whole": (
+        "whole total",
+        "`true` where the {noun} is a total that holds every {noun} of its group the source "
+        "publishes in that year, so it can stand in for them, and `false` otherwise.",
+    ),
     "type": ("type", "The graph types of the {noun}, comma-separated."),
+}
+
+_KIND_DESCRIPTION = (
+    "What the {noun} is: {party}. A `total` holds other {noun}s' figures, so a sum that "
+    "includes one counts its members twice. A `whole total` holds every {noun} of its group "
+    "the source publishes in that year, so it can stand in for them. `unallocated` holds "
+    "figures no other {noun} holds. Leaving totals out does not make every sum exact: two "
+    "{noun}s can report the same money, such as a fund and the organisation that runs it."
+)
+"""The description of a long layout's `<role>_kind` column
+(`materialise.projection.long_kind_cell`), with `{party}` filled by what a party reads on the
+role's axis (`_KIND_PARTY`)."""
+
+_KIND_PARTY: Mapping[str, str] = {
+    "origin": "`official` or `private` for a country, territory or organisation, by whose "
+    "money it reports",
+    "destination": "`country or organisation` for a country, territory or organisation",
 }
 
 _LABEL_SUFFIX = "_label"
@@ -351,6 +381,11 @@ def _column_meaning(
             return plain.capitalize(), f"The {plain} of the variable, in words."
         return "Variable property", "A property of the variable, in words."
     for role in role_columns:
+        if column == f"{role}{KIND_SUFFIX}" and (axis := role_key_axis(role)) is not None:
+            noun = role_noun(role)
+            return f"{noun.capitalize()} kind", _KIND_DESCRIPTION.format(
+                noun=noun, party=_KIND_PARTY[axis]
+            )
         field = column.removeprefix(f"{role}_")
         if column.startswith(f"{role}_") and field in _ENRICHMENT_COLUMNS:
             noun = role_noun(role)

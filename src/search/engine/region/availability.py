@@ -27,28 +27,28 @@ import logging
 from collections.abc import Collection, Mapping, Sequence
 from typing import Protocol
 
-from code_index.shared import get_index
 from materialise.place_scope import DefaultPresence
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.extract import DateRequest
 from search.engine.reading_coverage import ReadingCoverage, observed_years
+from search.engine.region.coverage_series import holds_series, requested_window
 from search.engine.region.place_roles import PlaceAssignment, bind_place_roles, names_a_place
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.state import ResolveState
-from search.engine.retrieval.bound_values import index_carries_shape, part_member_rows
-from search.engine.retrieval.role_scope import _COVERAGE_ROLE_FOR_AXIS
+from search.engine.retrieval.bound_values import index_carries_shape
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.models import TimeWindow
 
 logger = logging.getLogger(__name__)
 
-type _ShapeGroupKey = tuple[str, str, str, str, str | None, str | None, bool]
+type _ShapeGroupKey = tuple[str, str, str, str, str | None, str | None, bool, frozenset[str]]
 
 
 def _shape_group_key(shape: ShapeDraft) -> _ShapeGroupKey:
-    """Return a collision-free key for one derived shape group."""
+    """Return a collision-free key for one derived shape group. Each copy of a shape
+    narrowed to another breakdown (`ShapeDraft.omitted_slots`) is a group of its own."""
     return (
         shape.shape_id,
         shape.pop_type_dcid,
@@ -57,6 +57,7 @@ def _shape_group_key(shape: ShapeDraft) -> _ShapeGroupKey:
         shape.meas_qual_dcid,
         shape.meas_denom_dcid,
         shape.meas_denom_unresolved,
+        shape.omitted_slots,
     )
 
 
@@ -155,15 +156,8 @@ class SeriesReader(Protocol):
 def series_at_places(state: ResolveState) -> SeriesReader:
     """Whether each role-bearing shape's family holds a series at the places the part
     names, on the roles an assignment binds them to, else on those `bind_place_roles`
-    gives, read from the request's coverage snapshot within the requested years. A set
-    gives its node and its members. The family is the rows its part may answer from
-    (`part_member_rows`), else its recalled members. `None` when the shape is subject-only,
-    refuses the places, binds none, or has no member the coverage index holds."""
-    coverage = state.coverage.index
-    index = get_index()
-    window = _requested_window(state.date_request)
-    first_year = window.start_year if window is not None else None
-    last_year = window.end_year if window is not None else None
+    gives (`coverage_series.holds_series`). `None` when the shape is subject-only, refuses
+    the places, binds none, or has no member the coverage index holds."""
 
     def read(shape: ShapeDraft, assignment: PlaceAssignment | None = None) -> bool | None:
         if not is_role_bearing(shape):
@@ -171,33 +165,9 @@ def series_at_places(state: ResolveState) -> SeriesReader:
         bound_roles = bind_place_roles(state, shape) if assignment is None else assignment
         if isinstance(bound_roles, str) or bound_roles.binds_no_place:
             return None
-        bound = {
-            _COVERAGE_ROLE_FOR_AXIS[axis]: frozenset(
-                dcid
-                for place_set in sets
-                for dcid in (*place_set.dcids("default"), *place_set.dcids("members"))
-            )
-            for axis, sets in bound_roles.sets.items()
-            if axis in _COVERAGE_ROLE_FOR_AXIS and sets
-        }
-        members = [row.dcid for row in part_member_rows(shape, index)] or list(
-            shape.sv_arc_facts or ()
-        )
-        covered = [dcid for dcid in members if coverage.covers(dcid)]
-        if not bound or not covered:
-            return None
-        return bool(
-            coverage.filter_candidates(
-                variables=covered, bound=bound, first_year=first_year, last_year=last_year
-            )
-        )
+        return holds_series(state, shape, bound_roles.sets)
 
     return read
-
-
-def _requested_window(date_request: DateRequest | None) -> TimeWindow | None:
-    """The years a part asks for, `None` when it names none or asks for the latest."""
-    return None if date_request is None or date_request.latest else date_request.window
 
 
 def _in_window(coverage: Mapping[str, ReadingCoverage], window: TimeWindow) -> bool:
@@ -235,7 +205,7 @@ def _subject_has_data(
         return None
     if not available:
         return available
-    window = _requested_window(date_request)
+    window = requested_window(date_request)
     if window is None or coverage is None or _in_window(coverage, window):
         return True
     return False if covered else None

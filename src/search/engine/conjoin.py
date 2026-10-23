@@ -54,7 +54,7 @@ from search.models import (
     Warning,
 )
 from search.render.labels import _join_labels
-from search.render.no_data import ScopeSources, untold_place_name
+from search.render.no_data import ScopeSources, UnlistedPopulation, untold_place_name
 from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
@@ -170,8 +170,10 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
     Ambiguous entities supply terms and ordered candidate names.
     Role-not-admitted entities supply terms only. Unresolved entities use
     ``unresolved_entity_names``, and so do the names whose direction a
-    ``role_not_resolved`` refusal could not tell, each in the request's own words for it
-    (``RegionResult.entity_words``). Other reasons or empty values return ``None``.
+    ``role_not_resolved`` refusal could not tell and the whole populations a
+    ``role_incompatible`` refusal found directed to the other side, each in the request's
+    own words for it (``RegionResult.entity_words``). Other reasons or empty values return
+    ``None``.
     """
     if region.no_data_reason == "entity_ambiguous":
         entity_terms = [e.text for e in region.ambiguous_entities] or None
@@ -182,16 +184,27 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
         return entity_terms, None
     if region.no_data_reason == "entity_not_resolved":
         return list(region.unresolved_entity_names) or None, None
-    if region.no_data_reason == "role_not_resolved":
+    if region.no_data_reason in ("role_not_resolved", "role_incompatible"):
         return _untold_terms(region) or None, None
     return None, None
 
 
+def _unlisted_populations(region: RegionResult) -> dict[str, UnlistedPopulation]:
+    """Each population an ``entity_role_not_admitted`` region refuses because no shape lists
+    it exactly (`RoleNotAdmittedEntity.unlisted`), by the text the refusal names."""
+    return {
+        entity.text: entity.unlisted
+        for entity in region.role_not_admitted_entities
+        if entity.unlisted is not None
+    }
+
+
 def _untold_terms(region: RegionResult) -> list[str]:
-    """Every request text of each place set a ``role_not_resolved`` refusal could not tell
-    the direction of (``RegionResult.unresolved_entity_names``), in query order and in the
-    request's own words (``RegionResult.entity_words``), each once: the refusal's entity
-    terms and every role option's mentions."""
+    """Every request text a ``role_not_resolved`` or ``role_incompatible`` refusal names
+    (``RegionResult.unresolved_entity_names``): each place set whose direction the request
+    does not tell, or each whole population directed to the other side of the flow. In query
+    order and in the request's own words (``RegionResult.entity_words``), each once: the
+    refusal's entity terms and every role option's mentions."""
     words = region.entity_words or {}
     return list(dict.fromkeys(words.get(name, name) for name in region.unresolved_entity_names))
 
@@ -533,7 +546,16 @@ def _build_part(
                 *surviving_facts(
                     raised, [*warnings, *region.unapplied_qualifier_warnings, *envelope_warnings]
                 ),
-                *(() if folded else representative.inferred_facts),
+                *(
+                    ()
+                    if folded
+                    else (
+                        *representative.inferred_facts,
+                        *representative.unpublished_whole_facts.get(
+                            representative.spec.spec_id, ()
+                        ),
+                    )
+                ),
             ),
             entity_words=region.entity_words,
             assumption_echo=region.assumption_echo,
@@ -570,6 +592,7 @@ def _build_part(
                     if w.spec_id is None
                 ],
             ),
+            reading_facts=region.unpublished_whole_facts,
             request_words=region.entity_words is not None,
             asked_axes=region.every_member_axes,
             assumption_echoes=region.reading_assumption_echoes,
@@ -616,6 +639,7 @@ def _build_part(
         alternate_match=region.alternate_match,
         elected_stat_vars=region.elected_stat_vars,
         entity_terms=entity_terms,
+        unlisted=_unlisted_populations(region),
         entity_groups=_untold_place_terms(region),
         role_axis=region.no_data_role_axis,
         bound_role_dcids=region.no_data_bound_role_dcids,
@@ -642,6 +666,7 @@ def _build_part(
             raised,
             [*region.warnings, *region.unapplied_qualifier_warnings, *envelope_warnings],
         ),
+        reading_facts=region.unpublished_whole_facts,
         request_words=region.entity_words is not None,
         source_code_refusal=region.source_code_refusal,
     )

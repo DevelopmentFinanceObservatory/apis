@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from code_index.types import WholeMarker
 from scripts.export_graph_entities import export_entities, merge_records
 
 
@@ -62,8 +63,14 @@ def test_merge_fails_loudly_when_the_pin_no_longer_holds(records):
         merge_records(records, {"Source": "Target"})
 
 
-def _party(*, axes: tuple[str, ...], totals: str | None = None, label: str = "total"):
-    return SimpleNamespace(kind="total", axes=axes, totals=totals, label=label)
+def _party(
+    *,
+    axes: tuple[str, ...],
+    totals: str | None = None,
+    label: str = "total",
+    whole: tuple[WholeMarker, ...] = (),
+):
+    return SimpleNamespace(kind="total", axes=axes, totals=totals, label=label, whole=whole)
 
 
 def _index(**parties):
@@ -108,7 +115,7 @@ def _base_arcs():
     }
 
 
-def test_export_entities_adds_origin_dac_totals_and_lists_only_codes_of_grouped_ones():
+def test_export_entities_adds_origin_and_whole_dac_totals_and_lists_only_codes_of_grouped_ones():
     arcs = _base_arcs() | {
         "ExistingOrganisationTotal": {
             "typeOf": ("Organization",),
@@ -121,6 +128,12 @@ def test_export_entities_adds_origin_dac_totals_and_lists_only_codes_of_grouped_
             "name": ("official donors (DAC)",),
             "alternateName": ("Official Donors, Total",),
             "dacCode": ("20005",),
+        },
+        "DACAllRecipients": {
+            "typeOf": ("DACGroup",),
+            "name": ("all recipients (DAC)",),
+            "alternateName": ("All Recipients, Total",),
+            "dacCode": ("10200",),
         },
         "DACPairedTotal": {
             "typeOf": ("DACGroup",),
@@ -150,6 +163,11 @@ def test_export_entities_adds_origin_dac_totals_and_lists_only_codes_of_grouped_
     index = _index(
         DACOfficialDonors=_party(axes=("origin",), label="official donors (DAC)"),
         DACAsia=_party(axes=("destination",)),
+        DACAllRecipients=_party(
+            axes=("destination",),
+            label="all recipients (DAC)",
+            whole=(WholeMarker("provenance/OECDDAC2A", ("official", "residual"), (1984, 2024)),),
+        ),
         DACPairedTotal=_party(axes=("origin",), totals="groups/Paired", label="paired total"),
         DACUncodedPairedTotal=_party(
             axes=("origin",), totals="groups/Uncoded", label="uncoded paired total"
@@ -161,6 +179,13 @@ def test_export_entities_adds_origin_dac_totals_and_lists_only_codes_of_grouped_
 
     assert records == [
         _record("Africa_Finance_Corporation", name="Africa Finance Corporation", aliases=("AFC",)),
+        {
+            "dcid": "DACAllRecipients",
+            "name": "all recipients (DAC)",
+            "kind": "aggregate",
+            "aliases": ["All Recipients, Total"],
+            "dac_code": "10200",
+        },
         {
             "dcid": "DACOfficialDonors",
             "name": "official donors (DAC)",

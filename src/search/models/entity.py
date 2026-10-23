@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 from .base import StrictModel
 from .grammar import GraphRef
 from .identity import IdentityString
-from .vocab import Confidence, EntityRoleKey, RoleAxis
+from .vocab import Confidence, EntityRoleKey, PartyClass, RoleAxis
 
 # ---------------------------------------------------------------------------
 # Entity and EntityRole
@@ -82,6 +82,10 @@ class ResolvedEntity(StrictModel):
     )
 
 
+def _is_none(value: object) -> bool:
+    return value is None
+
+
 _ENTITY_GROUP_LABEL_MAX_LENGTH = 120
 """Code points a group's name may span. Real names ("least developed countries",
 "EU institutions") run under 40; the heading and departures echo the label."""
@@ -101,7 +105,12 @@ class EntityGroup(StrictModel):
     type. `entity_type` is informational, and the reading keys on `ref`. When
     the role binds the total its dataset publishes
     for the group ("Africa (DAC)") in place of the members, `total` names that
-    party and the role's one dcid is it. A Spec serves its groups on
+    party and the role's one dcid is it. A role read as the whole population of
+    its side, the source's total of every party there ("Official Donors, Total")
+    or a union of such totals ("all donors including private"), states the
+    classes of party that population covers in `whole_of`, and the classes the answer's
+    dataset publishes on that side in `side_classes`; a resubmit derives both from the
+    identity and the code index, whatever it posts. A Spec serves its groups on
     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
     (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`)."""
 
@@ -135,6 +144,27 @@ class EntityGroup(StrictModel):
             "the membership registry's id for a group the graph holds no node for, e.g. "
             "groups/OECD.DAC.Region.Asia; null when ref is set or the group "
             "is no registry group"
+        ),
+    )
+
+    whole_of: list[PartyClass] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the classes of party the role's whole population covers, sorted: official, "
+            'private or residual, e.g. ["official"] for Official Donors, Total, which holds '
+            "every official donor and no private one; absent for any other group"
+        ),
+    )
+    side_classes: list[PartyClass] | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "for a role read as its whole population, the classes of party, totals aside, the "
+            'answer\'s dataset publishes on that side, sorted, e.g. ["official", "private", '
+            '"residual"] for donors in DAC2a; a class here and not in whole_of, such as '
+            '"private", is outside the total. Absent for any other group. Derived from the '
+            "identity on every answer; a posted value is ignored"
         ),
     )
 

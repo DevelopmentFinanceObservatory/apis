@@ -22,11 +22,16 @@ from code_index.declarations import (
     MEASURE_VALUE_TEXT,
     PARTY_KIND_OVERRIDES,
     PARTY_TYPE_KINDS,
+    PRIVATE_PROVIDERS,
     TOTAL_GROUPS,
+    WHOLE_POPULATION_TOTALS,
+    WHOLE_TOTAL_SETS,
     CodeSystemConfig,
     KindOverride,
     MeasureValueText,
     TotalGroup,
+    WholePopulationTotal,
+    WholeWindow,
 )
 from code_index.export import (
     CoverageJoin,
@@ -62,8 +67,11 @@ from code_index.types import (
     MeasureAxis,
     MeasurePartitionLabel,
     PartlyStatedValue,
+    PartyClass,
     PartyRow,
     ShapeSlotDefault,
+    WholeMarker,
+    WholeTotalSet,
 )
 from dfo_platform.roles import RoleAxis
 from materialise.graph import (
@@ -307,6 +315,8 @@ def test_export_index_round_trips_through_load_index(tmp_path: Path):
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
 
@@ -1199,6 +1209,8 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     later = export_index(
@@ -1211,6 +1223,8 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     assert later == first
@@ -1227,6 +1241,8 @@ def test_content_hash_identical_across_runs_and_differs_on_a_row_change():
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     assert changed["stamp"]["content_hash"] != first["stamp"]["content_hash"]
@@ -1447,6 +1463,8 @@ def test_an_export_whose_alias_names_an_unexported_canonical_value_does_not_load
         measure_axes=_MEASURE_AXES_FOR_TEST,
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
 
@@ -1488,6 +1506,8 @@ def test_export_index_empty_measure_axes_exports_no_measure_values():
         measure_axes=(),
         measure_partition_labels=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     assert document["measure_axes"] == []
@@ -1509,6 +1529,8 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
         measure_nouns=_MEASURE_NOUNS_FOR_TEST,
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
 
@@ -1666,6 +1688,8 @@ def test_content_hash_moves_when_only_measure_axes_change():
         measure_axes=_MEASURE_AXES_FOR_TEST,
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     without_axes = export_index(
@@ -1679,6 +1703,8 @@ def test_content_hash_moves_when_only_measure_axes_change():
         measure_axes=(),
         measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     assert with_axes["stamp"]["content_hash"] != without_axes["stamp"]["content_hash"]
@@ -1794,6 +1820,8 @@ def test_export_index_refuses_when_the_guard_fails():
             measure_axes=_MEASURE_AXES_FOR_TEST,
             measure_partition_labels=(),
             total_groups={},
+            whole_totals={},
+            whole_total_sets=(),
             party_kind_overrides={},
         )
 
@@ -1880,6 +1908,8 @@ def test_export_index_stamps_plain_name_and_enum_dcid_from_the_code_system_table
         code_systems=(_HIERARCHICAL, _FLAT),
         measure_axes=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     by_system = {row["code_system"]: row for row in document["declarations"]}
@@ -1919,6 +1949,8 @@ def test_export_index_stamps_a_declared_default_and_it_round_trips(tmp_path: Pat
         code_systems=(_HIERARCHICAL_WITH_DEFAULT, _FLAT),
         measure_axes=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     by_system = {row["code_system"]: row for row in document["declarations"]}
@@ -1970,6 +2002,8 @@ def test_export_index_stamps_when_named_and_it_round_trips(tmp_path: Path):
         code_systems=(_HIERARCHICAL_WITH_NAMED_DEFAULT, _FLAT),
         measure_axes=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
     by_system = {row["code_system"]: row for row in document["declarations"]}
@@ -2008,6 +2042,8 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_not_lo
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
+            whole_totals={},
+            whole_total_sets=(),
             party_kind_overrides={},
         )
 
@@ -2039,6 +2075,8 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_empty(
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
+            whole_totals={},
+            whole_total_sets=(),
             party_kind_overrides={},
         )
 
@@ -2073,6 +2111,8 @@ def test_export_index_refuses_a_declared_default_when_named_entry_that_is_null()
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
+            whole_totals={},
+            whole_total_sets=(),
             party_kind_overrides={},
         )
 
@@ -2103,6 +2143,8 @@ def test_export_index_refuses_a_declared_default_code_outside_its_own_system():
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
+            whole_totals={},
+            whole_total_sets=(),
             party_kind_overrides={},
         )
 
@@ -2132,6 +2174,8 @@ def test_export_index_refuses_a_declared_default_scoped_under_an_unknown_dcid():
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
+            whole_totals={},
+            whole_total_sets=(),
             party_kind_overrides={},
         )
 
@@ -2162,6 +2206,8 @@ def test_export_index_refuses_a_declared_default_scoped_under_its_own_code_syste
             code_systems=(wrong, _FLAT),
             measure_axes=(),
             total_groups={},
+            whole_totals={},
+            whole_total_sets=(),
             party_kind_overrides={},
         )
 
@@ -2198,6 +2244,8 @@ def _export_two_system_graph(coverage: CoverageJoin, **overrides) -> dict:
         partly_stated_values=overrides.pop("partly_stated_values", ()),
         broad_readings=overrides.pop("broad_readings", BROAD_READINGS),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
 
@@ -2251,6 +2299,8 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(
         datasets=(declared,),
         partly_stated_values=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
     )
 
@@ -2375,6 +2425,7 @@ def test_export_graph_blocks_holds_the_documents_blocks_without_provenances_part
         measure_axes=(),
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
+        whole_total_sets=(),
     )
     document = _export_two_system_graph(_covered(graph))
 
@@ -2515,6 +2566,8 @@ def _export_with_listed(graph: _FakeGraph, provenances: dict[str, tuple[str, ...
         datasets=_TEST_DATASETS,
         partly_stated_values=(),
         total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
         party_kind_overrides={},
         listed_datasets=(_LISTED_PROVENANCE,),
     )
@@ -2670,6 +2723,8 @@ def test_export_index_refuses_a_row_lacking_a_system_its_dataset_always_declares
             datasets=_TEST_DATASETS,
             partly_stated_values=(),
             total_groups={},
+            whole_totals={},
+            whole_total_sets=(),
             party_kind_overrides={},
         )
 
@@ -2913,20 +2968,37 @@ def _export_parties(
     total_groups: dict[str, TotalGroup] | None = None,
     kind_overrides: dict[str, KindOverride] | None = None,
     names: dict[str, str] | None = None,
+    dac_codes: dict[str, tuple[str, ...]] | None = None,
+    private_providers: dict[int, str] | None = None,
+    whole_totals: dict[str, WholePopulationTotal] | None = None,
+    whole_total_sets: tuple[WholeTotalSet, ...] = (),
+    axis: RoleAxis = "destination",
+    axes: frozenset[RoleAxis] | None = None,
+    published_in: frozenset[str] = frozenset({_TEST_PROVENANCE}),
+    published_years: tuple[int, int] = (1960, 2024),
 ) -> dict:
-    """Export the two-system graph with `types_by_party` as graph nodes, named by `names`, and
-    `parties` (all of them by default) as the coverage build's parties."""
+    """Export the two-system graph with `types_by_party` as graph nodes, named by `names` and
+    carrying the `dac_codes`, and `parties` (all of them by default) as the coverage build's
+    parties, published on `axes` (just `axis` by default) by the datasets `published_in` in
+    `published_years`."""
     graph = _two_system_graph()
     names = names or {}
+    dac_codes = dac_codes or {}
     graph.forward_arcs.update(
         {
-            dcid: {"typeOf": types, "name": (names[dcid],) if dcid in names else ()}
+            dcid: {
+                "typeOf": types,
+                "name": (names[dcid],) if dcid in names else (),
+                "dacCode": dac_codes.get(dcid, ()),
+            }
             for dcid, types in types_by_party.items()
         }
     )
     published = frozenset(types_by_party) if parties is None else parties
     publication = PartyPublication(
-        datasets=frozenset({_TEST_PROVENANCE}), axes=frozenset({"destination"})
+        datasets=published_in,
+        axes=axes or frozenset({axis}),
+        years=dict.fromkeys(published_in, published_years),
     )
     coverage = dataclasses.replace(_covered(graph), parties=dict.fromkeys(published, publication))
     return export_index(
@@ -2940,6 +3012,9 @@ def _export_parties(
         partly_stated_values=(),
         total_groups=total_groups or {},
         party_kind_overrides=kind_overrides or {},
+        private_providers=private_providers or {},
+        whole_totals=whole_totals or {},
+        whole_total_sets=whole_total_sets,
     )
 
 
@@ -2971,12 +3046,23 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
     published, recipient = (_TEST_PROVENANCE,), ("destination",)
     assert index.parties == {
         "country/FRA": PartyRow(
-            dcid="country/FRA", kind="party", label="France", datasets=published, axes=recipient
+            dcid="country/FRA",
+            kind="party",
+            party_class="official",
+            label="France",
+            datasets=published,
+            axes=recipient,
         ),
         "country/IND": PartyRow(
-            dcid="country/IND", kind="party", datasets=published, axes=recipient
+            dcid="country/IND",
+            kind="party",
+            party_class="official",
+            datasets=published,
+            axes=recipient,
         ),
-        "IDA": PartyRow(dcid="IDA", kind="party", datasets=published, axes=recipient),
+        "IDA": PartyRow(
+            dcid="IDA", kind="party", party_class="official", datasets=published, axes=recipient
+        ),
         "DACAfrica": PartyRow(
             dcid="DACAfrica",
             kind="total",
@@ -3000,6 +3086,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
         "DACAfricaUnallocated": PartyRow(
             dcid="DACAfricaUnallocated",
             kind="residual",
+            party_class="residual",
             label="Africa, unallocated by country (DAC)",
             datasets=published,
             axes=recipient,
@@ -3099,9 +3186,19 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
             axes=recipient,
         ),
         "InternationalFinanceCorporation": PartyRow(
-            dcid="InternationalFinanceCorporation", kind="party", datasets=published, axes=recipient
+            dcid="InternationalFinanceCorporation",
+            kind="party",
+            party_class="official",
+            datasets=published,
+            axes=recipient,
         ),
-        "Mystery": PartyRow(dcid="Mystery", kind="residual", datasets=published, axes=recipient),
+        "Mystery": PartyRow(
+            dcid="Mystery",
+            kind="residual",
+            party_class="residual",
+            datasets=published,
+            axes=recipient,
+        ),
     }
 
 
@@ -3147,9 +3244,14 @@ def test_party_kind_overrides_holds_only_reviewed_total_rows():
 def test_the_fixture_index_carries_each_reviewed_kind_override(group: str, members: tuple[str]):
     index = get_index()
     assert (index.parties[group].kind, index.parties[group].totals) == ("total", None)
-    assert {member: index.parties[member].kind for member in members} == dict.fromkeys(
-        members, "party"
-    )
+    # The five national lotteries are private providers; every other member is official.
+    assert {
+        member: (index.parties[member].kind, index.parties[member].party_class)
+        for member in members
+    } == {
+        member: ("party", "private" if member in PRIVATE_PROVIDERS.values() else "official")
+        for member in members
+    }
 
 
 _AFRICA_RESIDUALS = (
@@ -3285,3 +3387,495 @@ def test_the_fixture_index_declares_the_exporters_party_types():
     index = get_index()
     assert index.party_types == PARTY_TYPE_KINDS
     assert index.parties
+
+
+# --- Private providers ---
+
+
+def test_a_listed_private_provider_takes_the_class_private(tmp_path: Path):
+    document = _export_parties(
+        {"GatesFoundation": ("Organization",), "WorldBank": ("Organization",)},
+        dac_codes={"GatesFoundation": ("1601",), "WorldBank": ("1011",)},
+        private_providers={1601: "GatesFoundation"},
+        axis="origin",
+    )
+    out = tmp_path / "index.json"
+    out.write_text(json.dumps(document))
+
+    parties = load_index(out).parties
+    assert {dcid: (row.kind, row.party_class) for dcid, row in parties.items()} == {
+        "GatesFoundation": ("party", "private"),
+        "WorldBank": ("party", "official"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("types_by_party", "dac_codes", "private_providers", "kind_overrides", "message"),
+    [
+        pytest.param(
+            {"GatesFoundation": ("Organization",), "SomeNewFoundation": ("Organization",)},
+            {"GatesFoundation": ("1601",), "SomeNewFoundation": ("1607",)},
+            {1601: "GatesFoundation"},
+            {},
+            r"do(?:es)? not list.*1607",
+            id="unlisted-party-with-a-private-code",
+        ),
+        pytest.param(
+            {"GatesFoundation": ("Organization",), "SomeNewFoundation": ("Organization",)},
+            {"GatesFoundation": ("1601",), "SomeNewFoundation": ("1607",)},
+            {1601: "GatesFoundation", 1607: "GatesFoundation"},
+            {},
+            r"different party.*1607",
+            id="listed-code-names-another-dcid",
+        ),
+        pytest.param(
+            {"GatesFoundation": ("Organization",)},
+            {"GatesFoundation": ("1602",)},
+            {1601: "GatesFoundation"},
+            {},
+            r"different party.*1601",
+            id="listed-party-does-not-carry-its-code",
+        ),
+        pytest.param(
+            {"GatesFoundation": ("Organization",)},
+            {"GatesFoundation": ("1601",)},
+            {1601: "GatesFoundation"},
+            {"GatesFoundation": KindOverride("total", "named in error")},
+            "both name",
+            id="listed-party-with-a-kind-override",
+        ),
+        pytest.param(
+            {"GatesFoundation": ("DACGroup",)},
+            {"GatesFoundation": ("1601",)},
+            {1601: "GatesFoundation"},
+            {},
+            "only a party can be private",
+            id="listed-party-the-types-make-a-total",
+        ),
+    ],
+)
+def test_export_index_refuses_a_private_provider_table_the_graph_contradicts(
+    types_by_party, dac_codes, private_providers, kind_overrides, message
+):
+    with pytest.raises(ExportRefused, match=message):
+        _export_parties(
+            types_by_party,
+            dac_codes=dac_codes,
+            private_providers=private_providers,
+            kind_overrides=kind_overrides,
+            axis="origin",
+        )
+
+
+@pytest.mark.parametrize(
+    ("types_by_party", "dac_codes", "private_providers", "refused"),
+    [
+        pytest.param(
+            {"GatesFoundation": ("Organization",)},
+            {"GatesFoundation": ("1601",)},
+            {1601: "GatesFoundation"},
+            "'party', 'private'",
+            id="private-party",
+        ),
+        pytest.param(
+            {"DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",)},
+            {},
+            {},
+            "'residual', 'residual'",
+            id="residual",
+        ),
+        pytest.param({"DACAllRecipients": ("DACGroup",)}, {}, {}, "'total', None", id="total"),
+    ],
+)
+def test_export_index_refuses_a_party_other_than_official_on_both_axes(
+    types_by_party, dac_codes, private_providers, refused
+):
+    with pytest.raises(ExportRefused, match=rf"more than one axis.*{refused}.*destination.*origin"):
+        _export_parties(
+            types_by_party,
+            dac_codes=dac_codes,
+            private_providers=private_providers,
+            axes=frozenset({"origin", "destination"}),
+        )
+
+
+def test_export_index_accepts_an_official_party_on_both_axes():
+    document = _export_parties({"Canada": ("Country",)}, axes=frozenset({"origin", "destination"}))
+    assert [(row["kind"], row["party_class"], row["axes"]) for row in document["parties"]] == [
+        ("party", "official", ["destination", "origin"])
+    ]
+
+
+def test_a_private_code_on_a_recipient_is_no_donor_to_list():
+    document = _export_parties(
+        {"SomeRecipient": ("Country",)}, dac_codes={"SomeRecipient": ("1607",)}, axis="destination"
+    )
+    assert [(row["kind"], row["party_class"]) for row in document["parties"]] == [
+        ("party", "official")
+    ]
+
+
+# The OECD donor codes 1601 to 1650 marked `Private donor` in the donor code list, with the party
+# each names in the graph. Two codes name no published party: 1645 (no node) and 1649
+# (`NovoNordiskFoundation`, a node no dataset publishes).
+_REVIEWED_PRIVATE_PROVIDERS = {
+    1601: "GatesFoundation",
+    1602: "DutchPostcodeLottery",
+    1603: "SwedishPostcodeLottery",
+    1604: "PeoplesPostcodeLottery",
+    1605: "MetLifeFoundation",
+    1606: "MastercardFoundation",
+    1608: "IKEAFoundation",
+    1609: "VanLeerFoundation",
+    1610: "MAVAFoundation",
+    1611: "OakFoundation",
+    1612: "HAndMFoundation",
+    1613: "LaudesFoundation",
+    1614: "ComicRelief",
+    1615: "ChildrensInvestmentFundFoundation",
+    1616: "GatsbyFoundation",
+    1617: "ConradNHiltonFoundation",
+    1618: "DavidAndLucilePackardFoundation",
+    1619: "JohnDAndCatherineTMacArthurFoundation",
+    1620: "AndrewCarnegieFoundation",
+    1621: "MichaelAndSusanDellFoundation",
+    1622: "OmidyarNetwork",
+    1623: "RockefellerFoundation",
+    1624: "WilliamAndFloraHewlettFoundation",
+    1625: "ArcusFoundation",
+    1626: "GordonAndBettyMooreFoundation",
+    1627: "FordFoundation",
+    1628: "WellcomeTrust",
+    1629: "UBSOptimusFoundation",
+    1630: "WorldDiabetesFoundation",
+    1631: "McKnightFoundation",
+    1632: "CitiFoundation",
+    1633: "LEGOFoundation",
+    1634: "NorwegianPostcodeLottery",
+    1636: "JacobsFoundation",
+    1637: "Arcadia",
+    1638: "MargaretACargillFoundation",
+    1639: "LaCaixaFoundation",
+    1640: "BloombergPhilanthropies",
+    1641: "SusanThompsonBuffettFoundation",
+    1642: "HowardGBuffettFoundation",
+    1643: "OpenSocietyFoundations",
+    1644: "FondationBotnar",
+    1646: "BezosEarthFund",
+    1647: "GermanPostcodeLottery",
+    1648: "LeonaMAndHarryBHelmsleyCharitableTrust",
+    1650: "GoodVenturesFoundation",
+}
+
+
+def test_private_providers_holds_only_reviewed_rows():
+    # A code joins PRIVATE_PROVIDERS only after its OECD `Private donor` row is read against the
+    # party the graph gives that code, and is added here.
+    assert dict(PRIVATE_PROVIDERS) == _REVIEWED_PRIVATE_PROVIDERS
+    assert set(PRIVATE_PROVIDERS) <= set(range(1601, 1651))
+
+
+def test_the_fixture_index_makes_exactly_the_listed_providers_private():
+    index = get_index()
+    classes = {(row.kind, row.party_class) for row in index.parties.values()}
+    private = {dcid for dcid, row in index.parties.items() if row.party_class == "private"}
+    assert private - {"DACPrivateDonors"} == set(_REVIEWED_PRIVATE_PROVIDERS.values())
+    assert all(index.parties[dcid].axes == ("origin",) for dcid in private)
+    # Every other party is official, and every residual reads residual.
+    assert classes == {
+        ("party", "official"),
+        ("party", "private"),
+        ("total", None),
+        ("total", "official"),
+        ("total", "private"),
+        ("residual", "residual"),
+    }
+
+
+# --- Whole-population totals ---
+
+_OFFICIAL_AND_PRIVATE = {
+    "DACOfficialDonors": ("DACGroup",),
+    "DACPrivateDonors": ("DACGroup",),
+}
+_OTHER = "provenance/OtherDataset"
+_BOTH = frozenset({_TEST_PROVENANCE, _OTHER})
+
+
+def _window(*covers: PartyClass, first_year: int | None = None) -> WholeWindow:
+    return WholeWindow(covers, first_year)
+
+
+def test_a_whole_total_carries_one_marker_per_named_dataset_and_a_set_joins_two(tmp_path: Path):
+    document = _export_parties(
+        {**_OFFICIAL_AND_PRIVATE, "DACMultilaterals": ("DACGroup",)},
+        whole_totals={
+            "DACOfficialDonors": WholePopulationTotal(
+                "origin",
+                {
+                    _TEST_PROVENANCE: _window("official", first_year=1960),
+                    _OTHER: _window("official"),
+                },
+                "a",
+            ),
+            "DACPrivateDonors": WholePopulationTotal(
+                "origin", {_TEST_PROVENANCE: _window("private")}, "b"
+            ),
+        },
+        whole_total_sets=(
+            WholeTotalSet("all donors including private", "origin", tuple(_OFFICIAL_AND_PRIVATE)),
+        ),
+        axis="origin",
+        published_in=_BOTH,
+    )
+    out = tmp_path / "index.json"
+    out.write_text(json.dumps(document))
+
+    index = load_index(out)
+    assert {dcid: (row.party_class, row.whole) for dcid, row in index.parties.items()} == {
+        "DACOfficialDonors": (
+            "official",
+            (
+                WholeMarker(_OTHER, ("official",)),
+                WholeMarker(_TEST_PROVENANCE, ("official",), (1960, 2024)),
+            ),
+        ),
+        "DACPrivateDonors": ("private", (WholeMarker(_TEST_PROVENANCE, ("private",)),)),
+        "DACMultilaterals": (None, ()),
+    }
+    assert index.whole_total_sets == (
+        WholeTotalSet("all donors including private", "origin", tuple(_OFFICIAL_AND_PRIVATE)),
+    )
+    # A row outside the table carries no key, and a marker without a window carries no `years`.
+    rows = {row["dcid"]: row for row in document["parties"]}
+    assert "whole" not in rows["DACMultilaterals"]
+    assert rows["DACPrivateDonors"]["whole"] == [
+        {"dataset": _TEST_PROVENANCE, "covers": ["private"]}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("published_years", "window"),
+    [
+        pytest.param((1960, 2024), (1984, 2024), id="last-published-year-ends-the-window"),
+        pytest.param((1960, 2025), (1984, 2025), id="a-later-published-year-extends-the-window"),
+    ],
+)
+def test_a_dataset_the_whole_row_leaves_out_reads_the_total_as_ordinary(
+    tmp_path: Path, published_years, window
+):
+    document = _export_parties(
+        {"DACAllRecipients": ("DACGroup",)},
+        whole_totals={
+            "DACAllRecipients": WholePopulationTotal(
+                "destination",
+                {_TEST_PROVENANCE: _window("official", "residual", first_year=1984)},
+                "a",
+            )
+        },
+        published_in=_BOTH,
+        published_years=published_years,
+    )
+    out = tmp_path / "index.json"
+    out.write_text(json.dumps(document))
+
+    row = load_index(out).parties["DACAllRecipients"]
+    assert row.party_class is None
+    assert row.marker(_TEST_PROVENANCE) == WholeMarker(
+        _TEST_PROVENANCE, ("official", "residual"), window
+    )
+    assert row.marker(_OTHER) is None
+
+
+_ORIGIN_TOTAL = {_TEST_PROVENANCE: WholeWindow(("official",))}
+
+
+@pytest.mark.parametrize(
+    ("types_by_party", "whole_totals", "axis", "message"),
+    [
+        pytest.param(
+            {"country/FRA": ("Country",)},
+            {"country/FRA": WholePopulationTotal("origin", _ORIGIN_TOTAL, "a")},
+            "origin",
+            "publishes as a total",
+            id="whole-row-on-a-party",
+        ),
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {"DACOfficialDonors": WholePopulationTotal("origin", _ORIGIN_TOTAL, "a")},
+            "destination",
+            "publish it on",
+            id="whole-row-on-another-axis",
+        ),
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {
+                "DACOfficialDonors": WholePopulationTotal(
+                    "origin", {_OTHER: _window("official")}, "a"
+                )
+            },
+            "origin",
+            "do not publish it",
+            id="dataset-named-for-a-party-it-does-not-publish",
+        ),
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {"DACGhost": WholePopulationTotal("origin", _ORIGIN_TOTAL, "a")},
+            "origin",
+            "publishes as a total",
+            id="whole-row-on-an-unpublished-party",
+        ),
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {"DACOfficialDonors": WholePopulationTotal("origin", _ORIGIN_TOTAL, "")},
+            "origin",
+            "no reason",
+            id="whole-row-without-a-reason",
+        ),
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {"DACOfficialDonors": WholePopulationTotal("origin", {}, "a")},
+            "origin",
+            "names no dataset",
+            id="whole-row-without-a-dataset",
+        ),
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {
+                "DACOfficialDonors": WholePopulationTotal(
+                    "origin", {_TEST_PROVENANCE: _window("official", first_year=2025)}, "a"
+                )
+            },
+            "origin",
+            "outside the years",
+            id="window-starting-after-the-last-published-year",
+        ),
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {
+                "DACOfficialDonors": WholePopulationTotal(
+                    "origin", {_TEST_PROVENANCE: _window("official", first_year=1950)}, "a"
+                )
+            },
+            "origin",
+            "outside the years",
+            id="window-starting-before-the-first-published-year",
+        ),
+    ],
+)
+def test_export_index_refuses_a_whole_total_row_it_cannot_stand_behind(
+    types_by_party, whole_totals, axis, message
+):
+    with pytest.raises(ExportRefused, match=message):
+        _export_parties(types_by_party, whole_totals=whole_totals, axis=axis)
+
+
+@pytest.mark.parametrize(
+    ("types_by_party", "whole_totals", "whole_total_sets", "message"),
+    [
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {
+                "DACOfficialDonors": WholePopulationTotal("origin", _ORIGIN_TOTAL, "a"),
+                "DACPrivateDonors": WholePopulationTotal(
+                    "origin", {_TEST_PROVENANCE: _window("official", "private")}, "b"
+                ),
+            },
+            (),
+            "both cover",
+            id="overlapping-markers",
+        ),
+        pytest.param(
+            _OFFICIAL_AND_PRIVATE,
+            {
+                "DACOfficialDonors": WholePopulationTotal(
+                    "origin", {_TEST_PROVENANCE: _window("total")}, "a"
+                )
+            },
+            (),
+            "outside",
+            id="whole-row-holding-a-total",
+        ),
+        pytest.param(
+            {**_OFFICIAL_AND_PRIVATE, "DACMultilaterals": ("DACGroup",)},
+            {"DACOfficialDonors": WholePopulationTotal("origin", _ORIGIN_TOTAL, "a")},
+            (WholeTotalSet("both", "origin", ("DACOfficialDonors", "DACMultilaterals")),),
+            "no whole total",
+            id="set-naming-a-total-that-holds-no-population",
+        ),
+    ],
+)
+def test_a_whole_total_document_the_loader_refuses(
+    types_by_party, whole_totals, whole_total_sets, message
+):
+    # The export writes these rows; the release gate refuses the part where it loads it.
+    document = _export_parties(
+        types_by_party,
+        whole_totals=whole_totals,
+        whole_total_sets=whole_total_sets,
+        axis="origin",
+    )
+
+    with pytest.raises(IndexFormatError, match=message):
+        parse_index(document)
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
+# Each whole-population total with the markers its composition checks gave, as reviewed against
+# the comment on `WHOLE_POPULATION_TOTALS`: the axis, then each dataset's classes and window. The
+# fixture index ends DACAllRecipients' window in the last year its coverage build publishes it.
+_REVIEWED_WHOLE_TOTALS = {
+    "DACAllRecipients": ("destination", {_DAC2A: (("official", "residual"), (1984, 2025))}),
+    "DACOfficialDonors": (
+        "origin",
+        {_DAC2A: (("official",), None), _DAC2B: (("official",), None)},
+    ),
+    "DACPrivateDonors": ("origin", {_DAC2A: (("private",), None)}),
+}
+_REVIEWED_WHOLE_CLASSES = {
+    "DACAllRecipients": None,
+    "DACOfficialDonors": "official",
+    "DACPrivateDonors": "private",
+}
+_REVIEWED_WHOLE_TOTAL_SETS = (
+    WholeTotalSet(
+        "all donors including private", "origin", ("DACOfficialDonors", "DACPrivateDonors")
+    ),
+    WholeTotalSet("all donors", "origin", ("DACOfficialDonors", "DACPrivateDonors")),
+    WholeTotalSet("every donor", "origin", ("DACOfficialDonors", "DACPrivateDonors")),
+)
+
+
+def test_whole_population_totals_holds_only_reviewed_rows():
+    # A row joins WHOLE_POPULATION_TOTALS only after the composition check its comment describes,
+    # and is added here. DACAllRecipients names DAC2A alone: DAC2B fails the check.
+    # The declaration states a window's first year, and the export ends it in the last year the
+    # dataset publishes the total.
+    assert {
+        dcid: (row.axis, {d: (w.covers, w.first_year) for d, w in row.datasets.items()})
+        for dcid, row in WHOLE_POPULATION_TOTALS.items()
+    } == {
+        dcid: (axis, {d: (covers, years and years[0]) for d, (covers, years) in datasets.items()})
+        for dcid, (axis, datasets) in _REVIEWED_WHOLE_TOTALS.items()
+    }
+    assert all(row.reason for row in WHOLE_POPULATION_TOTALS.values())
+    assert tuple(WHOLE_TOTAL_SETS) == _REVIEWED_WHOLE_TOTAL_SETS
+
+
+def test_the_fixture_index_carries_each_reviewed_whole_total():
+    index = get_index()
+    for dcid, (axis, datasets) in _REVIEWED_WHOLE_TOTALS.items():
+        row = index.parties[dcid]
+        assert (row.kind, row.party_class, row.axes) == (
+            "total",
+            _REVIEWED_WHOLE_CLASSES[dcid],
+            (axis,),
+        )
+        assert row.whole == tuple(
+            WholeMarker(dataset, covers, years)
+            for dataset, (covers, years) in sorted(datasets.items())
+        )
+    assert {dcid for dcid, row in index.parties.items() if row.whole} == set(_REVIEWED_WHOLE_TOTALS)
+    assert index.parties["DACAllRecipients"].marker(_DAC2B) is None
+    assert tuple(index.whole_total_sets) == _REVIEWED_WHOLE_TOTAL_SETS

@@ -9,23 +9,26 @@ listing SQL runs against the rows the writer stored.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
-from dataset_store.snapshot import FrameLineage, LiveSnapshotReader
+from code_index.shared import get_index
+from dataset_store.snapshot import FrameLineage, LiveSnapshotReader, ManifestFacts, VersionFacts
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.versions import VERSIONS_PAGE_MAX
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
-from datasets_api.versions import ArtifactRecord, VersionRecord, VersionsPageKey
+from datasets_api.versions import NO_PARTY_ROLE, ArtifactRecord, VersionRecord, VersionsPageKey
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
 from tests.artifact_store.conftest import FakeGCSClient
 
 from ._app_factories import make_client
 from ._snapshot_doubles import FakeSpecReader
+from ._version_facts import facts_from_body, golden_cases
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
 
@@ -94,9 +97,12 @@ class _Rig:
         subject_id: str = "spec_a",
         base_content_version: str | None = None,
         renderings: tuple[dict[str, object], ...] = (),
+        facts: VersionFacts | None = None,
+        enrichment_digest: str | None = None,
     ) -> None:
         """Record a version with one stored file linked under it per entry of `renderings`,
-        an hour after the version recorded before it."""
+        each salted with `enrichment_digest`, an hour after the version recorded before it.
+        `facts` default to a published frame's."""
         self.now += timedelta(hours=1)
         artifacts = tuple(
             ArtifactRecord(
@@ -105,6 +111,7 @@ class _Rig:
                 ).digest,
                 rendering=rendering,
                 media_type="application/vnd.apache.parquet",
+                enrichment_digest=enrichment_digest,
             )
             for index, rendering in enumerate(renderings)
         )
@@ -114,7 +121,7 @@ class _Rig:
                 subject_kind="spec",
                 content_version=content_version,
                 schema_version=1,
-                facts=FrameLineage(input_content_versions=[]),
+                facts=facts if facts is not None else FrameLineage(input_content_versions=[]),
                 artifacts=artifacts,
                 base_content_version=base_content_version,
             )
@@ -192,9 +199,13 @@ def test_versions_list_is_newest_first_with_each_version_s_rendering_for_any_cal
     response = rig.client().get(_VERSIONS_PATH)
 
     assert response.status_code == 200, response.text
+    # No version here stored an output profile or a `NO_PARTY_ROLE` link, so each lists the
+    # digest.
+    digest = get_index().enrichment_digest
     assert response.json() == {
         "schema_version": 1,
         "spec_id": "spec_a",
+        "enrichment_stamp": digest,
         "versions": [
             {
                 "content_version": _cv(6),
@@ -202,6 +213,7 @@ def test_versions_list_is_newest_first_with_each_version_s_rendering_for_any_cal
                 "rendering": "groupby",
                 "groupby": _GROUPBY,
                 "without_party_totals": True,
+                "enrichment_stamp": digest,
             },
             {
                 "content_version": _cv(5),
@@ -209,30 +221,35 @@ def test_versions_list_is_newest_first_with_each_version_s_rendering_for_any_cal
                 "rendering": "without_party_totals",
                 "groupby": None,
                 "without_party_totals": True,
+                "enrichment_stamp": digest,
             },
             {
                 "content_version": _cv(4),
                 "base_content_version": _cv(3),
                 "rendering": "not_recorded",
                 "groupby": None,
+                "enrichment_stamp": digest,
             },
             {
                 "content_version": _cv(2),
                 "base_content_version": _cv(3),
                 "rendering": "groupby",
                 "groupby": _GROUPBY,
+                "enrichment_stamp": digest,
             },
             {
                 "content_version": _cv(3),
                 "base_content_version": None,
                 "rendering": "plain",
                 "groupby": None,
+                "enrichment_stamp": digest,
             },
             {
                 "content_version": _cv(1),
                 "base_content_version": _cv(0),
                 "rendering": "groupby",
                 "groupby": _LEVELLED_GROUPBY,
+                "enrichment_stamp": digest,
             },
         ],
         "next_cursor": None,
@@ -248,6 +265,62 @@ def test_versions_list_is_empty_for_a_registered_dataset_with_no_stored_version(
     assert response.status_code == 200, response.text
     assert response.json()["versions"] == []
     assert response.json()["complete"] is True
+    assert response.json()["enrichment_stamp"] == get_index().enrichment_digest
+
+
+_LONG_RENDERING = {"format": "parquet", "bundle": False}
+
+
+def _dataset_facts(*roles: str) -> VersionFacts:
+    """A dataset version's facts whose output profile lists `roles` as its role columns."""
+    facts = facts_from_body(golden_cases()["definition"]["body"])
+    assert isinstance(facts, ManifestFacts)
+    profile = {
+        "schema_version": 1,
+        "rows": 1,
+        "columns": [
+            {"name": role, "kind": "role", "droppable": False, "distinct": 1} for role in roles
+        ],
+        "pivots": [],
+        "enrichments": [],
+    }
+    return replace(facts, output_profile=profile)
+
+
+@pytest.mark.parametrize(
+    "spec_reader",
+    [
+        pytest.param(None, id="one-subject"),
+        pytest.param(
+            _ServingSpecReader(spec_ids=["spec_a"], served={"spec_a": ("spec_served", "spec_a")}),
+            id="served-ids",
+        ),
+    ],
+)
+def test_each_listed_version_states_the_stamp_a_kind_file_of_it_carries_now(
+    rig: _Rig, spec_reader: FakeSpecReader | None
+) -> None:
+    """A version whose stored output profile holds no party role, or whose kind file is linked
+    under `NO_PARTY_ROLE`, lists no stamp; every other version lists the serving digest. The
+    keyset query of one subject and the grouped query of several read the same facts."""
+    digest = get_index().enrichment_digest
+    rig.record_version(content_version=_cv(1), facts=_dataset_facts("observationAbout"))
+    rig.record_version(content_version=_cv(2), facts=_dataset_facts("donor", "recipient"))
+    # A version with no output profile is read from the salt of its kind files' links.
+    rig.record_version(
+        content_version=_cv(3), renderings=(_LONG_RENDERING,), enrichment_digest=NO_PARTY_ROLE
+    )
+    rig.record_version(content_version=_cv(4), renderings=(_LONG_RENDERING,))
+
+    response = rig.client(spec_reader).get(_VERSIONS_PATH)
+
+    assert response.status_code == 200, response.text
+    stamps = {
+        version["content_version"]: version.get("enrichment_stamp")
+        for version in response.json()["versions"]
+    }
+    assert stamps == {_cv(4): digest, _cv(3): None, _cv(2): digest, _cv(1): None}
+    assert response.json()["enrichment_stamp"] == digest
 
 
 @pytest.mark.parametrize(

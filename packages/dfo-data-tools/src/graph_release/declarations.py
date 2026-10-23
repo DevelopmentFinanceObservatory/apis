@@ -19,7 +19,12 @@ from dataclasses import dataclass
 from typing import Final, cast
 
 from code_index import declarations as code_index_declarations
-from code_index.declarations import CodeSystemConfig, KindOverride, TotalGroup
+from code_index.declarations import (
+    CodeSystemConfig,
+    KindOverride,
+    TotalGroup,
+    WholePopulationTotal,
+)
 from code_index.types import (
     BroadReading,
     DatasetDeclaration,
@@ -31,6 +36,7 @@ from code_index.types import (
     PartyKind,
     ShapeSlotDefault,
     StatTypeWordDeclaration,
+    WholeTotalSet,
 )
 from dc_graph.visible_arcs import IMPORT_ADDED_CONSTRAINT_PROPERTIES
 from dfo_platform.roles import ROLE_AXES, RoleAxis
@@ -60,6 +66,9 @@ class Declarations:
     party_type_kinds: Mapping[str, PartyKind | None]
     party_kind_overrides: Mapping[str, KindOverride]
     total_groups: Mapping[str, TotalGroup]
+    private_providers: Mapping[int, str]
+    whole_totals: Mapping[str, WholePopulationTotal]
+    whole_total_sets: Sequence[WholeTotalSet]
     measure_axes: Sequence[MeasureAxis]
     measure_partition_labels: Sequence[MeasurePartitionLabel]
     measure_nouns: Sequence[MeasurePartitionLabel]
@@ -100,9 +109,10 @@ class Declarations:
 
 
 def _plain(value: object) -> object:
-    """`value` as JSON values: a dataclass as an object of its fields, a mapping as an object, a
-    set as a sorted array, a compiled pattern as its pattern and flags. Raises `TypeError` for
-    anything else that JSON cannot hold, and for a mapping key that is not a string."""
+    """`value` as JSON values: a dataclass as an object of its fields, a mapping as an object
+    (an integer key as its decimal text), a set as a sorted array, a compiled pattern as its
+    pattern and flags. Raises `TypeError` for anything else that JSON cannot hold, and for a
+    mapping key that is neither a string nor an integer."""
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             field.name: _plain(getattr(value, field.name)) for field in dataclasses.fields(value)
@@ -110,10 +120,12 @@ def _plain(value: object) -> object:
     if isinstance(value, re.Pattern):
         return {"pattern": value.pattern, "flags": int(value.flags)}
     if isinstance(value, Mapping):
-        keys = [key for key in value if not isinstance(key, str)]
+        keys = [key for key in value if not isinstance(key, str | int)]
         if keys:
-            raise TypeError(f"declaration mapping keys must be strings; got {keys[:5]!r}")
-        return {key: _plain(item) for key, item in value.items()}
+            raise TypeError(
+                f"declaration mapping keys must be strings or integers; got {keys[:5]!r}"
+            )
+        return {str(key): _plain(item) for key, item in value.items()}
     if isinstance(value, frozenset | set):
         return sorted(cast("list[str]", [_plain(item) for item in value]))
     if isinstance(value, tuple | list):
@@ -130,6 +142,9 @@ DECLARATIONS: Final[Declarations] = Declarations(
     party_type_kinds=code_index_declarations.PARTY_TYPE_KINDS,
     party_kind_overrides=code_index_declarations.PARTY_KIND_OVERRIDES,
     total_groups=code_index_declarations.TOTAL_GROUPS,
+    private_providers=code_index_declarations.PRIVATE_PROVIDERS,
+    whole_totals=code_index_declarations.WHOLE_POPULATION_TOTALS,
+    whole_total_sets=code_index_declarations.WHOLE_TOTAL_SETS,
     measure_axes=code_index_declarations.MEASURE_AXES,
     measure_partition_labels=code_index_declarations.MEASURE_PARTITION_LABELS,
     measure_nouns=code_index_declarations.MEASURE_NOUNS,
