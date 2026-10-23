@@ -387,7 +387,8 @@ class TestRoleSignatureIncompatibleIsNonRetryable422:
 
 
 class TestInconsistentCandidatesRefuseMemberNotResolvableNotASilentNarrowing:
-    """Candidates whose forward and reverse graph arcs disagree map to non-retryable 422 responses."""
+    """Candidates whose forward and reverse graph arcs disagree map to 422 responses. The
+    reads are a live graph's, which a later read can settle, so the refusal is retryable."""
 
     def test_inconsistent_candidate_refuses_member_not_resolvable_through_the_mint_door(self):
         store = FakeDatasetStore()
@@ -410,7 +411,7 @@ class TestInconsistentCandidatesRefuseMemberNotResolvableNotASilentNarrowing:
         assert resp.status_code == 422, resp.text
         problem = resp.json()
         assert problem["code"] == "member_not_resolvable"
-        assert problem["retryable"] is False
+        assert problem["retryable"] is True
         assert [issue["pointer"] for issue in problem["issues"]] == ["/input/spec_id"]
         assert [issue["member"] for issue in problem["issues"]] == [f"dcid:{_ODA_GRANTS}"]
         assert store.state.spec_registry == {}
@@ -441,7 +442,7 @@ class TestInconsistentCandidatesRefuseMemberNotResolvableNotASilentNarrowing:
         assert resp.status_code == 422, resp.text
         problem = resp.json()
         assert problem["code"] == "member_not_resolvable"
-        assert problem["retryable"] is False
+        assert problem["retryable"] is True
         assert [issue["member"] for issue in problem["issues"]] == [f"dcid:{_ODA_GRANTS}"]
 
 

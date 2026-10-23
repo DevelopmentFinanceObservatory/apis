@@ -47,6 +47,7 @@ from statvar_members.enumerate import (
 from statvar_members.types import (
     UNRESOLVED_NODE,
     AbsentReading,
+    CompleteArcReads,
     FiveTuple,
     MemberArcReader,
     SubjectPage,
@@ -58,6 +59,7 @@ __all__ = [
     "DEFAULT_SUBJECT_CEILING",
     "UNRESOLVED_NODE",
     "AbsentReading",
+    "CompleteArcReads",
     "DegenerateObservationProperties",
     "FiveTuple",
     "Member",

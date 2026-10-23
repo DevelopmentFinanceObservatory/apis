@@ -545,6 +545,11 @@ class OriginGraphClient:
             tables=lambda catalogue, dcid: _table_arc_values(catalogue, dcid, properties),
         )
 
+    def arcs_complete(self, dcid: str) -> bool:
+        """Whether the bound catalogue's tables answer `dcid`'s arcs (`arcs_mirrored`), so a
+        read of them drops none (`statvar_members.CompleteArcReads`)."""
+        return arcs_mirrored(dcid, catalogue=current_catalogue())
+
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, tuple[str, ...]]:
