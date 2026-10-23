@@ -459,9 +459,9 @@ def test_dropped_gross_is_admitted_when_the_final_answer_meets_it():
     assert "gross" not in state.satisfied_measure_phrases
     assert settle_answer(state, _GDP_BY_ACTIVITY, [settled]) == ()
     assert state.judgement is not None and state.judgement.departures() == ()
-    assert "gross" in _admitted_phrases(state, result)
+    assert "gross" in _admitted_phrases(state, result, {})
     assert settle_answer(state, _GDP_BY_ACTIVITY, []) == ()
-    assert "gross" not in _admitted_phrases(state, result)
+    assert "gross" not in _admitted_phrases(state, result, {})
 
 
 @pytest.mark.parametrize(

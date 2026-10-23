@@ -9,22 +9,25 @@ the sentence renderer reads and the plans it wrote, and writes
 
 - `id`, `query`: the panel query.
 - `rendered_sentence`, `sentence_plan`: the envelope sentence and plan.
-- `parts`: each part with its status, `variable_text`, warnings, departures and own
-  sentence; a definite part's Spec, a candidates part's shown Specs, a no-data part's reason.
+- `parts`: each part with its status, `variable_text`, warnings, departures, assumptions,
+  operations and own sentence; a definite part's Spec, a candidates part's shown Specs, a
+  no-data part's reason.
 
 A Spec keeps its definition and the resolved fields `render_sentence_plan` reads (shape,
 slots, StatVar counts and served dates, entities and groups, coverage, scope, facets, slot
-options, open-axis and role-axis facts, measure label, the trace's sources) with its recorded
-sentence. Beside `resolved` each Spec stores `sentence_facts`, what the renderer reads that
-the wire does not carry: the facts of its served members (`search.models.SentenceFacts`),
+options, open-axis and role-axis facts, measure label, the trace's sources and slot filters)
+with its recorded sentence. The slot filters carry each slot's key, binding kind, values and
+provenance, so a replay reads every declared default the answer stated. Beside `resolved`
+each Spec stores `sentence_facts`, what the renderer reads that the wire does not carry: the
+facts of its served members (`search.models.SentenceFacts`),
 which the in-process panel run records from each answer, and, for a Spec whose measure label
 names code pairs, those pairs (`measure_label_named_values`), which the script derives from
 the Spec's `measure_axis_values` and the measure index of the release `GRAPH_RELEASE_URI` names,
 as `spec_build.measure_label_for_partition` does. A replay states both on the Spec it rebuilds
 (`golden_parts`). Observations, timing, diagnostics, skills, entity and facet options and the
-rest of the trace go; the model fields that are required but unread (the trace's entity and
-filter lists) are written empty, and a role-axis fact's `member_count`, which the wire omits
-when it is null, is restored as null. A no-data part keeps only its reason, since the envelope
+rest of the trace go; the trace's entity list, required but unread, is written empty, and a
+role-axis fact's `member_count`, which the wire omits when it is null, is restored as null.
+A no-data part keeps only its reason, since the envelope
 composer reads no other `no_data` field.
 
 The files are gzipped: the 182-query golden is about 370 kB compressed against 4.8 MB
@@ -42,6 +45,16 @@ panel run. It re-renders what the test compares: each definite Spec's plan, each
 part's candidate plans and its own plan, and the envelope plan, with the sentence of each.
 A no-data part's own plan needs inputs the wire does not carry, so it stays as recorded.
 
+A recording keeps each part's assumptions as the answer gave them. A re-render recomputes
+them from what the golden holds: a definite part's from its Spec and operations
+(`assumptions_for`) and a candidates part's as the items every shown Spec's list so read
+holds alike (`common_assumptions`), as `engine.assemble` does. The golden records no
+every-member axes ("all donors") and no resubmit echo, so a re-render states an open role on
+an axis the request's words asked every member of. The golden also lacks the Spec each part
+of a same-shape merge or a fold resolved to before the merge, from which that part reads its
+declared defaults. A definite part whose Spec another part of the line shares therefore
+keeps the assumptions it recorded, as does a part of another status.
+
 Usage:
     just sentence-panel --in-process
     just sentence-golden runs/sentence-panel
@@ -57,6 +70,7 @@ import gzip
 import json
 import sys
 import tempfile
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -68,6 +82,7 @@ from code_index.shared import get_measure_index
 from code_index.types import label_for_pairs
 from graph_release.context import bound_served_release
 from search.models import (
+    Assumption,
     CandidatesPart,
     DefinitePart,
     SentenceFacts,
@@ -75,6 +90,7 @@ from search.models import (
     Spec,
 )
 from search.models.response import Part
+from search.render.assumptions import assumptions_for, common_assumptions
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.envelope import compose_envelope_sentence
 from search.render.heading import declared_axis_names, sibling_how_properties
@@ -88,6 +104,8 @@ _PART_KEYS = (
     "variable_text",
     "warnings",
     "departures",
+    "assumptions",
+    "operations",
     "rendered_sentence",
     "sentence_plan",
 )
@@ -108,6 +126,10 @@ _RESOLVED_KEYS = (
     "rendered_sentence",
     "sentence_plan",
 )
+
+# The fields of a `trace.slot_filters` entry that the assumptions read: a declared default's
+# slot, values and provenance.
+_SLOT_FILTER_KEYS = ("key", "binding_kind", "refs", "provenance")
 
 _PARTS = TypeAdapter(list[Part])
 _PLAN = TypeAdapter(list[SentenceToken])
@@ -186,7 +208,10 @@ def trim_spec(spec: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
     trimmed["trace"] = {
         "resolved_sources": resolved["trace"]["resolved_sources"],
         "resolved_entities": [],
-        "slot_filters": [],
+        "slot_filters": [
+            _pick(slot_filter, _SLOT_FILTER_KEYS)
+            for slot_filter in resolved["trace"]["slot_filters"]
+        ],
     }
     if role_facts := resolved.get("role_axis_facts"):
         # The wire omits null fields and `RoleAxisFact.member_count` is required but
@@ -203,8 +228,8 @@ def trim_spec(spec: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
 
 
 def trim_part(part: dict[str, Any], facts: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """`part` with its own sentence, departures and warnings, and the inputs the renderer
-    reads for its status, each Spec with its entry in `facts`, keyed by spec id."""
+    """`part` with its own sentence, departures, assumptions and warnings, and the inputs
+    the renderer reads for its status, each Spec with its entry in `facts`, keyed by spec id."""
     trimmed = _pick(part, _PART_KEYS)
     match part["status"]:
         case "definite":
@@ -317,24 +342,42 @@ def _set_plan(target: dict[str, Any], plan: list[SentenceToken]) -> None:
     target["rendered_sentence"] = sentence_from_plan(plan)
 
 
+def _set_assumptions(raw: dict[str, Any], assumptions: list[Assumption]) -> None:
+    """Store `assumptions` on the part `raw` as the wire writes them."""
+    raw["assumptions"] = [item.model_dump(mode="json", exclude_none=True) for item in assumptions]
+
+
 def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
-    """`line` with every plan the golden test compares re-rendered by the current renderer
-    and every input unchanged."""
+    """`line` with every plan the golden test compares re-rendered by the current renderer,
+    each assumptions list recomputed from the Spec but those of definite parts that share
+    one, and every other input unchanged."""
     parts = golden_parts(line["parts"])
     declarations = declared_axis_names()
+    spec_ids = Counter(part.spec.spec_id for part in parts if isinstance(part, DefinitePart))
     for part, raw in zip(parts, line["parts"], strict=True):
         if isinstance(part, DefinitePart):
             plan = render_sentence_plan(part.spec, axis_declarations=declarations)
             _set_plan(raw["spec"]["resolved"], plan)
+            # A Spec two parts share served a merge or a fold, whose parts read their
+            # declared defaults from their own pre-merge Specs, which the golden lacks.
+            if spec_ids[part.spec.spec_id] == 1:
+                _set_assumptions(raw, assumptions_for(part.spec, operations=part.operations))
         elif isinstance(part, CandidatesPart):
             specs = part.candidates.specs
             raw_specs = raw["candidates"]["specs"]
             for raw_spec, plan in zip(raw_specs, rerendered_candidates(specs), strict=True):
                 _set_plan(raw_spec["resolved"], plan)
+            assumptions = common_assumptions(
+                [assumptions_for(spec, operations=part.operations) for spec in specs]
+            )
+            _set_assumptions(raw, assumptions)
             _set_plan(
                 raw,
                 candidates_sentence_plan(
-                    specs, truncated=part.candidates.truncated, departures=part.departures
+                    specs,
+                    truncated=part.candidates.truncated,
+                    departures=part.departures,
+                    assumptions=assumptions,
                 ),
             )
     composed = compose_envelope_sentence(golden_parts(line["parts"]))

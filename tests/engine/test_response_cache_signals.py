@@ -32,7 +32,7 @@ def _count_state_attribute_reads(attr: str) -> int:
 
 
 def test_query_text_and_role_query_reader_counts_are_covered() -> None:
-    """Pin the 8 `query_text` readers and 1 `role_query` reader covered by cache signals,
+    """Pin the 8 `query_text` readers and 2 `role_query` readers covered by cache signals,
     plus the two reads of each that fill `QuantityRequest.query_text` in
     `_read_stated_quantity` and `BindRequest.query_text` in `_phase_bind`. Those two reach
     a model only through a binder that reads the query text, which looks up nothing on
@@ -44,9 +44,9 @@ def test_query_text_and_role_query_reader_counts_are_covered() -> None:
         "not the 8 compute_layer2_signals computes signals for and the binder requests' 2. "
         "Update compute_layer2_signals (and this test) to cover the new reader."
     )
-    assert role_query_reads == 3, (
+    assert role_query_reads == 4, (
         f"state.role_query has {role_query_reads} readers in src/search/engine/region/, "
-        "not the 1 compute_layer2_signals computes a signal for and the binder requests' 2. "
+        "not the 2 compute_layer2_signals computes signals for and the binder requests' 2. "
         "Update compute_layer2_signals (and this test) to cover the new reader."
     )
 
@@ -275,8 +275,25 @@ def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
         "declared_default_slots_named",
         "written_variable_phrases",
         "query_text_negated_stated_words",
+        "every_member_axes",
         "query_text_value_source",
     }
+
+
+def test_a_dropped_phrase_of_place_nouns_takes_its_axis_from_the_query() -> None:
+    """Two queries that extract "all countries" alike key apart by the preposition before
+    it, on a request of several variables too."""
+
+    def axes(query: str) -> tuple[str | None, ...]:
+        return compute_layer2_signals(
+            query=query,
+            entity_roles={},
+            query_text=None,
+            dropped_qualifiers=["all countries", "in all sectors"],
+        ).every_member_axes
+
+    assert axes("aid to Ethiopia from all countries in all sectors") == ("origin", None)
+    assert axes("aid from Ethiopia to all countries in all sectors") == ("destination", None)
 
 
 def test_graph_value_grounding_keeps_the_query_outside_indexed_vocabulary() -> None:

@@ -12,7 +12,7 @@ import threading
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Final, cast
+from typing import Final, Literal, cast
 
 import dc_graph
 from dfo_platform.executor import submit_with_context
@@ -273,6 +273,8 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         return await _role_incompatible_no_data(state)
     if bound == "role_not_resolved":
         return await _role_not_resolved_no_data(state)
+    if bound == "no_direction_holds":
+        return await _role_not_resolved_no_data(state, offer=False)
     state.elected_place_roles = bound
     _settle_breakdown(state)
     # The bound roles elect one role class among the shape's members, and every later
@@ -389,19 +391,29 @@ def _election_refusal(
     return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
 
 
-def _settle_direction(state: ResolveState) -> PlaceAssignment | PlaceRoleRefusal:
+def _settle_direction(
+    state: ResolveState,
+) -> PlaceAssignment | PlaceRoleRefusal | Literal["no_direction_holds"]:
     """The elected shape's places when one is named without a direction no rule places
     (`place_roles.direction_assignments`): the availability read runs once per role
     assignment (`availability.series_at_places`). Exactly one with data is served, and the
     answer states the direction it reads the place on (`departures.direction_inferred`).
     When several hold data the first is served and each other is offered beside it as a
     `direction` candidate: a copy of the elected shape on the menu, bound on its own
-    assignment (`ResolveState.direction_rivals`). Otherwise the places refuse
-    ``role_not_resolved``, as a question whose direction no data settles."""
+    assignment (`ResolveState.direction_rivals`). When readings exist and every read says
+    empty (`False`) the places refuse ``no_direction_holds``, a ``role_not_resolved`` that
+    offers no reading, since each is known empty. A read the coverage index cannot answer
+    (`None`) is unknown. Otherwise they refuse ``role_not_resolved``, as a question
+    whose direction no data settles."""
     shape = state.shape_draft
-    readings = direction_assignments(state, shape)
     series = series_at_places(state)
-    held = [(axis, assignment) for axis, assignment in readings if series(shape, assignment)]
+    reads = [
+        (axis, assignment, series(shape, assignment))
+        for axis, assignment in direction_assignments(state, shape)
+    ]
+    if reads and all(read is False for *_, read in reads):
+        return "no_direction_holds"
+    held = [(axis, assignment) for axis, assignment, read in reads if read]
     name = undirected_place_name(state)
     if not held or name is None:
         return "role_not_resolved"

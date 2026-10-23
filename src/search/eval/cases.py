@@ -42,6 +42,7 @@ from pydantic import (
 from yaml.constructor import ConstructorError
 
 from search.models import (
+    AssumptionKind,
     DataCommonsId,
     DeclinedReason,
     EntityRoleKey,
@@ -69,6 +70,7 @@ CheckName = Literal[
     "operations",
     "refusal",
     "warnings",
+    "assumptions",
     "candidates",
     "parts",
     "skills",
@@ -321,6 +323,15 @@ class ExpectedOperation(_CaseModel):
     target_year: int | None = None
 
 
+class ExpectedAssumption(_CaseModel):
+    """One value the answer filled that the request did not ask for. ``kind`` is asserted,
+    and ``binding_ref`` and ``text`` when the case sets them."""
+
+    kind: AssumptionKind
+    binding_ref: _NonEmpty | None = None
+    text: _NonEmpty | None = None
+
+
 class ExpectedUnit(_CaseModel):
     """The unit request the identity carries. An omitted field is unasserted."""
 
@@ -357,6 +368,10 @@ class _Assertions(_CaseModel):
     operations: list[ExpectedOperation] | None = None
     warnings: list[Pending] | None = Field(
         default=None, description="warning codes the answer must carry; extra warnings pass"
+    )
+    assumptions: list[ExpectedAssumption] | None = Field(
+        default=None,
+        description="the part's assumptions in clause order; [] asserts none",
     )
 
     @field_validator("entities")
@@ -771,6 +786,8 @@ def assertion_checks(block: _Assertions) -> set[CheckName]:
         checks.add("operations")
     if "warnings" in fields:
         checks.add("warnings")
+    if "assumptions" in fields:
+        checks.add("assumptions")
     if isinstance(block, DefiniteExpect | MixedExpect):
         checks.add("materialisation")
     if isinstance(block, DefiniteExpect) and "skills" in fields:

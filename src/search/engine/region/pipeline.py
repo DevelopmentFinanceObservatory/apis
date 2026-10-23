@@ -7,7 +7,7 @@ import dataclasses
 import functools
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import ExitStack
 from typing import Final
 
@@ -70,7 +70,7 @@ from search.engine.region.requirements import (
     unbinding_phrases,
     with_requirement_departures,
 )
-from search.engine.region.result import RegionResult
+from search.engine.region.result import RegionResult, every_member_phrases
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -819,7 +819,16 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 if result is None:
                     settled = settled or phase is _phase_settle
                 else:
-                    admitted = _admitted_phrases(state, result)
+                    # Only a vetted election can report qualifier matches: earlier terminals
+                    # may hold pre-bind candidates without a forced binding or elected shape.
+                    every_member = (
+                        every_member_phrases(
+                            result, state.dropped_qualifier_phrases, query=state.role_query
+                        )
+                        if state.shape_draft is not None
+                        else {}
+                    )
+                    admitted = _admitted_phrases(state, result, every_member)
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
                     return _stating_unevaluated(
@@ -828,6 +837,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                                 result, state.requirements, state.judgement
                             ),
                             admitted_qualifier_phrases=admitted,
+                            every_member_axes=frozenset(every_member.values()),
                             timing_by_step={**result.timing_by_step, **unbooked},
                             scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
@@ -877,13 +887,16 @@ def _book_unbooked_time(
     unbooked[step] = state.timing[step] = max(0, elapsed - booked)
 
 
-def _admitted_phrases(state: ResolveState, result: RegionResult) -> frozenset[str]:
+def _admitted_phrases(
+    state: ResolveState, result: RegionResult, every_member: Mapping[str, RoleAxis]
+) -> frozenset[str]:
     """The phrases the part's `result` admits, which no dropped-qualifier warning names
     (`assemble._surviving_qualifier_warnings`). Only a vetted election can report qualifier
     matches: earlier terminals may hold pre-bind candidates without a forced binding or
     elected shape, and admit only what their refusal names. A measure value is admitted
     when the elected shape carries it or every final answer meets it
-    (`met_measure_phrases`)."""
+    (`met_measure_phrases`), and a phrase of `every_member`, which asks for every member of
+    a flow role the answer represents (`every_member_phrases`)."""
     if state.shape_draft is None:
         return _refused_pinned_phrases(state, result)
     return (
@@ -894,6 +907,7 @@ def _admitted_phrases(state: ResolveState, result: RegionResult) -> frozenset[st
         | state.applied_dropped_qualifier_phrases
         | unbinding_phrases(state.requirements)
         | state.slot_default_phrases
+        | frozenset(every_member)
     )
 
 

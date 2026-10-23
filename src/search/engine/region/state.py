@@ -1389,6 +1389,7 @@ class ResolveState:
         nearest_real: tuple[NearestRealSpec, ...] | None = None,
         llm_usage: dict | None = None,
         unresolved_entity_names: tuple[str, ...] = (),
+        untold_groups: tuple[tuple[str, ...], ...] = (),
         ambiguous_entities: tuple[AmbiguousEntity, ...] = (),
         resolved_entity_dcids: Mapping[str, str] | None = None,
         role_not_admitted_entities: tuple[RoleNotAdmittedEntity, ...] = (),
@@ -1397,6 +1398,7 @@ class ResolveState:
         unbound_sources: tuple[ResolvedQualifier, ...] = (),
         unit_alternatives: tuple[UnitAlternative, ...] = (),
         denominator: NoDataDenominator | None = None,
+        role_assignments: tuple[Mapping[str, RoleAxis], ...] = (),
         candidate: _Candidate | None = None,
     ) -> RegionResult:
         """Build a no-data result, preserving `cause`. A `no_observations` answer over an
@@ -1449,6 +1451,7 @@ class ResolveState:
             ),
             llm_usage=llm_usage,
             unresolved_entity_names=unresolved_entity_names,
+            untold_groups=untold_groups,
             ambiguous_entities=ambiguous_entities,
             resolved_entity_dcids=dict(resolved_entity_dcids or {}),
             role_not_admitted_entities=role_not_admitted_entities,
@@ -1462,6 +1465,7 @@ class ResolveState:
             unbound_sources=unbound_sources,
             unit_alternatives=unit_alternatives,
             denominator=denominator,
+            role_assignments=role_assignments,
             no_data_role_axis=(
                 open_role_axis(_shape, _place.roles.resolved_entities)
                 if isinstance(_mat_result, NoDataDraft) and _mat_result.reason == "no_observations"

@@ -12,7 +12,7 @@ from typing import Final, cast
 import dc_graph
 from code_index.shared import get_index
 from dfo_platform.timings import PhaseTimings, collecting
-from entity_resolution import Ambiguous, Group, Resolved
+from entity_resolution import Ambiguous, Entity, Group, Resolved
 from origin_catalogue import note_un_unserved, recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets
 from search.engine.config import settings
@@ -248,6 +248,22 @@ def _is_oversized_group(resolution: object) -> bool:
     return isinstance(resolution, Group) and len(resolution.members) > settings().max_child_places
 
 
+def _ambiguous_candidate(
+    candidate: Entity, *, group_nodes: frozenset[str], group_names: Mapping[str, str]
+) -> AmbiguousEntityCandidate:
+    """`candidate` as an ambiguous wording's candidate, marked a group node when it is one
+    of `group_nodes`, the group nodes of a wording asked for its members, with its group's
+    name from `group_names`."""
+    group_node = candidate.dcid in group_nodes
+    return AmbiguousEntityCandidate(
+        dcid=candidate.dcid,
+        name=candidate.name,
+        kind=candidate.kind,
+        group_node=group_node,
+        group_name=group_names.get(candidate.dcid) if group_node else None,
+    )
+
+
 async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     """Refuse a part naming an entity that did not resolve, before shape derivation and
     the bind call.
@@ -271,23 +287,31 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     }
     if not reasons:
         return None
+    ambiguous = [name for name, name_reason in reasons.items() if name_reason == "entity_ambiguous"]
+    # A pin on a group's own node cannot ask for its members, so a candidate of a wording
+    # asked for its members carries whether it is one, and the group's registered name for
+    # its option to post.
+    asks_members = any(name in state.member_entities for name in ambiguous)
+    group_nodes = await state.resolver.group_node_dcids() if asks_members else frozenset()
+    group_names = await state.resolver.group_node_names() if asks_members else {}
     ambiguous_entities = tuple(
         AmbiguousEntity(
             text=name,
             candidates=tuple(
-                AmbiguousEntityCandidate(
-                    dcid=candidate.dcid, name=candidate.name, kind=candidate.kind
+                _ambiguous_candidate(
+                    candidate,
+                    group_nodes=group_nodes if name in state.member_entities else frozenset(),
+                    group_names=group_names,
                 )
                 for candidate in cast(Ambiguous, rcl.resolutions[name]).candidates
             ),
             role=_sole_axis(state, name),
         )
-        for name, name_reason in reasons.items()
-        if name_reason == "entity_ambiguous"
+        for name in ambiguous
     )
-    # The part's `data_query` pins these on an `entity_ambiguous` refusal. A group, and a
-    # set read as its members, stay unpinned: re-resolving the text keeps the members,
-    # whether an alias row or the part's flag asked for them.
+    # Each option of an `entity_ambiguous` refusal pins these. A group, and a set read as
+    # its members, stay unpinned: re-resolving the text keeps the members, whether an alias
+    # row or the part's flag asked for them.
     resolved_entity_dcids = {
         name: place_set.node.dcid
         for name in dict.fromkeys(state.entities)

@@ -106,6 +106,7 @@ from search.engine.spec_build import (
     build_spec,
     build_stat_vars,
 )
+from search.engine.unit.conversion import bound_prices
 from search.engine.unit.refs import unit_currency
 from search.models import (
     Coverage,
@@ -704,6 +705,17 @@ def _finish_candidate(
     # Reuse materialised role facts without extra SDMX reads. Labelled entity options are
     # built only for a surviving definite answer.
     cand_role_axis_facts = role_axis_facts_for_materialised(cand_mat, shape=cand_shape)
+    cand_facet_bindings = (
+        # A bound outcome guarantees a unit request. The type checker cannot carry that
+        # attribute invariant through this access.
+        {"unit": IdentityFacetValueRequest(request=cast(IdentityUnitRequest, state.unit_request))}
+        if state.bound_unit_outcome is not None
+        else (
+            {"unit": cluster_currency_binding(groundwork.confirmed_facets)}
+            if prep.twin_unit_filters[cand_index] is not None
+            else None
+        )
+    )
     cand_spec = build_spec(
         shape=groundwork.shape_model,
         slots=groundwork.slots,
@@ -735,25 +747,15 @@ def _finish_candidate(
         measure_siblings=cand_measure_siblings,
         open_axis_facts=cand_open_axis_facts,
         role_axis_facts=cand_role_axis_facts,
-        facet_bindings=(
-            # A bound outcome guarantees a unit request. The type checker cannot carry that
-            # attribute invariant through this access.
-            {
-                "unit": IdentityFacetValueRequest(
-                    request=cast(IdentityUnitRequest, state.unit_request)
-                )
-            }
-            if state.bound_unit_outcome is not None
-            else (
-                {"unit": cluster_currency_binding(groundwork.confirmed_facets)}
-                if prep.twin_unit_filters[cand_index] is not None
-                else None
-            )
-        ),
+        facet_bindings=cand_facet_bindings,
         text_recognized_properties=(
             text_recognized_properties if cand_bindings is state.bindings else frozenset()
         ),
-        query_qualifiers=answer_terms(state, cand_shape, cand_bindings),
+        # Judged under the unit request this candidate is served under, as the definite
+        # answer's trace is.
+        query_qualifiers=answer_terms(
+            state, cand_shape, cand_bindings, served=bound_prices(cand_facet_bindings)
+        ),
         measure_elected_properties=(
             measure_elected_properties if cand_bindings is state.bindings else frozenset()
         ),

@@ -92,6 +92,7 @@ from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_no
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
 from search.engine.unit.bind import with_unit_lexicon_version
+from search.engine.unit.conversion import served_prices
 from search.models import (
     CandidateBasis,
     IdentityUnitRequest,
@@ -495,10 +496,11 @@ async def _assemble_definite(
     or registry-twin substitution.
     A survivor from an alternate answers over its own place context, so its place warnings
     become the answer's own (`install_place_warnings`). The survivor is judged on every
-    requirement on its own shape and bindings (`requirements.settle_answer`), since a
-    stand-in or an alternate binds its values from its own representative and can hold a
-    code the elected shape dropped, bind another code on the same property, or, as a
-    sibling every member of which holds Female, apply "female". Its refusal names the terms
+    requirement on its own shape, bindings and served unit request
+    (`requirements.settle_answer`), since a stand-in or an alternate binds its values from
+    its own representative and can hold a code the elected shape dropped, bind another code
+    on the same property, or, as a sibling every member of which holds Female, apply
+    "female". Its refusal names the terms
     its flagged match's trace records (`requirements.answer_terms`): the elected reading's
     unbound query terms, which no answer is shown to apply, and each code and value
     requirement its own answer leaves unmet.
@@ -510,7 +512,9 @@ async def _assemble_definite(
             grounded.cand_places[unique_specs[0].spec_id],
             departure_facts=state.departure_facts,
         )
-    _survivor_unbound_qualifiers = settle_answer(state, _survivor.shape, _survivor.bindings)
+    _survivor_unbound_qualifiers = settle_answer(
+        state, _survivor.shape, _survivor.bindings, served=served_prices(unique_specs[0])
+    )
     if _survivor_unbound_qualifiers:
         return state.no_data(
             "qualifier_not_bound",
@@ -669,8 +673,9 @@ async def _assemble_candidate_set(
     _offer_place_warnings(state, grounded, unique_specs)
     if not state.elected_has_data:
         state.warnings.append(_elected_no_data_warning(state, unique_specs))
-    # Each survivor is judged on its own shape and bindings, and a requirement departs
-    # unless every survivor meets it (`requirements.settle_candidate_set`).
+    # Each survivor is judged on its own shape and bindings and the unit request its Spec is
+    # served under, and a requirement departs unless every survivor meets it
+    # (`requirements.settle_candidate_set`).
     settle_candidate_set(
         state,
         [
@@ -680,6 +685,7 @@ async def _assemble_candidate_set(
             )
             for spec in unique_specs
         ],
+        served=[served_prices(spec) for spec in unique_specs],
     )
     # State each candidate's unit lexicon version. Its identity already carries the binding,
     # and the outcome's warnings were merged earlier.
@@ -716,6 +722,9 @@ async def _assemble_candidate_set(
         candidate_budget_truncated=candidate_budget_truncated,
         slot_options_task=_make_slot_options_task(state, grounded, unique_specs),
         answered_roles=grounded.cand_answered_roles[_candidate_specs[0].spec_id],
+        candidate_answered_roles=tuple(
+            grounded.cand_answered_roles[spec.spec_id] for spec in _candidate_specs
+        ),
     )
 
 
