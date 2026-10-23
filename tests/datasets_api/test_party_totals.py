@@ -215,3 +215,61 @@ def test_the_cut_frame_counts_no_null_role_cell_as_a_value():
 
     assert kept.rows == 2
     assert kept.distinct == {_PROVIDER: 1, _RECIPIENT: 1, "years": 1}
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_CRS = "provenance/OECDCreditorReportingSystem"
+_IMF = "InternationalMonetaryFund"
+_TRUST_FUNDS = "IMFConcessionalTrustFunds"
+
+
+def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone():
+    """Kenya 2020: DAC2A publishes the IMF and its Concessional Trust Funds at 756,055,477
+    each, so a sum of DAC2A donors counted the IMF twice. The trust funds are a total in DAC2A
+    and a party in the CRS, which never publishes the IMF, so the cut drops their DAC2A row
+    and keeps their CRS row."""
+    parties = {
+        **_PARTIES,
+        _IMF: PartyRow(dcid=_IMF, kind="party", party_class="official"),
+        _TRUST_FUNDS: PartyRow(
+            dcid=_TRUST_FUNDS,
+            kind="party",
+            party_class="official",
+            datasets=(_CRS, _DAC2A),
+            axes=("origin",),
+            dataset_kinds=((_DAC2A, "total"),),
+        ),
+    }
+    rows = [
+        (_DAC2A, _IMF, 756_055_477.0),
+        (_DAC2A, _TRUST_FUNDS, 756_055_477.0),
+        (_DAC2A, _FRANCE, 100_000_000.0),
+        (_CRS, _TRUST_FUNDS, 756_055_477.0),
+    ]
+    frame = Frame.build(
+        role_keys=_ROLES,
+        rows=[
+            {
+                "stat_var": "dcid:SV",
+                _PROVIDER: provider,
+                _RECIPIENT: _KENYA,
+                "provenance": provenance,
+                "time_period": "2020",
+                "value": value,
+            }
+            for provenance, provider, value in rows
+        ],
+    )
+    cut = cut_party_totals(
+        lambda: iter((frame,)), roles=open_party_roles({}, _ROLES), parties=parties
+    )
+    at = [frame.columns.index(name) for name in ("provenance", _PROVIDER, "value")]
+    kept = [
+        tuple(row[index] for index in at)
+        for chunk in cut.chunks(lambda: iter((frame,)))()
+        for row in chunk.rows
+    ]
+
+    assert sorted(kept) == sorted(rows[:1] + rows[2:])
+    assert sum(value for provenance, _, value in kept if provenance == _DAC2A) == 856_055_477.0
+    assert cut.trace_entries() == [{"role": _PROVIDER, "entities": [_TRUST_FUNDS]}]

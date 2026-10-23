@@ -519,6 +519,14 @@ class PartyRow:
     (`DACOfficialDonors`) covers every `official` donor in DAC2A and DAC2B. A dataset with no
     marker reads the party as an ordinary `total`. The kind stays `total`, so a reader of
     `kind == "total"` stays correct.
+
+    `kind` is the party's kind in every dataset `dataset_kinds` does not name, and
+    `dataset_kinds` the `(dataset, kind)` pairs, sorted by dataset, where it takes another
+    kind. IMF Concessional Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS,
+    which publishes it and never the IMF, and a `total` in DAC2A, which publishes it beside
+    the IMF it equals. A reader serving one dataset reads `kind_in`, and one serving several or
+    none reads `kinds_over` or `kind_over`. `party_class` is the class of `kind`; in a dataset
+    where the party takes another kind it takes that kind's class (`class_in`).
     """
 
     dcid: str
@@ -531,10 +539,46 @@ class PartyRow:
     datasets: tuple[str, ...] = ()
     axes: tuple[RoleAxis, ...] = ()
     whole: tuple[WholeMarker, ...] = ()
+    dataset_kinds: tuple[tuple[str, PartyKind], ...] = ()
 
     def marker(self, dataset: str) -> WholeMarker | None:
         """The marker for `dataset`, or `None` where the party is an ordinary total."""
         return next((marker for marker in self.whole if marker.dataset == dataset), None)
+
+    def kind_in(self, dataset: str) -> PartyKind:
+        """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
+        return next((kind for named, kind in self.dataset_kinds if named == dataset), self.kind)
+
+    def kinds_over(self, datasets: Collection[str] = ()) -> frozenset[PartyKind]:
+        """The kinds the party takes in those of `datasets` that publish it, or in every
+        dataset that publishes it when none of `datasets` does, as for an empty `datasets`.
+        A row without `dataset_kinds` takes `kind` alone."""
+        if not self.dataset_kinds:
+            return frozenset((self.kind,))
+        named = [dataset for dataset in self.datasets if dataset in datasets] or self.datasets
+        return frozenset(self.kind_in(dataset) for dataset in named)
+
+    def kind_over(self, datasets: Collection[str] = ()) -> PartyKind | None:
+        """The one kind of `kinds_over(datasets)`, or `None` when the party takes different
+        kinds there, so a reader that needs one kind refuses rather than guesses."""
+        kinds = self.kinds_over(datasets)
+        return next(iter(kinds)) if len(kinds) == 1 else None
+
+    def class_in(self, dataset: str) -> PartyClass | None:
+        """The party's class in `dataset`: `party_class` where it takes `kind`, and where it
+        takes another kind the class that kind gives a row with no whole marker (`official`
+        for a `party`, `residual` for a residual, none for a total)."""
+        kind = self.kind_in(dataset)
+        return self.party_class if kind == self.kind else _KIND_CLASSES[kind]
+
+
+_KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {
+    "party": "official",
+    "residual": "residual",
+    "total": None,
+}
+"""The class a dataset kind gives a party (`PartyRow.class_in`). A private provider takes no
+dataset kind (`code_index.export.export_parties`), so a `party` there is `official`."""
 
 
 def marked_datasets(parties: Iterable[PartyRow]) -> frozenset[str]:

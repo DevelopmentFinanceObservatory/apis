@@ -360,10 +360,15 @@ PARTY_TYPE_KINDS: Mapping[str, PartyKind | None] = {
 
 @dataclass(frozen=True)
 class KindOverride:
-    """The kind one party takes in place of its graph types' kind, and why."""
+    """The kind one party takes in place of its graph types' kind, and why.
+
+    `datasets` are the provenances the override holds in, each publishing the party; in every
+    other dataset the party keeps its types' kind (`PartyRow.dataset_kinds`). `None` holds it in
+    every dataset."""
 
     kind: PartyKind
     reason: str
+    datasets: frozenset[str] | None = None
 
 
 # The parties whose kind differs from what their graph types give. An organisation is typed
@@ -374,14 +379,33 @@ class KindOverride:
 # 972), at DACAllRecipients and, wherever the group reports there, at Bangladesh, Ethiopia, India
 # and Kenya. A search over every subset of the other donors' gross disbursements at
 # DACAllRecipients, for each of the 122 organisation donors of the two datasets, finds a sum for
-# these four and for the IMF only. The IMF equals its Concessional Trust Funds from 1986 (DAC2A)
-# and its Resilience and Sustainability Trust (DAC2B), but reports alone in 1977 to 1985, so no sum
-# covers every year and it holds no row. Neither trust fund holds a row either: in DAC2A and DAC2B
-# each equals the IMF in every year and series it reports, but the CRS publishes both and never the
-# IMF, and a kind holds in every dataset, so a `total` would drop the IMF's CRS figures from a sum.
+# these four and for the IMF only.
+#
+# An override holds in the datasets it names, and a party keeps its types' kind in the others.
+# The IMF reports alone in 1977 to 1981 (Kenya 1977: 6.0m; Bangladesh 1977: 15.6m in DAC2A gross
+# ODA), so it is no sum of its trust funds and holds no row. Each IMF trust fund equals the IMF in
+# every year and series it reports in DAC2A and DAC2B, so there it is a `total` that the IMF's own
+# row already counts. The CRS publishes both trust funds and never the IMF, so there each stays a
+# `party` and a sum of CRS donors keeps the IMF's figures. DAC2A publishes the Concessional Trust
+# Funds and not the Resilience and Sustainability Trust, and DAC2B the reverse, so each override
+# names the one dataset that publishes it beside the IMF.
 PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
     "AfricanDevelopmentBankGroup": KindOverride(
         "total", "AfricanDevelopmentBank plus AfricanDevelopmentFund"
+    ),
+    "IMFConcessionalTrustFunds": KindOverride(
+        "total",
+        "InternationalMonetaryFund in DAC2A: equal to the dollar in gross ODA in every year the "
+        "trust funds report (Kenya 1988 to 2024, 19 years, 756.1m in 2020; Bangladesh 1987 to "
+        "2024, 18 years); a party in the CRS, which never publishes the IMF",
+        datasets=frozenset({_DAC2A}),
+    ),
+    "IMFResilienceAndSustainabilityTrust": KindOverride(
+        "total",
+        "InternationalMonetaryFund in DAC2B: equal to the dollar in gross disbursements in the "
+        "one year it reports (Kenya 2024: 180.2m); a party in the CRS, which never publishes "
+        "the IMF",
+        datasets=frozenset({_DAC2B}),
     ),
     "InterAmericanDevelopmentBankGroup": KindOverride(
         "total", "InterAmericanDevelopmentBank plus IDBInvest"

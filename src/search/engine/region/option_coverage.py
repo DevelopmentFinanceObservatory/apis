@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, NamedTuple, get_args
 
@@ -211,11 +211,15 @@ def _entity_options_count_only(
 
 
 def _enrich_entity_options(
-    entity_options: list[EntityOptions], *, graph: EngineGraphClient
+    entity_options: list[EntityOptions],
+    *,
+    graph: EngineGraphClient,
+    datasets: Collection[str],
 ) -> list[EntityOptions]:
     """Resolve member labels in one batch, using the dcid when a label lookup misses, and give
-    each member the party kind the code index lists for it on its axis
-    (`materialise.enrichment.read_party_kinds`).
+    each member the party kind the code index lists for it on its axis in `datasets`, the
+    provenances of the Spec's members (`materialise.enrichment.read_party_kinds`). Empty
+    `datasets` reads every dataset, where a party whose kind differs between datasets has none.
 
     Membership and counts come from the materialised result, so only labels require a read.
     """
@@ -231,6 +235,7 @@ def _enrich_entity_options(
             if o.value.ref is not None
         ),
         parties=get_index().parties,
+        datasets=datasets,
     )
     return [
         eo.model_copy(
@@ -1083,7 +1088,8 @@ def _build_and_enrich_entity_options(
     if not include_option_coverage:
         return raw, _entity_options_count_only(role_axis_facts), None
     try:
-        return raw, _enrich_entity_options(raw, graph=graph), None
+        datasets = get_index().statvar_provenances(sv_dcids)
+        return raw, _enrich_entity_options(raw, graph=graph, datasets=datasets), None
     except GraphInfraError:
         logger.warning(
             "entity_options label probe failed for shape_id=%r; returning unlabelled entity_options",
@@ -1152,7 +1158,9 @@ def _stream_slot_options_events(
         entity_warn: Warning | None = None
         if entity_options:
             try:
-                enriched_entities = _enrich_entity_options(entity_options, graph=graph)
+                # The streamed probe carries no member StatVars, so a party whose kind differs
+                # between datasets reads no kind here.
+                enriched_entities = _enrich_entity_options(entity_options, graph=graph, datasets=())
             except GraphInfraError:
                 logger.warning(
                     "entity_options label probe failed for spec_id=%r; returning unlabelled "

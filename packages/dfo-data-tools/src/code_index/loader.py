@@ -81,7 +81,8 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     (`_check_partly_stated_values`), and an `implied_values` row the code or StatVar rows
     contradict (`_check_implied_values`). A kind outside `PartyKind`, a type declared twice, a
     `totals` on a party that is not a total, or a false `sums_members` on a party holding no
-    group raises `IndexFormatError`, as does a class the row cannot carry (`_check_party_class`), a
+    group raises `IndexFormatError`, as does a dataset kind the row cannot carry
+    (`_check_dataset_kinds`), a class the row cannot carry (`_check_party_class`), a
     whole marker (`PartyRow.whole`) the row cannot carry (`_check_whole_markers`), two whole
     totals covering the same class on one dataset and axis, and a whole total set its members
     contradict (`_check_whole_totals`). A party without
@@ -252,10 +253,11 @@ def _parse_party(row: Mapping) -> PartyRow:
     """One `parties` row, refusing a kind outside `PartyKind`, an axis outside the flow axes,
     a `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
     party that holds no group or that counts residuals. `whole` markers are parsed by
-    `_parse_whole_marker` and checked by `_check_whole_markers`, and the class by
-    `_check_party_class`. `residuals`, `sums_members`, `label`, `datasets`, `axes` and `whole`
-    are optional, and a row without `sums_members` reads it as true. `party_class` is required
-    on a `party` and a residual and may be absent on a total."""
+    `_parse_whole_marker` and checked by `_check_whole_markers`, the dataset kinds by
+    `_check_dataset_kinds`, and the class by `_check_party_class`. `residuals`,
+    `sums_members`, `label`, `datasets`, `axes`, `whole` and `dataset_kinds` are optional, and
+    a row without `sums_members` reads it as true. `party_class` is required on a `party` and a
+    residual and may be absent on a total."""
     party = PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
@@ -271,6 +273,9 @@ def _parse_party(row: Mapping) -> PartyRow:
                 (_parse_whole_marker(marker) for marker in row.get("whole", ())),
                 key=lambda marker: marker.dataset,
             )
+        ),
+        dataset_kinds=tuple(
+            sorted((entry["dataset"], entry["kind"]) for entry in row.get("dataset_kinds", ()))
         ),
     )
     if party.kind not in PARTY_KINDS:
@@ -291,9 +296,42 @@ def _parse_party(row: Mapping) -> PartyRow:
             f"party {party.dcid!r} claims no sum of members but holds no group or counts "
             "residuals; only a total that holds a group and counts no residual makes no claim"
         )
+    _check_dataset_kinds(party)
     _check_whole_markers(party)
     _check_party_class(party)
     return party
+
+
+def _check_dataset_kinds(party: PartyRow) -> None:
+    """Raises `IndexFormatError` for a `dataset_kinds` list the row cannot carry: a kind outside
+    `PartyKind` or equal to the row's `kind`, a dataset the party is not published in or named
+    twice, entries naming every dataset that publishes the party, whose kind is then one kind
+    and belongs in `kind`, or any entry on a total that holds a group or counts residuals, whose
+    group holds in every dataset."""
+    named: set[str] = set()
+    for dataset, kind in party.dataset_kinds:
+        if kind not in PARTY_KINDS or kind == party.kind:
+            raise IndexFormatError(
+                f"party {party.dcid!r} takes kind {kind!r} in {dataset!r}; a dataset kind is one "
+                f"of {sorted(PARTY_KINDS)!r} other than the row's kind {party.kind!r}"
+            )
+        if dataset not in party.datasets:
+            raise IndexFormatError(
+                f"party {party.dcid!r} takes a kind in {dataset!r}, which does not publish it"
+            )
+        if dataset in named:
+            raise IndexFormatError(f"party {party.dcid!r} takes two kinds in {dataset!r}")
+        named.add(dataset)
+    if named and named >= set(party.datasets):
+        raise IndexFormatError(
+            f"party {party.dcid!r} takes a dataset kind in every dataset that publishes it; "
+            "one kind in every dataset is its kind"
+        )
+    if party.dataset_kinds and (party.totals is not None or party.residuals):
+        raise IndexFormatError(
+            f"party {party.dcid!r} holds a group or residuals and takes a kind per dataset; a "
+            "total that holds a group is a total in every dataset"
+        )
 
 
 def _parse_whole_marker(row: Mapping) -> WholeMarker:
@@ -312,8 +350,8 @@ def _parse_whole_marker(row: Mapping) -> WholeMarker:
 def _check_whole_markers(party: PartyRow) -> None:
     """Raises `IndexFormatError` for a `whole` marker list the row cannot carry: on a party
     that is not a total, on other than exactly one published axis, for a dataset the party is
-    not published in or twice for one dataset, or covering no class, a class outside
-    `PartyClass` or one class twice."""
+    not published in, takes another kind in (`PartyRow.kind_in`) or is marked twice for, or
+    covering no class, a class outside `PartyClass` or one class twice."""
     if not party.whole:
         return
     if party.kind != "total":
@@ -332,6 +370,11 @@ def _check_whole_markers(party: PartyRow) -> None:
             raise IndexFormatError(
                 f"party {party.dcid!r} is marked whole in {marker.dataset!r}, which does not "
                 "publish it"
+            )
+        if party.kind_in(marker.dataset) != "total":
+            raise IndexFormatError(
+                f"party {party.dcid!r} is marked whole in {marker.dataset!r}, where it takes the "
+                f"kind {party.kind_in(marker.dataset)!r}; only a total holds a population"
             )
         if marker.dataset in marked:
             raise IndexFormatError(

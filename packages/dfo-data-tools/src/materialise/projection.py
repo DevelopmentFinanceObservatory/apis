@@ -126,21 +126,25 @@ def long_kind_cell(
     (`materialise.enrichment.is_whole_total`) and `total` otherwise, and a residual reads
     `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
-    `None` for a ref the code index does not list, or one that is not text."""
+    The kind and class are the party's in the row's dataset (`PartyRow.kind_in`,
+    `PartyRow.class_in`). A row with no `provenance` reads the kind of every dataset, and is
+    empty for a party whose kind differs between datasets. `None` for a ref the code index does
+    not list, or one that is not text."""
     party = parties.get(ref) if isinstance(ref, str) else None
     if party is None:
         return None
-    if party.kind == "total":
-        whole = is_whole_total(
-            party,
-            year=period_year(period),
-            provenance=provenance if isinstance(provenance, str) else None,
-        )
+    dataset = provenance if isinstance(provenance, str) else None
+    kind = party.kind_over(() if dataset is None else (dataset,))
+    if kind is None:
+        return ""
+    if kind == "total":
+        whole = is_whole_total(party, year=period_year(period), provenance=dataset)
         return WHOLE_TOTAL_CELL if whole else TOTAL_CELL
-    if party.kind == "residual":
+    if kind == "residual":
         return RESIDUAL_CELL
-    if party.party_class == "private" or role_key_axis(role) == "origin":
-        return party.party_class
+    party_class = party.party_class if dataset is None else party.class_in(dataset)
+    if party_class == "private" or role_key_axis(role) == "origin":
+        return party_class
     return RECIPIENT_PARTY_CELL
 
 
