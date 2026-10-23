@@ -116,8 +116,9 @@ def restated_request(
 ) -> JevRequest:
     """The stated-word questions asked again once the bind has bound values: the variable
     phrase in the state, and one ``unread|index|k`` noul per word k of `words`, quoting menu
-    shape `index` as the values `bindings` restrict it to (`describe`)."""
-    desc = describe(shape, bindings=bindings)
+    shape `index` as the values `bindings` restrict it to and those its measure's
+    definition fixes (`describe`)."""
+    desc = describe(shape, bindings=bindings, definition=True)
     questions: dict[str, JevQuestion] = {
         unread_id(index, k): NoulModel(
             type="noul",
@@ -192,10 +193,13 @@ def _bind_questions(menu: JevMenu, *, query: bool) -> dict[str, JevQuestion]:
             ),
         )
         words = request.nominated_words[i] if request.nominated_words else ()
+        # The stated-word questions also quote what the measure's definition fixes, which the
+        # menu's own description leaves out.
+        stated = describe(request.shapes[i], menu.menus[i].fixed, definition=True) if words else ""
         for k, word in enumerate(words):
             q[unread_id(i, k)] = NoulModel(
                 type="noul",
-                instructions=STATED_WORD_INSTRUCTIONS.format(measure=desc, word=word),
+                instructions=STATED_WORD_INSTRUCTIONS.format(measure=stated, word=word),
                 criteria=STATED_WORD_CRITERIA,
             )
     for row in measure_values(request.shapes):

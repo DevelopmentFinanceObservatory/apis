@@ -19337,14 +19337,6 @@
       }
     ]
   },
-  "StatedWordsOutput@e3e465c89a54:71b49b046afb353eb4f367941a3f938b964accf6": {
-    "words": [
-      {
-        "index": 0,
-        "stated": false
-      }
-    ]
-  },
   "StatedWordsOutput@e3e465c89a54:02dfe91cbc3c02963b33efe262b944aa966329fe": {
     "words": [
       {
@@ -19551,6 +19543,14 @@
       {
         "index": 1,
         "rating": 0.8
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:249919ef15866ac6bce9ef685fec0e61f83ecef2": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
       }
     ]
   }

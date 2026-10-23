@@ -2,17 +2,18 @@
 of the variable the coverage readers leave unread on it.
 
 The call sees the variable phrase, the elected shape's reading as the bind menu states it
-(`bind.stated_reading`) with the values the final bindings restrict it to, and the numbered
-words. It answers, per word number, whether the series states what the word names
-(`StatedWordsOutput`): the total population does not state "refugee", total revenue does not
-state "tax", and a completion rate bound to Sex=Female states "girls". Its schema is fixed whatever the menu
-and the word count, so a recorded answer is keyed by the prompt text alone, and bind's
-schema never carries the rating. `GeminiBinder.rate_words_stated` makes the call.
+(`bind.stated_reading`) with the values the final bindings restrict it to and the values
+its measure's definition fixes, and the numbered words. It answers, per word number,
+whether the series states what the word names (`StatedWordsOutput`): the total population
+does not state "refugee", total revenue does not state "tax", and a completion rate bound to
+Sex=Female states "girls". Its schema is fixed whatever the menu and the word count, so a
+recorded answer is keyed by the prompt text alone, and bind's schema never carries the
+rating. `GeminiBinder.rate_words_stated` makes the call.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -79,8 +80,9 @@ def build_stated_words_prompt(
     bindings: Sequence[SlotBindingDraft],
 ) -> str:
     """The user prompt: the variable phrase, the series as the bind menu states the shape's
-    reading (`bind.stated_reading`) and the values `bindings` restrict it to
-    (`_restricted_values`), then the numbered WORDS list."""
+    reading (`bind.stated_reading`), the values `bindings` restrict it to
+    (`_restricted_values`) and those its measure's definition fixes (`implied_values`),
+    then the numbered WORDS list."""
     stated = stated_reading(shape)
     lines = [
         f"Variable phrase: {variable}",
@@ -104,6 +106,10 @@ def build_stated_words_prompt(
     # narrower than it.
     if restricted := _restricted_values(shape, bindings):
         lines.append(f"  restricted to, on its breakdowns: {restricted}")
+    # The headline series states nothing on a property its measure's definition fixes, so
+    # without the line a word naming that value reads as narrower than the series.
+    if implied := implied_values(shape, bindings):
+        lines.append(f"  fixed by the measure's definition: {implied}")
     lines.extend(["", WORDS_HEADER])
     lines.extend(f"  {number}: {word}" for number, word in enumerate(words))
     lines.append("")
@@ -115,11 +121,31 @@ def _restricted_values(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) 
     set's values joined by "or": "Sex=Female; Age=15 to 24 years". A value reads by
     `bound_value_label`, and a slot by its slot key's label. Empty when no binding
     restricts a slot."""
+    return _property_values(shape, restricting(bindings).items())
+
+
+def implied_values(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> str:
+    """Each value the code index declares `shape`'s measure means on a property its headline
+    series states nothing on (`CodeIndex.implied_values_of`), as `_restricted_values`
+    prints a bound one, less those on a property `bindings` restrict, where the bound value
+    holds instead. Empty for a measure that declares none. Jev's stated-word questions
+    quote the same values (`jev_menu.describe`)."""
+    implied = get_index().implied_values_of(shape.pop_type_dcid, shape.meas_prop_dcid)
+    bound = restricting(bindings)
+    return _property_values(
+        shape, ((prop, (value,)) for prop, value in implied.items() if prop not in bound)
+    )
+
+
+def _property_values(shape: ShapeDraft, values: Iterable[tuple[str, Sequence[str]]]) -> str:
+    """Each property of `values` with its values, as ``Property=Value``, a property's values
+    joined by "or". A value reads by `bound_value_label`, and a property by its slot key's
+    label on `shape`."""
     slot_labels = {key.property_dcid: key.label for key in shape.slot_keys}
     return "; ".join(
         f"{_humanize_ref(prop, slot_labels.get(prop))}="
-        + " or ".join(bound_value_label(shape, prop, dcid) for dcid in values)
-        for prop, values in restricting(bindings).items()
+        + " or ".join(bound_value_label(shape, prop, dcid) for dcid in dcids)
+        for prop, dcids in values
     )
 
 

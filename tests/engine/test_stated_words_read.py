@@ -50,6 +50,15 @@ _COMPLETION = replace(
 _FEMALE = SlotBindingDraft(
     axis="how", property_dcid="undataSex", kind="value", value_dcids=["undata/SEX-F"]
 )
+# The code index declares the measure's headline series to mean age 0
+# (`CodeIndex.implied_values_of`).
+_LIFE_EXPECTANCY = replace(
+    _PERSONS,
+    label="Life Expectancy",
+    meas_prop_dcid="lifeExpectancy",
+    slot_keys=(SlotKeyDraft(axis="how", property_dcid="age", label="Age"),),
+    value_labels={"Years60": "Years 60"},
+)
 
 
 @pytest.mark.parametrize(
@@ -87,14 +96,32 @@ _FEMALE = SlotBindingDraft(
             ),
             "  restricted to, on its breakdowns: Sex=Female\n",
         ),
+        (_LIFE_EXPECTANCY, (), "  fixed by the measure's definition: Age=years 0\n"),
+        (
+            _LIFE_EXPECTANCY,
+            (
+                SlotBindingDraft(
+                    axis="how", property_dcid="age", kind="value", value_dcids=["Years60"]
+                ),
+            ),
+            "  restricted to, on its breakdowns: Age=Years 60\n",
+        ),
     ],
-    ids=["no-binding", "bound-female", "set-and-value", "source-binding"],
+    ids=[
+        "no-binding",
+        "bound-female",
+        "set-and-value",
+        "source-binding",
+        "implied-value",
+        "implied-value-bound-elsewhere",
+    ],
 )
 def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, restricted):
     """`StatedWord.index` indexes the WORDS list, in the order the request holds them. The
     series lists the values its value and set bindings restrict it to, each by its graph
     label less its property's name, so the read can answer that a series bound to Sex=Female
-    states "girls"."""
+    states "girls". It lists the value its measure's definition fixes on a property no
+    binding restricts, which its headline series states nothing on."""
     assert build_stated_words_prompt(
         "stateless refugee population", shape, ("stateless", "refugee"), bindings=bindings
     ) == (
@@ -103,7 +130,8 @@ def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, re
         "SERIES:\n"
         f"  label: {shape.label}\n"
         "  family: standard Data Commons\n"
-        "  five_tuple: populationType=Person, measuredProperty=count, statType=measuredValue\n"
+        f"  five_tuple: populationType=Person, measuredProperty={shape.meas_prop_dcid}, "
+        "statType=measuredValue\n"
         f"{restricted}"
         "\n"
         "WORDS (words of the variable phrase):\n"

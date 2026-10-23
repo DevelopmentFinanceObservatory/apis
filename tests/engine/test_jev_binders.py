@@ -64,7 +64,7 @@ from search.models import (
 from tests.engine._binders import FakeAsk, FixedBinder, answer_all, keep_the_pick
 from tests.engine._builders import sv_arcs
 from tests.engine._jev_golden import GOLDEN, GoldenItem, golden_paths, load_item
-from tests.engine.test_stated_words_read import _COMPLETION, _FEMALE
+from tests.engine.test_stated_words_read import _COMPLETION, _FEMALE, _LIFE_EXPECTANCY
 from tests.graph_release.support import serving_index
 from tests.statvar_members.role_grid import synthetic_index
 
@@ -342,6 +342,47 @@ def test_jev_rates_its_unread_words_again_on_the_bound_values(bindings, rated, a
     assert "parts selectable by Age" in quoted
     assert "Sex" not in quoted
     assert usage == JevCall(ms=0, input_tokens=120, output_tokens=4).usage
+
+
+@pytest.mark.parametrize(
+    ("bindings", "quoted", "absent"),
+    [
+        ((), "its definition fixes Age=years 0", "restricted to"),
+        (
+            (
+                SlotBindingDraft(
+                    axis="how", property_dcid="age", kind="value", value_dcids=["Years60"]
+                ),
+            ),
+            "restricted to Years 60",
+            "its definition fixes",
+        ),
+    ],
+    ids=["unbound", "bound-elsewhere"],
+)
+def test_the_stated_word_questions_quote_what_the_measure_definition_fixes(
+    bindings, quoted, absent
+):
+    """The ``unread|`` questions of the bind and of the restated request quote the values the
+    measure's definition fixes on properties the bindings leave unrestricted, as Gemini's
+    prompt does (`stated_words_read.implied_values`). The bind's other questions describe
+    the shape without them."""
+    request = BindRequest(
+        variable="life expectancy at birth",
+        shapes=[_LIFE_EXPECTANCY],
+        nominated_words=[("birth",)],
+        query_text=None,
+        apply_policies=keep_the_pick,
+    )
+    _state, asked = bind_request(jev_menu(request))
+    _state, restated = restated_request(
+        request.variable, _LIFE_EXPECTANCY, 0, ("birth",), bindings=bindings
+    )
+
+    assert "its definition fixes Age=years 0" in asked["unread|0|0"]["instructions"]
+    assert quoted in restated["unread|0|0"]["instructions"]
+    assert absent not in restated["unread|0|0"]["instructions"]
+    assert "definition" not in asked["m|0"]["instructions"]
 
 
 def test_a_failed_restated_request_rates_no_word_and_logs_its_own_line(caplog):
