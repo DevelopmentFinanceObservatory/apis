@@ -381,16 +381,22 @@ class CacheScope:
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
         source_codes: Sequence[str | None] = (),
+        unit_texts: Sequence[str | None] = (),
         separate: Sequence[bool] = (),
         extraction_warnings: Sequence[Warning] = (),
+        measure_qualifiers: Sequence[tuple[str, ...]] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
 
         `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
         and `sources` are required to build a complete key. `source_codes` runs parallel to
-        `variables` and holds the series code the query writes for each. `separate` runs parallel to
+        `variables` and holds the series code the query writes for each. `unit_texts` runs
+        parallel to `variables` and holds the unit text extraction peeled from each
+        (`ExtractionResult.unit_texts`). `separate` runs parallel to
         `variables` and marks each one the raw query compares with another.
+        `measure_qualifiers` runs parallel to `variables` and holds the words narrowing each
+        one's measure.
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
         serves as stored. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
@@ -415,6 +421,7 @@ class CacheScope:
             operations=operations,
             sources=sources,
             source_codes=source_codes,
+            unit_texts=unit_texts,
             role_contradictions=signals.role_contradictions,
             query_text_qualifier_matches=signals.query_text_qualifier_matches,
             query_text_qualifier_ties=signals.query_text_qualifier_ties,
@@ -429,6 +436,7 @@ class CacheScope:
             scope=self._scope,
             separate=separate,
             extraction_warnings=extraction_warnings,
+            measure_qualifiers=measure_qualifiers,
         )
         self._layer2_key = key
         value, self._layer2_lease = await self._acquire(key)

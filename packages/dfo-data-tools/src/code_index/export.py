@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from code_index.declarations import (
+    BROAD_READINGS,
     CODE_SHORT_NAMES,
     CODE_SYNONYMS,
     CODE_SYSTEMS,
@@ -39,6 +40,7 @@ from code_index.declarations import (
     PARTY_KIND_OVERRIDES,
     PARTY_TYPE_KINDS,
     SHAPE_SLOT_DEFAULTS,
+    SLOT_PLAIN_NAMES,
     STAT_TYPE_WORDS,
     TOTAL_GROUPS,
     VARIABLE_ALIASES,
@@ -50,6 +52,7 @@ from code_index.declarations import (
 from code_index.members import key_sets_cover
 from code_index.tokens import Token, TokenLookup, singular, tokenize
 from code_index.types import (
+    BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
     ImpliedValue,
@@ -522,6 +525,37 @@ def _shape_slot_default_to_dict(default: ShapeSlotDefault) -> dict:
         "property": default.property_dcid,
         "value": default.value_dcid,
     }
+
+
+def _broad_reading_to_dict(reading: BroadReading) -> dict:
+    return {
+        "property": reading.property_dcid,
+        "value": reading.value_dcid,
+        "reads_as": reading.reads_as,
+        "unless_bound": reading.unless_bound,
+        "held_with": reading.held_with,
+        "note": reading.note,
+    }
+
+
+def _verify_broad_readings(
+    statvars: Sequence[dict], broad_readings: Sequence[BroadReading]
+) -> None:
+    """Require every row holding a broad reading's narrow value to hold its `held_with`
+    value on `unless_bound`. A row that does not raises `ExportRefused`, since a question could
+    then name the narrow category without naming a value on `unless_bound`, and the reading
+    would take that category from it."""
+    for reading in broad_readings:
+        for row in statvars:
+            constraints = row["constraint_properties"]
+            if constraints.get(reading.property_dcid) != reading.value_dcid:
+                continue
+            if constraints.get(reading.unless_bound) != reading.held_with:
+                raise ExportRefused(
+                    f"{row['dcid']} holds {reading.property_dcid}={reading.value_dcid} without "
+                    f"{reading.unless_bound}={reading.held_with}, so the broad reading of "
+                    f"{reading.value_dcid} as {reading.reads_as} cannot be declared"
+                )
 
 
 def _partly_stated_value_to_dict(declared: PartlyStatedValue) -> dict:
@@ -1644,6 +1678,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
             if dataset.house_default_for
             else {}
         ),
+        **(
+            {"ratio_base_axis": dataset.ratio_base_axis}
+            if dataset.ratio_base_axis is not None
+            else {}
+        ),
     }
 
 
@@ -1688,6 +1727,7 @@ def export_graph_blocks(
     party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
     listed: Collection[str] = (),
     shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
+    broad_readings: Sequence[BroadReading] = BROAD_READINGS,
     partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
     implied_values: Sequence[ImpliedValue] = IMPLIED_VALUES,
     measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
@@ -1699,7 +1739,8 @@ def export_graph_blocks(
     `listed` names the StatVars of the datasets no code system enumerates (`listed_dcids`),
     read into `listed_statvars` and checked by `_verify_listed_five_tuples`, their series
     codes into `source_codes` (`export_source_codes`), and the parents of their constraint
-    values into `value_parents` (`export_value_parents`).
+    values into `value_parents` (`export_value_parents`). Each of `broad_readings` is checked
+    against the rows of both blocks (`_verify_broad_readings`).
 
     StatVar rows carry no `provenances` and the result has no stamp, so it does not load as an
     index. `export_index` completes it.
@@ -1733,6 +1774,7 @@ def export_graph_blocks(
     )
     listed_statvars = export_statvars(reader, sorted(listed)) if listed else []
     _verify_listed_five_tuples(reader, statvars, listed_statvars)
+    _verify_broad_readings([*statvars, *listed_statvars], broad_readings)
     source_codes = export_source_codes(reader, sorted(listed)) if listed else []
     value_parents = export_value_parents(reader, listed_statvars)
     _verify_measure_partition_labels(statvars, measure_axes, measure_partition_labels)
@@ -1761,10 +1803,12 @@ def export_graph_blocks(
             {"type": type_, "kind": kind} for type_, kind in sorted(party_type_kinds.items())
         ],
         "shape_slot_defaults": [_shape_slot_default_to_dict(d) for d in shape_slot_defaults],
+        "broad_readings": [_broad_reading_to_dict(r) for r in broad_readings],
         "partly_stated_values": [_partly_stated_value_to_dict(v) for v in partly_stated_values],
         "implied_values": [_implied_value_to_dict(v) for v in implied_values],
         "measure_classes": [_measure_class_to_dict(d) for d in measure_classes],
         "variable_aliases": dict(variable_aliases),
+        "slot_plain_names": dict(SLOT_PLAIN_NAMES),
         "stat_type_words": [_stat_type_word_to_dict(d) for d in stat_type_words],
     }
 
@@ -1791,6 +1835,7 @@ def export_index(
     datasets: Sequence[DatasetDeclaration] = DATASETS,
     party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
     shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
+    broad_readings: Sequence[BroadReading] = BROAD_READINGS,
     partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
     implied_values: Sequence[ImpliedValue] = IMPLIED_VALUES,
     measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
@@ -1824,6 +1869,7 @@ def export_index(
         party_type_kinds=party_type_kinds,
         listed=listed_dcids(coverage.provenances, listed_datasets),
         shape_slot_defaults=shape_slot_defaults,
+        broad_readings=broad_readings,
         partly_stated_values=partly_stated_values,
         implied_values=implied_values,
         measure_classes=measure_classes,

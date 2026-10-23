@@ -98,7 +98,7 @@ repos:
     rev: v2.4.3
     hooks:
       - id: codespell
-        files: ^(src/|tests/|scripts/|packages/|README\.md|corpus/README\.md|CONTRIBUTING\.md|deploy/README\.md|deploy/postgres\.md|docs/conformance-search-api-v1\.md)
+        files: ^(src/|tests/|scripts/|packages/|README\.md|corpus/README\.md|CONTRIBUTING\.md|deploy/README\.md|deploy/postgres\.md|docs/development\.md|docs/reference\.md|docs/conformance-search-api-v1\.md)
         # The sentence panel misspells some queries on purpose to test misspelt input.
         exclude: ^scripts/sentence_panel/queries/
 
@@ -122,4 +122,4 @@ repos:
           - mdformat-frontmatter>=2.1.0
         # The conformance matrix is excluded: its table cells are paragraph-sized,
         # and mdformat's table normalisation would rewrite the whole file.
-        files: ^(README\.md|corpus/README\.md|CONTRIBUTING\.md|deploy/README\.md|deploy/postgres\.md|packages/dfo-data-tools/README\.md)$
+        files: ^(README\.md|corpus/README\.md|CONTRIBUTING\.md|deploy/README\.md|deploy/postgres\.md|docs/development\.md|docs/reference\.md|packages/dfo-data-tools/README\.md)$

@@ -82,6 +82,14 @@ def test_curated_aliases_name_only_known_dcids():
     assert not unknown, f"curated_aliases.json names dcid(s) absent from the records: {unknown}"
 
 
+@pytest.mark.parametrize(
+    ("text", "organisation"),
+    [("IMF", True), ("International Monetary Fund", True), ("China", False), ("Kenya", False)],
+)
+def test_an_organisation_name_is_one_the_pack_stores_for_an_organisation(text, organisation):
+    assert pack.is_organisation_name(text) is organisation
+
+
 def test_build_pack_returns_directory_with_module_metadata(tmp_path: Path):
     pack_dir = pack.build_pack(
         records_path=pack.records_path(), curated_path=pack.curated_path(), out_dir=tmp_path

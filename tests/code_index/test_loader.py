@@ -211,13 +211,14 @@ def test_refuses_a_malformed_party_declaration(tmp_path, party_types, parties, e
         ),
         ("variable_aliases", {"GNI": "gross national income"}, "lowercase"),
         ("variable_aliases", {"gni": ""}, "expands to"),
+        ("slot_plain_names", {"dacTypeOfFinance": " type of finance"}, "plain name"),
         (
             "stat_type_words",
             [{"pattern": "(growth", "stat_type": "growthRate"}],
             "does not compile",
         ),
     ],
-    ids=["pattern", "fallback", "alias-case", "alias-empty", "stat-type-pattern"],
+    ids=["pattern", "fallback", "alias-case", "alias-empty", "slot-name", "stat-type-pattern"],
 )
 def test_refuses_a_malformed_authored_block(tmp_path, block, value, message):
     payload = json.loads(FIXTURE_PATH.read_text())

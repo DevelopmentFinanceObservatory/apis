@@ -239,6 +239,12 @@ label = "United Nations Educational, Scientific and Cultural Organization (UNESC
 provenance = "undata/p/UNIDO"
 segment = "unido"
 label = "United Nations Industrial Development Organization (UNIDO)"
+declarations = [
+  # Values at constant 2015 US dollars.
+  { series = "undata/unido/SERIES-NA_COD", measurement_qualifier = "RealValue" },
+  { series = "undata/unido/SERIES-NA_GDPCOD", measurement_qualifier = "RealValue" },
+  { series = "undata/unido/SERIES-SDG9_NV_IND_MANFPC", measurement_qualifier = "RealValue" },
+]
 
 [[un_system]]
 provenance = "undata/p/ITU"
@@ -317,6 +323,35 @@ exclusions = [
   # External debt ratios built from World Bank International Debt Statistics.
   { series = "undata/sdg/SERIES-DT_DOD_DECT_GN_ZS", reason = "superseded_by_dfo", dfo_provenance = "provenance/WorldBankInternationalDebtStatistics" },
   { series = "undata/sdg/SERIES-DT_TDS_DECT", reason = "superseded_by_dfo", dfo_provenance = "provenance/WorldBankInternationalDebtStatistics" },
+]
+declarations = [
+  # Finance a country provides: climate finance and support reported to the UNFCCC, and
+  # illicit flows out of the country.
+  { series = "undata/sdg/SERIES-DC_FIN_CLIMB", side = "provider" },
+  { series = "undata/sdg/SERIES-DC_FIN_CLIMM", side = "provider" },
+  { series = "undata/sdg/SERIES-DC_FIN_CLIMT", side = "provider" },
+  { series = "undata/sdg/SERIES-DC_FIN_GEN", side = "provider" },
+  { series = "undata/sdg/SERIES-DC_FIN_TOT", side = "provider" },
+  { series = "undata/sdg/SERIES-DI_ILL_OUT", side = "provider" },
+  # Finance a country receives: TOSSD receipts by developing countries, clean-energy flows to
+  # developing countries, foreign direct investment inflows and illicit flows into the
+  # country.
+  { series = "undata/sdg/SERIES-BX_KLT_DINV_WD_GD_ZS", side = "recipient" },
+  { series = "undata/sdg/SERIES-DC_OSSD_GRT", side = "recipient" },
+  { series = "undata/sdg/SERIES-DC_OSSD_GRT_SSC", side = "recipient" },
+  { series = "undata/sdg/SERIES-DC_OSSD_MPF", side = "recipient" },
+  { series = "undata/sdg/SERIES-DC_OSSD_OFFCL", side = "recipient" },
+  { series = "undata/sdg/SERIES-DC_OSSD_OFFNL", side = "recipient" },
+  { series = "undata/sdg/SERIES-DC_OSSD_PRVGRT", side = "recipient" },
+  { series = "undata/sdg/SERIES-DI_ILL_IN", side = "recipient" },
+  { series = "undata/sdg/SERIES-EG_IFF_RANDN", side = "recipient" },
+  { series = "undata/sdg/SERIES-GF_FRN_FDI", side = "recipient" },
+  # Values at constant prices, or growth of a real aggregate.
+  { series = "undata/sdg/SERIES-GF_COM_PPPI_KD", measurement_qualifier = "RealValue" },
+  { series = "undata/sdg/SERIES-NV_IND_MANF", measurement_qualifier = "RealValue" },
+  { series = "undata/sdg/SERIES-NV_IND_MANFPC", measurement_qualifier = "RealValue" },
+  { series = "undata/sdg/SERIES-NY_GDP_PCAP", measurement_qualifier = "RealValue" },
+  { series = "undata/sdg/SERIES-SL_EMP_PCAP", measurement_qualifier = "RealValue" },
 ]
 
 [[alias]]

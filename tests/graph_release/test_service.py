@@ -49,7 +49,6 @@ from graph_release.service import (
     ReleaseUriMissingError,
     _LocalFiles,
     get_release_service,
-    reset_release_service,
 )
 from graph_release.views import ViewRefused
 from materialise.rate_tables import RateTableCache
@@ -608,9 +607,10 @@ class TestViews:
 class TestProcessService:
     @pytest.fixture(autouse=True)
     def _fresh_singleton(self) -> Iterator[None]:
-        reset_release_service()
-        yield
-        reset_release_service()
+        # Restores the session's service on exit, so later tests serve the release
+        # `tests/conftest.py` bound.
+        with service_module._singleton.isolated():
+            yield
 
     @pytest.mark.parametrize("value", [None, "", "  "])
     def test_an_unset_uri_refuses_the_service(
