@@ -21,12 +21,13 @@ from search.engine.retrieval.retrieve import (
 )
 from search.engine.retrieval.standard import Candidates, Keep, Narrow, breakdown_decision
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import CoverageBare, TimeWindow
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 # Declaration-free standard shapes probe the subject role.
@@ -3247,6 +3248,8 @@ def _resolve_gdp(
 
     class _BindLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"

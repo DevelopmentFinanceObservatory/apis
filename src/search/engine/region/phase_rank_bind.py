@@ -2898,7 +2898,10 @@ def _coverage_records(
     the elected shape to both (`quantity.serves_quantity`) and states a denominator it
     cannot verify (`denominator_unverified`). So are the words of each value the bind
     drafted on a slot the shape lacks, which each answer is judged on
-    (`ResolveState.stray_requirements`). A connective
+    (`ResolveState.stray_requirements`), and the phrase of each slot the final bindings open
+    (``requested_all``, the bind's claim or `_open_operation_slots` and
+    `_open_breakdown_slots`), whose every value the answer serves: "quintile" in "by
+    wealth quintile" on the "Wealth quantile" slot. A connective
     (`qualifier_match.CONNECTIVES`) between two code spans is read. A run of unread words
     is adjacent words with no separator between them (`_unread_runs`). Its neighbours lie
     in a code span when the token beside it on either side does, or is a union connective
@@ -2964,6 +2967,17 @@ def _coverage_reading(
             "stray",
             _occurrences(
                 tokens, (requirement.term.text for requirement in state.stray_requirements)
+            ),
+        ),
+        (
+            "opened",
+            _occurrences(
+                tokens,
+                (
+                    binding.requested_all_phrase
+                    for binding in state.bindings
+                    if binding.evidence == "requested_all"
+                ),
             ),
         ),
     ]

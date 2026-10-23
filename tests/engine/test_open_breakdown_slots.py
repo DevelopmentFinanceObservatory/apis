@@ -9,10 +9,11 @@ import asyncio
 import pytest
 
 from search.engine.bind import SlotBindingDraft
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.phase_rank_bind import _open_breakdown_slots
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from tests.engine._binders import elected_reply
+from tests.engine._binders import RatingBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -228,12 +229,12 @@ def _arcs(quintile: str) -> dict:
     }
 
 
-def test_the_reader_opens_the_slot_before_recall_binds_it(bind_catalogue):
-    """ "under-five mortality by wealth quintile in Kenya", where recall scores only the
-    highest quintile and the binder leaves the slot open. Without the reader the partition
-    binding (`bind_partition_values`) binds the slot to that one quintile, since every
-    member states one and the scored member is unanimous. The reader runs first, so the
-    slot stays open and the part serves every quintile."""
+def _resolve_mortality(
+    bind_catalogue, variable: str, *, dropped: list[str], binder: Binder | None = None
+):
+    """Resolve `variable` in Kenya over the held family of one under-five mortality member
+    per wealth quintile, recall scoring only the highest quintile and the binder leaving the
+    wealth slot open, with the bind's `dropped` phrases."""
     from origin_catalogue import BASE
     from search.engine.region import resolve_variable
     from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
@@ -267,7 +268,7 @@ def test_the_reader_opens_the_slot_before_recall_binds_it(bind_catalogue):
             ]
             for sv in arcs
         },
-        detect={"under-five mortality": {"svs": [_member("undata/WEALTH-Q5")]}},
+        detect={variable: {"svs": [_member("undata/WEALTH-Q5")]}},
         resolve={"Kenya": "country/KEN"},
     )
     open_wealth = SlotBindingDraft(axis="how", property_dcid=_WEALTH, kind="unbound")
@@ -278,23 +279,59 @@ def test_the_reader_opens_the_slot_before_recall_binds_it(bind_catalogue):
                 return NO_QUANTITY
             return elected_reply(0, bindings=[open_wealth], also_plausible=None), None
 
-    region = asyncio.run(
+    return asyncio.run(
         resolve_variable(
-            "under-five mortality",
+            variable,
             entities=["Kenya"],
             date_request=None,
-            detect_query="under-five mortality",
-            role_query="under-five mortality Kenya",
+            detect_query=variable,
+            role_query=f"{variable} Kenya",
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(),
-            dropped_qualifier_phrases=["by wealth quintile"],
+            binder=binder,
+            dropped_qualifier_phrases=dropped,
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
         )
     )
 
+
+def test_the_reader_opens_the_slot_before_recall_binds_it(bind_catalogue):
+    """ "under-five mortality by wealth quintile in Kenya", where recall scores only the
+    highest quintile and the binder leaves the slot open. Without the reader the partition
+    binding (`bind_partition_values`) binds the slot to that one quintile, since every
+    member states one and the scored member is unanimous. The reader runs first, so the
+    slot stays open and the part serves every quintile."""
+    region = _resolve_mortality(
+        bind_catalogue, "under-five mortality", dropped=["by wealth quintile"]
+    )
+
     served = [sv.ref.ref for spec in region.specs for sv in spec.resolved.members]
-    assert sorted(served) == sorted(arcs)
+    assert sorted(served) == sorted(_member(q) for q in _QUINTILES)
+
+
+@pytest.mark.parametrize(
+    ("variable", "asked"),
+    [
+        pytest.param("under-five mortality by wealth quintile", [], id="the_phrase_is_read"),
+        pytest.param(
+            "rural under-five mortality by wealth quintile",
+            [("rural",)],
+            id="a_word_outside_the_phrase_is_rated",
+        ),
+    ],
+)
+def test_the_words_of_an_opened_slot_phrase_are_read(bind_catalogue, variable, asked):
+    """The answer serves every value of the slot a breakdown phrase opens, so the coverage
+    rule reads the phrase's words and the binder rates none of them: "quintile", which no
+    member's name holds, stays off the stated-words read. A word outside the phrase that
+    no reader reads, "rural", is still rated."""
+    binder = RatingBinder(GeminiBinder())
+
+    region = _resolve_mortality(bind_catalogue, variable, dropped=[], binder=binder)
+
+    assert region.status == "definite"
+    assert [request.words for request in binder.requests] == asked
