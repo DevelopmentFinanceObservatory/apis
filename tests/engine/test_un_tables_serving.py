@@ -636,10 +636,9 @@ def _hold_wealth_series(
     """Bind tables holding a WHO series whole: five wealth members, each asserting one
     quintile and, with `urban`, the urban residence area too, and two by-sex members, each
     asserting one sex and, with `urban_sex`, the urban residence area too and, with
-    `aged_sex`, the age under five, each member
-    holding five points at Kenya. Return the graph whose recall for `query` scores the
-    highest quintile alone, our resolve's or, with `un_pass`, the UN resolve's, ours
-    recalling nothing."""
+    `aged_sex`, the age under five, each member holding five points at Kenya. Return the
+    graph whose recall for `query` scores the highest quintile alone, our resolve's or,
+    with `un_pass`, the UN resolve's, ours recalling nothing."""
     residence = {_RESIDENCE: _URBAN} if urban else {}
     sex_residence = ({_RESIDENCE: _URBAN} if urban_sex else {}) | (
         {_AGE: _UNDER_FIVE} if aged_sex else {}

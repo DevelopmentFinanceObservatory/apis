@@ -2891,13 +2891,13 @@ def _coverage_records(
     (`_unnamed_bound_code_words`), so "private" in "private grants" is read when the
     answer binds flow type 30, "private development finance", the words naming the
     shape's measure in its members' names (`_member_measure_words`), so "refugees" is read
-    on a series named "Refugee population", and on a shape measuring a count
+    on a series named "Refugee population", on a shape measuring a count
     (`shape.measures_count`) the nouns for what it counts (`COUNT_WORDS`), so "number" is
-    read on "Refugees, by host country", and on one counting persons
-    (`shape.counts_persons`) the nouns for people (`PERSON_WORDS`), so "population" is read
-    on "Number of refugees, by host country" and "people" is left for the binder on a
-    count of households, and a noun naming a role on an axis the shape declares (`role_text.role_axis_for_text`), so "creditors" is read
-    on debt by creditor. The form wording (`_form_ranges`: "rate", "share",
+    read on "Refugees, by host country", on one counting persons (`shape.counts_persons`)
+    the nouns for people (`PERSON_WORDS`), so "population" is read on "Number of refugees,
+    by host country" and "people" is left for the binder on a count of households, and a
+    noun naming a role on an axis the shape declares (`role_text.role_axis_for_text`), so
+    "creditors" is read on debt by creditor. The form wording (`_form_ranges`: "rate", "share",
     "percent", "per capita") and the question's words for the denominator the quantity
     read names (`NamedDenominator.base_words`) are read, since the materialise gate holds
     the elected shape to both (`quantity.serves_quantity`) and states a denominator it

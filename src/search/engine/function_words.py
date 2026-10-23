@@ -83,6 +83,6 @@ RATIO_WORDS = frozenset({"share", "ratio", "percent", "percentage", "proportion"
 COUNT_WORDS = frozenset({"number", "numbers"})
 
 # Nouns that say a measure counts people: "refugee population" is the number of refugees.
-# Only a count of persons states them, so "people in urban households" is no count of
-# households.
+# Only a count of persons states them. On a count of households, "people in urban
+# households" leaves them to the binder.
 PERSON_WORDS = frozenset({"population", "populations", "people", "persons"})

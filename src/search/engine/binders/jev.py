@@ -210,20 +210,20 @@ class JevBinder:
     ) -> tuple[dict[str, float], JevCall | None]:
         """Each word of `request` the bind's answers rate on the elected shape
         (`stated_words`), with some rated again in one request
-        (`jev_request.restated_request`), and the request, None when none was sent: the
-        words rated below `SearchSettings.stated_word_bar` when the final bindings restrict
-        the shape to a value (`stated_words_read.restricting`), and every rated word when
-        they override a value the measure's definition fixes
+        (`jev_request.restated_request`), and the request, None when none was sent. The
+        request covers the words rated below `SearchSettings.stated_word_bar` when the final
+        bindings restrict the shape to a value (`stated_words_read.restricting`), and every
+        rated word when they override a value the measure's definition fixes
         (`stated_words_read.implied_values`).
 
         The bind asked before any value was bound, so it quoted the shape as parts
         selectable by its slots, and its answer is evidence only about the series as a
         whole: a completion rate rates "girls" as unread until Sex=Female is bound. It also
-        quoted the definition's values, so a rating at the bar can rest on one the answer
-        no longer holds: "birth" on life expectancy at Age=years 0, with age bound to 60.
+        quoted the definition's values, so a rating at the bar can rest on one the final
+        bindings replace: "birth" on life expectancy at Age=years 0, with age bound to 60.
         The request's answer replaces the bind's, and a word the request leaves unanswered
         is unrated. Any other word keeps the bind's rating, and a shape whose bindings
-        change neither sends no request.
+        override and restrict nothing sends no request.
 
         Raises:
             JevFailure: The request gave no answer.

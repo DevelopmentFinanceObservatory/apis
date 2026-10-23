@@ -72,7 +72,7 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     does not meet another. A value with no name departs under its slot's name
     (`_unnamed_departure`), so no dcid reaches prose. The caller reads the qualifier
     records again over the remaining bindings (`phase_election.record_coverage`), where a
-    record of a phrase unbinding now requires adds nothing.
+    record of a phrase that unbinding makes a requirement adds nothing.
     """
     engine_chosen = state.measure_elected_properties | state.defaulted_properties
     unnamed = _sole_option_properties(state.bindings)

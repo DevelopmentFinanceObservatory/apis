@@ -128,9 +128,8 @@ def implied_values(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> s
     """Each value the code index declares `shape`'s measure means on a property its headline
     series states nothing on (`CodeIndex.implied_values_of`), as `_restricted_values`
     prints a bound one, less those on a property `bindings` restrict, where the bound value
-    holds instead, or open (``requested_all``), where the answer serves every value: "GDP
-    by economic sector" is no total over all economic activities. Empty for a measure that
-    declares none. Jev's stated-word questions quote the same values
+    holds instead, or open (``requested_all``), where the answer serves every value, as
+    "GDP by economic sector" serves each sector. Empty for a measure that declares none. Jev's stated-word questions quote the same values
     (`jev_menu.describe`)."""
     implied = get_index().implied_values_of(shape.pop_type_dcid, shape.meas_prop_dcid)
     overridden = restricting(bindings).keys() | {

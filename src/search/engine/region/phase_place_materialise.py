@@ -457,9 +457,8 @@ def _settle_breakdown(state: ResolveState) -> None:
     (`phase_election.narrowed_to_breakdown`) and bound with the signature's slots open
     (`_breakdown_bindings`). The copies are ordered by their members with data at the
     places the part names inside the years it asks for, then by their recalled members,
-    and capped at
-    `max_candidates`, a cut the candidate set states (`ResolveState.breakdown_truncated`,
-    `CandidateSet.truncated`). The first is installed as the elected shape; each other is
+    and capped at `max_candidates`, a cut the candidate set states
+    (`ResolveState.breakdown_truncated`, `CandidateSet.truncated`). The first is installed as the elected shape; each other is
     offered beside it as a `breakdown` candidate (`ResolveState.breakdown_rivals`). A lone
     copy answers alone, narrower than asked (`standard.Narrow.lone_signature`)."""
     decision = state.breakdown

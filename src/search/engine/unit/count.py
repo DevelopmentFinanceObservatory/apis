@@ -12,8 +12,8 @@ counts only through the unit on its facets. The graphs name count units two ways
   `_GRAPH_COUNT_UNITS`. The other ``SDG_UnitOfMeasure`` and ``UnitOfMeasure`` members are
   shares, rates, money, physical quantities or indexes.
 
-Of these, the units in `_PERSON_COUNT_UNITS` say what they count is persons, as a UN System
-series, whose population type is its own, says only through its unit.
+The units in `_PERSON_COUNT_UNITS` name persons as what they count. A UN System series has
+its own population type and says it counts persons only through its unit.
 """
 
 from __future__ import annotations

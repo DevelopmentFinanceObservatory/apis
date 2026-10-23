@@ -151,9 +151,10 @@ def lone_breakdown_absent(
     total by a breakdown the request did not name: its one breakdown signature
     (`standard.Narrow.lone_signature`), or the unopened properties of a family whose opened
     slots no signature holds together (`standard.Keep.unopened`) that a `served` member
-    asserts, read over every member `shape` stands for (`shape_population_arcs`). The fact names the labels of those slots that `bindings` bind to no value
-    (`slot_label`), in slot order, shown by `served[0]`, the answer's first member. `None`
-    for any other decision."""
+    asserts, read over every member `shape` stands for (`shape_population_arcs`). The fact
+    names the labels of those slots that `bindings` bind to no value (`slot_label`), in
+    slot order, shown by `served[0]`, the answer's first member. `None` for any other
+    decision."""
     if isinstance(decision, Narrow) and decision.lone_signature:
         properties = decision.properties
     elif isinstance(decision, Keep) and decision.unopened:
