@@ -1106,6 +1106,29 @@ def test_a_place_named_without_a_direction_reads_the_total_its_direction_leaves(
     assert (_whole_read(answer) is not None) == official
 
 
+def test_a_place_without_a_direction_beside_a_named_population_takes_the_other_side(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Coverage holds no series, so no reading of Ethiopia, named with no direction, holds
+    data and the part refuses `role_not_resolved`. "Official donors" names the official
+    donors' total on the donor side, so the refusal asks only Ethiopia's direction and
+    offers the one reading that side leaves."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(monkeypatch, [], role_names={_DAC2A_MEMBER: names})
+    part = {
+        "entities": [{"text": "official donors"}, {"text": "Ethiopia"}],
+        "time": "2021",
+        "variable": _VARIABLE,
+    }
+
+    (answer,) = _resolve(part).parts
+
+    assert isinstance(answer, NoDataPart)
+    assert answer.no_data.reason == "role_not_resolved"
+    assert answer.no_data.entity_terms == ["Ethiopia"]
+    assert [option.label for option in answer.no_data.options or ()] == ["To Ethiopia"]
+
+
 def _france_coverage(monkeypatch: pytest.MonkeyPatch, *, aid_type: str = "own") -> None:
     """DAC2a holds series in 2021 to France from Germany and from the official donors'
     total, the latter for the official development assistance member's own aid type or for

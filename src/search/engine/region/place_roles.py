@@ -1406,10 +1406,10 @@ def direction_readings(state: ResolveState) -> tuple[dict[str, RoleAxis], ...]:
     wording contradicts. Each takes one axis on which the elected shape declares a role and
     that the part does not ask open (`ResolveState.open_axes`, or an operation's `over`); an
     open axis counts as named and takes no set. A reading is kept when every such axis then
-    holds a set, a directed one included. Readings run over the sets in query order, origin
-    first. Empty when the shape declares no role, no set is untold, or more than
-    `MAX_DIRECTION_READINGS` readings are kept. The count stops there, so no reading past
-    it is built."""
+    holds a set, a directed one or a whole population a text names (`named_whole_axes`)
+    included. Readings run over the sets in query order, origin first. Empty when the shape
+    declares no role, no set is untold, or more than `MAX_DIRECTION_READINGS` readings are
+    kept. The count stops there, so no reading past it is built."""
     shape = state.shape_draft
     if shape is None or not is_role_bearing(shape):
         return ()
@@ -1429,7 +1429,9 @@ def direction_readings(state: ResolveState) -> tuple[dict[str, RoleAxis], ...]:
         for axis in ("origin", "destination")
         if axis in declared and axis not in state.open_axes and axis not in over
     )
-    held = {axis for key, told in directed.items() if key not in untold for axis in told}
+    held = {
+        axis for key, told in directed.items() if key not in untold for axis in told
+    } | named_whole_axes(state)
     needed = set(axes) - held
     readings: list[dict[str, RoleAxis]] = []
     for choice in itertools.product(axes, repeat=len(untold)):
