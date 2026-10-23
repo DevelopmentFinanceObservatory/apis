@@ -5,7 +5,7 @@ an explicit `CoverageSnapshot` because their coverage is a required argument.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 import pytest
 
@@ -70,9 +70,6 @@ class FakeCoverageService:
             stamp=stamp,
             build_id=f"{stamp}-build",
             built_at="1970-01-01T00:00:00Z",
-            source="fake",
-            row_counts={},
-            files={},
             horizon=index.horizon,
         )
 
@@ -81,13 +78,6 @@ class FakeCoverageService:
 
     def snapshot(self) -> CoverageSnapshot:
         return CoverageSnapshot(index=self._index, manifest=self._manifest, stamp=self.stamp)
-
-    def serves(self, snapshot: CoverageSnapshot) -> bool:
-        return snapshot.index is self._index
-
-    def register_load_guard(self, guard: object) -> Callable[[], None]:
-        """A fixed index never reloads, so no guard is ever entered."""
-        return lambda: None
 
 
 def empty_coverage_snapshot(*, stamp: str = "test-coverage-stamp") -> CoverageSnapshot:

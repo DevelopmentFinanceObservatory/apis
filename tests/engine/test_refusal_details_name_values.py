@@ -331,6 +331,17 @@ def test_a_key_that_utf8_cannot_encode_is_refused_with_a_bounded_body(post, memb
     assert len(response.content) < MAX_VALUE_CHARS * 4
 
 
+def test_a_raw_query_holding_a_lone_surrogate_is_refused():
+    """A raw query the response could not echo is refused at the door, as a parsed part's
+    text is."""
+    response = _resolve_post({"kind": "raw_text", "query": "aid to Kenya\ud800"})
+
+    assert response.status_code == 400, response.text
+    body = response.json()
+    assert body["code"] == "request_invalid"
+    assert body["pointer"] == "/input/query"
+
+
 @_IDENTITY_DOORS
 def test_an_open_role_the_entities_bind_is_named_plainly(post):
     """The roles both members name come back without a list repr around them."""

@@ -62,7 +62,7 @@ _SUBJECT_ROLES = ("observationAbout",)
 # whatever the query binds. The pins memo holds at most `_MEMO_SIZE` entries. The
 # slot-options memo holds at most `_SLOT_OPTIONS_REFS` references in all, counted as they
 # are added: each entry's rows and bucket positions, and the rows of each family it elects.
-# On the packaged index one menu of `crsPurpose` over the largest five-tuple holds about
+# On the dev release's code index one menu of `crsPurpose` over the largest five-tuple holds about
 # 50,000, so the bound keeps about 20 such menus, near 16 MiB, where the entry bound alone
 # kept 4,096 of them, about 0.8 MiB each.
 _elected_pins_cache: dict[int, _LruMemo[Mapping[str, str]]] = {}
@@ -1163,7 +1163,7 @@ def prepare_member_views(index: CodeIndex) -> None:
     """Builds `index`'s per-index views the member queries read: each five-tuple's rows
     and carried properties (`_five_tuple_rows`) and role-class facts
     (`_five_tuple_facts`). The first query reading a view builds it otherwise, which on the
-    packaged index costs that query about 60 ms."""
+    dev release's code index costs that query about 60 ms."""
     for five_tuple in _five_tuple_rows(index).rows:
         _five_tuple_facts(index, five_tuple)
 

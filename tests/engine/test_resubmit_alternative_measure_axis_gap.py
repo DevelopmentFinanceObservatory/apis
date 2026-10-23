@@ -1,6 +1,6 @@
 """A CRSPurposeCode700 sibling omits a member-only slot, yet its no-seed resubmit must recover.
 
-The packaged index lacks this purpose's modality variation, so the fixture adds it to one real member.
+The fixture index lacks this purpose's modality variation, so the fixture adds it to one real member.
 """
 
 from __future__ import annotations
@@ -233,14 +233,14 @@ def test_the_net_alternative_round_trips_definite_and_remints_its_own_spec_id(
     net_alt = _net_alternative(alternatives)
 
     # No slot for crsCooperationModality at all (neither bound nor an
-    # unbound placeholder), even though the packaged index (patched above)
+    # unbound placeholder), even though the fixture index (patched above)
     # declares it for one of this partition's own real members.
     assert all(slot.property != _MODALITY_PROP for slot in net_alt.definition.identity.slots)
 
     by_dcid = {row.dcid: row for row in get_index().statvars}
     member_rows = [by_dcid[dcid] for dcid in net_partition.members]
     # Augment the same one real member with the crsCooperationModality arc
-    # the packaged-index patch above declared, so the posted graph and the
+    # the fixture-index patch above declared, so the posted graph and the
     # minted identity agree on which member carries it.
     augmented = [
         dataclasses.replace(

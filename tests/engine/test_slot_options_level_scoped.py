@@ -1,7 +1,7 @@
 """Index-sourced slot options show the bound code's children and parent, or two levels unbound.
 
 The fixture checks CRSPurposeCode120 and its three children, parent, and member counts against
- the packaged index. It also checks all nine flat `crsTypeOfFlow` codes, the unbound two-level
+ the fixture index. It also checks all nine flat `crsTypeOfFlow` codes, the unbound two-level
  crsPurpose menu, and the pre-bind skeleton's roots-only and capped lists.
 """
 
@@ -45,9 +45,9 @@ def _row_label(index: CodeIndex, dcid: str) -> str:
     return row.label
 
 
-def test_fixture_matches_the_real_packaged_index():
+def test_fixture_matches_the_real_index():
     """Independent cross-check of this file's own fixture constants against
-    the real packaged index, so a corpus refresh that moves the health
+    the real fixture index, so a corpus refresh that moves the health
     family fails loudly here rather than the tests below silently testing
     stale assumptions."""
     index = get_index()

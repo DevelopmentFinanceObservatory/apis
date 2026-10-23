@@ -197,11 +197,8 @@ def test_a_refusal_names_a_posted_string_by_its_first_characters(body: dict, pos
 # The fields the doors leave out of a body when `None` (`exclude_if=is_none`), by schema and
 # def. Every other field of a response schema is required.
 _OMITTED_WHEN_NONE = {
-    ("manifest", "Manifest"): {
-        "series_count",
-        "output_options",
-        "series_coverage_stamp",
-    },
+    ("manifest", "Manifest"): {"series_count", "output_options", "series_coverage_stamp"},
+    ("manifest", "Retention"): {"held_until"},
     ("options_envelope", "OptionsEnvelope"): {"output_options"},
     ("operation_resource", "OperationEnvelope"): {"poll", "retry_after_ms", "progress"},
     ("operation_resource", "OperationResource"): {"manifest", "error"},

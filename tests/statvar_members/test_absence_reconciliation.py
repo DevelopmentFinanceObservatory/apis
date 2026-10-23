@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from statvar_members.enumerate import enumerate_members
+from statvar_members.enumerate import SlotBinding, enumerate_members
 from statvar_members.types import UNRESOLVED_NODE, FiveTuple
 
 from .conftest import FakeMemberArcReader, FlakyMemberArcReader
@@ -214,3 +214,73 @@ def test_concrete_denominator_ask_with_more_than_reprobe_budget_denominator_less
     assert group.candidates_considered == 1
     assert [member.stat_var for member in group.members] == ["Amount_WithDenom"]
     assert group.inconsistent_candidates == ()
+
+
+class _PartlyCompleteReader(FlakyMemberArcReader):
+    """Reads the dcids in `complete` in full, as the origin catalogue's tables answer them,
+    and the rest as a live graph whose batch reads drop arcs. Records every arcs read."""
+
+    def __init__(self, *, complete: frozenset[str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._complete = complete
+        self.reads: list[tuple[str, ...]] = []
+
+    def arcs_complete(self, dcid: str) -> bool:
+        return dcid in self._complete
+
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+        self.reads.append(tuple(dcids))
+        return super().node_arcs_many(
+            dcids, properties=properties, individual_probe_budget=individual_probe_budget
+        )
+
+
+def _occupation_arcs(occupation: str) -> dict[str, tuple[str, ...]]:
+    return _arcs(constraintProperties=("occupation",), occupation=(occupation,))
+
+
+def _age_arcs(age: str) -> dict[str, tuple[str, ...]]:
+    return _arcs(constraintProperties=("age",), age=(age,))
+
+
+@pytest.mark.parametrize(
+    ("live_ages", "nurse_live", "undismissed", "rereadable"),
+    [(0, True, 0, False), (33, False, 1, True)],
+    ids=["live_member_recovered", "live_siblings_past_the_budget"],
+)
+def test_only_complete_reads_skip_the_absence_re_read(
+    live_ages: int, nurse_live: bool, undismissed: int, rereadable: bool
+):
+    """40 siblings read in full lack the set-bound `occupation`, more than the 32-candidate
+    re-read budget, and are dismissed without a re-read. A live member whose first batch
+    drops its constraint is re-read and recovered. Live siblings past the budget stay
+    undismissed, and a later walk could settle them."""
+    complete_ages = {f"Amount_Age{i:02d}": _age_arcs(f"Age{i:02d}") for i in range(40)}
+    live = {f"Amount_LiveAge{i:02d}": _age_arcs(f"LiveAge{i:02d}") for i in range(live_ages)}
+    arcs = {
+        "Amount_Teacher": _occupation_arcs("Teacher"),
+        "Amount_Nurse": _occupation_arcs("Nurse"),
+        **complete_ages,
+        **live,
+    }
+    complete = frozenset(complete_ages) | {"Amount_Teacher"}
+    if not nurse_live:
+        complete |= {"Amount_Nurse"}
+    reader = _PartlyCompleteReader(
+        complete=complete,
+        arcs=arcs,
+        drop_first_batch={"Amount_Nurse": "constraintProperties"} if nurse_live else None,
+    )
+    slots: dict[str, SlotBinding] = {
+        "occupation": ("set", ("Teacher", "Nurse")),
+        "age": _UNBOUND,
+    }
+
+    group = enumerate_members(five_tuple=_NO_DENOMINATOR_ASK, slots=slots, graph=reader)
+
+    assert [member.stat_var for member in group.members] == ["Amount_Nurse", "Amount_Teacher"]
+    assert len(group.undismissed_candidates) == undismissed
+    assert group.undismissed_rereadable is rereadable
+    first, *rereads = reader.reads
+    assert set(first) == set(arcs)
+    assert not {dcid for read in rereads for dcid in read} & frozenset(complete_ages)

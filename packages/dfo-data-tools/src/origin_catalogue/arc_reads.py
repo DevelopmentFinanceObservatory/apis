@@ -65,7 +65,7 @@ from origin_catalogue.arc_tables import (
     ArcTablesBuilder,
     SpannerNode,
     WireArcs,
-    spanner_wire_target,
+    spanner_wire_arcs,
 )
 from origin_catalogue.node_reads import iter_node_arcs, iter_node_labels
 from origin_catalogue.origins import UN_ID_PREFIX
@@ -209,19 +209,7 @@ def read_dfo_arcs(
     variables = frozenset(edges)
     while edges:
         variable, properties = edges.popitem()
-        into.add(
-            "dfo",
-            variable,
-            {
-                property: {
-                    "nodes": [
-                        spanner_wire_target(object_id, nodes.get(object_id))
-                        for object_id in sorted(objects)
-                    ]
-                }
-                for property, objects in properties.items()
-            },
-        )
+        into.add("dfo", variable, spanner_wire_arcs(properties, nodes))
     return DfoArcs(
         variables=variables,
         without_node=observed_set - variables,

@@ -1,4 +1,4 @@
-"""Tests that minting uses the packaged code index to decode declared CRS axes by default.
+"""Tests that minting uses the fixture code index to decode declared CRS axes by default.
 The fixture uses a real indexed StatVar. Undeclared constraint properties stay undecoded.
 """
 
@@ -35,7 +35,7 @@ _PROVIDER = "country/USA"
 _RECIPIENT = "country/KEN"
 _BASE_URL = "https://datacommons.one.org/core/api"
 
-# Expected labels from the packaged index, in decode-plan column order.
+# Expected labels from the fixture index, in decode-plan column order.
 _EXPECTED_DECODED_LABELS = {
     "stat_var_crsCooperationModality": "general budget support",
     "stat_var_crsPurpose": "vocational training",
@@ -138,7 +138,7 @@ def _client(*, artifact_store: FakeArtifactStore | None = None):
 
 
 def test_the_fixture_statvar_declares_the_expected_codes():
-    # Keep the fixture aligned with the packaged index's StatVar declaration.
+    # Keep the fixture aligned with the fixture index's StatVar declaration.
     index = get_index()
     statvar = next(row for row in index.statvars if row.dcid == _STAT_VAR)
     assert statvar.observation_properties == ("financingProvider", "financingRecipient")
@@ -171,7 +171,7 @@ def test_a_mint_response_carries_every_declared_code_system_as_its_own_column():
     statvar = next(row for row in get_index().statvars if row.dcid == _STAT_VAR)
     code_systems = [decoded.removeprefix("stat_var_") for decoded in _EXPECTED_DECODED_LABELS]
     # Each declared axis is a code column and its label column, in property order after the
-    # entities, their names and their party kinds. The packaged index declares neither
+    # entities, their names and their party kinds. The fixture index declares neither
     # undeclared constraint, so both stay out.
     assert header[7:15] == [name for cs in code_systems for name in (cs, f"{cs}_label")]
     assert not {"financialFlowType", "nettingBasis"} & set(header)

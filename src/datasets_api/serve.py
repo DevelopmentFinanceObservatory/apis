@@ -54,7 +54,7 @@ import contextvars
 import logging
 import math
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -719,7 +719,6 @@ def serve_definition(
     ceiling: int | None = None,
     coverage_stamp: str | None = None,
     coverage_index: CoverageIndex | None = None,
-    coverage_current: Callable[[], bool] | None = None,
     progress: RowProgress | None = None,
 ) -> ServedDefinition:
     """Materialises with `prewrite_definition`, then writes artifacts and the version record,
@@ -736,9 +735,8 @@ def serve_definition(
 
     One materialise permit is held from before materialisation to after the last artifact write,
     waiting up to the earlier of `settings.materialise_wait_seconds` and `deps.deadline`. A full
-    semaphore raises retryable `MintBackpressure` (503). `coverage_current` is
-    `bounded_materialise_slot`'s: a `coverage_index` a reload replaced during the wait raises
-    `StaleCoverageSnapshot` before anything is fetched. The prewrite and its frame are bound
+    semaphore, or a swap that replaced the request's bound release, raises retryable
+    `MintBackpressure` (503) before anything is fetched. The prewrite and its frame are bound
     only in the function the slot calls, so they are freed before the permit is released.
     """
 
@@ -784,7 +782,6 @@ def serve_definition(
         deps.materialise_semaphore,
         wait_seconds=deps.settings.materialise_wait_seconds,
         deadline=deps.deadline,
-        coverage_current=coverage_current,
     ):
         return _materialise_and_record()
 

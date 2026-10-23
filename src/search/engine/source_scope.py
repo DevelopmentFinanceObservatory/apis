@@ -327,6 +327,45 @@ def _pinned_reference(dictionary: SourceDictionary, ref: str, *, pointer: str) -
     )
 
 
+def _refuse_every_reading_empty(
+    mentions: Sequence[SourceMention],
+    group: AmbiguousSource,
+    *,
+    catalogue: Catalogue,
+    pointers: Sequence[str],
+) -> None:
+    """Raise `request_invalid` when every candidate of `group`'s words leaves the part no
+    source. Each reading pins every ref-less mention of the words to one candidate and
+    compiles once without `refuse_empty`. A reading that leaves another wording ambiguous
+    counts as viable, so a contradiction spread over two wordings answers
+    `source_ambiguous` until the caller has chosen all but one of them, and the cost stays
+    one compile per candidate. The refusal points at the excluded mention that empties the
+    first candidate's reading, which compiles once more with `refuse_empty` to find it."""
+    readings = [
+        [
+            mention.model_copy(update={"ref": candidate.ref})
+            if mention.ref is None and mention.text == group.text
+            else mention
+            for mention in mentions
+        ]
+        for candidate in group.candidates
+    ]
+    for reading in readings:
+        compiled = compile_sources(
+            reading, catalogue=catalogue, pointers=pointers, refuse_empty=False
+        )
+        if not isinstance(compiled, SourceScope) or compiled.allowed:
+            return
+    try:
+        compile_sources(readings[0], catalogue=catalogue, pointers=pointers)
+    except EngineInputError as empty:
+        raise EngineInputError(
+            f"every source {group.text!r} may name leaves this part no source to answer from",
+            code="request_invalid",
+            pointer=empty.pointer,
+        ) from None
+
+
 def compile_sources(
     mentions: Sequence[SourceMention],
     *,
@@ -341,9 +380,11 @@ def compile_sources(
     unrelated ones, else the scope. Excluded words that match no source resolve to no
     reference and remove nothing. Raises `request_invalid` at a mention whose ref is not
     admitted, and, when `refuse_empty`, at the excluded mention that leaves the scope
-    empty. Without `refuse_empty` such a scope compiles allowing nothing, and its part
-    answers `qualifier_not_bound` (`region.result.empty_scope_result`), since the raw-text
-    door reads mentions an extraction model wrote, which the caller cannot correct."""
+    empty, or that does so under every reading of ambiguous words
+    (`_refuse_every_reading_empty`). Without `refuse_empty` such a scope compiles allowing
+    nothing, and its part answers `qualifier_not_bound` (`region.result.empty_scope_result`),
+    since the raw-text door reads mentions an extraction model wrote, which the caller
+    cannot correct."""
     if not mentions:
         return None
     dictionary = source_dictionary(catalogue)
@@ -380,6 +421,10 @@ def compile_sources(
             reason="source_not_resolved", terms=tuple(unmatched), ambiguous=(), mentions=pinned
         )
     if ambiguous:
+        if refuse_empty:
+            _refuse_every_reading_empty(
+                mentions, ambiguous[0], catalogue=catalogue, pointers=pointers
+            )
         return SourceRefusal(
             reason="source_ambiguous",
             terms=tuple(group.text for group in ambiguous),

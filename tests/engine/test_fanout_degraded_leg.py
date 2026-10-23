@@ -14,6 +14,7 @@ import pytest
 
 from entity_resolution import Admission
 from materialise.place_scope import DefaultPresence
+from search.engine.binders import GeminiBinder
 from search.engine.errors import GraphInfraError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.region import RegionResult, pipeline
@@ -46,6 +47,7 @@ def _fanout_kwargs(**overrides: Any) -> dict[str, Any]:
         "resolver": resolver,
         "admission": admission,
         "llm": llm,
+        "binder": GeminiBinder(),
         "sdmx": sdmx,
         "base_timing": {},
         "pre_resolved": None,

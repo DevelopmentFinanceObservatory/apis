@@ -1252,7 +1252,7 @@ def test_a_version_record_links_its_artifacts_under_the_digest_they_were_rendere
 
 
 def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
-    """Builds an index with a synthetic axis absent from the packaged index."""
+    """Builds an index with a synthetic axis absent from the fixture index."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="https://fixture.example.org",

@@ -1037,7 +1037,7 @@ def _directional_graph() -> FakeGraph:
 
 
 _DIRECTIONAL_GROUP = "TESTFIXTURE/OptionsSurfaceRoleAxes/DevelopingCountries"
-"""A recipient group the packaged code index does not list, so it carries no kind whatever
+"""A recipient group the fixture code index does not list, so it carries no kind whatever
 its graph type."""
 
 
@@ -1150,7 +1150,7 @@ class TestDirectionalOptions:
         assert warning.params["variable_labels"] == [""]
 
     def test_destination_request_returns_coverage_members_with_labels(self, monkeypatch):
-        """Each member carries the party kind the packaged code index lists for it, and a group
+        """Each member carries the party kind the fixture code index lists for it, and a group
         the index does not list carries none."""
         rows = _directional_coverage_rows(
             role="destination",

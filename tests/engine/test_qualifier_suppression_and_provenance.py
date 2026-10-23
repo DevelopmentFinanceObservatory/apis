@@ -1,6 +1,6 @@
 """Tests qualifier admission in warnings, filter provenance, and same-shape merges.
 
-Fixtures use packaged CRS data and one synthetic code system.
+Fixtures use fixture CRS data and one synthetic code system.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.same_shape import collapse_same_shape
 from search.engine.spec_build import build_spec
 from search.models import CoverageBare, StatVar, Warning
+from tests.engine._binders import elected_reply
 from tests.engine._builders import conjoin_spec as _spec
 from tests.engine._builders import gref as _gr
 from tests.engine._builders import shape_five_tuple as _shape
@@ -46,13 +47,14 @@ _E2E_SV_DCID = (
 _E2E_KEN_DCID = "country/KEN"
 
 
-def _e2e_sv_arcs() -> dict:
+def _e2e_sv_arcs(dcid: str = _E2E_SV_DCID) -> dict:
+    """The graph arcs of the packaged index's StatVar `dcid`."""
     from code_index.shared import get_index
 
-    row = next(r for r in get_index().statvars if r.dcid == _E2E_SV_DCID)
+    row = next(r for r in get_index().statvars if r.dcid == dcid)
     return {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-        "name": {"nodes": [{"value": _E2E_SV_DCID}]},
+        "name": {"nodes": [{"value": dcid}]},
         "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
         "measuredProperty": {"nodes": [{"dcid": "grantEquivalent"}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -101,9 +103,7 @@ class _ExtractAndBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[]), None
 
 
 def _e2e_graph() -> FakeGraph:
@@ -165,24 +165,30 @@ def test_two_dropped_qualifiers_keeps_only_the_unadmitted_one():
     ] == [("measure_not_applied", "an entirely unrelated qualifier")]
 
 
-def test_unadmitted_dropped_qualifier_survives_unchanged():
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "a phrase naming nothing in the index",
+        # Asks for every member of a flow role, which a subject-only answer has none of.
+        "from all donors",
+    ],
+)
+def test_unadmitted_dropped_qualifier_survives_unchanged(phrase):
     """A dropped qualifier no region admitted survives unchanged -- the
     regression guard that behaviour still works unchanged."""
     response = offline_resolve(
         make_request(_E2E_QUERY),
         graph=_e2e_graph(),
-        llm=_ExtractAndBindLLM(dropped_qualifiers=["a phrase naming nothing in the index"]),
+        llm=_ExtractAndBindLLM(dropped_qualifiers=[phrase]),
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     warnings = [w for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert len(warnings) == 1
-    assert warnings[0].message == (
-        'The requested qualifier "a phrase naming nothing in the index" was not applied.'
-    )
+    assert warnings[0].message == f'The requested qualifier "{phrase}" was not applied.'
     assert warnings[0].message not in response.parts[0].spec.resolved.rendered_sentence
     assert [
         (d.code, d.asked) for d in response.parts[0].departures if d.code == "measure_not_applied"
-    ] == [("measure_not_applied", "a phrase naming nothing in the index")]
+    ] == [("measure_not_applied", phrase)]
 
 
 def test_terminal_before_election_reports_no_admitted_phrases():
@@ -660,8 +666,8 @@ def test_e2e_forced_binding_carries_text_recognized_provenance_binder_elects_the
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -671,7 +677,6 @@ def test_e2e_forced_binding_carries_text_recognized_provenance_binder_elects_the
                     )
                 ],
                 also_plausible=[],
-                ask=None,
             ), None
 
     result = asyncio.run(
@@ -776,9 +781,7 @@ class _SyntheticNoBindingLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[]), None
 
 
 def test_synthetic_code_system_admission_reaches_both_halves(monkeypatch, search_settings):

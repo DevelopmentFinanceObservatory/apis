@@ -1,11 +1,11 @@
 """Storage and publication shared by the jobs that publish versioned
-artifacts: the coverage index (`series_coverage.job`) and the origin
-catalogue (`origin_catalogue.job`).
+artifacts: the origin catalogue (`origin_catalogue.job`), the graph release
+(`graph_release.job`) and the search catalogue (`search.catalogue.job`).
 
 Each artifact lives under a format root, where `POINTER_FILE` names one
 immutable build directory under `VERSIONS_PREFIX`. `uri` reads and writes
 `gs://` and `file://` objects; `jobs` holds the BigQuery reads, build lease,
-pruning and stale-publish tracking both jobs run.
+pruning and stale-publish tracking those jobs share.
 """
 
 from __future__ import annotations

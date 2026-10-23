@@ -14,7 +14,6 @@ import pytest
 from dc_graph import GraphReadError
 from dc_sdmx import SdmxCapExceededError
 from materialise.facets import FacetSelection, UnitRequest
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
@@ -52,7 +51,8 @@ from search.observations import (
     OBSERVATIONS_PREVIEW_TOO_LARGE,
     observation_settings,
 )
-from series_coverage.schema import BUILD_EPOCH_YEAR, FacetMetadata, RoleNames
+from series_coverage.schema import FacetMetadata, RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FIXTURE_PROVENANCE,
     FakeCoverageService,
@@ -76,6 +76,7 @@ from tests.engine._quantity import NO_QUANTITY
 from tests.engine._role_candidates import role_candidate
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
+from tests.series_coverage.support import BUILD_EPOCH_YEAR
 
 _SV = "TEST/BulkRoleObs_Flow"
 _DONOR = "country/BRDonor"
@@ -1373,7 +1374,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0, bindings=[]), None
 
 
 def test_role_bearing_bound_unit_overflow_never_escalates_to_graph_infra_error(

@@ -83,7 +83,6 @@
   why: No dataset holds GDP for the SubSaharanAfrica node, so the region reads as its member countries; WEO excludes IMF groups.
   reuse: panel/weo-012
   tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual, overlap: [weo]}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: base.gdp}
@@ -101,7 +100,6 @@
   why: The graph holds no euro area node, so the group reads as its member countries; entity_not_resolved also fits if it does not resolve.
   reuse: panel/weo-017
   tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual, overlap: [weo]}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: base.gdp}
@@ -113,7 +111,7 @@
   why: Global GDP resolves to the World Bank series for Earth.
   reuse: panel/weo-022
   tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition, task_outcome]}
+  known_failure: {issue: 1156, checks: [disposition]}
   expect: {definite: {measure: {family: base.gdp}, entities: [{dcid: Earth, role: observationAbout}]}}
 
 - id: dq-weo-013
@@ -252,7 +250,6 @@
   why: A World Bank Datasets central government debt share answers if it holds Kenya; otherwise the part refuses, and a debt level series elected for the share is refused denominator_not_available.
   reuse: panel/weo-040
   tags: {theme: debt, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [weo_unpublished], overlap: [ids]}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: base.government_debt}

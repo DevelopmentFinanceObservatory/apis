@@ -342,23 +342,17 @@ def test_a_regions_node_posted_with_its_group_is_read_at_the_node(doors: Doors) 
 _CONGOS = ("country/COD", "country/COG")
 
 
-def _data_query(response: ResolveResponse) -> ParsedPart:
-    """The one part of an `entity_ambiguous` answer's `data_query`."""
+def _option(response: ResolveResponse, dcid: str) -> ParsedPart:
+    """The one part of the option of an `entity_ambiguous` answer that picks `dcid`."""
     (part,) = response.parts
     assert part.status == "no_data", part.status
     assert part.no_data.reason == "entity_ambiguous"
-    assert part.no_data.data_query is not None
-    (query_part,) = part.no_data.data_query.parts
-    return query_part
-
-
-def _pick(part: ParsedPart, text: str, dcid: str) -> ParsedPart:
-    """`part` with the entity `text` pinned to `dcid`, as a client posts the user's pick."""
-    entities = [
-        entity.model_copy(update={"dcid": dcid}) if entity.text == text else entity
-        for entity in part.entities or ()
+    (query_part,) = [
+        option.data_query.parts[0]
+        for option in part.no_data.options
+        if any(entity.dcid == dcid for entity in option.data_query.parts[0].entities or ())
     ]
-    return part.model_copy(update={"entities": entities})
+    return query_part
 
 
 @pytest.mark.parametrize(
@@ -384,14 +378,14 @@ def _pick(part: ParsedPart, text: str, dcid: str) -> ParsedPart:
         ),
     ],
 )
-def test_a_data_query_posted_back_keeps_the_reading_of_each_set(
+def test_an_option_posted_back_keeps_the_reading_of_each_set(
     monkeypatch: pytest.MonkeyPatch,
     africa: ParsedEntity,
     echoed: tuple[str, str | None, bool],
     places: list[str],
 ) -> None:
-    """Africa beside the ambiguous "Congo": the answer is `entity_ambiguous`, and its
-    `data_query` states `members` where the part asked for Africa's members and leaves out
+    """Africa beside the ambiguous "Congo": the answer is `entity_ambiguous`, and each of
+    its options states `members` where the part asked for Africa's members and leaves out
     the flag where it did not. A set read as its members, by the flag or through an alias
     row that declares its text names members, is echoed unpinned, and Africa read whole is
     pinned to its node. Posted back with Congo picked, the part binds what the same request
@@ -407,11 +401,11 @@ def test_a_data_query_posted_back_keeps_the_reading_of_each_set(
     assert subject_reading(WHO, AFRICA) == [AFRICA]
     picked = ParsedEntity(text="Congo", dcid=_CONGOS[0])
 
-    query_part = _data_query(doors.first_answer(WHO, africa, "Congo"))
+    query_part = _option(doors.first_answer(WHO, africa, "Congo"), _CONGOS[0])
 
     entity = query_part.entities[0]
     assert (entity.text, entity.dcid, bool(entity.members)) == echoed
-    again = the_spec(doors.post(_pick(query_part, "Congo", _CONGOS[0])))
+    again = the_spec(doors.post(query_part))
     direct = the_spec(doors.first_answer(WHO, africa, picked))
     assert bound(again) == bound(direct) == {_SUBJECT: sorted([*places, _CONGOS[0]])}
     assert again.spec_id == direct.spec_id

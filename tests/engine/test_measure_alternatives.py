@@ -1,6 +1,6 @@
 """Tests measure-label composition and publication of sibling alternatives.
 
-Synthetic partitions pin label rules, and five real packaged-index partitions check integration.
+Synthetic partitions pin label rules, and five real fixture-index partitions check integration.
 """
 
 from __future__ import annotations
@@ -340,7 +340,7 @@ def test_real_index_every_partition_taken_as_elected_disambiguates_and_carries_a
         assert set(elected_label_axes) == {
             axis for axis, value in elected_partition.values if value is not None
         }
-        # The measure index labels every value a packaged partition holds.
+        # The measure index labels every value a fixture partition holds.
         assert [v.axis for v in measure_axis_values(elected_partition)] == elected_label_axes
         for alternative in alternatives:
             assert alternative.measure_axis_values

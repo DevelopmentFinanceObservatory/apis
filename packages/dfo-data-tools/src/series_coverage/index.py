@@ -1,11 +1,12 @@
-"""In-memory lookups over a loaded coverage artifact.
+"""In-memory lookups over the coverage rows of a graph release's coverage part
+(`graph_release.views.coverage_index`).
 
 Rows are sorted by `(variable, facet_id)`, so each variable's rows form one
 contiguous block. Lookups find each requested variable's block by binary
 search, filter bound roles with Arrow over those rows alone, then apply year
 windows through uint64 masks. `PairRows` uses the same binary search to read
-only the requested group. Load-time validation guarantees `n_obs` matches
-each row's mask. `role_names` maps package role labels to graph properties.
+only the requested group. `series_coverage.loader.checked_index` guarantees
+`n_obs` matches each row's mask. `role_names` maps package role labels to graph properties.
 A variable that declares one role carries `ABSENT_ENTITY` in the column of
 the role it lacks, which no lookup returns as a dcid.
 """
@@ -53,7 +54,6 @@ from series_coverage.schema import (
     FacetMetadata,
     RoleNames,
     YearHorizon,
-    widen_span,
 )
 from series_coverage.summary import CoverageSummary
 
@@ -509,7 +509,7 @@ class CoverageIndex:
     ) -> None:
         """Dictionary-encodes key columns and sorts rows by `(variable, facet_id)`.
 
-        `build_year` is the calendar year the artifact was built in, the last year a
+        `build_year` is the calendar year the coverage was read in, the last year a
         `latest` read elects (`elected_years`). None sets no last year.
 
         Raises `ValueError` if mask columns differ from `horizon` or a
@@ -547,8 +547,8 @@ class CoverageIndex:
 
     @property
     def build_year(self) -> int | None:
-        """The calendar year the artifact was built in, from its manifest, or None for an
-        index built without one. A `latest` read elects no later year
+        """The calendar year the coverage was read in, from the release manifest's read
+        timestamp, or None for an index built without one. A `latest` read elects no later year
         (`elected_years`), since a year after it holds projections."""
         return self._build_year
 
@@ -558,8 +558,8 @@ class CoverageIndex:
 
     @property
     def horizon(self) -> YearHorizon:
-        """The years this artifact's year masks represent, from its
-        manifest. A caller clamping a requested window to what coverage can
+        """The years this index's year masks represent, the release's
+        mask horizon. A caller clamping a requested window to what coverage can
         confirm reads `horizon.epoch_year`/`horizon.max_year`."""
         return self._horizon
 
@@ -576,8 +576,8 @@ class CoverageIndex:
     def facet_metadata(self) -> Mapping[str, FacetMetadata]:
         """Loaded facet metadata, used to rank this index's coverage results.
 
-        Real artifacts provide complete metadata. Direct construction
-        defaults to an empty map.
+        `checked_index` requires an entry for every facet of the rows. Direct
+        construction defaults to an empty map.
         """
         return self._facet_metadata
 
@@ -605,7 +605,8 @@ class CoverageIndex:
         `facet_metadata`, and a variable's axes come from `role_names`. Pairs
         whose facet has no provenance, or whose variable has no role names,
         are skipped. A provenance with no coverage rows has no entry, which
-        means unknown, because the building job keeps only role-bearing series.
+        means unknown, because `graph_release.coverage.coverage_rows` keeps only
+        role-bearing variables.
         """
         return self._provenance_shapes
 
@@ -664,31 +665,6 @@ class CoverageIndex:
                 if facet_id in facets and party != ABSENT_ENTITY:
                     axes.setdefault(party, set()).add(axis)
         return {party: frozenset(found) for party, found in axes.items()}
-
-    def dataset_party_years(
-        self, provenances: Collection[str]
-    ) -> dict[str, dict[str, tuple[int, int]]]:
-        """For every donor and recipient of `dataset_parties`, the first and last year,
-        inclusive, in which each of `provenances` publishes it, keyed by provenance."""
-        facet_provenances = {
-            facet_id: provenance
-            for facet_id, metadata in self._facet_metadata.items()
-            if (provenance := metadata.provenance_id) is not None and provenance in provenances
-        }
-        years: dict[str, dict[str, tuple[int, int]]] = {}
-        for role in _ROLE_AXES:
-            by_facet = self.grouped(by=(role, "facet_id"))
-            for party, facet_id, first, last in zip(
-                _key_values(by_facet[role]),
-                _key_values(by_facet[FACET_COLUMN]),
-                cast("list[int]", by_facet[FIRST_YEAR_COLUMN].to_pylist()),
-                cast("list[int]", by_facet[LAST_YEAR_COLUMN].to_pylist()),
-                strict=True,
-            ):
-                if facet_id not in facet_provenances or party == ABSENT_ENTITY:
-                    continue
-                widen_span(years.setdefault(party, {}), facet_provenances[facet_id], first, last)
-        return years
 
     def _member_rows(self, *, variables: Sequence[str], bound: BoundRoles) -> pa.Table:
         """The rows of `variables` surviving `bound`, in table order.
@@ -1288,7 +1264,7 @@ class CoverageIndex:
         same counts for it and the two calendar years before it (`recent_years`, newest
         first, a year with no data kept at zero). The window picks the latest year; the
         earlier years count whether or not the window reaches them. `recent_years` stops
-        at the horizon's `epoch_year`, since the artifact holds no year before it. `None`
+        at the horizon's `epoch_year`, since the index holds no year before it. `None`
         when nothing survives `bound` and the window.
 
         `elected` is set for a `latest` read, which passes no window, and holds the year
@@ -1476,7 +1452,7 @@ class CoverageIndex:
         }
 
     def covers(self, variable: str) -> bool:
-        """Whether the artifact holds any row of `variable`."""
+        """Whether the index holds any row of `variable`."""
         return variable in self._variable_codes
 
     def series_years(
@@ -1724,7 +1700,7 @@ class CoverageIndex:
             if names is None:
                 if variable in dispatching:
                     raise KeyError(
-                        f"variable {variable!r} has no RoleNames entry in this coverage artifact"
+                        f"variable {variable!r} has no RoleNames entry in this coverage index"
                     )
                 continue
             groups.setdefault(names, []).append(variable)

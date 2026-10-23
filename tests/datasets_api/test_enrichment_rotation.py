@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from artifact_store import LiveArtifactInventory
-from code_index import CodeIndex, default_index_path, parse_index
+from code_index import CodeIndex, parse_index
 from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader, StoredArtifactLocation
 from datasets_api.recipe_store import LiveRecipeStore
@@ -33,6 +33,7 @@ from dc_sdmx import SdmxClient
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
+from tests.code_index.support import INDEX_FIXTURE
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
 from . import test_mint_single_role as subject_only
@@ -75,9 +76,8 @@ def index_x() -> CodeIndex:
 
 @pytest.fixture(scope="module")
 def index_y(index_x: CodeIndex) -> CodeIndex:
-    """The packaged index with one residual read as a party."""
-    with default_index_path().open("rb") as source:
-        payload = json.loads(gzip.decompress(source.read()))
+    """The fixture index with one residual read as a party."""
+    payload = json.loads(gzip.decompress(INDEX_FIXTURE.read_bytes()))
     for row in payload["parties"]:
         if row["dcid"] == _CHANGED_PARTY:
             assert row["kind"] == "residual"

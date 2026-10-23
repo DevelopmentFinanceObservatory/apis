@@ -22,6 +22,7 @@ import pytest
 from scripts.sentence_golden import spec_dicts
 from search.eval.cases import Case, Family, Gl, validate_case
 from search.eval.checks import ScoreContext, WireSchema
+from search.eval.checks.base import MembersRefused
 from search.models import RESOLVE_RESPONSE_ADAPTER
 
 PANEL_DIR = Path(__file__).parents[2] / "fixtures" / "sentence_panel"
@@ -36,7 +37,7 @@ FAMILIES = {
         fixed={"financialFlowType": "Disbursement", "nettingBasis": "Gross"},
     ),
     # crs.disbursement_gross's shape and slots with StatVar pins, or under another dataset:
-    # the "unserved" pins name a StatVar crs-001 does not serve, "served" one it does, and
+    # the "unserved" pins name a StatVar crs-032 does not serve, "served" one it does, and
     # the unconfirmed family's slots are unconfirmed.
     "crs.disbursement_unserved": Family(
         origin="dfo",
@@ -51,8 +52,8 @@ FAMILIES = {
         shape={"population_type": "FinancialFlow", "measurement_qualifier": "Nominal"},
         fixed={"financialFlowType": "Disbursement", "nettingBasis": "Gross"},
         stat_vars=[
-            "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110"
-            "_CRSPurposeCode11120_Nominal"
+            "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow21_CRSTypeOfFinance421"
+            "_CRSPurposeCode23230_Nominal"
         ],
     ),
     "ids.disbursement_unserved": Family(
@@ -96,6 +97,12 @@ FAMILIES = {
         origin="base",
         dataset="dc/base/WorldDevelopmentIndicators",
         shape={"population_type": "EconomicActivity", "measurement_denominator": None},
+        fixed={"activitySource": "GrossDomesticProduction"},
+    ),
+    "wdi.gdp_per_capita": Family(
+        origin="base",
+        dataset="dc/base/WorldDevelopmentIndicators",
+        shape={"population_type": "EconomicActivity", "measurement_denominator": "PerCapita"},
         fixed={"activitySource": "GrossDomesticProduction"},
     ),
     "weo.gdp_per_capita": Family(
@@ -186,6 +193,11 @@ def no_members_door(spec_id: str, definition: dict[str, Any]) -> list[str]:
     """The members door of an app built before it: every read answers 404."""
     request = httpx.Request("POST", f"http://base/api/datasets/{spec_id}/members")
     raise httpx.HTTPStatusError("404", request=request, response=httpx.Response(404))
+
+
+def refusing_members_door(spec_id: str, definition: dict[str, Any]) -> list[str]:
+    """A members door that refuses every definition as one it will not mint."""
+    raise MembersRefused(code="member_not_resolvable", detail=f"{spec_id} did not resolve")
 
 
 @pytest.fixture

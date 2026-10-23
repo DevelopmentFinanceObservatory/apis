@@ -15,9 +15,8 @@ from code_index import (
     CrossSystemParent,
     IndexStamp,
     StatVarRow,
-    default_index_path,
-    load_index,
 )
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 _STAMP = IndexStamp(
     graph_endpoint="test",
@@ -276,10 +275,10 @@ def test_real_flat_type_of_flow_is_never_invented_into_a_hierarchy(code_index: C
 def test_a_real_bound_root_offers_the_other_roots_an_unbound_slot_lists(
     code_system: str, bound: str
 ):
-    """On the packaged index, a bound root's children are followed by the roots an unbound
+    """On the fixture index, a bound root's children are followed by the roots an unbound
     slot lists, in its order and less the bound root. A bound code with a parent is followed
     by that parent alone."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     row = index.code_by_dcid(bound)
     assert row is not None
 

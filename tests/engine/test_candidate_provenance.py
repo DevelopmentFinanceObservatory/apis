@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
+from search.engine.binders import Binder
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -83,8 +85,8 @@ class _ElectShape0AlsoPlausibleShape1LLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -94,7 +96,6 @@ class _ElectShape0AlsoPlausibleShape1LLM:
                 )
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 
@@ -105,8 +106,8 @@ class _ExplicitBindNoAdmissionLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what",
@@ -128,7 +129,6 @@ class _ExplicitBindNoAdmissionLLM:
                 ),
             ],
             also_plausible=[1],
-            ask=None,
         ), None
 
 
@@ -137,7 +137,7 @@ def _graph(query: str) -> FakeGraph:
     return FakeGraph(nodes=_NODES, detect=detect, resolve={"Kenya": _E2E_KEN_DCID}, obs=_OBS)
 
 
-def _run(query: str, llm):
+def _run(query: str, llm, *, binder: Binder | None = None):
     graph = _graph(query)
     return asyncio.run(
         resolve_variable(
@@ -150,6 +150,7 @@ def _run(query: str, llm):
             graph=graph,
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
+            binder=binder,
             llm=llm,
             base_timing={},
             coverage=empty_coverage_snapshot(),
@@ -175,7 +176,7 @@ def test_elected_candidate_carries_text_recognized_alt_carries_binder():
     """Only the elected candidate's forced filters report `text_recognized`. The alt's matching
     crsTypeOfFinance value reports `binder`.
     """
-    result = _run(_QUERY, _ElectShape0AlsoPlausibleShape1LLM())
+    result = _run(_QUERY, _ElectShape0AlsoPlausibleShape1LLM(), binder=ReplyBinder())
     assert result.status == "candidates"
     assert result.admitted_qualifier_phrases == frozenset({"oda", "standard grants"})
 
@@ -211,7 +212,7 @@ def test_elected_candidate_carries_measure_elected_alt_does_not():
         _settle_and_force_election if phase is _orig_settle else phase for phase in _orig_phases
     )
     try:
-        result = _run(_QUERY, _ElectShape0AlsoPlausibleShape1LLM())
+        result = _run(_QUERY, _ElectShape0AlsoPlausibleShape1LLM(), binder=ReplyBinder())
     finally:
         pipeline_module._PHASES = _orig_phases
 

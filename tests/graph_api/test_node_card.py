@@ -10,13 +10,12 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import replace
 
 import httpx
 import pytest
 
 from dc_sdmx import SdmxClient
-from graph_api.availability import AVAILABILITY_GAP, COUNTRIES_ONLY_GAP, NOT_SERVED_GAP
+from graph_api.availability import AVAILABILITY_GAP, COUNTRIES_ONLY_GAP
 from graph_api.card_reads import (
     LABELS_GAP,
     NATIONAL_CURRENCY_GAP,
@@ -27,6 +26,7 @@ from graph_api.card_reads import (
 from graph_api.doors import members as members_door
 from graph_api.doors import node as node_door
 from graph_generation import UNKNOWN_GENERATION
+from graph_release.context import bound_release, current_release, served_origin_key
 from materialise import EnrichmentLookup, MaterialisationRequest, materialise_spec, place_scope
 from materialise.facet_profile import FacetProfile, read_facet_profiles
 from materialise.graph import Facet, GraphReadError, SubjectPage
@@ -35,6 +35,7 @@ from materialise.window import RequestedWindow
 from origin_catalogue import DFO, Catalogue, bound_catalogue, current_catalogue
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.graph_release.support import release_at_revision
 from tests.materialise.conftest import FakeGraphReader
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
@@ -372,48 +373,6 @@ class TestVariableCard:
         assert second.headers["cache-control"] == "public, max-age=300"
         assert graph.fact_reads == reads == [("Estimated", _GERMANY, _FRANCE)]
 
-    def test_a_surface_without_a_coverage_index_gives_a_null_availability_with_a_permanent_gap(
-        self,
-    ):
-        profile_graph = _profile_graph()
-        client = make_client(
-            graph=FakeGraphNodeReader(nodes=_NODES, subjects=_CURRENCY_UNITS),
-            profile_graph=profile_graph,
-            availability=profile_graph.scope_availability(),
-        )
-        with client:
-            resp = client.get(f"/api/graph/node/{_GDP}")
-
-        body = resp.json()
-        assert body["stat_var"]["availability"] is None
-        assert NOT_SERVED_GAP in body["gaps"]
-        assert AVAILABILITY_GAP not in body["gaps"]
-        assert "coverage_index" not in body["built_from"]
-        assert resp.headers["cache-control"] == "public, max-age=300"
-        assert resp.headers["etag"]
-        assert profile_graph.calls["observation_facets_batch_many"] == 0
-
-    def test_a_coverage_index_that_failed_to_load_gives_a_null_availability_that_is_not_cached(
-        self,
-    ):
-        profile_graph = _profile_graph()
-        client = make_client(
-            graph=FakeGraphNodeReader(nodes=_NODES, subjects=_CURRENCY_UNITS),
-            profile_graph=profile_graph,
-            availability=profile_graph.scope_availability(),
-        )
-        with client:
-            deps = client.app.state.graph_deps
-            client.app.state.graph_deps = replace(deps, coverage_load_failed=True)
-            resp = client.get(f"/api/graph/node/{_GDP}")
-
-        body = resp.json()
-        assert body["stat_var"]["availability"] is None
-        assert AVAILABILITY_GAP in body["gaps"]
-        assert NOT_SERVED_GAP not in body["gaps"]
-        assert resp.headers["cache-control"] == "no-store"
-        assert profile_graph.calls["observation_facets_batch_many"] == 0
-
     def test_a_profile_miss_gives_a_null_availability_with_a_transient_gap(self):
         profile_graph = _profile_graph()
 
@@ -652,23 +611,6 @@ class TestFacetsRelation:
         assert page["gaps"] == ["facets_not_served"]
         assert resp.headers["cache-control"] == "public, max-age=300"
 
-    def test_a_coverage_index_that_failed_to_load_lists_nothing_and_is_not_cached(self):
-        profile_graph = _profile_graph()
-        with make_client(
-            graph=_Reads(),
-            profile_graph=profile_graph,
-            availability=profile_graph.scope_availability(),
-        ) as client:
-            deps = client.app.state.graph_deps
-            client.app.state.graph_deps = replace(deps, coverage_load_failed=True)
-            resp = _facets(client)
-
-        assert resp.status_code == 200, resp.text
-        page = resp.json()
-        assert (page["items"], page["complete"], page["total"]) == ([], False, None)
-        assert page["gaps"] == ["facets_not_read"]
-        assert resp.headers["cache-control"] == "no-store"
-
     def test_a_failed_label_read_leaves_labels_null_and_is_not_cached(self):
         with _client(graph=_Reads(fail_facts=frozenset({"Estimated"}))) as client:
             resp = _facets(client)
@@ -747,6 +689,37 @@ def test_facts_land_chunk_by_chunk_and_a_later_read_takes_only_the_missing():
     ]
 
 
+class _ReleaseNames(_Reads):
+    """Names each node after the release bound to the read, as the release answers a DFO
+    variable's name."""
+
+    def node_arcs_many(self, dcids, *, properties, deadline=None):
+        if tuple(properties) != _FACTS:
+            return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+        self.fact_reads.append(tuple(sorted(dcids)))
+        release = current_release().release_id
+        return {dcid: {"name": (f"{dcid} at {release}",), "typeOf": ("Thing",)} for dcid in dcids}
+
+
+def test_facts_read_under_one_release_are_read_again_under_the_next():
+    first, second = release_at_revision("rev-1"), release_at_revision("rev-2")
+    graph = _ReleaseNames()
+
+    async def read(caches: CardReadCaches) -> list[str | None]:
+        names = []
+        for release in (first, second, first):
+            with bound_release(release):
+                found = await caches.node_facts([_FRANCE], deadline=time.monotonic() + 5.0)
+            names.append(found.facts[_FRANCE].name)
+        return names
+
+    with ThreadPoolExecutor(max_workers=2) as dcp, _caches(graph, dcp, chunk_size=2) as caches:
+        names = asyncio.run(read(caches))
+
+    assert names == [f"{_FRANCE} at {release.release_id}" for release in (first, second, first)]
+    assert len(graph.fact_reads) == 2
+
+
 def test_the_driver_reads_every_chunk_after_its_caller_stops_waiting():
     release = threading.Event()
     graph = _Reads(release=release)
@@ -815,11 +788,12 @@ def test_the_driver_reads_under_the_callers_bound_catalogue():
 
     with ThreadPoolExecutor(max_workers=2) as dcp, _caches(graph, dcp, chunk_size=1) as caches:
         read_facts = asyncio.run(read(caches))
-        cached = caches._facts.cached_many([_FRANCE])
+        key = (_FRANCE, served_origin_key())
+        cached = caches._facts.cached_many([key])
 
     assert read_facts.complete
     assert read_facts.facts[_FRANCE].types == ("Country",)
-    assert cached == read_facts.facts
+    assert cached == {key: read_facts.facts[_FRANCE]}
 
 
 def test_a_read_past_its_deadline_starts_no_driver_though_a_slot_is_free():

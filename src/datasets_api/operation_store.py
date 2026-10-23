@@ -3,9 +3,9 @@
 `compute_operation_id` hashes canonical JSON of `request_identity` (the subject and its sorted
 member dcids), `origin_catalogue_build_id`, and the rendering key. Identical inputs share an id.
 Different renderings get separate operations, and so does a new catalogue build, whose admission
-may change what the same request returns. A coverage build leaves the id unchanged, so it never
-orphans a done operation. Raw options stay on the row, while sorted-key JSON makes mapping order
-and type irrelevant to the id.
+may change what the same request returns. A new graph release leaves the id unchanged, so it
+never orphans a done operation. Raw options stay on the row, while sorted-key JSON makes mapping
+order and type irrelevant to the id.
 
 `create_or_get` inserts a new row `pending` with a NULL `dispatched_at` and commits. The caller
 then creates the Cloud Tasks task and calls `mark_dispatched`, which sets `dispatched_at` once

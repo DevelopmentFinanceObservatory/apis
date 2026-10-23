@@ -1,0 +1,52 @@
+{
+  "model": "jev-1.13.0",
+  "questions": {
+    "control": {
+      "instructions": "Does the query name a country?",
+      "type": "noul"
+    },
+    "form": {
+      "criteria": {
+        "change": "a change between two dates",
+        "level": "a level or amount",
+        "rate": "a rate or share of a total"
+      },
+      "instructions": "Which form of quantity does the query ask for?",
+      "type": "choice"
+    },
+    "m|3": {
+      "instructions": "Does the query ask about the price of oil?",
+      "type": "noul"
+    }
+  },
+  "response": {
+    "answers": {
+      "control": {
+        "noul": 0.99,
+        "type": "noul"
+      },
+      "form": {
+        "choice": "level",
+        "confidence": 0.86,
+        "probabilities": {
+          "change": 0.08,
+          "level": 0.91,
+          "rate": 0.01
+        },
+        "type": "choice"
+      },
+      "m|3": {
+        "noul": 0.0,
+        "type": "noul"
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 384,
+      "output_tokens": 72
+    }
+  },
+  "state": {
+    "query": "life expectancy at birth in Kenya since 2000"
+  }
+}

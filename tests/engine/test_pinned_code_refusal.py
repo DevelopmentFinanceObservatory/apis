@@ -28,6 +28,8 @@ from search.engine.departures import (
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.region.phase_answer import _assemble_carve_outs
 from search.engine.region.requirements import (
+    answer_terms,
+    judge,
     record_reading,
     refusal_terms,
     settle_answer,
@@ -36,14 +38,18 @@ from search.engine.region.requirements import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
+    MeasureRule,
+    Requirement,
     ResolveState,
     code_requirement,
     qualifier_dropped_warning,
+    unapplied_departure,
     with_requirement,
 )
 from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.retrieve import BoundValuesUnrealisable, Materialised, MemberConflict
 from search.engine.shape import ShapeDraft, SlotKeyDraft
+from search.engine.unit.conversion import bound_prices, served_prices
 from search.heading.departure_fact import DepartureFact
 from search.models import CoverageBare, GraphRef, ResolvedQualifier, Spec, StatVar, Warning
 from tests.conftest import minimal_spec
@@ -334,9 +340,11 @@ def _named_terms_state() -> ResolveState:
 
 
 def _bound_without_terms_state() -> ResolveState:
-    """The elected shape binds health and education expenditure with no term naming
-    either, and no member holds them, so unbinding drops both, under one departure."""
+    """The elected shape binds health and education expenditure, which the words name by
+    their names and no recorded term names, and no member holds them, so unbinding drops
+    both, under one departure."""
     state = _state()
+    state.variable = "Healthcare expenditure and Education expenditure as share of GDP"
     state.measure_query_matches = ()
     state.graph = cast(
         EngineGraphClient,
@@ -419,7 +427,7 @@ def test_a_candidate_set_keeps_a_code_departure_one_answer_leaves_unmet(requeste
 )
 def test_each_requested_code_is_judged_alone(requested, bound, unbound):
     """The request asks for health and education expenditure on one property, by two terms
-    or by two bound values no term names. Applying one code does not satisfy the other:
+    or by two bound values its words name and no recorded term names. Applying one code does not satisfy the other:
     each requirement is met only by its own codes."""
     state = requested()
 
@@ -449,3 +457,139 @@ def test_a_stand_in_is_judged_on_the_code_the_request_named(bound, unbound):
 
     assert [(t.slot, t.text) for t in refused] == unbound
     assert _departed(state) == []
+
+
+# A price basis is met by the unit request an answer is served under. A Nominal series
+# converted to constant prices reads as RealValue.
+
+_CONSTANT = "constant"
+
+
+def _price_basis_requirement(code: str) -> Requirement:
+    return code_requirement(
+        property_dcid="measurementQualifier",
+        codes=(code,),
+        asked=_CONSTANT,
+        named=[GraphRef(ref=code, label=code)],
+        departure=unapplied_departure(
+            _CONSTANT, asked=_CONSTANT, property_dcid="measurementQualifier"
+        ),
+        origin="bind",
+    )
+
+
+def _nominal_flow() -> ShapeDraft:
+    return replace(_education_share(), shape_id="flow_nominal", meas_qual_dcid="Nominal")
+
+
+def _measure_price_basis_requirement(code: str) -> Requirement:
+    """The phrase "constant" as `ResolveState.require_measure` records it: a `MeasureRule` whose
+    measure value the Nominal shape does not carry."""
+    state = _state()
+    match = QualifierMatch(
+        code_system="measurementQualifier",
+        code_dcid=code,
+        label=code,
+        source="synonym",
+        matched_text=_CONSTANT,
+    )
+    state.measure_query_matches = (match,)
+    state.require_measure(_CONSTANT, match, discloses=True)
+    (requirement,) = state.requirements
+    assert isinstance(requirement.rule, MeasureRule)
+    return requirement
+
+
+@pytest.mark.parametrize(
+    ("served", "code", "departs", "build"),
+    [
+        ("constant", "RealValue", False, _price_basis_requirement),
+        ("constant", "InflationAdjusted", False, _price_basis_requirement),
+        ("current", "RealValue", True, _price_basis_requirement),
+        (None, "RealValue", True, _price_basis_requirement),
+        ("constant", "PurchasingPowerParity", True, _price_basis_requirement),
+        ("current", "Nominal", False, _price_basis_requirement),
+        ("constant", "RealValue", False, _measure_price_basis_requirement),
+        ("current", "RealValue", True, _measure_price_basis_requirement),
+    ],
+)
+def test_a_price_basis_is_met_by_the_served_unit_request(served, code, departs, build):
+    judgement = judge([build(code)], [(_nominal_flow(), [])], served=(served,))
+
+    assert bool(judgement.departures()) is departs
+
+
+def _unit_spec(prices: str | None) -> Spec:
+    spec = minimal_spec()
+    if prices is not None:
+        request = {"currency": "EUR", "prices": prices}
+        if prices == "constant":
+            request["base_year"] = 2022
+        spec["definition"]["identity"]["facets"] = {"unit": {"state": "value", "request": request}}
+    return Spec.model_validate(spec)
+
+
+@pytest.mark.parametrize(("prices", "departs"), [("constant", False), ("current", True)])
+def test_the_definite_answer_is_judged_under_its_spec_unit_request(prices, departs):
+    """Germany's bilateral ODA to Kenya in constant 2022 euros: the bind leaves "constant"
+    unapplied on the Nominal flow, and the definite Spec converts it to constant euros, which
+    meets the price basis. Served at current prices it departs."""
+    state = _state()
+    state.shape_draft = _nominal_flow()
+    state.measure_query_matches = (
+        QualifierMatch(
+            code_system="measurementQualifier",
+            code_dcid="RealValue",
+            label="Real value",
+            source="synonym",
+            matched_text=_CONSTANT,
+        ),
+    )
+    state.require_unapplied(
+        _CONSTANT, asked=_CONSTANT, property_dcid="measurementQualifier", origin="bind"
+    )
+
+    assert _carve_out(state, _unit_spec(prices)) is None
+    assert bool(_departed(state)) is departs
+
+
+@pytest.mark.parametrize(("prices", "unbound"), [("constant", []), ("current", [_CONSTANT])])
+def test_the_trace_judges_a_price_basis_slot_under_the_served_unit_request(prices, unbound):
+    """A shape holding `measurementQualifier` as a slot binds Nominal, so "constant" is
+    unmet on its bindings alone. Served in constant euros the trace and the carve-out both
+    count it met; served at current prices both name it."""
+    state = _state()
+    state.shape_draft = replace(
+        _education_share(),
+        shape_id="flow_price_slot",
+        slot_keys=(SlotKeyDraft(axis="how", property_dcid="measurementQualifier", label="prices"),),
+    )
+    state.measure_query_matches = (
+        QualifierMatch(
+            code_system="measurementQualifier",
+            code_dcid="RealValue",
+            label="Real value",
+            source="synonym",
+            matched_text=_CONSTANT,
+        ),
+    )
+    state.require_unapplied(
+        _CONSTANT, asked=_CONSTANT, property_dcid="measurementQualifier", origin="bind"
+    )
+    state.bindings = [
+        SlotBindingDraft(
+            axis="how", property_dcid="measurementQualifier", kind="value", value_dcids=["Nominal"]
+        )
+    ]
+    spec = _unit_spec(prices)
+
+    trace = answer_terms(
+        state,
+        state.shape_draft,
+        state.bindings,
+        served=bound_prices(spec.definition.identity.facets),
+    )
+    refused = settle_answer(state, state.shape_draft, state.bindings, served=served_prices(spec))
+
+    assert [q.text for q in trace if q.disposition != "bound"] == unbound
+    assert [q.text for q in refused] == unbound

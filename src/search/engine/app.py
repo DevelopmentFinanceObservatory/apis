@@ -28,7 +28,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated, TypedDict
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -59,7 +59,8 @@ from entity_resolution import (
 from graph_generation import GenerationProvider
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
-from graph_release.context import bound_served_release, optional_release_service
+from graph_release.context import bound_served_release
+from graph_release.service import ReleaseService, get_release_service
 from materialise import GraphReader, place_scope
 from materialise.errors import UpstreamVersionChangedError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -105,6 +106,7 @@ from search.engine.errors import (
     LLMInfraError,
 )
 from search.engine.events import DoneEvent, ErrorEvent, Event, serialize_sse
+from search.engine.extraction_store import build_extraction_store
 from search.engine.options.options_response_cache import (
     ComputedOptions,
     OptionsResponseCache,
@@ -132,10 +134,6 @@ from search.models import (
 )
 from series_coverage.shared import get_coverage_service
 from skills_index import SharedSkillsIndex, acquire_shared_index, release_shared_index
-
-if TYPE_CHECKING:
-    # Annotation-only: `graph_release.service` needs the `graph-release` extra.
-    from graph_release.service import ReleaseService
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +395,28 @@ _RESOLVE_RESPONSES: dict[int | str, dict[str, object]] = {
 }
 
 
-async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
+class _PipelineDeps(TypedDict):
+    """The keywords `resolve` passes `resolve_events` and `resolve_async` from the
+    app's dependencies and the request. The binder is left to `Settings.binder`."""
+
+    graph: EngineGraphClient
+    resolver: EntityResolver
+    admission: Admission | None
+    llm: SupportsLLM
+    sdmx: EngineSdmxClient
+    materialise_graph: GraphReader | None
+    materialise_sdmx: MaterialiseSdmxClient | None
+    rate_cache: RateTableCache | None
+    population_memo: OptionsPopulationMemo | None
+    place_options_pool: PlaceOptionsPool | None
+    shared_skills_index: SharedSkillsIndex | None
+    response_cache: ResponseCache | None
+    part_memo: PartMemo | None
+    generation: GenerationProvider
+    caller: str | None
+
+
+async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
     # Share the unimplemented-door set with capabilities so liveness and refusals agree.
     if body.input.kind in SEARCH_UNIMPLEMENTED_DOORS:
         raise EngineInputError(
@@ -422,7 +441,7 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
     # Refresh before every generation-keyed cache lookup.
     await deps.generation.refresh_if_stale()
 
-    pipeline_deps = {
+    pipeline_deps: _PipelineDeps = {
         "graph": deps.graph,
         "resolver": deps.resolver,
         "admission": deps.admission,
@@ -473,7 +492,7 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
     return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
 
 
-async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Response:
+async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
     """The options door: on-demand candidate enumeration for one resolved
     entity role (origin, destination, or observationAbout) of a posted
     identity, queried independently of the /resolve pipeline and fetched
@@ -559,15 +578,15 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
     return JSONResponse(result.model_dump(mode="json", by_alias=True, exclude_none=True))
 
 
-async def healthz() -> HealthResponse:
+async def get_health() -> HealthResponse:
     return health_response(capability_version=settings().capability_version)
 
 
-async def schema(request: Request, deps: SearchDepsDep) -> Response:
+async def get_schema(request: Request, deps: SearchDepsDep) -> Response:
     return deps.documents.schema.respond(request)
 
 
-async def capabilities(request: Request, deps: SearchDepsDep) -> Response:
+async def get_capabilities(request: Request, deps: SearchDepsDep) -> Response:
     # Deployment configuration can change capabilities without changing the contract schema.
     return deps.documents.capabilities(get_index()).respond(request)
 
@@ -580,7 +599,7 @@ class SearchCatalogueUnavailable(EngineInfraError):
 _CATALOGUE_CACHE_CONTROL = "public, max-age=300"
 
 
-async def catalogue_endpoint(
+async def get_catalogue(
     deps: SearchDepsDep,
     place: Annotated[
         str | None,
@@ -700,7 +719,7 @@ async def _open_search_deps(
     place_options_pool: PlaceOptionsPool | None,
     generation: GenerationProvider | None,
     catalogue: CatalogueService,
-    release: ReleaseService | None,
+    release: ReleaseService,
     conversion_catalogue: ConversionCatalogueService | None,
 ) -> SearchDeps:
     """Build missing dependencies and return the bundle. The `owned` stack closes clients in
@@ -889,25 +908,30 @@ async def _open_search_deps(
         skills_index = await acquire_shared_index(
             graph=graph,  # ty: ignore[invalid-argument-type]
             catalogue=catalogue.snapshot,
-            release=release.snapshot if release is not None else None,
+            release=release,
         )
         # Stop the index refresh task before closing the graph it reads.
         owned.push_async_callback(_release_skills_index, skills_index)
         logger.info("SharedSkillsIndex started")
 
     if llm is None:
-        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo.
+        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo,
+        # and `SEARCH_EXTRACT_STORE=off` the extraction store.
         try:
             _llm_mod.warm()
         except LLMInfraError:
             logger.critical("LLM warm-up failed; check GEMINI_API_KEY", exc_info=True)
             raise
-        llm = LLM(memo=build_memo())
+        llm = LLM(
+            memo=build_memo(),
+            extraction_store=build_extraction_store(settings().extract_store),
+        )
         logger.info(
-            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f)",
+            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f), extraction store %s",
             settings().llm_memo_max_bytes,
             settings().llm_memo_max_entry_bytes,
             settings().llm_memo_ttl_s,
+            settings().extract_store,
         )
 
     variable_breadth: VariableBreadthReader | None = None
@@ -986,7 +1010,7 @@ def _start_conversion_catalogue_load(
     *,
     generation: GenerationProvider,
     catalogue: CatalogueService,
-    release: ReleaseService | None,
+    release: ReleaseService,
     graph: EngineGraphClient,
     reader: GraphReader | None,
     sdmx: MaterialiseSdmxClient,
@@ -1038,13 +1062,12 @@ async def _wait_for_conversion_catalogue(service: ConversionCatalogueService) ->
 @contextmanager
 def _request_scope(
     catalogue: CatalogueService,
-    release: ReleaseService | None,
+    release: ReleaseService,
     conversion_catalogue: ConversionCatalogueService | None,
     variable_breadth: VariableBreadthReader | None,
 ) -> Iterator[None]:
     """Bind the origin catalogue's and the conversion catalogue's loaded snapshots, the
-    served graph release when there is a release service, and the process's whole-variable
-    breadth reader, for one request."""
+    served graph release, and the process's whole-variable breadth reader, for one request."""
     conversion = conversion_catalogue.snapshot() if conversion_catalogue is not None else None
     with (
         bound_catalogue(catalogue.snapshot()),
@@ -1062,6 +1085,14 @@ def _request_scope(
 async def _release_skills_index(skills_index: SharedSkillsIndex) -> None:
     await release_shared_index(skills_index)
     logger.info("SharedSkillsIndex released")
+
+
+def _require_jev_key() -> None:
+    """Refuse to serve when `Settings.binder` is ``jev`` or ``shadow`` and no TypeSafe key
+    is set, since every call routed to Jev would then fall back to Gemini."""
+    config = settings()
+    if config.binder in ("jev", "shadow") and not config.jev_api_key.get_secret_value():
+        raise RuntimeError(f"SEARCH_BINDER={config.binder} needs TYPESAFE_API_KEY; it is unset")
 
 
 def search_surface(
@@ -1089,14 +1120,18 @@ def search_surface(
     Injected instances remain caller-owned. `materialise_graph` defaults to the live graph
     client. The process-wide generation provider rejects duplicate cache registrations, so
     concurrent apps need separate injected generation providers. Each request binds the origin
-    catalogue's and the conversion catalogue's loaded snapshots for its whole run, and, with
-    `GRAPH_RELEASE_URI` set, the release service's served release. An injected
-    `conversion_catalogue` is served as loaded; without one the lifespan loads a new one.
+    catalogue's and the conversion catalogue's loaded snapshots for its whole run, and the
+    release service's served release. An injected `conversion_catalogue` is served as loaded;
+    without one the lifespan loads a new one.
+
+    Raises:
+        RuntimeError: `Settings.binder` sends calls to Jev and ``TYPESAFE_API_KEY`` is
+            unset (`_require_jev_key`).
     """
-    # Fail during construction when an artifact is missing or unreadable.
-    get_coverage_service()
+    _require_jev_key()
+    # Fail during construction when an artifact or the graph release is missing or unreadable.
     catalogue = get_catalogue_service()
-    release = optional_release_service()
+    release = get_release_service()
     # The documents read the code index as they are built, so they are built under the
     # release a request would bind.
     with bound_served_release(release):
@@ -1149,20 +1184,21 @@ def search_surface(
     # documents the body in /openapi.json.
     router.post(
         "/api/search/resolve", response_model=ResolveResponse, responses=_RESOLVE_RESPONSES
-    )(resolve_endpoint)
-    router.post("/api/search/options", response_model=OptionsResponse)(options_endpoint)
-    router.get("/api/search/healthz", response_model=HealthResponse)(healthz)
+    )(resolve)
+    router.post("/api/search/options", response_model=OptionsResponse)(list_options)
+    router.get("/api/search/healthz", response_model=HealthResponse)(get_health)
     router.get(
         "/api/search/schema",
         responses={
             200: {"content": {"application/json": {"schema": _schema_payload_response_schema()}}}
         },
-    )(schema)
-    router.get("/api/search/capabilities", response_model=Capabilities)(capabilities)
-    router.get("/api/search/catalogue", response_model=CatalogueResponse)(catalogue_endpoint)
+    )(get_schema)
+    router.get("/api/search/capabilities", response_model=Capabilities)(get_capabilities)
+    router.get("/api/search/catalogue", response_model=CatalogueResponse)(get_catalogue)
 
     return Surface(
         name="search",
+        description="Resolve a plain-language data question to dataset definitions and their options.",
         prefix="/api/search",
         router=router,
         capability_version=settings().capability_version,

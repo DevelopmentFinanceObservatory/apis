@@ -3,8 +3,10 @@
 The surface combines health, list, fetch, and resource doors. Its lifespan binds one shared
 skills index and per-door response caches in a fresh `SkillsDeps` for each entry. Door
 classifiers run in registration order, and the platform envelope renders RFC 9457 problem
-responses. The fronting Data access proxy handles authentication and the `401`, `413`, `415`,
-and `429` limits.
+responses. Callers reach the API through the website's proxy, which answers `429` once an IP
+passes its allowance, 120 calls a minute on `/api/*` by default, counted in a fixed window that
+every proxy instance shares in Postgres. A call whose count fails goes through. The proxy passes
+`Authorization` upstream unread.
 """
 
 from __future__ import annotations
@@ -71,6 +73,7 @@ def skills_surface(
 
     return Surface(
         name="skills",
+        description="List and fetch agent skills and their resources.",
         prefix="/api/skills",
         router=router,
         capability_version=SKILLS_CAPABILITY_VERSION,

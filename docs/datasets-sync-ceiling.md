@@ -70,7 +70,11 @@ lock and refuses `service_unavailable` (503, retryable) at `DATASETS_OPERATION_B
 Every mint and definition door call that reaches this point raises `OperationSubmitted`, caught by
 the door itself. The response is `202 Accepted` with a `Location` header pointing at
 `/api/datasets/operations/{operation_id}` and a body carrying `operation_id`, `status`, `poll`, and
-`retry_after_ms` (1,500).
+`retry_after_ms`. A `Retry-After` header carries the same wait in whole seconds, rounded up.
+`retry_after_ms` is a quarter of the time since the operation's current submission (`submitted_at`),
+held between 1,500 and 8,000, so a submission that joins a long build gets the slow value and a
+resubmission that restarts a failed build starts at 1,500. Every pending or running poll carries
+both. A done poll carries neither.
 
 ### Dispatch
 
@@ -200,15 +204,14 @@ The write half checks it before the version record and before each artifact rend
 a run past it takes the transient path below, so no write starts after it. The lease outlasts the
 work deadline by 120 seconds for the writes already under way, and stays under the task's
 1,800-second dispatch deadline. Its materialisation takes one permit from the worker process's single-permit semaphore.
-The run takes one coverage snapshot with `CoverageService.snapshot_current`, which reads the
-published `current.json` pointer and loads a moved build before it returns, so the run never
-executes against an artifact older than the pointer at run start, however long the worker instance
-sat idle with its CPU throttled. A failed pointer read or load is a transient failure of the
-attempt. The run then resolves the stored subject and estimates it against that snapshot with
-`sync_estimate`, the same estimator admission uses. It records the fresh estimate on the row,
+The run binds the graph release the worker process serves when the run starts
+(`graph_release.context.bound_served_release`) and reads coverage from that release's coverage
+view throughout. The process swaps to a newer published release in the background
+(`deploy/graph-release.md`). The run then resolves the stored subject and estimates it against
+that coverage with `sync_estimate`, the same estimator admission uses. It records the fresh estimate on the row,
 checks the async ceilings again (a breach fails the operation `over_ceiling`, not retryable), and
-sizes the raw-fetch guard from the fresh estimate. A coverage republish between submission and
-execution is therefore enforced against the data the run fetches. The run then serves through
+sizes the raw-fetch guard from the fresh estimate. A release published between submission and
+execution is therefore enforced against the data the run fetches once the worker serves it. The run then serves through
 `current.serve_current`, so a current head that holds the request's rendering answers with no fetch,
 and a rebuild advances the head.
 
@@ -250,7 +253,7 @@ a separate number, `dfo-data-tools`' own generic default for a caller of `materi
 
 ## Publish
 
-`POST /frames/publish` has no coverage artifact to estimate against, so it keeps its own fixed,
+`POST /frames/publish` has no coverage view to estimate against, so it keeps its own fixed,
 non-env-tunable row ceiling, `PUBLISH_MAX_ROWS = 250_000`
 (`datasets_api.doors.publish.PUBLISH_MAX_ROWS`), enforced by the same `OverCeilingError` the
 mid-fetch backstop raises. The door builds the whole frame in memory before it stores the canonical

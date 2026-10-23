@@ -1,7 +1,6 @@
 """`CodeIndex`: the in-memory, queryable catalogue built from parsed rows and
-declarations. No graph access and no file I/O here -- `loader.load_index`
-is the file-reading entry point that constructs one of these from a
-committed JSON export.
+declarations. No graph access and no file I/O here -- `loader.parse_index`
+constructs one of these from a code index document.
 """
 
 from __future__ import annotations
@@ -20,10 +19,13 @@ from code_index.types import (
     AbsentObservation,
     Bound,
     BoundSet,
+    BroadReading,
     CodeRow,
     CodeSystemDeclaration,
     ConstraintQuery,
     DatasetDeclaration,
+    HouseDefaultCase,
+    ImpliedValue,
     IndexStamp,
     LevelOption,
     MeasureClassDeclaration,
@@ -38,6 +40,8 @@ from code_index.types import (
     party_kind,
 )
 from statvar_members import FiveTuple
+
+_NO_IMPLIED: Mapping[str, str] = MappingProxyType({})
 
 
 class DuplicateDcid(ValueError):
@@ -384,12 +388,14 @@ class CodeIndex:
         "_codes_by_text",
         "_codes_by_tokens",
         "_codes_by_word",
+        "_implied_by_measure",
         "_members_by_source_code",
         "_partly_stated_by_five_tuple",
         "_source_codes_by_dcid",
         "_statvars_by_dcid",
         "_whole_sets_by_phrase",
         "_words_by_code",
+        "broad_readings",
         "codes",
         "codes_by_system",
         "dataset_pins",
@@ -399,6 +405,7 @@ class CodeIndex:
         "enrichment_digest",
         "families_by_five_tuple",
         "family_by_dcid",
+        "implied_values",
         "listed_by_five_tuple",
         "listed_statvars",
         "measure_classes",
@@ -406,6 +413,7 @@ class CodeIndex:
         "partly_stated_values",
         "party_types",
         "shape_slot_defaults",
+        "slot_plain_names",
         "source_code_provenances",
         "source_codes",
         "stamp",
@@ -430,9 +438,12 @@ class CodeIndex:
         parties: Iterable[PartyRow] = (),
         listed_statvars: Iterable[StatVarRow] = (),
         shape_slot_defaults: Iterable[ShapeSlotDefault] = (),
+        broad_readings: Iterable[BroadReading] = (),
         partly_stated_values: Iterable[PartlyStatedValue] = (),
+        implied_values: Iterable[ImpliedValue] = (),
         measure_classes: Iterable[MeasureClassDeclaration] = (),
         variable_aliases: Mapping[str, str] | None = None,
+        slot_plain_names: Mapping[str, str] | None = None,
         stat_type_words: Iterable[StatTypeWordDeclaration] = (),
         source_codes: Iterable[SourceCodeRow] = (),
         value_parents: Mapping[str, str] | None = None,
@@ -442,14 +453,31 @@ class CodeIndex:
         self.shape_slot_defaults = tuple(shape_slot_defaults)
         """The open-slot defaults declared per `populationType` for properties outside the
         code systems, in declaration order."""
+        self.broad_readings = tuple(broad_readings)
+        """The constraint values a question's words read as a broader value unless it names
+        a value on another property (`BroadReading`), in declaration order."""
         self.partly_stated_values = tuple(partly_stated_values)
         """The constraint values a dataset states on only some of its series
         (`PartlyStatedValue`), in declaration order."""
+        self.implied_values = tuple(implied_values)
+        """The constraint values each measure's headline series already means
+        (`ImpliedValue`), in declaration order."""
+        implied_by_measure: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
+        for implied in self.implied_values:
+            implied_by_measure[(implied.population_type, implied.measured_property)][
+                implied.property_dcid
+            ] = implied.value_dcid
+        self._implied_by_measure = {
+            measure: MappingProxyType(values) for measure, values in implied_by_measure.items()
+        }
         self.measure_classes = tuple(measure_classes)
         """The patterns naming each measure class, in declaration order."""
         self.variable_aliases: dict[str, str] = dict(variable_aliases or {})
         """Lowercase words recall reads as the full term each stands for, applied to the
         variable query alone."""
+        self.slot_plain_names: dict[str, str] = dict(slot_plain_names or {})
+        """The noun naming each constraint property no code system declares, as a question
+        names its slot (`code_index.declarations.SLOT_PLAIN_NAMES`)."""
         self.stat_type_words = tuple(stat_type_words)
         """The patterns naming a statType other than `measuredValue`, in declaration order;
         the frame reads the first that matches (`search.engine.frame`)."""
@@ -631,6 +659,12 @@ class CodeIndex:
         }
 
     # --- Lookup ---
+
+    def implied_values_of(self, population_type: str, measured_property: str) -> Mapping[str, str]:
+        """Each property mapped to the value the headline series of the measure
+        (`population_type`, `measured_property`) already means (`implied_values`). Empty
+        for a measure that declares none."""
+        return self._implied_by_measure.get((population_type, measured_property), _NO_IMPLIED)
 
     def partly_stated_on(self, five_tuple: FiveTuple) -> Mapping[str, frozenset[tuple[str, str]]]:
         """Each dataset mapped to the (property, value) pairs it states partly on `five_tuple`:
@@ -824,6 +858,24 @@ class CodeIndex:
         declares `provenance`."""
         dataset = self.datasets.get(provenance)
         return dataset.absent_observation if dataset is not None else "unknown"
+
+    def house_case_systems(self) -> dict[str, HouseDefaultCase]:
+        """Each code system that declares a kind of question (`CodeSystemDeclaration.house_case`)
+        mapped to that kind. A system declaring none is absent."""
+        return {
+            system: declaration.house_case
+            for system, declaration in self.declarations.items()
+            if declaration.house_case is not None
+        }
+
+    def house_defaults(self) -> dict[HouseDefaultCase, str]:
+        """Each kind of question mapped to the provenance of its house default dataset
+        (`DatasetDeclaration.house_default_for`). A kind no dataset claims is absent."""
+        return {
+            case: dataset.provenance
+            for dataset in self.datasets.values()
+            for case in dataset.house_default_for
+        }
 
     # --- Descendants ---
 

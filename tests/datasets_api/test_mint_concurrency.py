@@ -4,6 +4,7 @@ A work executor of one and a blocked graph read make backpressure observable.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
@@ -177,7 +178,8 @@ def test_timed_out_call_keeps_its_permit_held_until_it_actually_finishes(
     with client:
         first_response: list = []
         first_thread = threading.Thread(
-            target=lambda: first_response.append(client.post("/api/datasets", json=_BODY))
+            target=contextvars.copy_context().run,
+            args=(lambda: first_response.append(client.post("/api/datasets", json=_BODY)),),
         )
         first_thread.start()
         assert graph.entered.wait(timeout=5.0), (
@@ -214,7 +216,10 @@ def test_permit_frees_once_the_background_call_finishes(monkeypatch: pytest.Monk
 
     # Keep both requests on the same portal loop while the worker thread is blocked.
     with client:
-        first_thread = threading.Thread(target=lambda: client.post("/api/datasets", json=_BODY))
+        first_thread = threading.Thread(
+            target=contextvars.copy_context().run,
+            args=(lambda: client.post("/api/datasets", json=_BODY),),
+        )
         first_thread.start()
         assert graph.entered.wait(timeout=5.0), (
             "first request never reached the blocking graph read"

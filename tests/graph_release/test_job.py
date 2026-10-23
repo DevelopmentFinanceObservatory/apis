@@ -5,8 +5,7 @@ The tick builds the recorded slice (`tests.graph_release.recorded`) for real. Sp
 that answers the import-key and ingested-imports statements, with `read_inputs` returning the
 recorded `RawInputs` under the key the fake snapshot holds. The Admin API is `CloudRunAdmin`
 over an `httpx.MockTransport`; the mixer answers from the slice's own arcs and parties; SDMX
-returns each series row's count; the release root is a `file://` directory. With shadow on, the
-comparators' published builds come from `Builder.comparators`.
+returns each series row's count; the release root is a `file://` directory.
 """
 
 from __future__ import annotations
@@ -20,11 +19,13 @@ from pathlib import Path
 
 import httpx
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 from google.api_core.exceptions import ServiceUnavailable
 from google.auth.exceptions import RefreshError
 from pydantic import ValidationError
 
+import code_index.export as code_index_export
 from artifact_publication.jobs import acquire_lease, read_import_key, release_lease
 from artifact_publication.uri import (
     join_uri,
@@ -32,23 +33,23 @@ from artifact_publication.uri import (
     read_uri_bytes_and_generation,
     write_uri_bytes,
 )
+from dc_graph.client import SubjectPage
 from dc_graph.errors import GraphReadError
 from dc_sdmx.results import SdmxDataResult, SdmxObservation
 from graph_release import job
 from graph_release.format import Manifest, manifest_uri, pointer_uri, read_pointer
 from graph_release.gate import (
+    MAX_PART_BYTES,
     Dependency,
-    GateCode,
-    GateFinding,
     GateResult,
     GateUnavailable,
     release_arcs,
     visible_edges,
 )
 from graph_release.hold import main as hold_main
+from graph_release.origin import origin_view
 from graph_release.publish import clear_hold, hold_release
 from graph_release.serving_revision import CloudRunAdmin, ServingRevisionError
-from graph_release.shadow import ComparatorBuild
 from tests.graph_generation.conftest import FakeCredentials
 from tests.graph_release.recorded import (
     MIXER_PARTIES,
@@ -165,7 +166,8 @@ _PARTIES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
 
 class FakeMixer:
     """Answers the slice's parties and each variable's arcs as the release holds them, and no
-    node for the dcids in `missing`. Its `->*` reads serve the release's own arcs."""
+    node for the dcids in `missing`. Its `->*` and reverse reads serve the release's own
+    arcs, and its arc and reverse reads the arcs of the `extra` variables too."""
 
     def __init__(self) -> None:
         parts = platform_parts()
@@ -173,6 +175,7 @@ class FakeMixer:
         self._nodes = parts.nodes
         self.error: Exception | None = None
         self.missing: set[str] = set()
+        self.extra: dict[str, dict[str, tuple[str, ...]]] = {}
 
     def node_arcs_many(self, dcids: Sequence[str], *, properties: Sequence[str]):
         if self.error is not None:
@@ -180,15 +183,36 @@ class FakeMixer:
         arcs = release_arcs(self._edges, self._nodes, list(dcids))
         answers: dict[str, dict[str, tuple[str, ...]] | None] = {}
         for dcid in dcids:
-            found = _PARTIES.get(dcid) or {
-                prop: tuple(sorted(names)) for prop, names in arcs.get(dcid, {}).items()
-            }
+            found = (
+                _PARTIES.get(dcid)
+                or self.extra.get(dcid)
+                or {prop: tuple(sorted(names)) for prop, names in arcs.get(dcid, {}).items()}
+            )
             answers[dcid] = (
                 {prop: tuple(found.get(prop, ())) for prop in properties}
                 if found and dcid not in self.missing
                 else None
             )
         return answers
+
+    def node_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+    ) -> SubjectPage:
+        if self.error is not None:
+            raise self.error
+        subjects = self._holding(property, dcid)
+        for name, value in (filters or {}).items():
+            subjects &= self._holding(name, value)
+        return SubjectPage(dcids=tuple(sorted(subjects)), truncated=False)
+
+    def _holding(self, predicate: str, target: str) -> set[str]:
+        extra = {dcid for dcid, arcs in self.extra.items() if target in arcs.get(predicate, ())}
+        return set(_subjects(self._edges, predicate, target)) | extra
 
     def node_arcs_batch(self, dcids: list[str]) -> dict[str, dict | None]:
         if self.error is not None:
@@ -203,6 +227,13 @@ class FakeMixer:
             else None
             for dcid in dcids
         }
+
+
+def _subjects(edges: pa.Table, predicate: str, target: str) -> list[str]:
+    rows = edges.filter(
+        pc.and_(pc.equal(edges["predicate"], predicate), pc.equal(edges["object_id"], target))
+    )
+    return rows["subject_id"].to_pylist()
 
 
 class FakeSdmx:
@@ -245,26 +276,9 @@ class Builder:
     sdmx: FakeSdmx
     capsys: pytest.CaptureFixture[str]
     stamp: str
-    shadow: bool = False
     now: datetime = _NOW
-    behind: frozenset[Dependency] = frozenset()
-    coverage_build_id: str = "coverage-1"
-    comparator_error: GateUnavailable | None = None
     catalogue_job: str = ""
-
-    def comparators(self) -> tuple[ComparatorBuild, ...] | GateUnavailable:
-        """The comparators' published builds: those in `behind` hold an earlier import."""
-        if self.comparator_error is not None:
-            return self.comparator_error
-        return tuple(
-            ComparatorBuild(
-                dependency, "an-earlier-import" if dependency in self.behind else self.stamp, build
-            )
-            for dependency, build in (
-                (Dependency.COVERAGE_BUILD, self.coverage_build_id),
-                (Dependency.ORIGIN_CATALOGUE, "origin-1"),
-            )
-        )
+    max_part_bytes: int = MAX_PART_BYTES
 
     def settings(self) -> job.JobSettings:
         return job.JobSettings(
@@ -275,10 +289,8 @@ class Builder:
             datacommons_service=_SERVICE,
             graph_base_url="http://graph.invalid/core/api",
             sdmx_base_url="http://graph.invalid/core/api",
-            shadow=self.shadow,
-            coverage_uri="file:///coverage" if self.shadow else "",
-            origin_uri="file:///origin" if self.shadow else "",
             search_catalogue_job=self.catalogue_job,
+            max_part_bytes=self.max_part_bytes,
         )
 
     def run(self) -> None:
@@ -332,7 +344,7 @@ def builder(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> 
     with FakeDatabase().snapshot() as snapshot:
         key = read_import_key(snapshot)
     assert key is not None
-    built = Builder(
+    return Builder(
         root=tmp_path.joinpath("releases").as_uri(),
         database=FakeDatabase(),
         admin=FakeAdminApi(),
@@ -341,8 +353,6 @@ def builder(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> 
         capsys=capsys,
         stamp=key.stamp,
     )
-    monkeypatch.setattr(job, "shadow_builds", lambda **_: built.comparators())
-    return built
 
 
 # ---------------------------------------------------------------- publish and step 3
@@ -588,57 +598,6 @@ def test_the_oldest_serving_revision_decides_step_two() -> None:
         naive.created_at("b")
 
 
-# ---------------------------------------------------------------- shadow
-
-
-@pytest.mark.parametrize("behind", [Dependency.COVERAGE_BUILD, Dependency.ORIGIN_CATALOGUE])
-def test_shadow_waits_for_both_comparators_before_building(builder, behind):
-    builder.shadow = True
-    builder.behind = frozenset({behind})
-
-    events = builder.tick()
-
-    assert _outcome(events) == "shadow_waiting"
-    assert _named(events, "graph_release_shadow_waiting")[0]["stamp"] == builder.stamp
-    assert len(builder.database.snapshots) == 1
-    assert builder.lease_free() and read_pointer(builder.root) is None
-
-
-def test_shadow_diffs_the_release_once_both_comparators_are_ready(builder, monkeypatch):
-    builder.shadow = True
-    diffed = []
-
-    def diff(parts, **kwargs):
-        diffed.append(
-            (kwargs["import_stamp"], kwargs["coverage_build_id"], kwargs["origin_build_id"])
-        )
-        return GateResult(reports={"shadow_arcs": {"pinned": 0}})
-
-    monkeypatch.setattr(job, "shadow_diff", diff)
-
-    events = builder.tick()
-
-    assert _outcome(events) == "published"
-    assert diffed == [(builder.stamp, "coverage-1", "origin-1")]
-    assert "shadow" in _named(events, "graph_release_published")[0]["phases"]
-
-
-def test_a_shadow_finding_builds_again_once_a_comparator_is_republished(builder, monkeypatch):
-    builder.shadow = True
-    finding = GateFinding(GateCode.SHADOW_COVERAGE_DIFF, "1 coverage row differs")
-    monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult(findings=(finding,)))
-    assert _outcome(builder.tick()) == "gate_failed"
-    assert _outcome(builder.tick()) == "inputs_failed"
-
-    builder.coverage_build_id = "coverage-2"
-    monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult())
-
-    events = builder.tick()
-
-    assert _outcome(events) == "published"
-    assert builder.state()["last_built"]["inputs"]["coverage_build_id"] == "coverage-2"
-
-
 # ---------------------------------------------------------------- gate outcomes
 
 
@@ -661,6 +620,34 @@ def test_a_finding_records_the_failed_inputs_and_the_next_tick_skips_them(builde
     assert len(builder.database.snapshots) == 3
 
 
+def test_a_variable_sharing_a_release_five_tuple_publishes_with_a_notice(builder):
+    parts = platform_parts()
+    variable = min(origin_view(series=parts.series, edges=parts.edges, nodes=parts.nodes).arcs)
+    arcs = release_arcs(visible_edges(parts.edges), parts.nodes, [variable])[variable]
+    builder.mixer.extra = {
+        "Base_Copy": {prop: tuple(sorted(names)) for prop, names in arcs.items()}
+    }
+
+    events = builder.tick()
+
+    assert _outcome(events) == "published"
+    (published,) = _named(events, "graph_release_published")
+    assert [n["code"] for n in published["notices"]] == ["release_family_shared_with_base"]
+    assert published["notices"][0]["examples"] == ["Base_Copy"]
+    assert published["blind_spots"]["shared"] == 1
+
+
+def test_a_release_past_the_size_ceiling_fails_the_gate(builder):
+    builder.max_part_bytes = 1
+
+    events = builder.tick()
+
+    assert _outcome(events) == "gate_failed"
+    (failed,) = _named(events, "graph_release_gate_failed")
+    assert [f["code"] for f in failed["findings"]] == ["release_over_size_ceiling"]
+    assert read_pointer(builder.root) is None
+
+
 def _inconsistent_facets(builder: Builder, monkeypatch: pytest.MonkeyPatch) -> None:
     raw = raw_inputs()
     facets = raw.facets.set_column(
@@ -681,6 +668,27 @@ def test_a_platform_refusal_is_a_finding(builder, monkeypatch):
     assert _outcome(events) == "gate_failed"
     (failed,) = _named(events, "graph_release_gate_failed")
     assert [f["code"] for f in failed["findings"]] == ["inconsistent_facet"]
+    assert "last_failed" in builder.state()
+
+
+def test_a_code_index_the_loader_refuses_is_a_gate_finding(builder, monkeypatch):
+    """A built code index whose two code rows share a dcid stages, and the gate refuses it as
+    `code_index_unloadable`, as for any document `parse_index` refuses."""
+    export_graph_blocks = code_index_export.export_graph_blocks
+
+    def duplicated_code(*args, **kwargs):
+        blocks = export_graph_blocks(*args, **kwargs)
+        blocks["codes"].append(dict(blocks["codes"][0]))
+        return blocks
+
+    monkeypatch.setattr(code_index_export, "export_graph_blocks", duplicated_code)
+
+    events = builder.tick()
+
+    assert _outcome(events) == "gate_failed"
+    (failed,) = _named(events, "graph_release_gate_failed")
+    assert "code_index_unloadable" in [f["code"] for f in failed["findings"]]
+    assert read_pointer(builder.root) is None
     assert "last_failed" in builder.state()
 
 
@@ -742,17 +750,6 @@ def test_an_unavailable_dependency_records_nothing(
     assert read_pointer(builder.root) is None
     assert "last_failed" not in builder.state()
     assert builder.lease_free()
-
-
-def test_an_unavailable_shadow_comparator_records_nothing(builder):
-    builder.shadow = True
-    builder.comparator_error = GateUnavailable(Dependency.COVERAGE_BUILD, "pointer unreadable")
-
-    events = builder.tick()
-
-    assert _outcome(events) == "unavailable"
-    assert len(builder.database.snapshots) == 1
-    assert builder.state() == {}
 
 
 def test_inputs_that_ended_unavailable_back_off_for_ten_minutes(builder):
@@ -1060,49 +1057,6 @@ def test_a_published_import_is_never_stale(builder):
     assert _named(builder.tick(), "graph_release_stale") == []
 
 
-def test_time_spent_waiting_for_the_shadow_comparators_is_not_stale(builder, monkeypatch):
-    builder.shadow = True
-    builder.behind = frozenset({Dependency.ORIGIN_CATALOGUE})
-
-    builder.now = _COMPLETED + timedelta(minutes=20)
-    builder.tick()
-    builder.now = _COMPLETED + timedelta(minutes=45)
-    assert _named(builder.tick(), "graph_release_stale") == []
-
-    # Ready at 50 minutes, so 30 minutes were shadow waiting. The build fails, so the clock
-    # runs on.
-    builder.behind = frozenset()
-    monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult())
-    builder.now = _COMPLETED + timedelta(minutes=50)
-    builder.sdmx.extra = 1
-    assert _outcome(builder.tick()) == "gate_failed"
-    builder.now = _COMPLETED + timedelta(minutes=59)
-    assert _named(builder.tick(), "graph_release_stale") == []
-    builder.now = _COMPLETED + timedelta(minutes=61)
-    (stale,) = _named(builder.tick(), "graph_release_stale")
-    assert stale["waited_seconds"] == pytest.approx(31 * 60)
-
-
-def test_a_shadow_wait_past_its_limit_is_unavailable_and_stale_resumes(builder):
-    builder.shadow = True
-    builder.behind = frozenset({Dependency.COVERAGE_BUILD})
-    builder.now = _COMPLETED + timedelta(minutes=20)
-    assert _outcome(builder.tick()) == "shadow_waiting"
-    builder.now += timedelta(seconds=job.SHADOW_WAIT_LIMIT_SECONDS + 60)
-
-    events = builder.tick()
-
-    assert _outcome(events) == "unavailable"
-    (unavailable,) = _named(events, "graph_release_unavailable")
-    assert [u["dependency"] for u in unavailable["unavailable"]] == ["coverage_build"]
-    # 3 h 21 min since the import, less the 3 hours of wait the limit discounts.
-    assert _named(events, "graph_release_stale") == []
-
-    builder.now += timedelta(minutes=10)
-    (stale,) = _named(builder.tick(), "graph_release_stale")
-    assert stale["waited_seconds"] == pytest.approx(31 * 60)
-
-
 # ---------------------------------------------------------------- settings
 
 
@@ -1110,7 +1064,6 @@ def test_a_shadow_wait_past_its_limit_is_unavailable_and_stale_resumes(builder):
     "change",
     [
         pytest.param({"datacommons_service": "dfo-dev-dc-datacommons-service"}, id="bare_service"),
-        pytest.param({"shadow": True, "coverage_uri": ""}, id="shadow_without_coverage"),
         pytest.param({"search_catalogue_job": "search-catalogue"}, id="bare_catalogue_job"),
     ],
 )

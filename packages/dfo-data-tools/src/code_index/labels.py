@@ -1,4 +1,4 @@
-"""Labels the packaged indexes override: a measure partition, a StatVar family, an index
+"""Labels the release's code indexes override: a measure partition, a StatVar family, an index
 family, and a node's display label."""
 
 from __future__ import annotations

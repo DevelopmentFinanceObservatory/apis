@@ -1066,6 +1066,7 @@ def _finalize_merged_region(
         admitted_qualifier_phrases=frozenset(
             p for r in group for p in r.admitted_qualifier_phrases
         ),
+        every_member_axes=frozenset(axis for r in group for axis in r.every_member_axes),
         # A fact survives with its warning, so every member's facts carry over.
         departure_facts={key: fact for r in group for key, fact in r.departure_facts.items()},
         measure_partition=measure_partition,

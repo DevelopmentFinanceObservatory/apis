@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.state import EngineOptions
@@ -34,6 +34,7 @@ from tests.engine._base_identity import (
     subject_entity,
     where_slots_for,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._builders import (
     gref as _gref,
 )
@@ -889,8 +890,8 @@ class _SelectedAxisBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -906,7 +907,6 @@ class _SelectedAxisBindLLM:
                 ),
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 

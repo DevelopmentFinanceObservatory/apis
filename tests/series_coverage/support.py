@@ -3,38 +3,34 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import itertools
 import json
-import os
-from collections.abc import Collection, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
+from typing import Final
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from code_index.query import CodeIndex
-from code_index.types import IndexStamp, StatVarRow
-from series_coverage import shared as coverage_shared
-from series_coverage.io import (
-    write_coverage_table,
-    write_current,
-    write_facet_metadata,
-    write_manifest,
-    write_role_names,
-)
-from series_coverage.loader import load_coverage
+from series_coverage.index import CoverageIndex
+from series_coverage.loader import checked_index
 from series_coverage.schema import (
-    BUILD_EPOCH_YEAR,
-    FORMAT_ROOT,
-    POINTER_FILE,
-    VERSIONS_PREFIX,
-    CoverageManifest,
-    CoveragePointer,
+    DONOR_COLUMN,
+    FACET_COLUMN,
+    RECIPIENT_COLUMN,
+    VARIABLE_COLUMN,
     FacetMetadata,
     RoleNames,
     YearHorizon,
 )
+
+BUILD_EPOCH_YEAR: Final[int] = 1960
+"""The epoch `coverage_table` sizes its horizon from, equal to search's default
+`scope_min_year`, the earliest year a search window reaches."""
+
+BUILD_YEAR: Final[int] = 2026
+"""The build year of every index `checked_test_index` builds."""
 
 # Two facet ids, matching coverage-prototype.md's "only two distinct
 # facet_id values exist in the entire CRS family".
@@ -65,9 +61,8 @@ ROLE_NAMES: dict[str, RoleNames] = {
     V5: RoleNames(donor="creditor", recipient="debtor"),
 }
 
-# Real-shaped, live-matching metadata for the two facet ids above (see
-# series_coverage.job's own module docstring: TimeSeries carries no
-# scaling_factor column at all).
+# Real-shaped, live-matching metadata for the two facet ids above
+# (TimeSeries carries no scaling_factor column at all).
 FACET_METADATA: dict[str, FacetMetadata] = {
     FACET_ACTUALS: FacetMetadata(
         provenance_id="provenance/OECDCreditorReportingSystem",
@@ -100,8 +95,7 @@ def coverage_table(
 ) -> tuple[pa.Table, YearHorizon]:
     """The on-disk coverage table for `(variable, facet_id, donor,
     recipient, years)` rows, and the horizon its year-mask words encode:
-    from `BUILD_EPOCH_YEAR` to the latest year any row names, as
-    `series_coverage.job` sizes it."""
+    from `BUILD_EPOCH_YEAR` to the latest year any row names."""
     years_seen = [year for *_key, years in rows for year in years]
     horizon = YearHorizon.covering(
         epoch_year=BUILD_EPOCH_YEAR, last_year=max(years_seen, default=BUILD_EPOCH_YEAR)
@@ -157,41 +151,38 @@ def with_repeated_dictionaries(table: pa.Table, *, chunks: int) -> pa.Table:
     return pa.Table.from_arrays(columns, schema=schema)
 
 
-def build_dir(base: Path, build_id: str) -> Path:
-    """`base`'s build directory for `build_id` under this code's format
-    root: `<base>/format-<N>/versions/<build_id>/`."""
-    return base / FORMAT_ROOT / VERSIONS_PREFIX / build_id
-
-
-def pointer_path(base: Path) -> Path:
-    """`base`'s `current.json` under this code's format root."""
-    return base / FORMAT_ROOT / POINTER_FILE
-
-
-def build_test_artifact(
-    base: Path,
+def checked_test_index(
+    table: pa.Table,
+    role_names: Mapping[str, RoleNames],
+    facet_metadata: Mapping[str, FacetMetadata],
     *,
-    stamp: str = "test-coverage-stamp",
-    build_id: str | None = None,
-    provenance: str | None = None,
-    variables: Collection[str] | None = None,
-) -> str:
-    """Writes one build (`manifest.json`, `coverage.parquet`,
-    `role_names.json`, `facets.json`) into `build_dir(base, build_id)` and
-    points `pointer_path(base)` at it, the layout a published artifact
-    uses. `build_id` defaults to `<stamp>-build`. `provenance`, when set,
-    replaces every facet's provenance. `variables`, when set, keeps only the
-    rows of those variables. Returns the `file://` URI a
-    `COVERAGE_ARTIFACT_URI` should point at, `base` itself.
-    """
-    build_id = build_id or f"{stamp}-build"
-    prefix = build_dir(base, build_id)
-    prefix.mkdir(parents=True, exist_ok=True)
+    horizon: YearHorizon,
+) -> CoverageIndex:
+    """`checked_index` over `table` with its series key columns dictionary-encoded, as the
+    release's coverage rows hold them, built in `BUILD_YEAR`."""
+    keys = (VARIABLE_COLUMN, FACET_COLUMN, DONOR_COLUMN, RECIPIENT_COLUMN)
+    schema = pa.schema(
+        field.with_type(pa.dictionary(pa.int32(), pa.string())) if field.name in keys else field
+        for field in table.schema
+    )
+    return checked_index(
+        table.cast(schema),
+        role_names,
+        facet_metadata,
+        horizon=horizon,
+        build_year=BUILD_YEAR,
+        label="the test coverage table",
+    )
 
+
+def build_test_index(
+    *, provenance: str | None = None, variables: Collection[str] | None = None
+) -> CoverageIndex:
+    """The `CoverageIndex` of this module's rows, `ROLE_NAMES` and `FACET_METADATA`.
+    `provenance`, when set, replaces every facet's provenance. `variables`, when set, keeps
+    only the rows of those variables."""
     rows = _ROWS if variables is None else [row for row in _ROWS if row[0] in variables]
     table, horizon = coverage_table(rows)
-    write_coverage_table(table, prefix / "coverage.parquet", horizon=horizon)
-    write_role_names(ROLE_NAMES, prefix / "role_names.json")
     facet_metadata = (
         FACET_METADATA
         if provenance is None
@@ -200,119 +191,44 @@ def build_test_artifact(
             for facet_id, metadata in FACET_METADATA.items()
         }
     )
-    write_facet_metadata(facet_metadata, prefix / "facets.json")
-    manifest = CoverageManifest(
-        stamp=stamp,
-        build_id=build_id,
-        built_at="2026-09-24T00:00:00Z",
-        source="tests.series_coverage.support.build_test_artifact",
-        row_counts={"rows": len(rows)},
-        files={
-            "coverage": "coverage.parquet",
-            "role_names": "role_names.json",
-            "facets": "facets.json",
-        },
-        horizon=horizon,
-    )
-    write_manifest(manifest, prefix / "manifest.json")
-    write_current(CoveragePointer(stamp=stamp, build_id=build_id), pointer_path(base))
-    return f"file://{base}"
+    return checked_test_index(table, ROLE_NAMES, facet_metadata, horizon=horizon)
 
 
-def build_single_mask_artifact(base: Path, *, stamp: str = "test-coverage-stamp") -> str:
-    """`build_test_artifact`'s rows in the single-mask layout, labelled
-    with this code's own `format_version`: one `year_mask` column in place
-    of `year_mask_0`, and a manifest with no `epoch_year`/`mask_words`.
-    Returns the artifact's `file://` URI."""
-    uri = build_test_artifact(base, stamp=stamp)
-    prefix = build_dir(base, f"{stamp}-build")
-    table = pq.read_table(prefix / "coverage.parquet")
-    pq.write_table(
-        table.rename_columns(
-            ["year_mask" if name == "year_mask_0" else name for name in table.column_names]
-        ),
-        prefix / "coverage.parquet",
-    )
-    manifest = json.loads((prefix / "manifest.json").read_text(encoding="utf-8"))
-    del manifest["epoch_year"], manifest["mask_words"]
-    (prefix / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    return uri
+COVERAGE_SLICE_BUILD: Final[Path] = (
+    Path(__file__).parents[1]
+    / "fixtures"
+    / "coverage_slice"
+    / "format-3"
+    / "versions"
+    / "20260927T142252Z-slice"
+)
+"""The recorded coverage slice: the series of the variables the suite's fixtures and corpora
+name, as `coverage.parquet`, `role_names.json`, `facets.json` and a `manifest.json` holding
+its horizon and build time."""
 
 
-__all__ = [
-    "DEU",
-    "ETH",
-    "FACET_ACTUALS",
-    "FACET_METADATA",
-    "FACET_PROJECTED",
-    "FRA",
-    "KEN",
-    "ROLE_NAMES",
-    "UNICEF",
-    "V1",
-    "V2",
-    "V3",
-    "V4",
-    "V5",
-    "ZWE",
-    "build_dir",
-    "build_single_mask_artifact",
-    "build_test_artifact",
-    "coverage_table",
-    "pointer_path",
-]
-
-
-def code_index_for(
-    provenances: Mapping[str, tuple[str, ...]], *, content_hash: str = "test-index"
-) -> CodeIndex:
-    """A code index with one StatVar row per variable of `provenances`, carrying that
-    variable's provenances, and no declared dataset. `content_hash` names its compatibility
-    pointer."""
-    return CodeIndex(
-        stamp=IndexStamp(
-            graph_endpoint="https://fake.example",
-            exported_at="2026-01-01T00:00:00Z",
-            code_counts={},
-            statvar_shape_counts={},
-            content_hash=content_hash,
-        ),
-        declarations=(),
-        codes=(),
-        statvars=[
-            StatVarRow(
-                dcid=dcid,
-                population_type="FinancialFlow",
-                measured_property="amount",
-                stat_type="measuredValue",
-                measurement_qualifier=None,
-                measurement_denominator=None,
-                observation_properties=(),
-                constraint_properties={},
-                provenances=row_provenances,
-            )
-            for dcid, row_provenances in sorted(provenances.items())
-        ],
-    )
-
-
-def index_for(uri: str, *, content_hash: str = "test-index") -> CodeIndex:
-    """A code index whose rows carry exactly the provenances of the build `current.json`
-    names under `uri`, so that build is compatible with it."""
-    return code_index_for(
-        load_coverage(uri).index.variable_provenances(), content_hash=content_hash
-    )
-
-
-@contextmanager
-def session_coverage_service() -> Iterator[None]:
-    """Installs, inside the block, the process-wide coverage service over
-    `COVERAGE_ARTIFACT_URI`, checked against an index built from that build's own provenances.
-    The suite's recorded slice covers a subset of the packaged index's StatVars, so the
-    packaged index would reject it."""
-    uri = os.environ["COVERAGE_ARTIFACT_URI"]
-    service = coverage_shared.CoverageService(
-        artifact_uri=uri, index=index_for(uri), recheck_seconds=0
-    )
-    with coverage_shared._singleton.poisoned_for_test(service):
-        yield
+@functools.cache
+def slice_index() -> CoverageIndex:
+    """The `CoverageIndex` of the recorded coverage slice, which was built in `BUILD_YEAR`."""
+    manifest = json.loads((COVERAGE_SLICE_BUILD / "manifest.json").read_text())
+    horizon = YearHorizon(epoch_year=manifest["epoch_year"], mask_words=manifest["mask_words"])
+    roles = {
+        variable: RoleNames(**names)
+        for variable, names in json.loads(
+            (COVERAGE_SLICE_BUILD / "role_names.json").read_text()
+        ).items()
+    }
+    facets = {
+        facet_id: FacetMetadata(
+            provenance_id=fields.get("provenance_id"),
+            measurement_method=fields.get("measurement_method"),
+            unit=fields.get("unit"),
+            scaling_factor=fields.get("scaling_factor"),
+            observation_period=fields.get("observation_period"),
+        )
+        for facet_id, fields in json.loads(
+            (COVERAGE_SLICE_BUILD / "facets.json").read_text()
+        ).items()
+    }
+    table = pq.read_table(COVERAGE_SLICE_BUILD / "coverage.parquet")
+    return checked_test_index(table.cast(horizon.schema), roles, facets, horizon=horizon)

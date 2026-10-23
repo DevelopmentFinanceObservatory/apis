@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import itertools
 import threading
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -64,10 +64,7 @@ from .test_definition_door import (
     _client as _base_client,
 )
 from .test_materialise_semaphore import (
-    _CoverageBuilds,
     _FrameTrackingPermits,
-    _PermitLog,
-    _reload_before_permit,
 )
 from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
 
@@ -213,14 +210,6 @@ class _CoverageFromFacets:
                 )
         return build_coverage_index(rows, role_names=role_names, facet_metadata=facet_metadata)
 
-    def serves(self, snapshot: CoverageSnapshot) -> bool:
-        """`current()` builds an index per call, so the stamp identifies the served build."""
-        return snapshot.stamp == self.stamp
-
-    def register_load_guard(self, guard: object) -> Callable[[], None]:
-        """This fake never loads a build, so no guard is ever entered."""
-        return lambda: None
-
     def snapshot(self) -> CoverageSnapshot:
         return CoverageSnapshot(
             index=self.current(),
@@ -228,9 +217,6 @@ class _CoverageFromFacets:
                 stamp=self.stamp,
                 build_id=f"{self.stamp}-build",
                 built_at="t",
-                source="fake",
-                row_counts={},
-                files={},
                 horizon=self.current().horizon,
             ),
             stamp=self.stamp,
@@ -1029,52 +1015,6 @@ def test_head_hit_reads_and_renders_the_stored_frame_inside_a_materialise_slot(
     assert slots_held["count"] == 0
     assert frame_read_threads
     assert all(name.startswith("datasets-work") for name in frame_read_threads), frame_read_threads
-
-
-def test_a_head_hit_render_whose_snapshot_a_reload_replaced_renders_on_the_served_build(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """A GET took build 1's snapshot and a reload to build 2 completed before the render's
-    permit. The call gives the permit back, starts again on build 2, and reads the stored
-    frame after build 1's index has left memory."""
-    facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
-    body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
-    transport, _sdmx_calls = _counting_transport(body_ref)
-    version_store = FakeVersionRecordDatasetStore()
-    log = _PermitLog()
-    coverage = _CoverageBuilds(monkeypatch, make_index=_CoverageFromFacets(facets).current)
-    schedule = _reload_before_permit(monkeypatch, log, coverage)
-    old_index_resident: list[bool] = []
-
-    class _ObservingArtifactStore(_RenderableArtifactStore):
-        def get(self, *, artifact_digest: str, tier: Tier) -> bytes:
-            old_index_resident.append(coverage.resident(1))
-            log.record("frame_read")
-            return super().get(artifact_digest=artifact_digest, tier=tier)
-
-    client = _base_client(
-        graph=_mutable_graph(facets),
-        sdmx_transport=transport,
-        head_writer=_FakeHeadStore(),
-        version_writer=LiveVersionRecordWriter(store=version_store),
-        snapshot_reader=LiveSnapshotReader(store=version_store),
-        artifact_store=_ObservingArtifactStore(
-            inventory=LiveArtifactInventory(store=version_store)
-        ),
-        coverage=coverage.service,
-    )
-    spec_id = _mint_one_spec(client)
-    log.events.clear()
-    schedule(1)
-
-    resp = client.get(f"/api/datasets/{spec_id}?format=parquet&bundle=false")
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["trace"]["served_from"] == "head"
-    assert resp.json()["series_coverage_stamp"] == "stamp-build-2"
-    assert old_index_resident and not any(old_index_resident)
-    assert log.kinds() == ["reload", "acquire", "release", "acquire", "frame_read", "release"]
-    assert "coverage_restarts;desc=1" in resp.headers["server-timing"]
 
 
 def test_a_head_hit_render_frees_the_stored_frame_before_its_permit_is_released(

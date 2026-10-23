@@ -16,11 +16,6 @@ from fastapi.routing import APIRoute
 from dfo_apis.app import all_surfaces
 from dfo_platform.app import create_app
 
-# Search surface construction loads coverage, so these defaults support standalone runs.
-_COVERAGE_SLICE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "coverage_slice"
-os.environ.setdefault("COVERAGE_ARTIFACT_URI", f"file://{_COVERAGE_SLICE_DIR}")
-os.environ.setdefault("COVERAGE_RECHECK_SECONDS", "0")
-
 _FIXTURE_PATH = Path(__file__).with_name("route_metadata.json")
 
 _GRAPH_ENV_VARS = (
@@ -127,7 +122,7 @@ def test_fixture_route_count_per_surface():
         counts[row["surface"]] = counts.get(row["surface"], 0) + 1
     assert counts == {
         "search": 6,
-        "datasets": 57,
+        "datasets": 58,
         "graph": 10,
         "presentation": 10,
         "skills": 4,
@@ -135,5 +130,10 @@ def test_fixture_route_count_per_surface():
 
 
 if __name__ == "__main__":
-    _write_fixture(_current_route_rows())
+    # Surfaces read the origin catalogue and the graph release at construction, so a standalone
+    # run serves the suite's offline stand-ins for both.
+    from tests.live_refresh.composed_app import offline_services
+
+    with offline_services():
+        _write_fixture(_current_route_rows())
     print(f"wrote {_FIXTURE_PATH}")

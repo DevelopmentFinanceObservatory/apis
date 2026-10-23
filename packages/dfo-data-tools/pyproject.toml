@@ -63,14 +63,14 @@ generation = ["httpx>=0.28.1", "google-auth[requests]>=2.55"]
 # top of a 64-bit mask, so this is numpy, not an optional convenience.
 # artifact_publication.uri reads a gs:// artifact through google-cloud-storage,
 # imported lazily (never required for a file:// artifact, e.g. every
-# offline test). series_coverage.job (the building job, a Cloud Run Job
-# entrypoint, never imported by the serving path) reads Spanner through the
-# BigQuery federation connection via google-cloud-bigquery, also imported
-# lazily so no offline test or serving-path install needs it. Kept named
-# `coverage` (not `series_coverage`) as an extra -- only the importable
-# package name collides with coverage.py (pytest-cov). series_coverage also
-# reads observations through dc_sdmx directly, so `coverage` carries
-# `sdmx`'s own dependencies too.
+# offline test). artifact_publication.jobs.BigQueryReader, which
+# origin_catalogue.job reads Spanner through over the BigQuery federation
+# connection, imports google-cloud-bigquery lazily, so no offline test or
+# serving-path install needs it. Kept named `coverage` (not
+# `series_coverage`) as an extra -- only the importable package name
+# collides with coverage.py (pytest-cov). series_coverage.index plans its
+# estimates with dc_sdmx's request planner, so `coverage` carries `sdmx`'s
+# own dependencies too.
 coverage = [
     "numpy>=2.0",
     "google-cloud-storage>=2.18",
@@ -86,10 +86,10 @@ graph-release = ["google-cloud-spanner>=3.57", "dfo-data-tools[coverage]"]
 [tool.uv.sources]
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/provenance-docs" }
-dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/descriptions" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "0f1a106d35aed1b11aea90cb2d11040326b58bd6", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "0f1a106d35aed1b11aea90cb2d11040326b58bd6", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "0f1a106d35aed1b11aea90cb2d11040326b58bd6", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "0f1a106d35aed1b11aea90cb2d11040326b58bd6", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

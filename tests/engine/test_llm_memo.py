@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from google.genai.types import GenerateContentConfig, ThinkingConfig, ThinkingLevel
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 import search.engine.clients.llm as llm_module
 from search.engine.bind import _UniversalBindOutput
@@ -348,8 +348,8 @@ def test_key_moves_on_each_request_field(monkeypatch, field):
 
 
 def test_lone_surrogate_prompt_keys_and_behaves_as_without_a_memo(monkeypatch):
-    """A lone surrogate survives request parsing as one query character, though RFC 8785 rejects it.
-    The ASCII-escaped memo key lets the first call reach the model and the repeat hit the memo."""
+    """A prompt holding a lone surrogate, which RFC 8785 rejects, still keys: the
+    ASCII-escaped memo key lets the first call reach the model and the repeat hit the memo."""
     prompt = "\ud800"
     memo = _memo()
 
@@ -414,6 +414,17 @@ def test_key_covers_every_field_of_a_real_config():
     )
     assert _memo_key(model="m", prompt="p", schema=_DummySchema, config=config) != _memo_key(
         model="m", prompt="p", schema=_DummySchema, config=other_level
+    )
+
+
+def test_a_field_added_without_a_rename_moves_the_key():
+    grown = create_model("_DummySchema", __base__=_DummySchema, extra=(int, 0))
+    grown.__module__ = _DummySchema.__module__
+    config = GenerateContentConfig(response_mime_type="application/json")
+
+    assert grown.__qualname__ == _DummySchema.__qualname__
+    assert _memo_key(model="m", prompt="p", schema=_DummySchema, config=config) != _memo_key(
+        model="m", prompt="p", schema=grown, config=config
     )
 
 

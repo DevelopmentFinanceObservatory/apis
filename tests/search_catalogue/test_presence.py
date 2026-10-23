@@ -8,13 +8,13 @@ import pytest
 from search.catalogue.examples import Example
 from search.catalogue.presence import PresenceRefusal, example_places
 from tests.origin_catalogue.support import CENSUS_POVERTY, CRS_VARIABLE, GDP, POPULATION
-from tests.search_catalogue.support import coverage_fixture, origin_snapshot
-from tests.series_coverage.support import V1
+from tests.search_catalogue.support import origin_snapshot
+from tests.series_coverage.support import V1, build_test_index
 
 
 @pytest.fixture
 def sources(tmp_path):
-    return origin_snapshot(tmp_path / "origin"), coverage_fixture(tmp_path / "coverage").index
+    return origin_snapshot(tmp_path / "origin"), build_test_index()
 
 
 def _example(stat_var: str, place: str, role=None) -> Example:

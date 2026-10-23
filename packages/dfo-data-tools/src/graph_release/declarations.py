@@ -4,8 +4,8 @@
 code-index declarations `code_index.export` takes as arguments, `ROLE_AXES` and the authored
 rows. `declarations_json` serialises them with the tables `code_index.export` and
 `dc_graph.visible_arcs` read from their own modules (the synonym tables, short names, concept
-groups, measure value texts and `IMPORT_ADDED_CONSTRAINT_PROPERTIES`), so the declarations hash
-moves when any input of the DFO layer does.
+groups, measure value texts, slot plain names and `IMPORT_ADDED_CONSTRAINT_PROPERTIES`), so
+the declarations hash moves when any input of the DFO layer does.
 """
 
 from __future__ import annotations
@@ -26,7 +26,9 @@ from code_index.declarations import (
     WholePopulationTotal,
 )
 from code_index.types import (
+    BroadReading,
     DatasetDeclaration,
+    ImpliedValue,
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
@@ -47,6 +49,7 @@ _MODULE_TABLES: Final[tuple[str, ...]] = (
     "DECLARED_MEASURE_VALUES",
     "MEASURE_VALUE_TEXT",
     "MEASURE_WORD_SYNONYMS_KEPT",
+    "SLOT_PLAIN_NAMES",
 )
 """The `code_index.declarations` tables `code_index.export` reads from the module rather than
 from its arguments."""
@@ -70,7 +73,9 @@ class Declarations:
     measure_partition_labels: Sequence[MeasurePartitionLabel]
     measure_nouns: Sequence[MeasurePartitionLabel]
     shape_slot_defaults: Sequence[ShapeSlotDefault]
+    broad_readings: Sequence[BroadReading]
     partly_stated_values: Sequence[PartlyStatedValue]
+    implied_values: Sequence[ImpliedValue]
     measure_classes: Sequence[MeasureClassDeclaration]
     variable_aliases: Mapping[str, str]
     stat_type_words: Sequence[StatTypeWordDeclaration]
@@ -144,7 +149,9 @@ DECLARATIONS: Final[Declarations] = Declarations(
     measure_partition_labels=code_index_declarations.MEASURE_PARTITION_LABELS,
     measure_nouns=code_index_declarations.MEASURE_NOUNS,
     shape_slot_defaults=code_index_declarations.SHAPE_SLOT_DEFAULTS,
+    broad_readings=code_index_declarations.BROAD_READINGS,
     partly_stated_values=code_index_declarations.PARTLY_STATED_VALUES,
+    implied_values=code_index_declarations.IMPLIED_VALUES,
     measure_classes=code_index_declarations.MEASURE_CLASSES,
     variable_aliases=code_index_declarations.VARIABLE_ALIASES,
     stat_type_words=code_index_declarations.STAT_TYPE_WORDS,

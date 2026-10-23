@@ -52,6 +52,10 @@ _EXEMPT: dict[Site, str] = {
     ("datasets_api/operation_store.py", "compute_operation_id", "rendering_key"): (
         "an operation id, not an artifact link key"
     ),
+    ("datasets_api/doors/files.py", "_render_digest", "rendering_key"): (
+        "matches a fresh render's artifact to the requested rendering by its unsalted identity, "
+        "reading and writing no link"
+    ),
 }
 
 

@@ -3,7 +3,11 @@ each response's counts from its `Server-Timing` header."""
 
 from __future__ import annotations
 
+import contextvars
 import random
+from typing import cast
+
+import httpx
 
 from scripts.bench_datasets import Shape, run_bench, window_variants
 
@@ -19,6 +23,23 @@ _SERVE_COUNTS = {
 }
 
 
+class _ContextClient:
+    """`client` with each request run in a copy of the context it was built in, as a request
+    from that thread runs, so a burst the bench sends from its pool reads the graph release the
+    test binds."""
+
+    def __init__(self, client: httpx.Client) -> None:
+        self._client = client
+        self._context = contextvars.copy_context()
+        self.base_url = client.base_url
+
+    def get(self, *args, **kwargs) -> httpx.Response:
+        return self._context.copy().run(self._client.get, *args, **kwargs)
+
+    def post(self, *args, **kwargs) -> httpx.Response:
+        return self._context.copy().run(self._client.post, *args, **kwargs)
+
+
 def test_the_bench_reports_every_request_kind_with_its_store_counts(surface):  # noqa: F811
     minted = surface.client.post("/api/datasets", json=_body(format="csv", bundle=True))
     assert minted.status_code == 200, minted.text
@@ -30,7 +51,9 @@ def test_the_bench_reports_every_request_kind_with_its_store_counts(surface):  #
         variants=window_variants(definition, rng=random.Random(3)),
     )
 
-    report = run_bench(surface.client, [shape], samples=2, seed=3)
+    report = run_bench(
+        cast(httpx.Client, _ContextClient(surface.client)), [shape], samples=2, seed=3
+    )
 
     requests = report["shapes"]["fixture"]["requests"]
     assert set(requests) == {

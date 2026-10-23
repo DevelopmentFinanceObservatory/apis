@@ -593,7 +593,7 @@ def test_a_label_two_codes_of_a_system_share_leaves_the_code_empty_and_warns():
     assert _unavailable(rendered) == [("crsPurpose", 2)]
 
 
-def test_no_packaged_code_system_gives_two_codes_one_label():
+def test_no_fixture_code_system_gives_two_codes_one_label():
     """An axis code column reads its code back from the decoded label, so a label two codes
     of one declared system share leaves those rows without a code."""
     index = get_index()

@@ -8,7 +8,8 @@ properties cannot back, and no listed dataset, so the slice's code index loads. 
 no party nodes, so `slice_platform_parts` adds its CRS rows' parties as dev's Spanner holds
 them: two by `typeOf` and `name` edges, one country as a placeholder `Node` row an edge names,
 and one country not at all. `SLICE_BASE_PARTIES` answers those two countries and the imputed
-dataset's donors as the mixer does.
+dataset's donors as the mixer does. `recorded_dfo_arcs` reads the slice's DFO arc table as the
+origin catalogue job reads it from Spanner.
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ from graph_release.dfo import read_base_parties
 from graph_release.format import conform_part
 from graph_release.platform import PlatformParts, build_platform_parts
 from graph_release.reads import RawInputs
+from origin_catalogue.arc_reads import DfoArcs, dfo_edges_sql, read_dfo_arcs
+from origin_catalogue.arc_tables import ArcTablesBuilder
+from tests.artifact_publication.support import FakeBigQuery
 
 FIXTURES = Path(__file__).parents[1] / "fixtures/graph_release"
 
@@ -99,6 +103,7 @@ SLICE_DECLARATIONS = dataclasses.replace(
     measure_partition_labels=(),
     measure_nouns=(),
     shape_slot_defaults=(),
+    broad_readings=(),
     partly_stated_values=(),
 )
 
@@ -207,4 +212,42 @@ def slice_platform_parts() -> PlatformParts:
         edges=conform_part(
             pa.concat_tables([parts.edges.cast(edge_rows.schema), edge_rows]), name="edges"
         ),
+    )
+
+
+def recorded_dfo_arcs(into: ArcTablesBuilder) -> DfoArcs:
+    """Holds in `into`'s `dfo` table the recorded slice's DFO variables, read by
+    `origin_catalogue.arc_reads.read_dfo_arcs` as the catalogue job reads them: `dfo_edges_sql`
+    answered from the recorded `Edge` and `Node` rows, the variables with observations from the
+    recorded series, and the mixer's answer for each target Spanner holds no row for from the
+    authored rows, which were recorded from that answer (`graph_release.authored`)."""
+    # Imported here: test modules, which `tests.graph_release.support` callers need not load.
+    from tests.origin_catalogue.test_job import SPANNER_EDGES, FakeGraph, spanner_rows
+
+    raw = raw_inputs()
+    edges = raw.edges_raw.select(["subject_id", "predicate", "object_id"]).to_pylist()
+    declared = {
+        edge["subject_id"]
+        for edge in edges
+        if edge["predicate"] == "typeOf" and edge["object_id"] == "StatisticalVariable"
+    }
+    rows = spanner_rows(
+        [edge for edge in edges if edge["subject_id"] in declared], raw.nodes_raw.to_pylist()
+    )
+    assert SPANNER_EDGES in dfo_edges_sql("connection")
+    mixer = FakeGraph(
+        arcs={
+            node.subject_id: {"typeOf": node.types, "name": (node.name,)}
+            for node in AUTHORED.nodes
+            if node.types
+        }
+    )
+    return read_dfo_arcs(
+        FakeBigQuery({SPANNER_EDGES: rows}),
+        connection="connection",
+        observed={
+            str(variable) for variable in raw.series_summary["variable_measured"].to_pylist()
+        },
+        graph=mixer,
+        into=into,
     )

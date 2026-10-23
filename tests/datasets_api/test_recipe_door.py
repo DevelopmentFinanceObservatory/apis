@@ -1,4 +1,4 @@
-"""Tests recipes at the publish door and the recipe door's four routes.
+"""Tests recipes at the publish door and the recipe door's three routes.
 
 One `FakeVersionRecordDatasetStore` backs the version writer, snapshot reader, recipe store, and
 version lister, so the recipe SQL runs against the rows the publish door wrote. HTTP tests use
@@ -8,27 +8,23 @@ the whole Datasets surface, which also proves no other door's route answers a re
 from __future__ import annotations
 
 import json
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
-from code_index.shared import get_index
-from dataset_store.snapshot import FrameLineage, LiveSnapshotReader, ManifestFacts, VersionFacts
+from dataset_store.snapshot import FrameLineage, LiveSnapshotReader
 from datasets_api.doors.publish import PublishRecipeStoreMissing, publish_frame
 from datasets_api.publish_models import MAX_RECIPE_BYTES, Recipe
 from datasets_api.recipe_store import LiveRecipeStore, ReplayedFrame
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
-from datasets_api.versions import NO_PARTY_ROLE, ArtifactRecord, VersionRecord
 from spec_registry import LiveSpecRegistry
 from tests.artifact_store.conftest import FakeGCSClient
 
 from ._app_factories import make_client
 from ._snapshot_doubles import FakeSpecReader
-from ._version_facts import facts_from_body, golden_cases
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
@@ -44,7 +40,6 @@ _AUTH_HEADERS = {"x-dfo-principal": _PRINCIPAL}
 
 _RECIPE_PATH = f"/api/datasets/frames/{_SPEC_ID}/{_CONTENT_VERSION}/recipe"
 _REPLAY_PATH = f"/api/datasets/recipes/replays/{_REPLAY_KEY}"
-_VERSIONS_PATH = "/api/datasets/spec_a/versions"
 
 
 def _recipe(**overrides: object) -> dict[str, object]:
@@ -137,41 +132,6 @@ class _Deps:
     def stored_recipe(self, spec_id: str = _SPEC_ID, content_version: str = _CONTENT_VERSION):
         record = self.recipe_store.read_recipe(spec_id=spec_id, content_version=content_version)
         return None if record is None else dict(record.body)
-
-    def record_version(
-        self,
-        *,
-        subject_id: str,
-        content_version: str,
-        base_content_version: str | None = None,
-        renderings: tuple[dict[str, object], ...] = (),
-        facts: VersionFacts | None = None,
-        enrichment_digest: str | None = None,
-    ) -> None:
-        """Record a version with one stored file linked under it per entry of `renderings`,
-        each salted with `enrichment_digest`. `facts` default to a published frame's."""
-        artifacts = tuple(
-            ArtifactRecord(
-                artifact_digest=self.artifact_store.put(
-                    f"{content_version}:{index}".encode(), tier=Tier.working
-                ).digest,
-                rendering=rendering,
-                media_type="application/vnd.apache.parquet",
-                enrichment_digest=enrichment_digest,
-            )
-            for index, rendering in enumerate(renderings)
-        )
-        self.version_writer.record_version(
-            VersionRecord(
-                subject_id=subject_id,
-                subject_kind="spec",
-                content_version=content_version,
-                schema_version=1,
-                facts=facts if facts is not None else FrameLineage(input_content_versions=[]),
-                artifacts=artifacts,
-                base_content_version=base_content_version,
-            )
-        )
 
 
 @pytest.fixture
@@ -393,213 +353,10 @@ def test_recipe_and_replay_reads_are_not_found_when_nothing_is_stored(deps: _Dep
     assert replay.json()["code"] == "recipe_not_found"
 
 
-_FRAME1_RENDERING = {"format": "frame1"}
-_STATISTICS_RENDERING = {"statistics": "series"}
-_PLAIN_RENDERING = {"format": "parquet", "bundle": False, "layout": "frame"}
-_GROUPBY = {"by": ["recipient"], "op": "sum"}
-_LEVELLED_GROUPBY = {"by": ["recipient", "sector"], "op": "sum", "levels": {"sector": 0}}
-
-
-def test_versions_list_is_newest_first_with_each_version_s_rendering(deps: _Deps) -> None:
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000001",
-        base_content_version="cv_00000000000000000000000000000000",
-        renderings=(_FRAME1_RENDERING, {**_PLAIN_RENDERING, "groupby": _LEVELLED_GROUPBY}),
-    )
-    deps.now += timedelta(hours=1)
-    # A raw version lists as plain whatever is linked under it.
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000003",
-        renderings=(_FRAME1_RENDERING, _PLAIN_RENDERING, {**_PLAIN_RENDERING, "groupby": _GROUPBY}),
-    )
-    deps.now += timedelta(hours=1)
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000002",
-        base_content_version="cv_00000000000000000000000000000003",
-        renderings=(
-            _STATISTICS_RENDERING,
-            _FRAME1_RENDERING,
-            {**_PLAIN_RENDERING, "groupby": _GROUPBY},
-        ),
-    )
-    deps.now += timedelta(hours=1)
-    # A collapse holding only its frame1 and statistics files records no groupby.
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000004",
-        base_content_version="cv_00000000000000000000000000000003",
-        renderings=(_FRAME1_RENDERING, _STATISTICS_RENDERING),
-    )
-    deps.now += timedelta(hours=1)
-    # A party-totals cut records the option on its file, alone or beside the groupby.
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000005",
-        base_content_version="cv_00000000000000000000000000000003",
-        renderings=(_FRAME1_RENDERING, {**_PLAIN_RENDERING, "without_party_totals": True}),
-    )
-    deps.now += timedelta(hours=1)
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000006",
-        base_content_version="cv_00000000000000000000000000000003",
-        renderings=(
-            _FRAME1_RENDERING,
-            {**_PLAIN_RENDERING, "groupby": _GROUPBY, "without_party_totals": True},
-        ),
-    )
-    deps.record_version(
-        subject_id="spec_b",
-        content_version="cv_00000000000000000000000000000009",
-        base_content_version="cv_00000000000000000000000000000008",
-        renderings=({**_PLAIN_RENDERING, "groupby": {"by": ["donor"], "op": "sum"}},),
-    )
-
-    response = deps.client().get(_VERSIONS_PATH, headers=_AUTH_HEADERS)
-
-    assert response.status_code == 200, response.text
-    # No version here stored an output profile or a `NO_PARTY_ROLE` link, so each lists the
-    # digest.
-    digest = get_index().enrichment_digest
-    assert response.json() == {
-        "schema_version": 1,
-        "spec_id": "spec_a",
-        "enrichment_stamp": digest,
-        "versions": [
-            {
-                "content_version": "cv_00000000000000000000000000000006",
-                "base_content_version": "cv_00000000000000000000000000000003",
-                "rendering": "groupby",
-                "groupby": _GROUPBY,
-                "without_party_totals": True,
-                "enrichment_stamp": digest,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000005",
-                "base_content_version": "cv_00000000000000000000000000000003",
-                "rendering": "without_party_totals",
-                "groupby": None,
-                "without_party_totals": True,
-                "enrichment_stamp": digest,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000004",
-                "base_content_version": "cv_00000000000000000000000000000003",
-                "rendering": "not_recorded",
-                "groupby": None,
-                "enrichment_stamp": digest,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000002",
-                "base_content_version": "cv_00000000000000000000000000000003",
-                "rendering": "groupby",
-                "groupby": _GROUPBY,
-                "enrichment_stamp": digest,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000003",
-                "base_content_version": None,
-                "rendering": "plain",
-                "groupby": None,
-                "enrichment_stamp": digest,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000001",
-                "base_content_version": "cv_00000000000000000000000000000000",
-                "rendering": "groupby",
-                "groupby": _LEVELLED_GROUPBY,
-                "enrichment_stamp": digest,
-            },
-        ],
-    }
-
-
-_LONG_RENDERING = {"format": "parquet", "bundle": False}
-
-
-def _dataset_facts(*roles: str) -> VersionFacts:
-    """A dataset version's facts whose output profile lists `roles` as its role columns."""
-    facts = facts_from_body(golden_cases()["definition"]["body"])
-    assert isinstance(facts, ManifestFacts)
-    profile = {
-        "schema_version": 1,
-        "rows": 1,
-        "columns": [
-            {"name": role, "kind": "role", "droppable": False, "distinct": 1} for role in roles
-        ],
-        "pivots": [],
-        "enrichments": [],
-    }
-    return replace(facts, output_profile=profile)
-
-
-def test_each_listed_version_states_the_stamp_a_kind_file_of_it_carries_now(deps: _Deps) -> None:
-    digest = get_index().enrichment_digest
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000001",
-        facts=_dataset_facts("observationAbout"),
-    )
-    deps.now += timedelta(hours=1)
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000002",
-        facts=_dataset_facts("donor", "recipient"),
-    )
-    deps.now += timedelta(hours=1)
-    # A version with no output profile is read from the salt of its kind files' links.
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000003",
-        renderings=(_LONG_RENDERING,),
-        enrichment_digest=NO_PARTY_ROLE,
-    )
-    deps.now += timedelta(hours=1)
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000004",
-        renderings=(_LONG_RENDERING,),
-    )
-
-    response = deps.client().get(_VERSIONS_PATH, headers=_AUTH_HEADERS)
-
-    assert response.status_code == 200, response.text
-    stamps = {
-        version["content_version"]: version.get("enrichment_stamp")
-        for version in response.json()["versions"]
-    }
-    assert stamps == {
-        "cv_00000000000000000000000000000004": digest,
-        "cv_00000000000000000000000000000003": None,
-        "cv_00000000000000000000000000000002": digest,
-        "cv_00000000000000000000000000000001": None,
-    }
-    assert response.json()["enrichment_stamp"] == digest
-
-
-def test_versions_list_is_empty_for_a_dataset_with_no_stored_version(deps: _Deps) -> None:
-    response = deps.client().get(_VERSIONS_PATH, headers=_AUTH_HEADERS)
-
-    assert response.status_code == 200, response.text
-    assert response.json()["versions"] == []
-    assert response.json()["enrichment_stamp"] == get_index().enrichment_digest
-
-
-def test_versions_list_refuses_an_id_outside_the_dataset_grammar(deps: _Deps) -> None:
-    response = deps.client().get("/api/datasets/ops_abc123/versions", headers=_AUTH_HEADERS)
-
-    assert response.status_code == 404, response.text
-    assert response.json()["code"] == "not_found"
-
-
 _GUARDED_REQUESTS = [
     ("PUT", _RECIPE_PATH),
     ("GET", _RECIPE_PATH),
     ("GET", _REPLAY_PATH),
-    ("GET", _VERSIONS_PATH),
 ]
 
 

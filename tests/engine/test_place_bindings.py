@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.departures import warning_key
 from search.engine.quantity_read import QuantityOutput
@@ -26,6 +25,7 @@ from search.models import (
 )
 from series_coverage.schema import ABSENT_ENTITY, RoleNames
 from series_coverage.shared import CoverageSnapshot
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query, offline_resolve
@@ -65,7 +65,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _graph(
@@ -137,6 +137,26 @@ def test_solitary_axis_less_place_refuses_role_not_resolved():
     assert result.specs == ()
     assert result.flagged_match is None
     assert sdmx.series_calls == []
+    # One place cannot fill both axes the shape declares, so no reading is kept.
+    assert result.role_assignments == ()
+
+
+def test_two_axis_less_places_offer_each_reading_of_their_directions():
+    """ "aid Norway Kenya" leaves both directions untold: each reading puts one place on
+    each axis, origin first."""
+    result = _run(
+        entities=["Norway", "Kenya"],
+        resolve={"Norway": _NOR, "Kenya": _KEN},
+        sv_arcs=_declaring_arcs(observation_properties=["creditor", "debtor"]),
+        role_query="aid Norway Kenya",
+        sdmx=_sdmx({}),
+    )
+    assert result.no_data_reason == "role_not_resolved"
+    assert result.unresolved_entity_names == ("Norway", "Kenya")
+    assert result.role_assignments == (
+        {"Norway": "origin", "Kenya": "destination"},
+        {"Norway": "destination", "Kenya": "origin"},
+    )
 
 
 def test_place_with_a_door_occurrence_still_binds_on_that_axis(monkeypatch):

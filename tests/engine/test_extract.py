@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from code_index.shared import get_index, get_measure_index
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.engine.extract import (
+    _EXTRACTION_SYSTEM_PROMPT,
     MAX_OPERATIONS,
     ExtractedDate,
     ExtractedEntity,
@@ -22,7 +24,7 @@ from search.engine.extract import (
     _admit_operations,
     _drop_forecast_years,
     _occurs_in,
-    _system_instruction,
+    _resolve_relative_dates,
     _target_forecasts,
     _validate_role_spans,
     dates_to_request,
@@ -292,12 +294,62 @@ def test_validate_role_spans_downgrades_an_overlapping_role_span(caplog):
 # _validate_role_spans: the adjectival acceptance route on condition (2)
 
 
-def test_validate_role_spans_keeps_an_adjectival_surface_modifying_a_measure():
-    """A national adjective marks origin when it directly precedes the measure, as in "French aid"."""
-    entities = [_entity("France", span="French", flow_role="origin", role_span="French")]
-    validated = _validate_role_spans("French aid to Senegal", entities, ["aid"])
+@pytest.mark.parametrize(
+    ("query", "text", "span", "variable"),
+    [
+        ("French aid to Senegal", "France", "French", "aid"),
+        ("IMF credit outstanding Argentina", "IMF", "IMF", "credit outstanding"),
+    ],
+)
+def test_validate_role_spans_keeps_a_surface_modifying_a_measure(query, text, span, variable):
+    """A national adjective or an organisation's name directly before the measure is its
+    own cue."""
+    entities = [_entity(text, span=span, flow_role="origin", role_span=span)]
+    validated = _validate_role_spans(query, entities, [variable])
     assert validated[0].flow_role == "origin"
-    assert validated[0].role_span == "French"
+    assert validated[0].role_span == span
+
+
+@pytest.mark.parametrize(
+    ("query", "text", "variable"),
+    [
+        ("Kenya aid", "Kenya", "aid"),
+        ("China loans to Kenya", "China", "loans"),
+    ],
+)
+def test_validate_role_spans_downgrades_a_place_named_before_a_measure(query, text, variable):
+    """A place's own name before the measure states no direction: "Kenya aid" is usually
+    aid to Kenya, and "US aid" aid from the US."""
+    entities = [_entity(text, span=text, flow_role="origin", role_span=text)]
+    validated = _validate_role_spans(query, entities, [variable])
+    assert validated[0].flow_role == "unspecified"
+    assert validated[0].role_span is None
+
+
+@pytest.mark.parametrize(
+    ("query", "flow_role", "role_span", "variable", "expected"),
+    [
+        ("IMF credit outstanding Argentina", "unspecified", None, "credit outstanding", "origin"),
+        (
+            "IMF credit outstanding Argentina",
+            "destination",
+            "Argentina",
+            "credit outstanding",
+            "origin",
+        ),
+        # Named after the measure, the IMF is the source of the numbers.
+        ("Kenya GDP IMF", "unspecified", None, "GDP", "unspecified"),
+    ],
+)
+def test_validate_role_spans_reads_an_organisation_before_the_measure_as_lender(
+    query, flow_role, role_span, variable, expected
+):
+    """An organisation named straight before a measure word is the origin, with its own name
+    as cue, whatever role the model gave it."""
+    entities = [_entity("IMF", span="IMF", flow_role=flow_role, role_span=role_span)]
+    validated = _validate_role_spans(query, entities, [variable])
+    assert validated[0].flow_role == expected
+    assert validated[0].role_span == ("IMF" if expected == "origin" else None)
 
 
 def test_validate_role_spans_downgrades_an_adjectival_surface_with_no_measure_to_modify():
@@ -582,7 +634,7 @@ def test_validate_role_spans_never_refuses_only_downgrades():
 def test_extract_downgrades_a_fabricated_role_span_end_to_end():
     """`extract()` applies role-span validation before returning the response."""
     query = "population of Kenya"
-    key = fixture_key(Extraction, _system_instruction(), query)
+    key = fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
     llm = FakeLLM(
         responses={
             key: {
@@ -616,7 +668,10 @@ def _stub_for(query: str, payload: dict) -> FakeLLM:
     """
     return FakeLLM(
         responses={
-            fixture_key(Extraction, _system_instruction(), query): {"kind": "resolution", **payload}
+            fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query): {
+                "kind": "resolution",
+                **payload,
+            }
         }
     )
 
@@ -1076,6 +1131,85 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
     assert seen_lengths == [n]
 
 
+@pytest.mark.parametrize(
+    ("query", "variables", "dates", "resolved", "dropped"),
+    [
+        # dq-crs-056's stored reading.
+        (
+            "aid to Kenya and Uganda for health and education",
+            ["aid", "aid"],
+            [],
+            [],
+            ["health and education"],
+        ),
+        (
+            "aid to Kenya and Uganda for health and education",
+            ["aid", "Aid "],
+            [],
+            [],
+            ["health and education"],
+        ),
+        # Distinct variables lose nothing the engine can see.
+        (
+            "aid to Kenya and Uganda for health and education",
+            ["health aid", "education aid"],
+            [],
+            [],
+            [],
+        ),
+        # A repeat that loses no word adds nothing.
+        ("aid and aid to Kenya", ["aid", "aid"], [], [], []),
+        # The request's own words qualify no measure: only the phrase a preposition
+        # attaches is lost.
+        ("Show me aid to Kenya and aid to Uganda", ["aid", "aid"], [], [], []),
+        (
+            "How much aid did Kenya and Uganda get for health and education",
+            ["aid", "aid"],
+            [],
+            [],
+            ["health and education"],
+        ),
+        # A preposition that restricts stays in the phrase it opens.
+        (
+            "aid to Kenya excluding debt relief and aid to Uganda",
+            ["aid", "aid"],
+            [],
+            [],
+            ["excluding debt relief"],
+        ),
+        # A phrase right after the measure qualifies it with no preposition.
+        ("aid disbursements to Kenya and Uganda", ["aid", "aid"], [], [], ["disbursements"]),
+        # A resolved relative date holds its wording, though its bounds are years.
+        (
+            "aid to Kenya and Uganda over the last five years",
+            ["aid", "aid"],
+            [{"kind": "range", "relative": "over the last five years"}],
+            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [],
+        ),
+    ],
+)
+def test_extract_lists_the_words_a_repeated_variable_lost(
+    monkeypatch, query, variables, dates, resolved, dropped
+):
+    monkeypatch.setattr(extract_module, "date", SimpleNamespace(today=lambda: date(2026, 6, 23)))
+    llm = _stub_for(
+        query,
+        {
+            "variables": variables,
+            "entities": [
+                {"text": t, "span": t, "flow_role": "destination", "role_span": "to"}
+                for t in ("Kenya", "Uganda")
+                if t in query
+            ],
+            "dates": dates,
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert [d.model_dump(mode="json") for d in result.extraction.dates] == resolved
+    assert result.extraction.dropped_qualifiers == dropped
+
+
 def test_extract_dedupes_variables_before_the_cap_decision():
     """Six copies of GDP plus population count as two distinct variables, below the cap of 6."""
     query = "GDP GDP GDP GDP GDP GDP population of Kenya"
@@ -1403,6 +1537,32 @@ def test_extract_keeps_a_non_resolution_kind_with_only_blank_variables(kind):
     assert result.extraction.kind == kind
 
 
+@pytest.mark.parametrize(
+    ("variables", "operations", "kind"),
+    [
+        ([], [], "catalogue"),
+        (["  "], [], "catalogue"),
+        ([], [_op("rank", 0, "top 5", over="place")], "resolution"),
+    ],
+)
+def test_extract_reads_a_resolution_naming_no_measure_as_a_catalogue(variables, operations, kind):
+    """cat-show-me-whats-here: a reading with a place and no measure lists what the
+    database holds there. One with an operation keeps its kind."""
+    query = "Show me what's in the database for Nigeria"
+    llm = _stub_for(
+        query,
+        {
+            "variables": variables,
+            "entities": [{"text": "Nigeria", "span": "Nigeria"}],
+            "operations": operations,
+            "dates": [],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.kind == kind
+    assert _texts(result.extraction.entities) == ["Nigeria"]
+
+
 def test_extract_resolves_an_injected_out_of_scope_reading_of_a_data_question():
     """The injection golden inj-in-scope-asks-decline asks to be declined; a reading that
     obeys it but still names the measure answers as a resolution."""
@@ -1419,14 +1579,6 @@ def test_extract_resolves_an_injected_out_of_scope_reading_of_a_data_question():
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.kind == "resolution"
     assert result.extraction.variables == ["aid"]
-
-
-def test_extract_keeps_a_resolution_with_no_variables():
-    query = "tell me something"
-    llm = _stub_for(query, {"variables": [], "entities": [], "dates": []})
-    result, _ = _run(extract(query, llm=llm))
-    assert result.extraction.kind == "resolution"
-    assert result.extraction.variables == []
 
 
 def test_extract_carries_an_operation_on_its_variable():
@@ -1967,21 +2119,31 @@ def _nigeria_1999(operation: dict, dates: list[dict]) -> Extraction:
 
 
 @pytest.mark.parametrize(
-    "dates",
-    [[], [{"kind": "point", "start": "1999", "end": "1999"}]],
-    ids=["recorded", "year-already-in-dates"],
+    ("query", "phrase", "dates", "years"),
+    [
+        ("education aid to Nigeria in 1999", "in 1999", [], ["1999"]),
+        (
+            "education aid to Nigeria in 1999",
+            "in 1999",
+            [{"kind": "point", "start": "1999", "end": "1999"}],
+            ["1999"],
+        ),
+        ("education aid to Nigeria in 2026", "in 2026", [], ["2026"]),
+        ("education aid to Nigeria in 2025 and 2026", "in 2025 and 2026", [], ["2025", "2026"]),
+    ],
+    ids=["recorded", "year-already-in-dates", "current-year", "past-and-current-year"],
 )
-def test_admit_operations_returns_a_past_forecast_year_to_dates(dates):
+def test_admit_operations_returns_a_dated_forecast_year_to_dates(query, phrase, dates, years):
     """The recorded model output reads "in 1999" as a forecast with no date. A forecast
-    over a past year is discarded and the year returns to `dates` once."""
-    query = "education aid to Nigeria in 1999"
-    extraction = _nigeria_1999(_op("forecast", 0, "in 1999"), dates)
+    whose phrase names years, none of them a target year, is discarded and each year
+    returns to `dates` once, the current year included."""
+    extraction = _nigeria_1999(_op("forecast", 0, phrase), dates)
 
     admitted, operations = _admit_operations(query, extraction, today_year=2026)
 
     assert operations == {}
     assert admitted.operations == []
-    assert admitted.dates == [_date("point", "1999", "1999")]
+    assert admitted.dates == [_date("point", year, year) for year in years]
 
 
 @pytest.mark.parametrize(
@@ -1991,12 +2153,11 @@ def test_admit_operations_returns_a_past_forecast_year_to_dates(dates):
         ("forecast education aid to Nigeria", "forecast", None),
         ("forecast top 1000 education aid to Nigeria", "forecast top 1000", None),
         ("education aid to Nigeria from 2020 to 2030", "from 2020 to 2030", 2030),
-        ("education aid to Nigeria in 2026", "in 2026", None),
     ],
 )
-def test_admit_operations_keeps_a_forecast_naming_no_past_year_alone(query, phrase, target):
-    """A forecast naming a target year, only today's year, no year, or a count below
-    `MIN_YEAR` is admitted and adds no date."""
+def test_admit_operations_keeps_a_forecast_naming_no_dated_year_alone(query, phrase, target):
+    """A forecast naming a target year, no year, or a count below `MIN_YEAR` is
+    admitted and adds no date."""
     extraction = _nigeria_1999(_op("forecast", 0, phrase), [])
 
     admitted, operations = _admit_operations(query, extraction, today_year=2026)
@@ -2489,11 +2650,15 @@ def test_slot_default_answers_a_qualifier_that_names_only_the_slot(qualifier, va
     [
         ("top 5 donors in fragile states", ["fragile states"]),
         ("top 5 donors in the United States", []),
+        # The relative date's wording is applied, though its bounds are years.
+        ("top 5 donors over the last five years", []),
     ],
 )
 def test_extract_accounts_for_an_entity_only_as_a_run_of_its_words(dropped, expected):
     """ "states" alone is not the entity "United States"."""
-    query = "ODA from the top 5 donors in fragile states and the United States"
+    query = (
+        "ODA from the top 5 donors in fragile states and the United States over the last five years"
+    )
     llm = _stub_for(
         query,
         {
@@ -2501,7 +2666,7 @@ def test_extract_accounts_for_an_entity_only_as_a_run_of_its_words(dropped, expe
             "entities": [{"text": "United States", "span": "United States"}],
             "operations": [_op("rank", 0, "top 5 donors", "origin")],
             "dropped_qualifiers": [dropped],
-            "dates": [],
+            "dates": [{"kind": "range", "relative": "over the last five years"}],
         },
     )
     result, _ = _run(extract(query, llm=llm))
@@ -2744,6 +2909,121 @@ def test_extract_keys_operations_on_the_restored_variable():
     assert list(result.operations) == ["rate of extreme poverty"]
 
 
+# The unit phrase a variable holds
+
+
+@pytest.mark.parametrize(
+    ("query", "variable", "expected", "unit_text"),
+    [
+        ("GDP of Kenya in euros", "GDP in euros", "GDP", "in euros"),
+        ("GDP in yen", "GDP in yen", "GDP", "in yen"),
+        # A phrase inside the variable ends at a function word.
+        ("GDP per capita in euros", "GDP in euros per capita", "GDP per capita", "in euros"),
+        (
+            "GDP of Kenya in constant 2015 US dollars",
+            "GDP in constant 2015 US dollars",
+            "GDP",
+            "in constant 2015 US dollars",
+        ),
+        (
+            "ODA to Kenya in current US dollars",
+            "ODA in current US dollars",
+            "ODA",
+            "in current US dollars",
+        ),
+        ("aid to Kenya in real terms", "aid in real terms", "aid", "in real terms"),
+        ("GDP at constant prices", "GDP at constant prices", "GDP", "at constant prices"),
+        # A phrase holds one opener, so an observation year binds as no base year.
+        ("GDP in euros in 2020", "GDP in euros in 2020", "GDP in 2020", "in euros"),
+        (
+            "GDP at 2015 prices in euros",
+            "GDP at 2015 prices in euros",
+            "GDP",
+            "at 2015 prices in euros",
+        ),
+        # A run ends before a year once its words bind and name no price basis.
+        ("GDP in euros for 2020", "GDP in euros for 2020", "GDP for 2020", "in euros"),
+        ("GDP in euros, 2020", "GDP in euros, 2020", "GDP 2020", "in euros"),
+        ("GDP in euros 2020", "GDP in euros 2020", "GDP 2020", "in euros"),
+        ("GDP in 2020 euros", "GDP in 2020 euros", "GDP", "in 2020 euros"),
+        ("GDP at 2015 prices", "GDP at 2015 prices", "GDP", "at 2015 prices"),
+        (
+            "GDP in euros, constant 2015",
+            "GDP in euros, constant 2015",
+            "GDP",
+            "in euros, constant 2015",
+        ),
+        # A ratio written without a ratio word divides by an amount the currency names no
+        # part of; the binder departs for it on the ratio it answers.
+        (
+            "debt service in dollars to GDP",
+            "debt service in dollars to GDP",
+            "debt service to GDP",
+            "in dollars",
+        ),
+        # A bare price basis is the measure qualifier's to read, from the variable and query.
+        ("real GDP of Kenya", "real GDP", None, None),
+        ("nominal GDP of Kenya", "nominal GDP", None, None),
+        ("real GDP growth in Kenya", "real GDP growth", None, None),
+        # Currency and price-basis words that name the measure.
+        ("current account balance of Kenya", "current account balance", None, None),
+        ("real interest rate in Kenya", "real interest rate", None, None),
+        ("euro exchange rate", "euro exchange rate", None, None),
+        ("exchange rate of the euro", "exchange rate of the euro", None, None),
+        ("exchange rate in euros", "exchange rate in euros", None, None),
+        ("interest rate in real terms", "interest rate in real terms", None, None),
+        (
+            "share of Kenya's public debt denominated in US dollars",
+            "public debt denominated in US dollars as share of total public debt",
+            None,
+            None,
+        ),
+        # A currency the amount is denominated, issued, held or borrowed in.
+        ("debt denominated in euros", "debt denominated in euros", None, None),
+        ("bonds issued in euros", "bonds issued in euros", None, None),
+        ("loans held in dollars", "loans held in dollars", None, None),
+        ("debt borrowed in yen", "debt borrowed in yen", None, None),
+        # A phrase joined to more of the measure.
+        ("ODA in real terms and in euros", "ODA in real terms and in euros", None, None),
+        ("remittances in dollars and euros", "remittances in dollars and euros", None, None),
+        # A run the binder cannot read to its end, and a phrase that leaves no measure.
+        ("GDP in current US$", "GDP in current US$", None, None),
+        ("in euros", "in euros", None, None),
+    ],
+)
+def test_extract_moves_a_unit_phrase_from_the_variable_to_its_unit_text(
+    query, variable, expected, unit_text
+):
+    llm = _stub_for(query, {"variables": [variable], "entities": [], "dates": []})
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.variables == [expected or variable]
+    assert result.unit_texts == ({expected: unit_text} if expected else {})
+    assert result.extraction.dropped_qualifiers == []
+
+
+@pytest.mark.parametrize(
+    ("variables", "expected", "unit_texts"),
+    [
+        (["GDP in euros", "population"], ["GDP", "population"], {"GDP": "in euros"}),
+        (
+            ["GDP in euros", "debt in dollars"],
+            ["GDP", "debt"],
+            {"GDP": "in euros", "debt": "in dollars"},
+        ),
+        # Peeling would make two measures one.
+        (["GDP in euros", "GDP in dollars"], ["GDP in euros", "GDP in dollars"], {}),
+        (["GDP", "GDP in euros"], ["GDP", "GDP in euros"], {}),
+    ],
+)
+def test_extract_keys_each_peeled_unit_text_on_its_own_variable(variables, expected, unit_texts):
+    query = " and ".join(variables)
+    llm = _stub_for(query, {"variables": variables, "entities": [], "dates": []})
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.variables == expected
+    assert result.unit_texts == unit_texts
+    assert result.extraction.dropped_qualifiers == []
+
+
 def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
     """Variable text is no evidence the answer applied a qualifier: the region decides,
     and reports it when bind asks instead of electing."""
@@ -2759,3 +3039,119 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
     )
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.dropped_qualifiers == ["standard grants"]
+
+
+# Relative dates resolve in code, so the prompt carries no date
+
+
+@pytest.mark.parametrize(
+    ("dates", "resolved", "warning_codes"),
+    [
+        (
+            [{"kind": "range", "relative": "over the last decade"}],
+            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [],
+        ),
+        (
+            [{"kind": "range", "relative": "in the last 5 years"}],
+            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [],
+        ),
+        (
+            [{"kind": "range", "relative": "the past decade"}],
+            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [],
+        ),
+        (
+            [{"kind": "point", "relative": "last year"}],
+            [{"kind": "point", "start": "2025", "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "range", "relative": "los últimos 10 años"}],
+            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [],
+        ),
+        ([{"kind": "range", "relative": "last 0 years"}], [], ["time_text_not_parsed"]),
+        (
+            [{"kind": "latest", "relative": "today"}],
+            [{"kind": "latest", "start": None, "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "latest", "relative": "currently"}],
+            [{"kind": "latest", "start": None, "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "latest", "relative": "más reciente"}],
+            [{"kind": "latest", "start": None, "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "latest", "relative": "most recent"}],
+            [{"kind": "latest", "start": None, "end": None}],
+            [],
+        ),
+        (
+            [{"kind": "range", "start": "2010", "end": "2020"}],
+            [{"kind": "range", "start": "2010", "end": "2020"}],
+            [],
+        ),
+        (
+            [{"kind": "point", "start": "2015", "end": "2015", "relative": " "}],
+            [{"kind": "point", "start": "2015", "end": "2015"}],
+            [],
+        ),
+    ],
+    ids=[
+        "decade",
+        "lead-and-article",
+        "past-decade",
+        "last-year-point",
+        "spanish-span",
+        "unparsed-dropped",
+        "latest-today",
+        "latest-currently",
+        "latest-spanish",
+        "latest-parseable-wording",
+        "absolute-untouched",
+        "blank-relative-is-none",
+    ],
+)
+def test_resolve_relative_dates_reads_the_wording_against_the_current_year(
+    dates, resolved, warning_codes
+):
+    extraction = Extraction(kind="resolution", variables=["aid"], dates=dates)
+    out, warnings, _ = _resolve_relative_dates(extraction, current_year=2026)
+    # A resolved date dumps without `relative`, as the wire and the response cache keys read it.
+    assert [d.model_dump(mode="json") for d in out.dates] == resolved
+    assert [w.code for w in warnings] == warning_codes
+    assert out.model_copy(update={"dates": extraction.dates}) == extraction
+
+
+def test_extract_replays_one_recorded_reading_in_any_year_and_resolves_its_span_on_each():
+    """The prompt names each day's year, and a recorded reading keys on the prompt
+    template, so one recorded response serves both years; only the relative span's
+    years follow the day."""
+    query = "aid to Kenya over the last decade"
+    llm = _stub_for(
+        query,
+        {
+            "variables": ["aid"],
+            "entities": [{"text": "Kenya", "span": "Kenya"}],
+            "dates": [{"kind": "range", "relative": "over the last decade"}],
+        },
+    )
+    results = []
+    for day in (date(2026, 6, 23), date(2031, 1, 2)):
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(extract_module, "date", SimpleNamespace(today=lambda day=day: day))
+            results.append(_run(extract(query, llm=llm))[0])
+    first, second = results
+    assert [(d.start, d.end) for d in first.extraction.dates] == [("2017", "2026")]
+    assert [(d.start, d.end) for d in second.extraction.dates] == [("2022", "2031")]
+    assert second.extraction.model_copy(update={"dates": first.extraction.dates}) == (
+        first.extraction
+    )
+    assert first.warnings == second.warnings == ()

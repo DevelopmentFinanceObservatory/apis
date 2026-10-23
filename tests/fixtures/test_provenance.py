@@ -1,5 +1,5 @@
 """`index_provenance` reads whichever index `get_index` serves, and a swapped index leaves
-the packaged one's answer intact."""
+the fixture index's answer intact."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class _SyntheticIndex:
         self.statvars = [SimpleNamespace(dcid=dcid, provenances=(provenance,))]
 
 
-def test_swapped_index_does_not_leak_into_the_packaged_answer(
+def test_swapped_index_does_not_leak_into_the_fixture_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     row = next(row for row in get_index().statvars if len(row.provenances) == 1)

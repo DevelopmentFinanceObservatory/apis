@@ -28,8 +28,9 @@ STANDARD_SHAPE_LABEL = "standard Data Commons"
 
 type Pool = Literal["ours", "un_system"]
 """The resolver whose recall reached a shape: ours, or the UN System Data Commons'. Each
-scores on its own scale, so each pool meets its own score floor, and each pool's shapes are
-elected on their own pass (`region.pipeline`)."""
+scores on its own scale, so each pool meets its own score floor. The UN pool's shapes are
+elected on the UN pass (`region.pipeline`), and with `SEARCH_UN_ON_FIRST_MENU` also on our
+pass's menu beside ours (`region.phase_intake._merge_un_pool`)."""
 
 # ShapeDraft is the ungrounded shape representation used inside the pipeline.
 

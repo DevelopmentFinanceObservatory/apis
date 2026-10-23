@@ -5,13 +5,19 @@ A resolve refuses bound values that together exclude every member of the shape
 elected shape's door then unbinds a set chosen by `BoundValuesUnrealisable.relaxation` and
 resolves again. A declared default or the elected measure partition gives way first, then
 every value bound as its slot's sole option that some member conflicts on, then a minimal
-set of the values the request named. The engine-chosen and sole-option values go
-silently, with what the engine derived from them (`ResolveState.forget_bound`), and each
-request-named one is recorded as a code requirement (`region.state.Requirement`) on a property the shape holds, so the answer
-read without it refuses `qualifier_not_bound` with that answer as its flagged match, and
-a candidate set departs it `measure_not_applied` unless every answer applies it
-(`region.requirements.judge`). A resubmit binds only values its request posted, so every
-value counts as request-named: each one unbound is recorded under its name
+set of the values the request named. A single-member slot the unbinding opens takes the
+value its population forces, unless it released that value
+(`_with_forced_values`). The engine-chosen and sole-option values go
+silently, with what the engine derived from them (`ResolveState.forget_bound`). Each
+request-named one a recorded term supports is recorded as a code requirement
+(`region.state.Requirement`) on a property the shape holds, so the answer read without it
+refuses `qualifier_not_bound` with that answer as its flagged match, and a candidate set
+departs it `measure_not_applied` unless every answer applies it
+(`region.requirements.judge`). One no recorded term supports, which only the bind model
+read (`phase_rank_bind.model_only_values`), is a code requirement that does not refuse
+(`region.state.Requirement.refuses`), so an answer read without it stands and departs
+`measure_not_applied` under its name. A resubmit binds only values its request posted, so
+every value counts as request-named: each one unbound is recorded under its name
 (`unbind_posted`), and the resubmit refuses on it by the same rule
 (`requirements.settle_posted`). A refusal names a dropped value no name exists for by
 its dcid, and its departure names its slot, so no dcid reaches prose. The Spec, its heading and
@@ -24,11 +30,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.materialise_step import Departed
-from search.engine.region.phase_rank_bind import _resolve_query_qualifiers
+from search.engine.region.phase_election import _settle_sole_options
+from search.engine.region.phase_rank_bind import _resolve_query_qualifiers, model_only_values
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.requirements import record_reading
 from search.engine.region.state import (
@@ -42,7 +49,6 @@ from search.engine.region.state import (
 from search.engine.retrieval.bound_values import without_values
 from search.engine.retrieval.retrieve import BoundValuesUnrealisable
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.engine.spec_build import slot_label
 from search.heading.departure_fact import DepartureFact
 from search.models import GraphRef, ResolvedQualifier, Warning
 
@@ -55,12 +61,15 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     (`_sole_option_properties`) giving way before the request-named ones. Its properties of
     those two classes go silently, each slot shown unbound: the request's words named
     neither. What the engine derived from every unbound property goes with it
-    (`ResolveState.forget_bound`). Each term the request named for a request-named
-    one becomes a code requirement on the codes it names (`_asked_terms`), departing
-    `measure_not_applied` (`binding_ref` `how:<property>`, `asked` the term's text) if the
-    final answer leaves it unapplied. The values the request named in no recorded term
-    share one departure under their joined names. Each such value, and each value of a term
-    naming no code, becomes a requirement of its own (`_value_requirements`), so binding one
+    (`ResolveState.forget_bound`). A request-named value no recorded term supports
+    (`phase_rank_bind.model_only_values`) becomes a code requirement that does not refuse
+    (`_model_value_requirements`). An answer leaving it unapplied stands and departs
+    `measure_not_applied` under its name, else its slot's. Each term the request named for
+    the other values becomes a code requirement on the codes it names (`_asked_terms`),
+    departing `measure_not_applied` (`binding_ref` `how:<property>`, `asked` the term's
+    text) if the final answer leaves it unapplied. The values the words name by their names
+    alone share one departure under their joined names. Each such value, and each value of
+    a term naming no code, becomes a requirement of its own (`_value_requirements`), so binding one
     does not meet another. A value with no name departs under its slot's name
     (`_unnamed_departure`), so no dcid reaches prose. The qualifier records are read again
     over the remaining bindings
@@ -71,10 +80,16 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     unnamed = _sole_option_properties(state.bindings)
     properties = unrealisable.relaxation(engine_chosen=engine_chosen, unnamed=unnamed)
     for prop in sorted(properties - engine_chosen - unnamed):
-        values = _bound_values(state.bindings, prop)
+        bound = _bound_values(state.bindings, prop)
+        labels = _value_labels(bound, graph=state.graph)
+        model = model_only_values(state, prop, bound, labels)
+        slot = _slot_name(state.shape_draft, prop)
+        _require(state, _model_value_requirements(prop, model, labels, slot=slot))
+        values = tuple(value for value in bound if value not in model)
+        if not values:
+            continue
         terms = _asked_terms(state, prop)
         if not terms:
-            labels = _value_labels(values, graph=state.graph)
             names = dict.fromkeys(labels[value] for value in values if value in labels)
             departure = _unapplied(" and ".join(names), prop) if names else None
             _require(
@@ -84,7 +99,7 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
                     values,
                     labels,
                     departure,
-                    unnamed=_unnamed_departure(_slot_name(state.shape_draft, prop), prop),
+                    unnamed=_unnamed_departure(slot, prop),
                     named_only=True,
                 ),
             )
@@ -103,22 +118,48 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
                     )
                 ]
             else:
-                labels = _value_labels(values, graph=state.graph)
                 requirements = _value_requirements(
                     prop,
                     values,
                     labels,
                     departure,
-                    unnamed=_unnamed_departure(_slot_name(state.shape_draft, prop), prop),
+                    unnamed=_unnamed_departure(slot, prop),
                     named_only=False,
                 )
             _require(state, requirements)
-    state.bindings = without_values(state.bindings, properties)
+    released: dict[str | None, tuple[str, ...]] = {
+        prop: _bound_values(state.bindings, prop) for prop in properties
+    }
+    state.bindings = _with_forced_values(
+        without_values(state.bindings, properties), state.shape_draft, released
+    )
     state.forget_bound(properties)
     state.admitted_qualifiers = tuple(
         match for match in state.admitted_qualifiers if match.code_system not in properties
     )
     record_reading(state, _resolve_query_qualifiers(state))
+
+
+def _with_forced_values(
+    bindings: list[SlotBindingDraft],
+    shape: ShapeDraft,
+    released: Mapping[str | None, Sequence[str]],
+) -> list[SlotBindingDraft]:
+    """`bindings` with each single-member slot the unbinding left open bound to the value
+    its population forces (`phase_election._settle_sole_options`), so the answer states
+    what the elected shape forces whatever path opened the slot. "Female unemployment rate"
+    over a shape whose one member is male reads `gender=Male`, as it does when the bind
+    reply leaves gender unbound. A slot keeps open when the forced value is one the
+    unbinding released from it, alone or in a set, since no member holds it beside the
+    rest, and each unbinding then releases a value it does not bind again."""
+    forced = _settle_sole_options(bindings, shape)
+    return [
+        claim
+        if claim.kind == "value"
+        and not set(claim.value_dcids) <= set(released.get(claim.property_dcid, ()))
+        else draft
+        for draft, claim in zip(bindings, forced, strict=True)
+    ]
 
 
 def _sole_option_properties(bindings: Iterable[SlotBindingDraft]) -> frozenset[str]:
@@ -162,7 +203,7 @@ def _unnamed_departure(slot: str, prop: str) -> Departed:
 
 
 def _slot_name(shape: ShapeDraft, prop: str) -> str:
-    """The label `shape`'s slot for `prop` carries (`spec_build.slot_label`)."""
+    """The label `shape`'s slot for `prop` carries (`bind.slot_label`)."""
     key = next(
         (key for key in shape.slot_keys if key.property_dcid == prop),
         SlotKeyDraft(axis="how", property_dcid=prop, label=prop),
@@ -259,6 +300,31 @@ def disclose_posted_values(state: _PromoteState, prop: str, values: Sequence[str
             )
         )
         state.requirements = with_requirement(state.requirements, requirement)
+
+
+def _model_value_requirements(
+    prop: str, values: Sequence[str], labels: Mapping[str, str], *, slot: str
+) -> list[Requirement]:
+    """One code requirement per value in `values` on `prop`, values only the bind model
+    read, that does not refuse (`Requirement.refuses`). An answer that leaves it unapplied
+    departs `measure_not_applied` under its name in `labels`, else under `slot`, its
+    slot's name (`_unnamed_departure`)."""
+    requirements = []
+    for value in values:
+        label = labels.get(value)
+        requirements.append(
+            code_requirement(
+                property_dcid=prop,
+                codes=(value,),
+                asked=label,
+                named=(GraphRef(ref=value, label=label),) if label is not None else (),
+                departure=_unapplied(label, prop) if label is not None else None,
+                origin="unbinding",
+                generic=_unnamed_departure(slot, prop) if label is None else None,
+                refuses=False,
+            )
+        )
+    return requirements
 
 
 def _asked_terms(state: ResolveState, prop: str) -> list[tuple[str, tuple[str, ...]]]:
