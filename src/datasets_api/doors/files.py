@@ -483,7 +483,8 @@ def select_file(
         stored.servable,
         now=deps.now(),
         rendition=rendition_token(deps.settings.site),
-        enrichment_digest=enrichment_digest,
+        # `keys` are the current keys, so matching them keeps only current links.
+        enrichment_digest=None,
     )
     location = next((loc for loc in listable if loc.rendering_key in keys), None)
     if location is None:

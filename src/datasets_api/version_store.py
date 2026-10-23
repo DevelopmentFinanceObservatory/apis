@@ -108,7 +108,6 @@ from datasets_api.versions import (
 from description.facts import DescriptionRecord
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 from materialise.formats import FRAME1_MEDIA_TYPE
-from materialise.profile import OutputProfile
 
 Clock = Callable[[], datetime]
 
@@ -609,6 +608,15 @@ _LINKED_RENDERINGS_SQL = (
 )
 
 
+# The names of the role columns a version's stored output profile lists, as a JSON array, and
+# NULL for a version stored without one. Reading only these keeps the listing independent of the
+# rest of the profile's shape.
+_ROLE_COLUMNS_SQL = (
+    "jsonb_path_query_array(output_profile, '$.columns[*] ? (@.kind == \"role\").name') "
+    "AS role_columns"
+)
+
+
 def _placeholders(count: int) -> str:
     return ", ".join(["%s"] * count)
 
@@ -616,11 +624,11 @@ def _placeholders(count: int) -> str:
 def _listed_versions(
     rows: Sequence[Mapping[str, object]],
     linked: Sequence[Mapping[str, object]],
-    profiles: Mapping[str, Mapping[str, object]],
+    role_columns: Mapping[str, Sequence[str]],
 ) -> list[ListedVersion]:
     """The versions `rows` hold, in their order, each with the renderings `linked` holds for
     its content version, in theirs, and whether its frame holds a party role, read from the
-    output profile `profiles` holds for it (`_listed_holds_party_role`)."""
+    role columns `role_columns` holds for it (`_listed_holds_party_role`)."""
     renderings: dict[str, list[Mapping[str, object]]] = {}
     party_free: set[str] = set()
     for link in linked:
@@ -638,7 +646,7 @@ def _listed_versions(
             recorded_at=cast(datetime, row["recorded_at"]),
             renderings=tuple(renderings.get(content_version, ())),
             holds_party_role=_listed_holds_party_role(
-                profiles.get(content_version), party_free_link=content_version in party_free
+                role_columns.get(content_version), party_free_link=content_version in party_free
             ),
         )
         for row in rows
@@ -646,13 +654,13 @@ def _listed_versions(
 
 
 def _listed_holds_party_role(
-    output_profile: Mapping[str, object] | None, *, party_free_link: bool
+    role_columns: Sequence[str] | None, *, party_free_link: bool
 ) -> bool | None:
-    """`ListedVersion.holds_party_role` of a version that stored `output_profile`, which links a
-    file that `carries_party_kind` under `NO_PARTY_ROLE` when `party_free_link`."""
-    if output_profile is not None:
-        profile = OutputProfile.from_json(output_profile)
-        return holds_party_role(column.name for column in profile.columns if column.kind == "role")
+    """`ListedVersion.holds_party_role` of a version whose stored output profile names
+    `role_columns` (`_ROLE_COLUMNS_SQL`), `None` when it stored none, and which links a file
+    that `carries_party_kind` under `NO_PARTY_ROLE` when `party_free_link`."""
+    if role_columns is not None:
+        return holds_party_role(role_columns)
     return False if party_free_link else None
 
 
@@ -715,7 +723,8 @@ class LiveVersionLister:
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(
-                    "SELECT content_version, base_content_version, recorded_at, output_profile "
+                    "SELECT content_version, base_content_version, recorded_at, "
+                    f"{_ROLE_COLUMNS_SQL} "
                     "FROM datasets.version_record WHERE subject_id = %s "
                     # `content_version` orders versions recorded at one instant.
                     "ORDER BY recorded_at DESC, content_version DESC",
@@ -729,7 +738,7 @@ class LiveVersionLister:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return _listed_versions(rows, linked, _stored_profiles(rows))
+        return _listed_versions(rows, linked, _stored_role_columns(rows))
 
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
@@ -762,7 +771,7 @@ class LiveVersionLister:
                         (*subjects, *page),
                     )
                     profiles = tx.fetch_all(
-                        "SELECT content_version, output_profile "
+                        f"SELECT content_version, {_ROLE_COLUMNS_SQL} "
                         "FROM datasets.version_record "
                         f"WHERE subject_id IN ({in_subjects}) "
                         f"AND content_version IN ({_placeholders(len(page))}) "
@@ -774,16 +783,16 @@ class LiveVersionLister:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return _listed_versions(rows, linked, _stored_profiles(profiles))
+        return _listed_versions(rows, linked, _stored_role_columns(profiles))
 
 
-def _stored_profiles(rows: Sequence[Mapping[str, object]]) -> dict[str, Mapping[str, object]]:
-    """The output profile each of `rows` stored, by content version. A version recorded under
-    several subject ids stores one frame, so one profile."""
+def _stored_role_columns(rows: Sequence[Mapping[str, object]]) -> dict[str, Sequence[str]]:
+    """The role columns of the output profile each of `rows` stored, by content version. A
+    version recorded under several subject ids stores one frame, so one profile."""
     return {
-        cast(str, row["content_version"]): cast("Mapping[str, object]", row["output_profile"])
+        cast(str, row["content_version"]): cast("Sequence[str]", row["role_columns"])
         for row in rows
-        if row["output_profile"] is not None
+        if row["role_columns"] is not None
     }
 
 
