@@ -26,6 +26,7 @@ import pytest
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.departures import OPERATIONS_NOT_RUN
+from search.engine.extract import ExtractedEntity, ExtractedOperation
 from search.engine.region import (
     candidate_collapse,
     phase_election,
@@ -46,6 +47,7 @@ from search.models import (
     NoDataPart,
     ParsedInput,
     ParsedPart,
+    RawTextInput,
     Resolution,
     ResolveRequest,
     ResolveResponse,
@@ -2074,6 +2076,116 @@ def test_a_side_read_whole_departs_with_the_way_back_to_its_members(
     ]
 
     assert departure.text == text
+
+
+_EXTRACTED_ETHIOPIA = ExtractedEntity(
+    text="Ethiopia", span="Ethiopia", flow_role="destination", role_span="to"
+)
+
+
+def _raw(
+    query: str,
+    *,
+    dropped: tuple[str, ...] = (),
+    operations: tuple[ExtractedOperation, ...] = (),
+    entities: tuple[ExtractedEntity, ...] = (),
+) -> DefinitePart:
+    """The one part the raw-text door answers `query` with, extraction reading the
+    variable, Ethiopia as recipient and `entities`, and dropping `dropped`."""
+    return _part(
+        offline_resolve(
+            ResolveRequest(input=RawTextInput(query=query)),
+            graph=_graph(),
+            llm=_ScriptedLLM(
+                _VARIABLE,
+                dropped=dropped,
+                operations=operations,
+                entities=(_EXTRACTED_ETHIOPIA, *entities),
+            ),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "extracted"),
+    [
+        pytest.param(
+            "official development assistance to Ethiopia by donor",
+            {
+                "operations": (
+                    ExtractedOperation(verb="rank", variable=0, phrase="by donor", over="origin"),
+                )
+            },
+            id="by-donor-read-as-a-rank",
+        ),
+        pytest.param(
+            "official development assistance to Ethiopia by donor",
+            {"dropped": ("by donor",)},
+            id="by-donor-dropped",
+        ),
+        pytest.param(
+            "official development assistance to Ethiopia from each donor",
+            {"dropped": ("from each donor",)},
+            id="each-donor-dropped",
+        ),
+        pytest.param(
+            "official development assistance to Ethiopia for each donor",
+            {
+                "operations": (
+                    ExtractedOperation(
+                        verb="aggregate", variable=0, phrase="for each donor", over="origin"
+                    ),
+                )
+            },
+            id="each-donor-read-as-a-sum",
+        ),
+        pytest.param(
+            "official development assistance to Ethiopia from every donor",
+            {
+                "entities": (
+                    ExtractedEntity(
+                        text="every donor",
+                        span="every donor",
+                        flow_role="origin",
+                        role_span="from",
+                    ),
+                )
+            },
+            id="every-donor-read-as-a-place",
+        ),
+    ],
+)
+def test_a_raw_text_breakdown_by_a_role_lists_its_members(
+    monkeypatch: pytest.MonkeyPatch, query: str, extracted: dict[str, Any]
+):
+    """On the raw-text door, "by donor", "each donor" and "every donor" ask for one value
+    per donor, however extraction carries them: the part opens the donor side as
+    `open_roles: ["donor"]` does on the parsed door, reads no whole total, runs no
+    operation for the phrase and drops no qualifier."""
+    _coverage(monkeypatch)
+
+    answer = _raw(query, **extracted)
+
+    spec = answer.spec
+    assert spec.definition.identity.open_roles == ["origin"]
+    assert _origin(spec) is None
+    assert _whole_read(answer) is None
+    assert [d.code for d in answer.departures if d.code == "operation_not_applied"] == []
+    assert [w.code for w in answer.warnings if w.code == "query_qualifier_dropped"] == []
+
+
+def test_a_raw_text_side_read_whole_names_the_words_that_list_its_members(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The raw-text door cannot post `open_roles`, so a donor side read whole names the
+    words that list its donors, which the door reads as the breakdown."""
+    _coverage(monkeypatch)
+
+    answer = _raw("official development assistance to Ethiopia")
+
+    (departure,) = [d for d in answer.departures if d.code == "whole_total_read"]
+    assert departure.text.endswith('To list each donor, add "by donor" to the question.')
 
 
 # DAC2b's net other official flows member, a family DAC2a and the CRS do not publish, with

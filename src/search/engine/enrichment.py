@@ -391,6 +391,7 @@ def late_departures(
         raised=[*raised, *refused],
         operations=part.operations,
         entity_words=entity_words,
+        members_in_words=source.region.members_in_words,
     )
     if learned == part.departures:
         return None

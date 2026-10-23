@@ -277,6 +277,9 @@ _COG = Entity(
 _KOR = Entity(dcid="country/KOR", name="South Korea", kind="country", graph_type="Country")
 _PRK = Entity(dcid="country/PRK", name="North Korea", kind="country", graph_type="Country")
 _CAN = Entity(dcid="country/CAN", name="Canada", kind="country", graph_type="Country")
+_DEU = Entity(dcid="country/DEU", name="Germany", kind="country", graph_type="Country")
+_GBR = Entity(dcid="country/GBR", name="United Kingdom", kind="country", graph_type="Country")
+_USA = Entity(dcid="country/USA", name="United States", kind="country", graph_type="Country")
 _NAIROBI = Entity(dcid="wikidataId/Q3870", name="Nairobi", kind="place_other", graph_type="City")
 _NAIROBI_COUNTY = Entity(
     dcid="wikidataId/Q3335223", name="Nairobi County", kind="place_other", graph_type="County"
@@ -316,15 +319,29 @@ _CANADIAN_TX = Entity(dcid="geoId/4812412", name="Canadian", kind="place_other",
                 "Congo": Ambiguous(candidates=(_COD, _COG)),
                 "Democratic Republic of the Congo": Resolved(entity=_COD),
             },
-            Resolved(entity=_COD),
+            Ambiguous(candidates=(_COD, _COG)),
             id="congo",
         ),
         pytest.param(
             "aid to Korea",
             ExtractedEntity(text="South Korea", span="Korea"),
             {"Korea": Ambiguous(candidates=(_KOR, _PRK)), "South Korea": Resolved(entity=_KOR)},
-            Resolved(entity=_KOR),
+            Ambiguous(candidates=(_KOR, _PRK)),
             id="korea",
+        ),
+        pytest.param(
+            "German aid to Kenya",
+            ExtractedEntity(text="Germany", span="German"),
+            {"German": NotFound(), "Germany": Resolved(entity=_DEU)},
+            Resolved(entity=_DEU),
+            id="demonym_the_resolver_does_not_hold",
+        ),
+        pytest.param(
+            "aid from the U.S. to Kenya",
+            ExtractedEntity(text="United States", span="U.S."),
+            {"U.S.": NotFound(), "United States": Resolved(entity=_USA)},
+            Resolved(entity=_USA),
+            id="abbreviation_the_resolver_does_not_hold",
         ),
         pytest.param(
             "how fast has Canadian aid to Haiti grown",
@@ -348,15 +365,71 @@ _CANADIAN_TX = Entity(dcid="geoId/4812412", name="Canadian", kind="place_other",
         ),
     ],
 )
-def test_a_surface_and_its_name_settle_on_the_more_specific_text(
+def test_a_surface_and_its_name_settle_on_one_resolution(
     query: str, entity: ExtractedEntity, answers: dict[str, object], expected: Resolution
 ) -> None:
+    """The query's words decide: a name that only adds words to its surface ("Democratic
+    Republic of the Congo" for "Congo") settles none of its readings, and a name in other
+    words answers where the surface finds nothing."""
     resolver = _Resolver(answers)
 
     found = _lookup([entity], query=query, resolver=resolver)
 
     assert found == {entity.text: expected}
     assert resolver.calls == [[entity.span, entity.text]]
+
+
+@pytest.mark.parametrize(
+    ("query", "name", "span", "answers", "expected"),
+    [
+        pytest.param(
+            "aid to Congo",
+            "Democratic Republic of the Congo",
+            "Congo",
+            {
+                "Congo": Ambiguous(candidates=(_COD, _COG)),
+                "Democratic Republic of the Congo": Resolved(entity=_COD),
+            },
+            Ambiguous(candidates=(_COD, _COG)),
+            id="expanded_name",
+        ),
+        pytest.param(
+            "German aid to Kenya",
+            "Germany",
+            None,
+            {"Germany": Resolved(entity=_DEU)},
+            Resolved(entity=_DEU),
+            id="demonym",
+        ),
+        pytest.param(
+            "aid from the UK to Kenya",
+            "United Kingdom",
+            None,
+            {"United Kingdom": Resolved(entity=_GBR)},
+            Resolved(entity=_GBR),
+            id="abbreviation",
+        ),
+    ],
+)
+def test_a_name_the_query_does_not_write_resolves_through_the_query_words(
+    query: str,
+    name: str,
+    span: str | None,
+    answers: dict[str, object],
+    expected: Resolution,
+) -> None:
+    """An extraction that names a place in words the query does not write, and cites no
+    span, gets the query's own words for it as its span, which resolution reads. A name in
+    other words shares none with the query and resolves as itself."""
+    resolver = _Resolver(answers)
+
+    recovered = _recover_entity_surfaces(
+        [ExtractedEntity(text=name)], query=query, resolver=cast(EntityResolver, resolver)
+    )
+    found = _lookup(recovered, query=query, resolver=resolver)
+
+    assert recovered == [ExtractedEntity(text=name, span=span)]
+    assert found == {name: expected}
 
 
 @pytest.mark.parametrize(

@@ -249,18 +249,25 @@ def part_departure_facts(
     raised: Sequence[DepartureFact],
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    members_in_words: bool = False,
 ) -> tuple[DepartureFact, ...]:
     """A part's departure facts in `DEPARTURE_ORDER`, without repeats. They are `raised`,
     the facts whose warnings the part or its envelope holds, and those read off the `spec`
     it answers with and the `operations` it carries (`departures.spec_departure_facts`,
-    which asks a group in `entity_words`). A part answering with no Spec reads only its
+    which asks a group in `entity_words` and words a whole side's way back to its members as
+    `members_in_words` says). A part answering with no Spec reads only its
     operations. The `entity_unavailable` facts of one role merge into one
     (`departures.merged_entity_facts`), the Spec's first, so its entities lead in the
     answer's entity order."""
     return ordered_facts(
         merged_entity_facts(
             [
-                *spec_departure_facts(spec, operations=operations, entity_words=entity_words),
+                *spec_departure_facts(
+                    spec,
+                    operations=operations,
+                    entity_words=entity_words,
+                    members_in_words=members_in_words,
+                ),
                 *raised,
             ]
         )
@@ -353,6 +360,7 @@ def _definite_departure_facts(
     raised: Sequence[DepartureFact],
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None,
+    members_in_words: bool,
 ) -> tuple[DepartureFact, ...]:
     """A definite part's departure facts (`part_departure_facts`), with the byline's price
     basis as `shown` on a price-basis fact that lacks it, and the `closest_match` fact of its
@@ -360,7 +368,11 @@ def _definite_departure_facts(
     facts = [
         _with_price_basis_shown(fact, unit_text=heading.byline.unit_text or "")
         for fact in part_departure_facts(
-            spec, raised=raised, operations=operations, entity_words=entity_words
+            spec,
+            raised=raised,
+            operations=operations,
+            entity_words=entity_words,
+            members_in_words=members_in_words,
         )
     ]
     return _with_closest_match(
@@ -405,6 +417,7 @@ def build_definite_part(
     assumption_echo: Sequence[Assumption] | None = None,
     asked_axes: frozenset[RoleAxis] = frozenset(),
     own_spec: Spec | None = None,
+    members_in_words: bool = False,
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -421,6 +434,8 @@ def build_definite_part(
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
     open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
     ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
+    ``members_in_words`` is whether the part's door asks for a flow side's members in the
+    question's words (`RegionResult.members_in_words`).
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
@@ -443,6 +458,7 @@ def build_definite_part(
             raised=departure_facts,
             operations=operations,
             entity_words=entity_words,
+            members_in_words=members_in_words,
         ),
         assumptions=assumptions_for(
             spec,
@@ -462,6 +478,7 @@ def definite_departures(
     raised: Sequence[DepartureFact],
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    members_in_words: bool = False,
 ) -> list[Departure]:
     """The `departures` of a definite part answering with `spec`: the facts
     `_definite_departure_facts` reads off it, its `raised` facts and its reading's match,
@@ -477,6 +494,7 @@ def definite_departures(
             raised=raised,
             operations=operations,
             entity_words=entity_words,
+            members_in_words=members_in_words,
         ),
         family=heading.heading.family,
         shown=[spec],

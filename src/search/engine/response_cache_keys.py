@@ -267,6 +267,7 @@ def layer2_key(
     every_member_axes: Sequence[str | None] = (),
     extraction_warnings: Sequence[Warning] = (),
     measure_qualifiers: Sequence[tuple[str, ...]] = (),
+    open_axes: Sequence[frozenset[str]] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -286,7 +287,10 @@ def layer2_key(
     one `dropped_qualifiers` holds. The key states them and adds nothing when none is peeled.
     `measure_qualifiers` runs parallel to `variables` when given and holds the words that
     narrow each variable's measure, which only its part reads. The key states the
-    variables that have some and adds nothing when none has.
+    variables that have some and adds nothing when none has. `open_axes` runs parallel to
+    `variables` when given and holds the flow roles each part asks one value per member of
+    (`role_text.breakdown_axis`), read off phrases with the query's prepositions. The key
+    states the variables that have some and adds nothing when none has.
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
     positions and adds nothing when none is marked.
@@ -339,6 +343,12 @@ def layer2_key(
             variable: list(phrases)
             for variable, phrases in zip(variables, measure_qualifiers, strict=True)
             if phrases
+        }
+    if any(open_axes):
+        document["open_axes"] = {
+            variable: sorted(axes)
+            for variable, axes in zip(variables, open_axes, strict=True)
+            if axes
         }
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions

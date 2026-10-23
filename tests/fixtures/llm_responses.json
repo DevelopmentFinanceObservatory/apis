@@ -19553,5 +19553,227 @@
         "stated": true
       }
     ]
+  },
+  "Extraction@501cb31acc6e:1f38abcfd0d055d94e0db151355f29e604f91175": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "the UK",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:0b1c023a7b156ee1f9e6c62ceadf1d4b461ec35b": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "from each donor"
+    ],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2020",
+        "end": "2024"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:c3e7709cdeb181e1b0e350b61045f00692283b9c": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Congo",
+        "span": "Congo",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:44555c822ee8472f8b54a1757f05630c5fc2933e": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "German",
+        "flow_role": "origin",
+        "role_span": "German",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:6c714533a80fcc3bd8237ccaa14de7737ce96572": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "every donor",
+        "over": "origin"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:0e0732af58d4a30baf8d39214ccd9dec89f289a5": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "by donor",
+        "over": "origin"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:53b9a347da329c3a770582a2e4ad08924c81f59c": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:74cd7207933993cf8b563784c6bad02ea600e10e": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
   }
 }
