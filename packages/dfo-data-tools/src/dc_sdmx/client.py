@@ -48,6 +48,7 @@ from dc_sdmx.results import (
     observation_schema,
     parse_availability_json,
 )
+from dfo_platform.cloud_run_auth import cloud_run_auth
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.timings import carrying_timings, count
 
@@ -507,6 +508,9 @@ class SdmxClient:
     `total_concurrency` limits all GETs from this instance. Pass a shared
     `threading.BoundedSemaphore` to coordinate several instances. An integer
     creates a per-instance limit. Defaults are defined by the module constants.
+
+    A request to a `*.run.app` host carries a Cloud Run ID token
+    (`dfo_platform.cloud_run_auth`).
     """
 
     def __init__(
@@ -527,6 +531,7 @@ class SdmxClient:
         self._client = httpx.Client(
             base_url=base_url,
             headers=headers,
+            auth=cloud_run_auth(),
             timeout=timeout,
             transport=transport,
             event_hooks={"request": [_count_request]},

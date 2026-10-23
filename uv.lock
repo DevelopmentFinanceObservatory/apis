@@ -675,6 +675,7 @@ dependencies = [
 
 [package.optional-dependencies]
 coverage = [
+    { name = "google-auth", extra = ["requests"] },
     { name = "google-cloud-bigquery" },
     { name = "google-cloud-storage" },
     { name = "httpx" },
@@ -682,6 +683,7 @@ coverage = [
     { name = "pyarrow" },
 ]
 formats = [
+    { name = "google-auth", extra = ["requests"] },
     { name = "httpx" },
     { name = "openpyxl" },
     { name = "pyarrow" },
@@ -691,6 +693,7 @@ generation = [
     { name = "httpx" },
 ]
 graph-release = [
+    { name = "google-auth", extra = ["requests"] },
     { name = "google-cloud-bigquery" },
     { name = "google-cloud-spanner" },
     { name = "google-cloud-storage" },
@@ -704,6 +707,7 @@ resolve = [
     { name = "resolvekit", extra = ["parsing"] },
 ]
 sdmx = [
+    { name = "google-auth", extra = ["requests"] },
     { name = "httpx" },
     { name = "pyarrow" },
 ]
@@ -726,6 +730,7 @@ requires-dist = [
     { name = "dfo-spec-kit-provenance-docs", git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git?subdirectory=python%2Fprovenance-docs&rev=4ef22b70d0f11af87ed9a78afda841ab66f6230c" },
     { name = "fastapi", marker = "extra == 'surface'", specifier = ">=0.138" },
     { name = "google-auth", extras = ["requests"], marker = "extra == 'generation'", specifier = ">=2.55" },
+    { name = "google-auth", extras = ["requests"], marker = "extra == 'sdmx'", specifier = ">=2.55" },
     { name = "google-cloud-bigquery", marker = "extra == 'coverage'", specifier = ">=3.27" },
     { name = "google-cloud-spanner", marker = "extra == 'graph-release'", specifier = ">=3.57" },
     { name = "google-cloud-storage", marker = "extra == 'coverage'", specifier = ">=2.18" },

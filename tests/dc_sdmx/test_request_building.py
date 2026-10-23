@@ -242,3 +242,27 @@ def test_invalid_component_id_rejected_before_http(recording_transport):
     with pytest.raises(SdmxQueryError):
         _client(transport).availability(variables=["Count_Person"], component="bad id")
     assert transport.requests == []
+
+
+# An unsigned JWT whose `aud` is the run.app origin below; the auth reads `aud` unverified.
+_ID_TOKEN = "h.eyJhdWQiOiJodHRwczovL2Rmby1kZXYtZGMtZGF0YWNvbW1vbnMtc2VydmljZS1hYmMxMjMtbm4uYS5ydW4uYXBwIn0.s"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "sent"),
+    [
+        (
+            "https://dfo-dev-dc-datacommons-service-abc123-nn.a.run.app/core/api",
+            f"Bearer {_ID_TOKEN}",
+        ),
+        (_BASE_URL, None),
+    ],
+)
+def test_run_app_hosts_get_a_cloud_run_id_token(recording_transport, monkeypatch, base_url, sent):
+    monkeypatch.setenv("DCP_ID_TOKEN", _ID_TOKEN)
+    transport = recording_transport(_AVAILABILITY_RESPONSE)
+    SdmxClient(base_url=base_url, transport=transport).availability(
+        variables=["Count_Person"], component="observationAbout"
+    )
+    assert transport.last_request.headers.get("x-serverless-authorization") == sent
+    assert "authorization" not in transport.last_request.headers

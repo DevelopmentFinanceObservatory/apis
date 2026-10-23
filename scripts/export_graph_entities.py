@@ -30,6 +30,7 @@ import httpx
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dc_graph import GraphClient
+from dfo_platform.cloud_run_auth import cloud_run_auth
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
 
@@ -326,7 +327,12 @@ def export_regions(*, graph_base_url: str, token: str | None) -> list[dict]:
     headers = {"Content-Type": "application/json"}
     if token:
         headers["x-graph-token"] = token
-    client = httpx.Client(base_url=f"{graph_base_url}/core/api", headers=headers, timeout=30.0)
+    client = httpx.Client(
+        base_url=f"{graph_base_url}/core/api",
+        headers=headers,
+        timeout=30.0,
+        auth=cloud_run_auth(),
+    )
     rows = []
     try:
         for resolvekit_id, entity_type, name in _iter_resolvekit_region_entities():

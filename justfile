@@ -167,6 +167,13 @@ _gemini-key:
 # an alternate endpoint (e.g., a local development mirror):
 #   just SEARCH_GRAPH_BASE=http://127.0.0.1:8080 dev
 #
+# The default graph is a Cloud Run service that needs an ID token, which user
+# credentials cannot mint. Either impersonate a service account, which mints
+# and refreshes tokens:
+#   gcloud auth application-default login --impersonate-service-account=<sa>
+# or pass your own token, which expires after an hour:
+#   export DCP_ID_TOKEN="$(gcloud auth print-identity-token)"
+#
 # Hot-reload the Search API on the host (uvicorn --reload)
 dev:
     #!/usr/bin/env bash

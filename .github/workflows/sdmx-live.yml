@@ -14,6 +14,12 @@
 # challenges). SdmxClient appends its own /sdmx/v3/... paths to the API root,
 # so the live base is SEARCH_GRAPH_BASE plus the service's /core/api prefix.
 #
+# The service admits only callers holding roles/run.invoker. The job signs in
+# through eval-gate.yml's workload identity pair (EVAL_WIF_PROVIDER and the
+# EVAL_WIF_SA service account), mints an ID token for SEARCH_GRAPH_BASE, and
+# passes it as DCP_ID_TOKEN, which dfo_platform.cloud_run_auth sends to every
+# *.run.app host.
+#
 # DFO_SDMX_LIVE_REQUIRED makes a missing live base a collection error rather
 # than a skip, so the job cannot report green over a suite that skipped every
 # test. The preflight step covers the one case that guard cannot see: an unset
@@ -43,6 +49,7 @@ on:
     types: [opened, synchronize, reopened, edited, ready_for_review]
     paths:
       - packages/dfo-data-tools/src/dc_sdmx/**
+      - packages/dfo-data-tools/src/dfo_platform/cloud_run_auth.py
       - tests/dc_sdmx/**
       - packages/dfo-data-tools/src/code_index/declarations.py
       - tests/code_index/test_implied_values_live.py
@@ -81,6 +88,9 @@ jobs:
         github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
 
@@ -91,7 +101,7 @@ jobs:
           cache-dependency-glob: uv.lock
 
       # The `sdmx` extra carries only dc_sdmx's own dependency
-      # (httpx, pyarrow), with no FastAPI and no engine extras, which holds
+      # (httpx, pyarrow, google-auth), with no FastAPI and no engine extras, which holds
       # dc_sdmx to the independence contract tests/dc_sdmx/test_independence.py
       # asserts. The `coverage` extra (numpy, also free of FastAPI) serves the
       # session release tests/conftest.py binds.
@@ -107,11 +117,22 @@ jobs:
           [ -n "$GRAPH_BASE" ] || { echo "::error::repo variable SEARCH_GRAPH_BASE is unset"; exit 1; }
           [ -n "$GRAPH_TOKEN" ] || { echo "::error::repo secret SEARCH_GRAPH_TOKEN is unset"; exit 1; }
 
+      - name: Authenticate to Google Cloud as the eval reader
+        id: gcp
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
+          service_account: ${{ secrets.EVAL_WIF_SA }}
+          token_format: id_token
+          id_token_audience: ${{ vars.SEARCH_GRAPH_BASE }}
+          id_token_include_email: true
+
       - name: Run the live-gated dc_sdmx suite against the dev deployment
         env:
           DFO_SDMX_LIVE_BASE: ${{ vars.SEARCH_GRAPH_BASE }}/core/api
           DFO_SDMX_LIVE_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
           DFO_SDMX_LIVE_REQUIRED: "1"
+          DCP_ID_TOKEN: ${{ steps.gcp.outputs.id_token }}
         run: uv run pytest -q tests/dc_sdmx/test_live.py
 
       - name: Check every implied value against the dev graph
@@ -119,4 +140,5 @@ jobs:
           SEARCH_GRAPH_BASE: ${{ vars.SEARCH_GRAPH_BASE }}
           SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
           CODE_INDEX_LIVE_REQUIRED: "1"
+          DCP_ID_TOKEN: ${{ steps.gcp.outputs.id_token }}
         run: uv run pytest -q -m live tests/code_index/test_implied_values_live.py
