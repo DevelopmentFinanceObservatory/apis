@@ -339,6 +339,9 @@ class LiveGraphClient:
             deadline=deadline,
         )
 
+    def arcs_complete(self, dcid: str) -> bool:
+        return self._client.arcs_complete(dcid)
+
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, tuple[str, ...]]:

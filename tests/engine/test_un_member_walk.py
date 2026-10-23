@@ -37,6 +37,14 @@ _FEMALE = ("Sex", "undata/SEX-F", "Female")
 _MALE = ("Sex", "undata/SEX-M", "Male")
 _UNDER_ONE = ("Age", "undata/AGE-Y0", "Under 1")
 
+_EMPLOYMENT_SERIES = "undata/ilo/SERIES-EMP_TEMP_NB"
+_OCCUPATION = "undataOccupation"
+_TEACHERS = "undata/ilo/EMP_TEMP_NB.OCCUPATION--ISCO08_23"
+_NURSES = "undata/ilo/EMP_TEMP_NB.OCCUPATION--ISCO08_222"
+# More siblings lacking the occupation constraint than the walk re-reads for a dropped arc
+# (`statvar_members.enumerate._REPROBE_BUDGET`).
+_AGE_SIBLINGS = 40
+
 _TOTAL = "undata/who/MORT_U5_RATE"
 _FEMALE_SV = "undata/who/MORT_U5_RATE.SEX--F"
 _MALE_SV = "undata/who/MORT_U5_RATE.SEX--M"
@@ -56,6 +64,22 @@ def _catalogue() -> CatalogueSnapshot:
                     _SERIES, name="Female under 1", constraints={_SEX: _FEMALE, _AGE: _UNDER_ONE}
                 ),
                 _OTHER: un_variable(_OTHER_SERIES, name="Infant mortality"),
+                **{
+                    dcid: un_variable(
+                        _EMPLOYMENT_SERIES,
+                        name=dcid,
+                        constraints={_OCCUPATION: ("Occupation", f"undata/{code}", code)},
+                    )
+                    for dcid, code in ((_TEACHERS, "ISCO08_23"), (_NURSES, "ISCO08_222"))
+                },
+                **{
+                    f"undata/ilo/EMP_TEMP_NB.AGE--Y{age:02d}": un_variable(
+                        _EMPLOYMENT_SERIES,
+                        name=f"Aged {age}",
+                        constraints={_AGE: ("Age", f"undata/AGE-Y{age:02d}", f"{age}")},
+                    )
+                    for age in range(_AGE_SIBLINGS)
+                },
             }
         ),
     )
@@ -79,10 +103,10 @@ def graph(requests: list[httpx.Request], bind_catalogue) -> Iterator[OriginGraph
         yield client
 
 
-def _query(slots: Mapping[str, SlotBinding]) -> FamilyQuery:
+def _query(slots: Mapping[str, SlotBinding], *, series: str = _SERIES) -> FamilyQuery:
     return FamilyQuery(
         five_tuple=FiveTuple(
-            population_type=_SERIES,
+            population_type=series,
             measured_property="value",
             stat_type="measuredValue",
             measurement_qualifier=None,
@@ -158,3 +182,43 @@ def test_both_doors_settle_a_un_shapes_members_from_the_tables(
     assert ({member.stat_var for member in group.members}, set(group.family)) == minted
     assert minted == (members, family)
     assert requests == []
+
+
+def test_both_doors_settle_a_set_bound_slot_whose_siblings_lack_it(
+    graph: OriginGraphClient, requests: list[httpx.Request]
+) -> None:
+    """The series' age breakdowns lack the set-bound occupation constraint, more of them than
+    the walk re-reads for a dropped arc. The tables hold every arc, so each absence is a
+    verdict and the walk settles the occupation members at both doors."""
+    slots: dict[str, SlotBinding] = {
+        _OCCUPATION: ("set", ("undata/ISCO08_23", "undata/ISCO08_222")),
+        _AGE: ("unbound",),
+    }
+    query = _query(slots, series=_EMPLOYMENT_SERIES)
+
+    walked = RoleClassWalks(graph, enumerator=MemberEnumerator()).family(
+        query, (), deadline=time.monotonic() + 30.0
+    )
+    minted = _mint_family(graph, query)
+
+    assert walked.authority is MembershipAuthority.AUTHORITATIVE
+    assert walked.value is not None
+    assert {member.stat_var for member in walked.value.group.members} == minted[0]
+    assert minted[0] == {_TEACHERS, _NURSES}
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    ("dcid", "complete"),
+    [
+        (_TEACHERS, True),
+        ("undata/who/MORT_NEONATAL_RATE", False),
+        ("Count_Person", False),
+    ],
+    ids=["un_variable_held", "un_dcid_not_held", "ours_not_held"],
+)
+def test_the_client_reads_in_full_only_what_the_tables_hold(
+    graph: OriginGraphClient, dcid: str, complete: bool
+) -> None:
+    """A node the tables do not hold is read live, where a batch read can drop an arc."""
+    assert graph.arcs_complete(dcid) is complete

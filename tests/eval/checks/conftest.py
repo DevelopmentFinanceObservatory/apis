@@ -22,6 +22,7 @@ import pytest
 from scripts.sentence_golden import spec_dicts
 from search.eval.cases import Case, Family, Gl, validate_case
 from search.eval.checks import ScoreContext, WireSchema
+from search.eval.checks.base import MembersRefused
 from search.models import RESOLVE_RESPONSE_ADAPTER
 
 PANEL_DIR = Path(__file__).parents[2] / "fixtures" / "sentence_panel"
@@ -186,6 +187,11 @@ def no_members_door(spec_id: str, definition: dict[str, Any]) -> list[str]:
     """The members door of an app built before it: every read answers 404."""
     request = httpx.Request("POST", f"http://base/api/datasets/{spec_id}/members")
     raise httpx.HTTPStatusError("404", request=request, response=httpx.Response(404))
+
+
+def refusing_members_door(spec_id: str, definition: dict[str, Any]) -> list[str]:
+    """A members door that refuses every definition as one it will not mint."""
+    raise MembersRefused(code="member_not_resolvable", detail=f"{spec_id} did not resolve")
 
 
 @pytest.fixture

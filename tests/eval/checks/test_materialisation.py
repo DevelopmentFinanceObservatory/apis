@@ -15,6 +15,7 @@ from tests.eval.checks.conftest import (
     make_case,
     no_members_door,
     panel,
+    refusing_members_door,
     response_schema,
     schema_listing_members,
 )
@@ -930,6 +931,32 @@ def test_materialisation_lets_an_error_that_is_no_read_failure_propagate(graph, 
     """A bug in the check or its clients stops the run; it is no infrastructure result."""
     with pytest.raises(ValueError, match="a bug"):
         check(response, graph=graph, coverage=coverage)
+
+
+@pytest.mark.parametrize(
+    ("door", "verdict", "infra", "named"),
+    [
+        (no_members_door, U, True, "HTTPStatusError: 404"),
+        (refusing_members_door, FAIL, False, "member_not_resolvable"),
+    ],
+    ids=["failed_read", "refused_definition"],
+)
+def test_materialisation_exact_scores_the_members_door_failure(
+    door, verdict, infra: bool, named: str
+):
+    """An exact count reads the served StatVars from the members door. A failed read is
+    infrastructure, and a door refusing the definition fails the answer. Each names what
+    the door answered."""
+    ctx = ScoreContext(
+        schema=WireSchema.from_document({"response": response_schema()}),
+        graph=StubGraphClient(facets=_TWO_SOURCES),
+        members=door,
+    )
+
+    ev = CHECKS["materialisation"](DEFINITE, _exact_response(10), ctx)
+
+    assert (ev.verdict, ev.infra) == (verdict, infra), ev.detail
+    assert named in ev.detail
 
 
 def test_materialisation_graph_infra_error_names_the_http_status():
