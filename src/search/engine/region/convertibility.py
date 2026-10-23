@@ -520,6 +520,11 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
     }
 
 
+def served_units(plan: ReadPlan) -> frozenset[str | None]:
+    """The facet units `plan` serves rows under, `None` for a facet stating none."""
+    return frozenset(unit for by_key in _served_keys(plan).values() for unit, _ in by_key)
+
+
 def facet_selections(
     combos: Sequence[Mapping[str, FacetSelection]], key: _FacetKey
 ) -> Mapping[str, FacetSelection] | None:

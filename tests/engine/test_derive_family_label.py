@@ -1,7 +1,8 @@
 """Tests the label `derive_shapes` gives a shape: an index family reads as what every
 row of the family shares, a multi-member UN System family as its population type plus
-the values every member shares, and every other shape keeps its member's name. A resubmit
-of a first answer's identity takes the first answer's label."""
+the values every member shares, a role-bearing family whose members declare several role
+sets as its least-constrained recalled member, and every other shape keeps its member's
+name. A resubmit of a first answer's identity takes the first answer's label."""
 
 from __future__ import annotations
 
@@ -180,6 +181,80 @@ def test_base_family_keeps_its_recalled_member_name():
     )
 
     assert [shape.label for shape in shapes] == ["Female life expectancy"]
+
+
+@pytest.mark.parametrize(
+    ("roles", "expected"),
+    [
+        pytest.param(
+            {
+                "Debt_Guaranteed_Private_Bonds": ("financingProvider", "financingRecipient"),
+                "Debt_Guaranteed": ("financingRecipient",),
+            },
+            "Outstanding public or publicly guaranteed debt",
+            id="role-sets-differ-reads-as-the-least-constrained",
+        ),
+        pytest.param(
+            {"Debt_Guaranteed_Private_Bonds": (), "Debt_Guaranteed": ()},
+            "Outstanding publicly guaranteed debt owed by the private sector to bondholders",
+            id="no-roles-reads-as-the-top-scoring",
+        ),
+    ],
+)
+def test_a_family_reads_as_its_least_constrained_recalled_member(
+    roles: dict[str, tuple[str, ...]], expected: str
+):
+    """A role-bearing family the catalogue does not hold, whose members declare more than
+    one role set, reads as the recalled member with the fewest constraints whatever its
+    score, the name the mint gives the shape once its roles are bound: "publicly
+    guaranteed debt" recalls the bondholders' share of a debt stock above the total, and
+    the shape reads as the total. A family whose members declare no roles keeps its
+    top-scoring recalled member's name."""
+
+    def position(name: str, constraints: dict[str, str], declared: tuple[str, ...]) -> dict:
+        arcs: dict = {
+            "name": {"nodes": [{"value": name}]},
+            "populationType": {"nodes": [{"dcid": "TestDebtPosition"}]},
+            "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+            "statType": {"nodes": [{"dcid": "measuredValue"}]},
+            "constraintProperties": {"nodes": [{"dcid": prop} for prop in constraints]},
+        }
+        if declared:
+            arcs["observationProperties"] = {"nodes": [{"dcid": role} for role in declared]}
+        for prop, value in constraints.items():
+            arcs[prop] = {"nodes": [{"dcid": value}]}
+        return {"label": name, "arcs": arcs}
+
+    members = {
+        "Debt_Guaranteed_Private_Bonds": position(
+            "Outstanding publicly guaranteed debt owed by the private sector to bondholders",
+            {
+                "guaranteeStatus": "PubliclyGuaranteedClaim",
+                "debtorType": "PrivateSector",
+                "creditorType": "Bondholders",
+            },
+            roles["Debt_Guaranteed_Private_Bonds"],
+        ),
+        "Debt_Guaranteed": position(
+            "Outstanding public or publicly guaranteed debt",
+            {"guaranteeStatus": "PublicOrPubliclyGuaranteed"},
+            roles["Debt_Guaranteed"],
+        ),
+    }
+    graph = FakeGraph(
+        nodes={"TestDebtPosition": {"label": "debt position"}, **members},
+        obs={},
+        detect={},
+        resolve={},
+    )
+
+    shapes = derive_shapes(
+        confirmed_svs=list(members),
+        graph=graph,
+        sv_scores={"Debt_Guaranteed_Private_Bonds": 0.9, "Debt_Guaranteed": 0.8},
+    )
+
+    assert [shape.label for shape in shapes] == [expected]
 
 
 def _index_member(dcid: str, name: str) -> dict:
