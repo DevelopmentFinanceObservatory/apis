@@ -1064,9 +1064,11 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
     """The shape serves two members neither of which dominates the other: `_U_FEMALE` holds
     data in A1 and `_U_OVER65` in A2. The shape answers as the elected one, as an alternate
     beside the elected Household shape, or as the lone alternate of an elected shape with no
-    data. One batch reads both members at the union of their scopes, and the answer shows
-    `_U_FEMALE`, counts its own country alone, and a definite answer previews its series
-    there."""
+    data. One batch reads both members at the union of their scopes. Elected, the shape
+    leaves both open and serves both, each counted at its own country; an alternate binds
+    `_U_FEMALE`'s constraint, so it shows that member, counts its own country alone, and the
+    lone alternate previews its series there. The elected answer's two places preview
+    through a scope-wide SDMX read, which this test's SDMX double holds no rows for."""
 
     def facet(year: str) -> list[dict]:
         return [
@@ -1114,17 +1116,23 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
         include_observations=True,
     )
 
-    definite = answer != "alternate"
-    assert result.status == ("definite" if definite else "candidates"), result.no_data_reason
+    assert result.status == ("candidates" if answer == "alternate" else "definite"), (
+        result.no_data_reason
+    )
     spec = next(spec for spec in result.specs if spec.resolved.members[0].ref.ref == _U_FEMALE)
-    assert [sv.ref.ref for sv in spec.resolved.members] == [_U_FEMALE]
+    members, places = (
+        ([_U_FEMALE, _U_OVER65], ["country/A1", "country/A2"])
+        if answer == "elected"
+        else ([_U_FEMALE], ["country/A1"])
+    )
+    assert [sv.ref.ref for sv in spec.resolved.members] == members
     coverage = spec.resolved.coverage
     assert isinstance(coverage, CoverageExact)
-    assert coverage.observation_count == 1
+    assert coverage.observation_count == len(members)
     assert spec.resolved.scope is not None
-    assert [entity.ref for entity in spec.resolved.scope.members] == ["country/A1"]
+    assert [entity.ref for entity in spec.resolved.scope.members] == places
     assert ([_U_FEMALE, _U_OVER65], ["country/A1", "country/A2"]) in graph.probes
-    if definite:
+    if answer == "lone_alternate":
         observations = spec.resolved.observations
         assert observations is not None and observations.series
         assert {entity.ref for series in observations.series for entity in series.entities} == {

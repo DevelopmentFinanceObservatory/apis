@@ -247,14 +247,14 @@ def _elect_family(
     alternate or re-elected shape binds every constraint of its representative, so the
     representative is a total and the narrowing shows in the Spec's bound slots.
 
-    Kept members sort totals first. With no total, the member narrowing the family least
-    stands in: members with known constraints before unknown ones, then fewer asserted
-    unbound properties first, so a recall score never picks a narrower slice over a
+    Kept members sort totals first. With no total, the members narrowing the family least
+    sort first: members with known constraints before unknown ones, then fewer asserted
+    unbound properties first, so a recall score never puts a narrower slice ahead of a
     broader member. Recall breaks the remaining ties, by the position of the first member
-    whose unbound assertions include the member's own. No stand-in crosses a slot that
-    partitions the family, one every member states with two or more values among them:
-    the part binds such a slot before it resolves when every member recall scored states
-    one value on it (`bind_partition_values`).
+    whose unbound assertions include the member's own. A slot that partitions the family,
+    one every member states with two or more values among them, is bound before the part
+    resolves when every member recall scored states one value on it
+    (`bind_partition_values`).
     """
     read = {sv: _read_assertions(member_facts[sv], stated_values) for sv in svs}
     # The positions of the members asserting each unbound (property, value) pair.
@@ -803,9 +803,10 @@ def _no_entity_disambiguation(
     """Return bare coverage when no place entity is available.
 
     No observation probe runs. A member must explicitly assert every bound
-    property; the first of those members in election order answers
-    (``_elect_family``), with ``family_total_absent`` when it is not the family's
-    total. Otherwise the result has ``has_data=False`` and ``available_at_place=None``.
+    property; the members of those the datasets mint keeps answer, in election order
+    (``_elect_family``), with ``family_total_absent`` when they are one member that is
+    not the family's total. Otherwise the result has ``has_data=False`` and
+    ``available_at_place=None``.
     Explicit windows are echoed, while latest requests leave the window unset.
     """
     from search.engine.retrieval.retrieve import Materialised, MemberPopulation
@@ -821,10 +822,12 @@ def _no_entity_disambiguation(
             population=MemberPopulation(admitted=0, admitted_dcids=(), confirmed=0, exact=exact),
         )
     return Materialised(
-        sv_dcids=[representative_sv],
+        sv_dcids=list(family.order),
         has_data=True,
         coverage=CoverageBare(has_data=True, window=no_entity_window),
-        family_total_absent=family.total_absent(representative_sv, ()),
+        family_total_absent=(
+            family.total_absent(representative_sv, ()) if len(family.order) == 1 else None
+        ),
         member_facts=member_facts,
         population=MemberPopulation(
             admitted=len(family.members),
@@ -1040,9 +1043,9 @@ def _probe_and_scan(
     of them, so a family the tables hold whole is read only as far as its answer. "Latest
     life expectancy data" at the default scope elects the family's total from its first
     read, where reading all 351 members of the held family takes 27 reads of 2 to 3 s each.
-    Without `elects`, as for a set binding that answers every member or a family whose
-    `minted` members carry an elected dataset, every member is read, and so is every member
-    of a `facet_batch` read.
+    Without `elects`, as for a set binding, a family keeping several members, which the
+    answer serves together, or a family whose `minted` members carry an elected dataset,
+    every member is read, and so is every member of a `facet_batch` read.
 
     A member's facets union across its places, and it is confirmed at a place holding a
     point in `years` by the point rule every plan and election reads
@@ -1337,18 +1340,21 @@ def standard_resolve(
 
     Probe the admitted members at their own places (`facets_at_own_places`), through
     `facet_batch` when the Spec's place sets are settling (`FacetBatch`), in election order:
-    an answer naming one member reads them only until its election settles
+    a family keeping one member reads them only until that member settles
     (`_probe_and_scan`), and its confirmed count is then a floor
-    (`MemberPopulation.confirmed_exact`). A family with a kept member that has an elected
-    dataset is read whole, since the mint checks each such member. Bindings determine eligibility.
-    Election reads only the members the datasets mint keeps from the eligible
-    family (``_elect_family``): a ``kind="set"`` binding returns each of them with
-    a point in the years read, while other bindings elect the first of them, in
-    election order, that holds one. With none, a kept member holding data at the place
-    in other years answers for the window (``_no_data_in_years``), and with no kept
-    member holding data the first in election order is flagged as unavailable. Under
-    either binding, a result naming one member, elected or flagged, that is not the
-    family's total records it in ``family_total_absent``. A place-set probe unions facets
+    (`MemberPopulation.confirmed_exact`). A family keeping several members, or one with a
+    kept member that has an elected dataset, is read whole, since the mint serves and checks
+    each kept member. Bindings determine eligibility.
+    The answer serves the members the datasets mint keeps from the eligible family
+    (``_elect_family``) that hold a point in the years read, so its coverage, download and
+    served series are those of a mint of its definition: a family with a total keeps the
+    total alone, and one without keeps each member no other rolls up. A ``kind="set"``
+    binding lists them in probe order and other bindings in election order. With none, a
+    kept member holding data at the place in other years answers for the window
+    (``_no_data_in_years``), and with no kept member holding data the first in election
+    order is flagged as unavailable. Under either binding, a result naming one member,
+    served or flagged, that is not the family's total records it in
+    ``family_total_absent``. A place-set probe unions facets
     across its entities. An empty default scope can return before a probe because its
     presence read already established the result.
 
@@ -1460,9 +1466,10 @@ def standard_resolve(
         years=years,
         datasets=datasets,
         minted=family.order,
-        # The mint checks every kept member's elected dataset, so such a family is read whole.
+        # The mint checks every kept member's elected dataset, and serves every kept member,
+        # so a family keeping several, or one with an elected dataset, is read whole.
         elects=None
-        if multi_collect or not datasets.keys().isdisjoint(family.order)
+        if multi_collect or len(family.order) > 1 or not datasets.keys().isdisjoint(family.order)
         else family.order,
         facet_batch=facet_batch,
     )
@@ -1479,18 +1486,18 @@ def standard_resolve(
         exact=exact,
         confirmed_exact=probe.read_all,
     )
-    # A member is elected among those holding a point in the years read, the members the
-    # plan can serve; a member holding data at the place in other years only makes an empty
-    # answer one for the window. Both lists keep only the members the datasets mint keeps.
+    # The answer serves every kept member holding a point in the years read, as a mint of
+    # its definition does; a member holding data at the place in other years only makes an
+    # empty answer one for the window. Both lists keep only the members the datasets mint
+    # keeps, a set binding's in probe order and any other's in election order.
     if multi_collect:
         collected = [member for member in confirmed if member[0] in kept]
         held = [member for member in outside_years if member[0] in kept]
     else:
         by_sv = {member[0]: member for member in confirmed}
-        shown = next((sv for sv in family.order if sv in by_sv), None)
-        collected = [by_sv[shown]] if shown is not None else []
+        collected = [by_sv[sv] for sv in family.order if sv in by_sv]
         outside_by_sv = {member[0]: member for member in outside_years}
-        held = [outside_by_sv[sv] for sv in family.order if sv in outside_by_sv][:1]
+        held = [outside_by_sv[sv] for sv in family.order if sv in outside_by_sv]
     # A window answer with no point names its first held member alone.
     named_members = collected or held[:1]
     family_total_absent: FamilyTotalAbsent | None = None

@@ -264,6 +264,85 @@ class _BindNothingLLM:
         return elected_reply(0), None
 
 
+_Q5 = "undata/who/MORT_U5_RATE.WEALTH_QUANTILE--Q5"
+_WEALTH = "undataWealthQuantile"
+
+
+def test_a_series_with_no_total_states_the_members_a_mint_of_its_definition_serves(
+    bind_catalogue,
+) -> None:
+    """The WHO series holds a highest-quintile member and two by-sex members, each asserting
+    one slot, so none is its total and a mint of the definition, which leaves both slots
+    open, serves all three. The answer serves the same three: its members, its coverage and
+    its download state the mint's three series and their 15 rows in Kenya, and no member
+    stands in for the family."""
+    members = {
+        _Q5: ("Under-five mortality rate [Wealth quantile=Highest quintile]", _WEALTH, "Q5"),
+        _FEMALE: ("Under-five mortality rate [Sex=Female]", _SEX, "F"),
+        _MALE: ("Under-five mortality rate [Sex=Male]", _SEX, "M"),
+    }
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
+            un_mirror=un_mirror(
+                {
+                    sv: un_variable(
+                        _SERIES,
+                        name=name,
+                        constraints={prop: (prop, f"undata/{prop}-{value}", value)},
+                    )
+                    for sv, (name, prop, value) in members.items()
+                }
+            ),
+        )
+    )
+    query = "under-five mortality by wealth quintile"
+    graph = FakeGraph(
+        nodes={
+            "country/KEN": {"label": "Kenya", "type": "Country"},
+            _SERIES: {"label": "Under-five mortality rate"},
+            **{
+                sv: _member_node(name, {prop: f"undata/{prop}-{value}"})
+                for sv, (name, prop, value) in members.items()
+            },
+        },
+        obs={
+            f"{sv}|country/KEN": [{"earliestDate": "2010", "latestDate": "2014", "obsCount": 5}]
+            for sv in members
+        },
+        detect={query: {"svs": list(members), "cosine_scores": [0.9, 0.89, 0.88]}},
+        resolve={"Kenya": "country/KEN"},
+    )
+
+    result = asyncio.run(
+        resolve_variable(
+            query,
+            entities=["Kenya"],
+            date_request=None,
+            detect_query=query,
+            role_query=query,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            llm=_BindNothingLLM(),
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+            options=EngineOptions(deadline=None),
+        )
+    )
+
+    assert result.status == "definite"
+    (answer,) = result.specs
+    resolved = answer.resolved
+    assert [sv.ref.ref for sv in resolved.members] == list(members)
+    assert resolved.stat_vars.served_count == len(members)
+    assert resolved.coverage.observation_count == 15
+    assert resolved.download is not None
+    assert (resolved.download.rows, resolved.download.series) == (15, len(members))
+    assert "family_total_absent" not in {warning.code for warning in result.warnings}
+
+
 def _settle_queued_presence_reads() -> None:
     """Wait for every availability read the presence read queued to settle."""
     while flights := [flight for flight in place_scope._flights.values() if not flight.done()]:
@@ -274,12 +353,12 @@ def test_a_held_family_past_the_cold_read_cap_answers_unsettled_then_settles(
     bind_catalogue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A series with no total serves both by-sex members to a question naming no place, and
-    recall scores both, the female one first, so neither sex binds. With room for one cold presence read, the first request
-    reads the female member's places and gives the male member its countries for this
-    request. The answer shows the female member, whose scope is read, so its body equals a
-    settled answer's; its scope is unsettled and its leg degraded, so no cache stores it.
-    The male member's read settles behind it, and a second request reads both scopes from
-    the memo, settled, starting no availability read."""
+    recall scores both, the female one first, so neither sex binds. With room for one cold
+    presence read, the first request reads the female member's places and gives the male
+    member its countries for this request. The answer shows both members; its scope is
+    unsettled and its leg degraded, so no cache stores it. The male member's read settles
+    behind it, and a second request reads both scopes from the memo, settled, starting no
+    availability read."""
     monkeypatch.setattr(place_scope, "MAX_COLD_READS_PER_REQUEST", 1)
     bind_catalogue(
         restrictive_catalogue(
@@ -348,9 +427,9 @@ def test_a_held_family_past_the_cold_read_cap_answers_unsettled_then_settles(
     for result in (first, second):
         (answer,) = result.specs
         assert result.status == "definite"
-        assert [sv.ref.ref for sv in answer.resolved.members] == [_FEMALE]
-    assert first.warnings == second.warnings
-    assert PLACE_SCOPE_DEFAULTED in {warning.code for warning in first.warnings}
+        assert [sv.ref.ref for sv in answer.resolved.members] == [_FEMALE, _MALE]
+    for result in (first, second):
+        assert PLACE_SCOPE_DEFAULTED in {warning.code for warning in result.warnings}
     assert (first.scope_unsettled, first.leg_degraded) == (True, True)
     assert reads_first == 2
     assert (second.scope_unsettled, second.leg_degraded) == (False, False)

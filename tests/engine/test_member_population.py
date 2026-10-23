@@ -51,9 +51,10 @@ def _three_member_shape() -> ShapeDraft:
     )
 
 
-def test_standard_resolve_confirmed_population_exceeds_the_elected_winner():
-    """All three unbound members have data, but the single-match branch ships
-    only the first. `population.confirmed` counts all three (#893).
+def test_standard_resolve_serves_every_kept_member_it_confirms():
+    """All three unbound members have data and their constraints are unknown, so the mint
+    keeps all three and the answer serves them. `population.confirmed` counts all three
+    (#893).
     """
     shape = _three_member_shape()
     graph = _graph_with_data_for(_MEMBER_A, _MEMBER_B, _MEMBER_C)
@@ -68,7 +69,7 @@ def test_standard_resolve_confirmed_population_exceeds_the_elected_winner():
     )
 
     assert isinstance(result, Materialised)
-    assert result.sv_dcids == [_MEMBER_A]
+    assert result.sv_dcids == [_MEMBER_A, _MEMBER_B, _MEMBER_C]
     assert result.population is not None
     assert result.population.admitted == 3
     assert result.population.confirmed == 3
