@@ -1,4 +1,4 @@
-"""Tests measure-family partition caching against the packaged CRS index."""
+"""Tests measure-family partition caching against the fixture CRS index."""
 
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def test_the_key_follows_the_dataset_the_election_reads():
 
 def test_observed_measure_family_forwards_its_cache_and_still_finds_siblings():
     # All partitions share one cache entry. Only `amount` partitions have siblings; the
-    # `grantEquivalent` basis value has no match in the packaged index.
+    # `grantEquivalent` basis value has no match in the fixture index.
     index = get_index()
     axes = get_measure_index().axes
     shape = _crs_shape()

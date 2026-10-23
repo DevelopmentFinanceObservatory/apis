@@ -30,7 +30,7 @@ Axis = Literal["what", "how", "where", "when", "source"]
 # "unit", the byline's unit of measure, and "method", the byline's measurement method,
 # which no request slot carries.
 SentenceAxis = Literal[Axis, "unit", "method"]
-SentenceSegment = Literal["heading", "byline", "departure"]
+SentenceSegment = Literal["coverage", "heading", "byline", "departure", "assumption"]
 CoverageKind = Literal["exact", "breadth", "bare"]
 
 # BindingProvenance records why a slot has its value, independently of its
@@ -129,6 +129,10 @@ departure code is a `Warning.code` or a refusal code, so the platform
 code registry does not list them."""
 DEPARTURE_ORDER: tuple[DepartureCode, ...] = get_args(DepartureCode)
 """`DepartureCode` in precedence order. `_PartBase.departures` follows it."""
+AssumptionKind = Literal["declared_default", "open_role", "place_scope"]
+"""Every kind of value an answer fills that its request did not ask for (see
+`models.assumption.Assumption`), in the order a part's `assumptions` lists them. A closed
+vocabulary of its own, like `DepartureCode`, outside the platform code registry."""
 ObservationsOmissionReason = Literal[
     "observations_timed_out",
     "observations_no_matching_source",

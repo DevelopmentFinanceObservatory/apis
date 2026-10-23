@@ -4,7 +4,7 @@ The node, sources, and resolve doors share the graph reader and the bounded
 DCP-read executor, which refuses a read when every worker is busy instead of
 queueing it. Resolve also uses the resolver and generation provider.
 Resolvekit owns a separate single-worker executor. The sources door reads
-currency from the coverage service when one is configured, and keeps the
+currency from the bound release's coverage, and keeps the
 source documents it reads in `provenance_docs`. A variable's facet
 profile comes from the process's shared `FacetProfileCache` for its source
 (`materialise.shared_profiles`), whose flights run on an executor no request
@@ -46,8 +46,6 @@ if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
     from graph_api.card_reads import CardReadCaches
     from materialise.provenance_doc import ProvenanceDoc
-
-    # `series_coverage.shared` needs numpy, which the `graph` extra does not install.
     from series_coverage.shared import ServedCoverage
 
 
@@ -70,11 +68,7 @@ class GraphDeps:
     # Source documents keyed by `(dcid, origin catalogue build id)` and `generation`'s stamp,
     # read on `dcp_executor`.
     provenance_docs: SingleFlightCache[tuple[str, str], ProvenanceDoc]
-    # `None` when `COVERAGE_ARTIFACT_URI` is unset or the artifact failed to load.
-    coverage: ServedCoverage | None = None
-    # True when `coverage` is `None` because the artifact failed to load, a gap a later start
-    # can clear. An unset URI is a deployment's choice, so it leaves this false.
-    coverage_load_failed: bool = False
+    coverage: ServedCoverage
     # The process's shared facet profiles on a live surface. An injected graph has its own
     # only when the surface was given a profile graph and availability reader, else `None`.
     profile_cache: FacetProfileCache | None = None

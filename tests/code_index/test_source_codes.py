@@ -8,7 +8,8 @@ import json
 
 import pytest
 
-from code_index import IndexFormatError, default_index_path, load_index, parse_index
+from code_index import IndexFormatError, parse_index
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from .conftest import FIXTURE_PATH
 
@@ -131,8 +132,8 @@ def test_refuses_a_code_row_missing_a_field():
         parse_index(_document([{"provenance": _IDS, "code": "NGDP"}]))
 
 
-def test_the_packaged_index_names_the_debt_service_code_s_aggregate_and_by_creditor_series():
-    index = load_index(default_index_path())
+def test_the_fixture_index_names_the_debt_service_code_s_aggregate_and_by_creditor_series():
+    index = load_index(INDEX_FIXTURE)
 
     assert index.source_code_members("DT.TDS.DEGG.CD") == {
         _IDS: (

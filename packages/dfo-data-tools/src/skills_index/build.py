@@ -651,19 +651,21 @@ def _assemble_skills(
 
 
 class _ReadCountingGraph:
-    """A `SkillsGraph` that counts the reads that return and keeps the last
-    error raised, so the build can tell a graph outage from a failure confined
+    """A `SkillsGraph` that counts the reads that return and those that raise, and keeps
+    the last error raised, so the build can tell a graph outage from a failure confined
     to some reads."""
 
     def __init__(self, graph: SkillsGraph) -> None:
         self._graph = graph
         self.succeeded = 0
+        self.failed = 0
         self.last_failure: Exception | None = None
 
     def _counted[T](self, read: Callable[[], T]) -> T:
         try:
             result = read()
         except Exception as exc:
+            self.failed += 1
             self.last_failure = exc
             raise
         self.succeeded += 1
@@ -758,10 +760,12 @@ def build_index(
 ) -> SkillsIndex:
     """Reads the `AgentSkill` roster and builds its `SkillsIndex`.
 
-    Expansion uses the supplied depth, node, and per-lead result limits.
+    Expansion uses the supplied depth, node, and per-lead result limits. The index counts
+    the graph reads that raised (`SkillsIndex.failed_reads`).
     """
-    reference_graph = DecodedTextGraph(graph, max_decoded_bytes=SKILL_REFERENCE_MAX_BYTES)
-    graph = DecodedTextGraph(graph, max_decoded_bytes=SKILL_BODY_MAX_BYTES)
+    reads = _ReadCountingGraph(graph)
+    reference_graph = DecodedTextGraph(reads, max_decoded_bytes=SKILL_REFERENCE_MAX_BYTES)
+    graph = DecodedTextGraph(reads, max_decoded_bytes=SKILL_BODY_MAX_BYTES)
     state = _IndexBuildState()
     _read_roster(state, graph=graph)
     _read_front_matter(state, graph=graph)
@@ -792,6 +796,7 @@ def build_index(
         node_to_skills={dcid: tuple(matches) for dcid, matches in node_to_skills.items()},
         issues=tuple(state.issues),
         may_omit_published_skills=index_may_omit_published_skills(state.issues, skills),
+        failed_reads=reads.failed,
     )
 
 

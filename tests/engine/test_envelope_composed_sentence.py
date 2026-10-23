@@ -11,6 +11,7 @@ import json
 from fastapi.testclient import TestClient
 
 from search.engine.assemble import build_no_data_part
+from search.engine.clients.llm import SupportsLLM
 from search.engine.core import _quick_no_data
 from search.engine.envelope import make_diagnostics, make_response, now_ms
 from search.engine.extract import Extraction, ExtractionResult
@@ -21,6 +22,7 @@ from tests.engine._base_identity import (
     make_identity,
     subject_entity,
 )
+from tests.engine._binders import BIRTH_RATE_CANDIDATES, KeyedBindReplyLLM
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     make_request,
@@ -37,7 +39,7 @@ from tests.engine.test_parts_shape import (
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 
-def _client(*, walk: bool = False) -> TestClient:
+def _client(*, walk: bool = False, llm: SupportsLLM | None = None) -> TestClient:
     """A Search app over the shared fixture graph; with `walk`, a resubmit walks the mint's
     member enumeration over its nodes."""
     graph = FakeGraph()
@@ -45,7 +47,7 @@ def _client(*, walk: bool = False) -> TestClient:
         search_app(
             graph=graph,
             resolver=make_resolver(graph),
-            llm=FakeLLM(),
+            llm=llm if llm is not None else FakeLLM(),
             sdmx=FakeSdmxClient(),
             materialise_graph=member_walk_reader(graph) if walk else None,
         ),
@@ -219,7 +221,10 @@ def test_raw_text_three_variable_composed_sentence_names_middle_variable_once():
     fake_llm = _llm_with_extraction(
         _MIDDLE_FAILS_QUERY, variables=_MIDDLE_FAILS_VARIABLES, entities=["Ethiopia"]
     )
-    result = offline_resolve(make_request(_MIDDLE_FAILS_QUERY), llm=fake_llm)
+    result = offline_resolve(
+        make_request(_MIDDLE_FAILS_QUERY),
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES, delegate=fake_llm),
+    )
     assert result.rendered_sentence is not None
     assert result.rendered_sentence.lower().count("left-handedness") == 1
     assert "Birth rate has 2 readings." in result.rendered_sentence
@@ -233,6 +238,7 @@ _ETHIOPIA_REQUEST = {
 }
 
 _ETHIOPIA_RENDERED_SENTENCE = (
+    "Answered 1 of 2 parts. "
     "Ethiopia's total population, 1960 to 2024. World Development Indicators. "
     "Birth rate has 2 readings. Ethiopia's crude birth rate per capita. 1960 to 2023. "
     "Ethiopia's female fertility rate. World Development Indicators \u00b7 1960 to 2023."
@@ -241,7 +247,7 @@ _ETHIOPIA_RENDERED_SENTENCE = (
 
 def test_ethiopia_population_and_birth_rate_composed_sentence_buffered():
     """Issue #598: an unresolved sibling keeps both parts' sentences separate and unhoisted."""
-    client = _client()
+    client = _client(llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES))
     resp = client.post("/api/search/resolve", json=_ETHIOPIA_REQUEST)
     assert resp.status_code == 200
     body = resp.json()
@@ -264,18 +270,26 @@ def test_ethiopia_population_and_birth_rate_composed_sentence_buffered():
     assert when_slot["text"] == "1960 to 2024"
     assert when_slot["part_index"] == 0
 
-    # Every token belongs to exactly one sentence -- connectives and the
-    # terminal "." included -- joined by exactly one shared, unindexed " ".
+    # The mixed answer opens with two unindexed tokens, the opener and its space. After
+    # them every token belongs to exactly one sentence (connectives and the terminal "."
+    # included), joined by exactly one shared, unindexed " ".
+    opener, body_plan = plan[:2], plan[2:]
+    assert [(t["text"], t.get("part_index")) for t in opener] == [
+        ("Answered 1 of 2 parts.", None),
+        (" ", None),
+    ]
     separators = [
-        t for t in plan if t["kind"] == "text" and t["text"] == " " and t.get("part_index") is None
+        t
+        for t in body_plan
+        if t["kind"] == "text" and t["text"] == " " and t.get("part_index") is None
     ]
     assert len(separators) == 1
-    assert {t.get("part_index") for t in plan if t is not separators[0]} == {0, 1}
+    assert {t.get("part_index") for t in body_plan if t is not separators[0]} == {0, 1}
 
 
 def test_ethiopia_population_and_birth_rate_composed_sentence_sse():
     """The SSE response event carries the same composed sentence as the buffered body."""
-    client = _client()
+    client = _client(llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES))
     resp = client.post(
         "/api/search/resolve",
         json=_ETHIOPIA_REQUEST,

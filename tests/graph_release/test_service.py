@@ -1,16 +1,19 @@
 """Pins `ReleaseService`: load at start, a request-triggered recheck, the swap
 inside its guards, one release per request across a swap, file cleanup after
-the last holder, the serving views built as a release opens, the Datasets
-surface and worker wiring with and without `GRAPH_RELEASE_URI`, and the Graph,
-Presentation and Search surfaces' binding under it."""
+the last holder, the memory of a refused release, the events a recheck and a swap log,
+the serving views and origin view built as a release opens, the process service, the
+Datasets surface and worker wiring, and the Graph, Presentation and Search surfaces'
+binding under it."""
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
 import gc
+import logging
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,17 +33,22 @@ from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.oidc import FakeOidcVerifier
 from datasets_api.operations.worker_app import RUN_ROUTE_PATH, build_worker_app
 from graph_api.app import graph_surface
-from graph_release import context
 from graph_release.context import ReleaseNotBound, bound_release, current_release
-from graph_release.format import Manifest, Pointer, manifest_uri, open_release, pointer_uri
+from graph_release.format import (
+    Manifest,
+    Pointer,
+    ReleaseFormatError,
+    manifest_uri,
+    open_release,
+    pointer_uri,
+)
 from graph_release.service import (
     Release,
+    ReleaseLoader,
     ReleaseService,
     ReleaseUriMissingError,
     _LocalFiles,
     get_release_service,
-    optional_release_service,
-    reset_release_service,
 )
 from graph_release.views import ViewRefused
 from materialise.rate_tables import RateTableCache
@@ -49,6 +57,7 @@ from origin_catalogue.service import CatalogueService
 from presentation_api.app import presentation_surface
 from search.engine.app import search_surface
 from series_coverage.shared import get_coverage_service
+from statvar_members import shared_enumerator
 from tests.datasets_api._artifact_doubles import FakeArtifactStore
 from tests.datasets_api._operation_store import FakeOperationDatasetStore
 from tests.datasets_api.test_worker_app import _complete_run, _submit, _task_body
@@ -67,11 +76,13 @@ class _Clock:
         return self.now
 
 
-@pytest.fixture(autouse=True)
-def _views_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Most releases here hold no view parts, so the process service builds no views unless a
-    test sets `GRAPH_RELEASE_COVERAGE` itself."""
-    monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
+@pytest.fixture
+def _views_stubbed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Placeholder views and origin view for releases built from `sample_tables`, which hold no
+    view parts. The load, swap and cleanup tests read neither, and a real build costs about a
+    second per release."""
+    monkeypatch.setattr(service_module, "build_release_views", lambda _loaded: object())
+    monkeypatch.setattr(service_module, "release_origin", lambda _loaded: object())
 
 
 @pytest.fixture
@@ -95,12 +106,10 @@ def _other_tables() -> dict[str, pa.Table]:
 
 
 def _service(
-    root: str, local_dir: Path, *, clock: _Clock, loader=None, **kwargs: object
+    root: str, local_dir: Path, *, clock: _Clock, loader: ReleaseLoader = open_release
 ) -> ReleaseService:
-    if loader is not None:
-        kwargs["loader"] = loader
     return ReleaseService(
-        uri=root, local_dir=local_dir, recheck_seconds=_RECHECK, clock=clock, **kwargs
+        uri=root, local_dir=local_dir, recheck_seconds=_RECHECK, clock=clock, loader=loader
     )
 
 
@@ -117,6 +126,24 @@ def _files(manifest: Manifest) -> set[str]:
     return {ref.file_name for ref in manifest.parts}
 
 
+@contextmanager
+def _collector_off() -> Iterator[None]:
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
+
+
+def _events(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, object]]:
+    """The JSON fields of each `event` line the service logged."""
+    return [
+        fields
+        for record in caplog.records
+        if (fields := getattr(record, "json_fields", {})).get("event") == event
+    ]
+
+
 def _catalogue_service() -> CatalogueService:
     return CatalogueService(
         artifact_uri="fake://origin-catalogue",
@@ -125,6 +152,7 @@ def _catalogue_service() -> CatalogueService:
     )
 
 
+@pytest.mark.usefixtures("_views_stubbed")
 class TestService:
     def test_construction_serves_the_published_release_with_its_parts_mapped(
         self, root: str, local_dir: Path
@@ -251,20 +279,45 @@ class TestService:
     def test_a_replaced_release_unlinks_its_own_files_once_its_last_holder_drops_it(
         self, root: str, local_dir: Path
     ):
+        """With the collector off, so the release dies by its reference count and no cycle
+        keeps it until a collection."""
         first = build_test_release(root, tables=sample_tables())
         clock = _Clock()
         service = _service(root, local_dir, clock=clock)
         second = build_test_release(root, tables=_other_tables())
         held = service.snapshot()
+        replaced = weakref.ref(held)
+
+        with _collector_off():
+            _recheck(service, clock)
+            on_disk = {path.name for path in local_dir.iterdir()}
+            assert on_disk == _files(first) | _files(second)
+
+            del held
+            assert replaced() is None
+            assert {path.name for path in local_dir.iterdir()} == _files(second)
+        assert _files(first) - _files(second)
+
+    def test_memory_is_handed_back_after_the_first_load_and_each_swap(
+        self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        handed_back: list[str] = []
+        monkeypatch.setattr(
+            service_module,
+            "_return_freed_memory",
+            lambda: handed_back.append(threading.current_thread().name),
+        )
+        build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        service = _service(root, local_dir, clock=clock)
+        assert handed_back == [threading.current_thread().name]
 
         _recheck(service, clock)
-        on_disk = {path.name for path in local_dir.iterdir()}
-        assert on_disk == _files(first) | _files(second)
+        assert len(handed_back) == 1
 
-        del held
-        gc.collect()
-        assert {path.name for path in local_dir.iterdir()} == _files(second)
-        assert _files(first) - _files(second)
+        build_test_release(root, tables=_other_tables())
+        _recheck(service, clock)
+        assert handed_back[1:] == ["graph-release-recheck"]
 
     def test_a_release_never_unlinks_the_file_of_a_part_its_loader_skipped(
         self, root: str, local_dir: Path
@@ -291,7 +344,9 @@ class TestService:
         first = build_test_release(root, tables=sample_tables())
         clock = _Clock()
 
-        def failing_after_download(root_uri: str, *, local_dir: Path, release_id: str | None):
+        def failing_after_download(
+            root_uri: str, *, local_dir: Path, release_id: str | None = None
+        ):
             loaded = open_release(root_uri, local_dir=local_dir, release_id=release_id)
             if release_id is not None:
                 raise OSError("refused after the download")
@@ -318,22 +373,163 @@ class TestService:
         assert {path.name for path in tmp_path.iterdir()} == {"shared"}
 
 
+@pytest.mark.usefixtures("_views_stubbed")
+class TestRefusal:
+    @pytest.fixture(autouse=True)
+    def _events_captured(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger=service_module.__name__)
+
+    @pytest.mark.parametrize("refusal", ["format", "views"])
+    def test_a_refused_release_is_not_loaded_again_while_the_pointer_names_it(
+        self,
+        root: str,
+        local_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        refusal: str,
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        refused: set[str] = set()
+        loads: list[str | None] = []
+        guard_entries: list[str] = []
+
+        def loader(root_uri: str, *, local_dir: Path, release_id: str | None = None):
+            loads.append(release_id)
+            if refusal == "format" and release_id in refused:
+                raise ReleaseFormatError("part 'nodes' downloaded with SHA-256 0, manifest says 1")
+            return open_release(root_uri, local_dir=local_dir, release_id=release_id)
+
+        def build_views(loaded) -> object:
+            if loaded.manifest.release_id in refused:
+                raise ViewRefused("the coverage view does not build")
+            return object()
+
+        @contextmanager
+        def guard() -> Iterator[None]:
+            guard_entries.append("enter")
+            yield
+
+        monkeypatch.setattr(service_module, "build_release_views", build_views)
+        service = _service(root, local_dir, clock=clock, loader=loader)
+        service.register_swap_guard(guard)
+        second = build_test_release(root, tables=_other_tables())
+        refused.add(second.release_id)
+
+        for _ in range(3):
+            assert _recheck(service, clock).release_id == first.release_id
+
+        assert loads == [None, second.release_id]
+        assert guard_entries == ([] if refusal == "format" else ["enter"])
+        expected_type = "ReleaseFormatError" if refusal == "format" else "ViewRefused"
+        [refused_line] = _events(caplog, "graph_release_refused")
+        assert refused_line["release_id"] == second.release_id
+        assert refused_line["exception_type"] == expected_type
+        assert refused_line["reason"]
+        failures = _events(caplog, "graph_release_recheck_failed")
+        assert [
+            (f["pointer_release_id"], f["exception_type"], f["deterministic"], f["skipped"])
+            for f in failures
+        ] == [(second.release_id, expected_type, True, skipped) for skipped in (False, True, True)]
+        assert {f["served_release_id"] for f in failures} == {first.release_id}
+
+        third = build_test_release(root, tables=sample_tables(), dc_serving_revision="third")
+        assert _recheck(service, clock).release_id == third.release_id
+        assert loads[-1] == third.release_id
+
+    def test_a_transient_failure_is_loaded_again_at_the_next_recheck(
+        self, root: str, local_dir: Path, caplog: pytest.LogCaptureFixture
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        loads: list[str | None] = []
+
+        def loader(root_uri: str, *, local_dir: Path, release_id: str | None = None):
+            loads.append(release_id)
+            if len(loads) in (2, 3):
+                raise OSError("bucket unreachable")
+            return open_release(root_uri, local_dir=local_dir, release_id=release_id)
+
+        service = _service(root, local_dir, clock=clock, loader=loader)
+        second = build_test_release(root, tables=_other_tables())
+
+        assert _recheck(service, clock).release_id == first.release_id
+        assert _recheck(service, clock).release_id == first.release_id
+        assert _recheck(service, clock).release_id == second.release_id
+
+        assert loads == [None, second.release_id, second.release_id, second.release_id]
+        assert _events(caplog, "graph_release_refused") == []
+        failures = _events(caplog, "graph_release_recheck_failed")
+        assert [(f["exception_type"], f["deterministic"], f["skipped"]) for f in failures] == [
+            ("OSError", False, False)
+        ] * 2
+
+    def test_a_recheck_that_cannot_read_the_pointer_logs_no_pointer_id(
+        self, root: str, local_dir: Path, caplog: pytest.LogCaptureFixture
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        service = _service(root, local_dir, clock=clock)
+        write_uri_bytes(pointer_uri(root), b"not a pointer")
+
+        assert _recheck(service, clock).release_id == first.release_id
+
+        [failure] = _events(caplog, "graph_release_recheck_failed")
+        assert failure["served_release_id"] == first.release_id
+        assert failure["pointer_release_id"] is None
+        assert failure["exception_type"] == "ReleaseFormatError"
+        assert _events(caplog, "graph_release_refused") == []
+
+    def test_a_swap_logs_its_drain_build_and_memory(
+        self,
+        root: str,
+        local_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        first = build_test_release(root, tables=sample_tables())
+        clock = _Clock()
+        service = _service(root, local_dir, clock=clock)
+        monkeypatch.setattr(service_module, "_DRAIN_WARNING_SECONDS", 0.05)
+
+        @contextmanager
+        def slow_drain() -> Iterator[None]:
+            time.sleep(0.3)
+            yield
+
+        service.register_swap_guard(slow_drain)
+        second = build_test_release(root, tables=_other_tables())
+
+        assert _recheck(service, clock).release_id == second.release_id
+
+        [swapped] = _events(caplog, "graph_release_swapped")
+        assert swapped["from_release_id"] == first.release_id
+        assert swapped["to_release_id"] == second.release_id
+        assert isinstance(swapped["drain_seconds"], float) and swapped["drain_seconds"] >= 0.3
+        assert isinstance(swapped["build_seconds"], float) and swapped["build_seconds"] >= 0
+        assert isinstance(swapped["peak_rss_bytes"], int) and swapped["peak_rss_bytes"] > 0
+        assert "rss_bytes" in swapped
+        slow = _events(caplog, "graph_release_drain_slow")
+        assert slow, "a drain past the threshold logged nothing"
+        assert slow[0]["served_release_id"] == first.release_id
+        assert slow[0]["pointer_release_id"] == second.release_id
+        drained = [d for line in slow if isinstance(d := line["drain_seconds"], float)]
+        assert len(drained) == len(slow)
+        assert drained == sorted(drained) and drained[0] >= 0.05
+
+
 class TestViews:
-    @pytest.mark.parametrize("build_views", [False, True])
-    def test_views_are_built_as_a_release_opens_only_when_asked(
-        self, root: str, local_dir: Path, build_views: bool
+    def test_the_views_and_the_origin_view_are_built_as_a_release_opens(
+        self, root: str, local_dir: Path
     ):
         manifest = build_view_release(root)
 
-        release = _service(root, local_dir, clock=_Clock(), build_views=build_views).snapshot()
+        release = _service(root, local_dir, clock=_Clock()).snapshot()
 
-        if not build_views:
-            assert release.views is None
-            return
-        assert release.views is not None
         assert release.views.code_index.stamp.coverage_build == manifest.release_id
         assert release.views.measure_index.axes
         assert release.views.coverage.num_rows > 0
+        assert release.origin.arcs
 
     def test_construction_refuses_a_release_whose_views_do_not_build(
         self, root: str, local_dir: Path
@@ -341,7 +537,7 @@ class TestViews:
         build_test_release(root, tables=sample_tables())
 
         with pytest.raises(ViewRefused):
-            _service(root, local_dir, clock=_Clock(), build_views=True)
+            _service(root, local_dir, clock=_Clock())
         assert list(local_dir.iterdir()) == []
 
     def test_a_swap_builds_the_new_views_only_once_every_permit_is_held(
@@ -370,7 +566,8 @@ class TestViews:
             return object()
 
         monkeypatch.setattr(service_module, "build_release_views", build_views)
-        service = _service(root, local_dir, clock=clock, loader=loader, build_views=True)
+        monkeypatch.setattr(service_module, "release_origin", lambda _loaded: object())
+        service = _service(root, local_dir, clock=clock, loader=loader)
         service.register_swap_guard(permits.every_permit)
         loaded.clear()
         second = build_test_release(root, tables=_other_tables())
@@ -394,7 +591,7 @@ class TestViews:
         release's own files are unlinked."""
         first = build_view_release(root)
         clock = _Clock()
-        service = _service(root, local_dir, clock=clock, build_views=True)
+        service = _service(root, local_dir, clock=clock)
         permits = MaterialisePermits(1)
         service.register_swap_guard(permits.every_permit)
         build_test_release(root, tables=sample_tables())
@@ -402,7 +599,6 @@ class TestViews:
         served = _recheck(service, clock)
 
         assert served.release_id == first.release_id
-        assert served.views is not None
         assert permits.acquire(timeout=0)
         gc.collect()
         assert {path.name for path in local_dir.iterdir()} == _files(first)
@@ -410,49 +606,41 @@ class TestViews:
 
 class TestProcessService:
     @pytest.fixture(autouse=True)
-    def _fresh_singleton(self) -> Iterator[None]:
-        reset_release_service()
-        yield
-        reset_release_service()
+    def _fresh_singleton(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        # Restores the session's service on exit, so later tests serve the release
+        # `tests/conftest.py` bound. The shared member enumerator would otherwise follow
+        # each test's service and stop caching the session's member groups; a test that
+        # records the follow replaces this stub.
+        monkeypatch.setattr(shared_enumerator(), "follow_swaps", lambda service: None)
+        with service_module._singleton.isolated():
+            yield
 
     @pytest.mark.parametrize("value", [None, "", "  "])
-    def test_unset_uri_builds_no_service(self, monkeypatch: pytest.MonkeyPatch, value: str | None):
+    def test_an_unset_uri_refuses_the_service(
+        self, monkeypatch: pytest.MonkeyPatch, value: str | None
+    ):
         if value is None:
             monkeypatch.delenv("GRAPH_RELEASE_URI", raising=False)
         else:
             monkeypatch.setenv("GRAPH_RELEASE_URI", value)
 
-        assert optional_release_service() is None
-        assert context.optional_release_service() is None
         with pytest.raises(ReleaseUriMissingError):
             get_release_service()
 
-    @pytest.mark.parametrize("flag", [None, "1"])
-    def test_the_coverage_flag_builds_the_served_releases_views(
-        self, root: str, monkeypatch: pytest.MonkeyPatch, flag: str | None
-    ):
-        build_view_release(root)
-        monkeypatch.setenv("GRAPH_RELEASE_URI", root)
-        if flag is None:
-            monkeypatch.delenv("GRAPH_RELEASE_COVERAGE", raising=False)
-        else:
-            monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", flag)
-
-        views = get_release_service().snapshot().views
-
-        assert (views is not None) == (flag is not None)
-
-    def test_a_set_uri_loads_its_release_once_per_process(
+    def test_a_set_uri_opens_its_release_once_with_its_views_and_has_the_enumerator_follow_it(
         self, root: str, monkeypatch: pytest.MonkeyPatch
     ):
-        manifest = build_test_release(root, tables=sample_tables())
+        manifest = build_view_release(root)
         monkeypatch.setenv("GRAPH_RELEASE_URI", root)
+        followed: list[ReleaseService] = []
+        monkeypatch.setattr(shared_enumerator(), "follow_swaps", followed.append)
 
-        service = optional_release_service()
+        service = get_release_service()
 
         assert service is get_release_service()
-        assert service is not None and service.snapshot().release_id == manifest.release_id
-        assert context.optional_release_service() is service
+        assert service.snapshot().release_id == manifest.release_id
+        assert service.snapshot().views.coverage.num_rows > 0
+        assert followed == [service]
 
     @pytest.mark.parametrize(
         "build_surface",
@@ -462,7 +650,7 @@ class TestProcessService:
     def test_a_request_binds_the_served_release_beside_the_catalogue(
         self, root: str, monkeypatch: pytest.MonkeyPatch, build_surface
     ):
-        manifest = build_test_release(root, tables=sample_tables())
+        manifest = build_view_release(root)
         monkeypatch.setenv("GRAPH_RELEASE_URI", root)
         surface = build_surface()
 
@@ -473,27 +661,14 @@ class TestProcessService:
 
 
 class TestDatasetsSurface:
-    @pytest.mark.unbound_release
-    def test_without_a_release_a_request_binds_the_catalogue_alone(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.delenv("GRAPH_RELEASE_URI", raising=False)
-        surface = datasets_surface(catalogue=_catalogue_service())
-
-        assert surface.request_scope is not None
-        with surface.request_scope():
-            assert current_catalogue().build_id == "fake-catalogue"
-            with pytest.raises(ReleaseNotBound):
-                current_release()
-
     def test_a_request_binds_the_served_release_beside_the_catalogue(
         self, root: str, local_dir: Path
     ):
-        first = build_test_release(root, tables=sample_tables())
+        first = build_view_release(root)
         clock = _Clock()
         service = _service(root, local_dir, clock=clock)
         surface = datasets_surface(catalogue=_catalogue_service(), release=service)
-        second = build_test_release(root, tables=_other_tables())
+        second = build_view_release(root, dc_serving_revision="second")
 
         assert surface.request_scope is not None
         with surface.request_scope():
@@ -504,16 +679,13 @@ class TestDatasetsSurface:
         with surface.request_scope():
             assert current_release().release_id == second.release_id
 
-    @pytest.mark.parametrize("flag", [None, "1"], ids=["flag-off", "flag-on"])
+    @pytest.mark.usefixtures("_views_stubbed")
     def test_a_swap_waits_for_every_materialise_permit_while_the_deps_are_open(
-        self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch, flag: str | None
+        self, root: str, local_dir: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """With `GRAPH_RELEASE_COVERAGE` on, the coverage the deps register a load guard on is the
-        release's (`ReleaseCoverage`), and the swap still takes every permit once. A second
-        `every_permit` on the same permits would wait on the first, and the flip would never
-        end."""
-        if flag is not None:
-            monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", flag)
+        """The coverage the deps register a load guard on is the release's (`ReleaseCoverage`),
+        and the swap still takes every permit once. A second `every_permit` on the same permits
+        would wait on the first, and the flip would never end."""
         monkeypatch.setenv("GRAPH_RELEASE_URI", root)
         first = build_test_release(root, tables=sample_tables())
         clock = _Clock()
@@ -582,17 +754,15 @@ def _every_dependency_injected() -> dict[str, object]:
     } | {"artifact_store": FakeArtifactStore()}
 
 
+@pytest.mark.usefixtures("_views_stubbed")
 class TestWorker:
-    def _bound_release(self, release: ReleaseService | None) -> list[str]:
+    def _bound_release(self, release: ReleaseService) -> list[str]:
         operation_store = LiveOperationStore(store=FakeOperationDatasetStore())
         operation_id = _submit(operation_store)
         bound: list[str] = []
 
         def run(*, operation, deps, operation_store, **_) -> None:
-            try:
-                bound.append(current_release().release_id)
-            except ReleaseNotBound:
-                bound.append("unbound")
+            bound.append(current_release().release_id)
             _complete_run(operation=operation, deps=deps, operation_store=operation_store)
 
         app = build_worker_app(
@@ -623,9 +793,3 @@ class TestWorker:
         _recheck(service, clock)
 
         assert self._bound_release(service) == [second.release_id]
-
-    @pytest.mark.unbound_release
-    def test_without_a_release_an_operation_binds_none(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv("GRAPH_RELEASE_URI", raising=False)
-
-        assert self._bound_release(None) == ["unbound"]

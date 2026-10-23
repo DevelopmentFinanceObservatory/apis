@@ -38,6 +38,7 @@ from origin_catalogue.registry import parse_registry
 from origin_catalogue.schema import FORMAT_ROOT, CataloguePointer, IndexPresence, UnAgencyCounts
 from origin_catalogue.successors import Successors
 from origin_catalogue.un_mirror import UnMirror
+from tests.artifact_publication.support import FakeBigQuery, history_row, import_key_responses
 from tests.origin_catalogue.fake_catalogue import provenance_row, spread_provenance_places
 from tests.origin_catalogue.support import held_wire_arcs
 from tests.origin_catalogue.un_fake import (
@@ -50,7 +51,6 @@ from tests.origin_catalogue.un_fake import (
     FakeUn,
 )
 from tests.origin_catalogue.un_fake import target as un_target
-from tests.series_coverage.test_job import FakeBigQuery, history_row, import_key_responses
 
 _CONNECTION = "proj.region.conn"
 

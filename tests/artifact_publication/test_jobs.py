@@ -22,8 +22,13 @@ from artifact_publication.jobs import (
     unpublished_seconds,
 )
 from artifact_publication.uri import delete_uri_if_unchanged, read_uri_bytes_and_generation
-from tests.series_coverage.test_job import FakeBigQuery, history_row, import_key_responses
-from tests.series_coverage.test_uri_gs import _BUCKET, _FakeBlob, gs_bucket  # noqa: F401
+from tests.artifact_publication.support import (
+    BUCKET,
+    FakeBigQuery,
+    FakeBlob,
+    history_row,
+    import_key_responses,
+)
 
 _CONNECTION = "proj.region.conn"
 _LATER = datetime(2026, 9, 25, 10, 0, tzinfo=UTC)
@@ -178,15 +183,15 @@ def test_a_lease_that_does_not_parse_is_reclaimed(tmp_path):
 def _conditional_delete(self, if_generation_match: int | None = None) -> None:
     stored = self._objects.get(self.name)
     if stored is None:
-        raise NotFound(f"gs://{_BUCKET}/{self.name} does not exist")
+        raise NotFound(f"gs://{BUCKET}/{self.name} does not exist")
     if if_generation_match is not None and stored.generation != if_generation_match:
         raise PreconditionFailed(f"generation mismatch for {self.name}")
     del self._objects[self.name]
 
 
-def test_gs_lease_release_deletes_only_the_generation_it_took(gs_bucket, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(_FakeBlob, "delete", _conditional_delete)
-    root = f"gs://{_BUCKET}/catalogue/format-1"
+def test_gs_lease_release_deletes_only_the_generation_it_took(gs_bucket, monkeypatch):
+    monkeypatch.setattr(FakeBlob, "delete", _conditional_delete)
+    root = f"gs://{BUCKET}/catalogue/format-1"
     stale = acquire_lease(root, build_id="a", ttl_seconds=60, now=lambda: 1000.0)
     assert stale is not None
     fresh = acquire_lease(root, build_id="b", ttl_seconds=60, now=lambda: 2000.0)

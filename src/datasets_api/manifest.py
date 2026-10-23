@@ -772,11 +772,11 @@ def stored_series_conversions(facts: ManifestFacts) -> dict[SeriesKey, SeriesCon
 
 def version_document(stored: StoredVersion) -> dict[str, object]:
     """The JSON document a Presentation frame carries as its manifest: a dataset version's
-    manifest without `artifacts`, `output_options` and `diagnostics`, or a published frame's
-    `op_spec_hash` (its subject id), `input_content_versions` and `continuations`
-    (`FrameLineage.continuations`): its entries when it stores any, `null` while they are
-    unknown, on a version recorded before versions stored them until `backfill-descriptions`
-    fills them, and left out when nothing continues its series."""
+    manifest without `artifacts`, `output_options`, `diagnostics` and `retention`, or a
+    published frame's `op_spec_hash` (its subject id), `input_content_versions` and
+    `continuations` (`FrameLineage.continuations`): its entries when it stores any, `null` while
+    they are unknown, on a version recorded before versions stored them until
+    `backfill-descriptions` fills them, and left out when nothing continues its series."""
     if isinstance(stored.facts, FrameLineage):
         document: dict[str, object] = {
             "op_spec_hash": stored.subject_id,
@@ -789,7 +789,7 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
             document["continuations"] = [dict(entry) for entry in continuations]
         return document
     return stored_manifest(stored).model_dump(
-        mode="json", exclude={"artifacts", "output_options", "diagnostics"}
+        mode="json", exclude={"artifacts", "output_options", "diagnostics", "retention"}
     )
 
 

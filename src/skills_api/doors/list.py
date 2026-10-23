@@ -15,10 +15,10 @@ from fastapi import APIRouter, Request
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from skills_api.deps import (
+    CACHE_CONTROL,
     INDEX_NOT_BUILT_PROBLEM,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
-    cache_control,
 )
 from skills_api.models import SkillListResponse, skill_summary, split_skill_warnings
 from skills_index import SkillsIndex
@@ -39,7 +39,7 @@ def _build_response(index: SkillsIndex) -> SkillListResponse:
     return SkillListResponse(skills=skills, warnings=corpus_warnings)
 
 
-async def list_endpoint(request: Request, deps: SkillsDepsDep) -> object:
+async def list_skills(request: Request, deps: SkillsDepsDep) -> object:
     shared = deps.skills_index
     index = shared.index
     if index is None:
@@ -48,7 +48,7 @@ async def list_endpoint(request: Request, deps: SkillsDepsDep) -> object:
         generation=index,
         key=None,
         request=request,
-        cache_control=cache_control(shared),
+        cache_control=CACHE_CONTROL,
         build_payload=lambda: _build_response(index).model_dump(mode="json"),
     )
 
@@ -56,7 +56,7 @@ async def list_endpoint(request: Request, deps: SkillsDepsDep) -> object:
 def build_list_door() -> DoorContribution:
     router = APIRouter()
     router.add_api_route(
-        "/api/skills", list_endpoint, methods=["GET"], response_model=SkillListResponse
+        "/api/skills", list_skills, methods=["GET"], response_model=SkillListResponse
     )
     return DoorContribution(
         router=router,

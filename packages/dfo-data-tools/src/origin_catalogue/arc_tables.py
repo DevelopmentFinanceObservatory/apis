@@ -282,6 +282,25 @@ def spanner_wire_target(object_id: str, node: SpannerNode | None) -> dict[str, A
     )
 
 
+def spanner_wire_arcs(
+    edges: Mapping[str, Iterable[str]], nodes: Mapping[str, SpannerNode]
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """A DFO variable's `->*` answer from its `Edge` rows, `edges` mapping each predicate to
+    its `object_id`s, and the `Node` rows of their targets, each target as
+    `spanner_wire_target` gives it. Each property's targets are sorted by `object_id`, the
+    order our mixer's `->*` read gives them, so the answer is the same whatever order the rows
+    came in."""
+    return {
+        property: {
+            "nodes": [
+                spanner_wire_target(object_id, nodes.get(object_id))
+                for object_id in sorted(objects)
+            ]
+        }
+        for property, objects in edges.items()
+    }
+
+
 __all__ = [
     "DENOMINATOR_PROPERTY",
     "EMPTY_ARC_TABLES",
@@ -292,5 +311,6 @@ __all__ = [
     "ArcTablesError",
     "SpannerNode",
     "WireArcs",
+    "spanner_wire_arcs",
     "spanner_wire_target",
 ]

@@ -14,11 +14,11 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.errors import MaterialisationUsageError
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
-from search.engine.bind import _UniversalBindOutput
 from search.engine.concurrency import scoped_concurrency
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -66,7 +66,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _materialise_sdmx() -> MaterialiseSdmxClient:

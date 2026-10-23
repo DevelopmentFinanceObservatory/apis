@@ -140,7 +140,9 @@ class MemberNotResolvable(Refusal):
 
     This maps to `member_not_resolvable` with one issue per member at `issue_pointer`, which
     `kinds.spec_id` sets and which defaults to `kinds.statvar_set`'s `/input/statvars`.
-    `truncated` marks a capped list of disagreeing members.
+    `truncated` marks a capped list of disagreeing members. `retryable` marks members a
+    member walk left unsettled on reads that can drop an arc
+    (`MemberGroup.undismissed_rereadable`), which a later walk can settle.
     """
 
     code = "member_not_resolvable"
@@ -150,9 +152,12 @@ class MemberNotResolvable(Refusal):
     def issues(self) -> tuple[ProblemIssue, ...]:
         return tuple(ProblemIssue(pointer=self.issue_pointer, member=m) for m in self.members)
 
-    def __init__(self, *, members: tuple[str, ...], truncated: bool = False) -> None:
+    def __init__(
+        self, *, members: tuple[str, ...], truncated: bool = False, retryable: bool = False
+    ) -> None:
         self.members = members
         self.truncated = truncated
+        self.retryable = retryable
         detail = f"member(s) did not resolve to exactly one registered shape: {members!r}"
         if truncated:
             detail += "; more members disagreed than are named here"

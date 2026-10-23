@@ -16,15 +16,34 @@ JOINING_WORDS = frozenset(
     {"a", "an", "the", "of", "who", "which", "that", "is", "are", "was", "were"}
 )
 
-# Words a phrase can hold without naming anything a query restricts: the joining words,
-# prepositions, pronouns, auxiliaries and the possessive "s".
-FUNCTION_WORDS = JOINING_WORDS | frozenset(
+# Prepositions that name nothing a query restricts.
+JOINING_PREPOSITIONS = frozenset(
     {
-        "and", "or", "in", "to", "from", "by", "for", "on", "at", "with", "within", "as",
-        "per", "than", "into", "over", "across", "since", "between", "do", "does", "did",
-        "be", "been", "has", "have", "had", "what", "how", "i", "me", "my", "you", "your",
-        "we", "our", "it", "its", "this", "these", "those", "there", "s",
+        "of", "in", "to", "from", "by", "for", "on", "at", "with", "within", "as", "per",
+        "than", "into", "over", "across", "since", "between",
     }
+)  # fmt: skip
+
+# Prepositions that restrict what they attach ("aid excluding debt relief").
+RESTRICTING_PREPOSITIONS = frozenset(
+    {
+        "excluding", "including", "except", "without", "under", "about", "among", "through",
+        "towards", "toward", "via", "against", "during", "outside", "beyond",
+    }
+)  # fmt: skip
+
+# Words a phrase can hold without naming anything a query restricts: the joining words,
+# joining prepositions, pronouns, auxiliaries and the possessive "s".
+FUNCTION_WORDS = (
+    JOINING_WORDS
+    | JOINING_PREPOSITIONS
+    | frozenset(
+        {
+            "and", "or", "do", "does", "did", "be", "been", "has", "have", "had", "what",
+            "how", "i", "me", "my", "you", "your", "we", "our", "it", "its", "this", "these",
+            "those", "there", "s",
+        }
+    )
 )  # fmt: skip
 
 # Nouns that name the quantity a measure counts and nothing about which flows it counts:

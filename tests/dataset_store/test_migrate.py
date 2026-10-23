@@ -396,6 +396,7 @@ def test_apply_pending_applies_every_real_migration_in_order():
         "0034_description_record.sql",
         "0035_strip_backfilled_documentation.sql",
         "0036_version_record_continuations.sql",
+        "0037_version_record_recency.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert any("CREATE TABLE datasets.version_record" in sql for sql in statements)
@@ -486,6 +487,7 @@ def _statement_kinds(name: str) -> list[str]:
         ),
         ("0031_version_record_facts_backfill.sql", ["UPDATE datasets.version_record", "DO $$"]),
         ("0034_description_record.sql", ["SET LOCAL", "CREATE TABLE"]),
+        ("0037_version_record_recency.sql", ["SET LOCAL", "CREATE INDEX"]),
         (
             "0033_output_profile_party_kind.sql",
             [

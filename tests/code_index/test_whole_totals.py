@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from code_index import CodeIndex, IndexFormatError, default_index_path, load_index, parse_index
+from code_index import CodeIndex, IndexFormatError, parse_index
 from code_index.types import (
     PARTY_CLASSES,
     PARTY_KINDS,
@@ -16,6 +16,7 @@ from code_index.types import (
     WholeTotalSet,
     covered_class,
 )
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from .conftest import FIXTURE_PATH
 
@@ -136,8 +137,8 @@ def test_an_index_without_markers_loads_each_party_as_no_whole_total(code_index:
     assert code_index.whole_total_sets == ()
 
 
-def test_the_packaged_index_holds_only_whole_totals_that_are_totals_of_known_classes():
-    index = load_index(default_index_path())
+def test_the_fixture_index_holds_only_whole_totals_that_are_totals_of_known_classes():
+    index = load_index(INDEX_FIXTURE)
 
     assert {party.kind for party in index.parties.values()} <= PARTY_KINDS
     for party in index.parties.values():

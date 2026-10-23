@@ -60,6 +60,7 @@ from search.engine.retrieval.read_plan import current_year
 from search.engine.role_text import (
     ROLE_TEXT_NOT_RECOGNISED,
     DoorRole,
+    parsed_role_query,
     role_axis_for_text,
 )
 from search.engine.source_code import PartCode, compile_part_code, without_code_words
@@ -93,7 +94,6 @@ def _role_query_for_part(part: ParsedPart) -> tuple[str, list[Warning]]:
     `_entity_roles_for_part`. Return warnings for unrecognised role text. Those
     entities remain undirected.
     """
-    words = [part.variable_text]
     warnings: list[Warning] = []
     for entity in part.entities or ():
         axis = role_axis_for_text(entity.role_text)
@@ -110,8 +110,7 @@ def _role_query_for_part(part: ParsedPart) -> tuple[str, list[Warning]]:
                     ),
                 )
             )
-        words.append(entity.text)
-    return " ".join(words), warnings
+    return parsed_role_query(part), warnings
 
 
 def _entity_roles_for_part(part: ParsedPart) -> dict[str, list[DoorRole]]:
@@ -618,6 +617,7 @@ async def handle(
             resolver=resolver,
             admission=admission,
             llm=llm,
+            binder=params.binder,
             sdmx=sdmx,
             materialise_graph=materialise_graph,
             materialise_sdmx=materialise_sdmx,
@@ -707,6 +707,7 @@ async def handle(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=params.binder,
         sdmx=sdmx,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,

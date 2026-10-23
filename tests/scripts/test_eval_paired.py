@@ -26,7 +26,7 @@ from starlette.routing import Route
 
 import scripts.eval_paired as m
 from graph_release.context import bound_release_or_none
-from graph_release.service import ReleaseService
+from graph_release.service import ReleaseService, get_release_service
 from origin_catalogue import current_catalogue
 from search.engine.errors import GraphReadFailure
 from search.eval.cases import Case, asserted_checks, load_cases
@@ -35,7 +35,7 @@ from search.eval.gate import BLOCKING, Outcome
 from search.eval.runner import run_cases
 from search.models import RESOLVE_RESPONSE_ADAPTER
 from tests.conftest import _build_worked_example_response
-from tests.graph_release.support import build_test_release, sample_tables
+from tests.graph_release.support import build_view_release
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 REGRESSING = "health ODA grants to Ethiopia since 2015"
@@ -232,7 +232,9 @@ def run_driver(
 ) -> tuple[int, Counter, Counter]:
     transports, head_posts, base_posts = _transports(head, base)
     args = m._parser().parse_args(argv)
-    reads = m.Reads(catalogue=CATALOGUE, release=release, graph=graph or AllExist())
+    reads = m.Reads(
+        catalogue=CATALOGUE, release=release or get_release_service(), graph=graph or AllExist()
+    )
 
     async def go() -> int:
         async with httpx.AsyncClient(mounts=transports) as client:
@@ -285,7 +287,7 @@ def test_matching_apps_exit_0_on_one_head_sample_each_without_a_base_run(corpus,
 
 def test_every_check_read_sees_the_served_graph_release(corpus, tmp_path):
     root = (tmp_path / "releases").as_uri()
-    manifest = build_test_release(root, tables=sample_tables())
+    manifest = build_view_release(root)
     graph = ReleaseRecording()
 
     code, _, _ = run_driver(

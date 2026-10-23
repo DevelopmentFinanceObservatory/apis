@@ -40,7 +40,7 @@ Every identity built here is canonical (`code_index.members.canonical_identity`)
 slot an invariant of the dataset the identity names fixes binds the invariant's value, so an
 answer, an alternate candidate and a suggestion naming one dataset mint one spec_id whichever
 invariants their bindings hold. The module
-reads the packaged code index for that election and is otherwise pure apart from the
+reads the release's code index for that election and is otherwise pure apart from the
 identity package call.
 
 The id hashes the whole ``BaseIdentity`` document, dumped with null members omitted.

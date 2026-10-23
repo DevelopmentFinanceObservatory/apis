@@ -1,4 +1,4 @@
-"""Test `index_family_label` over every family of the packaged index.
+"""Test `index_family_label` over every family of the fixture index.
 
 An index family's label names only what every one of its rows shares, so the code of a slot
 the family spans never enters it, whichever row a sample happens to hold."""
@@ -9,11 +9,12 @@ import re
 
 import pytest
 
-from code_index import IndexFamily, default_index_path, load_index
+from code_index import IndexFamily
 from code_index.labels import index_family_label
 from code_index.shared import get_measure_index
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
-_INDEX = load_index(default_index_path())
+_INDEX = load_index(INDEX_FIXTURE)
 _FAMILIES = [family for families in _INDEX.families_by_five_tuple.values() for family in families]
 
 

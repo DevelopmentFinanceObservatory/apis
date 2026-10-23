@@ -1,9 +1,9 @@
 """Pins that every surface starts, and answers, with no graph release bound when it starts.
 
 A production process starts its lifespans with nothing bound: a request binds its release at
-entry, and startup is no request. With `GRAPH_RELEASE_COVERAGE` on, a code index, measure index
-or coverage read with no release bound raises `ReleaseNotBound`, so a lifespan that warms one up
-must bind the served release around the read. These tests build the apis service's composed app,
+entry, and startup is no request. A code index, measure index or coverage read with no release
+bound raises `ReleaseNotBound`, so a lifespan that warms one up must bind the served release
+around the read. These tests build the apis service's composed app,
 every surface it mounts, and the datasets worker app over a release with views, run their
 lifespans from an unbound context, and send one request through a route that reads the code
 index. Live clients are injected or replaced, and every startup step that reads an index runs
@@ -71,8 +71,7 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Release
     root = (tmp_path / "releases").as_uri()
     build_view_release(root)
     monkeypatch.setenv("GRAPH_RELEASE_URI", root)
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
-    served = ReleaseService(uri=root, local_dir=tmp_path / "local", build_views=True)
+    served = ReleaseService(uri=root, local_dir=tmp_path / "local")
     with service_module._singleton.poisoned_for_test(served):
         yield served
     served.close()

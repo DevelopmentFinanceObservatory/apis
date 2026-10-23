@@ -25,6 +25,7 @@ from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import WORKER_PLACE_SCOPE_MEMO_NAME, build_worker_app
 from graph_generation import GraphGeneration
 from graph_generation.fake import FakeGeneration
+from graph_release.service import get_release_service
 from materialise.rate_tables import RateTableCache
 from series_coverage.shared import get_coverage_service
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -115,6 +116,7 @@ def _open_deps(**injected: Any) -> None:
     overrides = DepsOverrides(
         coverage=get_coverage_service(),
         rate_cache=RateTableCache(),
+        release=get_release_service(),
         code_index=get_index(),
         task_client=FakeTaskClient(),
         **{name: object() for name in _STORES},

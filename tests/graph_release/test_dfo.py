@@ -21,9 +21,9 @@ import pytest
 
 from code_index import declarations as code_index_declarations
 from code_index.export import content_hash
+from code_index.loader import parse_index
 from dc_graph import GraphClient, parse_arcs
 from graph_release import declarations as release_declarations
-from graph_release.coverage import HORIZON, role_map
 from graph_release.declarations import DECLARATIONS, Declarations
 from graph_release.dfo import (
     GRAPH_ENDPOINT,
@@ -38,8 +38,6 @@ from graph_release.dfo import (
 )
 from graph_release.format import conform_part
 from graph_release.platform import PlatformRefusal
-from series_coverage.index import CoverageIndex
-from series_coverage.schema import FacetMetadata
 from tests.graph_release.recorded import (
     MIXER_PARTIES,
     PLACEHOLDER_PARTY,
@@ -262,27 +260,6 @@ def test_parties_publish_each_dataset_between_its_first_and_last_year() -> None:
     assert parties["Recipient"].years == {"d/A": (1980, 2024), "d/B": (2010, 2020)}
 
 
-def test_parties_give_the_years_the_script_path_reads_from_the_year_masks() -> None:
-    # `load_coverage_join` takes the years from the year masks and `_parties` from the
-    # `first_year` and `last_year` columns; one export must not depend on which path ran.
-    parts = slice_platform_parts()
-    inputs = dfo_inputs(parts, SLICE_DECLARATIONS)
-    index = CoverageIndex(
-        inputs.coverage,
-        role_map(parts.edges, SLICE_DECLARATIONS.role_axes),
-        {
-            facet_id: FacetMetadata(provenance_id=provenance)
-            for facet_id, provenance in inputs.facet_provenances.items()
-        },
-        horizon=HORIZON,
-    )
-
-    from_release = {party: row.years for party, row in _parties(inputs, {_CRS}).items()}
-
-    assert from_release
-    assert from_release == index.dataset_party_years({_CRS})
-
-
 def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() -> None:
     base = json.loads(SLICE_BASE_PARTIES)
     del base["country/TJK"]
@@ -323,6 +300,30 @@ def test_dfo_parts_read_a_base_partys_donor_code_from_the_mixer() -> None:
     }
     assert rows[PLACEHOLDER_PARTY] == ("party", "private")
     assert rows[UNHELD_PARTY] == ("party", "official")
+
+
+def test_dfo_parts_carry_the_ratio_base_shape_slot_defaults_and_broad_readings() -> None:
+    """The code index the release serves reads the declarations back, and a dataset that
+    declares no ratio base writes no key."""
+    crs, imputed = SLICE_DECLARATIONS.datasets
+    declarations = dataclasses.replace(
+        SLICE_DECLARATIONS,
+        datasets=(dataclasses.replace(crs, ratio_base_axis="destination"), imputed),
+        shape_slot_defaults=code_index_declarations.SHAPE_SLOT_DEFAULTS,
+        broad_readings=code_index_declarations.BROAD_READINGS,
+    )
+
+    built = build_dfo_parts(dfo_inputs(slice_platform_parts(), declarations), SLICE_BASE_PARTIES)
+    document = json.loads(gzip.decompress(built.code_index_blocks))
+    index = parse_index(document)
+
+    assert [row.get("ratio_base_axis") for row in document["datasets"]] == ["destination", None]
+    assert "ratio_base_axis" not in document["datasets"][1]
+    assert index.datasets[crs.provenance].ratio_base_axis == "destination"
+    assert index.datasets[imputed.provenance].ratio_base_axis is None
+    assert index.shape_slot_defaults == code_index_declarations.SHAPE_SLOT_DEFAULTS
+    assert index.broad_readings == code_index_declarations.BROAD_READINGS
+    assert built.declarations == declarations.declarations_json()
 
 
 @pytest.mark.parametrize(

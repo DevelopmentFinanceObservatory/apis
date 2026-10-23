@@ -39,7 +39,7 @@ Related guides:
 
 - [deploy/postgres.md](postgres.md) covers database connectivity, IAM authentication, migrator roles, and schema migrations.
 - [deploy/graph.md](graph.md) covers Graph API surface mounting, DCP authentication, and ResolveKit SQLite cache composition.
-- [deploy/coverage.md](coverage.md) covers the coverage artifact: its layout, the job that builds it, and the deploy-order dependency the service has on it.
+- [deploy/graph-release.md](graph-release.md) covers the graph release every serving process serves from: its layout, the builder job, its deploy check, and the rollback floor.
 - [deploy/origin-catalogue.md](origin-catalogue.md) covers the origin catalogue: its layout, the job that builds it, its refusals, and the deploy-order dependency the services have on it.
 - [deploy/search-catalogue.md](search-catalogue.md) covers the search catalogue: its layout, the job that builds and checks it, its events, and how `GET /api/search/catalogue` reads it.
 
@@ -69,18 +69,13 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
 1. Points `JOB_DATASETS_MIGRATE` at the new image and executes it with `--wait`.
 1. Points `JOB_PRESENTATION_MIGRATE` at the new image and executes it with `--wait`.
 1. Points `JOB_DATASETS_MAINTENANCE` at the new image. Cloud Scheduler runs its `datasets-maintenance` tasks.
-1. Points `JOB_COVERAGE` at the new image, so scheduled runs use the new code (see [deploy/coverage.md](coverage.md)).
-1. Executes `JOB_COVERAGE` with its args overridden to `-m series_coverage.verify` (the command stays `python`), confirming a compatible artifact is published in the new image's coverage format root. Only when verify fails, executes the build job (`python -m series_coverage.job`) and verifies again; a second failure stops the run before either service moves onto the new image (see [deploy/coverage.md](coverage.md)'s "Deploy order" section).
-1. Executes `JOB_COVERAGE` with `-m series_coverage.verify_index --record`, checking the image's code index against the published coverage build and recording its compatibility pointer. A difference stops the run before either service moves onto the new image.
 1. Points `JOB_ORIGIN_CATALOGUE` at the new image, so scheduled runs use the new code (see [deploy/origin-catalogue.md](origin-catalogue.md)).
 1. Executes `JOB_ORIGIN_CATALOGUE` with its args overridden to `-m origin_catalogue.verify`, confirming a compatible catalogue is published in the new image's format root. Only when verify fails, executes the build job (`python -m origin_catalogue.job`) and verifies again; a second failure stops the run before either service moves onto the new image (see [deploy/origin-catalogue.md](origin-catalogue.md)'s "Deploy order" section).
-1. Points `JOB_GRAPH_RELEASE` at the new image without executing it, so its scheduled ticks build with the new code (see [deploy/graph-release.md](graph-release.md)).
-1. Points `JOB_SEARCH_CATALOGUE` at the new image. The apis service starts without a search catalogue and answers 503 on `GET /api/search/catalogue` until one loads.
+1. Points `JOB_GRAPH_RELEASE` at the new image, so its scheduled ticks build with the new code, and executes it with its args overridden to `-m graph_release.verify`, confirming the new image opens the release the pointer names and builds its views. Only when verify fails, executes one build and verifies again; a second failure stops the run before either service moves onto the new image (see [deploy/graph-release.md](graph-release.md)).
+1. Points `JOB_SEARCH_CATALOGUE` at the new image and executes it with `--wait`. Its build key includes the image's commit, so the run builds the catalogue on the new image in about 90 seconds, or exits at once when the image's format root already carries its key. Then executes it with its args overridden to `-m search.catalogue.verify`, confirming a loadable build is published at the new image's format root. A failed build or a failed verify stops the run before either service moves onto the new image (see [deploy/search-catalogue.md](search-catalogue.md)).
 1. Updates the datasets worker service revision (`SERVICE_WORKER`, the async operations worker) using `gcloud run services update`.
 1. Updates the apis service revision (`SERVICE_APIS`) using `gcloud run services update`.
-1. Executes `JOB_SEARCH_CATALOGUE` with `--async`. Its build key includes the image's commit, so the execution rebuilds the catalogue on the new image in about 90 seconds. The deploy does not wait for it.
 1. Executes `JOB_DATASETS_MAINTENANCE` with `--args=settle --wait`, repeating the data statements of the migrations over rows the previous image wrote between the migration job and the service move.
-1. Executes `JOB_COVERAGE` with `-m series_coverage.record_serving_index`, recording the image's code index as the one both services run.
 1. Executes `JOB_DATASETS_MAINTENANCE` with `--args=backfill-descriptions --wait`, writing a description record for every version row that holds none, including those the previous image wrote before the service move. A version it cannot backfill is logged as one ERROR line and tried again on the next deploy that moves the apis service to a new image or on a `workflow_dispatch` run, as is a collapse whose base holds no record; a re-run of the workflow for a commit already live runs no step. The step fails when the run read no version and met a failure a retry can clear (an unreachable store, a timeout or an overload), so a run in which every version failed for good exits 0 and logs each one.
 
 Every job moves to the new image before it executes, so a job still on the `gcr.io/cloudrun/hello` placeholder a fresh project starts with never runs as the placeholder. A failed job step stops the run before the service moves to the new image.
@@ -89,7 +84,7 @@ Manual deployments trigger via `workflow_dispatch` in GitHub Actions and always 
 dispatched commit, whether or not it's already live, since dispatch exists to force a redeploy
 (to re-run the migration jobs, for instance, or to roll back). Roll back by dispatching the older
 commit rather than by moving traffic in the Cloud Run console: dispatch also points the
-coverage, origin catalogue and search catalogue jobs at that commit's image, so the scheduled runs keep its format roots current (see [deploy/coverage.md](coverage.md), [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/search-catalogue.md](search-catalogue.md)).
+origin catalogue and search catalogue jobs at that commit's image, so the scheduled runs keep its format roots current (see [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/search-catalogue.md](search-catalogue.md)). An image older than `4be674b7d` cannot open a graph release; [deploy/graph-release.md](graph-release.md) gives the rollback floor and the environment older images read.
 
 ## Workload Identity Federation & Authentication
 
@@ -122,7 +117,6 @@ Configuration values map to GitHub Environment secrets and variables:
 | `JOB_DATASETS_MIGRATE`     | Environment | Variable | Cloud Run Job that applies the datasets migrations (`dfo-dev-datasets-migrate` in dev).                                                                          | `just handoff apis` in infra |
 | `JOB_PRESENTATION_MIGRATE` | Environment | Variable | Cloud Run Job that applies the presentation migrations (`dfo-dev-presentation-migrate` in dev).                                                                  | `just handoff apis` in infra |
 | `JOB_DATASETS_MAINTENANCE` | Environment | Variable | Cloud Run Job that runs the `datasets-maintenance` tasks: the reconciliation sweep, aging terminal operations, and the deploy's settle and description backfill. | `just handoff apis` in infra |
-| `JOB_COVERAGE`             | Environment | Variable | Cloud Run Job that builds and verifies the coverage artifact (`dfo-dev-coverage` in dev).                                                                        | `just handoff apis` in infra |
 | `JOB_ORIGIN_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds and verifies the origin catalogue (`dfo-dev-origin-catalogue` in dev).                                                                 | `just handoff apis` in infra |
 | `JOB_SEARCH_CATALOGUE`     | Environment | Variable | Cloud Run Job that builds the search catalogue (`dfo-dev-search-catalogue` in dev).                                                                              | `just handoff apis` in infra |
 | `JOB_GRAPH_RELEASE`        | Environment | Variable | Cloud Run Job that builds and publishes the graph release (`dfo-dev-graph-release` in dev).                                                                      | `just handoff apis` in infra |

@@ -19,6 +19,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
+from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -86,20 +87,25 @@ def _merge_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
     return merged
 
 
-def _candidates_collapsed_warning(*, posted: int, survivors: int) -> Warning:
+def _candidates_collapsed_warning(*, posted: int, resolved: int, survivors: int) -> Warning:
     """Report a collapsed candidate set with posted and surviving counts.
 
-    One survivor yields `candidates_collapsed_definite`. Zero yields
-    `candidates_collapsed_no_data`.
+    One survivor yields `candidates_collapsed_definite`. Its message says how many posted
+    candidates still resolve and, when more than one does, that they rebuild to one
+    reading. Zero yields `candidates_collapsed_no_data`.
     """
     if survivors == 1:
+        resolves = (
+            "1 still resolves to a definite answer"
+            if resolved == 1
+            else f"{resolved} still resolve and rebuild to 1 reading"
+        )
         return Warning(
             code="candidates_collapsed_definite",
             severity="warn",
             message=(
-                f"{posted} candidates were posted; 1 still resolves to a definite "
-                "answer, so the part is reported as that answer and not as the "
-                "posted candidate set."
+                f"{posted} candidates were posted; {resolves}, so the part is reported "
+                "as that answer and not as the posted candidate set."
             ),
         )
     return Warning(
@@ -118,8 +124,20 @@ def _build_candidates_region(
     """Keep definite promotes in posted order, which `gather` preserves.
     No-data and unsupported promotes both drop. Two or more survivors rebuild
     the set. One becomes definite and zero becomes no-data, each with a warning.
+    Each survivor carries its candidate's assumptions echo. A set reads each reading with
+    its own, and a lone survivor's definite part states its own. Candidates that rebuild
+    to one spec_id keep the first, with its echo, as a first-pass set keeps one reading
+    per spec_id.
     """
-    survivors = [r for r in promoted if r.status == "definite"]
+    echoes = [
+        None if candidate.assumptions is None else tuple(candidate.assumptions)
+        for candidate in entry.candidates
+    ]
+    by_spec_id: dict[str, RegionResult] = {}
+    for r, echo in zip(promoted, echoes, strict=True):
+        if r.status == "definite":
+            by_spec_id.setdefault(r.spec.spec_id, dataclasses.replace(r, assumption_echo=echo))
+    survivors = list(by_spec_id.values())
     timing_by_step = _merge_timing_by_step(promoted)
 
     if len(survivors) >= 2:
@@ -142,6 +160,11 @@ def _build_candidates_region(
             # elected shape's do on a first pass.
             answered_roles=survivors[0].answered_roles,
             separate=entry.separate,
+            reading_assumption_echoes={
+                r.spec.spec_id: r.assumption_echo
+                for r in survivors
+                if r.assumption_echo is not None
+            },
         )
     if len(survivors) == 1:
         (only,) = survivors
@@ -150,7 +173,11 @@ def _build_candidates_region(
             variable_text=entry.variable_text,
             warnings=(
                 *only.warnings,
-                _candidates_collapsed_warning(posted=len(promoted), survivors=1),
+                _candidates_collapsed_warning(
+                    posted=len(promoted),
+                    resolved=sum(r.status == "definite" for r in promoted),
+                    survivors=1,
+                ),
             ),
             timing_by_step=timing_by_step,
             earliest_index=index,
@@ -174,7 +201,7 @@ def _build_candidates_region(
         unsupported=None,
         warnings=(
             *first.warnings,
-            _candidates_collapsed_warning(posted=len(promoted), survivors=0),
+            _candidates_collapsed_warning(posted=len(promoted), resolved=0, survivors=0),
         ),
         timing_by_step=timing_by_step,
         earliest_index=index,
@@ -273,6 +300,7 @@ async def resolve_parsed_entries(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     materialise_graph: GraphReader | None,
     materialise_sdmx: MaterialiseSdmxClient | None,
@@ -319,6 +347,7 @@ async def resolve_parsed_entries(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=binder,
         sdmx=sdmx,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,

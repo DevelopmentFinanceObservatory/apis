@@ -5,9 +5,9 @@ its mapped parts resident after every import, which ends in an out-of-memory kil
 surface is built through the process's release service, as in production, and answers its
 health route with no lifespan running.
 
-With `GRAPH_RELEASE_COVERAGE` on, the release carries its views, the surfaces read the code index
-from them as they are built, and the datasets and graph surfaces answer their capabilities
-routes, which read it per request. The datasets and graph surfaces also run their lifespans
+The release carries its views, the surfaces read the code index from them as they are built,
+and the datasets and graph surfaces answer their capabilities routes, which read it per
+request. The datasets and graph surfaces also run their lifespans
 across the swap, over the coverage `get_coverage_service()` serves, and the graph surface's
 capabilities read that coverage per request. A per-index memo, a construction-time read or a
 lifespan that kept the old release's code index or coverage would keep it alive after the swap.
@@ -33,7 +33,7 @@ from presentation_api.app import presentation_surface
 from search.engine.app import search_surface
 from series_coverage.shared import get_coverage_service
 from tests.datasets_api._artifact_doubles import FakeArtifactStore
-from tests.graph_release.support import build_test_release, build_view_release, sample_tables
+from tests.graph_release.support import build_view_release
 
 _RECHECK = 60.0
 
@@ -50,15 +50,15 @@ class _Clock:
 _READS_INDEX = frozenset({"datasets", "graph"})
 
 
-def _request(surface: Surface, *, release_id: str, views: bool) -> None:
-    """Sends one request through `surface` and checks its request scope binds `release_id`.
-    With `views`, also reads its capabilities where they read the code index."""
+def _request(surface: Surface, *, release_id: str) -> None:
+    """Sends one request through `surface` and checks its request scope binds `release_id`,
+    and reads its capabilities where they read the code index."""
     assert surface.request_scope is not None
     with surface.request_scope():
         assert current_release().release_id == release_id
     client = TestClient(create_app([surface]), raise_server_exceptions=False)
     assert client.get(f"{surface.prefix}/healthz").status_code == 200
-    if views and surface.name in _READS_INDEX:
+    if surface.name in _READS_INDEX:
         response = client.get(f"{surface.prefix}/capabilities")
         assert response.status_code == 200, response.text
 
@@ -99,54 +99,42 @@ def _coverage_build(client: TestClient) -> str:
     return response.json()["data_builds"]["coverage_index"]
 
 
-def _publish(root: str, *, views: bool, revision: str) -> str:
-    if views:
-        return build_view_release(root, dc_serving_revision=revision).release_id
-    return build_test_release(root, tables=sample_tables(), dc_serving_revision=revision).release_id
+def _publish(root: str, *, revision: str) -> str:
+    return build_view_release(root, dc_serving_revision=revision).release_id
 
 
 # Unbound, so the surfaces read the code index at construction only under the release they bind.
 @pytest.mark.unbound_release
-@pytest.mark.parametrize("views", [False, True], ids=["flag-off", "flag-on"])
 def test_a_swapped_out_release_dies_after_a_request_through_every_surface(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, views: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     root = (tmp_path / "releases").as_uri()
-    first = _publish(root, views=views, revision="first")
+    first = _publish(root, revision="first")
     clock = _Clock()
     service = ReleaseService(
-        uri=root,
-        local_dir=tmp_path / "local",
-        recheck_seconds=_RECHECK,
-        clock=clock,
-        build_views=views,
+        uri=root, local_dir=tmp_path / "local", recheck_seconds=_RECHECK, clock=clock
     )
     served = service.snapshot()
     old = weakref.ref(served)
-    old_views = (
-        [weakref.ref(served.views.code_index), weakref.ref(served.views.coverage)]
-        if served.views is not None
-        else []
-    )
+    old_views = [weakref.ref(served.views.code_index), weakref.ref(served.views.coverage)]
     del served
     monkeypatch.setenv("GRAPH_RELEASE_URI", root)
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1" if views else "0")
 
     with service_module._singleton.poisoned_for_test(service), ExitStack() as running:
         surfaces = [datasets_surface(), graph_surface(), presentation_surface(), search_surface()]
         for surface in surfaces:
-            _request(surface, release_id=first, views=views)
-        graph = _graph_client_beside_datasets(running) if views else None
-        assert graph is None or _coverage_build(graph) == first
+            _request(surface, release_id=first)
+        graph = _graph_client_beside_datasets(running)
+        assert _coverage_build(graph) == first
 
-        second = _publish(root, views=views, revision="second")
+        second = _publish(root, revision="second")
         clock.now += _RECHECK
         service.snapshot()
         service.close()
         for surface in surfaces:
-            _request(surface, release_id=second, views=views)
-        assert graph is None or _coverage_build(graph) == second
+            _request(surface, release_id=second)
+        assert _coverage_build(graph) == second
 
         gc.collect()
         assert old() is None
-        assert [ref() for ref in old_views] == [None] * len(old_views)
+        assert [ref() for ref in old_views] == [None, None]

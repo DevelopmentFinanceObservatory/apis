@@ -10,13 +10,16 @@ from unittest.mock import patch
 import pytest
 
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
+from search.engine import binders
 from search.engine.bind import _UniversalBindOutput
+from search.engine.binders import JevBinder, jev_client
 from search.engine.core import resolve_async, resolve_events
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphInfraError, LLMInfraError
-from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.extract import ExtractedDate, ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.response_cache import ResponseCache
+from search.engine.time_bind import TIME_TEXT_NOT_PARSED
 from search.models import (
     ParsedEntity,
     ParsedInput,
@@ -27,6 +30,7 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.engine._binders import FakeAsk, elected_reply
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import EMPTY_SDMX, make_request, member_walk_reader
@@ -113,13 +117,13 @@ def test_identical_requests_share_one_warm_cache():
     assert r2.parts == r1.parts
 
 
-def test_differently_worded_query_hits_layer2():
-    """Identical extractions share the bind result, while each query is extracted."""
+def test_differently_worded_single_variable_queries_keep_separate_results():
+    """The full query grounds graph values, so matching extractions can answer differently."""
     llm = _CountingLLM(_AliasedLLM(alias_query=_QUERY_B, canonical_query=_QUERY_A))
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_B), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput", "Extraction"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
 
     # Each response retains its request's wording.
     assert r2.query_echo.raw_query == _QUERY_B
@@ -129,10 +133,7 @@ def test_differently_worded_query_hits_layer2():
     assert r2.diagnostics.trace_id != r1.diagnostics.trace_id
     assert r2.diagnostics.llm_usage != r1.diagnostics.llm_usage
     assert r2.diagnostics.llm_usage is not None and r1.diagnostics.llm_usage is not None
-    assert r2.diagnostics.llm_usage["input_tokens"] < r1.diagnostics.llm_usage["input_tokens"]
-
-    # Everything the query itself determines is shared between the two.
-    assert r1.parts == r2.parts
+    assert r1.status == r2.status == "definite"
     assert r1.rendered_sentence == r2.rendered_sentence
 
 
@@ -436,8 +437,8 @@ class _FixedExtractionLLM:
             return extraction, None
         if schema is QuantityOutput:
             return NO_QUANTITY
-        assert schema is _UniversalBindOutput
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        assert issubclass(schema, _UniversalBindOutput)
+        return elected_reply(0), None
 
 
 def _role_bearing_graph() -> FakeGraph:
@@ -519,8 +520,8 @@ def test_role_direction_contradiction_is_not_masked_by_a_shared_extraction(monke
     assert r2.status == "no_data", r2
 
 
-def test_role_direction_agreement_still_hits_layer2(monkeypatch):
-    """Different wordings with the same role verdict share the layer-2 result."""
+def test_role_direction_agreement_keeps_distinct_query_sources_separate(monkeypatch):
+    """A shared role verdict leaves each query's graph-value grounding independent."""
     _auto_coverage_index_1 = patch_coverage(
         monkeypatch, _ROLE_COVERAGE_ROWS, role_names=_ROLE_NAMES
     )
@@ -542,10 +543,62 @@ def test_role_direction_agreement_still_hits_layer2(monkeypatch):
         sdmx=FakeSdmxClient(observations={}),
         materialise_graph=_role_bearing_member_graph(),
     )
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput", "Extraction"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
     assert r1.status == "definite", r1
     assert r2.status == "definite", r2
-    assert r1.parts == r2.parts
+    assert r1.rendered_sentence == r2.rendered_sentence
+
+
+class _UnparsedDateLLM(_FixedExtractionLLM):
+    """`_FixedExtractionLLM`, adding a relative date worded "lately" to a query holding the
+    word. The time parser cannot read it, so extraction drops the date and warns: the
+    resolved extraction matches the dateless query's, and only the warning differs."""
+
+    async def generate_structured(self, *, prompt: str, system: str, schema):
+        parsed, usage = await super().generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        if schema is Extraction and "lately" in prompt:
+            parsed = parsed.model_copy(
+                update={"dates": [ExtractedDate(kind="range", relative="lately")]}
+            )
+        return parsed, usage
+
+
+def _warning_codes(response) -> list[str]:
+    return [warning.code for warning in response.diagnostics.warnings] + [
+        warning.code for part in response.parts for warning in part.warnings
+    ]
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [("aid to Kenya", "aid to Kenya lately"), ("aid to Kenya lately", "aid to Kenya")],
+    ids=["dateless-first", "unparsed-first"],
+)
+def test_an_unparsed_date_warning_keeps_its_own_layer2_entry(monkeypatch, first, second):
+    """A dropped relative date leaves the extraction the dateless query has, so only its
+    `time_text_not_parsed` warning tells the two apart. Each answer carries the warning
+    exactly when its own query held the wording, in either order."""
+    patch_coverage(monkeypatch, _ROLE_COVERAGE_ROWS, role_names=_ROLE_NAMES)
+    llm = _CountingLLM(_UnparsedDateLLM())
+    cache = ResponseCache()
+    responses = [
+        _run(
+            make_request(query),
+            llm=llm,
+            cache=cache,
+            graph=_role_bearing_graph(),
+            sdmx=FakeSdmxClient(observations={}),
+            materialise_graph=_role_bearing_member_graph(),
+        )
+        for query in (first, second)
+    ]
+
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
+    for query, response in zip((first, second), responses, strict=True):
+        assert response.status == "definite", response
+        assert (TIME_TEXT_NOT_PARSED in _warning_codes(response)) == ("lately" in query)
 
 
 # ---------------------------------------------------------------------------
@@ -624,3 +677,48 @@ def test_written_entry_lifetime_matches_the_known_generations_max_age():
     assert entries  # the request stored at least one entry
     for entry in entries:
         assert abs(entry.expires_at - (before + expected_max_age)) < 5.0
+
+
+@pytest.fixture
+def jev_routed(search_settings, monkeypatch):
+    """Every request routes to Jev (`binder="jev"`), with a fresh circuit breaker. Jev has
+    no key, so each Jev call falls back to Gemini."""
+    search_settings(binder="jev")
+    monkeypatch.setattr(jev_client, "_BREAKER", jev_client.CircuitBreaker())
+
+
+def test_a_request_whose_jev_calls_fell_back_is_not_cached(jev_routed):
+    """With no TypeSafe key every Jev call falls back to Gemini, so the answer is not the
+    Jev binder's its key names: the repeat runs the whole pipeline again."""
+    llm = _CountingLLM(FakeLLM())
+    cache = ResponseCache()
+    r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
+    assert r1.status == r2.status == "definite"
+
+
+def test_a_repeated_query_under_jev_hits_layer1_and_never_a_gemini_entry(
+    search_settings, monkeypatch
+):
+    """A Jev answer is stored under the Jev binder's key: its repeat is a layer-1 hit that
+    asks Jev nothing, and an answer the Gemini binder stored for the same query is not
+    served for it."""
+    monkeypatch.setattr(jev_client, "_BREAKER", jev_client.CircuitBreaker())
+    ask = FakeAsk()
+    monkeypatch.setattr(binders, "JevBinder", lambda: JevBinder(ask=ask))
+    llm = _CountingLLM(FakeLLM())
+    cache = ResponseCache()
+    _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    search_settings(binder="jev")
+    gemini_calls = len(llm.calls)
+
+    first = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    jev_requests = len(ask.requests)
+    second = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+
+    assert llm.calls[gemini_calls:] == ["Extraction"]
+    assert jev_requests == 2
+    assert len(ask.requests) == jev_requests
+    assert set(second.diagnostics.timing_ms.by_step or {}) == {"coverage", "response_cache_layer1"}
+    assert second.parts == first.parts

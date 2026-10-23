@@ -1,4 +1,4 @@
-"""Tests options-population derivation from the packaged index and graph enumeration.
+"""Tests options-population derivation from the fixture index and graph enumeration.
 
 Covers filtering, empty populations, truncation, and the graph branch's 700-member cap."""
 
@@ -54,7 +54,7 @@ _NON_INDEX_SHAPE = IdentityShapeSchema(
     population_type="Person", measured_property="lifeExpectancy", stat_type="measuredValue"
 )
 
-# The graph-source cases walk fake IDS series on IDS five-tuples, which the packaged index
+# The graph-source cases walk fake IDS series on IDS five-tuples, which the fixture index
 # lists.
 pytestmark = pytest.mark.usefixtures("unlisted_index")
 

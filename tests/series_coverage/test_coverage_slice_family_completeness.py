@@ -2,19 +2,16 @@
 in the offline slice, or none of it.
 
 `graph_confirm_resolve` confirms family members against coverage only, so a missing sibling reads
-as no data and drops out of `resolved.stat_vars`. Re-record the slice per `deploy/coverage.md`.
+as no data and drops out of `resolved.stat_vars`. The slice is frozen, so a case that needs a
+family the slice holds in part names StatVars the slice holds whole instead.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from search.eval.cases import load_cases
-from series_coverage.loader import load_coverage
-
-_SLICE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "coverage_slice"
+from tests.series_coverage.support import slice_index
 
 
 def _family_cases() -> list[tuple[str, tuple[str, ...]]]:
@@ -33,7 +30,7 @@ def _family_cases() -> list[tuple[str, tuple[str, ...]]]:
 
 @pytest.fixture(scope="module")
 def role_names() -> dict:
-    return load_coverage(f"file://{_SLICE_DIR}").index.role_names
+    return slice_index().role_names
 
 
 @pytest.mark.parametrize(
@@ -49,6 +46,5 @@ def test_coverage_slice_confirms_a_whole_family_or_none_of_it(
     missing = [sv for sv in expected_stat_vars if sv not in role_names]
     assert not missing, (
         f"{case_id}: coverage_slice confirms {len(present)}/{len(expected_stat_vars)} "
-        f"of this family's stat_vars and lacks {missing!r}; re-record it with "
-        "scripts/record_coverage_slice.py (deploy/coverage.md)"
+        f"of this family's stat_vars and lacks {missing!r}"
     )

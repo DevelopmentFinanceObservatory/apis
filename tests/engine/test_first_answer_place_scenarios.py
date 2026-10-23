@@ -64,7 +64,7 @@ from unittest import mock
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
+from materialise import place_scope
 from search.engine.clients import materialise_bridge
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
@@ -80,9 +80,12 @@ from search.engine.region.observations import fetch as observation_fetch
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
-from search.models import Resolution, Spec
+from search.engine.retrieval import bound_values
+from search.models import Assumption, Resolution, Spec
+from search.render.assumptions import assumptions_for
 from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.engine._binders import elected_reply
 from tests.engine._facet_option_builds import wrap_facet_option_builds
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -303,6 +306,17 @@ def _regions(declare_regions):
     declare_regions({_AFRICA: _CHILDREN[_AFRICA]["Country"]})
 
 
+@pytest.fixture(autouse=True)
+def _no_wall_clock_budgets(monkeypatch):
+    """A snapshot pins the reads a scenario makes, so no wall-clock budget may cut them.
+
+    The role-class walk and the every-place availability wait each stop reading or fall
+    back when their budget runs out, which a stalled worker can reach.
+    """
+    monkeypatch.setattr(bound_values, "_ROLE_CLASS_WALK_BUDGET_S", 1e6)
+    monkeypatch.setattr(place_scope, "EVERY_PLACE_SECONDS", 1e6)
+
+
 def _facets(*, count: int = 5, start: str = "2015", end: str = "2022") -> list[dict]:
     return [{"earliestDate": start, "latestDate": end, "obsCount": count, "provenanceId": _SOURCE}]
 
@@ -349,12 +363,7 @@ class _Bind:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
-        ), None
+        return elected_reply(self._chosen, bindings=[], also_plausible=self._also_plausible), None
 
 
 _MORTALITY = "mortality count"
@@ -1048,9 +1057,9 @@ _RETIRED_WORDING = (
 def _sentence_violations(response: Resolution) -> list[str]:
     """Each way a sentence in `response` breaks the sentence invariants: retired wording, a
     plan whose plain join differs from its `rendered_sentence`, a token with no segment or
-    of kind "note", a departure token on a spec's own plan, and a role token naming more than
-    three entities. Every sentence the response carries is checked: the composed one, each
-    part's own, and each offered spec's."""
+    of kind "note", a departure or assumption token on a spec's own plan, and a role token
+    naming more than three entities. Every sentence the response carries is checked: the
+    composed one, each part's own, and each offered spec's."""
     violations: list[str] = []
     labels = {dcid: node["label"] for dcid, node in _NODES.items()}
 
@@ -1068,12 +1077,14 @@ def _sentence_violations(response: Resolution) -> list[str]:
                 violations.append(f"{path}: plain join differs from {text!r}")
             violations.extend(f"{path}: retired {w!r}" for w in _RETIRED_WORDING if w in text)
             for token in plan:
-                if token.get("segment") not in ("heading", "byline", "departure"):
+                if token.get("segment") not in ("heading", "byline", "departure", "assumption"):
                     violations.append(f"{path}: token {token['text']!r} has no segment")
                 if token["kind"] == "note":
                     violations.append(f"{path}: note token {token['text']!r}")
-                if "stat_vars" in value and token.get("segment") == "departure":
-                    violations.append(f"{path}: spec plan holds departure {token['text']!r}")
+                if "stat_vars" in value and token.get("segment") in ("departure", "assumption"):
+                    violations.append(
+                        f"{path}: spec plan holds {token['segment']} {token['text']!r}"
+                    )
                 named = [
                     d for d in token.get("entity_refs", []) if labels.get(d, d) in token["text"]
                 ]
@@ -1414,7 +1425,8 @@ def test_a_placeless_one_role_question_discovers_its_recipients_from_coverage(
     scenario_id, offered, search_settings
 ) -> None:
     """With no place named, the recipient-only series stays in the election, alone or beside
-    a subject-only reading, and answers over the recipients its one-role coverage rows name."""
+    a subject-only reading, and answers over the recipients its one-role coverage rows name.
+    The role scope default warns beside the open recipients the answer assumes."""
     scenario = _SCENARIOS[scenario_id]
     _patch_settings(scenario, search_settings)
 
@@ -1426,6 +1438,9 @@ def test_a_placeless_one_role_question_discovers_its_recipients_from_coverage(
     assert ids_spec.resolved.scope.axis == "destination"
     assert [member.ref for member in ids_spec.resolved.scope.members] == [_USA]
     assert "role_scope_defaulted" in [warning.code for warning in result.warnings]
+    assert assumptions_for(ids_spec) == [
+        Assumption(kind="open_role", binding_ref="where:", text="every recipient")
+    ]
 
 
 # A subject-only series with the recipient-only IDS series' five-tuple and constraints. With

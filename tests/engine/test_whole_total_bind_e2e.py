@@ -57,6 +57,7 @@ from search.models import (
 )
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.code_index.aid_identity import CRS_PROVENANCE, IMPUTED_PROVENANCE
+from tests.engine._binders import ReplyBinder
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import member_walk_reader, offline_resolve
@@ -642,6 +643,7 @@ def _crs_and_imputed_answer(monkeypatch: pytest.MonkeyPatch, text: str) -> Any:
         graph=_graph(members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER), variable="aid"),
         llm=_ScriptedLLM("aid", also_plausible=[1]),
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=ReplyBinder(),
     ).parts
     return answer
 
@@ -751,6 +753,7 @@ def test_an_alternate_match_states_the_total_its_reading_lists_beside(
         graph=_graph(members=(_COMMITMENTS_MEMBER, _DAC2A_MEMBER), variable="aid"),
         llm=_ScriptedLLM("aid", also_plausible=[1]),
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=ReplyBinder(),
     )
 
     assert isinstance(response, Resolution), response

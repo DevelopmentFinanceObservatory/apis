@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from graph_release.context import bound_release
 from origin_catalogue import (
     BASE,
     DFO,
@@ -22,6 +23,7 @@ from origin_catalogue import (
 from origin_catalogue.catalogue import BaseVariable, CardFacts
 from origin_catalogue.families import FamilyKey, FamilySummary
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_MEMBERS
+from tests.graph_release.support import origin_release
 from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
     provenance_row,
@@ -578,23 +580,25 @@ _DEBT = FamilyKey("Debt", "amount", "measuredValue", None, None, False, False)
 _UN_MORTALITY = FamilyKey(UN_SERIES, "value", "", None, None, False, False)
 
 
-def test_a_snapshot_reads_each_family_summary_the_job_computed_from_its_tables() -> None:
-    """A DFO and a base variable whose only difference is a qualifier typed only
-    ProvisionalNode, which search reads as none, share a family, summarised once; a real
-    qualifier makes another. A node held empty belongs to none. The UN family reads from
-    the UN tables, and with the UN origin off it is not held."""
+def test_a_snapshot_joins_the_release_s_family_summaries_to_its_base_and_un_ones() -> None:
+    """A DFO variable the bound release holds and a base variable whose only difference is a
+    qualifier typed only ProvisionalNode, which search reads as none, share a family,
+    summarised once; a real qualifier makes another. A node held empty belongs to none. The
+    UN family reads from the UN tables, and with the UN origin off it is not held."""
     dfo, base, qualified, empty = "Debt_Dfo", "Debt_Base", "Debt_Real", "Debt_Empty"
+    released = {
+        dfo: {
+            **_family_variable({"dcid": "dangling", "types": ["ProvisionalNode"]}, name="Debt"),
+            "typeOf": {"nodes": [{"dcid": "StatisticalVariable", "types": ["Class"]}]},
+        }
+    }
     snapshot = restrictive_catalogue(
         provenances=[provenance_row(WDI, BASE)],
         dfo_variables=[dfo],
         base_variables={base: ([WDI], []), qualified: ([WDI], []), empty: ([WDI], [])},
         un_mirror=sample_un_mirror(),
         arcs=build_arc_tables(
-            dfo={
-                dfo: _family_variable(
-                    {"dcid": "dangling", "types": ["ProvisionalNode"]}, name="Debt"
-                )
-            },
+            dfo={},
             base={
                 base: _family_variable(None, name="Debt owed", constraints={"creditor": "IMF"}),
                 qualified: _family_variable({"dcid": "Real", "types": ["Qualifier"]}),
@@ -604,29 +608,30 @@ def test_a_snapshot_reads_each_family_summary_the_job_computed_from_its_tables()
         ),
     )
 
-    assert snapshot.held_family(_DEBT) == FamilySummary(
-        members=(dfo, base),
-        values={"creditor": ("IMF",)},
-        shared={},
-        total=dfo,
-        total_name="Debt",
-        un_only=False,
-    )
-    assert snapshot.held_family(_DEBT._replace(measurement_qualifier="Real")) == FamilySummary(
-        members=(qualified,),
-        values={},
-        shared={},
-        total=None,
-        total_name=None,
-        un_only=False,
-    )
-    assert snapshot.held_family(_DEBT._replace(role_bearing=True)) is None
-    assert snapshot.held_family(_UN_MORTALITY) == FamilySummary(
-        members=(UN_VARIABLE, UN_VARIABLE_FEMALE),
-        values={"undataSex": ("undata/SEX-F",)},
-        shared={},
-        total=UN_VARIABLE,
-        total_name="Under-five mortality rate",
-        un_only=True,
-    )
-    assert replace(snapshot, un_system_enabled=False).held_family(_UN_MORTALITY) is None
+    with bound_release(origin_release(released)):
+        assert snapshot.held_family(_DEBT) == FamilySummary(
+            members=(dfo, base),
+            values={"creditor": ("IMF",)},
+            shared={},
+            total=dfo,
+            total_name="Debt",
+            un_only=False,
+        )
+        assert snapshot.held_family(_DEBT._replace(measurement_qualifier="Real")) == FamilySummary(
+            members=(qualified,),
+            values={},
+            shared={},
+            total=None,
+            total_name=None,
+            un_only=False,
+        )
+        assert snapshot.held_family(_DEBT._replace(role_bearing=True)) is None
+        assert snapshot.held_family(_UN_MORTALITY) == FamilySummary(
+            members=(UN_VARIABLE, UN_VARIABLE_FEMALE),
+            values={"undataSex": ("undata/SEX-F",)},
+            shared={},
+            total=UN_VARIABLE,
+            total_name="Under-five mortality rate",
+            un_only=True,
+        )
+        assert replace(snapshot, un_system_enabled=False).held_family(_UN_MORTALITY) is None

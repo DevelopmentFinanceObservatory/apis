@@ -29,7 +29,6 @@ _GATED_ROUTES = (
     ("PUT", "/api/datasets/frames/ops_a/ocv_a/recipe", "publish", "publish_not_permitted"),
     ("GET", "/api/datasets/frames/ops_a/ocv_a/recipe", "publish", "publish_not_permitted"),
     ("GET", "/api/datasets/recipes/replays/rk_a", "publish", "publish_not_permitted"),
-    ("GET", "/api/datasets/spec_a/versions", "publish", "publish_not_permitted"),
     ("POST", "/api/datasets/frames/refresh", "refresh", "refresh_not_permitted"),
 )
 
@@ -113,10 +112,9 @@ def test_the_table_names_every_gated_route(app) -> None:
         ("PUT", "/api/datasets/frames/{spec_id}/{content_version}/recipe"),
         ("GET", "/api/datasets/frames/{spec_id}/{content_version}/recipe"),
         ("GET", "/api/datasets/recipes/replays/{replay_key}"),
-        ("GET", "/api/datasets/{id}/versions"),
         ("POST", "/api/datasets/frames/refresh"),
     }
-    markers = ("/pin", "/recipe", "/replays/", "/versions", "/frames/publish", "/frames/refresh")
+    markers = ("/pin", "/recipe", "/replays/", "/frames/publish", "/frames/refresh")
     served = {
         (method.upper(), path)
         for path, operations in app.openapi()["paths"].items()

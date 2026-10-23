@@ -9,21 +9,25 @@ Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,
 `GET /api/datasets/{spec_id}/{content_version}/observations`,
 `GET /api/datasets/{spec_id}/{content_version}/files/{digest}`,
+`GET /api/datasets/{spec_id}/{content_version}/file`,
 `GET /api/datasets/{id}/{content_version}/description` and its `/values` page for a `spec_` or
 `ops_` id, `POST /api/datasets/register`,
 `POST /api/datasets`, `POST /api/datasets/frames/publish`, `POST /api/datasets/frames/refresh`,
-and the recipe door's
-`PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe`,
+the recipe door's
+`PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe` and
 `GET /api/datasets/recipes/replays/{replay_key}`, and `GET /api/datasets/{spec_id}/versions`.
 Registration stores definitions for later materialisation. The mint route handles four input
-kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes. It
-mounts before the snapshot door, whose `GET /api/datasets/{spec_id}/{content_version}` would
-otherwise read `versions` as a content version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
+kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes.
+The versions door mounts before the snapshot door, whose
+`GET /api/datasets/{spec_id}/{content_version}` would otherwise read `versions` as a content
+version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
 problem details.
 
-The Data access proxy authenticates and authorises requests and enforces `401`, `413`, `415`, and
-`429`. The deployment bounds request bodies, except publish, which checks its own `Content-Length`
-ceiling before proxy admission.
+Callers reach the API through the website's proxy, which answers `429` once an IP passes its
+allowance, 120 calls a minute on `/api/*` by default, counted in a fixed window that every proxy
+instance shares in Postgres. A call whose count fails goes through. The proxy passes
+`Authorization` upstream unread. The deployment bounds request bodies, and publish also checks its
+own `Content-Length` ceiling at admission, before it reads the body.
 """
 
 from __future__ import annotations
@@ -64,6 +68,7 @@ from datasets_api.doors.register import (
     classify_register_exception,
 )
 from datasets_api.doors.snapshot import build_snapshot_door
+from datasets_api.doors.versions import build_versions_door
 from datasets_api.operation_store import OperationStore, classify_operation_store_exception
 from datasets_api.operations.task_client import TaskClient
 from datasets_api.recipe_store import RecipeStore
@@ -76,7 +81,7 @@ from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
 from dfo_platform.doors import combine_classifiers, flatten
 from graph_release.context import bound_served_release
-from graph_release.service import ReleaseService, optional_release_service
+from graph_release.service import ReleaseService, get_release_service
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
@@ -140,10 +145,8 @@ def datasets_surface(
 
     A given `code_index` serves every request. Left out, each request reads `get_index()`,
     which can change between requests. The index is read here, under the served release as a
-    request reads it, so a missing or malformed export fails construction. `coverage` defaults
-    to the process-wide service, resolved here, so a missing or unreadable
-    `COVERAGE_ARTIFACT_URI` fails construction. With `GRAPH_RELEASE_COVERAGE` on it is the bound
-    release's coverage (`series_coverage.shared.ReleaseCoverage`), which reads no artifact.
+    request reads it, so a release without one fails construction. `coverage` defaults to the
+    bound release's coverage (`series_coverage.shared.ReleaseCoverage`).
     `rate_cache` defaults to a cache of this surface's own; pass Search's when composing both.
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
@@ -157,13 +160,13 @@ def datasets_surface(
     the lifespan acquires the process-wide graph generation the live graph client keys its
     caches on, and registers the default-scope memo on it.
 
-    With `GRAPH_RELEASE_URI` set, or `release` given, each request also binds the release
-    service's served release, and a swap holds every materialise permit. An unreadable
-    release fails startup.
+    Each request also binds `release`'s served release, and a swap holds every materialise
+    permit. `release` defaults to the process-wide service, so an unset `GRAPH_RELEASE_URI` or
+    an unreadable release fails startup.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
-    _release = release if release is not None else optional_release_service()
+    _release = release if release is not None else get_release_service()
     cell = DepsCell()
     # The doors read the code index as they are built, so they are built under the release a
     # request would bind, and keep none of what they read.
@@ -179,6 +182,7 @@ def datasets_surface(
             build_recipe_door(
                 deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
             ),
+            build_versions_door(deps=cell),
             build_snapshot_door(deps=cell),
             build_description_door(deps=cell),
             build_files_door(deps=cell),
@@ -232,6 +236,7 @@ def datasets_surface(
 
     return Surface(
         name="datasets",
+        description="Register and mint datasets, poll their operations, and read versions, observations and files.",
         prefix="/api/datasets",
         router=router,
         capability_version=DATASETS_CAPABILITY_VERSION,

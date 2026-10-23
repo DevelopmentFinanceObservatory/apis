@@ -1741,7 +1741,7 @@ class _StubCoverageSnapshot:
 
 
 class _StubCoverage:
-    def snapshot_current(self):
+    def snapshot(self):
         return _StubCoverageSnapshot()
 
 

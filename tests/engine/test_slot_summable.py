@@ -77,7 +77,7 @@ def _slots_of(document: dict) -> list[Slot]:
 
 
 def _unindexed_identity() -> BaseIdentity:
-    """A described identity whose five-tuple the packaged index does not carry."""
+    """A described identity whose five-tuple the fixture index does not carry."""
     return _identity(
         {
             "identity_version": "spec1",
@@ -271,7 +271,7 @@ class TestAgreesWithGroupby:
         assert flags[_SYNTHETIC_NOT_SUMMABLE] is False
         assert flags["crsPurpose"] is True
 
-    def test_the_packaged_code_systems_read_their_declared_summability(self):
+    def test_the_fixture_code_systems_read_their_declared_summability(self):
         flags = {
             prop: summable
             for document in (education_aid_identity(), imputed_education_aid_identity())

@@ -187,7 +187,7 @@ a legitimate combination width multiplied across every StatVar in a large
 population, which nothing bounded before this guard. `options/surface.py`
 calls `decide_part_unit` with its full server-derived population, which
 carries no StatVar-count precheck of its own (see that module's own
-docstring), and the packaged code index's own population is deliberately
+docstring), and the code index's own population is deliberately
 never capped at all (see `options/population.py`'s own docstring) -- both
 make a large `sv_dcids` reachable here.
 
@@ -518,6 +518,11 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
         sv: {key: partial(_pair_rows, served) for key, served in keys.items()}
         for sv, keys in by_sv.items()
     }
+
+
+def served_units(plan: ReadPlan) -> frozenset[str | None]:
+    """The facet units `plan` serves rows under, `None` for a facet stating none."""
+    return frozenset(unit for by_key in _served_keys(plan).values() for unit, _ in by_key)
 
 
 def facet_selections(

@@ -317,9 +317,10 @@ NULL_VERSION_RECORD_WRITER = NullVersionRecordWriter()
 class ListedVersion:
     """One stored version of a subject. `base_content_version` names the raw version a derived
     version (a full groupby collapse, a party-totals cut, or both) was rendered from, and is
-    `None` on every other version. `renderings` holds the rendering of each file linked under
-    the version, in the order `SnapshotReader.read_artifact_locations` returns them. A derived
-    version's options are read from them (`datasets_api.recorded_rendering`).
+    `None` on every other version. `recorded_at` is when its record was written. `renderings`
+    holds the rendering of each file linked under the version, in the order
+    `SnapshotReader.read_artifact_locations` returns them. A derived version's options are read
+    from them (`datasets_api.recorded_rendering`).
 
     `holds_party_role` says whether the version's frame holds a party role (`holds_party_role`),
     so whether a file of it that `carries_party_kind` holds party-kind cells. It is read from
@@ -331,13 +332,31 @@ class ListedVersion:
 
     content_version: str
     base_content_version: str | None
+    recorded_at: datetime
     renderings: tuple[Mapping[str, object], ...] = ()
     holds_party_role: bool | None = None
+
+
+@dataclass(frozen=True)
+class VersionsPageKey:
+    """Where a page of a versions listing ends: the last listed version's `recorded_at` and
+    `content_version`, the listing's sort key."""
+
+    recorded_at: datetime
+    content_version: str
 
 
 class VersionLister(Protocol):
     def list_versions(self, subject_id: str) -> list[ListedVersion]:
         """Return the subject's stored versions, newest first. Empty when it holds none."""
+        ...
+
+    def list_servable_versions(
+        self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
+    ) -> list[ListedVersion]:
+        """Return at most `limit` versions recorded under any of `subject_ids`, newest first,
+        starting after `after`, leaving out each version revoked, or whose base version is
+        revoked, under any of them. A version recorded under several of them lists once."""
         ...
 
 

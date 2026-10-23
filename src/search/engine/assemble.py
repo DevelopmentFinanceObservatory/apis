@@ -30,6 +30,7 @@ from search.models import (
     UNIT_REF,
     AmbiguousEntityGroup,
     AmbiguousSourceGroup,
+    Assumption,
     CandidateSet,
     CandidatesPart,
     DefinitePart,
@@ -39,11 +40,11 @@ from search.models import (
     NoData,
     NoDataDenominator,
     NoDataGate,
+    NoDataOption,
     NoDataPart,
     NoDataReason,
     Operation,
     Ordering,
-    ParsedInput,
     ParsedPart,
     ResolvedQualifier,
     RoleAxis,
@@ -53,6 +54,7 @@ from search.models import (
     UnsupportedPart,
     Warning,
 )
+from search.render.assumptions import assumptions_for, common_assumptions
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.departures import departures_from_facts
 from search.render.heading import (
@@ -217,10 +219,23 @@ def _surviving_qualifier_warnings(
     """Keep dropped-qualifier warnings that remain true across all regions.
 
     Each warning stays paired with its extracted phrase. One region admitting a phrase
-    makes the request-wide warning false. Compare with the same strip-and-casefold
-    normalisation used by ``admitted_qualifier_phrases``.
+    makes the request-wide warning false. A part's departures read its own region's
+    admission (`unapplied_qualifier_warnings`, `RegionResult.unapplied_qualifier_warnings`).
     """
-    admitted = {phrase for region in regions for phrase in region.admitted_qualifier_phrases}
+    admitted = frozenset(
+        phrase for region in regions for phrase in region.admitted_qualifier_phrases
+    )
+    return unapplied_qualifier_warnings(qualifier_warnings, phrases, admitted=admitted)
+
+
+def unapplied_qualifier_warnings(
+    qualifier_warnings: Sequence[Warning],
+    phrases: Sequence[str],
+    *,
+    admitted: frozenset[str],
+) -> list[Warning]:
+    """The `qualifier_warnings` whose paired phrase `admitted` does not hold, compared with
+    the strip-and-casefold normalisation ``admitted_qualifier_phrases`` uses."""
     return [
         warning
         for warning, phrase in zip(qualifier_warnings, phrases, strict=True)
@@ -387,6 +402,9 @@ def build_definite_part(
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    assumption_echo: Sequence[Assumption] | None = None,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
+    own_spec: Spec | None = None,
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -396,6 +414,13 @@ def build_definite_part(
     its envelope holds. ``definite_departures`` adds those the spec, the operations
     and the reading's match carry. ``entity_words`` are the request's own words for each
     entity name (`RegionResult.entity_words`), in which a group read as members is asked.
+    ``assumption_echo`` is the list a dataset resubmit entry echoed
+    (`RegionResult.assumption_echo`), of which the part states those that still hold
+    (`render.assumptions.assumptions_for`), None when it echoed none. ``asked_axes`` are
+    the flow axes the request's words asked every member of
+    (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
+    open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
+    ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
@@ -418,6 +443,13 @@ def build_definite_part(
             raised=departure_facts,
             operations=operations,
             entity_words=entity_words,
+        ),
+        assumptions=assumptions_for(
+            spec,
+            echo=assumption_echo,
+            asked_axes=asked_axes,
+            operations=operations,
+            own_spec=own_spec,
         ),
     )
 
@@ -471,12 +503,13 @@ def build_no_data_part(
     elected_stat_vars: list[GraphRef] | None = None,
     entity_terms: list[str] | None = None,
     unlisted: Mapping[str, UnlistedPopulation] | None = None,
+    entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
     ambiguous_entities: list[AmbiguousEntityGroup] | None = None,
     ambiguous_roles: Mapping[str, RoleAxis] | None = None,
-    data_query: ParsedInput | None = None,
+    options: list[NoDataOption] | None = None,
     source_terms: list[str] | None = None,
     ambiguous_sources: list[AmbiguousSourceGroup] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
@@ -503,14 +536,15 @@ def build_no_data_part(
     code lives on ``NoData.gate``. ``elected_stat_vars`` lets sentence composition name an
     exact series match before a nearest substitute.
 
-    ``entity_terms`` preserves the place wording seen by the engine, and ``unlisted`` the
-    populations among them no source lists exactly (`UnlistedPopulation`). ``role_axis`` names an
+    ``entity_terms`` preserves the place wording seen by the engine, ``unlisted`` the
+    populations among them no source lists exactly (`UnlistedPopulation`), and ``entity_groups``
+    groups a ``role_not_resolved`` refusal's terms by the place each names. ``role_axis`` names an
     open origin or destination axis in ``no_observations`` copy. ``bound_role_dcids`` records
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
-    the sentence marks as a slot. ``data_query`` is the part's parsed form for
-    ``entity_ambiguous``, ``source_ambiguous`` and ``source_code_ambiguous``.
+    the sentence marks as a slot. ``options`` are the ready requests of a refusal that
+    asks for a choice (`conjoin._options`).
     ``source_terms`` are the source wordings a ``source_not_resolved`` or
     ``source_ambiguous`` outcome rests on, or the series code a ``source_code_*`` outcome
     rests on, and ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
@@ -608,6 +642,7 @@ def build_no_data_part(
         variable_term=variable_text,
         entity_terms=entity_terms,
         unlisted=unlisted,
+        entity_groups=entity_groups,
         role_axis=role_axis,
         bound_role_dcids=bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
@@ -650,6 +685,7 @@ def build_no_data_part(
                 variable_term=variable_text,
                 entity_terms=entity_terms,
                 unlisted=unlisted,
+                entity_groups=entity_groups,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,
@@ -672,7 +708,7 @@ def build_no_data_part(
             unbound_qualifiers=[*(qualifier_terms or ()), *(unbound_sources or ())],
             unit_alternatives=unit_alternatives,
             denominator=denominator,
-            data_query=data_query,
+            options=options or [],
         ),
         rendered_sentence=rendered,
         sentence_plan=plan,
@@ -745,6 +781,8 @@ def build_candidates_part(
     departure_facts: Sequence[DepartureFact] = (),
     reading_facts: Mapping[str, Sequence[DepartureFact]] = NO_READING_FACTS,
     request_words: bool = True,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
+    assumption_echoes: Mapping[str, Sequence[Assumption]] = MappingProxyType({}),
 ) -> CandidatesPart:
     """Build a candidates part from competing specs, in the order given: the elected
     reading first and its rivals in menu order (`region.status_rule`), or the order a
@@ -767,6 +805,14 @@ def build_candidates_part(
     `elected_shape_no_data` states one `closest_match` departure
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
+    ``asked_axes`` are the flow axes the request's words asked every member of
+    (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
+    open role. `CandidatesPart.reading_assumptions` holds each shown reading's own list, as
+    a definite part answering it would carry (`assumptions_for`), and the part's
+    assumptions are the items every one of those lists holds alike (`common_assumptions`).
+    ``assumption_echoes`` holds the list a dataset resubmit candidates entry echoed for a
+    reading, under its spec_id (`RegionResult.reading_assumption_echoes`), with which that
+    reading's list is read.
     """
     cap = max_candidates if max_candidates is not None else len(specs)
     clamped = list(specs)[:cap]
@@ -802,9 +848,25 @@ def build_candidates_part(
         keep_how_properties=keep_how_properties,
         request_words=request_words,
     )
+    # What each reading assumes once picked: the list its definite part would carry. The
+    # part assumes what every one of them holds.
+    reading_lists = [
+        assumptions_for(
+            spec,
+            echo=assumption_echoes.get(spec.spec_id),
+            asked_axes=asked_axes,
+            operations=operations,
+        )
+        for spec in clamped
+    ]
+    assumptions = common_assumptions(reading_lists)
+    reading_assumptions = {
+        spec.spec_id: items for spec, items in zip(clamped, reading_lists, strict=True)
+    }
     plan = candidates_sentence_plan(
         clamped,
         departures=departures,
+        assumptions=assumptions,
         truncated=truncated,
         # Show the pre-clamp total only when no upstream budget hid candidates.
         total=len(specs) if not budget_truncated else None,
@@ -833,4 +895,6 @@ def build_candidates_part(
         restatement=restatement,
         operations=list(operations),
         departures=departures,
+        assumptions=assumptions,
+        reading_assumptions=reading_assumptions,
     )

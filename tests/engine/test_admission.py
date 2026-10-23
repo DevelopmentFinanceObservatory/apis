@@ -9,7 +9,6 @@ from typing import cast
 import pytest
 
 from entity_resolution import Admission
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
@@ -18,6 +17,7 @@ from search.engine.region.phase_intake import _prune_shapes_by_admission
 from search.engine.region.place_set import PlaceNode, PlaceSet, PlaceSetKind
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -32,7 +32,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0, bindings=[]), None
 
 
 @pytest.mark.parametrize(

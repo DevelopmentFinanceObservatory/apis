@@ -2,7 +2,7 @@
 
 The imputed education-aid identity sits on the imputed multilateral table's
 `attributedAmount` five-tuple and binds `facets.provenance` to that table. Without posted
-`resolved_stat_var_dcids` the resubmit elects its members from the packaged index. The
+`resolved_stat_var_dcids` the resubmit elects its members from the fixture index. The
 GDP identity sits outside the index, so its resubmit serves the posted seed.
 """
 

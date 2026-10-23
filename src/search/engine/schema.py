@@ -11,7 +11,7 @@ def _with_declared_datasets(request_schema: dict) -> dict:
     values a parsed part's `provenance` takes: one `const` per dataset, titled with its label,
     described by its description and flagged with `x-opt-in`. The declarations are code, so
     the schema and the capability version that hashes it are fixed per process. Reading the
-    code index would need a bound graph release under `GRAPH_RELEASE_COVERAGE`."""
+    code index would need a bound graph release."""
     field = request_schema["$defs"]["ParsedPart"]["properties"]["provenance"]
     named = next(branch for branch in field["anyOf"] if branch.get("type") == "string")
     named["oneOf"] = [

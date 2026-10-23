@@ -26,11 +26,20 @@ from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.operation_store import LiveOperationStore, Operation
 from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS
 from datasets_api.operations.lease import LEASE_SECONDS
+from datasets_api.operations.submit import (
+    OPERATION_POLL_MAX_MS,
+    OPERATION_SUBMIT_RETRY_AFTER_MS,
+    OperationSubmitted,
+    operation_submitted_resource,
+    poll_interval_ms,
+    retry_after_headers,
+)
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.render import artifact_rendering
 from datasets_api.schema import (
     Manifest,
     MintRequest,
+    OperationEnvelope,
     OperationResource,
     PinRequest,
     PinResponse,
@@ -283,6 +292,130 @@ def test_running_operation_reports_progress_against_the_estimate() -> None:
         "rows_written": 250_000,
         "estimate_rows": 1_000_000,
     }
+
+
+@pytest.mark.parametrize("state", ["pending", "running"])
+def test_an_unfinished_poll_paces_the_caller_in_the_body_and_the_header(state: str) -> None:
+    """The row is months old, so the pacing sits at its cap."""
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        operation_store=_FixedOperationStore({"op_1": _operation(state=state)}),
+    )
+
+    resp = client.get("/api/datasets/operations/op_1")
+
+    assert resp.status_code == 200
+    assert resp.json()["operation"]["retry_after_ms"] == OPERATION_POLL_MAX_MS
+    assert resp.headers["retry-after"] == str(OPERATION_POLL_MAX_MS // 1000)
+
+
+@pytest.mark.parametrize("state", ["pending", "running"])
+def test_an_unfinished_poll_paces_by_the_age_of_the_operation(state: str) -> None:
+    operation_store = _FixedOperationStore({"op_1": _operation(state=state)})
+    now_box = {"t": _OP_NOW + timedelta(seconds=20)}
+
+    resource = _resolve_operation(
+        operation_id="op_1",
+        operation_store=operation_store,
+        task_client=None,
+        spec_reader=None,
+        snapshot_reader=None,
+        now=lambda: now_box["t"],
+        settings=DatasetsBuildSettings(),
+        enrichment_digest=get_index().enrichment_digest,
+    )
+
+    assert resource.operation.retry_after_ms == 5_000
+
+
+@pytest.mark.parametrize(
+    ("age_seconds", "expected_ms"),
+    [
+        pytest.param(-5, OPERATION_SUBMIT_RETRY_AFTER_MS, id="clock-skew-floors"),
+        pytest.param(0, OPERATION_SUBMIT_RETRY_AFTER_MS, id="new-floors"),
+        pytest.param(6, OPERATION_SUBMIT_RETRY_AFTER_MS, id="floor-edge"),
+        pytest.param(8, 2_000, id="just-above-the-floor"),
+        pytest.param(20, 5_000, id="a-quarter-of-the-age"),
+        pytest.param(32, OPERATION_POLL_MAX_MS, id="cap-edge"),
+        pytest.param(3_600, OPERATION_POLL_MAX_MS, id="old-caps"),
+    ],
+)
+def test_poll_interval_is_a_quarter_of_the_age_between_the_floor_and_the_cap(
+    age_seconds: int, expected_ms: int
+) -> None:
+    operation = _operation(state="running")
+
+    interval = poll_interval_ms(operation, now=_OP_NOW + timedelta(seconds=age_seconds))
+
+    assert interval == expected_ms
+
+
+@pytest.mark.parametrize(
+    ("fails_first", "resubmit_after_s", "expected_ms"),
+    [
+        pytest.param(True, 3_600, OPERATION_SUBMIT_RETRY_AFTER_MS, id="restarted-build-floors"),
+        pytest.param(False, 20, 5_000, id="join-keeps-the-running-builds-age"),
+    ],
+)
+def test_a_resubmission_is_paced_from_its_current_submission(
+    fails_first: bool, resubmit_after_s: int, expected_ms: int
+) -> None:
+    """A failed operation resubmitted an hour after its creation restarts its build, so its
+    first 202 answers the floor. A resubmission that joins a running build keeps that build's
+    age-derived wait."""
+    now_box = {"t": _OP_NOW}
+    store = LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: now_box["t"])
+    submission = {
+        "request_identity": {"input": {"spec_id": "spec_a"}},
+        "options": _PARQUET_BUNDLE.model_dump(mode="json"),
+        "coverage_stamp": "cov_stamp_1",
+        "origin_catalogue_build_id": "fake-catalogue",
+        "estimate": _DEFAULT_ESTIMATE,
+    }
+    created = store.create_or_get(**submission)
+    assert store.claim(
+        created.id, submission_count=0, lease_seconds=LEASE_SECONDS, final_delivery=True
+    )
+    if fails_first:
+        assert store.fail(created.id, attempt=1, refusal_code="internal_error", retryable=True)
+    now_box["t"] += timedelta(seconds=resubmit_after_s)
+
+    resubmitted = store.create_or_get(**submission)
+    resource = operation_submitted_resource(
+        OperationSubmitted(operation=resubmitted), now=now_box["t"]
+    )
+
+    assert resubmitted.created_at == _OP_NOW
+    assert resource.operation.retry_after_ms == expected_ms
+
+
+@pytest.mark.parametrize("state", ["done", "failed"])
+def test_a_finished_operation_is_paced_at_the_floor_whatever_its_age(state: str) -> None:
+    operation = _operation(state=state)
+
+    interval = poll_interval_ms(operation, now=_OP_NOW + timedelta(hours=1))
+
+    assert interval == OPERATION_SUBMIT_RETRY_AFTER_MS
+
+
+@pytest.mark.parametrize(
+    ("retry_after_ms", "expected"),
+    [
+        pytest.param(1_500, {"Retry-After": "2"}, id="rounds-up"),
+        pytest.param(2_000, {"Retry-After": "2"}, id="whole-second-stays"),
+        pytest.param(2_001, {"Retry-After": "3"}, id="one-millisecond-over-rounds-up"),
+        pytest.param(8_000, {"Retry-After": "8"}, id="cap"),
+        pytest.param(None, {}, id="no-pacing-no-header"),
+    ],
+)
+def test_retry_after_header_is_whole_seconds_rounded_up(
+    retry_after_ms: int | None, expected: dict[str, str]
+) -> None:
+    envelope = OperationEnvelope(
+        operation_id="op_1", status="pending", retry_after_ms=retry_after_ms
+    )
+
+    assert retry_after_headers(envelope) == expected
 
 
 def test_failed_operation_refuses_operation_failed_at_the_registrys_own_status() -> None:
@@ -538,6 +671,7 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
     assert resp.status_code == 200
     body = resp.json()
     assert body["operation"] == {"operation_id": "op_1", "status": "done"}
+    assert "retry-after" not in resp.headers
     trace = body["manifest"]["trace"]
     assert {key: trace[key] for key in ("served_from", "confirmed_at") if key in trace} == currency
     assert body["manifest"]["content_version"] == "cv1"

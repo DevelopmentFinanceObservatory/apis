@@ -8,12 +8,12 @@ from __future__ import annotations
 import asyncio
 
 from materialise.graph import Facet as MaterialiseFacet
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from series_coverage.schema import FacetMetadata, RoleNames
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -76,7 +76,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0, bindings=[]), None
 
 
 def test_directional_single_place_gets_no_slot_options_coverage(monkeypatch):

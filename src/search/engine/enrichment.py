@@ -339,11 +339,11 @@ def late_departures(
 
     The list is built as the part built its own (`assemble.definite_departures`), from its
     own heading words, warnings and operations and the facts raised beside the warnings the
-    part or its envelope holds, so a folded part keeps the list of a folded part. The read's
-    observations join the Spec, so `modelled_values` reads modelled and projected series,
-    and places the UN front door refused during the read join as raised
-    `entity_unavailable` facts (`un_system.refused_places_fact`), merged into one per role
-    with those the part states. A client replaces the part's list with it."""
+    part, its envelope or its region's unapplied qualifiers hold, so a folded part keeps the
+    list of a folded part. The read's observations join the Spec, so `modelled_values` reads
+    modelled and projected series, and places the UN front door refused during the read join
+    as raised `entity_unavailable` facts (`un_system.refused_places_fact`), merged into one
+    per role with those the part states. A client replaces the part's list with it."""
     part = source.part
     spec = part.spec
     observed = next(
@@ -371,7 +371,11 @@ def late_departures(
         return None
     raised = surviving_facts(
         {**source.region.departure_facts, **source.representative.departure_facts},
-        [*part.warnings, *source.envelope_warnings],
+        [
+            *part.warnings,
+            *source.region.unapplied_qualifier_warnings,
+            *source.envelope_warnings,
+        ],
     )
     read = (
         spec

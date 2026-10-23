@@ -11,10 +11,10 @@ from typing import ClassVar
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
 from search.models import BindingSet, BindingValue, CoverageExact
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -84,12 +84,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=None,
-            ask=None,
-        ), None
+        return elected_reply(0, also_plausible=None), None
 
 
 def _run(
@@ -435,12 +430,7 @@ class TestCandidatesEveryShapeCarriesFullPlaceSet:
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[],
-                also_plausible=[1],
-                ask=None,
-            ), None
+            return elected_reply(0, also_plausible=[1]), None
 
     def test_every_candidate_where_binding_carries_both_places(self):
         graph = FakeGraph(

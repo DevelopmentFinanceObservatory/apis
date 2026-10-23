@@ -81,11 +81,12 @@ def _index(*rows: StatVarRow) -> CodeIndex:
 def _catalogue(
     arcs: dict[str, tuple[UnArc, ...]], *, ingestion: Ingestion | None = None
 ) -> FakeCatalogue:
+    """A catalogue whose build holds `arcs` as base Data Commons arcs, which the build serves;
+    a DFO variable's arcs come from the bound graph release's origin view."""
     return FakeCatalogue(
         build_id="catalogue-build",
         ingestion=ingestion,
-        dfo_variables=frozenset(arcs),
-        arcs=ArcTables(dfo=arcs, base={}, schema={}, labels=named_labels(arcs)),
+        arcs=ArcTables(dfo={}, base=arcs, schema={}, labels=named_labels(arcs)),
     )
 
 

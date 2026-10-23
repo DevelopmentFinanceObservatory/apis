@@ -113,7 +113,7 @@ DENOMINATOR_UNVERIFIED = "denominator_unverified"
 # so the place becomes the subject. The warning carries this fact. A query with
 # no direction hint emits none. Promote paths refuse role_incompatible instead.
 DIRECTION_DISCARDED = "direction_discarded"
-# The role refresh read failed for an index-sourced population. Its packaged
+# The role refresh read failed for an index-sourced population. Its code index
 # role declarations remain in use. This warning is emitted during materialisation.
 ROLE_DECLARATION_UNVERIFIED = "role_declaration_unverified"
 # A scope-defaulted or role-bearing bulk SDMX read failed after coverage ran.
@@ -155,7 +155,7 @@ ORIGIN_CATALOGUE_STALE = "origin_catalogue_stale"
 # so an answer may miss data the newer one added until both rebuild. The message names
 # both builds and their ingestions.
 ARTIFACT_PAIR_STALE = "artifact_pair_stale"
-# The origin catalogue's arcs and the packaged code index disagree on the five-tuple,
+# The origin catalogue's arcs and the release's code index disagree on the five-tuple,
 # constraint properties or roles of a StatVar the answer serves. The message names them.
 CATALOGUE_INDEX_DRIFT = "catalogue_index_drift"
 # An answer lists each member of a flow side whose dataset publishes the total of that

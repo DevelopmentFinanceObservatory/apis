@@ -11,7 +11,7 @@ every version, so neither records them. A file linked as incomplete
 the options and counts as a requested-format file.
 
 The frame refresh (`datasets_api.doors.refresh`), the versions list
-(`datasets_api.doors.recipe`) and the description backfill (`datasets_api.maintenance`) resolve
+(`datasets_api.doors.versions`) and the description backfill (`datasets_api.maintenance`) resolve
 a version's options here.
 """
 

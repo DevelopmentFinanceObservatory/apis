@@ -4,8 +4,11 @@ resolve. The UN origin is off here; test_detect_two_resolves.py covers the UN re
 import pytest
 
 import dc_graph
+from code_index.query import CodeIndex
+from code_index.types import IndexStamp
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.errors import GraphInfraError
+from tests.graph_release.support import serving_index
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 
@@ -44,6 +47,37 @@ def test_detect_svs_cache_hit_skips_network(monkeypatch) -> None:
 
     assert call_count[0] == 1, "Second detect_svs for same query must hit cache"
     assert r1 == r2
+
+
+def _index(content_hash: str) -> CodeIndex:
+    stamp = IndexStamp(
+        graph_endpoint="test",
+        exported_at="2026-10-11T00:00:00Z",
+        code_counts={},
+        statvar_shape_counts={},
+        content_hash=content_hash,
+    )
+    return CodeIndex(stamp=stamp, declarations=(), codes=(), statvars=())
+
+
+def test_the_served_code_index_keys_a_detection(monkeypatch) -> None:
+    """The rival rows come from the bound release's code index, so a release serving another
+    index detects afresh and one serving the first hits."""
+    call_count = [0]
+
+    def fake_post(self, path, payload, *, deadline=None):
+        call_count[0] += 1
+        return {"entities": []}
+
+    monkeypatch.setattr(dc_graph.GraphClient, "post", fake_post)
+    client = LiveGraphClient(base="http://fake")
+    first, second = _index("index-1"), _index("index-2")
+
+    for index in (first, second, first):
+        with serving_index(index):
+            client.detect_svs("test query")
+
+    assert call_count[0] == 2
 
 
 def test_detect_svs_cache_error_does_not_cache(monkeypatch) -> None:

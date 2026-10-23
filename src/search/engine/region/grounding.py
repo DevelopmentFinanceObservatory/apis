@@ -557,7 +557,7 @@ def _ground_answer_lookup(
     """Batch every graph-label lookup needed by grounding.
 
     Collect distinct ids across shapes, slots, StatVars, roles, and options for one
-    `node_labels_batch` call. Missing graph labels fall back to packaged code-index labels.
+    `node_labels_batch` call. Missing graph labels fall back to code-index labels.
     Source labels come from the origin catalogue; only provenance ids it does not list
     join the batch.
     Index-sourced taxonomies offer a bound code's children and its parent, or, for a bound
@@ -632,7 +632,7 @@ def _ground_answer_lookup(
     name_dcids.update(answer_facet_dcids(plan, unit_request))
 
     labels = graph.node_labels_batch(list(name_dcids))
-    # Fill graph label misses from the packaged code index.
+    # Fill graph label misses from the release's code index.
     code_index = get_index()
     for dcid in name_dcids:
         if dcid in labels:

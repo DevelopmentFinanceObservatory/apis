@@ -20,7 +20,6 @@ import search.engine.region.phase_answer as phase_answer
 import search.engine.region.promote_ground as promote_ground
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
@@ -39,6 +38,7 @@ from search.models import (
 from search.render.plan import render_sentence, render_sentence_plan
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine import test_parsed_pipeline as parsed
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     CoverageRow,
     FakeCoverageService,
@@ -121,9 +121,7 @@ class _BindLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible
-            ),
+            elected_reply(0, bindings=[], also_plausible=self._also_plausible),
             None,
         )
 

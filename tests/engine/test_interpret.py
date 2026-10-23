@@ -326,7 +326,7 @@ _IDS = "provenance/WorldBankInternationalDebtStatistics"
 
 
 def _dcid_of(provenance: str, measured_property: str) -> str:
-    """The first packaged index row of `provenance` with `measured_property`, StatVars the
+    """The first fixture index row of `provenance` with `measured_property`, StatVars the
     index lists included."""
     index = get_index()
     return next(

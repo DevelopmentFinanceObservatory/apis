@@ -1,4 +1,4 @@
-"""Tests the raw-text source scan over the committed dev catalogue build and the packaged
+"""Tests the raw-text source scan over the committed dev catalogue build and the fixture
 code index."""
 
 from __future__ import annotations

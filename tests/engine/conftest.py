@@ -26,8 +26,9 @@ from tests.fixtures import PINNED_DATE
 
 @pytest.fixture(autouse=True)
 def _pin_extract_date():
-    """Pin the prompt date so recorded FakeLLM fixtures keep matching, and the clock a
-    mint's open-ended election ends at (`materialise.window.current_year`) with it."""
+    """Pin the year extract reads, the one its prompt names and relative dates resolve
+    against, and the clock a mint's open-ended election ends at
+    (`materialise.window.current_year`) with it."""
     with (
         patch("search.engine.extract.date") as mock_date,
         patch("materialise.window.date") as election_date,
@@ -82,7 +83,7 @@ def declare_regions(
 
 @pytest.fixture
 def unlisted_index(monkeypatch: pytest.MonkeyPatch):
-    """Serve the packaged code index without its listed rows (`CodeIndex.listed_statvars`), so
+    """Serve the fixture code index without its listed rows (`CodeIndex.listed_statvars`), so
     a test's fake graph decides an IDS family through the member walk."""
     packaged = code_index_shared.get_index
     index = copy.copy(packaged())

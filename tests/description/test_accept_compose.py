@@ -194,7 +194,7 @@ _INDEX = CodeIndex(
     statvars=(),
 )
 
-# Keyed as the packaged measure index keys its partition labels: on the shape's
+# Keyed as the fixture measure index keys its partition labels: on the shape's
 # `populationType` and `measuredProperty` beside the constraint axes.
 _MEASURES = MeasureIndex(
     axes=(

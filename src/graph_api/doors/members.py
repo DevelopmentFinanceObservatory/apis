@@ -23,8 +23,7 @@ in process:
   `measurement_method` selects the facets that state no method. A profile that could not be
   read lists nothing with the gap `facets_not_read`, and names not read by the deadline leave
   the unit and method labels null with `labels_not_read`; both answer `no-store`. A surface
-  that reads no profiles, because it has no profile cache or no coverage index configured,
-  lists nothing with the permanent gap `facets_not_served` and answers `public`. A profile
+  that reads no profiles, because it has no profile cache, lists nothing with the permanent gap `facets_not_served` and answers `public`. A profile
   whose default scope fell back to the countries with data carries the card's permanent gap
   `stat_var.availability.countries_only`, since each facet's `places` then counts countries
   only. Every other relation refuses a filter at its pointer.
@@ -437,8 +436,7 @@ def _membership(
 async def _facets(deps: GraphDeps, dcid: str, where: FacetFilter) -> _Listing[FacetItem]:
     """A variable's facets that `where` keeps, from its profile, under the node deadline. A
     profile that could not be read lists nothing, with the transient gap `facets_not_read`. A
-    surface that reads no profiles lists nothing, with the permanent gap `facets_not_served`;
-    a coverage index that failed to load is the transient case of it."""
+    surface that reads no profiles lists nothing, with the permanent gap `facets_not_served`."""
     deadline = time.monotonic() + GRAPH_NODE_TIMEOUT_SECONDS
     profiles = None
     if deps.card_reads is not None:
@@ -454,7 +452,7 @@ async def _facets(deps: GraphDeps, dcid: str, where: FacetFilter) -> _Listing[Fa
         built_from["coverage_index"] = profiles.coverage_build
         facets = await read_facets(profiles, dcid, where=where, deadline=deadline)
     if facets is None or facets.items is None:
-        transient = profiles is not None or deps.coverage_load_failed
+        transient = profiles is not None
         return _Listing(
             rows=(),
             sort_key=_by_facet_id,
@@ -588,7 +586,7 @@ async def _graph_labels(
     return labelled, False
 
 
-async def members_endpoint(
+async def list_members(
     dcid: str,
     request: Request,
     deps: GraphDepsDep,
@@ -672,7 +670,7 @@ def _membership_roots(policy: MembershipPolicy, kind: MembershipKind) -> list[Ro
     )
 
 
-async def roots_endpoint(request: Request) -> Response:
+async def list_roots(request: Request) -> Response:
     index = get_index()
     catalogue = current_catalogue()
     lists = _catalogue_lists(catalogue.build_id)
@@ -733,11 +731,11 @@ def build_members_door() -> DoorContribution:
     # through.
     router.add_api_route(
         "/api/graph/node/{dcid:dcid}/members",
-        members_endpoint,
+        list_members,
         methods=["GET"],
         response_model=MembersPage,
     )
-    router.add_api_route("/api/graph/roots", roots_endpoint, methods=["GET"], response_model=Roots)
+    router.add_api_route("/api/graph/roots", list_roots, methods=["GET"], response_model=Roots)
     return DoorContribution(
         router=router,
         registry_endpoints={

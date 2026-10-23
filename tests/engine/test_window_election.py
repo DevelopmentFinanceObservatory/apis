@@ -23,7 +23,6 @@ from datasets_api.shape import StatVarShape
 from materialise import MaterialisationRequest, RequestedWindow, materialise_preview
 from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import _UniversalBindOutput
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.convertibility import decide_part_unit
@@ -31,6 +30,7 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.read_plan import facets_served, plan_standard
 from search.models import IdentityUnitRequest, Spec, TimeWindow
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs
@@ -70,7 +70,7 @@ class _Bind:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=[]), None
+        return elected_reply(0, also_plausible=[]), None
 
 
 def _search_answer() -> Spec:

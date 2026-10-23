@@ -2,7 +2,7 @@
 five-tuple, and `index_covers_slot_keys` decides whether the index resolves an identity.
 
 Synthetic indexes put datasets on their own five-tuples and on shared ones, so no rule
-depends on a property name. The packaged index pins the education-aid families' counts.
+depends on a property name. The fixture index pins the education-aid families' counts.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import dataclasses
 
 import pytest
 
-from code_index import default_index_path, load_index
 from code_index import members as members_module
 from code_index.members import (
     DatasetScope,
@@ -48,6 +47,7 @@ from code_index.types import (
 )
 from spec_registry import recompute_identity
 from statvar_members import FiveTuple, SlotBinding
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 from .aid_identity import (
     AID_TYPE,
@@ -122,7 +122,7 @@ def _dataset(
 
 
 def _not_declared(code_system: str, *, summable: bool = True) -> CodeSystemDeclaration:
-    """A code system whose absent cell blocks dominance, as every packaged system reads."""
+    """A code system whose absent cell blocks dominance, as every fixture system reads."""
     return CodeSystemDeclaration(
         code_system=code_system,
         hierarchical=False,
@@ -1403,7 +1403,7 @@ def test_a_five_tuple_the_index_does_not_carry_is_not_covered():
 
 
 # ---------------------------------------------------------------------------
-# The education-aid families in the packaged index
+# The education-aid families in the fixture index
 # ---------------------------------------------------------------------------
 
 _MODALITY = "crsCooperationModality"
@@ -1463,14 +1463,14 @@ _CRS_OPEN_SLOTS = ("crsCooperationModality", "crsPurpose", "crsTypeOfFinance", "
     ],
     ids=["dac1-provider-totals", "crs-flows"],
 )
-def test_an_open_recipient_reads_the_packaged_rows_its_dataset_declares_it_on(
+def test_an_open_recipient_reads_the_fixture_rows_its_dataset_declares_it_on(
     open_slots: tuple[str, ...], as_role_keys: tuple[str, ...], dataset: str, count: int
 ):
     """A donor's net disbursements to every recipient. DAC1 holds a recipient on two flows
     to the West Bank and Gaza Strip only, at constraint values no provider total holds,
     so its rows are its 128 provider totals, those of the donor alone, without the two
     flows. Every CRS row holds one, so its rows are those of a named recipient."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     slots = {**dict.fromkeys(open_slots, ("unbound",)), **_NET_DISBURSEMENT}
     query = FamilyQuery(_EDU_AID_FIVE_TUPLE, slots, None, role_keys=frozenset({"origin"}))
 
@@ -1498,7 +1498,7 @@ def test_the_education_family_on_amount_is_the_crs_rows(
     """CRS keys elect the CRS family on `amount`. DAC2a declares `dac2aAidType` there too,
     so CRS keys beside it straddle two families and elect none, as CRS keys beside an
     unbound `dac1AidType` do."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
 
     rows = _minimal(index, _education_aid_slots(index, aid_type=aid_type))
 
@@ -1507,7 +1507,7 @@ def test_the_education_family_on_amount_is_the_crs_rows(
 
 
 def test_the_education_members_without_a_modality_stay():
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
 
     rows = _minimal(index, _education_aid_slots(index, aid_type=None))
 
@@ -1518,7 +1518,7 @@ def test_the_education_members_without_a_modality_stay():
 @pytest.mark.parametrize("aid_type", [("unbound",), ("value", IMPUTED_MULTILATERAL)])
 def test_the_education_family_on_attributed_amount_is_the_imputed_rows(aid_type: SlotBinding):
     """The aid type holds one value on every imputed row, so binding it changes no member."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
 
     rows = _minimal(
         index, _education_aid_slots(index, aid_type=aid_type), five_tuple=_IMPUTED_FIVE_TUPLE
@@ -1548,7 +1548,7 @@ def test_the_keys_on_attributed_amount_decide_the_imputed_or_dac2a_table(
     under fewer keys. An unnamed question on DAC2a's keys elects that row. Adding the
     imputed table's sector and flow keys, with the purpose bound to education, elects the
     imputed rows."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     slots = dict(_DAC2A_KEYS)
     if sector:
         slots["crsPurpose"] = ("set", index.descendants("CRSPurposeCode110"))
@@ -1566,7 +1566,7 @@ def test_the_keys_on_attributed_amount_decide_the_imputed_or_dac2a_table(
 
 
 def test_the_crs_source_on_attributed_amount_refuses():
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     slots = _education_aid_slots(index, aid_type=("unbound",))
 
     with pytest.raises(SourceNotInFamily) as refusal:
@@ -1593,14 +1593,14 @@ def test_the_imputed_pins_are_bound_only_where_the_index_decides(slots, source, 
     canonical identity of a query that names it binds the aid type it leaves unbound, and
     one that names no dataset keeps it unbound. Slot keys no index row is covered by elect
     no family, so nothing is bound and the graph walk reads the slot."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     query = FamilyQuery(_IMPUTED_FIVE_TUPLE, slots(index), source)
 
     assert invariant_bindings(index, query) == bound
 
 
 def test_an_imputed_identity_posted_with_or_without_its_pins_is_one_canonical_identity():
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     posted = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
     unbound = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
     for slot in unbound["slots"]:
@@ -1627,7 +1627,7 @@ def test_every_form_of_a_named_identitys_invariant_reaches_one_spec_id(aid_type:
     """The imputed table declares its aid type. An identity naming the table that binds it
     by value, leaves it unbound, binds a set of the one code or binds it `exact` reaches the
     spec_id of the value binding Search mints."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     expected = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
     posted = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
     for slot in posted["slots"]:
@@ -1643,7 +1643,7 @@ def test_canonicalising_identities_on_five_tuples_the_index_does_not_carry_store
     """Every door canonicalises a posted identity, whatever five-tuple it names. The
     role-class memo holds the five-tuples the index carries, so posting new ones leaves its
     size as it was."""
-    index = load_index(default_index_path())
+    index = load_index(INDEX_FIXTURE)
     canonical_identity(index, imputed_education_aid_identity(source=IMPUTED_PROVENANCE))
     size = len(members_module._five_tuple_facts_cache.get(id(index), {}))
 

@@ -11,7 +11,6 @@ from typing import ClassVar
 
 import pytest
 
-from code_index.loader import load_index
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from datasets_api import deps as deps_module
@@ -22,6 +21,7 @@ from datasets_api.door_executor import DoorExecutor
 from datasets_api.operations.task_client import FakeTaskClient, LiveTaskClient
 from datasets_api.shutdown import ShutdownBudget
 from graph_generation.fake import FakeGeneration
+from graph_release.service import get_release_service
 from materialise.rate_tables import RateTableCache
 from origin_catalogue.graph import (
     ARCS_CACHE_SIZE,
@@ -32,6 +32,7 @@ from origin_catalogue.graph import (
 )
 from series_coverage.shared import get_coverage_service
 from tests.code_index.conftest import FIXTURE_PATH
+from tests.code_index.support import load_index
 from tests.graph_release.support import serving_index
 
 from ._artifact_doubles import FakeArtifactStore, RecordingArtifactStore
@@ -166,6 +167,7 @@ def _overrides(*, code_index: CodeIndex | None = None, **injected: object) -> De
     return DepsOverrides(
         coverage=get_coverage_service(),
         rate_cache=RateTableCache(),
+        release=get_release_service(),
         code_index=code_index,
         **injected,
     )

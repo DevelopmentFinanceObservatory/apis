@@ -12,7 +12,7 @@ import pytest
 
 from materialise import place_scope
 from origin_catalogue import BASE, DFO, UN_SYSTEM
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import DetectedSV, DetectLegs, admit_legs
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.quantity_read import QuantityOutput
@@ -23,6 +23,7 @@ from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.facts import read_constraints, read_five_tuple
 from search.engine.retrieval.standard import _admit_standard_members, _AdmittedStandardMembers
 from statvar_members import member_digest
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -195,7 +196,7 @@ class _BindFemaleLLM:
         female = SlotBindingDraft(
             axis="how", property_dcid=_SEX, kind="value", value_dcids=["undata/SEX-F"]
         )
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[female], ask=None), None
+        return elected_reply(0, bindings=[female]), None
 
 
 def test_a_question_naming_no_place_answers_a_held_member_at_its_default_scope(
@@ -260,7 +261,7 @@ class _BindNothingLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[], ask=None), None
+        return elected_reply(0), None
 
 
 def _settle_queued_presence_reads() -> None:

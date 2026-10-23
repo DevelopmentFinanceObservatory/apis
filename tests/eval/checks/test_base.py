@@ -52,7 +52,7 @@ def test_wire_schema_declares_paths(path, declared):
 
 
 def test_read_path_reads_an_omitted_field_as_none(ctx: ScoreContext):
-    response = panel("crs-001")
+    response = panel("crs-032")
     part = response["parts"][0]
     assert read_path(part, "spec.definition.identity.facets", ctx, at="parts[]") is None
     assert (
@@ -193,6 +193,7 @@ def test_every_check_name_is_registered():
         "operations",
         "refusal",
         "warnings",
+        "assumptions",
         "candidates",
         "parts",
     }
@@ -207,7 +208,7 @@ def test_a_name_registers_once():
 
 def test_score_reports_every_registered_check_in_check_name_order(ctx: ScoreContext):
     case = make_case({"definite": {}})
-    verdicts = score(case, panel("crs-001"), ctx)
+    verdicts = score(case, panel("crs-032"), ctx)
     assert list(verdicts) == [name for name in CHECK_NAMES if name in CHECKS]
     assert verdicts["disposition"] == Verdict.PASS
     assert verdicts["measure"] == Verdict.NA
@@ -225,11 +226,11 @@ def test_a_renamed_field_scores_unverifiable_and_leaves_other_checks_alone():
             "window": {"kind": "all"},
             "entities": [
                 {"dcid": "country/DEU", "role": "origin"},
-                {"dcid": "country/KEN", "role": "destination"},
+                {"dcid": "country/BRA", "role": "destination"},
             ],
             "definite": {},
         }
     )
-    results = score_results(case, panel("crs-001"), ctx)
+    results = score_results(case, panel("crs-032"), ctx)
     assert results["request"].verdict == Verdict.UNVERIFIABLE
     assert results["entities"].verdict == Verdict.PASS

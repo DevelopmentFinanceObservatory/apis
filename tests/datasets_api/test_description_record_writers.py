@@ -433,13 +433,10 @@ def test_a_publish_label_read_is_bounded_and_a_failed_one_still_stores_the_recor
     assert record.evidence.labels == []
 
 
-def test_a_publish_reads_its_labels_under_the_requests_graph_release(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With `GRAPH_RELEASE_COVERAGE` on, the label read on the work executor reads the code
-    index from the release the request bound, so the record is stored. Lost on the pool thread,
-    the binding would fail the read and leave the version without a record."""
-    monkeypatch.setenv("GRAPH_RELEASE_COVERAGE", "1")
+def test_a_publish_reads_its_labels_under_the_requests_graph_release() -> None:
+    """The label read on the work executor reads the code index from the release the request
+    bound, so the record is stored. Lost on the pool thread, the binding would fail the read and
+    leave the version without a record."""
     store = FakeVersionRecordDatasetStore()
 
     response = publish(datasets_client(store), publish_body(steps=_summing_steps()))

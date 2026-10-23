@@ -3,23 +3,19 @@
 `bounded_materialise_slot` limits the whole frames a mint, a rebuild, a head render, a file
 renewal and an observations read hold to the process's `MaterialisePermits`, and caps waiting
 at both the configured wait and client deadline. A publish builds its frame outside the
-permits. `MaterialisePermits.every_permit` holds every permit, so a coverage reload never
-overlaps a permit holder. A request that took its coverage snapshot before its permit confirms
-the snapshot (`coverage_current`) before it waits, while it waits and at admission, and starts
-again on the served one when a reload replaced it (`under_current_coverage`). A request that
-holds a permit therefore builds its frame beside the one index the service serves. A request
-waiting for a permit or for its turn at a shared rebuild (`RebuildFlights.turn`) releases a
-replaced index within `STALE_CHECK_SECONDS` of the reload. Before it waits, a request can
-hold a replaced index for as long as its head checks, its graph reads, member resolution, the
-estimate and the budget decision take, beside the frames of the requests that hold permits.
-
-With `GRAPH_RELEASE_COVERAGE` on, a request reads the code index and coverage of the graph
-release it bound at entry, and a release swap holds every permit. A request whose bound release
-the service no longer serves (`graph_release.service.Release.served`) is refused with retryable
-`MintBackpressure` at the same checks, so it takes no permit or rebuild turn beside both
-releases' views. It cannot start again on the served release instead, since its doors resolve
-members, read heads and capture the code index before `under_current_coverage`, and a restart
-would mix those with the new release's coverage. A retry binds the served release at entry.
+permits. A request reads the code index and coverage of the graph release it bound at entry.
+`MaterialisePermits.every_permit` holds every permit, and a release swap runs under it, so a
+swap never overlaps a permit holder. A request confirms that the service still serves its
+bound release (`graph_release.service.Release.served`) before it waits for a permit, while it
+waits and once it holds one, and is refused with retryable `MintBackpressure` when a swap
+replaced it, so a request that holds a permit builds its frame beside the one release the
+service serves. A request waiting for a permit or for its turn at a shared rebuild
+(`RebuildFlights.turn`) refuses within `STALE_CHECK_SECONDS` of the swap. Before it waits, a
+request can hold a replaced release for as long as its head checks, its graph reads, member
+resolution, the estimate and the budget decision take, beside the frames of the requests that
+hold permits. It cannot start again on the served release, since its doors resolve members,
+read heads and capture the code index before they wait, and a restart would mix those with the
+new release's coverage. A retry binds the served release at entry.
 
 A permit covers a frame for as long as its work runs. An error's traceback can keep the frame
 until the door has answered the error, after the permit is released.
@@ -61,7 +57,7 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.timings import count, phase
 from dc_sdmx import ContainedIn
-from graph_release.context import bound_release_or_none, coverage_views_enabled
+from graph_release.context import current_release
 from materialise.errors import OverCeilingError
 from materialise.formats import EXCEL_MAX_ROWS, ExcelLimitError, check_excel_rows
 from materialise.generation import (
@@ -72,23 +68,15 @@ from materialise.generation import (
 )
 from materialise.pipeline import MaterialisationRequest
 from series_coverage.index import BoundRoles, CoverageIndex, Estimate, Role
-from series_coverage.shared import CoverageSnapshot
 
 _STAT_VAR_PREFIX = "dcid:"
 
 # Coverage cannot price uncovered members, so this separate cap bounds their count.
 UNCOVERED_MEMBER_CAP = 700
 
-# How many times a request starts again on the served coverage snapshot before it refuses.
-COVERAGE_RESTARTS = 2
-
-# How long a request waits for a permit or a rebuild turn between looks at whether its
-# coverage snapshot is still the served one.
+# How long a request waits for a permit or a rebuild turn between looks at whether the service
+# still serves its bound release.
 STALE_CHECK_SECONDS = 0.1
-
-
-class StaleCoverageSnapshot(Exception):
-    """A coverage reload replaced the snapshot a request holds before its permit was taken."""
 
 
 def _sliced_wait(
@@ -112,20 +100,10 @@ def _sliced_wait(
     return False
 
 
-def _admission_check(coverage_current: Callable[[], bool] | None) -> Callable[[], bool] | None:
-    """`coverage_current`, preceded by a check that raises `MintBackpressure` once the service
-    no longer serves the graph release bound to the request. Returns `coverage_current` itself
-    with `GRAPH_RELEASE_COVERAGE` off or no release bound."""
-    release = bound_release_or_none() if coverage_views_enabled() else None
-    if release is None:
-        return coverage_current
-
-    def current() -> bool:
-        if not release.served:
-            raise MintBackpressure()
-        return coverage_current is None or coverage_current()
-
-    return current
+def _bound_release_served() -> Callable[[], bool]:
+    """Whether the service still serves the graph release bound to the request now."""
+    release = current_release()
+    return lambda: release.served
 
 
 class MaterialisePermits:
@@ -152,8 +130,7 @@ class MaterialisePermits:
         `keep_waiting` is asked before the wait starts, when the gate opens, and then every
         `STALE_CHECK_SECONDS` of the wait for a permit (`_sliced_wait`). A false answer ends
         the wait with no permit taken. The slices add up to `timeout` and no more, so one
-        call waits `timeout` at most. A request that starts again on a replaced coverage
-        snapshot calls this again with its full wait (`under_current_coverage`).
+        call waits `timeout` at most.
         """
         ends = time.monotonic() + timeout
         if keep_waiting is not None and not keep_waiting():
@@ -173,8 +150,8 @@ class MaterialisePermits:
     @contextmanager
     def every_permit(self) -> Iterator[None]:
         """Hold every permit, waiting as long as the frames alive now take to finish, so no
-        materialisation overlaps the block. A coverage reload and a graph release swap run
-        under it, since the old and new index are both resident while they load.
+        materialisation overlaps the block. A graph release swap runs under it, since the old
+        and new release's views are both resident while the new one loads.
 
         Concurrent callers run one at a time: a drain mutex is held from the first permit
         taken to the last one released, so two drains never each hold part of the permits
@@ -206,7 +183,6 @@ def bounded_materialise_slot(
     *,
     wait_seconds: float,
     deadline: float | None = None,
-    coverage_current: Callable[[], bool] | None = None,
 ) -> Iterator[None]:
     """Acquire a slot, waiting up to the smaller of `wait_seconds` and the remaining deadline.
 
@@ -215,18 +191,12 @@ def bounded_materialise_slot(
     to acquire raises retryable `MintBackpressure` (503). The wait records as
     the `materialise_wait` phase and adds its whole milliseconds to the `permit_wait_ms` count.
 
-    `coverage_current` says whether the coverage snapshot the caller took before the slot is
-    still the served one (`CoverageService.serves`). It is asked before the wait, when a
-    reload ends, and every `STALE_CHECK_SECONDS` of the wait (`MaterialisePermits.acquire`),
-    and a false answer raises `StaleCoverageSnapshot` (`under_current_coverage`) with no
-    permit taken, so a waiting caller drops a replaced index within one such slice. It is
-    asked again once the permit is held, when no reload can run, and a false answer there
-    releases the permit and raises the same. Every check runs inside the `materialise_wait`
-    phase. A caller that takes its snapshot inside the slot passes none.
-
-    With `GRAPH_RELEASE_COVERAGE` on and a graph release bound, every one of those checks
-    first raises `MintBackpressure` once the service no longer serves that release, whether
-    or not the caller passes `coverage_current` (`_admission_check`).
+    Whether the service still serves the request's bound release is asked before the wait,
+    when a swap ends, and every `STALE_CHECK_SECONDS` of the wait (`MaterialisePermits.acquire`),
+    and a false answer raises `MintBackpressure` with no permit taken, so a waiting caller
+    drops a replaced release within one such slice. It is asked again once the permit is held,
+    when no swap can run, and a false answer there releases the permit and raises the same.
+    Every check runs inside the `materialise_wait` phase.
 
     The permit covers a frame for as long as the work inside the slot runs. The function that
     enters the slot binds no frame in its own locals, so a slot that ends without an error
@@ -236,57 +206,24 @@ def bounded_materialise_slot(
     if materialise_semaphore is None:
         yield
         return
-    coverage_current = _admission_check(coverage_current)
+    served = _bound_release_served()
     _wait_seconds = float(wait_seconds)
     if deadline is not None:
         _wait_seconds = max(0.0, min(_wait_seconds, deadline - time.monotonic()))
     started = time.perf_counter()
     with phase("materialise_wait"):
-        acquired = materialise_semaphore.acquire(
-            timeout=_wait_seconds, keep_waiting=coverage_current
-        )
-        # A wait that ended with no permit ended on a replaced snapshot or on its bound.
-        stale = not acquired and coverage_current is not None and not coverage_current()
+        acquired = materialise_semaphore.acquire(timeout=_wait_seconds, keep_waiting=served)
     count("permit_wait_ms", round((time.perf_counter() - started) * 1000))
-    if stale:
-        raise StaleCoverageSnapshot
     if not acquired:
         raise MintBackpressure()
     try:
-        if coverage_current is not None:
-            with phase("materialise_wait"):
-                current = coverage_current()
-            if not current:
-                raise StaleCoverageSnapshot
+        with phase("materialise_wait"):
+            still_served = served()
+        if not still_served:
+            raise MintBackpressure()
         yield
     finally:
         materialise_semaphore.release()
-
-
-def under_current_coverage[T](
-    take: Callable[[], CoverageSnapshot], work: Callable[[CoverageSnapshot], T]
-) -> T:
-    """Run `work` on a snapshot from `take` and return its result.
-
-    `work` covers everything the request derives from the snapshot before it reaches a
-    materialise slot: head checks, graph reads, member resolution, the estimate and the
-    budget decision. When a slot or a rebuild turn inside it raises `StaleCoverageSnapshot`,
-    `work` runs again from a new `take()`, at most `COVERAGE_RESTARTS` times, and one more
-    stale snapshot raises retryable `MintBackpressure` (503). Each run waits for its permit
-    up to the configured wait again, so a request can wait `1 + COVERAGE_RESTARTS` times
-    that wait in all, inside its request deadline. Each stale run adds one to the
-    `coverage_restarts` count of the timings collection open around this call. The worker
-    opens its collection inside `work`, one per run, so a restart there shows as a second
-    timings line and no count. This function holds no snapshot between runs.
-    """
-    for _ in range(1 + COVERAGE_RESTARTS):
-        try:
-            return work(take())
-        except StaleCoverageSnapshot:
-            # Leaving this handler frees the exception, and with its traceback the frames
-            # that hold the replaced snapshot, before the next run takes the served one.
-            count("coverage_restarts", 1)
-    raise MintBackpressure()
 
 
 class RebuildFlights:
@@ -319,7 +256,6 @@ class RebuildFlights:
         *,
         deadline: float | None,
         wait_seconds: float,
-        coverage_current: Callable[[], bool] | None = None,
     ) -> Iterator[bool]:
         """Enter once no rebuild of `subject_id` the caller could share is running, yielding
         whether the caller waited for one.
@@ -336,15 +272,12 @@ class RebuildFlights:
         for a caller with no deadline. A rebuild still running at the bound raises retryable
         `MintBackpressure` (503). The wait records as the `rebuild_wait` phase.
 
-        `coverage_current` says whether the coverage snapshot the caller holds is still the
-        served one (`CoverageService.serves`). It is asked every `STALE_CHECK_SECONDS` of the
-        wait (`_sliced_wait`), and a wait that ended on a false answer raises
-        `StaleCoverageSnapshot` (`under_current_coverage`), so a waiting caller drops a
-        replaced index within one such slice while the rebuild it waits on still runs. A
-        request whose bound graph release the service no longer serves gets `MintBackpressure`
-        at the same checks (`_admission_check`).
+        Whether the service still serves the request's bound release is asked every
+        `STALE_CHECK_SECONDS` of the wait (`_sliced_wait`), and a wait that ended on a false
+        answer raises the same `MintBackpressure`, so a waiting caller drops a replaced release
+        within one such slice while the rebuild it waits on still runs.
         """
-        coverage_current = _admission_check(coverage_current)
+        served = _bound_release_served()
         finished = threading.Event()
         running = self._claim(subject_id, finished)
         waited = running is not None
@@ -353,12 +286,7 @@ class RebuildFlights:
                 float(wait_seconds) if deadline is None else max(0.0, deadline - time.monotonic())
             )
             with phase("rebuild_wait"):
-                ended = _sliced_wait(running.wait, ends=ends, keep_waiting=coverage_current)
-                # A wait that ended with the rebuild running ended on a replaced snapshot or
-                # on its bound.
-                stale = not ended and coverage_current is not None and not coverage_current()
-            if stale:
-                raise StaleCoverageSnapshot
+                ended = _sliced_wait(running.wait, ends=ends, keep_waiting=served)
             if not ended:
                 raise MintBackpressure()
             running = self._claim(subject_id, finished)
@@ -659,17 +587,14 @@ def refuse_async_over_ceiling(
 
 
 __all__ = [
-    "COVERAGE_RESTARTS",
     "STALE_CHECK_SECONDS",
     "UNCOVERED_MEMBER_CAP",
     "MaterialisePermits",
     "RebuildFlights",
-    "StaleCoverageSnapshot",
     "bounded_materialise_slot",
     "refuse_async_over_ceiling",
     "refuse_excel_over_estimate",
     "refuse_inline_over_ceiling",
     "sync_estimate",
-    "under_current_coverage",
     "within_sync_budget",
 ]

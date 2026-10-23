@@ -1,4 +1,4 @@
-"""Lists populated measure partitions and finds exact axis values in the packaged CRS index."""
+"""Lists populated measure partitions and finds exact axis values in the fixture CRS index."""
 
 from __future__ import annotations
 

@@ -4,7 +4,7 @@ A verbatim claim suppresses the matching default and warning. An unapplied or in
 its warning. Invalid claims leave the default active. A two-variable query checks that extraction
 broadcasts dropped phrases to both bind prompts.
 
-The fixture uses the packaged CRS index and the query "standard grants", which leaves
+The fixture uses the fixture CRS index and the query "standard grants", which leaves
 crsTypeOfFlow open for the binder.
 """
 
@@ -14,12 +14,13 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
 from search.models import UNIT_REF
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
@@ -60,8 +61,8 @@ class _FlowRequestedAllLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -73,7 +74,6 @@ class _FlowRequestedAllLLM:
                 )
             ],
             also_plausible=[],
-            ask=None,
         ), None
 
 
@@ -102,7 +102,7 @@ class _ExtractAndFlowRequestedAllLLM(_FlowRequestedAllLLM):
 
 
 def test_requested_all_on_the_flow_slot_suppresses_the_declared_default_end_to_end():
-    """A validated breadth claim leaves the packaged crsTypeOfFlow default unbound (issue #968)."""
+    """A validated breadth claim leaves the fixture index's crsTypeOfFlow default unbound (issue #968)."""
     graph = _e2e_graph_for(_QUERY)
 
     result = asyncio.run(
@@ -240,17 +240,23 @@ def test_a_hallucinated_requested_all_phrase_not_in_the_input_list_is_discarded(
 class _TwoLegLLM:
     """Record each variable's bind prompt and claim the breadth phrase on the CRS shape."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        dropped_qualifiers: tuple[str, ...] = (_BREADTH_PHRASE,),
+        second: str = _RESOLVE_DETECT_QUERY,
+    ) -> None:
         self.prompts_by_variable: dict[str, str] = {}
+        self._dropped = list(dropped_qualifiers)
+        self._second = second
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "Extraction":
             return Extraction(
                 kind="resolution",
-                variables=[_QUERY, _RESOLVE_DETECT_QUERY],
+                variables=[_QUERY, self._second],
                 entities=[ExtractedEntity(text="Kenya")],
                 dates=[],
-                dropped_qualifiers=[_BREADTH_PHRASE],
+                dropped_qualifiers=self._dropped,
             ), None
         if schema is QuantityOutput:
             return NO_QUANTITY
@@ -262,8 +268,8 @@ class _TwoLegLLM:
         )
         self.prompts_by_variable[variable] = prompt
         if variable == _QUERY:
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -275,20 +281,17 @@ class _TwoLegLLM:
                     )
                 ],
                 also_plausible=[],
-                ask=None,
             ), None
         # Count_Person has no constraint slots to bind.
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[], ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=[]), None
 
 
-def _two_leg_graph() -> FakeGraph:
+def _two_leg_graph(second: str = _RESOLVE_DETECT_QUERY) -> FakeGraph:
     return FakeGraph(
         nodes={**_E2E_NODES, **_RESOLVE_NODES},
         detect={
             _QUERY: {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]},
-            _RESOLVE_DETECT_QUERY: {"svs": [_RESOLVE_SV], "entities": []},
+            second: {"svs": [_RESOLVE_SV], "entities": []},
         },
         resolve=_RESOLVE_RESOLVE,
         obs=_E2E_OBS,
@@ -334,6 +337,55 @@ def test_two_variable_query_broadcasts_dropped_qualifiers_to_every_leg():
     assert len(flow_filters) == 1
     assert flow_filters[0].binding_kind == "unbound"
     assert flow_filters[0].provenance != "declared_default"
+
+
+@pytest.mark.parametrize(
+    ("dropped", "in_bind", "warned", "departed"),
+    [
+        # Dropped, and held by the second variable alone: that leg's bind reads it and its
+        # part warns, though the part has no answer.
+        (("multilateral",), True, True, [[], ["multilateral"]]),
+        # Held by the variable only: the bind reads it in the variable already, and a part
+        # with no answer leaves it unjudged, since its refusal states why nothing is shown.
+        ((), False, False, [[], []]),
+        # Beside a request-wide phrase the first part meets: the request-wide warning goes,
+        # "multilateral" still warns once on the second part, and the second part departs
+        # for both, the request-wide one by its own region's admission.
+        (
+            ("multilateral", _BREADTH_PHRASE),
+            True,
+            True,
+            [[], ["multilateral", _BREADTH_PHRASE]],
+        ),
+    ],
+)
+def test_a_narrowing_word_is_judged_on_the_part_whose_variable_holds_it(
+    dropped, in_bind, warned, departed
+):
+    """A narrowing word the second variable holds reaches that part alone: the first part
+    and the envelope never warn for it."""
+    second = "multilateral population"
+    llm = _TwoLegLLM(dropped_qualifiers=dropped, second=second)
+    response = offline_resolve(
+        make_request(f"standard grants and {second}"),
+        graph=_two_leg_graph(second),
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert "multilateral" not in llm.prompts_by_variable[_QUERY]
+    assert ("DROPPED QUALIFIERS" in llm.prompts_by_variable[_QUERY]) is (_BREADTH_PHRASE in dropped)
+    assert ("DROPPED QUALIFIERS" in llm.prompts_by_variable[second]) is in_bind
+    dropped_warning = 'The requested qualifier "multilateral" was not applied.'
+    assert [w.message for w in response.parts[1].warnings if w.code == QUERY_QUALIFIER_DROPPED] == (
+        [dropped_warning] if warned else []
+    )
+    assert not [w for w in response.parts[0].warnings if w.code == QUERY_QUALIFIER_DROPPED]
+    assert not [w for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED]
+    assert [
+        [d.asked for d in part.departures if d.code == "measure_not_applied"]
+        for part in response.parts
+    ] == departed
 
 
 def test_a_requested_all_claim_on_a_property_the_elected_shape_lacks_keeps_its_warning():

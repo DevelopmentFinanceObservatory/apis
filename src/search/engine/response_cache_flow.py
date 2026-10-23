@@ -23,6 +23,7 @@ from search.engine.bind_repair import (
     declared_default_words_named,
     stated_words_negated,
 )
+from search.engine.binders import Binder, Fallbacks
 from search.engine.deadline import _await_bounded
 from search.engine.enrichment import stream_place_options
 from search.engine.envelope import _terminal_events, now_ms
@@ -57,7 +58,7 @@ from search.engine.response_cache_keys import (
     to_entry,
 )
 from search.engine.response_cache_memo import PartMemo
-from search.engine.role_text import DoorRole, contradicts
+from search.engine.role_text import DoorRole, contradicts, every_member_axis
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.engine.written_phrase import written_phrase
 from search.models import (
@@ -67,6 +68,7 @@ from search.models import (
     ResolveResponse,
     ResubmitIdentityPayload,
     SourceMention,
+    Warning,
 )
 from series_coverage.shared import CoverageSnapshot
 
@@ -80,14 +82,14 @@ type ReplayedPlaceOptions = Callable[
 
 
 # ---------------------------------------------------------------------------
-# Raw-text inputs absent from Extraction: one `role_query` reader checks each
-# DoorRole occurrence on every leg. Five `query_text` readers run only for one-
-# variable requests: qualifier matches and ties (one reading serves both),
-# two-reading spans, unsupported phrases, default triggers, and the defaulted
-# slots the query names.
+# Raw-text inputs absent from Extraction: two `role_query` readers run on every leg. One
+# checks each DoorRole occurrence, the other reads the flow axis each dropped phrase asks
+# every member of (`role_text.every_member_axis`). Single-variable requests also read
+# qualifier vocabulary, defaults, written phrases, negated dataset words and graph value
+# names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
-# Reuse pipeline helpers and index;
-# the key builder receives JSON-safe results, not raw text or the index.
+# Graph value names are known only after retrieval, so their signal keeps the whole
+# query. The other signals reuse the pipeline helpers and index.
 # ---------------------------------------------------------------------------
 
 
@@ -108,6 +110,8 @@ class Layer2Signals:
     declared_default_slots_named: tuple[str, ...]
     written_variable_phrases: tuple[str | None, ...]
     query_text_negated_stated_words: tuple[str, ...]
+    every_member_axes: tuple[str | None, ...]
+    query_text_value_source: str | None
 
 
 def _role_contradiction(name: str, role: DoorRole, *, query: str) -> dict[str, object]:
@@ -127,10 +131,13 @@ def compute_layer2_signals(
     entity_roles: Mapping[str, Sequence[DoorRole]],
     query_text: str | None,
     variables: Sequence[str] = (),
+    dropped_qualifiers: Sequence[str] = (),
 ) -> Layer2Signals:
-    """`query` supplies every leg's raw role signal; `entity_roles` lists its
-    door-provided occurrences in mention order. `query_text` is set only for a
-    single-variable request, matching the pipeline's own raw-text readers. Each of
+    """`query` supplies every leg's raw role signals; `entity_roles` lists its
+    door-provided occurrences in mention order, and each of `dropped_qualifiers` gives the
+    flow axis it asks every member of, read with the preposition `query` puts before it.
+    `query_text` is set only for a single-variable request, matching the pipeline's own
+    raw-text readers. Each of
     `variables` gives the stretch of `query_text` that writes it (`written_phrase`), which
     the named-member binding reads.
     """
@@ -138,6 +145,9 @@ def compute_layer2_signals(
         _role_contradiction(name, role, query=query)
         for name, roles in entity_roles.items()
         for role in roles
+    )
+    every_member_axes = tuple(
+        every_member_axis(phrase, query=query) for phrase in dropped_qualifiers
     )
     if query_text is None:
         return Layer2Signals(
@@ -151,6 +161,8 @@ def compute_layer2_signals(
             declared_default_slots_named=(),
             written_variable_phrases=(),
             query_text_negated_stated_words=(),
+            every_member_axes=every_member_axes,
+            query_text_value_source=None,
         )
     index = get_index()
     measure_index = get_measure_index()
@@ -180,6 +192,8 @@ def compute_layer2_signals(
             written_phrase(variable, query_text) for variable in variables
         ),
         query_text_negated_stated_words=stated_words_negated(query_text, index=index),
+        every_member_axes=every_member_axes,
+        query_text_value_source=query_text,
     )
 
 
@@ -199,7 +213,15 @@ class CacheScope:
     response at the `response` event. A hit sends either entry through `hit_events`. A
     follower of an in-flight streamed leader therefore waits
     for the leader's `done` before it sends anything. The generation stamp is read once
-    and sets both the key and entry lifetime. New stamps produce new keys, leaving old entries unreachable. The caller's
+    and sets both the key and entry lifetime. New stamps produce new keys, leaving old
+    entries unreachable. `binder` is the binder the request was routed to. Its name and
+    model join the key, so answers two binders give never share one. Layer 2 serves one query's answer to any query with the same
+    extraction, which holds only while the bind reads the extraction alone: a binder that
+    reads the query's own text (`Binder.reads_query_text`) skips the extraction-keyed
+    lookup (`lookup_parsed`), and layer 1, which keys on the query, serves its repeats.
+    `fallbacks` is the request's record of calls its binder served from a fallback
+    (`binders.recording_fallbacks`). A request that holds any stores nothing, since its
+    answer is not the one its key names. The caller's
     coverage snapshot contributes its stamp to the same scope; this class does
     not read the coverage service again. The revision of the conversion catalogue and the
     build and UN System setting of the origin catalogue the request bound join the scope
@@ -215,7 +237,8 @@ class CacheScope:
         start_ms: int,
         deadline: float,
         build_commit: str,
-        model: str,
+        binder: Binder,
+        fallbacks: Fallbacks,
         seed: int | None,
         today: str,
         max_candidates: int,
@@ -225,6 +248,8 @@ class CacheScope:
         generation: GenerationProvider = UNKNOWN_GENERATION,
     ) -> None:
         self._cache = cache
+        self._fallbacks = fallbacks
+        self._reads_query_text = binder.reads_query_text
         self._start_ms = start_ms
         self._deadline = deadline
         # Captured once, here, never re-read: a computation that started
@@ -253,7 +278,9 @@ class CacheScope:
                 seam_default=seam_default,
                 qualifier_coverage=config.settings().qualifier_coverage,
                 build_commit=build_commit,
-                model=model,
+                binder=binder.name,
+                model=binder.model,
+                engine_model=config.settings().engine_model,
                 seed=seed,
                 today=today,
                 graph_generation=self._stamp.key,
@@ -365,26 +392,40 @@ class CacheScope:
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
         source_codes: Sequence[str | None] = (),
+        unit_texts: Sequence[str | None] = (),
         separate: Sequence[bool] = (),
+        extraction_warnings: Sequence[Warning] = (),
+        measure_qualifiers: Sequence[tuple[str, ...]] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
 
         `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
         and `sources` are required to build a complete key. `source_codes` runs parallel to
-        `variables` and holds the series code the query writes for each. `separate` runs parallel to
-        `variables` and marks each one the raw query compares with another. This lookup
+        `variables` and holds the series code the query writes for each. `unit_texts` runs
+        parallel to `variables` and holds the unit text extraction peeled from each
+        (`ExtractionResult.unit_texts`). `separate` runs parallel to
+        `variables` and marks each one the raw query compares with another.
+        `measure_qualifiers` runs parallel to `variables` and holds the words narrowing each
+        one's measure.
+        `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
+        serves as stored. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
+        A binder that reads the query's own text looks up nothing here (`CacheScope`).
 
         Hits record the leader's health verdict. `store()` can then cache the
         request's literal query at layer 1 using that verdict; layer-2 hits
         never republish the layer-2 key.
         """
-        if not self.active:
+        if not self.active or self._reads_query_text:
             return None
         assert self._scope is not None
         signals = compute_layer2_signals(
-            query=query, entity_roles=entity_roles, query_text=query_text, variables=variables
+            query=query,
+            entity_roles=entity_roles,
+            query_text=query_text,
+            variables=variables,
+            dropped_qualifiers=dropped_qualifiers,
         )
         key = layer2_key(
             variables=variables,
@@ -395,6 +436,7 @@ class CacheScope:
             operations=operations,
             sources=sources,
             source_codes=source_codes,
+            unit_texts=unit_texts,
             role_contradictions=signals.role_contradictions,
             query_text_qualifier_matches=signals.query_text_qualifier_matches,
             query_text_qualifier_ties=signals.query_text_qualifier_ties,
@@ -405,8 +447,12 @@ class CacheScope:
             declared_default_slots_named=signals.declared_default_slots_named,
             written_variable_phrases=signals.written_variable_phrases,
             query_text_negated_stated_words=signals.query_text_negated_stated_words,
+            every_member_axes=signals.every_member_axes,
+            query_text_value_source=signals.query_text_value_source,
             scope=self._scope,
             separate=separate,
+            extraction_warnings=extraction_warnings,
+            measure_qualifiers=measure_qualifiers,
         )
         self._layer2_key = key
         value, self._layer2_lease = await self._acquire(key)
@@ -533,7 +579,7 @@ class CacheScope:
             # No lease means this request cannot publish a cache entry.
             return
         try:
-            verdict = self._served_storable and storable()
+            verdict = not self._fallbacks.reasons and self._served_storable and storable()
             timed_out = self._timed_out or self._served_timed_out
             entry, size = encode()
             for lease in (self._layer1_lease, self._layer2_lease):

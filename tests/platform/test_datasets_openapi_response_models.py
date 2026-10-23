@@ -78,6 +78,7 @@ def test_every_datasets_path_is_present(app: FastAPI):
         "/api/datasets/{id}/{content_version}",
         "/api/datasets/{id}/{content_version}/pin",
         "/api/datasets/{id}/{content_version}/observations",
+        "/api/datasets/{id}/{content_version}/file",
         "/api/datasets/{id}/{content_version}/files/{digest}",
         "/api/datasets/{id}/{content_version}/description",
         "/api/datasets/{id}/{content_version}/description/values",
@@ -123,3 +124,13 @@ def test_schema_route_2xx_response_matches_the_document_it_describes(app: FastAP
     assert set(body_schema["required"]) == set(build_schema_document())
     manifest_property = body_schema["properties"]["manifest"]
     assert manifest_property != schema["components"]["schemas"]["Manifest"]
+
+
+@pytest.mark.parametrize(
+    ("path", "method"), [("/api/datasets", "post"), ("/api/datasets/{id}", "get")]
+)
+def test_operation_submitting_routes_document_their_202(app: FastAPI, path: str, method: str):
+    response = app.openapi()["paths"][path][method]["responses"]["202"]
+    body_schema = response["content"]["application/json"]["schema"]
+    assert body_schema == {"$ref": "#/components/schemas/OperationResource"}
+    assert set(response["headers"]) == {"Location", "Retry-After"}

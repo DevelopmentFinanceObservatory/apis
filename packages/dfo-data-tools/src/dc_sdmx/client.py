@@ -2005,8 +2005,6 @@ def plan_request_chunks(
     time_period: Literal["LATEST"] | Sequence[str] | None = None,
     url_budget_bytes: int = _DEFAULT_URL_BUDGET_BYTES,
     lanes: int = DEFAULT_PLANNING_LANES,
-    row_weights: Mapping[str, int] | None = None,
-    row_budget: int | None = None,
 ) -> list[tuple[str, ...]]:
     """Split variables in order into lane-sized groups, then pack by URL byte budget.
 
@@ -2014,15 +2012,7 @@ def plan_request_chunks(
     query cost is applied. Fixed entity, facet, and time filters count toward
     the URL budget. The client uses `lanes=1`. The coverage estimator passes
     its dispatch lane count so both share the same request plan.
-
-    With `row_weights` and `row_budget`, a chunk also closes before its
-    variables' summed weights (expected response rows) would pass
-    `row_budget`. Every variable needs a weight. A variable whose weight
-    alone passes the budget raises `SdmxQueryError`, since only a narrower
-    entity filter can shrink its response.
     """
-    if (row_weights is None) != (row_budget is None):
-        raise ValueError("row_weights and row_budget are passed together or not at all")
     target = max(1, math.ceil(len(variables) / lanes))
     grouped: list[tuple[str, ...]] = [
         tuple(variables[i : i + target]) for i in range(0, len(variables), target)
@@ -2039,15 +2029,7 @@ def plan_request_chunks(
 
     chunks: list[tuple[str, ...]] = []
     for group in grouped:
-        chunks.extend(
-            _pack_variable_chunks(
-                group,
-                budget=url_budget_bytes,
-                query_len=_query_len,
-                row_weights=row_weights,
-                row_budget=row_budget,
-            )
-        )
+        chunks.extend(_pack_variable_chunks(group, budget=url_budget_bytes, query_len=_query_len))
     return chunks
 
 
@@ -2081,84 +2063,28 @@ def place_slices(
     )
 
 
-def plan_entity_chunks(
-    dcids: Sequence[str],
-    *,
-    role: str,
-    variables: Sequence[str],
-    url_budget_bytes: int = _DEFAULT_URL_BUDGET_BYTES,
-    row_weights: Mapping[str, int] | None = None,
-    row_budget: int | None = None,
-) -> list[tuple[str, ...]]:
-    """Split one role's entity filter in order into runs, one filter per `/data` request.
-
-    Each run closes before a request reading any one of `variables` on
-    `{role: run}` would pass `url_budget_bytes` once encoded, measured with
-    the variable that encodes longest. With `row_weights` and `row_budget`,
-    a run also closes before its dcids' summed weights (expected response
-    rows) would pass `row_budget`, and every dcid needs a weight. Every
-    dcid lands in exactly one run. A dcid whose weight or query cost alone
-    passes its budget raises `SdmxQueryError`.
-    """
-    if (row_weights is None) != (row_budget is None):
-        raise ValueError("row_weights and row_budget are passed together or not at all")
-    if not variables:
-        raise SdmxQueryError("plan_entity_chunks requires at least one variable")
-    _or_list("variableMeasured", variables)
-    widest = max(variables, key=lambda v: len(str(httpx.QueryParams({"v": v}))))
-
-    def _query_len(run: Sequence[str]) -> int:
-        params = {"c[variableMeasured]": widest, **_entity_params({role: run})}
-        return len(str(httpx.QueryParams(params)))
-
-    return _pack_variable_chunks(
-        dcids,
-        budget=url_budget_bytes,
-        query_len=_query_len,
-        label="entity",
-        row_weights=row_weights,
-        row_budget=row_budget,
-    )
-
-
 def _pack_variable_chunks(
     variables: Sequence[str],
     *,
     budget: int,
     query_len: Callable[[Sequence[str]], int],
     label: str = "variable",
-    row_weights: Mapping[str, int] | None = None,
-    row_budget: int | None = None,
 ) -> list[tuple[str, ...]]:
     """Greedily pack items in input order against the encoded query budget.
 
-    Shared by `/data`, `/availability`, entity-filter, and facet-id
-    planning. `label` names the item in an oversized-item error. A single
-    item over budget raises `SdmxQueryError`. A list that fits returns as
-    one chunk. With
-    `row_budget`, each chunk's summed `row_weights` also stays within it,
-    and an item whose own weight passes it raises `SdmxQueryError`.
+    Shared by `/data`, `/availability`, place, and facet-id planning. `label`
+    names the item in an oversized-item error. A single item over budget
+    raises `SdmxQueryError`. A list that fits returns as one chunk.
     """
     chunks: list[tuple[str, ...]] = []
     current: list[str] = []
-    current_rows = 0
     for variable in variables:
-        rows = 0
-        if row_weights is not None and row_budget is not None:
-            rows = row_weights[variable]
-            if rows > row_budget:
-                raise SdmxQueryError(
-                    f"SDMX {label} {variable!r} alone expects {rows} rows, over the row "
-                    f"budget of {row_budget}; only a narrower entity filter can carry it"
-                )
-        within_rows = row_budget is None or current_rows + rows <= row_budget
-        if within_rows and query_len([*current, variable]) <= budget:
+        if query_len([*current, variable]) <= budget:
             current.append(variable)
-            current_rows += rows
             continue
         if current:
             chunks.append(tuple(current))
-        current, current_rows = [variable], rows
+        current = [variable]
         if query_len(current) > budget:
             raise SdmxQueryError(
                 f"SDMX {label} {variable!r} alone exceeds the URL budget of "

@@ -38,6 +38,7 @@ from search.models import (
     StatVar,
     Timing,
 )
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
@@ -459,7 +460,6 @@ class TestNearestRealProbeFailureIsContained:
     def test_probe_graph_error_still_yields_200_no_data(self, monkeypatch):
         import asyncio
 
-        from search.engine.bind import _UniversalBindOutput
         from search.engine.errors import GraphInfraError
         from search.engine.region import resolve_variable
         from search.engine.retrieval.retrieve import NoDataDraft
@@ -476,8 +476,8 @@ class TestNearestRealProbeFailureIsContained:
                     return NO_QUANTITY
                 assert schema.__name__ == "_UniversalBindOutput"
                 return (
-                    _UniversalBindOutput(
-                        chosen_shape_index=0,
+                    elected_reply(
+                        0,
                         bindings=[
                             {
                                 "axis": "how",
@@ -487,7 +487,6 @@ class TestNearestRealProbeFailureIsContained:
                             }
                         ],
                         also_plausible=[],
-                        ask=None,
                     ),
                     None,
                 )

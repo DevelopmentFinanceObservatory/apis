@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -14,6 +15,7 @@ from code_index.shared import get_index
 from code_index.types import PartyRow, WholeMarker
 from datasets_api.render import _RenderReads
 from dc_graph import GraphClient
+from graph_release.context import bound_release, current_release
 from materialise.enrichment import (
     PARTY_FIELDS,
     EnrichmentLookup,
@@ -23,10 +25,12 @@ from materialise.enrichment import (
     read_party_kinds,
     row_party_cell,
 )
+from tests.graph_release.support import release_at_revision
 
 from .conftest import FakeGraphReader
 
 _FIXTURES = Path(__file__).parent.parent / "fixtures"
+_DEBT = "Amount_FinancialFlow_Debt_Nominal"
 
 
 def _graph() -> FakeGraphReader:
@@ -411,12 +415,19 @@ def test_empty_refs_makes_no_call():
 
 def test_concurrent_lookups_of_the_same_uncached_refs_are_all_correct_then_cached():
     # Graph reads run outside the cache lock, so concurrent misses may fetch
-    # the same refs. Results remain correct and later reads use the cache.
+    # the same refs. Results remain correct and later reads use the cache. Each
+    # worker runs in a copy of the caller's context, as pooled request work does,
+    # so it reads the release the caller bound.
     graph = _graph()
     lookup = EnrichmentLookup(graph, parties=lambda: {})
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(lookup.lookup, ["country/KEN", "org/WORLDBANK"]) for _ in range(8)]
+        futures = [
+            pool.submit(
+                contextvars.copy_context().run, lookup.lookup, ["country/KEN", "org/WORLDBANK"]
+            )
+            for _ in range(8)
+        ]
         results = [future.result() for future in futures]
 
     for result in results:
@@ -622,3 +633,23 @@ def test_a_rows_cells_give_its_party_whole_cell(ref, period, provenance, expecte
         row_party_cell("party_whole", ref, parties=parties, period=period, provenance=provenance)
         == expected
     )
+
+
+def test_a_name_read_under_one_release_is_read_again_under_the_next(monkeypatch):
+    """The bound release answers a DFO variable's name, so a name cached under one release is
+    not served under another."""
+    first, second = release_at_revision("rev-1"), release_at_revision("rev-2")
+    names = {first.release_id: "Debt flows", second.release_id: "Debt flows, renamed"}
+    graph = FakeGraphReader(arcs={})
+
+    def node_arcs_many(dcids, **_kwargs):
+        return {dcid: {"name": (names[current_release().release_id],)} for dcid in dcids}
+
+    monkeypatch.setattr(graph, "node_arcs_many", node_arcs_many)
+    lookup = EnrichmentLookup(graph, parties=lambda: {})
+    read = []
+    for release in (first, second, first):
+        with bound_release(release):
+            read.append(lookup.lookup([_DEBT])[_DEBT]["label"])
+
+    assert read == ["Debt flows", "Debt flows, renamed", "Debt flows"]

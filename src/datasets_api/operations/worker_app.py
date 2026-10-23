@@ -71,7 +71,7 @@ from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.build import build_commit
 from graph_release.context import bound_served_release
-from graph_release.service import ReleaseService, optional_release_service
+from graph_release.service import ReleaseService, get_release_service
 from materialise import EnrichmentLookup
 from materialise.facets import VariableBreadthReader
 from materialise.graph import GraphReader
@@ -227,8 +227,8 @@ def build_worker_app(
     stamps `claimed_at` with. After a normal return, the route reads the stored terminal state and
     answers 2xx so Cloud Tasks does not retry completed or failed work. `catalogue` defaults to the
     process-wide service, so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails construction.
-    `release` defaults to the process-wide graph release service when `GRAPH_RELEASE_URI` is set,
-    and to none otherwise. Injected `deps` serve every run as given. Deps the lifespan builds
+    `release` defaults to the process-wide graph release service, so an unset `GRAPH_RELEASE_URI`
+    or an unreadable release fails construction. Injected `deps` serve every run as given. Deps the lifespan builds
     take the code index each run reads under its bindings, since it can change between runs.
     The lifespan reads it once under the served release, so a missing or malformed index fails
     startup, and keeps none.
@@ -244,7 +244,7 @@ def build_worker_app(
     _worker_url = worker_url
     _worker_invoker_service_account = worker_invoker_service_account
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
-    _release = release if release is not None else optional_release_service()
+    _release = release if release is not None else get_release_service()
     _lock = threading.Lock()
 
     @asynccontextmanager
@@ -309,20 +309,15 @@ def build_worker_app(
                     )
                     coverage = get_coverage_service()
                     materialise_semaphore = MaterialisePermits(1)
-                    # A coverage reload holds the run's permit, as on the API surface. The run
-                    # confirms its coverage snapshot before and while it waits for the permit
-                    # and once it holds it, so it builds its frame beside the one index the
-                    # service serves and drops a replaced index within one wait slice of the
-                    # reload (`admission.STALE_CHECK_SECONDS`), as it does while it waits its
-                    # turn at a shared rebuild. Before it waits, a run can hold a replaced
-                    # index for as long as its head checks, its graph reads, member
-                    # resolution, the estimate and the budget decision take.
-                    stack.callback(coverage.register_load_guard(materialise_semaphore.every_permit))
-                    # A release swap holds the run's permit for the same reason.
-                    if _release is not None:
-                        stack.callback(
-                            _release.register_swap_guard(materialise_semaphore.every_permit)
-                        )
+                    # A release swap holds the run's permit, as on the API surface. The run
+                    # confirms that the service still serves its bound release before and
+                    # while it waits for the permit and once it holds it, so it builds its
+                    # frame beside the one release the service serves and refuses within one
+                    # wait slice of the swap (`admission.STALE_CHECK_SECONDS`), as it does
+                    # while it waits its turn at a shared rebuild. Before it waits, a run can
+                    # hold a replaced release for as long as its head checks, its graph reads,
+                    # member resolution, the estimate and the budget decision take.
+                    stack.callback(_release.register_swap_guard(materialise_semaphore.every_permit))
                     # Run state uses the top-level store. This worker only runs tasks.
                     # Dependency defaults stay inert.
                     # Parsed now, so a missing or malformed index fails startup.

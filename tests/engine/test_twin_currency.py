@@ -17,10 +17,12 @@ import pytest
 
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
+from search.engine.binders import Binder
 from search.engine.extract import DateRequest
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import IdentityBindingValue, ResubmitIdentityPayload, TimeWindow
+from tests.engine._binders import ReplyBinder
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -173,6 +175,7 @@ def _resolve(
     bindings: Sequence[SlotBindingDraft],
     places: Mapping[str, str],
     *,
+    binder: Binder | None = None,
     wb_absent: frozenset[str] = frozenset(),
     imf_absent: frozenset[str] = frozenset(),
     wb_national: bool = False,
@@ -216,6 +219,7 @@ def _resolve(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_SoleOptionLLM([1], bindings),
             base_timing={},
             sdmx=FakeSdmxClient(
@@ -244,7 +248,7 @@ _WB_IN_USD = (_NOMINAL_GDP_SV, "USDollar", None)
 
 
 @pytest.mark.parametrize(
-    ("svs", "bindings", "places", "wb_absent", "served", "listed"),
+    ("svs", "bindings", "places", "wb_absent", "served", "listed", "binder"),
     [
         pytest.param(
             {**_WB_NOMINAL_GDP_NODES, _IMF_GDP_SV: _IMF_GDP_NODE},
@@ -253,6 +257,7 @@ _WB_IN_USD = (_NOMINAL_GDP_SV, "USDollar", None)
             frozenset(),
             _WB_IN_USD,
             _IMF_IN_USD,
+            None,
             id="imf-listed",
         ),
         pytest.param(
@@ -262,12 +267,13 @@ _WB_IN_USD = (_NOMINAL_GDP_SV, "USDollar", None)
             frozenset({"country/SOM"}),
             _IMF_IN_USD,
             _WB_IN_USD,
+            ReplyBinder(),
             id="imf-served-first",
         ),
     ],
 )
-def test_the_imf_twin_reads_us_dollars(svs, bindings, places, wb_absent, served, listed):
-    result = _resolve(svs, bindings, places, wb_absent=wb_absent)
+def test_the_imf_twin_reads_us_dollars(svs, bindings, places, wb_absent, served, listed, binder):
+    result = _resolve(svs, bindings, places, wb_absent=wb_absent, binder=binder)
 
     assert result.status == "definite", result
     (spec,) = result.specs
@@ -349,14 +355,14 @@ def _dated(facet: dict, first: int, last: int) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("wb_last", "served", "listed"),
+    ("wb_last", "served", "listed", "binder"),
     [
-        pytest.param(2023, _IMF_IN_USD, _WB_IN_USD, id="world-bank-lacks-two-years"),
-        pytest.param(2025, _WB_IN_USD, _IMF_IN_USD, id="world-bank-holds-every-year"),
+        pytest.param(2023, _IMF_IN_USD, _WB_IN_USD, ReplyBinder(), id="world-bank-lacks-two-years"),
+        pytest.param(2025, _WB_IN_USD, _IMF_IN_USD, None, id="world-bank-holds-every-year"),
     ],
 )
 def test_the_preferred_twin_answers_only_where_it_holds_every_requested_year(
-    wb_last, served, listed
+    wb_last, served, listed, binder
 ):
     """ "GDP of Kenya from 2010 to 2025" elects IMF GDP, which holds all 16 years. World Bank
     GDP is the registry's preferred member and answers in its place only when it holds
@@ -369,6 +375,7 @@ def test_the_preferred_twin_answers_only_where_it_holds_every_requested_year(
         date_request=DateRequest(window=TimeWindow(start_year=2010, end_year=2025), latest=False),
         imf_facets=lambda place, *, usd: [_dated(f, 2010, 2025) for f in _imf(place, usd=usd)],
         wb_facets=[_dated(_WB, 2010, wb_last)],
+        binder=binder,
     )
 
     assert result.status == "definite", result

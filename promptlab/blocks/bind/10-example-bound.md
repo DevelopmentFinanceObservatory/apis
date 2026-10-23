@@ -8,6 +8,7 @@ Example output (shape 0 chosen, two constraint slots, no ambiguity):
      "value_dcids": []}
   ],
   "also_plausible": null,
+  "measuring": [{"index": 0, "rating": 1.0}],
   "ask": null,
   "nearest_refused_index": null
 }

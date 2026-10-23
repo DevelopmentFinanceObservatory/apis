@@ -104,8 +104,8 @@ def movable_totals_roles(
     over `parties`). An open role qualifies when `parties` lists a total on its axis that one of
     `datasets` publishes (`PartyRow.axes`, `PartyRow.datasets`), or any total on its axis when
     `datasets` is empty, as for a definition whose read selected no provenance. The index builds
-    those rows from the coverage build that lists each provenance's parties, so a total an open
-    role can hold in a covered provenance is one this rule names."""
+    those rows from the coverage that lists each provenance's parties, so a total an open role
+    can hold in a covered provenance is one this rule names."""
     axes = totals_axes(identity)
     read = set(datasets)
 

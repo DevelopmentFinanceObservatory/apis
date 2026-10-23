@@ -26,6 +26,7 @@ from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine import test_candidates_fold_after_unit_filter as fold
 from tests.engine import test_measure_election_inapplicable_slots as measure_election
 from tests.engine import test_pool_election as pools
+from tests.engine._binders import ReplyBinder
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import PINNED_DATE, door_roles_for_test_query
@@ -268,6 +269,7 @@ def test_a_refusal_in_the_candidates_fan_out_streams_no_sentence(monkeypatch) ->
                 base_timing={},
                 emit=_emit,
                 coverage=FakeCoverageService(index).snapshot(),
+                binder=ReplyBinder(),
             )
         )
 

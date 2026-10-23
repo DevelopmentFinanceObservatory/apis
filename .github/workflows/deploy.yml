@@ -43,35 +43,33 @@ name: Deploy
 #
 # The apis service moves to an image only after both migration jobs
 # (vars.JOB_DATASETS_MIGRATE, vars.JOB_PRESENTATION_MIGRATE), the datasets
-# maintenance job (vars.JOB_DATASETS_MAINTENANCE), the coverage
-# job (vars.JOB_COVERAGE), the origin catalogue job
+# maintenance job (vars.JOB_DATASETS_MAINTENANCE), the origin catalogue job
 # (vars.JOB_ORIGIN_CATALOGUE), the search catalogue job
 # (vars.JOB_SEARCH_CATALOGUE), the graph release job
 # (vars.JOB_GRAPH_RELEASE), and the datasets worker service
 # (vars.SERVICE_WORKER) have moved onto that same image: build and push the
 # SHA-tagged image, point each job at it, run both migration jobs, make sure a
-# compatible coverage artifact and a compatible origin catalogue are
-# published, then update the worker service, then the apis service, then
-# record the image's code index as the one both services run. Each job
-# is pointed at the new image before it executes, so a job still on the
-# `gcr.io/cloudrun/hello` placeholder a fresh project starts with never runs
-# as the placeholder. The two migration jobs are idempotent. Given an image
+# compatible origin catalogue is published, then update the worker service,
+# then the apis service. Each job is pointed at the new image before it
+# executes, so a job still on the `gcr.io/cloudrun/hello` placeholder a fresh
+# project starts with never runs as the placeholder. The two migration jobs are idempotent. Given an image
 # with nothing new to apply, each reports nothing to apply and exits 0, so
 # every deploy runs both rather than trying to detect whether any is needed.
 # The datasets maintenance job is pointed at the new image after both
 # migrations and left to its Scheduler, and runs `settle` once the apis
-# service has moved and `backfill-descriptions` after the code index record,
-# as the last step (see those steps). The environment must set
-# vars.JOB_DATASETS_MAINTENANCE; the upfront variable check refuses the
-# deploy when it is missing.
-# The coverage and origin catalogue jobs are pointed at the new image on
-# every deploy but built only when no compatible artifact is published for
-# the image's format (see their steps below). The graph release job is
-# pointed at the new image and left to its Scheduler. The search catalogue
-# job is pointed at the new image and, once the apis service has moved, one
-# execution of it is started without waiting for it (see their steps). A
-# failed step stops the job before any step after it runs, so a failed
-# migration or artifact build leaves both services on their current image.
+# service has moved and `backfill-descriptions` as the last step (see those
+# steps). The environment must set vars.JOB_DATASETS_MAINTENANCE; the upfront
+# variable check refuses the deploy when it is missing.
+# The origin catalogue job is pointed at the new image on every deploy but
+# built only when no compatible artifact is published for the image's
+# format (see its steps below). The graph release job is pointed at the new
+# image and left to its Scheduler; the deploy first checks that the new image
+# opens the published release and builds one when it does not (see its step).
+# The search catalogue job is pointed at the new image and run once on it,
+# waiting for it, then verified to have a build published, before the worker
+# and the apis service move (see its steps). A failed step stops the job before any step after it
+# runs, so a failed migration or artifact build leaves both services on their
+# current image.
 
 on:
   workflow_call:
@@ -149,7 +147,6 @@ jobs:
           SERVICE_WORKER: ${{ vars.SERVICE_WORKER }}
           JOB_DATASETS_MIGRATE: ${{ vars.JOB_DATASETS_MIGRATE }}
           JOB_PRESENTATION_MIGRATE: ${{ vars.JOB_PRESENTATION_MIGRATE }}
-          JOB_COVERAGE: ${{ vars.JOB_COVERAGE }}
           JOB_ORIGIN_CATALOGUE: ${{ vars.JOB_ORIGIN_CATALOGUE }}
           JOB_SEARCH_CATALOGUE: ${{ vars.JOB_SEARCH_CATALOGUE }}
           JOB_DATASETS_MAINTENANCE: ${{ vars.JOB_DATASETS_MAINTENANCE }}
@@ -159,7 +156,7 @@ jobs:
           missing=0
           checked=0
           for name in PROJECT_ID REGION AR_REPO SERVICE_APIS SERVICE_WORKER \
-            JOB_DATASETS_MIGRATE JOB_PRESENTATION_MIGRATE JOB_COVERAGE JOB_ORIGIN_CATALOGUE \
+            JOB_DATASETS_MIGRATE JOB_PRESENTATION_MIGRATE JOB_ORIGIN_CATALOGUE \
             JOB_SEARCH_CATALOGUE JOB_DATASETS_MAINTENANCE JOB_GRAPH_RELEASE; do
             checked=$((checked + 1))
             if [ -z "${!name}" ]; then
@@ -167,7 +164,7 @@ jobs:
               missing=1
             fi
           done
-          [ "$checked" -eq 12 ] || { echo "::error::checked $checked variables, expected 12."; exit 1; }
+          [ "$checked" -eq 11 ] || { echo "::error::checked $checked variables, expected 11."; exit 1; }
           [ "$missing" -eq 0 ] || exit 1
           image="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/dfo-apis:${{ steps.target.outputs.sha }}"
           echo "image=$image" >> "$GITHUB_OUTPUT"
@@ -294,94 +291,6 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
-      # The coverage job moves onto the new image on every deploy so its
-      # scheduled runs (every 15 minutes) use the new code. The deploy itself
-      # only needs the guarantee the service has at startup:
-      # `search_surface()`/`datasets_surface()` construction loads the
-      # coverage artifact (`series_coverage.shared.get_coverage_service()`)
-      # and fails readiness when none can be loaded. The scheduled job owns
-      # freshness, and a running service reloads a newer artifact within
-      # COVERAGE_RECHECK_SECONDS, so a deploy does not rebuild an artifact
-      # that is already published.
-      #
-      # The two checks below run as executions of this job, and an execution
-      # overrides the job's args and env but not its image, so the job moves
-      # before the checks and therefore before the services. A deploy that
-      # stops after this step leaves the job on a newer image than the
-      # services. The job's pointer expiry does not rely on the two moving
-      # together: it reads the serving index the last step of this workflow
-      # records.
-      - name: Point the coverage job at the new image
-        if: steps.decide.outputs.deploy == 'true'
-        run: |
-          set -euo pipefail
-          gcloud run jobs update "${{ vars.JOB_COVERAGE }}" \
-            --image="${{ steps.image.outputs.image }}" \
-            --region="${{ vars.REGION }}" \
-            --project="${{ vars.PROJECT_ID }}" \
-            --quiet
-
-      # `python -m series_coverage.verify` calls `series_coverage.loader
-      # .load_coverage` against COVERAGE_ARTIFACT_URI directly and exits
-      # non-zero unless a compatible artifact actually loads -- the same
-      # call `get_coverage_service()` makes at surface-construction time, so
-      # this can never drift from what startup itself would do. It runs as
-      # an execution of the coverage Job with its args overridden (`--args`;
-      # the job's own container `command` is already `python`), so it
-      # inherits that Job's Terraform-provisioned COVERAGE_ARTIFACT_URI
-      # rather than a second, workflow-level copy of it that could drift.
-      #
-      # Verify runs first. It passes whenever the new image's format root
-      # holds a compatible artifact, however old, and the deploy goes on. A
-      # format bump, or a fresh project, has no artifact in its format root,
-      # so verify fails, the build job (`python -m series_coverage.job`)
-      # runs, and a second verify confirms the build published one, all
-      # before traffic moves. A build failure, or a second verify failure,
-      # fails the step and stops the deploy. A build that fails on the data
-      # alone therefore blocks a release only when no artifact exists for the
-      # format to serve.
-      - name: Ensure a compatible coverage artifact is published
-        if: steps.decide.outputs.deploy == 'true'
-        run: |
-          set -euo pipefail
-          verify() {
-            gcloud run jobs execute "${{ vars.JOB_COVERAGE }}" \
-              --region="${{ vars.REGION }}" \
-              --project="${{ vars.PROJECT_ID }}" \
-              --wait \
-              --args=-m,series_coverage.verify
-          }
-          if ! verify; then
-            gcloud run jobs execute "${{ vars.JOB_COVERAGE }}" \
-              --region="${{ vars.REGION }}" \
-              --project="${{ vars.PROJECT_ID }}" \
-              --wait
-            verify
-          fi
-
-      # The packaged code index carries each StatVar's provenances, joined
-      # from a coverage build when the index was exported. `python -m
-      # series_coverage.verify_index` compares every index row with the
-      # published build and exits non-zero on a difference, naming the
-      # variables. It runs as an execution of the coverage job on the new
-      # image, like the step above, so it reads the index that image packages
-      # and that job's own COVERAGE_ARTIFACT_URI. A failure means the index
-      # needs re-exporting (scripts/export_code_index.py) against the current
-      # build, and it stops the deploy before traffic moves. `--record` writes
-      # the index's compatibility pointer (compatible/<content_hash>.json)
-      # naming the build it checked, so the new revision has a compatible
-      # build to load even after a later publish that its index does not
-      # match.
-      - name: Check the code index against the coverage build
-        if: steps.decide.outputs.deploy == 'true'
-        run: |
-          set -euo pipefail
-          gcloud run jobs execute "${{ vars.JOB_COVERAGE }}" \
-            --region="${{ vars.REGION }}" \
-            --project="${{ vars.PROJECT_ID }}" \
-            --wait \
-            --args=-m,series_coverage.verify_index,--record
-
       # The origin catalogue job moves onto the new image on every deploy so
       # its scheduled runs (Cloud Scheduler, every 15 minutes) use the new
       # code. The deploy itself only needs the guarantee the services have at
@@ -444,7 +353,7 @@ jobs:
 
       # The graph release job moves onto the new image on every deploy so its
       # scheduled ticks (Cloud Scheduler, every 2 minutes) build with the new
-      # code. The deploy does not execute it. deploy/graph-release.md covers the job.
+      # code. deploy/graph-release.md covers the job.
       - name: Point the graph release job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -455,13 +364,46 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
+      # `python -m graph_release.verify` opens the release GRAPH_RELEASE_URI's
+      # pointer names for the new image's format through
+      # `graph_release.service.ReleaseService`, building the serving views and
+      # the origin view, and exits non-zero unless they build. It runs as an
+      # execution of the graph release job with its args overridden, so it reads
+      # the job's GRAPH_RELEASE_URI.
+      #
+      # Every serving process fails startup without a release it can open, so
+      # the step runs on every deploy. Verify runs first. A format bump
+      # has no pointer in the new format, and a release the new view code
+      # refuses fails too, so the build job (`python -m graph_release.job`)
+      # runs once on the new image and a second verify checks what it
+      # published. A tick exits 0 on a gate finding, an unavailable dependency
+      # or a scheduled tick holding the lease, so the second verify decides. A
+      # build failure, or a second verify failure, fails the step and stops the
+      # deploy with both services on their current image.
+      - name: Ensure a compatible graph release is published
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          verify() {
+            gcloud run jobs execute "${{ vars.JOB_GRAPH_RELEASE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait \
+              --args=-m,graph_release.verify
+          }
+          if ! verify; then
+            gcloud run jobs execute "${{ vars.JOB_GRAPH_RELEASE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait
+            verify
+          fi
+
       # The search catalogue job (`python -m search.catalogue.job`) builds the
       # example sentences GET /api/search/catalogue serves. It moves onto the
-      # new image here, after the coverage and origin catalogue steps, because
-      # it reads both artifacts in the new image's formats. The apis service
-      # starts without a catalogue, and only that route answers 503 until one
-      # loads. The build key includes the image's commit, so every deploy
-      # needs a new build. The step after the apis service moves starts it.
+      # new image here, after the origin catalogue and graph release steps,
+      # because it reads the catalogue and the release in the new image's
+      # formats, which those steps have just ensured are published.
       - name: Point the search catalogue job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -472,11 +414,38 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
+      # The build key includes the image's commit, and a catalogue format bump
+      # starts an empty format root, so the deploy runs the job once on the new
+      # image and waits, before traffic moves. The run builds in about 90
+      # seconds, or exits at once when the new image's root already carries its
+      # key. A run started by a graph release publish may hold the lease; this
+      # run waits for it and then builds what the pointers name. A refused or
+      # failed build exits non-zero. Some runs exit 0 without publishing (a key
+      # refused within six hours, a wait that ran out, a lapsed lease), so
+      # `python -m search.catalogue.verify`, an execution of the same job with
+      # its args overridden, then decides: it exits non-zero unless a loadable
+      # build is published at the new image's format root. Either failure stops
+      # the deploy with both services on their current image
+      # (deploy/search-catalogue.md).
+      - name: Build the search catalogue on the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait
+          gcloud run jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=-m,search.catalogue.verify
+
       # The async operations worker (the `infra` repository's google_cloud_run_v2_service
       # .datasets_worker) runs the same image as the apis service, and moves
       # onto the new one before the apis step below does, because an
       # in-flight or newly-enqueued operation must run against the schema and
-      # coverage artifact this deploy just brought current. Image-only
+      # graph release this deploy just brought current. Image-only
       # update, same shape as the apis service step below. `infra` owns the
       # service's own scaling/secrets/runtime-service-account config via
       # lifecycle.ignore_changes on the container image.
@@ -509,21 +478,6 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
-      # The search catalogue build key includes the image's commit, so this
-      # starts one execution of the job on the new image, which builds in
-      # about 90 seconds. `--async` returns once the execution is created:
-      # the build's Gemini calls and graph reads stay out of the deploy, and
-      # a failed build raises the job's own alerts while the last published
-      # catalogue keeps serving.
-      - name: Start a search catalogue build on the new image
-        if: steps.decide.outputs.deploy == 'true'
-        run: |
-          set -euo pipefail
-          gcloud run jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}" \
-            --region="${{ vars.REGION }}" \
-            --project="${{ vars.PROJECT_ID }}" \
-            --async
-
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026
       # converted. `datasets-maintenance settle` repeats that migration's
@@ -548,25 +502,6 @@ jobs:
             --wait \
             --args=settle
 
-      # Both services now run the new image's code index. `python -m
-      # series_coverage.record_serving_index` records that index's
-      # content_hash (serving/code_index.json under the coverage format
-      # root), running as an execution of the coverage job, which is on the
-      # new image. The job's prune expires another index's compatibility
-      # pointer only when it was last written before this record and seven
-      # days ago or more, so a pointer a serving revision still needs
-      # survives a deploy that failed part way. A failure here leaves the
-      # previous record, which expires fewer pointers, never more.
-      - name: Record the code index the services run
-        if: steps.decide.outputs.deploy == 'true'
-        run: |
-          set -euo pipefail
-          gcloud run jobs execute "${{ vars.JOB_COVERAGE }}" \
-            --region="${{ vars.REGION }}" \
-            --project="${{ vars.PROJECT_ID }}" \
-            --wait \
-            --args=-m,series_coverage.record_serving_index
-
       # A version row holds a description record from the image that writes
       # records onward. `datasets-maintenance backfill-descriptions` writes one,
       # with basis `backfill`, for every version row holding none: those made
@@ -584,7 +519,7 @@ jobs:
       # task starts no version after 45 minutes, within the Job's
       # 3600-second timeout, and the next deploy carries on from the versions
       # still without a record. It runs last, so no failure of it holds back
-      # the code index record above.
+      # an earlier step.
       - name: Backfill description records
         if: steps.decide.outputs.deploy == 'true'
         run: |
