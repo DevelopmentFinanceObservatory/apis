@@ -298,7 +298,7 @@ def _note_lone_breakdown(state: ResolveState, grounded: _GroundedCandidates, spe
         state.breakdown,
         shape=survivor.shape,
         bindings=survivor.bindings,
-        shown=survivor.mat.sv_dcids[0],
+        served=survivor.mat.sv_dcids,
     )
     if fact is not None:
         state.family_total_absent.setdefault(spec.spec_id, fact)

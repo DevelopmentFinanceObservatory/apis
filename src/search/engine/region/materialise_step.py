@@ -143,12 +143,12 @@ def lone_breakdown_absent(
     *,
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
-    shown: str,
+    served: Sequence[str],
 ) -> FamilyTotalAbsent | None:
     """The `family_total_absent` fact of an answer over `shape` that shows a family with no
     total by its one breakdown signature (`standard.Narrow.lone_signature`): the labels of
     the slots `decision` keeps that `bindings` bind to no value (`slot_label`), in slot
-    order. `shown` is the answer's first member. `None` for any other decision."""
+    order, shown by `served[0]`, the answer's first member. `None` for any other decision."""
     if not isinstance(decision, Narrow) or not decision.lone_signature:
         return None
     bound = bound_values_from_bindings(bindings)
@@ -159,7 +159,7 @@ def lone_breakdown_absent(
     )
     if not breakdown:
         return None
-    return FamilyTotalAbsent(total=None, shown=shown, places=(), breakdown=breakdown)
+    return FamilyTotalAbsent(total=None, shown=served[0], places=(), breakdown=breakdown)
 
 
 def family_total_absent_departure(

@@ -492,7 +492,7 @@ def test_a_lone_breakdown_warning_names_its_unbound_slots(
     ]
     decision = Narrow(frozenset(slot.property_dcid for slot in slots), lone_signature=True)
 
-    fact = lone_breakdown_absent(decision, shape=shape, bindings=bindings, shown=_FEMALE)
+    fact = lone_breakdown_absent(decision, shape=shape, bindings=bindings, served=[_FEMALE])
 
     assert fact is not None
     warning, _departure = resubmit_family_total_absent_departure(

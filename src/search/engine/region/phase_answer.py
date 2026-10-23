@@ -1020,7 +1020,7 @@ def _build_definite_spec(
         state.breakdown,
         shape=state.shape_draft,
         bindings=state.bindings,
-        shown=mat_result.sv_dcids[0],
+        served=mat_result.sv_dcids,
     )
     if family_total_absent is not None:
         state.family_total_absent[spec.spec_id] = family_total_absent
