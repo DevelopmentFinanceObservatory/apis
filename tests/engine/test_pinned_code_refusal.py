@@ -38,6 +38,7 @@ from search.engine.region.requirements import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
+    MeasureRule,
     Requirement,
     ResolveState,
     code_requirement,
@@ -481,19 +482,39 @@ def _nominal_flow() -> ShapeDraft:
     return replace(_education_share(), shape_id="flow_nominal", meas_qual_dcid="Nominal")
 
 
+def _measure_price_basis_requirement(code: str) -> Requirement:
+    """The phrase "constant" as `ResolveState.require_measure` records it: a `MeasureRule` whose
+    measure value the Nominal shape does not carry."""
+    state = _state()
+    match = QualifierMatch(
+        code_system="measurementQualifier",
+        code_dcid=code,
+        label=code,
+        source="synonym",
+        matched_text=_CONSTANT,
+    )
+    state.measure_query_matches = (match,)
+    state.require_measure(_CONSTANT, match, discloses=True)
+    (requirement,) = state.requirements
+    assert isinstance(requirement.rule, MeasureRule)
+    return requirement
+
+
 @pytest.mark.parametrize(
-    ("served", "code", "departs"),
+    ("served", "code", "departs", "build"),
     [
-        ("constant", "RealValue", False),
-        ("constant", "InflationAdjusted", False),
-        ("current", "RealValue", True),
-        (None, "RealValue", True),
-        ("constant", "PurchasingPowerParity", True),
-        ("current", "Nominal", False),
+        ("constant", "RealValue", False, _price_basis_requirement),
+        ("constant", "InflationAdjusted", False, _price_basis_requirement),
+        ("current", "RealValue", True, _price_basis_requirement),
+        (None, "RealValue", True, _price_basis_requirement),
+        ("constant", "PurchasingPowerParity", True, _price_basis_requirement),
+        ("current", "Nominal", False, _price_basis_requirement),
+        ("constant", "RealValue", False, _measure_price_basis_requirement),
+        ("current", "RealValue", True, _measure_price_basis_requirement),
     ],
 )
-def test_a_price_basis_is_met_by_the_served_unit_request(served, code, departs):
-    judgement = judge([_price_basis_requirement(code)], [(_nominal_flow(), [])], served=(served,))
+def test_a_price_basis_is_met_by_the_served_unit_request(served, code, departs, build):
+    judgement = judge([build(code)], [(_nominal_flow(), [])], served=(served,))
 
     assert bool(judgement.departures()) is departs
 

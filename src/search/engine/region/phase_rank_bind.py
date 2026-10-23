@@ -660,7 +660,9 @@ def _read_offer(
         matches=query_qualifiers.matches,
         ties=query_qualifiers.ties,
         # Dropped-qualifier warnings cover matches, ties and two-reading spans alike.
-        matched_phrases=query_qualifiers.phrases | reading_owned_phrases,
+        matched_phrases=_outside_unit_text(
+            query_qualifiers.phrases | reading_owned_phrases, state.unit_text
+        ),
         measure_matches=measure_query_matches,
         measure_conflict_phrases=measure_qualifier_conflict_phrases,
         unread_price_basis=unread_price_basis,
@@ -670,6 +672,17 @@ def _read_offer(
         eligible_shapes=eligible_shapes,
     )
     return offer, collapsed
+
+
+def _outside_unit_text(phrases: frozenset[str], unit_text: str | None) -> frozenset[str]:
+    """`phrases` without those `unit_text` holds. The unit request owns its words, as
+    raw-text entry owns a dropped phrase's: it converts the answer to the price basis it
+    names ("in real terms"), or departs for its phrase when the answer cannot take it
+    (`phase_shared.withdraw_typed_unit`), so no measure-value warning repeats them."""
+    if unit_text is None:
+        return phrases
+    unit = f" {_normalize(unit_text)} "
+    return frozenset(phrase for phrase in phrases if f" {phrase} " not in unit)
 
 
 async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
@@ -2905,6 +2918,21 @@ def model_only_values(
     )
 
 
+def names_value(phrase: str, *, prop: str, value: str, label: str | None) -> bool:
+    """Whether `phrase` names `value` on `prop`: one of the value's names (`_value_names`)
+    holds the phrase's words (`holds_words`). "bilateral" names DAC1 "bilateral ODA", and
+    "concessional" names no "official non-concessional flow"."""
+    return any(holds_words(name, phrase) for name in _value_names(prop, value, label))
+
+
+def holds_words(text: str, phrase: str) -> bool:
+    """Whether `text` holds `phrase`'s words as a run, read as a code label reads a query
+    span (`_token_occurrences`): "imputed multilateral aid" holds "multilateral", and
+    "non-concessional flows" holds no "concessional", since a hyphenated word is one
+    token."""
+    return bool(_token_occurrences(tokenize(text), phrase))
+
+
 def _value_names(prop: str, value: str, label: str | None) -> tuple[str, ...]:
     """Every name the qualifier matcher reads for `value` on `prop`, and its graph `label`:
     the code index's label and synonyms of the code, and the label and synonyms of each
@@ -2953,7 +2981,9 @@ def value_requirements(
     the reading of purpose 120 alone. A requirement keeps the code systems of the code
     terms its words overlap, read in every code system, for the judge. A value a negated or
     excluded occurrence names (`_label_has_negated_occurrence`) is left to the exclusion
-    readers.
+    readers. A value whose words lie strictly inside the words of another value of its
+    property is no requirement (`_outside_wider_names`): "public or publicly guaranteed"
+    names that value, and not also Publicly guaranteed.
     """
     index = get_index()
     variable = state.variable
@@ -3004,6 +3034,7 @@ def value_requirements(
         if occurrences and not _label_has_negated_occurrence(label, variable):
             for occurrence in occurrences:
                 named[occurrence] |= values
+    named = _outside_wider_names(named)
     return tuple(
         Requirement(
             term=ResolvedQualifier(
@@ -3031,6 +3062,31 @@ def value_requirements(
         )
         for (start, end), values in sorted(named.items())
     )
+
+
+def _outside_wider_names(
+    named: Mapping[tuple[int, int], set[tuple[str, str]]],
+) -> dict[tuple[int, int], set[tuple[str, str]]]:
+    """`named` without each value whose run lies strictly inside the run of another value
+    of the same property: the words of "public or publicly guaranteed" name that value
+    alone, and the "publicly guaranteed" inside them name no second one. The run names a
+    value of another property still. Runs that end empty are dropped."""
+
+    def inside(run: tuple[int, int], wider: tuple[int, int]) -> bool:
+        return run != wider and wider[0] <= run[0] and run[1] <= wider[1]
+
+    kept: dict[tuple[int, int], set[tuple[str, str]]] = {}
+    for run, values in named.items():
+        wider_props = {
+            prop
+            for other, other_values in named.items()
+            if inside(run, other)
+            for prop, _value in other_values
+        }
+        own = {(prop, value) for prop, value in values if prop not in wider_props}
+        if own:
+            kept[run] = own
+    return kept
 
 
 def _family_constraints(shape: ShapeDraft) -> list[dict[str, str]] | None:
@@ -3085,7 +3141,10 @@ def judge_value_requirements(
     unmet: "female" when the answering literacy rate has no gender slot. A word the
     answer's datasets state of the rows the part reads (`_dataset_stated_words`) is stated
     too: "bilateral", the creditor type of a debt series on the menu, is met by a CRS
-    answer. A resubmit gives no `state` and reads none.
+    answer. A broad reading that fired on the part (`SlotDefaultDisclosure.reading`) applies
+    its narrow value wherever the bindings hold its broader one: "publicly guaranteed" is
+    applied by public and publicly guaranteed debt, which the part's note says it read. A
+    resubmit gives no `state` and reads none.
     """
     if not requirements:
         return ()
@@ -3100,13 +3159,21 @@ def judge_value_requirements(
     constraints = [read_constraints(arcs) for arcs in selected]
     names = [_casefolded_words(read_name(arcs) or "") for arcs in selected]
     stated = _series_words(shape) | _dataset_stated_words(shape, get_index(), state)
+    read_broadly = {
+        (reading.property_dcid, reading.value_dcid)
+        for disclosure in (state.slot_defaults.values() if state is not None else ())
+        if (reading := disclosure.reading) is not None
+        and (reading.property_dcid, reading.reads_as) in bound
+    }
 
     def applied(prop: str, value: str) -> bool:
-        return any(
-            bound_prop == prop and applies_value(value, held) for bound_prop, held in bound
-        ) or (
-            bool(constraints)
-            and all(applies_value(value, member.get(prop)) for member in constraints)
+        return (
+            (prop, value) in read_broadly
+            or any(bound_prop == prop and applies_value(value, held) for bound_prop, held in bound)
+            or (
+                bool(constraints)
+                and all(applies_value(value, member.get(prop)) for member in constraints)
+            )
         )
 
     def applied_as_a_set(values: frozenset[tuple[str, str]]) -> bool:

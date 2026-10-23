@@ -15,7 +15,12 @@ import pytest
 from entity_resolution import Admission
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import raw_text
-from search.engine.extract import Extraction, ExtractionResult
+from search.engine.extract import (
+    _EXTRACTION_SYSTEM_PROMPT,
+    Extraction,
+    ExtractionResult,
+    extract,
+)
 from search.engine.unit.bind import BoundUnitRequest, UnitDefaultPolicy, bind_unit_text
 from search.models import RawTextInput
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -25,6 +30,7 @@ from tests.engine.test_raw_text_handle_close_order import (
     _stub_region,
 )
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
+from tests.fixtures.keys import fixture_key
 
 _POLICY = UnitDefaultPolicy(currency="USD", base_year=lambda: 2023)
 
@@ -58,6 +64,48 @@ def test_a_typed_currency_phrase_binds_as_the_unit_text(phrase, currency, prices
     assert (outcome.currency, outcome.prices, outcome.base_year) == (currency, prices, base_year)
 
 
+@pytest.mark.parametrize(
+    ("query", "variable", "dates", "measure"),
+    [
+        ("GDP of Kenya in euros", "GDP in euros", [], "GDP"),
+        # The year extraction reads as the date stays the observation year.
+        (
+            "GDP of Kenya in euros in 2020",
+            "GDP in euros in 2020",
+            [{"kind": "point", "start": "2020"}],
+            "GDP in 2020",
+        ),
+        (
+            "GDP of Kenya in euros 2020",
+            "GDP in euros 2020",
+            [{"kind": "point", "start": "2020"}],
+            "GDP 2020",
+        ),
+    ],
+)
+def test_a_unit_phrase_inside_the_variable_binds_as_the_unit_text(query, variable, dates, measure):
+    llm = FakeLLM(
+        responses={
+            fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query): {
+                "kind": "resolution",
+                "variables": [variable],
+                "entities": [{"text": "Kenya", "span": "Kenya"}],
+                "dates": dates,
+            }
+        }
+    )
+    result, _ = asyncio.run(extract(query, llm=llm))
+
+    prep = raw_text._prepare_extraction(result.extraction, result, query=query)
+
+    assert prep.unique == [measure]
+    assert prep.per_variable_unit_texts == ["in euros"]
+    assert prep.dropped_qualifier_phrases == []
+    outcome = bind_unit_text(prep.per_variable_unit_texts[0], policy=_POLICY)
+    assert isinstance(outcome, BoundUnitRequest)
+    assert (outcome.currency, outcome.prices, outcome.base_year) == ("EUR", "current", None)
+
+
 def test_a_phrase_that_cannot_bind_stays_dropped_with_its_departure():
     prep = _prep("in zorkmids", "in constant 2022 dollars and euros", "through development banks")
 
@@ -72,20 +120,29 @@ def test_a_phrase_that_cannot_bind_stays_dropped_with_its_departure():
     ]
 
 
-def test_a_second_phrase_that_conflicts_with_the_first_stays_dropped():
-    prep = _prep("in euros", "in yen", "at constant prices")
+@pytest.mark.parametrize(
+    ("dropped", "unit_text", "left"),
+    [
+        (("in euros", "in yen", "at constant prices"), "in euros at constant prices", ["in yen"]),
+        # A bare year binds as no phrase, so it never becomes a base year beside a currency.
+        (("in euros", "in 2020"), "in euros", ["in 2020"]),
+    ],
+)
+def test_a_phrase_that_binds_as_no_request_with_the_first_stays_dropped(dropped, unit_text, left):
+    prep = _prep(*dropped)
 
-    assert prep.unit_text == "in euros at constant prices"
-    assert prep.dropped_qualifier_phrases == ["in yen"]
+    assert prep.unit_text == unit_text
+    assert prep.dropped_qualifier_phrases == left
 
 
 async def _legs_unit_texts(
-    extraction: Extraction,
+    extraction: Extraction, *, unit_texts: dict[str, str] | None = None
 ) -> list[tuple[str, str | None, bool, list[str]]]:
     legs: list[tuple[str, str | None, bool, list[str]]] = []
 
     async def _extract(query, *, llm):
-        return ExtractionResult(extraction=extraction, qualifiers={}), None
+        result = ExtractionResult(extraction=extraction, qualifiers={}, unit_texts=unit_texts or {})
+        return result, None
 
     async def _resolve_variable(variable, **kwargs):
         legs.append(
@@ -129,3 +186,44 @@ def test_every_variable_leg_receives_the_unit_text(variables):
 
     # A typed phrase is best effort, so data that cannot convert answers without it.
     assert legs == [(variable, "in euros", True, []) for variable in sorted(variables)]
+
+
+@pytest.mark.parametrize(
+    ("variables", "dropped", "unit_texts", "expected"),
+    [
+        pytest.param(
+            ["GDP", "population"],
+            [],
+            {"GDP": "in euros"},
+            {"GDP": "in euros", "population": None},
+            id="own-phrase-stays-on-its-part",
+        ),
+        pytest.param(
+            ["GDP", "debt"],
+            [],
+            {"GDP": "in euros", "debt": "in dollars"},
+            {"GDP": "in euros", "debt": "in dollars"},
+            id="each-part-its-own-currency",
+        ),
+        pytest.param(
+            ["GDP", "debt"],
+            ["at constant prices"],
+            {"GDP": "in euros"},
+            {"GDP": "in euros at constant prices", "debt": "at constant prices"},
+            id="own-phrase-joins-the-request-wide-one",
+        ),
+        pytest.param(
+            ["GDP", "debt"],
+            ["in yen"],
+            {"GDP": "in euros"},
+            {"GDP": "in euros", "debt": "in yen"},
+            id="own-phrase-wins-a-conflict",
+        ),
+    ],
+)
+def test_a_peeled_unit_text_reaches_only_its_own_part(variables, dropped, unit_texts, expected):
+    extraction = Extraction(kind="resolution", variables=variables, dropped_qualifiers=dropped)
+
+    legs = asyncio.run(_legs_unit_texts(extraction, unit_texts=unit_texts))
+
+    assert {variable: unit_text for variable, unit_text, _, _ in legs} == expected

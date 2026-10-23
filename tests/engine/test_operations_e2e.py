@@ -158,9 +158,9 @@ def test_a_rank_operation_rides_on_its_part_with_the_donor_axis_open_and_no_warn
 
 
 def test_the_recorded_top_5_donors_reading_carries_its_rank_with_no_warning():
-    """The recorded model output for the design's headline query lists the whole query
-    as a dropped qualifier beside the rank; the rank and the variable account for every
-    word of it, so the answer carries the rank and no unapplied-qualifier warning."""
+    """The recorded model output for the design's headline query reads "Top 5" as a rank
+    over origin on "education aid"; the rank and the variable account for every word of
+    it, so the answer carries the rank and no unapplied-qualifier warning."""
     response = offline_resolve(make_request("Top 5 donors for education aid"))
 
     assert [p.operations for p in response.parts] == [

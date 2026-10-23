@@ -764,8 +764,8 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="direction_discarded", binding_ref="where:", asked="Kenya", over="destination"
         ),
         None,
-        "You named Kenya as a recipient. This measure has no recipients, so this checked the "
-        "place itself.",
+        "You named Kenya as a recipient, but this measure has no recipients, so this checked "
+        "Kenya itself.",
     ),
     (
         DepartureFact(

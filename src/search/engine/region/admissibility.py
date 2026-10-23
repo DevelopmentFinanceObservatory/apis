@@ -8,9 +8,12 @@ at the first that refuses it, so a shape refused on a pinned part passed every o
 1. measure class: a shape whose population type names another measure class than the
    question (prevalence, incidence, mortality) measures something else
    (``variable_not_resolved``);
-2. roles: a subject-only shape cannot hold both flow ends a question names, and a
-   role-bearing shape that declares no role on an axis the question needs cannot place it
-   (``role_incompatible``);
+2. roles: a subject-only shape cannot hold both flow ends a question names, a
+   role-bearing shape that declares no role on an axis the question needs cannot place it,
+   a one-way series whose declared side is not an axis the question needs reads the other
+   end of the flow, and a ratio whose declared base axis is not an axis the question needs
+   divides by the other party's total, as DAC2a's ODA per capita of the recipient for
+   "ODA per capita from Norway" (``role_incompatible``; `place_roles.lacks_query_axis`);
 3. form: every normalisation form the question names must be honoured, a form a wording
    pattern names or, where none does, the one the quantity read's model states
    (`phase_rank_bind._read_stated_quantity`; `quantity.serves_every_form`;
