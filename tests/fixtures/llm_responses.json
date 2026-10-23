@@ -19553,5 +19553,17 @@
         "stated": true
       }
     ]
+  },
+  "StatedWordsOutput@e3e465c89a54:78ad55fae309d7618b0c4fb9843ec2a0f4f403fd": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      },
+      {
+        "index": 1,
+        "stated": false
+      }
+    ]
   }
 }

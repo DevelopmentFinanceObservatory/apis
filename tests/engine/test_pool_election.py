@@ -39,7 +39,7 @@ from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions, ResolveState, UnLeg, UnPool
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_scope import SourceScope
-from search.engine.stated_words_read import StatedWordsOutput
+from search.engine.stated_words_read import StatedWord, StatedWordsOutput
 from search.models import Spec, Warning
 from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -1347,3 +1347,85 @@ def test_current_health_expenditure_share_of_gdp_elects_who_on_the_un_pass(caplo
     assert 'whether it divides by "GDP"' in warning.message
     # The UN pass's answer stands, and the line still records that our bind asked.
     assert _gap_fill_line(caplog).endswith(" bind_asked=true un_merged=false doubted=false")
+
+
+class _RejectWordsLLM(_ElectLLM):
+    """`_ElectLLM` whose stated-words read rates every word not stated, counting its
+    calls."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.word_calls = 0
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            self.word_calls += 1
+            return StatedWordsOutput(
+                words=[StatedWord(index=i, stated=False) for i in range(20)]
+            ), None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+def _with_name(node: dict, name: str) -> dict:
+    node["label"] = name
+    node["arcs"]["name"] = {"nodes": [{"value": name}]}
+    return node
+
+
+@pytest.mark.parametrize("kind", ["absent", "unbound"])
+def test_a_member_the_answer_excludes_reads_no_word_of_the_variable(search_settings, kind):
+    """ "refugee population" over a family holding the total and a refugee member, scored
+    first, answers the total under an absent or open refugee-status binding. The refugee
+    member's name reads no word of an answer that excludes it, so the binder rates
+    "refugee" on the total and the part refuses on it."""
+    search_settings(qualifier_coverage="refuse")
+    total, refugees = "Count_Person", "Count_Person_UNHCR"
+    query = "refugee population"
+    nodes = {
+        _KEN: {"label": "Kenya", "type": "Country"},
+        "refugeeStatus": {"label": "Mandate status"},
+        "UNHCRMandate": {"label": "Under UNHCR mandate"},
+        total: _with_name(_sv_node(total, meas_prop="count"), "Total population"),
+        refugees: _with_name(
+            _sv_node(refugees, meas_prop="count", constraints={"refugeeStatus": "UNHCRMandate"}),
+            "Refugee population",
+        ),
+    }
+    llm = _RejectWordsLLM(
+        bindings=(SlotBindingDraft(axis="how", property_dcid="refugeeStatus", kind=kind),)
+    )
+    graph = _graph(
+        ours=((refugees, 0.95), (total, 0.9)), un=(), data=(total,), query=query, nodes=nodes
+    )
+
+    result = _resolve(graph, query=query, llm=llm)
+
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert llm.word_calls == 1
+
+
+@pytest.mark.parametrize("query", ["people in urban households", "urban population"])
+def test_a_count_of_households_reads_no_noun_for_people(search_settings, query):
+    """A noun for people is read only on a count of persons, so on a count of urban
+    households the binder rates it, and the part refuses on the rating."""
+    search_settings(qualifier_coverage="refuse")
+    dcid = "Count_Household_Urban"
+    node = _sv_node(
+        dcid, population_type="Household", meas_prop="count", constraints={"location": "Urban"}
+    )
+    nodes = {
+        _KEN: {"label": "Kenya", "type": "Country"},
+        dcid: _with_name(node, "Urban households"),
+        "location": {"label": "Location"},
+        "Urban": {"label": "Urban"},
+    }
+    llm = _RejectWordsLLM()
+
+    result = _resolve(
+        _graph(ours=((dcid, 0.9),), un=(), data=(dcid,), query=query, nodes=nodes),
+        query=query,
+        llm=llm,
+    )
+
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert llm.word_calls == 1

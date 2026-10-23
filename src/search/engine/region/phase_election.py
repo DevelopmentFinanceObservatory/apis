@@ -971,9 +971,8 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     # (`phase_rank_bind._stray_requirements`), so its query record adds none. Every
     # requirement departs only if the final answer leaves it unapplied
     # (`requirements.with_requirement_departures`). The coverage rule reads a word beside
-    # no code as unread only on the binder's rating, read first (`_rate_unread_words`).
-    await _rate_unread_words(state)
-    record_reading(state, _resolve_query_qualifiers(state))
+    # no code as unread only on the binder's rating, read first (`record_coverage`).
+    await record_coverage(state)
     withheld = _withheld_qualifiers(state)
     log_mode = settings().qualifier_coverage == "log"
     recorded = (*state.query_qualifiers, *withheld)
@@ -1012,16 +1011,28 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     return None
 
 
+async def record_coverage(state: ResolveState) -> None:
+    """Rate the words the coverage rule leaves unrated on the elected shape over the final
+    bindings (`_rate_unread_words`), then record the query records over both
+    (`requirements.record_reading`). Binding repair and each unbinding at materialise
+    (`phase_place_materialise._unbind`) record by it, so every reading of the rule rests on
+    ratings of the shape and bindings it reads."""
+    await _rate_unread_words(state)
+    record_reading(state, _resolve_query_qualifiers(state))
+
+
 async def _rate_unread_words(state: ResolveState) -> None:
     """Keep the binder's rating of each word the coverage rule leaves unrated on the
     elected shape over the final bindings (`_unrated_words`) as
-    `ResolveState.stated_word_ratings`, with the read's usage added to the part's. The
-    binder is asked once per pass, and only when such a word remains. A read that fails
+    `ResolveState.stated_word_ratings`, with the read's usage added to the part's. Ratings
+    of an earlier shape or bindings are dropped first, so each word is rated on the series
+    the answer reads, and the binder is asked only when such a word remains. A read that fails
     (`LLMInfraError`) rates no word, so each counts as stated, and is noted as lost
     (`note_degraded_read`), so the response cache stores no answer read without it. A read
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
     for the word or answering it both ways."""
+    state.stated_word_ratings = {}
     words = _unrated_words(state)
     if not words:
         return

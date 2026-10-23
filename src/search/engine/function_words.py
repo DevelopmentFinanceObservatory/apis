@@ -4,7 +4,8 @@ Extraction reads them when it restores a variable's word order and when it judge
 dropped qualifier, and the qualifier coverage rule (`phase_rank_bind._coverage_records`)
 reads `FUNCTION_WORDS`, `AMOUNT_WORDS`, `DATA_WORDS` and `FLOW_VERBS` as words no
 reader needs to cover, `RATIO_WORDS` on a shape that divides by a denominator,
-and `COUNT_WORDS` on a shape that measures a count.
+`COUNT_WORDS` on a shape that measures a count, and `PERSON_WORDS` on one that counts
+persons.
 """
 
 from __future__ import annotations
@@ -77,6 +78,11 @@ FLOW_VERBS = frozenset(
 # A shape with a denominator states them; on an amount shape they restrict.
 RATIO_WORDS = frozenset({"share", "ratio", "percent", "percentage", "proportion"})
 
-# Nouns that say a measure counts what it names: "refugee population" is the number of
-# refugees, "number of refugees" their population. A shape measuring a count states them.
-COUNT_WORDS = frozenset({"number", "numbers", "population", "populations", "people", "persons"})
+# Nouns that say a measure counts what it names: "number of refugees" is their count. A
+# shape measuring a count states them.
+COUNT_WORDS = frozenset({"number", "numbers"})
+
+# Nouns that say a measure counts people: "refugee population" is the number of refugees.
+# Only a count of persons states them, so "people in urban households" is no count of
+# households.
+PERSON_WORDS = frozenset({"population", "populations", "people", "persons"})

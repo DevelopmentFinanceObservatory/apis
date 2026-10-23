@@ -35,9 +35,8 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_election import _settle_sole_options
-from search.engine.region.phase_rank_bind import _resolve_query_qualifiers, model_only_values
+from search.engine.region.phase_rank_bind import model_only_values
 from search.engine.region.promote_state import _PromoteState
-from search.engine.region.requirements import record_reading
 from search.engine.region.state import (
     Requirement,
     ResolveState,
@@ -71,10 +70,9 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     alone share one departure under their joined names. Each such value, and each value of
     a term naming no code, becomes a requirement of its own (`_value_requirements`), so binding one
     does not meet another. A value with no name departs under its slot's name
-    (`_unnamed_departure`), so no dcid reaches prose. The qualifier records are read again
-    over the remaining bindings
-    (`requirements.record_reading`), and a record of a phrase unbinding now requires adds
-    nothing.
+    (`_unnamed_departure`), so no dcid reaches prose. The caller reads the qualifier
+    records again over the remaining bindings (`phase_election.record_coverage`), where a
+    record of a phrase unbinding now requires adds nothing.
     """
     engine_chosen = state.measure_elected_properties | state.defaulted_properties
     unnamed = _sole_option_properties(state.bindings)
@@ -137,7 +135,6 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     state.admitted_qualifiers = tuple(
         match for match in state.admitted_qualifiers if match.code_system not in properties
     )
-    record_reading(state, _resolve_query_qualifiers(state))
 
 
 def _with_forced_values(

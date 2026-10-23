@@ -398,19 +398,28 @@ def test_an_uncovered_word_beside_a_code_is_a_record(search_settings, variable, 
     ]
 
 
-def _reader_shape(name: str, *, meas_prop: str = _MEAS_PROP_DCID) -> ShapeDraft:
-    """A one-member shape named `name`, with no slot, measuring `meas_prop`."""
+def _reader_shape(
+    name: str, *, meas_prop: str = _MEAS_PROP_DCID, pop_type: str = _POP_TYPE_DCID
+) -> ShapeDraft:
+    """A one-member shape named `name`, with no slot, measuring `meas_prop` of
+    `pop_type`."""
     return replace(
         _shape(),
+        pop_type_dcid=pop_type,
         meas_prop_dcid=meas_prop,
         sv_arc_facts={"reader_member": {"name": {"nodes": [{"value": name}]}}},
     )
 
 
-_READER_PERSONS = _reader_shape("Total population", meas_prop="count")
-_READER_REFUGEES = _reader_shape("Refugee population", meas_prop="count")
+_READER_PERSONS = _reader_shape("Total population", meas_prop="count", pop_type="Person")
+_READER_REFUGEES = _reader_shape("Refugee population", meas_prop="count", pop_type="Person")
 _READER_TAX = _reader_shape("Tax revenue")
-_READER_REFUGEE_COUNT = _reader_shape("Refugees, by host country", meas_prop="count")
+_READER_REFUGEE_COUNT = _reader_shape(
+    "Refugees, by host country", meas_prop="count", pop_type="Person"
+)
+_READER_HOUSEHOLD_COUNT = _reader_shape(
+    "Refugee households", meas_prop="count", pop_type="Household"
+)
 _READER_REFUGEE_SHARE = _reader_shape("Refugees, by host country", meas_prop="amount")
 _READER_DEBT_BY_CREDITOR = replace(
     _reader_shape("External debt stocks"),
@@ -461,6 +470,19 @@ _READER_DEBT_BY_CREDITOR = replace(
                 None,
                 [("refugee", "measure"), (noun, "count")],
                 id=f"count-shape-{noun}",
+            )
+            for noun in ("number", "population", "populations", "people", "persons")
+        ),
+        # On a count of anything but persons, only the nouns for a count: the binder rates
+        # the nouns for people.
+        *(
+            pytest.param(
+                f"refugee {noun}",
+                _READER_HOUSEHOLD_COUNT,
+                None,
+                None,
+                [("refugee", "measure"), (noun, "count" if noun == "number" else "unrated")],
+                id=f"count-of-households-{noun}",
             )
             for noun in ("number", "population", "populations", "people", "persons")
         ),
@@ -621,6 +643,10 @@ _READER_DEBT_BY_CREDITOR = replace(
         "count-shape-populations",
         "count-shape-people",
         "count-shape-persons",
+        *(
+            f"count-of-households-{noun}"
+            for noun in ("number", "population", "populations", "people", "persons")
+        ),
         "no-count-shape-number",
         "no-count-shape-population",
         "no-count-shape-people",
@@ -893,32 +919,80 @@ def test_jev_rates_the_nominated_words_in_the_bind_and_the_rule_reads_its_rating
     assert _has_miss(qualifiers) == bool(records)
 
 
-@pytest.mark.parametrize(
-    ("bound", "scored", "unrated"),
-    [
-        ((), (), ("refugee", "camps")),
-        ((), ("nominating_1",), ("camps",)),
-        ((("gender", ["Female"]),), (), ("refugee", "camps")),
-        ((("gender", ["Female"]),), ("nominating_1",), ("camps",)),
-        ((("gender", ["Male"]),), ("nominating_2",), ("refugee",)),
-    ],
-    ids=["open", "scored", "bound", "bound-and-scored", "bound-other"],
+_FEMALE = _binding("gender", kind="value", value_dcids=["Female"])
+_MALE = _binding("gender", kind="value", value_dcids=["Male"])
+_GENDER_OPENED = _binding("gender").model_copy(
+    update={"evidence": "requested_all", "requested_all_phrase": "by gender"}
 )
-def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(bound, scored, unrated):
+
+
+@pytest.mark.parametrize(
+    ("total", "bound", "scored", "unrated"),
+    [
+        (True, (), (), ("refugee", "camps")),
+        # A scored member the bindings do not entail is not what the answer serves, so its
+        # name reads no word: the total answers, and the binder rates "refugee".
+        (True, (), ("nominating_1",), ("refugee", "camps")),
+        (True, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
+        (True, (_binding("gender"),), ("nominating_1",), ("refugee", "camps")),
+        (True, (_GENDER_OPENED,), ("nominating_1",), ("camps",)),
+        (True, (_FEMALE,), (), ("refugee", "camps")),
+        (True, (_FEMALE,), ("nominating_1",), ("camps",)),
+        (True, (_MALE,), ("nominating_2",), ("refugee",)),
+        # A family with no total whose bindings entail no member reads the members no
+        # binding contradicts, as a later step elects one of them.
+        (False, (), ("nominating_1",), ("camps",)),
+        (False, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
+        # With none, the words every member's name holds still read.
+        (
+            False,
+            (_binding("gender", kind="value", value_dcids=["Unknown"]),),
+            (),
+            ("refugee", "camps"),
+        ),
+    ],
+    ids=[
+        "open",
+        "scored",
+        "absent-and-scored",
+        "unbound-and-scored",
+        "opened-and-scored",
+        "bound",
+        "bound-and-scored",
+        "bound-other",
+        "no-total-scored",
+        "no-total-absent",
+        "no-member-served",
+    ],
+)
+def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(
+    total, bound, scored, unrated
+):
     """The words the coverage rule leaves unrated on the elected shape over its bindings
     (`_unrated_words`) are among those nominated for that shape before the bind
     (`_nominated_words`), so a binder that rates the nominated words in the bind holds a
-    rating for each word it is later asked about."""
+    rating for each word it is later asked about. Only the names of the members the
+    answer serves read words (`_member_measure_words`)."""
+    members = [{"gender": "Female"}, {"gender": "Male"}]
+    names = ["Female refugee population", "Male population of camps"]
     shape = _value_shape(
         "nominating",
         SlotKeyDraft(axis="how", property_dcid="gender", label="gender"),
-        members=[{}, {"gender": "Female"}, {"gender": "Male"}],
-        names=["Population", "Female refugee population", "Male population of camps"],
+        members=[{}, *members] if total else members,
+        names=["Population", *names] if total else names,
     )
+    if not total:
+        shape = replace(
+            shape,
+            sv_arc_facts={
+                f"nominating_{i + 1}": arcs
+                for i, arcs in enumerate((shape.sv_arc_facts or {}).values())
+            },
+        )
     state = _state(
         variable="female refugee population of camps",
         shape_draft=replace(shape, scored_members=frozenset(scored)),
-        bindings=[_binding(prop, kind="value", value_dcids=dcids) for prop, dcids in bound],
+        bindings=list(bound),
         unplaced=[],
         entities=(),
     )

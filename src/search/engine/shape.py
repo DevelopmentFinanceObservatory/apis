@@ -327,6 +327,12 @@ def measures_count(shape: ShapeDraft) -> bool:
     return bool(units) and all(is_count_unit(unit) for unit in units)
 
 
+def counts_persons(shape: ShapeDraft) -> bool:
+    """True when the group's values count persons: its population type is ``Person`` and
+    it measures a count (`measures_count`)."""
+    return shape.pop_type_dcid == "Person" and measures_count(shape)
+
+
 def is_un_shape(shape: ShapeDraft) -> bool:
     """True when every member dcid is a UN System Data Commons variable (`undata/`)."""
     members = shape.sv_arc_facts

@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Literal
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.retrieval.facts import _dcids_for, read_name
-from search.engine.shape import ShapeDraft, measures_count
+from search.engine.shape import ShapeDraft, counts_persons, measures_count
 from search.models import GraphRef, QuantityForm
 from unit_words.unit_class import is_per_head_denominator
 
@@ -373,7 +373,7 @@ def honours(shape: ShapeDraft, cls: NormalisationClass, named: NamedNormalisatio
     if cls == "per_area":
         return named in ("per_area", "rate")
     if named == "share":
-        return shape.pop_type_dcid == "Person" and measures_count(shape)
+        return counts_persons(shape)
     return named in ("per_person", "per_head_base", "rate")
 
 

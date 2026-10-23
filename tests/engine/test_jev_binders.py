@@ -344,21 +344,66 @@ def test_jev_rates_its_unread_words_again_on_the_bound_values(bindings, rated, a
     assert usage == JevCall(ms=0, input_tokens=120, output_tokens=4).usage
 
 
+_AGE_60 = SlotBindingDraft(axis="how", property_dcid="age", kind="value", value_dcids=["Years60"])
+_AGE_OPENED = SlotBindingDraft(
+    axis="how",
+    property_dcid="age",
+    kind="unbound",
+    evidence="requested_all",
+    requested_all_phrase="by age",
+)
+
+
+@pytest.mark.parametrize(
+    ("bindings", "asked"),
+    [
+        ((), ()),
+        ((_RESTATED_UNBOUND,), ()),
+        ((_AGE_60,), ("birth", "female")),
+        ((_AGE_OPENED,), ("birth", "female")),
+    ],
+    ids=["no-binding", "other-slot-open", "bound-elsewhere", "opened"],
+)
+def test_jev_rates_its_words_again_once_the_bindings_override_the_definition(bindings, asked):
+    """The bind quoted life expectancy as its definition fixes it, Age=years 0, so a word it
+    rated at the bar or above rests on that value. Bindings that restrict or open age
+    override it, so every word the bind rated is asked again on the bindings; a word it
+    did not rate stays unrated."""
+    ask = FakeAsk({}, stated={"birth": 0.1, "female": 0.2})
+    decision = BindResult(
+        output=_ELECTS_FIRST,
+        binder="jev",
+        stated_words={(0, "birth"): 1.0, (0, "female"): 0.9},
+    )
+    request = StatedWordsRequest(
+        variable="female life expectancy at birth in years",
+        shape=_LIFE_EXPECTANCY,
+        shape_index=0,
+        words=("birth", "female", "years"),
+        bindings=bindings,
+        decision=decision,
+    )
+
+    got, _usage = asyncio.run(JevBinder(ask=ask).rate_words_stated(request, llm=None))
+
+    if not asked:
+        assert (ask.requests, got) == ([], {"birth": 1.0, "female": 0.9})
+        return
+    ((state, questions),) = ask.requests
+    assert (state, questions) == restated_request(
+        request.variable, _LIFE_EXPECTANCY, 0, asked, bindings=bindings
+    )
+    assert got == {"birth": 0.1, "female": 0.2}
+
+
 @pytest.mark.parametrize(
     ("bindings", "quoted", "absent"),
     [
         ((), "its definition fixes Age=years 0", "restricted to"),
-        (
-            (
-                SlotBindingDraft(
-                    axis="how", property_dcid="age", kind="value", value_dcids=["Years60"]
-                ),
-            ),
-            "restricted to Years 60",
-            "its definition fixes",
-        ),
+        ((_AGE_60,), "restricted to Years 60", "its definition fixes"),
+        ((_AGE_OPENED,), "parts selectable by Age", "its definition fixes"),
     ],
-    ids=["unbound", "bound-elsewhere"],
+    ids=["unbound", "bound-elsewhere", "opened"],
 )
 def test_the_stated_word_questions_quote_what_the_measure_definition_fixes(
     bindings, quoted, absent

@@ -75,7 +75,11 @@ from search.engine.region.materialise_step import (
 from search.engine.region.observations.dispatch import _attach_observations
 from search.engine.region.observations.entities import _observation_entities
 from search.engine.region.observations.fetch import _build_observations
-from search.engine.region.phase_election import _settle_served_dataset, narrowed_to_breakdown
+from search.engine.region.phase_election import (
+    _settle_served_dataset,
+    narrowed_to_breakdown,
+    record_coverage,
+)
 from search.engine.region.phase_intake import not_admitted_entity
 from search.engine.region.phase_shared import (
     _elected_flagged_match,
@@ -335,7 +339,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         is not None
     ):
         state.shape_draft = recalled
-        if (refused := _unbind(state, unrealisable, role_keys)) is not None:
+        if (refused := await _unbind(state, unrealisable, role_keys)) is not None:
             return refused
         recalled = state.shape_draft
         relaxed = True
@@ -1554,16 +1558,23 @@ class _RelaxedPartRefused(Exception):
         self.result = result
 
 
-def _unbind(
+async def _unbind(
     state: ResolveState, unrealisable: BoundValuesUnrealisable, role_keys: RoleKeys
 ) -> RegionResult | None:
     """Unbind values of `unrealisable` (`unbind_unrealisable`) and settle the dataset the
     part is served from again under what remains, returning the refusal of a part no table
     then serves. The dataset is named from the bindings wherever the index decides the
     part's membership (`bound_values.part_source`), and a query the index did not decide
-    can be one it decides once a value on a property no index row declares is unbound."""
+    can be one it decides once a value on a property no index row declares is unbound.
+    On a part a table serves, the words the coverage rule then leaves unrated are rated on
+    the shape and bindings so settled, and the qualifier records read again over them
+    (`phase_election.record_coverage`), as binding repair reads them: "female" in "female
+    aged X" reads no bound code once Sex=Female is unbound."""
     unbind_unrealisable(state, unrealisable)
-    return _settle_served_dataset(state, role_keys)
+    if (refused := _settle_served_dataset(state, role_keys)) is not None:
+        return refused
+    await record_coverage(state)
+    return None
 
 
 async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
@@ -1581,7 +1592,7 @@ async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
     try:
         place, mat_result = await materialise_task
         while isinstance(mat_result, BoundValuesUnrealisable):
-            refused = _unbind(
+            refused = await _unbind(
                 state,
                 mat_result,
                 entity_role_keys(
