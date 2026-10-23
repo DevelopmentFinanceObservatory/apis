@@ -38,6 +38,7 @@ from search.engine.region.phase_rank_bind import (
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
     _menu_choices,
+    _open_breakdown_slots,
     _open_operation_slots,
     _resolve_query_qualifiers,
     _shape_qualifiers,
@@ -140,8 +141,8 @@ def _vet_election(state: ResolveState) -> RegionResult | None:
     the shape. A weak retrieval score warns and sets no status (`status_rule`).
     Invalid ``requested_all`` claims are demoted. Only validated phrases suppress defaults
     and dropped-qualifier warnings.
-    An operation over a category slot opens that slot as a valid claim whether or not
-    bind made one.
+    An operation over a category slot, or a breakdown phrase naming one, opens that slot
+    as a valid claim whether or not bind made one.
 
     The elected shape is the highest-ranked of the menu shapes stated as the reading the
     model chose (`_elected_index`), so every later reader of the election sees one index.
@@ -266,7 +267,9 @@ def _settle_bindings(
     measure's headline series already means (`_unbind_implied_values`). One value drafted
     on two properties no member holds together keeps the property a measure noun pins
     (`_keep_the_noun_pinned_property`). An operation
-    over a category slot opens that slot. Model tie choices are
+    over a category slot opens that slot, and so does a breakdown phrase naming it ("by
+    wealth quintile", `_open_breakdown_slots`), ahead of `bind_partition_values` in
+    `_repair_bindings`, which leaves an opened slot open. Model tie choices are
     vetted against the model's own bindings, and the query's qualifier matches the elected
     shape admits, with the codes the model chose from a phrase's candidate menu, are
     forced into the bindings (`_force_qualifier_bindings`).
@@ -283,6 +286,13 @@ def _settle_bindings(
     bind_result.bindings = _keep_the_noun_pinned_property(bind_result.bindings, shape_draft)
     bind_result.bindings = _open_operation_slots(
         bind_result.bindings, state.operations, shape_draft
+    )
+    bind_result.bindings = _open_breakdown_slots(
+        bind_result.bindings,
+        state.variable,
+        state.dropped_qualifier_phrases,
+        shape_draft,
+        entities=(*state.entities, *state.entity_surfaces.values()),
     )
 
     # The elected shape's own qualifiers: the matches its vocabulary reads and admits, and its

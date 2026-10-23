@@ -24,6 +24,7 @@ from origin_catalogue import current_catalogue
 from search.engine.bind import (
     CandidateMenu,
     SlotBindingDraft,
+    _slot_name,
     _UniversalBindOutput,
     rank_elected,
     split_stray_bindings,
@@ -63,6 +64,7 @@ from search.engine.function_words import (
 )
 from search.engine.interpretation import Interpretation, InterpretationSet
 from search.engine.qualifier_match import (
+    BREAKDOWN_FILLER_NOUNS,
     CONNECTIVES,
     UNION_CONNECTIVES,
     CodedQualifier,
@@ -77,6 +79,7 @@ from search.engine.qualifier_match import (
     _ranges_overlap,
     _row_system,
     bindable_codes,
+    breakdown_spans,
     governing_connectives,
     joins,
     match_unsupported_qualifier_phrases,
@@ -172,6 +175,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.facts import read_constraints, read_five_tuple, read_name
 from search.engine.shape import (
     ShapeDraft,
+    SlotKeyDraft,
     is_role_bearing,
 )
 from search.engine.source_code import names_only_code
@@ -3645,6 +3649,15 @@ def _open_operation_slots(
         )
         for prop, phrase in operation_slot_phrases(operations, shape_draft).items()
     }
+    return _with_opened_slots(bindings, opened)
+
+
+def _with_opened_slots(
+    bindings: list[SlotBindingDraft], opened: Mapping[str, SlotBindingDraft]
+) -> list[SlotBindingDraft]:
+    """`bindings` with each slot of `opened` they leave open replaced by its
+    ``requested_all`` binding, and each they hold no binding for added. A slot they bind
+    to a value stays."""
     if not opened:
         return bindings
 
@@ -3652,11 +3665,109 @@ def _open_operation_slots(
         return binding.kind in ("unbound", "absent") and not binding.value_dcids
 
     result = [
-        opened[b.property_dcid] if b.property_dcid in opened and is_open(b) else b for b in bindings
+        opened[prop]
+        if (prop := b.property_dcid) is not None and prop in opened and is_open(b)
+        else b
+        for b in bindings
     ]
     bound = {b.property_dcid for b in bindings}
     result.extend(binding for prop, binding in opened.items() if prop not in bound)
     return result
+
+
+def _open_breakdown_slots(
+    bindings: list[SlotBindingDraft],
+    variable_text: str,
+    dropped_phrases: Sequence[str],
+    shape_draft: ShapeDraft,
+    *,
+    entities: Iterable[str],
+) -> list[SlotBindingDraft]:
+    """Open each slot of `shape_draft` the variable phrase or a dropped phrase names as a
+    breakdown, as a valid ``requested_all``.
+
+    A breakdown span is the words after "by", "across" or "for each", up to the next such
+    connective, a number or one of `entities`, less function words and filler nouns
+    (`qualifier_match.breakdown_spans`). A span names a slot when one of its words is a
+    word of the slot's name (`bind._slot_name`) and each other word is a word of that
+    name or of the label of a value in the slot's taxonomy (`_slot_vocabulary`). "By
+    wealth quintile in Kenya" names the "Wealth quantile" slot through "wealth", with
+    "quintile" from its value "Highest quintile". "Across Africa" names no slot, whatever
+    a value's label holds, and "per capita" is no breakdown. A span naming two slots opens
+    neither. The slot then binds ``unbound`` with ``requested_all`` evidence and the
+    span's phrase, so `bind_partition_values`, which runs after, leaves it open. A slot
+    the bindings give a value stays as bound (`_with_opened_slots`).
+    """
+    entities = tuple(entities)
+    vocabularies = {
+        slot.property_dcid: _slot_vocabulary(slot, shape_draft)
+        for slot in shape_draft.slot_keys
+        if slot.property_dcid is not None
+    }
+    axis_of = {slot.property_dcid: slot.axis for slot in shape_draft.slot_keys}
+    opened: dict[str, SlotBindingDraft] = {}
+    for text in (variable_text, *dropped_phrases):
+        for span in breakdown_spans(text, stops=entities):
+            named = [
+                prop
+                for prop, (name, labels) in vocabularies.items()
+                if any(_has_word(word, name) for word in span.words)
+                and all(_has_word(word, name | labels) for word in span.words)
+            ]
+            if len(named) == 1 and named[0] not in opened:
+                opened[named[0]] = SlotBindingDraft(
+                    axis=axis_of[named[0]],
+                    property_dcid=named[0],
+                    kind="unbound",
+                    evidence="requested_all",
+                    requested_all_phrase=span.phrase,
+                )
+    return _with_opened_slots(bindings, opened)
+
+
+def _slot_vocabulary(
+    slot: SlotKeyDraft, shape_draft: ShapeDraft
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The casefolded words of `slot`'s name (`bind._slot_name`) and of its values' labels,
+    less function words and filler nouns. A value's label is its code row's on a shape
+    whose taxonomy the index sources, else its graph label (`ShapeDraft.value_labels`)
+    without its property's name (`code_index.labels.without_property_suffix`)."""
+    index = get_index()
+    graph_labels = shape_draft.value_labels or {}
+    values = (shape_draft.slot_taxonomy or {}).get(f"{slot.axis}:{slot.property_dcid}", [])
+    labels: list[str] = []
+    for value in values:
+        if shape_draft.slot_taxonomy_index_sourced:
+            if (row := index.code_by_dcid(value)) is not None:
+                labels.append(row.label)
+        elif (label := graph_labels.get(value)) is not None:
+            labels.append(
+                without_property_suffix(label, graph_labels.get(slot.property_dcid or ""))
+            )
+
+    def content_words(text: str) -> frozenset[str]:
+        return frozenset(
+            folded
+            for token in word_tokens(text)
+            if (folded := token.text.casefold()) not in FUNCTION_WORDS
+            and folded not in BREAKDOWN_FILLER_NOUNS
+        )
+
+    return content_words(_slot_name(slot)), frozenset().union(*map(content_words, labels))
+
+
+def _has_word(word: str, words: AbstractSet[str]) -> bool:
+    """Whether `word` is one of `words`, singular or plural: as written, or less a plural
+    "s", "es" or "ies" (which reads "y"), as `qualifier_match.names_plain_name` reads a
+    plural name."""
+    forms = {word}
+    if word.endswith("ies"):
+        forms.add(f"{word[:-3]}y")
+    if word.endswith("es"):
+        forms.add(word[:-2])
+    if word.endswith("s"):
+        forms.add(word[:-1])
+    return not forms.isdisjoint(words)
 
 
 def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:

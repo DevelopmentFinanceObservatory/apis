@@ -381,6 +381,87 @@ def slot_noun_named(phrase: str, plain_names: Iterable[str]) -> str | None:
     return named.pop() if len(named) == 1 else None
 
 
+# The connectives that ask for a slot's values side by side ("by wealth quintile", "across
+# sectors", "for each donor"), casefolded, each a word sequence. "per" stays out: "per
+# capita" and "per 1,000 live births" divide by a base.
+BREAKDOWN_CONNECTIVES = (("for", "each"), ("by",), ("across",))
+
+# Nouns that say a breakdown is by a classification and nothing about which one: "by age
+# group", "by income level", "across flow types".
+BREAKDOWN_FILLER_NOUNS = frozenset(
+    {
+        "group", "groups", "level", "levels", "category", "categories", "type", "types",
+        "kind", "kinds",
+    }
+)  # fmt: skip
+
+
+@dataclass(frozen=True, slots=True)
+class BreakdownSpan:
+    """The words a breakdown connective governs (`breakdown_spans`). `phrase` is the text
+    from the connective to the span's last content word ("by wealth quintile") and `words`
+    its content words, casefolded, in text order ("wealth", "quintile")."""
+
+    phrase: str
+    words: tuple[str, ...]
+
+
+def breakdown_spans(text: str, *, stops: Iterable[str] = ()) -> tuple[BreakdownSpan, ...]:
+    """Each breakdown span of `text`, in text order.
+
+    A span starts after a breakdown connective (`BREAKDOWN_CONNECTIVES`) and runs to the
+    next connective, a number (a year or a date), an occurrence of one of `stops` (the
+    request's entity names) or the end. Its content words are its words less function
+    words (`FUNCTION_WORDS`) and filler nouns (`BREAKDOWN_FILLER_NOUNS`). "under-five
+    mortality by wealth quintile in Kenya" holds one span, "wealth quintile", when `stops`
+    holds "Kenya". A connective with no content word after it holds no span ("by 2020").
+    """
+    tokens = word_tokens(text)
+    folded = [token.text.casefold() for token in tokens]
+    stopped = [span for stop in stops for span in _all_normalized_text_ranges(stop, text)]
+
+    def connective_at(i: int) -> int:
+        """The length in words of the connective at token `i`, or 0."""
+        for connective in BREAKDOWN_CONNECTIVES:
+            if tuple(folded[i : i + len(connective)]) == connective:
+                return len(connective)
+        return 0
+
+    def ends_span(i: int) -> bool:
+        token = tokens[i]
+        return (
+            connective_at(i) > 0
+            or any(char.isdigit() for char in token.text)
+            or any(_ranges_overlap((token.start, token.end), span) for span in stopped)
+        )
+
+    spans: list[BreakdownSpan] = []
+    i = 0
+    while i < len(tokens):
+        width = connective_at(i)
+        if not width:
+            i += 1
+            continue
+        first = i + width
+        end = first
+        while end < len(tokens) and not ends_span(end):
+            end += 1
+        content = [
+            j
+            for j in range(first, end)
+            if folded[j] not in FUNCTION_WORDS and folded[j] not in BREAKDOWN_FILLER_NOUNS
+        ]
+        if content:
+            spans.append(
+                BreakdownSpan(
+                    phrase=text[tokens[i].start : tokens[content[-1]].end],
+                    words=tuple(folded[j] for j in content),
+                )
+            )
+        i = end
+    return tuple(spans)
+
+
 def match_unsupported_qualifier_phrases(text: str, *, terms: Collection[str]) -> tuple[str, ...]:
     """Return each word of ``text`` that is one of ``terms``, the words a code system declares
     it has no vocabulary for (`CodeSystemDeclaration.no_vocabulary_terms`), in text order.
