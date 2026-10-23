@@ -11,6 +11,7 @@ import pytest
 from search.eval import runner
 from search.eval.apis_auth import ApisAuth, ApisAuthError, apis_auth
 from search.eval.cases import Case, validate_case
+from search.eval.checks.base import MembersRefused
 from search.eval.runner import (
     DEGRADED_LEG_HEADER,
     CaseRun,
@@ -550,11 +551,64 @@ def test_the_members_door_reader_posts_each_definition_once():
     assert posts == [("http://app/api/datasets/spec_1/members", {"definition": definition})]
 
 
-def test_a_refused_members_read_raises_for_the_check_to_score_as_infrastructure():
+def _problem(status: int, code: str, *, retryable: bool = False) -> tuple[int, dict]:
+    return status, {"code": code, "detail": f"{code} detail", "retryable": retryable}
+
+
+@pytest.mark.parametrize(
+    ("status", "problem"),
+    [
+        (404, {}),
+        _problem(400, "request_invalid"),
+        _problem(422, "unsupported_schema_version"),
+        _problem(503, "service_unavailable", retryable=True),
+        _problem(422, "member_not_resolvable", retryable=True),
+    ],
+    ids=["no_door", "request_invalid", "schema_version", "unavailable", "unsettled_member"],
+)
+def test_a_failed_members_read_raises_for_the_check_to_score_as_infrastructure(
+    status: int, problem: dict
+):
+    """A read that does not refuse the definition itself is infrastructure, among them a
+    member refusal the app marks retryable, and its error names the problem's code and
+    detail."""
+
     def post(url, *, json, headers, timeout, auth):
-        return httpx.Response(404, json={}, request=httpx.Request("POST", url))
+        return httpx.Response(status, json=problem, request=httpx.Request("POST", url))
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(runner.httpx, "post", post)
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(httpx.HTTPStatusError) as raised:
             members_door_reader("http://app")("spec_1", {})
+
+    assert f"code={problem.get('code')!r}" in str(raised.value)
+    assert f"detail={problem.get('detail')!r}" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "problem"),
+    [_problem(422, "member_not_resolvable"), _problem(409, "spec_not_exportable")],
+    ids=["member_not_resolvable", "spec_not_exportable"],
+)
+def test_a_refused_definition_raises_its_problem_once_per_spec(status: int, problem: dict):
+    """The door refusing the definition the answer carries is a verdict on the answer: the
+    reader raises ``MembersRefused`` with the problem's code and detail, and reads the Spec
+    once."""
+    posts = []
+
+    def post(url, *, json, headers, timeout, auth):
+        posts.append(url)
+        return httpx.Response(status, json=problem, request=httpx.Request("POST", url))
+
+    read = members_door_reader("http://app")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runner.httpx, "post", post)
+        for _ in range(2):
+            with pytest.raises(MembersRefused) as raised:
+                read("spec_1", {})
+            assert (raised.value.code, raised.value.detail) == (
+                problem["code"],
+                problem["detail"],
+            )
+
+    assert len(posts) == 1
