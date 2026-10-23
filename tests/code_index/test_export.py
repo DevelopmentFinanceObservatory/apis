@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from code_index.declarations import (
+    BROAD_READINGS,
     CODE_SYSTEMS,
     CONCEPT_GROUPS,
     DATASETS,
@@ -54,6 +55,7 @@ from code_index.export import (
 from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.shared import get_index
 from code_index.types import (
+    BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
     ImpliedValue,
@@ -61,7 +63,9 @@ from code_index.types import (
     MeasurePartitionLabel,
     PartlyStatedValue,
     PartyRow,
+    ShapeSlotDefault,
 )
+from dfo_platform.roles import RoleAxis
 from materialise.graph import (
     UNRESOLVED_NODE,
     GraphNotAdvancingError,
@@ -2192,6 +2196,7 @@ def _export_two_system_graph(coverage: CoverageJoin, **overrides) -> dict:
         measure_axes=(),
         datasets=overrides.pop("datasets", _TEST_DATASETS),
         partly_stated_values=overrides.pop("partly_stated_values", ()),
+        broad_readings=overrides.pop("broad_readings", BROAD_READINGS),
         total_groups={},
         party_kind_overrides={},
     )
@@ -2222,7 +2227,14 @@ def test_export_index_joins_each_rows_sorted_provenances_and_stamps_no_build():
     assert document["stamp"]["statvars_without_coverage"] == 1
 
 
-def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("ratio_base_axis", "written"),
+    [(None, {}), ("destination", {"ratio_base_axis": "destination"})],
+)
+def test_export_index_writes_dataset_declarations_and_they_round_trip(
+    tmp_path: Path, ratio_base_axis: RoleAxis | None, written: dict
+):
+    declared = dataclasses.replace(_OPT_IN, ratio_base_axis=ratio_base_axis)
     graph = _two_system_graph()
     document = export_index(
         graph,
@@ -2236,7 +2248,7 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
             ),
         ),
         measure_axes=(),
-        datasets=(_OPT_IN,),
+        datasets=(declared,),
         partly_stated_values=(),
         total_groups={},
         party_kind_overrides={},
@@ -2252,13 +2264,77 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
             "account": "provider",
             "rank": 10,
             "invariants": {},
+            **written,
         }
     ]
     out = tmp_path / "with_datasets.json"
     out.write_text(json.dumps(document))
     index = load_index(out)
-    assert index.datasets[_OPT_IN_PROVENANCE] == _OPT_IN
+    assert index.datasets[_OPT_IN_PROVENANCE] == declared
     assert {row.provenances for row in index.statvars} == {(_OPT_IN_PROVENANCE,)}
+
+
+def test_export_index_writes_the_declared_slot_defaults_and_broad_readings_and_they_round_trip():
+    document = _export_two_system_graph(_covered(_two_system_graph()))
+
+    assert parse_index(document).broad_readings == BROAD_READINGS
+
+    assert parse_index(document).shape_slot_defaults == (
+        ShapeSlotDefault(
+            population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
+        ),
+        ShapeSlotDefault(
+            population_type="FinancialPosition",
+            property_dcid="financialPositionType",
+            value_dcid="AmountOutstanding",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "unless_bound", "held_with", "refused"),
+    [
+        ("Commitment", "sysFlat", "SysFlatB", False),
+        ("Disbursement", "nettingBasis", "Gross", True),
+        ("Disbursement", "sysFlat", "SysFlatB", True),
+    ],
+    ids=["every-row-holds-it", "a-row-states-nothing", "a-row-holds-another-value"],
+)
+def test_a_broad_reading_is_refused_where_a_row_of_its_value_lacks_the_value_it_holds_with(
+    value: str, unless_bound: str, held_with: str, refused: bool
+):
+    """Naming a value on `unless_bound` names the narrow value only where every row holding
+    it holds `held_with`. A disbursement row states no netting basis, and both state flat
+    alpha, so a reading of the disbursement flow type unless either is named is refused."""
+    reading = BroadReading(
+        property_dcid="financialFlowType" if value == "Disbursement" else "financialObligationType",
+        value_dcid=value,
+        reads_as="Total",
+        unless_bound=unless_bound,
+        held_with=held_with,
+        note="Read broadly.",
+    )
+    coverage = _covered(_two_system_graph())
+
+    if refused:
+        with pytest.raises(ExportRefused, match=f"without {unless_bound}={held_with}"):
+            _export_two_system_graph(coverage, broad_readings=(reading,))
+    else:
+        document = _export_two_system_graph(coverage, broad_readings=(reading,))
+        assert parse_index(document).broad_readings == (reading,)
+
+
+def test_the_aid_tables_declare_whose_base_a_ratio_divides_by():
+    """DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the recipient's."""
+    crs, imputed, dac1, dac2a, dac2b = (dataset.provenance for dataset in DATASETS)
+
+    assert {dataset.provenance: dataset.ratio_base_axis for dataset in DATASETS} == {
+        crs: None,
+        imputed: None,
+        dac1: "origin",
+        dac2a: "destination",
+        dac2b: None,
+    }
 
 
 def test_an_export_with_a_row_without_its_datasets_declared_invariant_does_not_load():

@@ -19,7 +19,13 @@ import pytest
 
 from code_index import CodeIndex, DatasetDeclaration, IndexFormatError, IndexStamp, parse_index
 from code_index.query import row_five_tuple
-from code_index.types import ImpliedValue, PartlyStatedValue, PartyWord, StatedWord
+from code_index.types import (
+    BroadReading,
+    ImpliedValue,
+    PartlyStatedValue,
+    PartyWord,
+    StatedWord,
+)
 from entity_resolution.types import KINDS
 from tests.code_index.support import INDEX_FIXTURE, load_index
 
@@ -97,7 +103,12 @@ def test_parse_index_reads_a_document_as_load_index_reads_its_file(code_index: C
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("absent_observation", "not_reported"), ("account", "lender"), ("account", None)],
+    [
+        ("absent_observation", "not_reported"),
+        ("account", "lender"),
+        ("account", None),
+        ("ratio_base_axis", "recipient"),
+    ],
 )
 def test_loader_rejects_a_value_outside_a_fields_vocabulary(field: str, value: object):
     payload = _fixture()
@@ -444,6 +455,19 @@ def test_a_codeindex_built_with_no_datasets_at_all_reads_unknown():
     index = CodeIndex(stamp=_EMPTY_STAMP, declarations=(), codes=(), statvars=())
     assert index.absent_observation(_CRS_PROVENANCE) == "unknown"
     assert index.stamp.coverage_build is None
+
+
+def test_every_constraint_property_of_the_fixture_index_has_a_plain_name():
+    """A slot is named by its plain name (`search.engine.bind.slot_label`), so every
+    constraint property of a StatVar row declares one, as a code system or a slot."""
+    index = load_index(INDEX_FIXTURE)
+    properties = {
+        prop
+        for row in (*index.statvars, *index.listed_statvars)
+        for prop in row.constraint_properties
+    }
+
+    assert properties - index.declarations.keys() - index.slot_plain_names.keys() == set()
 
 
 def test_the_fixture_index_declares_crs_and_the_dac_tables_and_the_opt_in_imputed_dataset():
@@ -813,6 +837,44 @@ def test_loader_reads_the_house_default_each_dataset_claims():
         "donor": _IMPUTED_PROVENANCE,
     }
     assert parse_index(_fixture()).house_defaults() == {}
+
+
+def test_loader_reads_whose_base_a_ratio_divides_by_and_an_absent_key_declares_none():
+    payload = _with_imputed_dataset()
+    payload["datasets"][0]["ratio_base_axis"] = "destination"
+    index = parse_index(payload)
+
+    assert index.datasets[_CRS_PROVENANCE].ratio_base_axis == "destination"
+    assert index.datasets[_IMPUTED_PROVENANCE].ratio_base_axis is None
+
+
+def test_loader_reads_the_broad_readings_and_an_index_without_the_block_declares_none():
+    """A release exported without broad readings has no `broad_readings` block and reads as
+    declaring none."""
+    payload = _fixture()
+    assert "broad_readings" not in payload
+    assert parse_index(payload).broad_readings == ()
+
+    payload["broad_readings"] = [
+        {
+            "property": "guaranteeStatus",
+            "value": "PubliclyGuaranteedClaim",
+            "reads_as": "PublicOrPubliclyGuaranteed",
+            "unless_bound": "idsDebtorType",
+            "held_with": "IDSDebtorTypePrivateSector",
+            "note": "Read broadly.",
+        }
+    ]
+    assert parse_index(payload).broad_readings == (
+        BroadReading(
+            property_dcid="guaranteeStatus",
+            value_dcid="PubliclyGuaranteedClaim",
+            reads_as="PublicOrPubliclyGuaranteed",
+            unless_bound="idsDebtorType",
+            held_with="IDSDebtorTypePrivateSector",
+            note="Read broadly.",
+        ),
+    )
 
 
 @pytest.mark.parametrize(

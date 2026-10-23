@@ -11,6 +11,7 @@ from contextlib import suppress
 from code_index.shared import get_index, get_measure_index
 from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
+    apply_broad_readings,
     apply_declared_defaults,
     apply_shape_slot_defaults,
     defaulted_slot_notes,
@@ -57,9 +58,9 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.place_roles import bind_place_roles
 from search.engine.region.qualifier_readings import (
+    answer_reads_measure,
     bound_value_reads_measure,
     reading_for_shape,
-    shape_carries_measure_match,
 )
 from search.engine.region.requirements import record_reading, settle_unanswered
 from search.engine.region.result import RegionResult
@@ -212,16 +213,17 @@ def _vet_election(state: ResolveState) -> RegionResult | None:
     # two-reading span is satisfied when the shape reads it as the measure value, and was
     # admitted above when the shape reads it as the code. It is unapplied when the shape
     # carries both readings or neither. A measure value that a bound constraint value reads
-    # is satisfied too (`bound_value_reads_measure`).
+    # is satisfied too (`bound_value_reads_measure`). A measure value the shape does not
+    # carry here is judged on each final answer (`ResolveState.require_measure`), since
+    # binding repair can bind a value that reads it after this. One the raw text owns is
+    # judged without departing, so the part admits it when the final answer meets it.
     unsatisfied: dict[str, QualifierMatch | None] = dict.fromkeys(
         state.measure_qualifier_conflict_phrases
     )
     satisfied_phrases: set[str] = set()
     for match in state.measure_query_matches:
         phrase = _normalize(match.matched_text)
-        if shape_carries_measure_match(shape_draft, match) or bound_value_reads_measure(
-            shape_draft, match, bind_result.bindings
-        ):
+        if answer_reads_measure(shape_draft, match, bind_result.bindings):
             satisfied_phrases.add(phrase)
         else:
             unsatisfied.setdefault(phrase, match)
@@ -233,8 +235,14 @@ def _vet_election(state: ResolveState) -> RegionResult | None:
         elif kept is None:
             unsatisfied.setdefault(_normalize(r.matched_text), r.measure)
     state.satisfied_measure_phrases = frozenset(satisfied_phrases)
-    for phrase in sorted(unsatisfied.keys() & state.variable_matched_qualifier_phrases):
+    owned = state.variable_matched_qualifier_phrases
+    for phrase in sorted(unsatisfied):
         match = unsatisfied[phrase]
+        if match is not None and match in state.measure_query_matches:
+            state.require_measure(phrase, match, discloses=phrase in owned)
+            continue
+        if phrase not in owned:
+            continue
         state.require_unapplied(
             phrase,
             asked=match.matched_text if match is not None else phrase,
@@ -275,9 +283,7 @@ def _settle_bindings(
     bind_result.bindings, state.applied_dropped_qualifier_phrases = validate_requested_all_bindings(
         bind_result.bindings,
         state.dropped_qualifier_phrases,
-        slot_properties=frozenset(
-            slot.property_dcid for slot in shape_draft.slot_keys if slot.property_dcid is not None
-        ),
+        slot_keys=shape_draft.slot_keys,
     )
     bind_result.bindings = _settle_sole_options(bind_result.bindings, shape_draft)
     bind_result.bindings = _unbind_implied_values(bind_result.bindings, shape_draft)
@@ -721,8 +727,9 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     """Repair bindings and apply measure elections and defaults.
 
     In order, bind the values an unexported family shares, force open measure axes, apply
-    declared defaults (none on a slot an invariant of the dataset the part names fixes), apply
-    the shape's slot defaults, bind each open slot that partitions the served members to
+    declared defaults (none on a slot an invariant of the dataset the part names fixes), read
+    each bound value the code index reads more broadly as that value (`apply_broad_readings`),
+    apply the shape's slot defaults, bind each open slot that partitions the served members to
     the value of the one member the variable phrase names (`bind_named_member_values`) and
     each that partitions a standard family to the one value its scored members state
     (`bind_partition_values`), then put the bindings in
@@ -837,6 +844,21 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
             )
             for prop, pairs in named.items()
         }
+
+    # A bound value the code index reads more broadly unless the query names a value on
+    # another slot binds the broader value ("publicly guaranteed" reads public and publicly
+    # guaranteed debt), before the measure vote reads the bindings. Its note and the reading
+    # itself, which applies the narrow value's words, are kept under its property, so
+    # unbinding the slot takes both back.
+    bindings, broad_readings = apply_broad_readings(bindings, state.shape_draft, index=get_index())
+    if broad_readings:
+        state.bindings = bindings
+        for reading in broad_readings:
+            warning = Warning(code=SLOT_DEFAULTED, severity="warn", message=reading.note)
+            state.warnings.append(warning)
+            state.slot_defaults[reading.property_dcid] = SlotDefaultDisclosure(
+                warnings=(warning,), reading=reading
+            )
 
     # Force measure axes left open after query matches and declared defaults. Run after draft
     # repair, which judges realizability against a capped recall sample.

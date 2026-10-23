@@ -18,6 +18,7 @@ import dataclasses
 
 import pytest
 
+from code_index.shared import get_index
 from search.engine.bind import ShapeRating, _UniversalBindOutput
 from search.engine.binders import GeminiBinder
 from search.engine.config import settings
@@ -912,6 +913,114 @@ def test_an_alternate_binds_on_the_direction_the_elected_reading_was_served_on(m
         [_PAID],
         [_ADJUSTED_PAID],
     ]
+
+
+# DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the recipient's
+# (`DatasetDeclaration.ratio_base_axis`). Both are code-index rows of the fixture index.
+_DAC1_GNI_SHARE = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_DAC2A_GNI_SHARE = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_KEN = scenarios._KEN
+# Norway gives to Kenya, and receives nothing.
+_GNI_SHARE_ROWS = (
+    (_DAC1_GNI_SHARE, "f_dac1", _NOR, "", [2020, 2021, 2022]),
+    (_DAC2A_GNI_SHARE, "f_dac2a", _NOR, _KEN, [2020, 2021, 2022]),
+)
+
+
+def _index_row_node(dcid: str) -> dict:
+    """The graph node of the fixture index row `dcid`, with the arcs the row declares."""
+    row = next(r for r in get_index().statvars if r.dcid == dcid)
+    arcs = {
+        "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+        "populationType": {"nodes": [{"dcid": row.population_type}]},
+        "measuredProperty": {"nodes": [{"dcid": row.measured_property}]},
+        "statType": {"nodes": [{"dcid": row.stat_type}]},
+        "measurementQualifier": {"nodes": [{"dcid": row.measurement_qualifier}]},
+        "measurementDenominator": {"nodes": [{"dcid": row.measurement_denominator}]},
+        "constraintProperties": {"nodes": [{"dcid": p} for p in row.constraint_properties]},
+        **{p: {"nodes": [{"dcid": v}]} for p, v in row.constraint_properties.items()},
+        "observationProperties": {"nodes": [{"dcid": r} for r in row.observation_properties]},
+    }
+    return scenarios._sv(dcid, arcs)
+
+
+@pytest.fixture
+def _gni_shares(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        scenarios,
+        "_NODES",
+        {
+            **scenarios._NODES,
+            _DAC1_GNI_SHARE: _index_row_node(_DAC1_GNI_SHARE),
+            _DAC2A_GNI_SHARE: _index_row_node(_DAC2A_GNI_SHARE),
+        },
+    )
+    monkeypatch.setattr(
+        scenarios,
+        "_ROLE_NAMES",
+        {
+            **scenarios._ROLE_NAMES,
+            _DAC1_GNI_SHARE: RoleNames(donor="financingProvider", recipient=None),
+            _DAC2A_GNI_SHARE: RoleNames(donor="financingProvider", recipient="financingRecipient"),
+        },
+    )
+
+
+@pytest.mark.usefixtures("_gni_shares")
+@pytest.mark.parametrize(
+    ("place", "rows", "answer"),
+    [
+        pytest.param(
+            "Norway",
+            _GNI_SHARE_ROWS,
+            [(_DAC1_GNI_SHARE, "origin")],
+            id="norway-reads-the-donor-share",
+        ),
+        pytest.param(
+            "Kenya",
+            _GNI_SHARE_ROWS,
+            [(_DAC2A_GNI_SHARE, "destination")],
+            id="kenya-reads-the-recipient-share",
+        ),
+        pytest.param("Norway", _GNI_SHARE_ROWS[1:], [], id="norway-holds-no-recipient-share"),
+    ],
+)
+def test_a_place_named_without_a_direction_owns_the_base_of_a_ratio(place, rows, answer):
+    """ "ODA as a share of GNI for Norway" names Norway without a direction. A ratio whose
+    dataset declares whose total it divides by reads the place as that party: Norway is the
+    donor on DAC1's share of the donor's GNI, and the recipient on DAC2a's share of the
+    recipient's, where it holds no data, so DAC2a leaves the menu and DAC1 answers. Where
+    DAC1 holds no data for Norway either, the part answers no data, and does not read
+    Norway's aid to others as a share of their GNI. Kenya is DAC2a's recipient, and DAC1
+    holds no recipient."""
+    result = scenarios._resolve(
+        scenarios._Scenario(
+            query="official development assistance",
+            entities=(place,),
+            # Recall ranks DAC2a first, and the binder elects the first menu shape.
+            svs=(_DAC2A_GNI_SHARE, _DAC1_GNI_SHARE),
+            scores=(0.85, 0.84),
+            coverage_rows=rows,
+        )
+    )
+
+    dcid = scenarios._RESOLVE[place]
+    assert [
+        (
+            spec.resolved.members[0].ref.ref,
+            next(
+                role for role, dcids in spec.definition.identity.entities.items() if dcid in dcids
+            ),
+        )
+        for spec in result.specs
+    ] == answer
+    assert result.status == ("definite" if answer else "no_data")
 
 
 @pytest.fixture

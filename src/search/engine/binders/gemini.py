@@ -161,7 +161,7 @@ def with_valid_requested_all(
     (`bind.validate_requested_all_bindings`), before the pool and `reelect` read them, so
     a "total" that names no slot keeps no shape out."""
     bindings, _applied = validate_requested_all_bindings(
-        output.bindings, dropped_qualifier_phrases, slot_properties=_slot_property_dcids(pick)
+        output.bindings, dropped_qualifier_phrases, slot_keys=pick.slot_keys
     )
     return output.model_copy(update={"bindings": bindings})
 

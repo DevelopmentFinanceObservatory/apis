@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from code_index.members import FamilyQuery
 from code_index.shared import get_index
+from code_index.types import BroadReading
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import Cause
 from entity_resolution import Admission, EntityResolver, Resolution
@@ -438,6 +439,19 @@ class ValueRule:
     code_systems: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class MeasureRule:
+    """A measure value the request's words name (`match`) that the elected shape does not
+    carry under the bindings it was elected with. An answer meets the rule when its shape
+    carries the value or a value its settled bindings bind reads it
+    (`qualifier_readings.answer_reads_measure`), which binding repair can bind after
+    election: activitySource GrossDomesticProduction reads "gross". Otherwise it is judged
+    as `code`, the `CodeRule` on the measure axis."""
+
+    match: QualifierMatch
+    code: CodeRule
+
+
 # Where a requirement was recorded: a model tie the bindings leave unresolved ("tie"), the
 # elected reading's own measure phrases, coverage words and query records ("bind"), a run
 # naming a value by its graph label ("value"), a value the bind drafted on a slot the
@@ -448,11 +462,11 @@ type RequirementOrigin = Literal[
     "tie", "bind", "value", "stray", "set_value", "unbinding", "posted"
 ]
 
-# How an answer is judged on a requirement: by its codes (`CodeRule`), by the values its
-# words name (`ValueRule`), as unmet on every answer ("unbound", a query record of the
-# elected reading no binding covers), or on none (`None`, a term no one slot clears, which
+# How an answer is judged on a requirement: by its codes (`CodeRule`), by the measure value
+# its words name (`MeasureRule`), by the values its words name (`ValueRule`), as unmet on
+# every answer ("unbound", a query record of the elected reading no binding covers), or on none (`None`, a term no one slot clears, which
 # departs unless a refusal names it).
-type RequirementRule = CodeRule | ValueRule | Literal["unbound"] | None
+type RequirementRule = CodeRule | MeasureRule | ValueRule | Literal["unbound"] | None
 
 
 @dataclass(frozen=True)
@@ -606,11 +620,14 @@ class UnLeg:
 @dataclass(frozen=True, slots=True)
 class SlotDefaultDisclosure:
     """What one declared default that fired states (`phase_election._repair_bindings`): its
-    `slot_defaulted` warnings, and the normalised dropped phrases it answers, whose
-    entry-level warning those replace."""
+    `slot_defaulted` warnings, the normalised dropped phrases it answers, whose
+    entry-level warning those replace, and the broad reading it is, if any
+    (`bind_repair.apply_broad_readings`), whose broader value applies the words of its
+    narrow one (`phase_rank_bind.judge_value_requirements`)."""
 
     warnings: tuple[Warning, ...] = ()
     phrases: frozenset[str] = frozenset()
+    reading: BroadReading | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -1287,6 +1304,30 @@ class ResolveState:
                 origin=origin,
             )
         self.requirements = with_requirement(self.requirements, requirement)
+
+    def require_measure(self, phrase: str, match: QualifierMatch, *, discloses: bool) -> None:
+        """Record that the elected shape does not carry the measure value `match` names, by
+        the request's words of normalised `phrase`, as a requirement each final answer is
+        judged on by its own shape and settled bindings (`MeasureRule`). When the part
+        `discloses` the phrase it departs as the code requirement `require_unapplied`
+        records on the measure axis. A phrase the raw text owns (a dropped qualifier) departs
+        and refuses nothing: its raw-text warning discloses it, and the part admits it when
+        every final answer meets it (`requirements.met_measure_phrases`)."""
+        asked, prop = match.matched_text, match.code_system
+        named = tuple(self.codes_named(asked, prop))
+        codes = tuple(ref.ref for ref in named)
+        requirement = code_requirement(
+            property_dcid=prop,
+            codes=codes,
+            asked=asked,
+            named=named,
+            departure=unapplied_departure(phrase, asked=asked, property_dcid=prop),
+            origin="bind",
+        )
+        rule = MeasureRule(match=match, code=CodeRule(property_dcid=prop, codes=codes))
+        if not discloses:
+            requirement = replace(requirement, departure=None, refuses=False)
+        self.requirements = with_requirement(self.requirements, replace(requirement, rule=rule))
 
     def label_dcids(self, dcids: Sequence[str]) -> list[str]:
         """Label DCIDs from query text, one batched graph lookup, or the DCID fallback."""

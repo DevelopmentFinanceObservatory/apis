@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.materialise_step import Departed
@@ -49,7 +49,6 @@ from search.engine.region.state import (
 from search.engine.retrieval.bound_values import without_values
 from search.engine.retrieval.retrieve import BoundValuesUnrealisable
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.engine.spec_build import slot_label
 from search.heading.departure_fact import DepartureFact
 from search.models import GraphRef, ResolvedQualifier, Warning
 
@@ -204,7 +203,7 @@ def _unnamed_departure(slot: str, prop: str) -> Departed:
 
 
 def _slot_name(shape: ShapeDraft, prop: str) -> str:
-    """The label `shape`'s slot for `prop` carries (`spec_build.slot_label`)."""
+    """The label `shape`'s slot for `prop` carries (`bind.slot_label`)."""
     key = next(
         (key for key in shape.slot_keys if key.property_dcid == prop),
         SlotKeyDraft(axis="how", property_dcid=prop, label=prop),

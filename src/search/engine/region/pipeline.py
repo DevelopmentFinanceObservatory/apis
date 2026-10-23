@@ -67,6 +67,7 @@ from search.engine.region.phase_shared import settle_unjudged_refusal
 from search.engine.region.place_roles import group_request_names, stated_party_words
 from search.engine.region.related_read import cancel_related_reads, settle_related_reads
 from search.engine.region.requirements import (
+    met_measure_phrases,
     refusal_terms,
     unbinding_phrases,
     with_requirement_departures,
@@ -834,18 +835,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 if result is None:
                     settled = settled or phase is _phase_settle
                 else:
-                    # Only a vetted election can report qualifier matches: earlier terminals
-                    # may hold pre-bind candidates without a forced binding or elected shape.
-                    admitted = (
-                        _admitted_qualifier_phrases(state.admitted_qualifiers)
-                        | state.satisfied_measure_phrases
-                        | state.elected_tie_phrases
-                        | state.applied_dropped_qualifier_phrases
-                        | unbinding_phrases(state.requirements)
-                        | state.slot_default_phrases
-                        if state.shape_draft is not None
-                        else _refused_pinned_phrases(state, result)
-                    )
+                    admitted = _admitted_phrases(state, result)
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
                     log_would_refuse(state, result)
@@ -902,6 +892,26 @@ def _book_unbooked_time(
         state.timing[earlier] -= taken
         excess -= taken
     unbooked[step] = state.timing[step] = max(0, elapsed - booked)
+
+
+def _admitted_phrases(state: ResolveState, result: RegionResult) -> frozenset[str]:
+    """The phrases the part's `result` admits, which no dropped-qualifier warning names
+    (`assemble._surviving_qualifier_warnings`). Only a vetted election can report qualifier
+    matches: earlier terminals may hold pre-bind candidates without a forced binding or
+    elected shape, and admit only what their refusal names. A measure value is admitted
+    when the elected shape carries it or every final answer meets it
+    (`met_measure_phrases`)."""
+    if state.shape_draft is None:
+        return _refused_pinned_phrases(state, result)
+    return (
+        _admitted_qualifier_phrases(state.admitted_qualifiers)
+        | state.satisfied_measure_phrases
+        | met_measure_phrases(state.judgement)
+        | state.elected_tie_phrases
+        | state.applied_dropped_qualifier_phrases
+        | unbinding_phrases(state.requirements)
+        | state.slot_default_phrases
+    )
 
 
 def _refused_pinned_phrases(state: ResolveState, result: RegionResult) -> frozenset[str]:

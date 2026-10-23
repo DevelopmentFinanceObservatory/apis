@@ -11,10 +11,15 @@ from search.render.tokens import plan_tokens, sentence_from_plan
 from tests.render._helpers import _ref, _rendered, _spec, assert_round_trip
 
 _LIVE_BIRTHS = _ref("TotalReportedLiveBirths", "Total Number Of Reported Live Births")
+_GNI = _ref("PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal", "GNI")
 
 
 def _unit(ref: str, label: str | None, currency: str | None = None) -> dict[str, ResolvedFacet]:
     return {"unit": ResolvedFacet(basis="fallback", ref=ref, label=label, currency=currency)}
+
+
+def _provenance(ref: str) -> dict[str, ResolvedFacet]:
+    return {"provenance": ResolvedFacet(basis="fallback", ref=ref)}
 
 
 @pytest.mark.parametrize(
@@ -112,10 +117,33 @@ def test_a_ratio_token_states_the_unit_only_when_it_names_it(unit, states):
             id="ratio-without-percent",
         ),
         pytest.param(None, _unit("Percent", "Percent"), "Debt service in percent.", id="percent"),
+        pytest.param(
+            _GNI,
+            {**_unit("Percent", "Percent"), **_provenance("provenance/OECDDAC1")},
+            "Debt service as a share of the provider's GNI.",
+            id="share-of-the-providers-own-total",
+        ),
+        pytest.param(
+            _GNI,
+            {**_unit("Percent", "Percent"), **_provenance("provenance/OECDDAC2A")},
+            "Debt service as a share of the recipient's GNI.",
+            id="share-of-the-recipients-own-total",
+        ),
+        pytest.param(
+            _GNI,
+            {
+                **_unit("Percent", "Percent"),
+                **_provenance("provenance/OECDCreditorReportingSystem"),
+            },
+            "Debt service as a share of GNI.",
+            id="undeclared-base",
+        ),
     ],
 )
 def test_a_ratio_or_percent_stays_in_the_heading(denominator, unit, expected: str):
-    """A share of another series, a ratio, or a percent changes what the number means."""
+    """A share of another series, a ratio, or a percent changes what the number means. A
+    dataset that declares whose total its ratio divides by (`ratio_base_axis`) names that
+    party, so DAC2a's share of the recipient's GNI does not read as the provider's."""
     spec = _spec(
         measured_property=_ref("debtService", "Debt service"),
         measurement_denominator=denominator,

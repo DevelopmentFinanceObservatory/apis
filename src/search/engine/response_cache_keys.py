@@ -265,6 +265,7 @@ def layer2_key(
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
     extraction_warnings: Sequence[Warning] = (),
+    measure_qualifiers: Sequence[tuple[str, ...]] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -282,6 +283,9 @@ def layer2_key(
     when given and holds the unit text extraction peeled from each
     (`ExtractionResult.unit_texts`), the part's own unit request beside the request-wide
     one `dropped_qualifiers` holds. The key states them and adds nothing when none is peeled.
+    `measure_qualifiers` runs parallel to `variables` when given and holds the words that
+    narrow each variable's measure, which only its part reads. The key states the
+    variables that have some and adds nothing when none has.
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
     positions and adds nothing when none is marked.
@@ -327,6 +331,12 @@ def layer2_key(
         document["source_codes"] = list(source_codes)
     if any(text is not None for text in unit_texts):
         document["unit_texts"] = list(unit_texts)
+    if any(measure_qualifiers):
+        document["measure_qualifiers"] = {
+            variable: list(phrases)
+            for variable, phrases in zip(variables, measure_qualifiers, strict=True)
+            if phrases
+        }
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):

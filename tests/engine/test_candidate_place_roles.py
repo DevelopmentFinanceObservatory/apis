@@ -1532,6 +1532,8 @@ def _index_member_shape(dcid: str) -> ShapeDraft:
         **{p: {"nodes": [{"dcid": v}]} for p, v in row.constraint_properties.items()},
         "observationProperties": {"nodes": [{"dcid": r} for r in row.observation_properties]},
     }
+    if row.measurement_denominator is not None:
+        arcs["measurementDenominator"] = {"nodes": [{"dcid": row.measurement_denominator}]}
     nodes = {dcid: {"label": dcid, "type": "StatisticalVariable", "arcs": arcs}}
     (shape,) = derive_shapes(
         confirmed_svs=[dcid], graph=FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
@@ -1642,6 +1644,223 @@ def test_an_index_shape_declares_the_axes_its_dataset_declares(member, lacks) ->
     )
 
     assert lacks_query_axis(state, _index_member_shape(member)) is lacks
+
+
+_CLIMATE_FINANCE = "undata/sdg/SERIES-DC_FIN_CLIMT"
+_MOBILISED_RECEIPTS = "undata/sdg/SERIES-DC_OSSD_MPF"
+_UNDECLARED_SERIES = "undata/sdg/SERIES-DC_FIN_UNDECLARED"
+_JPN = "country/JPN"
+_BGD = "country/BGD"
+_PRIVATE_FINANCE_MOBILISED = "Test_AmountMobilised_Provider"
+
+
+def _un_series_node(series: str, name: str) -> dict:
+    """A UN series' one variable, whose population type is the series."""
+    return {
+        "label": name,
+        "type": "StatisticalVariable",
+        "arcs": {
+            "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+            "populationType": {"nodes": [{"dcid": series, "name": name}]},
+            "measuredProperty": {"nodes": [{"dcid": "value"}]},
+            "statType": {"nodes": [{"dcid": "measuredValue"}]},
+            "constraintProperties": {"nodes": []},
+        },
+    }
+
+
+def _un_series_shape(series: str) -> ShapeDraft:
+    variable = series.replace("SERIES-", "")
+    nodes = {variable: _un_series_node(series, series)}
+    (shape,) = derive_shapes(
+        confirmed_svs=[variable], graph=FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
+    )
+    return shape
+
+
+@pytest.mark.parametrize(
+    ("series", "axes", "lacks"),
+    [
+        pytest.param(_CLIMATE_FINANCE, ("destination",), True, id="provided-to-a-recipient"),
+        pytest.param(_CLIMATE_FINANCE, ("origin",), False, id="provided-by-a-provider"),
+        pytest.param(_MOBILISED_RECEIPTS, ("origin",), True, id="received-from-a-provider"),
+        pytest.param(_MOBILISED_RECEIPTS, ("destination",), False, id="received-by-a-recipient"),
+        pytest.param(_CLIMATE_FINANCE, ("origin", "destination"), False, id="both-ends"),
+        pytest.param(_UNDECLARED_SERIES, ("destination",), False, id="undeclared"),
+    ],
+)
+def test_a_one_way_series_lacks_the_flow_end_its_declared_side_opposes(
+    series: str, axes: tuple[str, ...], lacks: bool
+) -> None:
+    """A UN series declares the end of a one-way flow its place sits on (the origin
+    registry's `side`): climate finance provided sits on the provider, receipts of mobilised
+    private finance on the recipient. A query that directs its places only to the other
+    end asks for an axis the series cannot hold. One naming both ends keeps the binder's
+    reading, and an undeclared series lacks no axis."""
+    places = dict(list({"Kenya": "country/KEN", "Norway": _NOR}.items())[: len(axes)])
+    state = _state(
+        names_and_roles={
+            name: [_door_role(axis, name)] for name, axis in zip(places, axes, strict=True)
+        },
+        places=places,
+    )
+
+    assert lacks_query_axis(state, _un_series_shape(series)) is lacks
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_DAC1_GNI_SHARE = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_DAC2A_GNI_SHARE = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_DAC2A_AMOUNT = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
+_DAC2A_PER_CAPITA = f"{_DAC2A_AMOUNT}_AsAFractionOf_Count_Person"
+
+
+@pytest.mark.parametrize(
+    ("member", "axes", "declared", "lacks"),
+    [
+        pytest.param(_DAC1_GNI_SHARE, ("origin",), True, False, id="donor-share-for-a-donor"),
+        pytest.param(_DAC2A_GNI_SHARE, ("origin",), True, True, id="recipient-share-for-a-donor"),
+        pytest.param(
+            _DAC2A_GNI_SHARE, ("destination",), True, False, id="recipient-share-for-a-recipient"
+        ),
+        pytest.param(
+            _DAC1_GNI_SHARE, ("destination",), True, True, id="donor-share-for-a-recipient"
+        ),
+        pytest.param(_DAC2A_GNI_SHARE, ("origin", "destination"), True, False, id="both-ends"),
+        # "ODA per capita from Norway": DAC2a divides by the recipient's population.
+        pytest.param(
+            _DAC2A_PER_CAPITA, ("origin",), True, True, id="recipient-per-capita-for-a-donor"
+        ),
+        pytest.param(_DAC2A_GNI_SHARE, ("origin",), False, False, id="undeclared"),
+        pytest.param(_DAC2A_AMOUNT, ("origin",), True, False, id="no-ratio"),
+    ],
+)
+def test_a_ratio_lacks_the_flow_end_whose_total_it_does_not_divide_by(
+    monkeypatch, member: str, axes: tuple[str, ...], declared: bool, lacks: bool
+) -> None:
+    """DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the
+    recipient's (`DatasetDeclaration.ratio_base_axis`). A query whose places sit only on
+    the other end asks for a ratio the shape does not hold: "ODA as a share of GNI from
+    Norway" asks for Norway's own GNI. DAC2a with no base declared, and an amount of a
+    dataset that declares one, lack no axis by it."""
+    if not declared:
+        datasets = get_index().datasets
+        monkeypatch.setitem(
+            datasets, _DAC2A, dataclasses.replace(datasets[_DAC2A], ratio_base_axis=None)
+        )
+    places = dict(list({"Norway": _NOR, "Kenya": "country/KEN"}.items())[: len(axes)])
+    state = _state(
+        names_and_roles={
+            name: [_door_role(axis, name)] for name, axis in zip(places, axes, strict=True)
+        },
+        places=places,
+    )
+
+    assert lacks_query_axis(state, _index_member_shape(member)) is lacks
+
+
+def _resolve_directed(
+    query: str, nodes: dict[str, dict], order: list[str], place: str, dcid: str, axis: str
+):
+    """Resolve `query` over `nodes`, recall returning `order` and `place` resolving to
+    `dcid` on `axis`, every variable holding data at `dcid`."""
+    graph = FakeGraph(
+        nodes={**nodes, dcid: {"label": place, "type": "Country"}},
+        obs={
+            f"{sv}|{dcid}": [{"earliestDate": "2020", "latestDate": "2022", "obsCount": 3}]
+            for sv in order
+        },
+        detect={query: {"svs": order, "cosine_scores": [0.8 - 0.1 * i for i in range(len(order))]}},
+        resolve={place: dcid},
+    )
+    return asyncio.run(
+        resolve_variable(
+            query,
+            entities=[place],
+            date_request=None,
+            detect_query=query,
+            role_query=query,
+            entity_roles={place: [DoorRole(axis=cast(Any, axis), span=place)]},
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_ElectFirstWithAlternate(),
+            sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("series", "status", "reason"),
+    [
+        pytest.param(_CLIMATE_FINANCE, "no_data", "role_incompatible", id="declared-provider"),
+        pytest.param(_UNDECLARED_SERIES, "definite", None, id="undeclared"),
+    ],
+)
+def test_climate_finance_to_a_recipient_refuses_on_the_provider_side_series(
+    series: str, status: str, reason: str | None
+) -> None:
+    """ "climate finance to Bangladesh": the only climate finance measure is the SDG series
+    of finance provided, which has no recipients, so the part refuses `role_incompatible`
+    in place of reading Bangladesh as a provider. A series with no declared side still
+    binds Bangladesh as its subject and discloses the dropped direction."""
+    variable = series.replace("SERIES-", "")
+    nodes = {variable: _un_series_node(series, "Total climate-specific financial support provided")}
+
+    result = _resolve_directed(
+        "climate finance to Bangladesh", nodes, [variable], "Bangladesh", _BGD, "destination"
+    )
+
+    assert (result.status, result.no_data_reason) == (status, reason)
+    assert ("direction_discarded" in [w.code for w in result.warnings]) is (status == "definite")
+
+
+def test_private_finance_mobilised_by_a_provider_elects_the_provider_side_measure() -> None:
+    """ "private sector mobilised by Japan's aid": the SDG series of mobilised private finance
+    received by developing countries recalls first, and the binder elects the first shape on
+    its menu. The series sits on the recipient, so it leaves the menu and the measure that
+    declares a provider is elected."""
+    variable = _MOBILISED_RECEIPTS.replace("SERIES-", "")
+    nodes = {
+        variable: _un_series_node(
+            _MOBILISED_RECEIPTS,
+            "Gross receipts by developing countries of mobilised private finance (MPF)",
+        ),
+        _PRIVATE_FINANCE_MOBILISED: {
+            "label": "Private finance mobilised",
+            "type": "StatisticalVariable",
+            "arcs": {
+                "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+                "populationType": {"nodes": [{"dcid": "PrivateFinanceMobilisation"}]},
+                "measuredProperty": {"nodes": [{"dcid": "amountMobilised"}]},
+                "statType": {"nodes": [{"dcid": "measuredValue"}]},
+                "constraintProperties": {"nodes": []},
+                "observationProperties": {"nodes": [{"dcid": "financingProvider"}]},
+            },
+        },
+    }
+
+    result = _resolve_directed(
+        "private sector mobilised by Japan's aid",
+        nodes,
+        [variable, _PRIVATE_FINANCE_MOBILISED],
+        "Japan",
+        _JPN,
+        "origin",
+    )
+
+    elected = [*result.specs, *(result.flagged_match or ())]
+    assert [[m.ref.ref for m in spec.resolved.members] for spec in elected] == [
+        [_PRIVATE_FINANCE_MOBILISED]
+    ]
 
 
 _GHA_KEN_GROUP = {"Africa": [_GHA, "country/KEN"]}

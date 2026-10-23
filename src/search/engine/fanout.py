@@ -676,6 +676,7 @@ class _LegOverrides:
     per_variable_operations: list[tuple[Operation, ...]] | None
     per_variable_open_axes: list[frozenset[RoleAxis]] | None
     per_variable_separate: list[bool] | None
+    per_variable_dropped_qualifier_phrases: list[list[str]] | None
     door: EntryPath
 
 
@@ -737,6 +738,16 @@ def _leg_operations(overrides: _LegOverrides, i: int) -> tuple[Operation, ...]:
         overrides.per_variable_operations[i]
         if overrides.per_variable_operations is not None
         else ()
+    )
+
+
+def _leg_dropped_qualifier_phrases(
+    overrides: _LegOverrides, i: int, broadcast: list[str] | None
+) -> list[str] | None:
+    return (
+        overrides.per_variable_dropped_qualifier_phrases[i]
+        if overrides.per_variable_dropped_qualifier_phrases is not None
+        else broadcast
     )
 
 
@@ -889,7 +900,9 @@ def _launch_variable_tasks(
                 source_scope=_leg_source_scope(overrides, i),
                 source_code=_leg_source_code(overrides, i),
                 qualifiers=_leg_qualifiers(overrides, i),
-                dropped_qualifier_phrases=dropped_qualifier_phrases,
+                dropped_qualifier_phrases=_leg_dropped_qualifier_phrases(
+                    overrides, i, dropped_qualifier_phrases
+                ),
                 operations=_leg_operations(overrides, i),
                 open_axes=_leg_open_axes(overrides, i),
                 separate=_leg_separate(overrides, i),
@@ -985,6 +998,7 @@ async def _run_variables_streaming(
     per_variable_open_axes: list[frozenset[RoleAxis]] | None = None,
     per_variable_separate: list[bool] | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
+    per_variable_dropped_qualifier_phrases: list[list[str]] | None = None,
     query_text: str | None = None,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -1006,15 +1020,17 @@ async def _run_variables_streaming(
     pre-resolution values override their broadcast counterparts by index.
     `None` broadcasts the shared value. `per_variable_pre_resolved` replaces
     the shared map; parsed-door callers merge pins before passing it. `entity_surfaces`
-    maps an entity name to the query words every leg's recall resolves it through. Dropped
-    qualifier phrases and request-level dependencies are broadcast unchanged.
+    maps an entity name to the query words every leg's recall resolves it through.
+    Request-level dependencies are broadcast unchanged.
     `per_variable_operations` gives each leg its own operations, which ride on its
     region and restatement and join its bind's dropped phrases; `None` gives every
     leg none. `per_variable_source_scopes` gives each leg its compiled source mentions;
     `None` gives every leg none. `per_variable_source_codes` gives each leg its compiled
     series code, and `None` gives every leg none. `per_variable_open_axes` gives each leg its own open
     roles, and `None` gives every leg none. `per_variable_separate` marks each leg compared
-    with the others (`RegionResult.separate`), and `None` marks none. `member_entities`
+    with the others (`RegionResult.separate`), and `None` marks none.
+    `per_variable_dropped_qualifier_phrases` gives each leg its own dropped phrases in place
+    of the broadcast `dropped_qualifier_phrases`; `None` broadcasts them. `member_entities`
     are the entities every leg is asked the members of, and `per_variable_member_entities`
     gives each leg its own.
     `query_text` is supplied only for a single-variable request.
@@ -1044,6 +1060,7 @@ async def _run_variables_streaming(
         per_variable_operations=per_variable_operations,
         per_variable_open_axes=per_variable_open_axes,
         per_variable_separate=per_variable_separate,
+        per_variable_dropped_qualifier_phrases=per_variable_dropped_qualifier_phrases,
         door=door,
     )
 

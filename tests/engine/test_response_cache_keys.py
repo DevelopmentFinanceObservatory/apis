@@ -129,6 +129,7 @@ def _layer2_key(
     unit_texts: list[str | None] | None = None,
     separate: list[bool] | None = None,
     written_variable_phrases: list[str | None] | None = None,
+    measure_qualifiers: list[tuple[str, ...]] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -178,6 +179,7 @@ def _layer2_key(
         written_variable_phrases=(
             written_variable_phrases if written_variable_phrases is not None else ()
         ),
+        measure_qualifiers=measure_qualifiers if measure_qualifiers is not None else (),
     )
 
 
@@ -614,6 +616,18 @@ def test_a_separate_variable_changes_layer2_key() -> None:
     second = _layer2_key(variables=variables, separate=[False, True])
     assert len({unmarked, second, _layer2_key(variables=variables, separate=[True, False])}) == 3
     assert unmarked == _layer2_key(variables=variables, separate=[False, False])
+
+
+def test_a_measure_qualifier_changes_layer2_key() -> None:
+    """A word narrowing one variable's measure reaches that part alone, so the same word on
+    another variable keys apart. None on any variable keys as an extraction without the
+    field."""
+    variables = ["bilateral aid", "imputed multilateral aid"]
+    plain = _layer2_key(variables=variables)
+    first = _layer2_key(variables=variables, measure_qualifiers=[("bilateral",), ()])
+    second = _layer2_key(variables=variables, measure_qualifiers=[(), ("bilateral",)])
+    assert len({plain, first, second}) == 3
+    assert plain == _layer2_key(variables=variables, measure_qualifiers=[(), ()])
 
 
 def test_a_series_code_changes_layer2_key() -> None:
