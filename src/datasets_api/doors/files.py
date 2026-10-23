@@ -41,8 +41,8 @@ are the requested ones laid over the version's own minting options
 version whose files record none refuses `artifact_expired`. A file the version's snapshot lists
 under that rendering, linked under a key current for the serving code index's
 `enrichment_digest` (`version_store.current_rendering_keys`), is signed in hand. Otherwise,
-on the work executor under a materialise permit and the request deadline, a file of that rendering past working retention whose bytes
-survive renews as its link's renewal does, and failing that the version renders from its stored
+on the work executor under a materialise permit and the request deadline, a file of that
+rendering past working retention whose bytes survive renews as its link's renewal does, and failing that the version renders from its stored
 frame (`render_version_from_frame`, which a link's renewal also calls) and the redirect names
 the file the render returned. A frame past working retention renews first, and the selector
 refuses `artifact_expired` only when neither the file's bytes nor the frame's survive. The
