@@ -19301,6 +19301,154 @@
       }
     ]
   },
+  "StatedWordsOutput@e3e465c89a54:e23693338ee90f74f1c228afd564fa981b45c150": {
+    "words": [
+      {
+        "index": 0,
+        "stated": false
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:e86e8aed27a88020bdcec213f89423d453646f6b": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:b49ce94152e6af3b9774dd4dd364ae3a8542f026": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      },
+      {
+        "index": 1,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:aa18066e7c2f757e117bfb34e9f55b167eb417b8": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:02dfe91cbc3c02963b33efe262b944aa966329fe": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:2a8a49d023bbb3fc12eba8e6354b0573739a072b": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:9a769f94b86bfed3a98d85f4949c30f06aa276f4": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:0f5b3864808bfa8931fd0ed08b58f2d027a56ad7": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:bc8528cc9f7c32904ed85d875e001a227e21511e": {
+    "words": [
+      {
+        "index": 0,
+        "stated": false
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:d24021832fb4d88e5fa9e17540d8c76d0816479a": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:0f5cbcb375a3c2d235a13837323a5ed72a7cb640": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:ecb7cb6c28a1b454dc3ac14801fdb709bab76883": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:ad4dcd92e11add0d5c4eb7e49ea0787119121930": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:1153c601dd9b2792935afe0e941b51a86096ede5": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:0166e24f1837cd2f47c27f978937eaee690de307": {
+    "words": [
+      {
+        "index": 0,
+        "stated": false
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:cfa30cb32a7f5a51eb93e0b357621fba8d0a4a44": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      },
+      {
+        "index": 1,
+        "stated": true
+      },
+      {
+        "index": 2,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:a1d7a5dcccdcd0ef883cd88dd3a32cf736b71d45": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
   "_UniversalBindOutput@7105c7d81a38:696b2ef25f3cb3a92e6e49d24a5f4e3ea0821ec6": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -19395,6 +19543,14 @@
       {
         "index": 1,
         "rating": 0.8
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:249919ef15866ac6bce9ef685fec0e61f83ecef2": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
       }
     ]
   }

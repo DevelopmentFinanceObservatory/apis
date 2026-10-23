@@ -378,7 +378,7 @@ class _NoEntityBindLLM:
 class TestEntityLessDefiniteConfidenceFreshPath:
     """Entity-less definite results grade confidence from the representative score (#305)."""
 
-    _QUERY = "test no entity incidence rate strong"
+    _QUERY = "test no entity incidence rate"
 
     def test_strong_match_grades_high(self):
         graph = _no_entity_graph(query=self._QUERY, cosine_score=settings().weak_score_threshold)
@@ -410,7 +410,7 @@ class TestEntityLessDefiniteConfidenceFreshPath:
         """Without a named place, a below-threshold score on the only admissible reading
         with data grades high: the frame admitting one reading corroborates it, and scores
         reach confidence only beside a rival (status rule 5)."""
-        query = "test no entity incidence rate weak"
+        query = "test no entity incidence rate"
         graph = _no_entity_graph(query=query, cosine_score=settings().weak_score_threshold - 0.1)
         result = asyncio.run(
             resolve_variable(

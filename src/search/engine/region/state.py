@@ -1022,6 +1022,18 @@ class ResolveState:
     # Each named narrowing term and its outcome; build_spec records these, and
     # coverage and final assembly use them for their guards.
     query_qualifiers: list[ResolvedQualifier] = field(default_factory=list)
+    # Under `SearchSettings.qualifier_coverage="log"`, the terms the elected answer would
+    # refuse on in refuse mode, and each word of the variable with the reader that reads
+    # it (`phase_rank_bind._coverage_reading`), which the pass logs once it ends
+    # (`phase_election.log_would_refuse`). Empty in refuse mode.
+    would_refuse: tuple[ResolvedQualifier, ...] = ()
+    word_verdicts: tuple[tuple[str, str], ...] = ()
+    # The binder's rating of each casefolded word the coverage rule leaves unrated on the
+    # elected shape over the final bindings: the probability that the shape's series states
+    # what the word names (`phase_election._rate_unread_words`). The rule reads a word
+    # rated below `SearchSettings.stated_word_bar` as unread. Empty until the bindings
+    # settle, and for a read that failed.
+    stated_word_ratings: Mapping[str, float] = field(default_factory=dict)
     # Every term the request names that each final answer is judged against
     # (`Requirement`), in the order recorded.
     requirements: tuple[Requirement, ...] = ()

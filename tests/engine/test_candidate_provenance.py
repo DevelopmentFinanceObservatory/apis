@@ -33,9 +33,10 @@ from tests.engine.test_qualifier_suppression_and_provenance import (
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "ODA standard grants"
-# Registers no code-row synonym in the real index, so match_qualifiers admits
-# nothing for this text -- the same two shapes recalled, with no forced binding.
-_NEUTRAL_QUERY = "zzqxvville flerbnaxx wobbleglorp"
+# A noun naming data itself (`function_words.DATA_WORDS`): it registers no code-row
+# synonym in the real index, so match_qualifiers admits nothing for this text -- the same
+# two shapes recalled, with no forced binding -- and every answer reads it.
+_NEUTRAL_QUERY = "indicators"
 
 _recalled1_row = _real_row(_RECALLED_SV1)
 

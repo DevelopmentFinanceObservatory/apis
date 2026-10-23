@@ -7,7 +7,9 @@ tag (`decode`): ``$tuple``, ``$frozenset``, ``$dataclass``, ``$namedtuple``, ``$
 and ``$dict``, each naming its class by module and qualified name.
 
 An item's answers are both rounds' of its bind (`jev_assemble.span_round`) when its first
-round calls for a second.
+round calls for a second. An item whose shapes the readers leave words unread on stores
+them as ``nominated_words`` (`BindRequest.nominated_words`) with Jev's ``unread|`` answers;
+an item without them nominates none.
 
 `replay` runs an item through the Jev request builders and `jev_assemble`, then through the
 steps the engine applies after a binder returns (`bind.split_stray_bindings`, the menu-rank
@@ -148,6 +150,7 @@ def load_item(path: Path) -> GoldenItem:
     """The item `path` holds, its request asked with a query, as the stored answers were."""
     record = json.loads(path.read_text())
     args = {name: decode(record["args"][name]) for name in _BIND_FIELDS}
+    args["nominated_words"] = decode(record["args"].get("nominated_words", []))
     step = _HousePolicyStep(
         shapes=args["shapes"],
         frame=args["frame"],

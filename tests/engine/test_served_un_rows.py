@@ -122,7 +122,7 @@ def _sv_node(dcid: str, *, population_type: str) -> dict:
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": dcid}]},
+            "name": {"nodes": [{"value": "Under-five mortality rate"}]},
             "populationType": {"nodes": [{"dcid": population_type}]},
             "measuredProperty": {"nodes": [{"dcid": "mortalityRate"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},

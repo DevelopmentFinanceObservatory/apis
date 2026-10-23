@@ -277,6 +277,7 @@ class CacheScope:
                 max_candidates=max_candidates,
                 seam_default=seam_default,
                 qualifier_coverage=config.settings().qualifier_coverage,
+                stated_word_bar=config.settings().stated_word_bar,
                 build_commit=build_commit,
                 binder=binder.name,
                 model=binder.model,

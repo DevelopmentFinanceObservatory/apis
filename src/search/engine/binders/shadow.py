@@ -35,11 +35,16 @@ import json
 import logging
 import random
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from search.engine.binders.base import BindRequest, BindResult, QuantityRequest
+from search.engine.binders.base import (
+    BindRequest,
+    BindResult,
+    QuantityRequest,
+    StatedWordsRequest,
+)
 from search.engine.binders.jev import JevFailure
 from search.engine.binders.part_log import Call, elapsed_ms, log_binder_part
 from search.engine.clients.llm import detached, unrecorded_llm_usage
@@ -193,6 +198,12 @@ class ShadowBinder:
             started=started,
         )
         return answer
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """The served binder's rating, unshadowed."""
+        return await self.served.rate_words_stated(request, llm=llm)
 
     def _mode(self) -> Mode | None:
         """Whether this call is shadowed, and by Jev or by Gemini as the control. A call

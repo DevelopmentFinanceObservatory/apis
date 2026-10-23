@@ -35,13 +35,14 @@ from search.engine.region.status_rule import (
     plan_status,
 )
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import TimeWindow
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
-from tests.engine._binders import nominee_ratings
+from tests.engine._binders import RatingBinder, nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _GDP = "GrossDomesticProduction"
@@ -393,6 +394,8 @@ class _FixedBindLLM:
         self._chosen = chosen
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         return _UniversalBindOutput(
@@ -407,11 +410,21 @@ class _FixedBindLLM:
         ), None
 
 
+# "land use statistic" names what forest area is a kind of, so no word of it names a part
+# of what the series counts: the binder rates each word stated.
+_LAND_USE_WORDS = ("land", "use", "statistic")
+
+
+def _land_use_binder() -> RatingBinder:
+    return RatingBinder(GeminiBinder(), dict.fromkeys(_LAND_USE_WORDS, 1.0))
+
+
 def _run(
     variable: str,
     *,
     scores: list[float],
     also_plausible: list[int] | None = None,
+    binder: RatingBinder | None = None,
 ) -> RegionResult:
     svs = [_SV_FOREST, _SV_POPULATION]
     graph = FakeGraph(
@@ -434,7 +447,7 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(also_plausible),
-            binder=GeminiBinder(),
+            binder=binder or GeminiBinder(),
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -447,9 +460,11 @@ def _run(
 def test_a_thin_retrieval_margin_sets_no_status():
     """Forest area and population scored 0.0046 apart, and nobody nominated population:
     another measure enters the menu only through a nomination."""
-    result = _run("land use statistic", scores=[0.8230, 0.8184])
+    binder = _land_use_binder()
+    result = _run("land use statistic", scores=[0.8230, 0.8184], binder=binder)
     assert result.status == "definite"
     assert [spec.resolved.members[0].ref.ref for spec in result.specs] == [_SV_FOREST]
+    assert [request.words for request in binder.requests] == [_LAND_USE_WORDS]
 
 
 def test_a_nomination_with_data_is_offered_as_nominated():
@@ -480,6 +495,7 @@ def test_the_only_reading_with_data_is_high_confidence_despite_a_weak_score():
         resolve={"Brazil": "country/BRA"},
         obs=graph_obs,
     )
+    binder = _land_use_binder()
     result = asyncio.run(
         resolve_variable(
             "land use statistic",
@@ -491,6 +507,7 @@ def test_the_only_reading_with_data_is_high_confidence_despite_a_weak_score():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
+            binder=binder,
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -500,6 +517,7 @@ def test_the_only_reading_with_data_is_high_confidence_despite_a_weak_score():
     )
     assert result.status == "definite"
     assert result.specs[0].resolved.confidence == "high"
+    assert [request.words for request in binder.requests] == [_LAND_USE_WORDS]
 
 
 # The admission guards honour the status rule's open axes and run before it, and the

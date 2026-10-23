@@ -25,12 +25,13 @@ from search.engine.region.state import EngineOptions
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.facts import read_constraints, read_five_tuple
 from search.engine.retrieval.standard import _admit_standard_members, _AdmittedStandardMembers
+from search.engine.stated_words_read import StatedWordsOutput
 from statvar_members import member_digest
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import (
     provenance_row,
@@ -838,6 +839,8 @@ class _BindTeachingLLM:
     an order other than the sorted one an identity states."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         teaching = SlotBindingDraft(

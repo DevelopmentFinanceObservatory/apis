@@ -41,7 +41,7 @@ _NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Population"}]},
+            "name": {"nodes": [{"value": "Test resolved scope population"}]},
             "populationType": {"nodes": [{"dcid": "Person"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},

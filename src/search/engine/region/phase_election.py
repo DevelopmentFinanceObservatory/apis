@@ -3,6 +3,7 @@ default its bindings (`_phase_settle`)."""
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
@@ -17,7 +18,11 @@ from search.engine.bind_repair import (
     defaulted_slot_notes,
     defaulted_slots_named,
 )
+from search.engine.binders import StatedWordsRequest
 from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
+from search.engine.envelope import _sum_usage
+from search.engine.errors import LLMInfraError
 from search.engine.extract import slot_default_answers
 from search.engine.qualifier_match import (
     QualifierMatch,
@@ -34,7 +39,8 @@ from search.engine.region.named_source import with_named_source, without_dataset
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches_against_elected_shape,
     _bound_code_records,
-    _coverage_records,
+    _coverage_reading,
+    _coverage_terms,
     _elected_index,
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
@@ -45,6 +51,7 @@ from search.engine.region.phase_rank_bind import (
     _shape_qualifiers,
     _unchosen_matches,
     _unheld_bound_codes,
+    _unrated_words,
     _unread_qualifier_phrases,
     _withheld_qualifiers,
     judge_value_requirements,
@@ -123,7 +130,7 @@ async def _phase_settle(state: ResolveState) -> RegionResult | None:
     refused = _vet_election(state)
     if refused is not None:
         return refused
-    return _repair_bindings(state)
+    return await _repair_bindings(state)
 
 
 def _vet_election(state: ResolveState) -> RegionResult | None:
@@ -808,7 +815,7 @@ def _query_role_keys(state: ResolveState, shape: ShapeDraft) -> RoleKeys:
     return RoleKeys() if isinstance(bound, str) else bound.role_keys
 
 
-def _repair_bindings(state: ResolveState) -> RegionResult | None:
+async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     """Repair bindings and apply measure elections and defaults.
 
     In order, bind the values an unexported family shares, bind the values a series code's
@@ -819,7 +826,9 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
     the bindings under them (`_bind_query_places`): the measure election, the shape's slot
     defaults, the named-member and partition binds, the canonical pins, the slots the
     identity carries (`standard.breakdown_decision`), and the dataset the part is served
-    from, where a part no table serves refuses ``qualifier_not_bound``.
+    from, where a part no table serves refuses ``qualifier_not_bound``. The binder then
+    rates the words the coverage rule leaves unrated on the shape and bindings so settled
+    (`_rate_unread_words`), and the query qualifiers resolve against the final bindings.
     """
     bindings: list[SlotBindingDraft] = list(state.bind_result.bindings)
     state.bindings = bindings
@@ -946,35 +955,38 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
         return refused
 
     # Resolve query qualifiers against the final bindings, each one no binding covers a
-    # requirement (`requirements.record_reading`). In "refuse" coverage mode an uncovered
-    # word beside a recognised code is a record and the part refuses on it. In log mode the
-    # record is logged once here, outside `unrealisable.unbind_unrealisable`'s re-read, and
-    # a word of a qualifier term the elected shape's own reading leaves unread is a term
-    # no answer is judged on (`_unread_qualifier_phrases`). In refuse mode a record already
+    # requirement (`requirements.record_reading`). In "refuse" coverage mode a word of the
+    # variable no reader covers is a record and the part refuses on it. In log mode the
+    # record is kept once here, outside `unrealisable.unbind_unrealisable`'s re-read, for
+    # the line the pass logs when it ends (`log_would_refuse`), and a word of a qualifier
+    # term the elected shape's own reading leaves unread is a term no answer is judged on
+    # (`_unread_qualifier_phrases`). In refuse mode a record already
     # covers that word. In log mode a term of a part naming no dataset that names only codes
-    # no shape can bind is withheld (`_withheld_qualifiers`), logged here alike, and is a
+    # no shape can bind is withheld (`_withheld_qualifiers`), kept here alike, and is a
     # term no answer is judged on, whatever its property. Each value the request names by
     # its graph label is recorded once as a requirement (`value_requirements`) in refuse
-    # mode, and in log mode the elected answer's unmet ones are logged here by the same
+    # mode, and in log mode the elected answer's unmet ones are kept by the same
     # rule (`judge_value_requirements`). Each value the bind drafted on a slot the elected
     # shape lacks is a requirement judged by the same rule, which bind recorded
     # (`phase_rank_bind._stray_requirements`), so its query record adds none. Every
     # requirement departs only if the final answer leaves it unapplied
-    # (`requirements.with_requirement_departures`).
+    # (`requirements.with_requirement_departures`). The coverage rule reads a word beside
+    # no code as unread only on the binder's rating, read first (`_rate_unread_words`).
+    await _rate_unread_words(state)
     record_reading(state, _resolve_query_qualifiers(state))
     withheld = _withheld_qualifiers(state)
     log_mode = settings().qualifier_coverage == "log"
     recorded = (*state.query_qualifiers, *withheld)
-    coverage = _coverage_records(state, recorded) if log_mode else []
-    values = value_requirements(state, (*recorded, *coverage))
-    if log_mode:
+    coverage = _coverage_reading(state, _coverage_terms(state)) if log_mode else None
+    values = value_requirements(state, (*recorded, *(coverage.records if coverage else ())))
+    if coverage is not None:
         unmet = judge_value_requirements(values, state.shape_draft, state.bindings, state)
-        for record in (*withheld, *coverage, *(requirement.term for requirement in unmet)):
-            logger.info(
-                "qualifier_coverage would_refuse phrase=%s codes=%s",
-                record.text,
-                ",".join(ref.ref for ref in record.named),
-            )
+        state.would_refuse = (
+            *withheld,
+            *coverage.records,
+            *(requirement.term for requirement in unmet),
+        )
+        state.word_verdicts = coverage.verdicts
     else:
         for requirement in values:
             state.requirements = with_requirement(state.requirements, requirement)
@@ -998,6 +1010,74 @@ def _repair_bindings(state: ResolveState) -> RegionResult | None:
         state.require_unapplied(phrase, asked=phrase, property_dcid=None, origin="bind")
 
     return None
+
+
+async def _rate_unread_words(state: ResolveState) -> None:
+    """Keep the binder's rating of each word the coverage rule leaves unrated on the
+    elected shape over the final bindings (`_unrated_words`) as
+    `ResolveState.stated_word_ratings`, with the read's usage added to the part's. The
+    binder is asked once per pass, and only when such a word remains. A read that fails
+    (`LLMInfraError`) rates no word, so each counts as stated, and is noted as lost
+    (`note_degraded_read`), so the response cache stores no answer read without it. A read
+    that leaves a word unrated is noted the same way, once: Jev leaving its question
+    unanswered or holding none for a shape outside the menu, or Gemini answering no index
+    for the word or answering it both ways."""
+    words = _unrated_words(state)
+    if not words:
+        return
+    shape = state.shape_draft
+    request = StatedWordsRequest(
+        variable=state.variable,
+        shape=shape,
+        shape_index=next(
+            (
+                index
+                for index, menu_shape in enumerate(state.capped_shapes)
+                if menu_shape.shape_id == shape.shape_id
+            ),
+            None,
+        ),
+        words=words,
+        bindings=tuple(state.bindings),
+        decision=state.bind_decision,
+        part=state.variable_index,
+        pool=state.pool,
+    )
+    try:
+        ratings, usage = await state.binder.rate_words_stated(request, llm=state.llm)
+    except LLMInfraError:
+        logger.warning("stated words read failed; each word reads as stated", exc_info=True)
+        note_degraded_read("stated words read")
+        return
+    state.stated_word_ratings = {word: ratings[word] for word in words if word in ratings}
+    state.var_usage = _sum_usage(state.var_usage, usage)
+    if len(state.stated_word_ratings) < len(words):
+        note_degraded_read("stated words unrated")
+
+
+def log_would_refuse(state: ResolveState, result: RegionResult) -> None:
+    """Log one ``qualifier_coverage would_refuse`` line, a JSON object, per term the pass's
+    elected answer would refuse on in refuse mode (`ResolveState.would_refuse`): the part's
+    index, the pass's pool, the variable, the elected shape, the term's phrase and the codes
+    it names, the status `result`, the pass's answer, reached, the spec ids it answers with,
+    and its flagged match's on a refusal, each word of the variable with its verdict
+    (`ResolveState.word_verdicts`), and the binder's rating of each word it rated
+    (`ResolveState.stated_word_ratings`)."""
+    specs = result.specs or result.flagged_match or ()
+    for record in state.would_refuse:
+        line = {
+            "part": state.variable_index,
+            "pool": state.pool,
+            "variable": state.variable,
+            "shape": state.shape_draft.shape_id,
+            "phrase": record.text,
+            "codes": [ref.ref for ref in record.named],
+            "status": result.status,
+            "spec_ids": [spec.spec_id for spec in specs],
+            "words": [list(verdict) for verdict in state.word_verdicts],
+            "ratings": dict(state.stated_word_ratings),
+        }
+        logger.info("qualifier_coverage would_refuse %s", json.dumps(line, separators=(",", ":")))
 
 
 @dataclass(frozen=True)

@@ -43,7 +43,7 @@ from search.engine.region.candidate_admission import alternates_unevaluated_warn
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
-from search.engine.region.phase_election import _phase_settle
+from search.engine.region.phase_election import _phase_settle, log_would_refuse
 from search.engine.region.phase_intake import (
     _phase_check_entities,
     _phase_derive_shapes,
@@ -55,6 +55,7 @@ from search.engine.region.phase_place_materialise import (
     _phase_facet_requests,
     _phase_materialise,
     _phase_place_bindings,
+    refuse_unread_answer,
 )
 from search.engine.region.phase_rank_bind import (
     _admitted_qualifier_phrases,
@@ -67,6 +68,7 @@ from search.engine.region.place_roles import group_request_names, stated_party_w
 from search.engine.region.related_read import cancel_related_reads, settle_related_reads
 from search.engine.region.requirements import (
     met_measure_phrases,
+    refusal_terms,
     unbinding_phrases,
     with_requirement_departures,
 )
@@ -590,7 +592,9 @@ async def _fill_gap(
     a menu, so an answer our pass serves without it carries none of it. A declared-default refusal
     (`DeclaredDefaultUnsupportedError`), an index-sourced shape meeting a default scope
     (`DefaultScopeIndexSourcedError`) or a conversion-table refusal (`RATE_TABLE_REFUSALS`)
-    in the UN pass propagates, since each refuses the request on every door; any other
+    in the UN pass propagates, since each refuses the request on every door; a UN answer
+    leaving terms unmet refuses `qualifier_not_bound` before any of them (`_run_phases`),
+    and that refusal meets ours by the rules above. Any other
     failure is a defect, logged, and leaves `result` standing. Cancellation propagates. The UN pass sends no events: the frame, shape and
     step events on the stream describe our pass.
     """
@@ -806,7 +810,10 @@ async def _run_phases(state: ResolveState) -> RegionResult:
     unscoped and reads scoped from election on. However the pass ends, it then cancels what
     it queued (`_cancel_queued_reads`) and ends its related-measures reads
     (`_end_related_reads`). Each phase's time that no step booked lands under
-    `phase_<name>` (`_book_unbooked_time`)."""
+    `phase_<name>` (`_book_unbooked_time`). A refusal of the whole request
+    (`_REQUEST_REFUSALS`) a phase raises once the bindings are final, on an elected answer
+    leaving terms unmet, gives way to the part's `qualifier_not_bound` refusal
+    (`refuse_unread_answer`)."""
     scoped = False
     settled = False
     unbooked: dict[str, int] = {}
@@ -817,7 +824,16 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 name = phase.__name__.removeprefix("_phase_")  # ty: ignore[unresolved-attribute]
                 enter_phase(f"{state.pool}:{name}")
                 t0, booked_before = now_ms(), _booked_ms(state)
-                result = await phase(state)
+                try:
+                    result = await phase(state)
+                except _REQUEST_REFUSALS:
+                    # A refusal of the whole request comes only from a series the part
+                    # answers on. Once the bindings are final, an elected answer leaving
+                    # terms unmet answers nothing, so the part refuses on them instead
+                    # (`refuse_unread_answer`).
+                    if not settled or not refusal_terms(state, state.shape_draft, state.bindings):
+                        raise
+                    result = await refuse_unread_answer(state)
                 # A refusal once the bindings are final that judged no answer is judged
                 # on the elected answer, so each requirement is named or departs
                 # (`settle_unjudged_refusal`).
@@ -850,6 +866,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     admitted = _admitted_phrases(state, result, every_member)
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
+                    log_would_refuse(state, result)
                     result = _stating_unevaluated(
                         dataclasses.replace(
                             with_requirement_departures(
@@ -1011,8 +1028,10 @@ async def _end_related_reads(state: ResolveState) -> None:
 # requirements only an answer can meet (`requirements.settle_unanswered`); from
 # `_phase_materialise` for a declined reading's pinned codes (`_declined_refusal`); and
 # from definite assembly after identity confirmation or candidates' single-survivor
-# collapse. The last two call `requirements.settle_answer`, so each value bind drafted on
-# a slot the elected shape lacks is among the terms they name. A later refusal that judged
+# collapse; and from `_run_phases` when a later phase raises a refusal of the whole request
+# on an elected answer leaving terms unmet (`refuse_unread_answer`). The last three call
+# `requirements.settle_answer`, so each value bind drafted on a slot the elected shape
+# lacks is among the terms they name. A later refusal that judged
 # no answer and whose reason ranks after `qualifier_not_bound` gives way to it when the
 # elected answer leaves terms unmet (`phase_shared.settle_unjudged_refusal`).
 # Materialise can mint `no_matching_slice`, deferred to the place-less mint, or `binding_mismatch`.

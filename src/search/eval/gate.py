@@ -23,10 +23,13 @@ The rows, in the order they apply:
 - every base sample is unreached, or a reached base sample fails: pre-existing;
 - a reached base sample is unverifiable and none fails: unverifiable at base, blocking
   until an override releases it;
+- every reached base sample passes ``disposition`` or ``answer`` on a wrong answer (see
+  below): wrong answer at base, which does not block;
 - every reached base sample passes: the confirm round decides. Infra in it is infra as
   above. A confirm head sample that fails or is unverifiable is a regression when the
   confirm base sample passes and unverifiable at base when it is unverifiable; anything
-  else, an unreached sample on either side included, is unstable.
+  else, an unreached sample on either side included, is unstable. A base with one right
+  sample regresses through the confirm round whatever its confirm base sample answers.
 
 ``scripts/eval_paired.py`` hands in a head sample whose run failed as a failed
 ``task_outcome`` sample with no infra flag, so a head-side ``"run"`` failure in the first row
@@ -51,6 +54,19 @@ confirm base sample is read against the confirm head sample's failed parts alone
 confirm round blocks with a regression only when the confirm base passes a part the confirm
 head failed.
 
+A base sample's pass on ``disposition`` or ``answer`` (``WRONG_ANSWER_CHECKS``) is a pass on a
+wrong answer when the same sample fails a check that says which series or places answer
+(``CONTENT_CHECKS``: ``measure``, ``entities``, ``provenance``) on the whole answer, or on
+a case with ``expect.parts`` when some content check fails on each part the head failed.
+A head failure that concerns the whole answer, as every ``disposition`` failure does,
+failed every expected part (``Observation.part_count``), so a base right on one part is no
+wrong answer. The driver hands those observations in as ``Observation.content``.
+A head that refuses, or answers in another status, where base answered the wrong series
+then has no right answer to regress from. The sample's own content verdicts decide, so a
+content check in the case's ``known_failure.checks`` counts as it scored on that sample:
+``answer`` leaves known failures out, and a base sample passes it on a series the case
+already knows is wrong.
+
 A base sample the app refused as a malformed request (``request_rejected``) is
 unverifiable, since the head runner's request may carry fields the base app does not know.
 At head the checks score the refusal as the problem document it is.
@@ -65,7 +81,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal
 
-from search.eval.checks import Verdict
+from search.eval.checks import ANSWER, Verdict
 
 type Infra = Literal["run", "read"]
 
@@ -79,6 +95,7 @@ class Outcome(StrEnum):
     UNSTABLE = "unstable"
     PRE_EXISTING = "pre_existing"
     UNVERIFIABLE_AT_BASE = "unverifiable_at_base"
+    WRONG_ANSWER_AT_BASE = "wrong_answer_at_base"
     INFRA = "infra"
     NEEDS_BASE = "needs_base"
     NEEDS_CONFIRM = "needs_confirm"
@@ -93,6 +110,13 @@ BLOCKING = frozenset(
     }
 )
 """Outcomes that fail the gate with exit 1. The ``eval-override`` label releases them."""
+
+WRONG_ANSWER_CHECKS = frozenset({"disposition", ANSWER})
+"""Checks a base sample can pass on a wrong answer: the right status on the wrong series."""
+
+CONTENT_CHECKS = frozenset({"measure", "entities", "provenance"})
+"""Checks that say which series and places answer: the five-tuple and StatVars, the bound
+entities, and the dataset the facets name."""
 
 PENDING = frozenset({Outcome.NEEDS_BASE, Outcome.NEEDS_CONFIRM})
 """Outcomes waiting on a base run or a confirm round."""
@@ -115,8 +139,15 @@ class Observation:
     """The check's ``Result.parts``: each expected part that did not pass, by position, as a
     read-only copy, or None when the verdict concerns the whole answer, and on a pass or n/a.
     Hashing leaves it out, so equal observations still hash alike."""
+    part_count: int | None = None
+    """How many parts the case expects, on a base sample of a check in
+    ``WRONG_ANSWER_CHECKS`` on a case with ``expect.parts``; None otherwise."""
+    content: Mapping[str, Observation] = field(default_factory=dict, hash=False)
+    """The same sample's observations on ``CONTENT_CHECKS``, by check, on a base sample of a
+    check in ``WRONG_ANSWER_CHECKS``, as a read-only copy. Hashing leaves it out."""
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "content", MappingProxyType(dict(self.content)))
         if self.parts is None:
             return
         held = None if self.verdict in (Verdict.PASS, Verdict.NA) else dict(self.parts)
@@ -187,11 +218,16 @@ def judge(
     if any(o.infra for o in base):
         return verdict(Outcome.INFRA)
     failed = _failed_parts(head)
-    base_v = [v for o in base if (v := _effective(o, "base", failed=failed)) != Verdict.UNREACHED]
+    reached_base = [
+        (o, v) for o in base if (v := _effective(o, "base", failed=failed)) != Verdict.UNREACHED
+    ]
+    base_v = [v for _, v in reached_base]
     if not base_v or Verdict.FAIL in base_v:
         return verdict(Outcome.PRE_EXISTING)
     if Verdict.UNVERIFIABLE in base_v:
         return verdict(Outcome.UNVERIFIABLE_AT_BASE)
+    if all(_wrong_answer(o, check=check, failed=failed) for o, _ in reached_base):
+        return verdict(Outcome.WRONG_ANSWER_AT_BASE)
     if confirm is None:
         return verdict(Outcome.NEEDS_CONFIRM)
     read += confirm
@@ -244,6 +280,22 @@ def _effective(
         if verdict in on_failed:
             return verdict
     return Verdict.UNREACHED if on_failed == {Verdict.UNREACHED} else Verdict.PASS
+
+
+def _wrong_answer(observation: Observation, *, check: str, failed: AbstractSet[int] | None) -> bool:
+    """Whether a base sample passes ``check`` on a wrong answer: the check is in
+    ``WRONG_ANSWER_CHECKS`` and a content check fails on the whole answer, or some content
+    check fails on each part in ``failed``. ``failed`` None is every expected part."""
+    if check not in WRONG_ANSWER_CHECKS:
+        return False
+    content = observation.content.values()
+    if any(o.verdict == Verdict.FAIL and o.parts is None for o in content):
+        return True
+    if failed is None:
+        failed = frozenset(range(observation.part_count or 0))
+    return bool(failed) and all(
+        any(o.parts is not None and o.parts.get(i) == Verdict.FAIL for o in content) for i in failed
+    )
 
 
 def _failed_parts(head: Iterable[Observation]) -> frozenset[int] | None:

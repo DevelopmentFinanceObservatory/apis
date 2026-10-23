@@ -41,8 +41,10 @@ class ResolvedQualifier(StrictModel):
     `"bound"` when some final binding on a named row's code system covers
     it (that row or a descendant), `"unbound"` when a row was named but no
     binding covers it, and `"no_vocabulary"` when the term names no code at
-    all -- an LLM-reported phrase (`bind`'s own `unplaced` output) that no
-    taxonomy in this deployment's index can express.
+    all: an LLM-reported phrase (`bind`'s own `unplaced` output) that no
+    taxonomy in this deployment's index can express, an exclusion or comparison
+    phrase (`"unsupported"`), or words beside no code the binder rated as not
+    stated on the elected shape (`"uncovered"`).
 
     `start` and `end` locate the term in the part's variable phrase. `evidence` says what
     read it, and `None` means a code's label or synonym matched the term as the query
@@ -53,9 +55,12 @@ class ResolvedQualifier(StrictModel):
     - `"model"` marks a phrase the bind model read through a code it chose from the
       phrase's candidate menu, a lexical hit of the menu or a descendant of one
       (`phase_rank_bind._model_records`); `named` holds the chosen codes.
-    - `"uncovered"` marks words no reader covers beside a recognised code
-      (`phase_rank_bind._coverage_records`), recorded `"unbound"` with that code's rows as
-      `named`.
+    - `"uncovered"` marks words no reader covers on the elected shape
+      (`phase_rank_bind._coverage_records`). Beside a recognised code they are recorded
+      `"unbound"` with that code's rows as `named`. Beside no code they are recorded
+      `"no_vocabulary"` with `named` empty when the binder rates them below
+      `SearchSettings.stated_word_bar` as not stated by the shape's series; a word it rates
+      at the bar or above, or leaves unrated, reads as stated.
     - `"unavailable"` marks a code term the elected shape cannot apply: one naming only
       codes no shape can bind, or, on a part naming a dataset, one no row of that dataset
       holds (`phase_rank_bind._unavailable_qualifiers`), recorded `"unbound"`.
@@ -109,8 +114,10 @@ class ResolvedQualifier(StrictModel):
         default=None,
         description=(
             'what read the term: a code label or synonym, the bind model, "uncovered" '
-            'for words no reader covers beside a recognised code, "unavailable" for a '
-            'code no table holds, "unsupported" for a distinction no binding expresses'
+            "for words no reader covers on the elected shape, unbound beside a recognised "
+            "code and no_vocabulary beside none when the binder rated them as not stated "
+            'by its series, "unavailable" for a code no table holds, "unsupported" for a '
+            "distinction no binding expresses"
         ),
     )
     operation: Literal["union", "refinement"] | None = Field(

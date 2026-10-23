@@ -11,6 +11,7 @@ from search.engine.binders.base import (
     BindRequest,
     BindResult,
     QuantityRequest,
+    StatedWordsRequest,
 )
 from search.engine.binders.fallback import FallbackBinder, Fallbacks, recording_fallbacks
 from search.engine.binders.gemini import GeminiBinder
@@ -73,6 +74,7 @@ __all__ = [
     "JevBinder",
     "QuantityRequest",
     "ShadowBinder",
+    "StatedWordsRequest",
     "configured_binder",
     "recording_fallbacks",
     "routes_to_jev",
