@@ -20,6 +20,7 @@ from ._graph_doubles import FakeMintGraphReader
 from ._identity_builders import described_identity, pinned_identity
 from .conftest import FakeDatasetStore, wire_definition_for
 from .test_definition_door import _client, _coverage_service
+from .test_resolve_definition_members_guards import _InconsistentReadGraphReader
 
 _RECIPIENT = "country/KEN"
 _ROOT = "Count_Person"
@@ -299,6 +300,35 @@ def test_a_member_refusal_is_the_mint_s():
 
     assert minted.status_code == members.status_code == 409, members.text
     assert minted.json()["code"] == members.json()["code"] == "spec_not_exportable"
+
+
+class _CompleteInconsistentReadGraphReader(_InconsistentReadGraphReader):
+    """Reads every node in full (`statvar_members.CompleteArcReads`), as the origin
+    catalogue's tables do, so a contradiction it returns is the graph's own."""
+
+    def arcs_complete(self, dcid: str) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    ("reader_type", "retryable"),
+    [(_InconsistentReadGraphReader, True), (_CompleteInconsistentReadGraphReader, False)],
+    ids=["live_reads", "complete_reads"],
+)
+def test_an_unsettled_member_refuses_retryable_only_where_a_later_read_can_settle_it(
+    reader_type: type[_InconsistentReadGraphReader], retryable: bool
+):
+    """A member whose forward read contradicts the reverse index is left undismissed. On a
+    live graph a later batch read can settle it, so the refusal is retryable. A reader that
+    holds every arc reads the same contradiction again, so it is final."""
+    graph = reader_type(_graph(with_root=False), stale_dcids=(_MALE,))
+
+    resp = _members(_members_client(graph=graph), _described())  # ty: ignore[invalid-argument-type]
+
+    assert resp.status_code == 422, resp.text
+    problem = resp.json()
+    assert (problem["code"], problem["retryable"]) == ("member_not_resolvable", retryable)
+    assert problem["issues"] == [{"member": f"dcid:{_MALE}"}]
 
 
 def test_a_query_key_refuses_request_invalid():

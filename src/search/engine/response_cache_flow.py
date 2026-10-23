@@ -58,7 +58,7 @@ from search.engine.response_cache_keys import (
     to_entry,
 )
 from search.engine.response_cache_memo import PartMemo
-from search.engine.role_text import DoorRole, contradicts
+from search.engine.role_text import DoorRole, contradicts, every_member_axis
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.engine.written_phrase import written_phrase
 from search.models import (
@@ -82,9 +82,11 @@ type ReplayedPlaceOptions = Callable[
 
 
 # ---------------------------------------------------------------------------
-# Raw-text inputs absent from Extraction: one `role_query` reader checks each
-# DoorRole occurrence on every leg. Single-variable requests also read qualifier
-# vocabulary, defaults, written phrases, negated dataset words and graph value names.
+# Raw-text inputs absent from Extraction: two `role_query` readers run on every leg. One
+# checks each DoorRole occurrence, the other reads the flow axis each dropped phrase asks
+# every member of (`role_text.every_member_axis`). Single-variable requests also read
+# qualifier vocabulary, defaults, written phrases, negated dataset words and graph value
+# names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
 # Graph value names are known only after retrieval, so their signal keeps the whole
 # query. The other signals reuse the pipeline helpers and index.
@@ -108,6 +110,7 @@ class Layer2Signals:
     declared_default_slots_named: tuple[str, ...]
     written_variable_phrases: tuple[str | None, ...]
     query_text_negated_stated_words: tuple[str, ...]
+    every_member_axes: tuple[str | None, ...]
     query_text_value_source: str | None
 
 
@@ -128,10 +131,13 @@ def compute_layer2_signals(
     entity_roles: Mapping[str, Sequence[DoorRole]],
     query_text: str | None,
     variables: Sequence[str] = (),
+    dropped_qualifiers: Sequence[str] = (),
 ) -> Layer2Signals:
-    """`query` supplies every leg's raw role signal; `entity_roles` lists its
-    door-provided occurrences in mention order. `query_text` is set only for a
-    single-variable request, matching the pipeline's own raw-text readers. Each of
+    """`query` supplies every leg's raw role signals; `entity_roles` lists its
+    door-provided occurrences in mention order, and each of `dropped_qualifiers` gives the
+    flow axis it asks every member of, read with the preposition `query` puts before it.
+    `query_text` is set only for a single-variable request, matching the pipeline's own
+    raw-text readers. Each of
     `variables` gives the stretch of `query_text` that writes it (`written_phrase`), which
     the named-member binding reads.
     """
@@ -139,6 +145,9 @@ def compute_layer2_signals(
         _role_contradiction(name, role, query=query)
         for name, roles in entity_roles.items()
         for role in roles
+    )
+    every_member_axes = tuple(
+        every_member_axis(phrase, query=query) for phrase in dropped_qualifiers
     )
     if query_text is None:
         return Layer2Signals(
@@ -152,6 +161,7 @@ def compute_layer2_signals(
             declared_default_slots_named=(),
             written_variable_phrases=(),
             query_text_negated_stated_words=(),
+            every_member_axes=every_member_axes,
             query_text_value_source=None,
         )
     index = get_index()
@@ -182,6 +192,7 @@ def compute_layer2_signals(
             written_phrase(variable, query_text) for variable in variables
         ),
         query_text_negated_stated_words=stated_words_negated(query_text, index=index),
+        every_member_axes=every_member_axes,
         query_text_value_source=query_text,
     )
 
@@ -410,7 +421,11 @@ class CacheScope:
             return None
         assert self._scope is not None
         signals = compute_layer2_signals(
-            query=query, entity_roles=entity_roles, query_text=query_text, variables=variables
+            query=query,
+            entity_roles=entity_roles,
+            query_text=query_text,
+            variables=variables,
+            dropped_qualifiers=dropped_qualifiers,
         )
         key = layer2_key(
             variables=variables,
@@ -432,6 +447,7 @@ class CacheScope:
             declared_default_slots_named=signals.declared_default_slots_named,
             written_variable_phrases=signals.written_variable_phrases,
             query_text_negated_stated_words=signals.query_text_negated_stated_words,
+            every_member_axes=signals.every_member_axes,
             query_text_value_source=signals.query_text_value_source,
             scope=self._scope,
             separate=separate,

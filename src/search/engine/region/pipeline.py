@@ -70,7 +70,7 @@ from search.engine.region.requirements import (
     unbinding_phrases,
     with_requirement_departures,
 )
-from search.engine.region.result import RegionResult
+from search.engine.region.result import RegionResult, every_member_phrases
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -883,7 +883,8 @@ def _admitted_phrases(state: ResolveState, result: RegionResult) -> frozenset[st
     matches: earlier terminals may hold pre-bind candidates without a forced binding or
     elected shape, and admit only what their refusal names. A measure value is admitted
     when the elected shape carries it or every final answer meets it
-    (`met_measure_phrases`)."""
+    (`met_measure_phrases`), and a phrase asking for every member of a flow role when the
+    answer represents that scope (`every_member_phrases`)."""
     if state.shape_draft is None:
         return _refused_pinned_phrases(state, result)
     return (
@@ -894,6 +895,7 @@ def _admitted_phrases(state: ResolveState, result: RegionResult) -> frozenset[st
         | state.applied_dropped_qualifier_phrases
         | unbinding_phrases(state.requirements)
         | state.slot_default_phrases
+        | every_member_phrases(result, state.dropped_qualifier_phrases, query=state.role_query)
     )
 
 

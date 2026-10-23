@@ -7,7 +7,7 @@ the binder matches bare codes against lives in ``unit_words.currency_codes``.
 
 from __future__ import annotations
 
-LEXICON_VERSION = "unit_lexicon_v2"
+LEXICON_VERSION = "unit_lexicon_v3"
 
 # ---------------------------------------------------------------------------
 # ISO codes that also spell common English words refuse as bare tokens. The
@@ -161,7 +161,8 @@ AMBIGUOUS_CURRENCY_NAMES: dict[str, tuple[str, ...]] = {
 
 # ---------------------------------------------------------------------------
 # Display names for every code that can appear in an ambiguity refusal.
-# Other ISO codes fall back to the code itself.
+# Other ISO codes fall back to the code itself. The binder also reads each name
+# as a currency name, so a refusal's alternative can be requested by its label.
 # ---------------------------------------------------------------------------
 
 CURRENCY_DISPLAY_NAMES: dict[str, str] = {

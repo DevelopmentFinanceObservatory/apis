@@ -451,7 +451,7 @@ class SentenceToken(StrictModel):
             "with the role the request gave it (null when it gave none), no entity_refs "
             "and no binding_ref, and text equal to one NoData.ambiguous_entities[i].text "
             "on the same part. The client titles that wording's candidate menu by this "
-            "role and pins the pick into NoData.data_query."
+            "role and posts the pick's entry of NoData.options."
         ),
     )
     binding_ref: str | None = Field(

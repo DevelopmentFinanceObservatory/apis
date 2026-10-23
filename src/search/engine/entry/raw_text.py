@@ -25,6 +25,7 @@ from search.engine.assemble import (
     build_no_data_part,
     skills_index_incomplete_warning,
     skills_index_unavailable_warning,
+    unapplied_qualifier_warnings,
 )
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
@@ -589,12 +590,15 @@ class _ExtractionPrep:
         """`region`, the part of `unique[i]`, holding what this extraction knows beyond it:
         the departures raised beside the request-wide qualifier warnings, a
         `query_qualifier_dropped` warning and its departure for each word narrowing its own
-        measure that its answer leaves unapplied, and the query's words for each entity.
+        measure that its answer leaves unapplied, the request-wide qualifier warnings whose
+        phrase the region leaves unapplied (`RegionResult.unapplied_qualifier_warnings`), and
+        the query's words for each entity.
 
         The answer applies a narrowing word when the region admitted it as a qualifier
         phrase, or when every Spec it answers with binds a value or a party named by it
         (`_binds_value_named`), such as "concessional" on a part that binds IDS
-        Concessional, or "multilateral" on one whose provider is `DACMultilaterals`. A part with no answer warns only for the words the model dropped
+        Concessional, or "multilateral" on one whose provider is `DACMultilaterals`. A part
+        with no answer warns only for the words the model dropped
         (`per_variable_dropped_phrases`): its refusal states why nothing is shown, and the
         words of its variable stay unjudged."""
         judged = (
@@ -615,7 +619,18 @@ class _ExtractionPrep:
                 facts[warning_key(warning)] = fact
         if warnings:
             region = dataclasses.replace(region, warnings=(*region.warnings, *warnings))
-        return with_entity_words(with_departure_facts(region, facts), self.entity_words)
+        request_unapplied = unapplied_qualifier_warnings(
+            self.qualifier_warnings,
+            self.dropped_qualifier_phrases,
+            admitted=region.admitted_qualifier_phrases,
+        )
+        return with_entity_words(
+            dataclasses.replace(
+                with_departure_facts(region, facts),
+                unapplied_qualifier_warnings=tuple(request_unapplied),
+            ),
+            self.entity_words,
+        )
 
 
 def _binds_value_named(phrase: str, spec: Spec) -> bool:
