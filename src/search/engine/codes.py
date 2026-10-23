@@ -304,6 +304,9 @@ WARNING_CODES: frozenset[str] = frozenset(
         # No conversion catalogue is loaded, so a currency answer states no offer
         # (region/codes.py).
         "unit_conversion_unavailable",
+        # An answer lists each member of a flow side whose dataset publishes the side's
+        # whole total (region/codes.py).
+        "whole_total_available",
         # A replayed selection collapsed to one definite candidate.
         "candidates_collapsed_definite",
         # A replayed selection has no surviving candidates.

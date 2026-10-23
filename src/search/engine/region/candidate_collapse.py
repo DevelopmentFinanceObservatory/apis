@@ -88,6 +88,7 @@ from search.engine.region.requirements import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState, raised_facts
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_nothing
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
@@ -627,7 +628,11 @@ async def _assemble_definite(
         status="definite",
         specs=(_survivor_spec,),
         no_data_reason=None,
-        warnings=(*state.warnings, *(warning for warning, _fact in _family)),
+        warnings=(
+            *state.warnings,
+            *(warning for warning, _fact in _family),
+            *whole_total_warnings(_survivor_spec, coverage=state.coverage.index),
+        ),
         departure_facts={**state.departure_facts, **raised_facts(_family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,
@@ -658,7 +663,8 @@ async def _assemble_candidate_set(
     has no data, add a warning describing its failure; assembly states its `closest_match`
     departure (`assemble._with_readings_substituted`). Each candidate the search could not
     check against the denominator the question names warns under its own spec_id
-    (`note_denominator_unverified`).
+    (`note_denominator_unverified`), as each one listing a side whose total its dataset
+    publishes does (`whole_totals.whole_total_warnings`).
     """
     unique_specs = [
         spec.model_copy(
@@ -715,7 +721,15 @@ async def _assemble_candidate_set(
         status="candidates",
         specs=tuple(_candidate_specs),
         no_data_reason=None,
-        warnings=(*state.warnings, *(warning for warning, _fact in _family)),
+        warnings=(
+            *state.warnings,
+            *(warning for warning, _fact in _family),
+            *(
+                warning
+                for spec in _candidate_specs
+                for warning in whole_total_warnings(spec, coverage=state.coverage.index)
+            ),
+        ),
         departure_facts={**state.departure_facts, **raised_facts(_family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,

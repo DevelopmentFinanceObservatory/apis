@@ -82,6 +82,7 @@ from search.engine.region.source_choice import (
 from search.engine.region.state import EngineOptions, ResolveState
 from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.weak_score import _representative_score_is_weak
+from search.engine.region.whole_totals import whole_total_unpublished_facts
 from search.engine.region.withheld import elected_series, with_withheld_warning
 from search.engine.retrieval.bound_values import RoleClassWalks, elects_within, held_family_memo
 from search.engine.role_text import DoorRole
@@ -517,6 +518,24 @@ def _excluded_from_the_place(result: RegionResult, state: ResolveState) -> Regio
     )
 
 
+def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> RegionResult:
+    """`result` holding, for each of its Specs, each whole population a text names whose
+    side the Spec's dataset publishes no total of and reads as unnamed
+    (`whole_totals.whole_total_unpublished_facts`), by `spec_id`
+    (`RegionResult.unpublished_whole_facts`), and so for the alternate a no-data answer
+    shows in its place (`RegionResult.alternate_match`). Such a side warns no
+    `role_scope_defaulted` (`PlaceRoles.unnamed_wholes`)."""
+    if not state.whole_named:
+        return result
+    shown = (*result.specs, *([result.alternate_match] if result.alternate_match else []))
+    facts = {
+        spec.spec_id: tuple(found)
+        for spec in shown
+        if (found := whole_total_unpublished_facts(spec, state.whole_named))
+    }
+    return dataclasses.replace(result, unpublished_whole_facts=facts) if facts else result
+
+
 def _stating_unevaluated(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result`, stating `alternates_unevaluated` when the pass left an alternate
     unevaluated, on every path that reached admission, a capped alternate's refusal
@@ -848,7 +867,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
                     log_would_refuse(state, result)
-                    return _stating_unevaluated(
+                    result = _stating_unevaluated(
                         dataclasses.replace(
                             with_requirement_departures(
                                 result, state.requirements, state.judgement
@@ -858,12 +877,14 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                             timing_by_step={**result.timing_by_step, **unbooked},
                             scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
+                            listed_axes=frozenset(state.whole_listed.values()),
                             inferred_facts=(
                                 tuple(state.inferred_facts) if result.status == "definite" else ()
                             ),
                         ),
                         state,
                     )
+                    return _stating_unpublished_wholes(result, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))
                     scoped = True
@@ -979,7 +1000,10 @@ async def _end_related_reads(state: ResolveState) -> None:
 # Entity errors come from `_phase_check_entities`, which runs before shape derivation and
 # the bind call. Each name with no place set mints `entity_not_resolved`, `entity_ambiguous`
 # (an Ambiguous resolution) or `entity_set_too_large` (a Group with more members than a
-# Spec binds), and `elect_no_data_reason` picks the part's reason from them.
+# Spec binds), and `elect_no_data_reason` picks the part's reason from them. Where every name
+# resolved, it mints `role_incompatible` for a whole population the request directs to the
+# other side, ahead of the variable reasons: the conflict is the request's own and holds on
+# every shape.
 # `_phase_place_bindings` mints `entity_set_too_large` too, for an
 # elected shape whose places exceed that bound. The count depends on the elected shape's
 # roles, so it is known only once a shape is elected. A request whose variable does not

@@ -47,6 +47,7 @@ from search.engine.region.candidates import (
     _AlternatesRead,
     _materialise_alt_shapes,
     alternate_representative,
+    settle_alternate,
     walk_alternate,
 )
 from search.engine.region.codes import (
@@ -99,13 +100,14 @@ from search.engine.region.place_roles import (
     PlaceAssignment,
     PlaceRoleRefusal,
     bind_alternate_place_roles,
-    bind_place_roles,
     bound_after_election,
     direction_assignments,
     first_spellings,
+    holds_whole_total,
     names_a_place,
     request_named_groups,
     undirected_place_name,
+    whole_total_candidates,
 )
 from search.engine.region.requirements import settle_answer, stray_values
 from search.engine.region.result import FacetAxisFilter, RegionResult
@@ -266,7 +268,9 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     """
     _note_named_places(state)
 
-    bound = bind_place_roles(state, state.shape_draft)
+    # Binding repair bound the elected shape's places (`ResolveState.query_place_roles`).
+    bound = state.query_place_roles
+    assert bound is not None, "binding repair binds the query's places"
     if bound == "role_not_resolved":
         bound = _settle_direction(state)
     if bound == "role_incompatible":
@@ -404,7 +408,10 @@ def _settle_direction(
     empty (`False`) the places refuse ``no_direction_holds``, a ``role_not_resolved`` that
     offers no reading, since each is known empty. A read the coverage index cannot answer
     (`None`) is unknown. Otherwise they refuse ``role_not_resolved``, as a question
-    whose direction no data settles."""
+    whose direction no data settles. The served assignment binds the first whole total a
+    side it leaves unnamed offers where the bindings hold its series
+    (`place_roles.holds_whole_total`); each rival decides its own when it is walked
+    (`_walked_alternates`)."""
     shape = state.shape_draft
     series = series_at_places(state)
     reads = [
@@ -420,11 +427,20 @@ def _settle_direction(
     (axis, served), *others = held
     if not others:
         state.inferred_facts.append(direction_inferred(name, axis))
-        return served
     for _axis, assignment in others:
         state.direction_rivals[len(state.capped_shapes)] = assignment
         state.capped_shapes.append(shape)
-    return served
+    # Binding repair settled the bindings under no role keys, so each whole total the
+    # served direction offers is judged under them, in the order offered
+    # (`place_roles.whole_total_candidates`).
+    return next(
+        (
+            whole
+            for whole in whole_total_candidates(state, shape, served)
+            if holds_whole_total(state, shape, whole, state.bindings)
+        ),
+        served,
+    )
 
 
 def _settle_breakdown(state: ResolveState) -> None:
@@ -1047,16 +1063,18 @@ class _WalkedAlternate:
 _WalkKey = tuple[int, tuple[str, ...], tuple[object, ...], str, tuple[object, ...]]
 
 
-def _walk_key(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> _WalkKey:
+def _walk_key(
+    state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str, roles: PlaceAssignment
+) -> _WalkKey:
     """The memo key of a walk: everything `walk_alternate` reads from the request. That is
-    the alternate, by capped-shape index, its members and the role keys its places are
-    assigned under, the representative its bindings come from, and the values the bind
+    the alternate, by capped-shape index, its members and the role keys `roles` assigns its
+    places under, the representative its bindings come from, and the values the bind
     drafted on slots the elected reading lacks, which it binds where its members hold them
     (`candidates._with_stray_values`). The dataset it names is
     its shape's (`ShapeDraft.named_dataset`), or the one the part's source scope leaves
     serving under those bindings, whatever bindings the shape in play holds. The scope is
     the leg's, fixed once vetting runs."""
-    role_keys = state.alternate_place_roles[index].role_keys
+    role_keys = roles.role_keys
     places = (tuple(sorted(role_keys.bound)), tuple(sorted(role_keys.open)))
     strays = tuple(
         sorted((prop, tuple(sorted(values))) for prop, values in _strays_by_property(state).items())
@@ -1073,10 +1091,12 @@ def _strays_by_property(state: ResolveState) -> dict[str, frozenset[str]]:
     return {prop: frozenset(values) for prop, values in by_prop.items()}
 
 
-def _walk_args(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> dict:
+def _walk_args(
+    state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str, roles: PlaceAssignment
+) -> dict:
     return {
         "shape": shape,
-        "role_keys": state.alternate_place_roles[index].role_keys,
+        "role_keys": roles.role_keys,
         "rep_sv": rep_sv,
         "graph": state.graph,
         "deadline": state.deadline,
@@ -1087,46 +1107,14 @@ def _walk_args(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) 
     }
 
 
-def _start_alternate_walks(
-    state: ResolveState, shapes: Mapping[int, ShapeDraft], *, elected_has_data: bool
-) -> None:
-    """Start the walk of each of `shapes`, by capped-shape index and narrowed to the members
-    it is offered through (`_offered_shapes`), at the representative it takes under
-    `elected_has_data` (`alternate_representative`), on `_WALK_POOL`, and keep
-    each in `state.alternate_walks` under its `_walk_key`. A walk already kept is not
-    started again. With no walks to run (`state.role_class_walks` is `None`) the election
-    makes no request, so nothing is started and `_walk` elects in place."""
-    if state.role_class_walks is None:
-        return
-    for index, shape in _offered_shapes(state, shapes).items():
-        rep_sv = alternate_representative(
-            shape,
-            elected_bindings=state.bindings,
-            elected_has_data=elected_has_data,
-            stray_values=_strays_by_property(state),
-        )
-        if rep_sv is None:
-            continue
-        key = _walk_key(state, index, shape, rep_sv)
-        if key in state.alternate_walks:
-            continue
-        state.alternate_walks[key] = _submit_walk(state, index, shape, rep_sv)
-
-
-def _submit_walk(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> Future:
-    """Queue the walk of `shape` at `rep_sv` on `_WALK_POOL` (`walk_alternate`)."""
-    return submit_with_context(
-        _WALK_POOL, walk_alternate, **_walk_args(state, index, shape, rep_sv)
-    )
-
-
-async def _walk(
+def _walk_plan(
     state: ResolveState, index: int, shape: ShapeDraft, *, elected_has_data: bool
-) -> _Alternate | None:
-    """The walk of `shape` at the representative it takes under `elected_has_data`: the one
-    `_start_alternate_walks` started, awaited however long it waits in `_WALK_POOL`'s queue,
-    else one queued there now. With no walks to run the election makes no request and runs
-    in place."""
+) -> tuple[str, PlaceAssignment] | None:
+    """The representative the alternate at `index`, offered as `shape`, takes under
+    `elected_has_data` (`alternate_representative`), and the assignment of the query's
+    places it is walked under (`_walk_assignment`). `None` when it has no representative.
+    The assignment is judged once per walk key of the alternate as bound
+    (`state.alternate_walk_plans`), so the walk's start and its await read one judgement."""
     rep_sv = alternate_representative(
         shape,
         elected_bindings=state.bindings,
@@ -1135,13 +1123,92 @@ async def _walk(
     )
     if rep_sv is None:
         return None
+    key = _walk_key(state, index, shape, rep_sv, state.alternate_place_roles[index])
+    roles = state.alternate_walk_plans.get(key)
+    if roles is None:
+        roles = state.alternate_walk_plans[key] = _walk_assignment(state, index, shape, rep_sv)
+    return rep_sv, roles
+
+
+def _walk_assignment(
+    state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str
+) -> PlaceAssignment:
+    """The assignment the alternate at `index`, offered as `shape`, is walked under at
+    `rep_sv`: its places with the first whole total its shape offers on a side they leave
+    unnamed (`place_roles.whole_total_candidates`) whose series the alternate's own
+    bindings under that total's role keys hold (`candidates.settle_alternate`,
+    `place_roles.holds_whole_total`), else its places as bound
+    (`state.alternate_place_roles`). The bindings are those before the walk, as binding
+    repair judges the elected shape's total on its bindings before its role class is
+    elected, so each alternate is walked once, whatever the shape in play binds."""
+    placed = state.alternate_place_roles[index]
+    for whole in whole_total_candidates(state, state.capped_shapes[index], placed):
+        settled = settle_alternate(
+            shape,
+            whole.role_keys,
+            rep_sv,
+            scope=state.scope,
+            stray_values=_strays_by_property(state),
+            bindings=state.breakdown_rivals.get(index),
+        )
+        if settled is not None and holds_whole_total(state, settled.shape, whole, settled.bindings):
+            return whole
+    return placed
+
+
+def _start_alternate_walks(
+    state: ResolveState, shapes: Mapping[int, ShapeDraft], *, elected_has_data: bool
+) -> None:
+    """Start the walk of each of `shapes`, by capped-shape index and narrowed to the members
+    it is offered through (`_offered_shapes`), at the representative and under the
+    assignment it is walked under (`_walk_plan`), on `_WALK_POOL`, and keep each in
+    `state.alternate_walks` under its `_walk_key`. A walk already kept is not started
+    again. With no walks to run (`state.role_class_walks` is `None`) the election makes no
+    request, so nothing is started and `_walk` elects in place."""
     if state.role_class_walks is None:
-        return walk_alternate(**_walk_args(state, index, shape, rep_sv))
-    key = _walk_key(state, index, shape, rep_sv)
-    started = state.alternate_walks.get(key)
-    if started is None:
-        started = state.alternate_walks[key] = _submit_walk(state, index, shape, rep_sv)
-    return await asyncio.wrap_future(started)
+        return
+    for index, shape in _offered_shapes(state, shapes).items():
+        plan = _walk_plan(state, index, shape, elected_has_data=elected_has_data)
+        if plan is None:
+            continue
+        rep_sv, roles = plan
+        key = _walk_key(state, index, shape, rep_sv, roles)
+        if key in state.alternate_walks:
+            continue
+        state.alternate_walks[key] = _submit_walk(state, index, shape, rep_sv, roles)
+
+
+def _submit_walk(
+    state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str, roles: PlaceAssignment
+) -> Future:
+    """Queue the walk of the alternate at `index`, offered as `shape`, at `rep_sv` under
+    `roles` on `_WALK_POOL` (`walk_alternate`)."""
+    return submit_with_context(
+        _WALK_POOL, walk_alternate, **_walk_args(state, index, shape, rep_sv, roles)
+    )
+
+
+async def _walk(
+    state: ResolveState, index: int, shape: ShapeDraft, *, elected_has_data: bool
+) -> tuple[_Alternate, PlaceAssignment] | None:
+    """The walk of the alternate at `index`, offered as `shape`, with the assignment of the
+    query's places it answers under (`_walk_plan`), or `None` when it has no representative
+    or the walk drops it. The walk is the one `_start_alternate_walks` started, awaited
+    however long it waits in `_WALK_POOL`'s queue, else one queued there now. With no walks
+    to run the election makes no request and runs in place."""
+    plan = _walk_plan(state, index, shape, elected_has_data=elected_has_data)
+    if plan is None:
+        return None
+    rep_sv, roles = plan
+    if state.role_class_walks is None:
+        alternate = walk_alternate(**_walk_args(state, index, shape, rep_sv, roles))
+    else:
+        key = _walk_key(state, index, shape, rep_sv, roles)
+        started = state.alternate_walks.get(key)
+        if started is None:
+            started = state.alternate_walks[key] = _submit_walk(state, index, shape, rep_sv, roles)
+        alternate = await asyncio.wrap_future(started)
+    return None if alternate is None else (alternate, roles)
 
 
 async def _walked_alternates(
@@ -1150,25 +1217,27 @@ async def _walked_alternates(
     """Elect each alternate's role class before anything is read for its places, and bind
     the query's places to the shape the election returns. Keyed by capped-shape index, in
     `shapes` order, without the alternates the election or the binding drops. Each shape is
-    walked through the members it is offered through (`_offered_shapes`).
+    walked through the members it is offered through (`_offered_shapes`), under the
+    assignment of the query's places it answers under (`_walk`).
 
     The mint's walk can replace a role-bearing shape with a subject-only family, or the
     reverse, so the presence read, the place context and the probe places all belong to the
     shape this returns. Every alternate is walked, whether or not it declares a flow role,
     so an offered shape lists the members its own resubmit serves. The walks run beside one
-    another off the event loop. A shape keeps the binding `_phase_place_bindings` made
-    unless the election turns it from role-bearing to subject-only or the reverse
-    (`place_roles.bound_after_election`); a shape whose new binding refuses is dropped.
+    another off the event loop. A shape keeps that assignment unless the election turns it
+    from role-bearing to subject-only or the reverse (`place_roles.bound_after_election`); a
+    shape whose new binding refuses is dropped.
     """
     shapes = _offered_shapes(state, shapes)
     elected = await asyncio.gather(
         *[_walk(state, i, shape, elected_has_data=elected_has_data) for i, shape in shapes.items()]
     )
     walked: dict[int, _WalkedAlternate] = {}
-    for (i, shape), alternate in zip(shapes.items(), elected, strict=True):
-        if alternate is None:
+    for (i, shape), placed in zip(shapes.items(), elected, strict=True):
+        if placed is None:
             continue
-        roles = bound_after_election(state, shape, state.alternate_place_roles[i], alternate.shape)
+        alternate, assignment = placed
+        roles = bound_after_election(state, shape, assignment, alternate.shape)
         if isinstance(roles, PlaceAssignment) and not _lacks_default_scope(state, alternate.shape):
             walked[i] = _WalkedAlternate(alternate, roles)
     return walked
@@ -1808,6 +1877,7 @@ async def _phase_materialise(state: ResolveState) -> RegionResult | None:
         boundary_roles=state.place.roles.roles,
         label_of=state.opposite_labels,
         warnings=state.warnings,
+        unnamed_wholes=state.place.roles.unnamed_wholes,
     )
     # A discovered scope exceeding its year limit is unsupported. Handle it before data checks.
     if isinstance(outcome, UnsupportedMaterialise):

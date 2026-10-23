@@ -241,7 +241,7 @@ dfo-data-tools = { workspace = true }
 # starved_axis_binding_restored.
 # Follow-up: move all five to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "0f1a106d35aed1b11aea90cb2d11040326b58bd6", subdirectory = "python/spec-kit" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "95a15cf0af7f4d34c113a1b811712a93e1baa2cb", subdirectory = "python/spec-kit" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

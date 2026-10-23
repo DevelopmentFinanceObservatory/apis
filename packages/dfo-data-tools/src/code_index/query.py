@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
+    POPULATION_CLASS,
     AbsentObservation,
     Bound,
     BoundSet,
@@ -30,6 +31,7 @@ from code_index.types import (
     LevelOption,
     MeasureClassDeclaration,
     PartlyStatedValue,
+    PartyClass,
     PartyKind,
     PartyRow,
     ShapeSlotDefault,
@@ -39,6 +41,7 @@ from code_index.types import (
     WholeTotalSet,
     party_kind,
 )
+from dfo_platform.roles import RoleAxis
 from statvar_members import FiveTuple
 
 _NO_IMPLIED: Mapping[str, str] = MappingProxyType({})
@@ -412,7 +415,9 @@ class CodeIndex:
         "parties",
         "partly_stated_values",
         "party_types",
+        "population_totals_by_axis",
         "shape_slot_defaults",
+        "side_classes",
         "slot_plain_names",
         "source_code_provenances",
         "source_codes",
@@ -523,6 +528,26 @@ class CodeIndex:
                 if party.totals in self.totals_by_group:
                     raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
                 self.totals_by_group[party.totals] = party
+        side_classes: dict[tuple[RoleAxis, str], set[PartyClass]] = defaultdict(set)
+        population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
+        for party in self.parties.values():
+            if party.kind != "total" and party.party_class is not None:
+                for axis in party.axes:
+                    for dataset in party.datasets:
+                        side_classes[axis, dataset].add(party.party_class)
+            elif any(POPULATION_CLASS in marker.covers for marker in party.whole):
+                population_totals_by_axis[party.axes[0]].append(party.dcid)
+        self.side_classes: dict[tuple[RoleAxis, str], frozenset[PartyClass]] = {
+            side: frozenset(classes) for side, classes in side_classes.items()
+        }
+        """The classes of party, totals aside, each dataset publishes on each
+        flow axis, by `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a
+        party published on both axes counts on each in every dataset that publishes it."""
+        self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
+            axis: tuple(sorted(dcids)) for axis, dcids in population_totals_by_axis.items()
+        }
+        """The totals some dataset marks as covering the `official` class (`PartyRow.whole`),
+        by the one axis each stands on, sorted by dcid."""
         self.enrichment_digest = _enrichment_digest(self.parties.values())
         """SHA-256 over the sorted `(dcid, kind, party_class, whole markers)` rows of `parties`,
         the part of the index the `{role}_party_kind`, `{role}_party_class` and

@@ -442,6 +442,10 @@ classes (`WholeMarker.covers`)."""
 
 PARTY_CLASSES: frozenset[str] = frozenset(get_args(PartyClass))
 
+POPULATION_CLASS: PartyClass = "official"
+"""The class every whole population covers: a side read whole holds its official parties, so a
+total whose markers cover it stands for a population (`CodeIndex.population_totals_by_axis`)."""
+
 
 @dataclass(frozen=True, slots=True)
 class WholeMarker:
