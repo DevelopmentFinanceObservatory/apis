@@ -39,10 +39,12 @@ from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions, ResolveState, UnLeg, UnPool
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_scope import SourceScope
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import Spec, Warning
 from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_RATING
 from tests.engine.test_ids_index_sourcing import _crs_shape
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -166,6 +168,8 @@ class _ElectLLM:
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             quantity = QuantityOutput(
                 base_words=self.base_words, denominator_index=self._denominator_index(prompt)

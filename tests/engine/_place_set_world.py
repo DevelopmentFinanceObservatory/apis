@@ -711,8 +711,10 @@ class Doors:
         operations: Sequence[Operation] = (),
     ) -> ResolveResponse:
         """The parsed door's answer to one part whose text recalls each of `stat_vars`, in
-        that order, where bind elects the first and names the rest as other readings."""
-        text = " or ".join(VARIABLE_TEXT[stat_var] for stat_var in stat_vars)
+        that order, where bind elects the first and names the rest as other readings. The
+        text is a noun naming data itself (`function_words.DATA_WORDS`), so each reading
+        reads every word of it."""
+        text = "indicators"
         self._graph.recall(text, stat_vars)
         return self._ask(
             "first_answer",

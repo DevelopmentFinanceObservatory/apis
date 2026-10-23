@@ -1477,7 +1477,7 @@ def test_a_named_part_refuses_a_code_only_another_table_holds_once_bound(
         ]
     else:
         assert vetted is None
-        assert _repair_bindings(state) is None
+        assert asyncio.run(_repair_bindings(state)) is None
         assert [b.value_dcids for b in state.bindings if b.property_dcid == "sector"] == [[sector]]
 
 
@@ -1677,7 +1677,7 @@ def _repair(
         return []
 
     monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", _dispositions)
-    assert _repair_bindings(state) is None
+    assert asyncio.run(_repair_bindings(state)) is None
     (bindings,) = disposed
     assert bindings == state.bindings
     return bindings

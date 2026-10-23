@@ -23,6 +23,7 @@ from search.engine.binders import (
     JevBinder,
     QuantityRequest,
     ShadowBinder,
+    StatedWordsRequest,
     configured_binder,
     jev_assemble,
     recording_fallbacks,
@@ -43,7 +44,7 @@ from search.engine.binders.jev_assemble import (
 )
 from search.engine.binders.jev_client import JevError
 from search.engine.binders.jev_menu import jev_menu
-from search.engine.binders.jev_request import bind_request, quantity_request
+from search.engine.binders.jev_request import bind_request, quantity_request, restated_request
 from search.engine.binders.jev_split import RequestTooLarge
 from search.engine.clients import llm as llm_client
 from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
@@ -63,6 +64,7 @@ from search.models import (
 from tests.engine._binders import FakeAsk, FixedBinder, answer_all, keep_the_pick
 from tests.engine._builders import sv_arcs
 from tests.engine._jev_golden import GOLDEN, GoldenItem, golden_paths, load_item
+from tests.engine.test_stated_words_read import _COMPLETION, _FEMALE, _LIFE_EXPECTANCY
 from tests.graph_release.support import serving_index
 from tests.statvar_members.role_grid import synthetic_index
 
@@ -252,6 +254,171 @@ def test_the_jev_bind_call_sends_the_bind_request_and_assembles_its_answers():
         "cached_tokens": 0,
         "jev_input_tokens": 120,
         "jev_output_tokens": 4,
+    }
+
+
+def test_the_bind_rates_each_nominated_word_in_its_own_request():
+    """A nominated word adds one ``unread|i|k`` noul to the bind request, by its menu
+    index and its place among the shape's words, so a word holding a space or a bar keeps
+    a clean id, and a request nominating none asks none. Jev's answers fill
+    `BindResult.stated_words`, and a word Jev left unanswered stays unrated."""
+    plain = _golden_request(_CountingStep())
+    request = dataclasses.replace(
+        plain, nominated_words=[("official",), ("development assistance", "a|b")]
+    )
+    ask = FakeAsk(_GOLDEN.stored, stated={"official": 0.2, "development assistance": 0.7})
+
+    result, _usage = asyncio.run(JevBinder(ask=ask).bind(request, llm=None))
+
+    ((_state, questions),) = ask.requests
+    _plain_state, plain_questions = bind_request(jev_menu(plain))
+    assert sorted(questions.keys() - plain_questions.keys()) == [
+        "unread|0|0",
+        "unread|1|0",
+        "unread|1|1",
+    ]
+    assert plain_questions.keys() <= questions.keys()
+    assert not [qid for qid in plain_questions if qid.startswith("unread|")]
+    assert result.stated_words == {(0, "official"): 0.2, (1, "development assistance"): 0.7}
+
+
+# "lower secondary completion rate for girls in rural Nigeria" on a completion rate the
+# bind restricted to Sex=Female, after rating "girls" as unread on it unrestricted.
+_RESTATED_VARIABLE = "lower secondary completion rate for girls in rural"
+_RESTATED_UNBOUND = SlotBindingDraft(axis="how", property_dcid="undataAge", kind="unbound")
+
+
+def _restated_request(
+    bindings: tuple[SlotBindingDraft, ...], rated: dict[str, float]
+) -> StatedWordsRequest:
+    decision = BindResult(
+        output=_ELECTS_FIRST,
+        binder="jev",
+        stated_words={(0, word): rating for word, rating in rated.items()},
+    )
+    return StatedWordsRequest(
+        variable=_RESTATED_VARIABLE,
+        shape=_COMPLETION,
+        shape_index=0,
+        words=("girls", "rural"),
+        bindings=bindings,
+        decision=decision,
+    )
+
+
+@pytest.mark.parametrize(
+    ("bindings", "rated", "asked", "ratings"),
+    [
+        ((_FEMALE, _RESTATED_UNBOUND), {"girls": 0.1, "rural": 0.8}, ("girls",), {"girls": 0.9}),
+        ((_FEMALE,), {"girls": 0.1, "rural": 0.2}, ("girls", "rural"), {"girls": 0.9}),
+        ((_RESTATED_UNBOUND,), {"girls": 0.1, "rural": 0.8}, (), {"girls": 0.1}),
+        ((_FEMALE,), {"girls": 0.6, "rural": 0.8}, (), {"girls": 0.6}),
+    ],
+    ids=["bound-value", "unanswered-word", "no-bound-value", "above-the-bar"],
+)
+def test_jev_rates_its_unread_words_again_on_the_bound_values(bindings, rated, asked, ratings):
+    """A word the bind rated below `stated_word_bar` is asked again in one request of its
+    own once the bindings restrict the shape to a value, quoting the shape as restricted to
+    that value with its slot no longer selectable, and that answer decides; a word it
+    leaves unanswered is unrated. A word at or above the bar, and a shape with no bound
+    value, keep the bind's rating and send no request."""
+    ask = FakeAsk({}, stated={"girls": 0.9})
+    request = _restated_request(bindings, rated)
+
+    got, usage = asyncio.run(JevBinder(ask=ask).rate_words_stated(request, llm=None))
+
+    kept = {word: rating for word, rating in rated.items() if word not in asked}
+    assert got == kept | {word: ratings[word] for word in asked if word in ratings}
+    if not asked:
+        assert (ask.requests, usage) == ([], None)
+        return
+    ((state, questions),) = ask.requests
+    assert (state, questions) == restated_request(
+        _RESTATED_VARIABLE, _COMPLETION, 0, asked, bindings=bindings
+    )
+    assert list(questions) == [f"unread|0|{k}" for k in range(len(asked))]
+    quoted = questions["unread|0|0"]["instructions"]
+    assert "restricted to Female" in quoted
+    assert "parts selectable by Age" in quoted
+    assert "Sex" not in quoted
+    assert usage == JevCall(ms=0, input_tokens=120, output_tokens=4).usage
+
+
+@pytest.mark.parametrize(
+    ("bindings", "quoted", "absent"),
+    [
+        ((), "its definition fixes Age=years 0", "restricted to"),
+        (
+            (
+                SlotBindingDraft(
+                    axis="how", property_dcid="age", kind="value", value_dcids=["Years60"]
+                ),
+            ),
+            "restricted to Years 60",
+            "its definition fixes",
+        ),
+    ],
+    ids=["unbound", "bound-elsewhere"],
+)
+def test_the_stated_word_questions_quote_what_the_measure_definition_fixes(
+    bindings, quoted, absent
+):
+    """The ``unread|`` questions of the bind and of the restated request quote the values the
+    measure's definition fixes on properties the bindings leave unrestricted, as Gemini's
+    prompt does (`stated_words_read.implied_values`). The bind's other questions describe
+    the shape without them."""
+    request = BindRequest(
+        variable="life expectancy at birth",
+        shapes=[_LIFE_EXPECTANCY],
+        nominated_words=[("birth",)],
+        query_text=None,
+        apply_policies=keep_the_pick,
+    )
+    _state, asked = bind_request(jev_menu(request))
+    _state, restated = restated_request(
+        request.variable, _LIFE_EXPECTANCY, 0, ("birth",), bindings=bindings
+    )
+
+    assert "its definition fixes Age=years 0" in asked["unread|0|0"]["instructions"]
+    assert quoted in restated["unread|0|0"]["instructions"]
+    assert absent not in restated["unread|0|0"]["instructions"]
+    assert "definition" not in asked["m|0"]["instructions"]
+
+
+def test_a_failed_restated_request_rates_no_word_and_logs_its_own_line(caplog):
+    """Behind the fallback binder, the request asking the words again logs a ``call=stated``
+    ``binder_part`` line. A failed one falls back on nothing: Gemini is not asked, its line
+    names no fallback, and it raises `LLMInfraError`, so the caller rates no word and notes
+    the read as lost."""
+    caplog.set_level(logging.INFO, logger="search.engine.binders.part_log")
+    request = _restated_request((_FEMALE,), {"girls": 0.1, "rural": 0.8})
+    gemini = _GeminiDouble(_ELECTS_FIRST)
+
+    answered = FallbackBinder(
+        primary=JevBinder(ask=FakeAsk(stated={"girls": 0.9})), fallback=gemini
+    )
+    ratings, _usage = asyncio.run(answered.rate_words_stated(request, llm=None))
+    failing = FallbackBinder(
+        primary=JevBinder(ask=FakeAsk(fail=JevError(None, "timeout"))), fallback=gemini
+    )
+    with pytest.raises(LLMInfraError):
+        asyncio.run(failing.rate_words_stated(request, llm=None))
+
+    assert ratings == {"girls": 0.9, "rural": 0.8}
+    assert gemini.requests == []
+    answer, failure = (_fields(line) for line in _binder_parts(caplog))
+    assert {k: answer[k] for k in ("call", "served_by", "fallback", "jev_error", "questions")} == {
+        "call": "stated",
+        "served_by": "jev",
+        "fallback": "-",
+        "jev_error": "-",
+        "questions": "1",
+    }
+    assert {k: failure[k] for k in ("call", "served_by", "fallback", "jev_error")} == {
+        "call": "stated",
+        "served_by": "-",
+        "fallback": "-",
+        "jev_error": "timeout",
     }
 
 

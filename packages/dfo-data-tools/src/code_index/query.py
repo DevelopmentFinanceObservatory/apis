@@ -352,7 +352,7 @@ class CandidateCodes:
     codes: tuple[str, ...]
 
 
-def _fold(word: str) -> str:
+def fold_word(word: str) -> str:
     """`word` casefolded, less one trailing "s" when it is longer than two letters.
     Candidate retrieval applies this one plural allowance to query words and code text
     alike."""
@@ -664,8 +664,8 @@ class CodeIndex:
         for row in self.codes:
             for text in (row.label, *row.synonyms):
                 for word in word_tokens(text):
-                    codes_by_word[_fold(word.text)][row.dcid] = None
-                    words_by_code[row.dcid].add(_fold(word.text))
+                    codes_by_word[fold_word(word.text)][row.dcid] = None
+                    words_by_code[row.dcid].add(fold_word(word.text))
         self._codes_by_word = {word: tuple(dcids) for word, dcids in codes_by_word.items()}
         self._words_by_code = {dcid: frozenset(words) for dcid, words in words_by_code.items()}
 
@@ -796,9 +796,9 @@ class CodeIndex:
         shares no CRS purpose's text, while "contraceptive" shares 13030's synonym
         "contraceptive delivery".
         """
-        asked = {_fold(word) for word in words}
+        asked = {fold_word(word) for word in words}
         shared: dict[str, set[str]] = defaultdict(set)
-        for word in asked | {_fold(word) for word in context}:
+        for word in asked | {fold_word(word) for word in context}:
             for dcid in self._codes_by_word.get(word, ()):
                 if self._codes_by_dcid[dcid].code_system in code_systems:
                     shared[dcid].add(word)
@@ -831,7 +831,7 @@ class CodeIndex:
         as `candidate_codes` compares them: casefolded, less one trailing "s" on a word
         longer than two letters, and returned in that form. Empty for an unknown code."""
         held = self._words_by_code.get(dcid, frozenset())
-        return frozenset(folded for word in words if (folded := _fold(word)) in held)
+        return frozenset(folded for word in words if (folded := fold_word(word)) in held)
 
     # --- Source codes ---
 

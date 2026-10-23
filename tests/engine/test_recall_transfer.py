@@ -56,13 +56,23 @@ _TOPIC_BASE = "dc/topic/sdg_4.6"
 _FACET = {"earliestDate": "2020", "latestDate": "2022", "obsCount": 3}
 
 
+# The graph's names of the literacy series, which the coverage rule reads the variable by.
+_NAMES = {
+    _SDG: "Literacy rate, by sex",
+    _WHO: "Literacy rate",
+    _SDG_FEMALE: "Literacy rate, female",
+    _BASE: "Literacy rate, by sex",
+    _BASE_VARIANT: "Literacy rate, female",
+}
+
+
 def _sv_node(dcid: str, *, population_type: str, meas_prop: str) -> dict:
     return {
         "label": dcid,
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": dcid}]},
+            "name": {"nodes": [{"value": _NAMES.get(dcid, dcid)}]},
             "populationType": {"nodes": [{"dcid": population_type}]},
             "measuredProperty": {"nodes": [{"dcid": meas_prop}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},

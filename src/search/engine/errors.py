@@ -170,7 +170,8 @@ class DeclaredDefaultUnsupportedError(EngineInputError):
     of the part is sent (the pipeline holds sentences until the answer stands), as the
     registered `facet_binding_unsupported` refusal (501, not retryable): a facet axis this
     deployment recognises but cannot honour. The fan-out re-raises it rather than degrade it
-    to no data.
+    to no data. A part whose elected answer leaves terms unmet answers nothing on the
+    series, so it refuses `qualifier_not_bound` instead (`region.pipeline._run_phases`).
     """
 
     def __init__(self, message: str) -> None:
@@ -186,7 +187,9 @@ class DefaultScopeIndexSourcedError(Exception):
     covered. Raised where the read's StatVars are chosen
     (`region.place_context.default_scope_stat_vars`) for the shape being answered, the
     elected shape or the shape a resubmit posts, which refuses the request as the unhandled
-    default (500 `internal_error`) before any member meets an unread StatVar. An alternate
+    default (500 `internal_error`) before any member meets an unread StatVar, unless the
+    elected answer leaves terms unmet and the part refuses `qualifier_not_bound` instead
+    (`region.pipeline._run_phases`). An alternate
     in that position is dropped from the offer, and the answer proceeds without it
     (`region.phase_place_materialise._bind_alternates`).
     """

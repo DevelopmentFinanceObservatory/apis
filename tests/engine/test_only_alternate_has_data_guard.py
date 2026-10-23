@@ -21,6 +21,7 @@ from search.engine.region.codes import ELECTED_SHAPE_NO_DATA, ONLY_ALTERNATE_HAS
 from search.engine.region.state import _elected_stat_vars
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import GraphRef
 from series_coverage.schema import RoleNames
 from tests.engine._binders import ReplyBinder, nominee_ratings
@@ -31,7 +32,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _ELECTED_SV = "Count_Person_HighAltitude"
@@ -85,6 +86,8 @@ class _GuardBindLLM:
         self._bindings = list(bindings)
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
@@ -119,11 +122,11 @@ def _run(
     graph = FakeGraph(nodes=nodes, detect=detect, resolve={"Kenya": "country/KEN"}, obs=obs)
     return asyncio.run(
         resolve_variable(
-            "high altitude population or health spending in Kenya",
+            "indicators in Kenya",
             entities=["Kenya"],
             date_request=None,
-            detect_query="high altitude population or health spending in Kenya",
-            role_query="high altitude population or health spending in Kenya",
+            detect_query="indicators in Kenya",
+            role_query="indicators in Kenya",
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
@@ -159,7 +162,7 @@ _ONE_ALT_NODES: dict = {
 # Standard SV ranks first (higher retrieval score) -- the model must elect
 # the data-empty shape despite this.
 _ONE_ALT_DETECT = {
-    "high altitude population or health spending in Kenya": {
+    "indicators in Kenya": {
         "svs": [_STD_SV, _ELECTED_SV],
         "cosine_scores": [0.85, 0.82],
     },
@@ -217,7 +220,9 @@ def test_one_alt_survivor_carries_only_alternate_has_data_gate():
     assert result.gate == ONLY_ALTERNATE_HAS_DATA
 
 
-@pytest.mark.parametrize("unplaced", [[], ["altitude"]], ids=["every-word-placed", "unplaced-word"])
+@pytest.mark.parametrize(
+    "unplaced", [[], ["indicators"]], ids=["every-word-placed", "unplaced-word"]
+)
 def test_one_alt_survivor_departs_each_word_its_trace_leaves_unmet(unplaced):
     """The refusal names no term, so each word the alternate's trace leaves unmet departs
     once, judged on the alternate itself."""
@@ -302,6 +307,9 @@ _ROLE_GUARD_OBS = {
 }
 
 
+_DENOMINATOR_NOUNS = {"GrossNationalIncome": "GNI", "GrossDomesticProduction": "GDP"}
+
+
 def _run_role_bearing_one_alt_scenario(
     aid_denominator: str = "GrossNationalIncome", *, rated: Sequence[int] = ()
 ):
@@ -314,7 +322,7 @@ def _run_role_bearing_one_alt_scenario(
             _AID_SV: {
                 **_ROLE_NODE[_AID_SV],
                 "arcs": _std_arcs(
-                    "Aid received as a fraction of GNI",
+                    f"Aid received as a fraction of {_DENOMINATOR_NOUNS[aid_denominator]}",
                     pop_type="EconomicActivity",
                     meas_prop="amount",
                     denom=aid_denominator,
@@ -484,7 +492,7 @@ _TWO_ALT_NODES: dict = {
     },
 }
 _TWO_ALT_DETECT = {
-    "high altitude population or health spending in Kenya": {
+    "indicators in Kenya": {
         "svs": [_STD_SV, _STD_SV_2, _ELECTED_SV],
         "cosine_scores": [0.86, 0.85, 0.82],
     },

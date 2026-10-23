@@ -669,6 +669,7 @@ _KEY_SCOPE = scope_document(
     max_candidates=6,
     seam_default=True,
     qualifier_coverage="log",
+    stated_word_bar=0.5,
     build_commit="commit-a",
     binder="gemini",
     model="model-a",

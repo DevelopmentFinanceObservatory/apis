@@ -7,12 +7,13 @@ from __future__ import annotations
 import pytest
 
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import GeminiBinder
 from search.models import (
     CandidatesPart,
     DefinitePart,
     NoDataPart,
 )
-from tests.engine._binders import FixedBindReplyLLM, nominee_ratings
+from tests.engine._binders import FixedBindReplyLLM, RatingBinder, nominee_ratings
 from tests.engine._harness import make_request as _req
 from tests.engine._harness import offline_resolve
 from tests.fixtures import FakeGraph
@@ -187,15 +188,18 @@ class TestStd04bBirthsEthiopia:
 class TestStd05Under5ChildMortality:
     """std-05: 'under-5 child mortality rate', no place. Bind elects the under-five mortality
     rate and nominates the under-five death count at 0.8 of its pick, below the nomination
-    bar, so the rate answers alone."""
+    bar, so the rate answers alone. No reader reads "child" on the rate, which the binder
+    rates stating it, as a rate on Age=Under 5 does."""
 
     _QUERY = "under-5 child mortality rate"
 
     def test_the_rate_answers_without_the_count(self):
-        inner = offline_resolve(_req(self._QUERY)).parts[0]
+        binder = RatingBinder(GeminiBinder(), {"child": 1.0})
+        inner = offline_resolve(_req(self._QUERY), binder=binder).parts[0]
         assert isinstance(inner, DefinitePart)
         assert inner.spec.resolved.shape.label == "Under-five mortality rate [under 5 years old]"
         assert inner.spec.resolved.entities == []
+        assert [request.words for request in binder.requests] == [("child",)]
 
 
 # ---------------------------------------------------------------------------
