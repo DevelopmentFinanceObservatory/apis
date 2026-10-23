@@ -87,6 +87,7 @@ class EntityCounts(ResponseModel):
     model_config = ConfigDict(title="GraphAvailabilityEntityCounts")
 
     parties: int = Field(description="entities with figures of their own")
+    private: int = Field(description="the parties whose class is private, a subset of parties")
     totals: int = Field(description="entities that hold other entities' figures")
     residual: int = Field(description="entities holding figures no other entity does")
     unclassified: int = Field(description="entities the code index does not list")
@@ -696,6 +697,7 @@ def _entities(fold: _Fold, held: Iterable[_Held]) -> dict[str, EntityCounts] | N
 def _entity_counts(counts: PartyCounts) -> EntityCounts:
     return EntityCounts(
         parties=counts.parties,
+        private=counts.private,
         totals=counts.totals,
         residual=counts.residual,
         unclassified=counts.unclassified,

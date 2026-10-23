@@ -93,7 +93,7 @@ from datasets_api.output_options import derive_output_options
 from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
     DerivedVersion,
-    artifact_rendering_key,
+    artifact_rendering_keys,
     is_incomplete_rendering,
     is_statistics_rendering,
     refuse_pivot_over_stored_caps,
@@ -129,6 +129,7 @@ from datasets_api.versions import (
     Trigger,
     VersionLister,
     VersionRecordWriter,
+    link_digest,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.problem import Refusal
@@ -329,7 +330,7 @@ def load_stored(
     content_version: str,
     deps: DefinitionDeps,
     include_artifacts: bool,
-    rendering_key: str | None = None,
+    rendering_keys: tuple[str, ...] | None = None,
     revoked_under: Sequence[str] = (),
 ) -> Manifest:
     """Load a stored version of the served definition through the snapshot loaders.
@@ -340,10 +341,13 @@ def load_stored(
     revocations under it, and a request naming a posted id passes that id, so it honours
     both.
     `include_artifacts=True` uses `read_snapshot_manifest`, which lists servable artifacts under
-    their download links and refuses an expired version. An optional `rendering_key` narrows
+    their download links and refuses an expired version. Optional `rendering_keys` narrow
     artifacts to the requested rendering. `False` uses `read_snapshot_currency`, which returns
     no artifacts. A fresh head relies on this as its only existence check. Both time under
     `snapshot_state`.
+
+    Its artifacts hold the party-kind files linked under the code index's digest only, each
+    carrying it as `enrichment_stamp` (`read_snapshot_manifest`).
     """
     with phase("snapshot_state"):
         if not include_artifacts:
@@ -363,8 +367,9 @@ def load_stored(
             snapshot_reader=deps.snapshot_reader,
             now=deps.now,
             settings=deps.settings,
-            rendering_key=rendering_key,
+            rendering_keys=rendering_keys,
             revoked_under=revoked_under,
+            enrichment_digest=deps.code_index.enrichment_digest,
         )
 
 
@@ -462,7 +467,11 @@ def _record_head_hit_derived(
         return derived_manifest
     if created:
         return with_linked_artifacts(
-            derived_manifest, subject_id=subject_id, locations=state.locations, now=deps.now()
+            derived_manifest,
+            subject_id=subject_id,
+            locations=state.locations,
+            now=deps.now(),
+            enrichment_digest=deps.code_index.enrichment_digest,
         )
     return persisted_response(
         subject_id=subject_id,
@@ -471,6 +480,7 @@ def _record_head_hit_derived(
         served=derived_manifest,
         call_warnings=call_warnings,
         now=deps.now(),
+        enrichment_digest=deps.code_index.enrichment_digest,
     )
 
 
@@ -717,6 +727,7 @@ def _render_frame(
             artifact_digest=artifact.artifact_digest,
             rendering=artifact.rendering,
             media_type=artifact.media_type,
+            enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
         ),
         trace_id=trace_id,
     )
@@ -732,6 +743,7 @@ def _render_frame(
         subject_id=subject_id,
         locations=deps.snapshot_reader.read_artifact_locations(subject_id, content_version),
         now=deps.now(),
+        enrichment_digest=deps.code_index.enrichment_digest,
     )
     return linked_manifest.model_copy(
         update={"artifacts": [*linked_manifest.artifacts, *manifest.artifacts]}
@@ -894,13 +906,19 @@ def head_rendering(
     as taken under that permit. A `plan` argument is the `plan_stored_render` decision the
     caller made from this version, so the render does not make it again.
     """
-    key = artifact_rendering_key(options, site=deps.settings.site) if options is not None else None
+    keys = (
+        artifact_rendering_keys(
+            options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
+        )
+        if options is not None
+        else None
+    )
     manifest = load_stored(
         subject_id=subject_id,
         content_version=content_version,
         deps=deps,
         include_artifacts=options is not None,
-        rendering_key=key,
+        rendering_keys=keys,
         revoked_under=revoked_under,
     )
     # The snapshot loader retains `series-statistics/1` even when the requested rendering is

@@ -6,7 +6,7 @@ This module has no graph or file-I/O imports.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, get_args
 
@@ -434,6 +434,36 @@ country", `DACAfricaUnallocated`).
 
 PARTY_KINDS: frozenset[str] = frozenset(get_args(PartyKind))
 
+PartyClass = Literal["official", "private", "residual"]
+"""Whose money a party's figures count (`PartyRow.party_class`). A `private` party is a
+private provider of development finance, such as a foundation, an `official` party is any
+other party, and a `residual` holds figures no other party does. A whole total covers
+classes (`WholeMarker.covers`)."""
+
+PARTY_CLASSES: frozenset[str] = frozenset(get_args(PartyClass))
+
+
+@dataclass(frozen=True, slots=True)
+class WholeMarker:
+    """What a total holds in one dataset: every party of the classes in `covers` on its axis.
+
+    `dataset` is a provenance among `PartyRow.datasets`, and `covers` a non-empty, sorted
+    subset of `PartyClass`. `years` is the first and last year, inclusive, in which the total
+    holds that population in `dataset`, or `None` for every year the dataset publishes it.
+    "All Recipients, Total" (`DACAllRecipients`) covers every `official` and `residual`
+    recipient in DAC2A from the year its composition check starts, and in DAC2B it holds
+    nothing of the kind, so it has no marker there.
+    """
+
+    dataset: str
+    covers: tuple[PartyClass, ...]
+    years: tuple[int, int] | None = None
+
+
+def covered_class(covers: Collection[PartyClass]) -> PartyClass | None:
+    """The one class in `covers`, or `None` when they name more than one."""
+    return next(iter(covers)) if len(set(covers)) == 1 else None
+
 
 def party_kind(
     types: Iterable[str], type_kinds: Mapping[str, PartyKind | None]
@@ -473,16 +503,56 @@ class PartyRow:
     `datasets` are the provenances of the declared and listed datasets that publish the
     party, and `axes` the flow axes they publish it on (`origin` as a donor, `destination` as a
     recipient), each sorted.
+
+    `party_class` is `private` for a party the export's `PRIVATE_PROVIDERS` lists and
+    `official` for every other party, on every axis, and `residual` for a residual. A total
+    takes the one class its whole markers cover (`covered_class`), `None` when they cover more
+    than one or it has no marker.
+
+    `whole` is empty for every row but a whole total: a `total` that holds the whole
+    population of some classes on its one axis in the datasets it carries a marker for
+    (`WholeMarker`), sorted by dataset, one per dataset. "Official Donors, Total"
+    (`DACOfficialDonors`) covers every `official` donor in DAC2A and DAC2B. A dataset with no
+    marker reads the party as an ordinary `total`. The kind stays `total`, so a reader of
+    `kind == "total"` stays correct.
     """
 
     dcid: str
     kind: PartyKind
+    party_class: PartyClass | None = None
     totals: str | None = None
     residuals: tuple[str, ...] = ()
     sums_members: bool = True
     label: str | None = None
     datasets: tuple[str, ...] = ()
     axes: tuple[RoleAxis, ...] = ()
+    whole: tuple[WholeMarker, ...] = ()
+
+    def marker(self, dataset: str) -> WholeMarker | None:
+        """The marker for `dataset`, or `None` where the party is an ordinary total."""
+        return next((marker for marker in self.whole if marker.dataset == dataset), None)
+
+
+def marked_datasets(parties: Iterable[PartyRow]) -> frozenset[str]:
+    """The datasets in which every one of `parties` carries a whole marker. Empty for no party."""
+    sets = [frozenset(marker.dataset for marker in party.whole) for party in parties]
+    return frozenset.intersection(*sets) if sets else frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class WholeTotalSet:
+    """Whole totals read as one population under a phrase.
+
+    `phrase` is the words that name the union ("all donors including private"), `axis` the
+    flow axis it stands on, and `members` the dcids of the whole totals it joins, which
+    are each marked in at least one dataset where all are marked
+    (`marked_datasets`), and cover disjoint classes there, so their sum counts no
+    party twice (`code_index.loader._check_whole_totals`).
+    """
+
+    phrase: str
+    axis: RoleAxis
+    members: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

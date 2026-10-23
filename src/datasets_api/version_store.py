@@ -86,6 +86,7 @@ from datasets_api.manifest import version_body
 from datasets_api.manifest_models import year_coverage_counted
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
+    NO_PARTY_ROLE,
     RENDERED_FACT_FIELDS,
     ArtifactRecord,
     DescriptionDiverges,
@@ -100,6 +101,8 @@ from datasets_api.versions import (
     VersionsPageKey,
     VersionWrite,
     WrittenVersion,
+    carries_party_kind,
+    holds_party_role,
     log_description_build_failure,
 )
 from description.facts import DescriptionRecord
@@ -116,6 +119,35 @@ def utc_now() -> datetime:
 def rendering_key(rendering: Mapping[str, object]) -> str:
     canonical = json.dumps(dict(rendering), sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def enriched_rendering_key(rendering: Mapping[str, object], enrichment_digest: str | None) -> str:
+    """The key a file of `rendering` is linked under when it was rendered under
+    `enrichment_digest` (`versions.link_digest`).
+
+    A rendering that `carries_party_kind` is keyed by the rendering and the digest, so a change
+    to a party's kind or whole markers leaves its old link matching no request, and the next
+    request re-renders. Any other rendering, and any call with no digest, keys as
+    `rendering_key` does. The digest salts the key only. `rendering` itself, which a caller
+    selects an artifact by, never holds it.
+    """
+    if enrichment_digest is None or not carries_party_kind(rendering):
+        return rendering_key(rendering)
+    return rendering_key({"rendering": dict(rendering), "enrichment_digest": enrichment_digest})
+
+
+def current_rendering_keys(
+    rendering: Mapping[str, object], enrichment_digest: str | None
+) -> tuple[str, ...]:
+    """The keys a current file of `rendering` can be linked under while the code index has
+    `enrichment_digest`: salted with the digest for a frame with a party role, and with
+    `NO_PARTY_ROLE` for one without. A lookup needs no fact about the frame, since a file is
+    linked under one of the two only. A rendering `carries_party_kind` rejects, and a call
+    with no digest, have the one unsalted key."""
+    key = enriched_rendering_key(rendering, enrichment_digest)
+    if enrichment_digest is None or not carries_party_kind(rendering):
+        return (key,)
+    return (key, enriched_rendering_key(rendering, NO_PARTY_ROLE))
 
 
 def recorded_frame_sha256(
@@ -192,7 +224,7 @@ def _insert_artifact(
             subject_id,
             content_version,
             artifact.artifact_digest,
-            rendering_key(artifact.rendering),
+            enriched_rendering_key(artifact.rendering, artifact.enrichment_digest),
             dict(artifact.rendering),
             artifact.media_type,
             now - WORKING_TIER_RETENTION,
@@ -500,7 +532,11 @@ class LiveVersionRecordWriter:
                 linked = tx.fetch_one(
                     "SELECT artifact_digest FROM datasets.version_artifact "
                     "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
-                    (subject_id, content_version, rendering_key(artifact.rendering)),
+                    (
+                        subject_id,
+                        content_version,
+                        enriched_rendering_key(artifact.rendering, artifact.enrichment_digest),
+                    ),
                 )
         except Exception as exc:
             failure = (
@@ -559,7 +595,8 @@ class LiveVersionRecordWriter:
 
 
 _LINKED_RENDERINGS_SQL = (
-    "SELECT va.content_version AS content_version, va.rendering AS rendering "
+    "SELECT va.content_version AS content_version, va.rendering AS rendering, "
+    "va.rendering_key AS rendering_key "
     "FROM datasets.version_artifact va "
     "JOIN datasets.artifact_inventory ai "
     "ON ai.artifact_digest = va.artifact_digest "
@@ -571,29 +608,60 @@ _LINKED_RENDERINGS_SQL = (
 )
 
 
+# The names of the role columns a version's stored output profile lists, as a JSON array, and
+# NULL for a version stored without one. Reading only these keeps the listing independent of the
+# rest of the profile's shape.
+_ROLE_COLUMNS_SQL = (
+    "jsonb_path_query_array(output_profile, '$.columns[*] ? (@.kind == \"role\").name') "
+    "AS role_columns"
+)
+
+
 def _placeholders(count: int) -> str:
     return ", ".join(["%s"] * count)
 
 
 def _listed_versions(
-    rows: Sequence[Mapping[str, object]], linked: Sequence[Mapping[str, object]]
+    rows: Sequence[Mapping[str, object]],
+    linked: Sequence[Mapping[str, object]],
+    role_columns: Mapping[str, Sequence[str]],
 ) -> list[ListedVersion]:
     """The versions `rows` hold, in their order, each with the renderings `linked` holds for
-    its content version, in theirs."""
+    its content version, in theirs, and whether its frame holds a party role, read from the
+    role columns `role_columns` holds for it (`_listed_holds_party_role`)."""
     renderings: dict[str, list[Mapping[str, object]]] = {}
+    party_free: set[str] = set()
     for link in linked:
-        renderings.setdefault(cast(str, link["content_version"]), []).append(
-            cast("Mapping[str, object]", link["rendering"])
-        )
+        content_version = cast(str, link["content_version"])
+        rendering = cast("Mapping[str, object]", link["rendering"])
+        renderings.setdefault(content_version, []).append(rendering)
+        if carries_party_kind(rendering) and link["rendering_key"] == enriched_rendering_key(
+            rendering, NO_PARTY_ROLE
+        ):
+            party_free.add(content_version)
     return [
         ListedVersion(
-            content_version=cast(str, row["content_version"]),
+            content_version=(content_version := cast(str, row["content_version"])),
             base_content_version=cast("str | None", row["base_content_version"]),
             recorded_at=cast(datetime, row["recorded_at"]),
-            renderings=tuple(renderings.get(cast(str, row["content_version"]), ())),
+            renderings=tuple(renderings.get(content_version, ())),
+            holds_party_role=_listed_holds_party_role(
+                role_columns.get(content_version), party_free_link=content_version in party_free
+            ),
         )
         for row in rows
     ]
+
+
+def _listed_holds_party_role(
+    role_columns: Sequence[str] | None, *, party_free_link: bool
+) -> bool | None:
+    """`ListedVersion.holds_party_role` of a version whose stored output profile names
+    `role_columns` (`_ROLE_COLUMNS_SQL`), `None` when it stored none, and which links a file
+    that `carries_party_kind` under `NO_PARTY_ROLE` when `party_free_link`."""
+    if role_columns is not None:
+        return holds_party_role(role_columns)
+    return False if party_free_link else None
 
 
 def _servable_page_query(
@@ -655,7 +723,8 @@ class LiveVersionLister:
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(
-                    "SELECT content_version, base_content_version, recorded_at "
+                    "SELECT content_version, base_content_version, recorded_at, "
+                    f"{_ROLE_COLUMNS_SQL} "
                     "FROM datasets.version_record WHERE subject_id = %s "
                     # `content_version` orders versions recorded at one instant.
                     "ORDER BY recorded_at DESC, content_version DESC",
@@ -669,7 +738,7 @@ class LiveVersionLister:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return _listed_versions(rows, linked)
+        return _listed_versions(rows, linked, _stored_role_columns(rows))
 
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
@@ -686,6 +755,7 @@ class LiveVersionLister:
         sqlstate: str | None = None
         rows: list[Mapping[str, object]] = []
         linked: list[Mapping[str, object]] = []
+        profiles: list[Mapping[str, object]] = []
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(*_servable_page_query(subjects, after=after, limit=limit))
@@ -700,12 +770,30 @@ class LiveVersionLister:
                         ),
                         (*subjects, *page),
                     )
+                    profiles = tx.fetch_all(
+                        f"SELECT content_version, {_ROLE_COLUMNS_SQL} "
+                        "FROM datasets.version_record "
+                        f"WHERE subject_id IN ({in_subjects}) "
+                        f"AND content_version IN ({_placeholders(len(page))}) "
+                        "AND output_profile IS NOT NULL",
+                        (*subjects, *page),
+                    )
         except Exception as exc:
             failure = f"listing versions subject_ids {subjects!r} failed: {safe_diagnostics(exc)}"
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return _listed_versions(rows, linked)
+        return _listed_versions(rows, linked, _stored_role_columns(profiles))
+
+
+def _stored_role_columns(rows: Sequence[Mapping[str, object]]) -> dict[str, Sequence[str]]:
+    """The role columns of the output profile each of `rows` stored, by content version. A
+    version recorded under several subject ids stores one frame, so one profile."""
+    return {
+        cast(str, row["content_version"]): cast("Sequence[str]", row["role_columns"])
+        for row in rows
+        if row["role_columns"] is not None
+    }
 
 
 _HEAD_COLUMNS = "content_version, confirmed_at, materialised_at, materialisation_id, dependencies"

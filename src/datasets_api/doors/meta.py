@@ -12,9 +12,9 @@ worker classified, and the body carries its detail, pointer, alternatives, issue
 ceiling fields and cause entities, as `GET /api/datasets/{id}` renders them for
 the same failure.
 A done operation returns the mint manifest narrowed to the rendering its request
-posted, each artifact under its stable download link. The rendering key is
-`artifact_rendering_key` of the row's stored `options` under this service's site
-settings, the key the synchronous definition door narrows by, so the poll lists
+posted, each artifact under its stable download link. The rendering keys are
+`artifact_rendering_keys` of the row's stored `options` under this service's site
+settings, the keys the synchronous definition door narrows by, so the poll lists
 that rendering's artifact plus statistics artifacts, as the synchronous mint does.
 Its `trace` carries `served_from: materialise` and the `confirmed_at` the row
 recorded at completion, the currency pair a synchronous mint that materialised
@@ -93,7 +93,7 @@ from datasets_api.operations.task_client import (
     TaskClient,
 )
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import artifact_rendering_key, is_statistics_rendering, rendition_token
+from datasets_api.render import artifact_rendering_keys, is_statistics_rendering, rendition_token
 from datasets_api.retention import with_retention
 from datasets_api.schema import (
     OperationEnvelope,
@@ -207,6 +207,7 @@ def _load_done_manifest(
     snapshot_reader: SnapshotReader,
     now: Clock,
     settings: DatasetsBuildSettings,
+    enrichment_digest: str,
 ) -> Manifest | None:
     """The done operation's manifest, narrowed to the rendering its request posted.
 
@@ -214,18 +215,19 @@ def _load_done_manifest(
     `served_from: materialise` and the `confirmed_at` the row recorded. It carries the
     version's `retention` (`datasets_api.retention`).
 
-    The rendering key is `artifact_rendering_key` of the row's `options` under this service's
-    `settings.site`, the key the synchronous definition door narrows by. The read lists that
-    rendering's artifact plus statistics artifacts. Returns `None` when it lists no artifact
-    other than statistics, as for a bundle the worker could not link, a bundle of a superseded
-    rendition or an expired working-tier artifact.
+    The rendering keys are `artifact_rendering_keys` of the row's `options` under this
+    service's `settings.site` and the serving code index's `enrichment_digest`, the keys the
+    synchronous definition door narrows by. A kind-column file linked under an older digest
+    matches none of them. The read lists that rendering's artifact plus statistics artifacts.
+    Returns `None` when it lists no artifact other than statistics, as for a bundle the worker
+    could not link, a bundle of a superseded rendition or an expired working-tier artifact.
 
     Stored options that fail `MintOptions` validation raise `ValidationError`, and snapshot
     failures raise `RuntimeError`. This route maps both to `internal_error`.
     """
     assert operation.subject_id is not None and operation.content_version is not None
     options = MintOptions.model_validate(operation.options)
-    key = artifact_rendering_key(options, site=settings.site)
+    keys = artifact_rendering_keys(options, site=settings.site, enrichment_digest=enrichment_digest)
     try:
         manifest = read_snapshot_manifest(
             id=operation.subject_id,
@@ -234,7 +236,8 @@ def _load_done_manifest(
             snapshot_reader=snapshot_reader,
             now=now,
             settings=settings,
-            rendering_key=key,
+            rendering_keys=keys,
+            enrichment_digest=enrichment_digest,
         )
     except (
         SpecNotFound,
@@ -258,11 +261,11 @@ def _load_done_manifest(
         logger.warning(
             "Datasets operations door: operation %r is done (subject_id=%r, "
             "content_version=%r) but the snapshot lists no artifact under its rendering "
-            "key %r at rendition %r",
+            "keys %r at rendition %r",
             operation.id,
             operation.subject_id,
             operation.content_version,
-            key,
+            keys,
             rendition_token(settings.site),
         )
         return None
@@ -310,6 +313,7 @@ def _resolve_operation(
     snapshot_reader: SnapshotReader | None,
     now: Clock,
     settings: DatasetsBuildSettings,
+    enrichment_digest: str,
 ) -> OperationResource:
     if operation_store is None:
         # Requests before lifespan setup follow the unknown-id path.
@@ -351,6 +355,7 @@ def _resolve_operation(
         snapshot_reader=snapshot_reader,
         now=now,
         settings=settings,
+        enrichment_digest=enrichment_digest,
     )
     if manifest is not None:
         return OperationResource(
@@ -450,6 +455,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
                     snapshot_reader=current.snapshot_reader,
                     now=current.now,
                     settings=current.settings,
+                    enrichment_digest=current.code_index.enrichment_digest,
                 ),
                 refuse=OperationBackpressure,
             )

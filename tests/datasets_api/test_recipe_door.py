@@ -221,12 +221,26 @@ def test_publish_with_a_recipe_and_no_recipe_store_refuses_before_any_write(deps
     assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
 
 
-def test_put_recipe_is_idempotent_and_readable(deps: _Deps) -> None:
+_STAMPED_ROOT = {
+    "spec_id": "spec_a",
+    "content_version": "cv_00000000000000000000000000abc123",
+    "groupby": None,
+    "enrichment_stamp": "e" * 64,
+}
+
+
+@pytest.mark.parametrize(
+    "roots",
+    [None, [_STAMPED_ROOT]],
+    ids=["root-without-enrichment-stamp", "root-with-enrichment-stamp"],
+)
+def test_put_recipe_is_idempotent_and_readable(deps: _Deps, roots: list[object] | None) -> None:
     client = deps.client()
     deps.publish(client)
+    sent = _recipe(anchor=_anchor(), **({} if roots is None else {"roots": roots}))
 
-    first = client.put(_RECIPE_PATH, json=_recipe(anchor=_anchor()), headers=_AUTH_HEADERS)
-    second = client.put(_RECIPE_PATH, json=_recipe(anchor=_anchor()), headers=_AUTH_HEADERS)
+    first = client.put(_RECIPE_PATH, json=sent, headers=_AUTH_HEADERS)
+    second = client.put(_RECIPE_PATH, json=sent, headers=_AUTH_HEADERS)
     read = client.get(_RECIPE_PATH, headers=_AUTH_HEADERS)
     replay = client.get(_REPLAY_PATH, headers=_AUTH_HEADERS)
 
@@ -239,7 +253,8 @@ def test_put_recipe_is_idempotent_and_readable(deps: _Deps) -> None:
     assert second.status_code == 200, second.text
     assert second.json()["created"] is False
     assert read.status_code == 200, read.text
-    assert read.json() == _recipe(anchor=_anchor())
+    assert read.json() == sent
+    assert deps.stored_recipe() == sent
     assert replay.status_code == 200, replay.text
     assert replay.json() == {"spec_id": _SPEC_ID, "content_version": _CONTENT_VERSION}
 

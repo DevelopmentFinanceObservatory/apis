@@ -15,7 +15,9 @@ alternates and siblings run beside the elected shape's reads, and the sentence t
 response assembled from the answer states, with the part's departures. It compares the
 projection with the one stored under the scenario's id in
 `tests/fixtures/first_answer_place_scenarios.json`, and checks every sentence that response
-carries against the sentence invariants (`_sentence_violations`).
+carries against the sentence invariants (`_sentence_violations`). The requests include every
+job the resolve submits to the pools `_EXECUTORS` names, each run to its end (`_JoinedPool`),
+whether or not the answer waited for it.
 
 `test_first_answer_keeps_its_serial_depth` runs each scenario on a virtual clock
 (`_virtual_clock.VirtualRequests`), where every request takes one tick and no wall clock is
@@ -53,6 +55,8 @@ import logging
 import os
 import threading
 from collections.abc import Callable, Coroutine, Iterator, Mapping
+from concurrent import futures
+from concurrent.futures import Executor, Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -830,6 +834,41 @@ class _ObservationEntities:
         return recorded
 
 
+class _JoinedPool:
+    """Stands in for a pool a module builds at import (`_EXECUTORS`) and runs each job on that
+    pool's threads. A job counts as running from the moment it is submitted, so the
+    cancellation at a pass's end (`pipeline._cancel_queued_reads`) never drops one still
+    queued, and `_join` waits for every job. The engine does not wait for the alternates'
+    walks and reads an answer leaves untaken, so without the join their requests land in the
+    log or not depending on the machine's load."""
+
+    def __init__(self, pool: Executor) -> None:
+        self._pool = pool
+        self.jobs: list[Future[Any]] = []
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future[Any]:
+        job: Future[Any] = Future()
+        job.set_running_or_notify_cancel()
+        self._pool.submit(fn, *args, **kwargs).add_done_callback(
+            functools.partial(_settle_job, job)
+        )
+        self.jobs.append(job)
+        return job
+
+
+def _join(pools: list[_JoinedPool]) -> None:
+    """Wait for every job of `pools`, those a job submits while the others run included."""
+    while pending := [job for pool in pools for job in pool.jobs if not job.done()]:
+        futures.wait(pending)
+
+
+def _settle_job(job: Future[Any], ran: Future[Any]) -> None:
+    if (error := ran.exception()) is not None:
+        job.set_exception(error)
+    else:
+        job.set_result(ran.result())
+
+
 @contextlib.contextmanager
 def _index_sourced(stat_vars: tuple[str, ...]) -> Iterator[None]:
     """Report every shape holding one of `stat_vars` as index-sourced where the engine
@@ -1157,8 +1196,12 @@ def test_first_answer_matches_its_snapshot(scenario_id, monkeypatch, search_sett
     reads = _ObservationEntities()
     for module in (phase_answer, candidate_grounding, phase_place_materialise):
         monkeypatch.setattr(module, "_observation_entities", reads.wrap(module))
+    pools = [_JoinedPool(getattr(module, name)) for module, name in _EXECUTORS]
+    for (module, name), pool in zip(_EXECUTORS, pools, strict=True):
+        monkeypatch.setattr(module, name, pool)
 
     result = _resolve(scenario)
+    _join(pools)
     answer = _projection(result)
     calls = [[name, _with_deadline_marked(arguments)] for name, arguments in log.calls]
     response = _response(result, scenario.query)

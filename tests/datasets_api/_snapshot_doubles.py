@@ -13,6 +13,7 @@ from typing import cast
 from fastapi.testclient import TestClient
 
 from artifact_store import Tier
+from code_index.shared import get_index
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import (
     Revocation,
@@ -23,7 +24,7 @@ from dataset_store.snapshot import (
 )
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
-from datasets_api.version_store import rendering_key
+from datasets_api.version_store import enriched_rendering_key
 from datasets_api.versions import (
     NULL_VERSION_RECORD_WRITER,
     ArtifactRecord,
@@ -191,7 +192,7 @@ class RecordingVersionWriter:
             self._link(record.subject_id, record.content_version, artifact)
 
     def _link(self, subject_id: str, content_version: str, artifact: ArtifactRecord) -> None:
-        key = rendering_key(artifact.rendering)
+        key = enriched_rendering_key(artifact.rendering, artifact.enrichment_digest)
         linked = self.reader.locations.setdefault((subject_id, content_version), [])
         linked[:] = [location for location in linked if location.rendering_key != key]
         stored_at = self.now()
@@ -291,11 +292,18 @@ def _location(
     rendering: Mapping[str, object] | None = None,
     media_type: str = "text/csv",
 ) -> StoredArtifactLocation:
+    rendering = dict(rendering) if rendering is not None else {"format": "csv", "bundle": False}
     return StoredArtifactLocation(
         artifact_digest=digest,
-        # Default keys are per digest. Tests with multiple renderings for one digest pass a key.
-        rendering_key=rendering_key if rendering_key is not None else f"rk:{digest}",
-        rendering=dict(rendering) if rendering is not None else {"format": "csv", "bundle": False},
+        # The default key is the one the rendering is linked under for the packaged code index,
+        # which the fake dependencies serve, so a snapshot read lists the location. Tests that
+        # narrow by key, or hold more than one location of a rendering, pass a key.
+        rendering_key=(
+            rendering_key
+            if rendering_key is not None
+            else enriched_rendering_key(rendering, get_index().enrichment_digest)
+        ),
+        rendering=rendering,
         media_type=media_type,
         size_bytes=10,
         created_at=created_at,

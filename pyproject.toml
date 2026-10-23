@@ -285,8 +285,9 @@ python = ".venv"
 # literally in a docstring about averaging three ratios. "dependant" is
 # FastAPI's own attribute name (`APIRoute.dependant`).
 # heading_words_specs.json holds graph labels verbatim ("Assitance" in a UNICEF series).
+# CHANEL Foundation is an OECD private donor (code 1645) named in code_index.declarations.
 skip = "tests/render/heading_words_specs.json"
-ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant"
+ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant,chanel"
 
 [tool.ruff]
 target-version = "py312"

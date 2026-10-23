@@ -29,6 +29,7 @@ from graph_release.dfo import (
     GRAPH_ENDPOINT,
     MissingBaseParties,
     ReleaseGraphReader,
+    _parties,
     base_party_ids,
     build_dfo_parts,
     dfo_inputs,
@@ -234,6 +235,31 @@ def test_dfo_parts_rebuild_byte_for_byte_and_join_coverage(tmp_path: Path) -> No
     }
 
 
+def test_parties_publish_each_dataset_between_its_first_and_last_year() -> None:
+    # `Donor` is on two facets of one dataset, whose spans merge, and on a facet of a second
+    # dataset with its own span. `Other` sits on a facet of a dataset the call leaves out.
+    inputs = dataclasses.replace(
+        dfo_inputs(slice_platform_parts(), SLICE_DECLARATIONS),
+        coverage=pa.table(
+            {
+                "donor": ["Donor", "Donor", "Donor", "Other", ""],
+                "recipient": ["Recipient", "Recipient", "Recipient", "Recipient", "Recipient"],
+                "facet_id": ["f1", "f2", "f3", "f4", "f1"],
+                "first_year": [2000, 1995, 2010, 1990, 1980],
+                "last_year": [2005, 2001, 2020, 2022, 2024],
+            }
+        ),
+        facet_provenances={"f1": "d/A", "f2": "d/A", "f3": "d/B", "f4": "d/C"},
+    )
+
+    parties = _parties(inputs, {"d/A", "d/B"})
+
+    assert set(parties) == {"Donor", "Recipient"}
+    assert parties["Donor"].years == {"d/A": (1995, 2005), "d/B": (2010, 2020)}
+    assert parties["Donor"].datasets == {"d/A", "d/B"}
+    assert parties["Recipient"].years == {"d/A": (1980, 2024), "d/B": (2010, 2020)}
+
+
 def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() -> None:
     base = json.loads(SLICE_BASE_PARTIES)
     del base["country/TJK"]
@@ -245,6 +271,35 @@ def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() ->
         )
 
     assert refused.value.code == "code_index_export_refused"
+
+
+def test_dfo_parts_read_a_base_partys_donor_code_from_the_mixer() -> None:
+    # The placeholder country stands in for a foundation the base graph alone holds: its listed
+    # code reaches `export_parties` only through `read_base_parties`.
+    answers = {
+        **MIXER_PARTIES,
+        PLACEHOLDER_PARTY: {**MIXER_PARTIES[PLACEHOLDER_PARTY], "dacCode": ("1601",)},
+    }
+
+    class Mixer:
+        def node_arcs_many(self, dcids, *, properties):
+            return {
+                dcid: {prop: answers[dcid].get(prop, ()) for prop in properties} for dcid in dcids
+            }
+
+    base = read_base_parties(sorted(MIXER_PARTIES), graph=Mixer())
+    declarations = dataclasses.replace(
+        SLICE_DECLARATIONS, private_providers={1601: PLACEHOLDER_PARTY}
+    )
+
+    built = build_dfo_parts(dfo_inputs(slice_platform_parts(), declarations), base)
+
+    rows = {
+        row["dcid"]: (row["kind"], row["party_class"])
+        for row in json.loads(gzip.decompress(built.code_index_blocks))["parties"]
+    }
+    assert rows[PLACEHOLDER_PARTY] == ("party", "private")
+    assert rows[UNHELD_PARTY] == ("party", "official")
 
 
 def test_dfo_parts_carry_the_ratio_base_shape_slot_defaults_and_broad_readings() -> None:

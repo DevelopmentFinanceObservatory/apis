@@ -33,19 +33,20 @@ the rendering is not one this build renders, or the render produced other bytes,
 
 `GET /api/datasets/{id}/{content_version}/file?format=&bundle=&layout=` selects one file of
 the version and answers 302 to it, signed as a link is. The query takes the closed
-namespace's `format`, `bundle` and `layout` (`layout` takes only `frame`), with the definition
-GET's defaults, and any other key refuses `request_invalid` before the version is read. The
+namespace's `format`, `bundle` and `layout` (`layout` takes only `frame`), with the defaults
+of the definition GET, and any other key refuses `request_invalid` before the version is read. The
 version reads under the same served-id, quarantine and revocation rules as a link. Its options
 are the requested ones laid over the version's own minting options
 (`recorded_rendering.recorded_minting`), so a derived version renders as itself, and a derived
 version whose files record none refuses `artifact_expired`. A file the version's snapshot lists
-under that rendering is signed in hand. Otherwise, on the work executor under a materialise
-permit and the request deadline, a file of that rendering past working retention whose bytes
-survive renews as its link's renewal does, and failing that the version renders from its stored
+under that rendering, linked under a key current for the serving code index's
+`enrichment_digest` (`version_store.current_rendering_keys`), is signed in hand. Otherwise,
+on the work executor under a materialise permit and the request deadline, a file of that
+rendering past working retention whose bytes survive renews as its link's renewal does, and failing that the version renders from its stored
 frame (`render_version_from_frame`, which a link's renewal also calls) and the redirect names
 the file the render returned. A frame past working retention renews first, and the selector
 refuses `artifact_expired` only when neither the file's bytes nor the frame's survive. The
-render's refusals answer as the definition GET's do: an `xlsx` over a sheet's limit refuses
+render's refusals answer as those of the definition GET do: an `xlsx` over a sheet's limit refuses
 `excel_limit` (422). A bundle render reads graph metadata for its citations.
 
 The read and the signing run on the read executor. Presentation reads frames in process and
@@ -56,7 +57,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
@@ -99,7 +100,8 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.query_options import QueryOptionsInvalid, parse_query_options, pointer_for_key
 from datasets_api.recorded_rendering import recorded_minting
 from datasets_api.render import (
-    artifact_rendering_key,
+    artifact_rendering,
+    artifact_rendering_keys,
     complete_rendering,
     rendering_options,
     rendition_token,
@@ -107,7 +109,7 @@ from datasets_api.render import (
     stored_frame_location,
 )
 from datasets_api.timings import door_call, phase, run_with_timings
-from datasets_api.version_store import rendering_key
+from datasets_api.version_store import current_rendering_keys, rendering_key
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
@@ -460,22 +462,31 @@ def _version_options(stored: ServableVersion, requested: MintOptions, *, id: str
     )
 
 
-def select_file(*, id: str, content_version: str, requested: MintOptions, deps: Deps) -> str | None:
+def select_file(
+    *, id: str, content_version: str, requested: MintOptions, enrichment_digest: str, deps: Deps
+) -> str | None:
     """The signed URL of the file the version links under the rendering `requested` names, or
     `None` when the version lists no servable file of that rendering and it must render first
     (`render_and_select`). The version's listable files are the ones its snapshot lists
-    (`doors.snapshot.servable_listable_locations`).
+    (`doors.snapshot.servable_listable_locations`), and a file holding party cells is the one
+    linked under a key current for `enrichment_digest`, the serving code index's.
 
     Raises `SpecNotFound`, `IdentityQuarantined`, `SnapshotNotFound`, `SnapshotRevoked` or
     `ArtifactExpired` before any signing."""
     stored, _subject_ids = _read_version(id=id, content_version=content_version, deps=deps)
-    key = artifact_rendering_key(
-        _version_options(stored, requested, id=id), site=deps.settings.site
+    keys = artifact_rendering_keys(
+        _version_options(stored, requested, id=id),
+        site=deps.settings.site,
+        enrichment_digest=enrichment_digest,
     )
     listable = servable_listable_locations(
-        stored.servable, now=deps.now(), rendition=rendition_token(deps.settings.site)
+        stored.servable,
+        now=deps.now(),
+        rendition=rendition_token(deps.settings.site),
+        # `keys` are the current keys, so matching them keeps only current links.
+        enrichment_digest=None,
     )
-    location = next((loc for loc in listable if loc.rendering_key == key), None)
+    location = next((loc for loc in listable if loc.rendering_key in keys), None)
     if location is None:
         return None
     return _signed_url(location, stored=stored, artifact_store=deps.artifact_store)
@@ -486,17 +497,18 @@ def _render_digest(
     stored: ServableVersion,
     subject_ids: tuple[str, ...],
     options: MintOptions,
-    key: str,
+    rendering: Mapping[str, object],
     deps: DefinitionDeps,
 ) -> str | None:
-    """The digest of the artifact whose complete rendering key is `key` in the manifest a render
-    of `options` from the version's stored frame gives (`render_version_from_frame`), or `None`
-    when no frame bytes are left or the render gives another version."""
+    """The digest of the artifact whose complete rendering is `rendering` in the manifest a
+    render of `options` from the version's stored frame gives (`render_version_from_frame`), or
+    `None` when no frame bytes are left or the render gives another version."""
     manifest = render_version_from_frame(
         stored=stored, subject_ids=subject_ids, options=options, deps=deps
     )
     if manifest is None or manifest.content_version != stored.version.content_version:
         return None
+    key = rendering_key(rendering)
     return next(
         (
             artifact.artifact_digest
@@ -521,13 +533,20 @@ def render_and_select(
     no frame bytes left, or a render that gives another version, refuses `ArtifactExpired`."""
     stored, subject_ids = _read_version(id=id, content_version=content_version, deps=deps)
     options = _version_options(stored, requested, id=id)
-    key = artifact_rendering_key(options, site=deps.settings.site)
-    aged = next((loc for loc in stored.aged_out if loc.rendering_key == key), None)
+    rendering = artifact_rendering(options, site=deps.settings.site)
+    # A file linked under an earlier code index's digest holds stale party cells, so only a
+    # file under a current key renews.
+    keys = current_rendering_keys(rendering, deps.code_index.enrichment_digest)
+    aged = next((loc for loc in stored.aged_out if loc.rendering_key in keys), None)
     if aged is not None and _renew(aged, deps=deps):
         digest = aged.artifact_digest
     else:
         digest = _render_digest(
-            stored=stored, subject_ids=subject_ids, options=options, key=key, deps=deps
+            stored=stored,
+            subject_ids=subject_ids,
+            options=options,
+            rendering=rendering,
+            deps=deps,
         )
     if digest is None:
         raise ArtifactExpired(id=id, content_version=content_version)
@@ -657,6 +676,8 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
                     id=id,
                     content_version=content_version,
                     requested=requested,
+                    # Read here, where the request binds its graph release.
+                    enrichment_digest=current.code_index.enrichment_digest,
                     deps=current,
                 ),
                 refuse=DownloadBackpressure,
