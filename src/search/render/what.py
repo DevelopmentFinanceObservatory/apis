@@ -113,6 +113,12 @@ def _lower_first_word(text: str) -> str:
     return f"{first.lower()} {rest}" if rest else first.lower()
 
 
+def breakdown_phrase(slot_labels: Sequence[str]) -> str:
+    """The slots an answer breaks a series down by, as a phrase inside a sentence: each
+    label's first word lowered (`_lower_first_word`), joined ("sex and age")."""
+    return _join_labels([_lower_first_word(label) for label in slot_labels])
+
+
 def _label_head(text: str) -> str:
     """Return the label head without a trailing parenthetical."""
     match = _TRAILING_PARENTHETICAL.search(text)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections.abc import Mapping
 from concurrent.futures import wait
 
 import httpx
@@ -16,6 +17,7 @@ from origin_catalogue import BASE, DFO, UN_SYSTEM
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import DetectedSV, DetectLegs, admit_legs
 from search.engine.clients.graph_client import LiveGraphClient
+from search.engine.config import settings
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import PLACE_SCOPE_DEFAULTED
 from search.engine.region.pipeline import resolve_variable
@@ -277,11 +279,15 @@ _TWO_BREAKDOWNS = {
 }
 
 
-def _resolve_two_breakdowns(bind_catalogue, *, with_data: frozenset[str]):
-    """Bind tables holding a WHO series with a highest-quintile member and two by-sex
-    members, each asserting one slot, so none is its total, and resolve "under-five
-    mortality by wealth quintile" in Kenya, naming no breakdown the binder opens. Each
-    member in `with_data` holds five points at Kenya."""
+def _two_breakdowns_graph(
+    bind_catalogue,
+    *,
+    with_data: frozenset[str],
+    members: Mapping[str, tuple[str, str, str]] = _TWO_BREAKDOWNS,
+) -> FakeGraph:
+    """Bind tables holding a WHO series of `members`, by default a highest-quintile member
+    and two by-sex members, each asserting one slot, so none is its total, and return the
+    graph in which each member in `with_data` holds five points at Kenya."""
     bind_catalogue(
         restrictive_catalogue(
             provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
@@ -292,28 +298,40 @@ def _resolve_two_breakdowns(bind_catalogue, *, with_data: frozenset[str]):
                         name=name,
                         constraints={prop: (prop, f"undata/{prop}-{value}", value)},
                     )
-                    for sv, (name, prop, value) in _TWO_BREAKDOWNS.items()
+                    for sv, (name, prop, value) in members.items()
                 }
             ),
         )
     )
     query = "under-five mortality by wealth quintile"
-    graph = FakeGraph(
+    return FakeGraph(
         nodes={
             "country/KEN": {"label": "Kenya", "type": "Country"},
             _SERIES: {"label": "Under-five mortality rate"},
+            _SEX: {"label": "Sex"},
             **{
                 sv: _member_node(name, {prop: f"undata/{prop}-{value}"})
-                for sv, (name, prop, value) in _TWO_BREAKDOWNS.items()
+                for sv, (name, prop, value) in members.items()
             },
         },
         obs={
             f"{sv}|country/KEN": [{"earliestDate": "2010", "latestDate": "2014", "obsCount": 5}]
             for sv in with_data
         },
-        detect={query: {"svs": list(_TWO_BREAKDOWNS), "cosine_scores": [0.9, 0.89, 0.88]}},
+        detect={
+            query: {
+                "svs": list(members),
+                "cosine_scores": [0.9 - 0.01 * i for i in range(len(members))],
+            }
+        },
         resolve={"Kenya": "country/KEN"},
     )
+
+
+def _resolve_two_breakdowns(graph: FakeGraph):
+    """Resolve "under-five mortality by wealth quintile" in Kenya over `graph`
+    (`_two_breakdowns_graph`), naming no breakdown the binder opens."""
+    query = "under-five mortality by wealth quintile"
     return asyncio.run(
         resolve_variable(
             query,
@@ -341,7 +359,9 @@ def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
     serves exactly the members it states: the two by-sex series and their 10 rows in Kenya
     first, as the breakdown with more members holding data there, then the quintile and
     its 5 rows, offered on the `breakdown` basis."""
-    result = _resolve_two_breakdowns(bind_catalogue, with_data=frozenset(_TWO_BREAKDOWNS))
+    result = _resolve_two_breakdowns(
+        _two_breakdowns_graph(bind_catalogue, with_data=frozenset(_TWO_BREAKDOWNS))
+    )
 
     assert result.status == "candidates"
     assert [
@@ -357,11 +377,42 @@ def test_a_series_with_no_total_and_two_breakdowns_offers_each_as_a_candidate(
     assert "family_total_absent" not in {warning.code for warning in result.warnings}
 
 
+_URBAN_MEMBER = "undata/who/MORT_U5_RATE.RESIDENCE_AREA--U"
+
+
+@pytest.mark.parametrize(
+    ("max_candidates", "truncated"),
+    [(3, False), (2, True)],
+    ids=["every_breakdown_offered", "the_cap_cuts_a_breakdown"],
+)
+def test_a_cap_below_the_breakdown_count_truncates_the_candidates(
+    bind_catalogue, monkeypatch: pytest.MonkeyPatch, max_candidates: int, truncated: bool
+) -> None:
+    """The series breaks down three ways, by sex, by wealth quintile and by residence area.
+    With `max_candidates` below that, the part offers the two breakdowns with most members
+    holding data and says it cut one."""
+    monkeypatch.setattr(settings(), "max_candidates", max_candidates)
+    members = {
+        **_TWO_BREAKDOWNS,
+        _URBAN_MEMBER: ("Under-five mortality rate [Residence area=Urban]", _RESIDENCE, "U"),
+    }
+
+    result = _resolve_two_breakdowns(
+        _two_breakdowns_graph(bind_catalogue, with_data=frozenset(members), members=members)
+    )
+
+    assert result.status == "candidates"
+    assert len(result.specs) == min(max_candidates, 3)
+    assert result.candidate_budget_truncated is truncated
+
+
 def test_one_breakdown_left_with_data_answers_by_it_with_a_departure(bind_catalogue) -> None:
     """Of the series' two breakdowns only the by-sex members hold data in Kenya, so the
     quintile candidate drops and the by-sex one answers alone, definite, warning that the
     family has no total with the `closest_match` departure."""
-    result = _resolve_two_breakdowns(bind_catalogue, with_data=frozenset({_FEMALE, _MALE}))
+    result = _resolve_two_breakdowns(
+        _two_breakdowns_graph(bind_catalogue, with_data=frozenset({_FEMALE, _MALE}))
+    )
 
     assert result.status == "definite"
     (answer,) = result.specs
@@ -372,17 +423,16 @@ def test_one_breakdown_left_with_data_answers_by_it_with_a_departure(bind_catalo
     assert [departure.code for departure in result.departure_facts.values()] == ["closest_match"]
 
 
-def test_a_series_with_no_total_and_one_breakdown_answers_by_it_with_a_departure(
-    bind_catalogue,
-) -> None:
-    """The WHO series holds two by-sex members and no total, and the question names no
-    breakdown. Its one breakdown answers definite, the identity carrying the sex slot alone,
-    and the part discloses that the family has no total and the answer shows it by sex,
-    with the `closest_match` departure."""
-    members = {
-        _FEMALE: ("Under-five mortality rate [Sex=Female]", "undata/SEX-F"),
-        _MALE: ("Under-five mortality rate [Sex=Male]", "undata/SEX-M"),
-    }
+_BY_SEX = {
+    _FEMALE: ("Under-five mortality rate [Sex=Female]", "undata/SEX-F"),
+    _MALE: ("Under-five mortality rate [Sex=Male]", "undata/SEX-M"),
+}
+
+
+def _resolve_one_breakdown(bind_catalogue):
+    """Bind tables holding a WHO series of two by-sex members and no total, each holding
+    five points at Kenya, and resolve "under-five mortality" there, naming no breakdown.
+    Return the result and the graph."""
     bind_catalogue(
         restrictive_catalogue(
             provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
@@ -391,7 +441,7 @@ def test_a_series_with_no_total_and_one_breakdown_answers_by_it_with_a_departure
                     sv: un_variable(
                         _SERIES, name=name, constraints={_SEX: ("Sex", value, value[-1])}
                     )
-                    for sv, (name, value) in members.items()
+                    for sv, (name, value) in _BY_SEX.items()
                 }
             ),
         )
@@ -402,13 +452,13 @@ def test_a_series_with_no_total_and_one_breakdown_answers_by_it_with_a_departure
             "country/KEN": {"label": "Kenya", "type": "Country"},
             _SERIES: {"label": "Under-five mortality rate"},
             _SEX: {"label": "Sex"},
-            **{sv: _member_node(name, {_SEX: value}) for sv, (name, value) in members.items()},
+            **{sv: _member_node(name, {_SEX: value}) for sv, (name, value) in _BY_SEX.items()},
         },
         obs={
             f"{sv}|country/KEN": [{"earliestDate": "2010", "latestDate": "2014", "obsCount": 5}]
-            for sv in members
+            for sv in _BY_SEX
         },
-        detect={query: {"svs": list(members), "cosine_scores": [0.9, 0.89]}},
+        detect={query: {"svs": list(_BY_SEX), "cosine_scores": [0.9, 0.89]}},
         resolve={"Kenya": "country/KEN"},
     )
 
@@ -429,11 +479,22 @@ def test_a_series_with_no_total_and_one_breakdown_answers_by_it_with_a_departure
             options=EngineOptions(deadline=None),
         )
     )
+    return result, graph
+
+
+def test_a_series_with_no_total_and_one_breakdown_answers_by_it_with_a_departure(
+    bind_catalogue,
+) -> None:
+    """The WHO series holds two by-sex members and no total, and the question names no
+    breakdown. Its one breakdown answers definite, the identity carrying the sex slot alone,
+    and the part discloses that the family has no total and the answer shows it by sex,
+    with the `closest_match` departure."""
+    result, _graph = _resolve_one_breakdown(bind_catalogue)
 
     assert result.status == "definite"
     (answer,) = result.specs
     assert [slot.property for slot in answer.definition.identity.slots] == [_SEX]
-    assert {sv.ref.ref for sv in answer.resolved.members} == set(members)
+    assert {sv.ref.ref for sv in answer.resolved.members} == set(_BY_SEX)
     assert [w.spec_id for w in result.warnings if w.code == "family_total_absent"] == [
         answer.spec_id
     ]
@@ -647,48 +708,61 @@ def test_a_resubmit_of_a_breakdown_identity_keeps_its_spec_id(bind_catalogue) ->
     assert spec.resolved.stat_vars.served_count == len(_QUINTILES)
 
 
-def test_a_breakdown_no_member_holds_alone_offers_each_breakdown_as_a_candidate(
-    bind_catalogue,
+@pytest.mark.parametrize("quintiles_hold_data", [True, False], ids=["with_data", "no_data"])
+def test_a_breakdown_no_member_holds_alone_answers_by_the_breakdown_holding_it(
+    bind_catalogue, quintiles_hold_data: bool
 ) -> None:
     """Every quintile member of the series also asserts the urban residence area, so "by
     wealth quintile" opens a slot no member asserts alone and no identity serves the
-    quintiles by themselves. The part offers the family's breakdowns instead: the quintiles
-    by residence area, which recall reached, then the two by-sex series."""
-    result = _resolve_by_wealth_quintile(
-        _hold_wealth_series(bind_catalogue, un_pass=False, urban=True)
-    )
+    quintiles by themselves. The one breakdown holding the wealth slot, the quintiles by
+    residence area, answers definite, narrower than asked, with the `closest_match`
+    departure. The by-sex series leave out the breakdown the question named, so none is
+    offered, and with no quintile holding data in Kenya the part answers no data."""
+    graph = _hold_wealth_series(bind_catalogue, un_pass=False, urban=True)
+    if not quintiles_hold_data:
+        for sv in _QUINTILES:
+            del graph._obs[f"{sv}|country/KEN"]
 
-    assert result.status == "candidates"
-    assert [
-        (
-            [slot.property for slot in spec.definition.identity.slots],
-            {sv.ref.ref for sv in spec.resolved.members},
-            spec.resolved.basis,
-        )
-        for spec in result.specs
-    ] == [
-        ([_RESIDENCE, _WEALTH], set(_QUINTILES), None),
-        ([_SEX], {_FEMALE, _MALE}, "breakdown"),
+    result = _resolve_by_wealth_quintile(graph)
+
+    if not quintiles_hold_data:
+        assert (result.status, result.no_data_reason) == ("no_data", "no_observations")
+        assert not result.specs
+        return
+    assert result.status == "definite"
+    (answer,) = result.specs
+    assert [slot.property for slot in answer.definition.identity.slots] == [_RESIDENCE, _WEALTH]
+    assert {sv.ref.ref for sv in answer.resolved.members} == set(_QUINTILES)
+    assert [w.message for w in result.warnings if w.code == "family_total_absent"] == [
+        "This indicator has no overall figure, so the answer shows it by wealth quantile and "
+        "residence area."
     ]
+    assert [departure.code for departure in result.departure_facts.values()] == ["closest_match"]
 
 
-def test_a_resubmit_of_a_breakdown_candidate_answers_it_under_its_spec_id(
-    bind_catalogue,
+@pytest.mark.parametrize("answer", ["lone_breakdown", "by_sex_candidate"])
+def test_a_resubmit_of_a_breakdown_answer_keeps_its_spec_id_warning_and_departure(
+    bind_catalogue, answer: str
 ) -> None:
-    """A resubmit of the by-sex candidate's identity reads its slots as posted, so it answers
-    definite over the same two series under the same spec_id."""
+    """A resubmit of a definite lone-breakdown answer's identity, or of the by-sex candidate
+    a series with two breakdowns offers, reads its slots as posted, so it answers definite over the same series
+    under the same spec_id. The breakdown decision the first answer takes, over the shape
+    the posted slots give, finds one signature, so the resubmit states that the family has
+    no total and the answer shows it by its breakdown, with the `closest_match` departure."""
     from search.engine.region import resolve_spec_resubmit
     from search.models import ResubmitIdentityPayload
 
-    graph = _hold_wealth_series(bind_catalogue, un_pass=False, urban=True)
-    (by_sex,) = [
-        spec
-        for spec in _resolve_by_wealth_quintile(graph).specs
-        if spec.resolved.basis == "breakdown"
-    ]
+    if answer == "lone_breakdown":
+        result, graph = _resolve_one_breakdown(bind_catalogue)
+        (first,) = result.specs
+    else:
+        graph = _two_breakdowns_graph(bind_catalogue, with_data=frozenset(_TWO_BREAKDOWNS))
+        result = _resolve_two_breakdowns(graph)
+        assert result.status == "candidates"
+        first = result.specs[0]
 
     resubmitted = resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(identity=by_sex.definition.identity),
+        inp=ResubmitIdentityPayload(identity=first.definition.identity),
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
@@ -697,9 +771,15 @@ def test_a_resubmit_of_a_breakdown_candidate_answers_it_under_its_spec_id(
 
     assert resubmitted.status == "definite"
     (spec,) = resubmitted.specs
-    assert spec.spec_id == by_sex.spec_id
+    assert spec.spec_id == first.spec_id
     assert {sv.ref.ref for sv in spec.resolved.members} == {_FEMALE, _MALE}
     assert spec.resolved.stat_vars.served_count == 2
+    assert [w.message for w in resubmitted.warnings if w.code == "family_total_absent"] == [
+        "This indicator has no overall figure, so the answer shows it by sex."
+    ]
+    assert [departure.code for departure in resubmitted.departure_facts.values()] == [
+        "closest_match"
+    ]
 
 
 def test_a_narrowed_part_whose_walk_settles_another_query_raises(bind_catalogue) -> None:

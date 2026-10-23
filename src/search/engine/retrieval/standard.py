@@ -740,26 +740,19 @@ class Narrow:
 
 
 @dataclass(frozen=True)
-class Empty:
-    """The opened slots leave no member: every member also asserts a slot the request did
-    not open. The answer offers the family's `signatures` as `Candidates` does, over the
-    `bound` properties."""
-
-    signatures: tuple[frozenset[str], ...]
-    bound: frozenset[str] = frozenset()
-
-
-@dataclass(frozen=True)
 class Candidates:
-    """Nothing opened, and the members break down by several `signatures`, each the set
-    of unbound properties some member asserts, in member order. Each candidate's identity
-    carries the `bound` properties and one signature."""
+    """The members break down by several `signatures`, or the slots the request opened
+    leave no member and every member that asserts them all also asserts a slot it did not
+    open. Each signature is the set of unbound properties some member asserts, in member
+    order, and holds every opened slot, so each candidate carries the breakdown the
+    question named. Each candidate's identity carries the `bound` properties and one
+    signature."""
 
     signatures: tuple[frozenset[str], ...]
     bound: frozenset[str] = frozenset()
 
 
-type BreakdownDecision = Keep | Narrow | Empty | Candidates
+type BreakdownDecision = Keep | Narrow | Candidates
 
 
 def breakdown_decision(
@@ -770,17 +763,18 @@ def breakdown_decision(
 
     The decision reads the family `_admit_standard_members` admits, before any narrowing. A
     member's signature is the set of its asserted constraint properties no binding binds to
-    a value. A family with a total (`family_totals`) keeps every slot, so is a role-bearing
-    shape, which `_elect_family` never reads, a recall sample with no catalogue family
-    (`ShapeDraft.held_family`), whose total may be a member recall did not return, and
-    bindings that admit no family. The population read is the one `bind_partition_values`
-    reads, with the families the code index decides and exact member sets beside it. Otherwise, with slots opened
-    as ``requested_all`` (an operation's slot, or a breakdown the phrase names), the
-    identity carries the bound and opened properties when a member asserts no other
-    (`Narrow`), and `Empty`, holding every signature, when none does. With nothing opened, members asserting only
-    bound properties narrow to those, one signature narrows to it beside them, and several
-    are `Candidates`. A member whose constraints are unknown has no signature, since the
-    mint drops it."""
+    a value. A family with a total (`family_totals`) keeps every slot, and so do a
+    role-bearing shape, which `_elect_family` never reads, a recall sample with no catalogue
+    family (`ShapeDraft.held_family`), whose total may be a member recall did not return,
+    and bindings that admit no family. The population read is the one
+    `bind_partition_values` reads, with the families the code index decides and exact
+    member sets beside it. Otherwise, with slots opened as ``requested_all`` (an
+    operation's slot, or a breakdown the phrase names), the identity carries the bound and
+    opened properties when a member asserts no other (`Narrow`). When none does, the
+    signatures holding every opened slot are `Candidates`, and with no such signature the
+    family keeps every slot. With nothing opened, members asserting only bound properties
+    narrow to those, one signature narrows to it beside them, and several are `Candidates`.
+    A member whose constraints are unknown has no signature, since the mint drops it."""
     if is_role_bearing(shape):
         return Keep()
     admitted = _admit_standard_members(shape, list(bindings), role_keys)
@@ -808,7 +802,8 @@ def breakdown_decision(
     if opened:
         if any(signature <= opened for signature in signatures):
             return Narrow(bound | opened)
-        return Empty(signatures, bound)
+        named = tuple(signature for signature in signatures if opened <= signature)
+        return Candidates(named, bound) if named else Keep()
     if frozenset() in signatures:
         return Narrow(bound)
     if len(signatures) == 1:
@@ -900,6 +895,7 @@ def _no_entity_disambiguation(
     *,
     member_facts: dict[str, MemberFacts],
     family: _Family,
+    served: Sequence[str],
     representative_sv: str,
     date_request: DateRequest | None,
     exact: bool,
@@ -907,9 +903,9 @@ def _no_entity_disambiguation(
     """Return bare coverage when no place entity is available.
 
     No observation probe runs. A member must explicitly assert every bound
-    property; the members of those the datasets mint keeps answer, in election order
-    (``_elect_family``), with ``family_total_absent`` when they are one member that is
-    not the family's total. Otherwise the result has ``has_data=False`` and
+    property; the `served` members of those the datasets mint keeps answer, in election
+    order (``_elect_family``), with ``family_total_absent`` when they are one member that
+    is not the family's total. Otherwise the result has ``has_data=False`` and
     ``available_at_place=None``.
     Explicit windows are echoed, while latest requests leave the window unset.
     """
@@ -926,12 +922,10 @@ def _no_entity_disambiguation(
             population=MemberPopulation(admitted=0, admitted_dcids=(), confirmed=0, exact=exact),
         )
     return Materialised(
-        sv_dcids=list(family.order),
+        sv_dcids=list(served),
         has_data=True,
         coverage=CoverageBare(has_data=True, window=no_entity_window),
-        family_total_absent=(
-            family.total_absent(representative_sv, ()) if len(family.order) == 1 else None
-        ),
+        family_total_absent=(family.total_absent(served[0], ()) if len(served) == 1 else None),
         member_facts=member_facts,
         population=MemberPopulation(
             admitted=len(family.members),
@@ -1444,23 +1438,24 @@ def standard_resolve(
 
     Probe the admitted members at their own places (`facets_at_own_places`), through
     `facet_batch` when the Spec's place sets are settling (`FacetBatch`), in election order:
-    a family keeping one member reads them only until that member settles
+    an answer naming one member reads them only until its election settles
     (`_probe_and_scan`), and its confirmed count is then a floor
-    (`MemberPopulation.confirmed_exact`). A family keeping several members, or one with a
-    kept member that has an elected dataset, is read whole, since the mint serves and checks
-    each kept member. Bindings determine eligibility.
-    The answer serves the members the datasets mint keeps from the eligible family
-    (``_elect_family``) that hold a point in the years read, so its coverage, download and
-    served series are those of a mint of its definition: a family with a total keeps the
-    total alone, and one without keeps each member no other rolls up. A ``kind="set"``
-    binding lists them in probe order and other bindings in election order. With none, a
-    kept member holding data at the place in other years answers for the window
+    (`MemberPopulation.confirmed_exact`). A family the answer serves whole, or one with a
+    kept member that has an elected dataset, is read whole, since the mint serves or checks
+    each such member. Bindings determine eligibility.
+    The answer reads the members the datasets mint keeps from the eligible family
+    (``_elect_family``). A family with no total serves every one of them whose constraints
+    are known and that holds a point in the years read, as a mint of its definition does,
+    which drops the rest. A family with a total, or one whose kept members' constraints are
+    all unknown, elects the first of them in election order that holds one, and a
+    ``kind="set"`` binding returns each of them, in probe order. With none, a kept member
+    holding data at the place in other years answers for the window
     (``_no_data_in_years``), and with no kept member holding data the first in election
-    order is flagged as unavailable. Under either binding, a result naming one member,
-    served or flagged, that is not the family's total records it in
-    ``family_total_absent``. A place-set probe unions facets
-    across its entities. An empty default scope can return before a probe because its
-    presence read already established the result.
+    order is flagged as unavailable. A result naming one member, served or flagged, that
+    is not the family's total records it in ``family_total_absent``, so an answer whose
+    total holds no data says which member it shows. A place-set probe unions facets across
+    its entities. An empty default scope can return before a probe because its presence
+    read already established the result.
 
     ``default_presence`` defaults the place scope of a shape with no subject entity, in
     place of ``place_dcids``. Each member the result can name (the kept family) is read at
@@ -1498,6 +1493,15 @@ def standard_resolve(
     refuse_declared_defaults(graph, list(member_facts))
 
     probe_members, multi_collect, family, answering = _answering(admitted, bindings)
+    # A family with no total is served as a mint of its definition serves it: every kept
+    # member whose constraints are known, since the mint drops the rest. A family with a
+    # total, or one whose kept constraints are all unknown, answers by its first kept member
+    # holding data, in election order.
+    known = [
+        sv for sv in family.order if asserted_constraint_properties(member_facts[sv]) is not None
+    ]
+    serves_every = not family.totals and bool(known)
+    served = known if serves_every else list(family.order)
     if default_presence is not None:
         if place_dcid is not None:
             raise AssertionError(
@@ -1543,6 +1547,7 @@ def standard_resolve(
         return _no_entity_disambiguation(
             member_facts=member_facts,
             family=admitted.family,
+            served=served if serves_every else [representative_sv],
             representative_sv=representative_sv,
             date_request=date_request,
             exact=exact,
@@ -1570,10 +1575,10 @@ def standard_resolve(
         years=years,
         datasets=datasets,
         minted=family.order,
-        # The mint checks every kept member's elected dataset, and serves every kept member,
-        # so a family keeping several, or one with an elected dataset, is read whole.
+        # The mint checks every kept member's elected dataset, so such a family is read
+        # whole, and so is one the answer serves every member of.
         elects=None
-        if multi_collect or len(family.order) > 1 or not datasets.keys().isdisjoint(family.order)
+        if multi_collect or serves_every or not datasets.keys().isdisjoint(family.order)
         else family.order,
         facet_batch=facet_batch,
     )
@@ -1590,18 +1595,21 @@ def standard_resolve(
         exact=exact,
         confirmed_exact=probe.read_all,
     )
-    # The answer serves every kept member holding a point in the years read, as a mint of
-    # its definition does; a member holding data at the place in other years only makes an
-    # empty answer one for the window. Both lists keep only the members the datasets mint
-    # keeps, a set binding's in probe order and any other's in election order.
+    # The answer serves the `served` members holding a point in the years read, every one
+    # of them or the first in election order; a member holding data at the place in other
+    # years only makes an empty answer one for the window. Both lists keep only the members
+    # the datasets mint keeps, a set binding's in probe order and any other's in election
+    # order.
     if multi_collect:
         collected = [member for member in confirmed if member[0] in kept]
         held = [member for member in outside_years if member[0] in kept]
     else:
         by_sv = {member[0]: member for member in confirmed}
-        collected = [by_sv[sv] for sv in family.order if sv in by_sv]
         outside_by_sv = {member[0]: member for member in outside_years}
-        held = [outside_by_sv[sv] for sv in family.order if sv in outside_by_sv]
+        collected = [by_sv[sv] for sv in served if sv in by_sv]
+        held = [outside_by_sv[sv] for sv in served if sv in outside_by_sv]
+        if not serves_every:
+            collected, held = collected[:1], held[:1]
     # A window answer with no point names its first held member alone.
     named_members = collected or held[:1]
     family_total_absent: FamilyTotalAbsent | None = None

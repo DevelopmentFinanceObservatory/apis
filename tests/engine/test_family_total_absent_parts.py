@@ -179,14 +179,13 @@ def _years(start: int, end: int) -> DateRequest:
 def test_a_total_with_data_only_outside_the_years_asked_is_said_to_lack_data_in_them(
     status_reads_not_declared,
 ):
-    """Dateless, the total and the narrower member it does not roll up both answer, as the
-    mint keeps both, and nothing warns. Asked for 2015 to 2020 the narrower
+    """Dateless, the total answers and nothing warns. Asked for 2015 to 2020 the narrower
     member answers, and the warning says the total has no data in the years asked: it holds
     Kenya data in other years. Asked for 2011 to 2014, where neither holds a point, the
     total answers for the window and nothing warns."""
     dateless = _resolve_rate_in(None)
     assert dateless.status == "definite", dateless
-    assert _stat_vars(dateless.specs[0]) == [_RATE, _RATE_DISABLED]
+    assert _stat_vars(dateless.specs[0]) == [_RATE]
     assert _family_notes(dateless) == []
 
     inside = _resolve_rate_in(_years(2015, 2020))

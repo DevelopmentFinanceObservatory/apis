@@ -36,6 +36,7 @@ from tests.engine.test_un_tables_serving import (
     _hold_wealth_series,
     _resolve_by_wealth_quintile,
     _resolve_two_breakdowns,
+    _two_breakdowns_graph,
 )
 from tests.statvar_members.conftest import FakeMemberArcReader
 
@@ -108,13 +109,17 @@ class _Case:
 
 _CASES = {
     "two_breakdowns_candidates": _Case(
-        resolve=lambda bind: _resolve_two_breakdowns(bind, with_data=frozenset(_TWO_BREAKDOWNS)),
+        resolve=lambda bind: _resolve_two_breakdowns(
+            _two_breakdowns_graph(bind, with_data=frozenset(_TWO_BREAKDOWNS))
+        ),
         population_type=_SERIES,
         members=_TWO_BREAKDOWN_MEMBERS,
         counted=True,
     ),
     "lone_breakdown_with_data": _Case(
-        resolve=lambda bind: _resolve_two_breakdowns(bind, with_data=frozenset({_FEMALE, _MALE})),
+        resolve=lambda bind: _resolve_two_breakdowns(
+            _two_breakdowns_graph(bind, with_data=frozenset({_FEMALE, _MALE}))
+        ),
         population_type=_SERIES,
         members=_TWO_BREAKDOWN_MEMBERS,
         counted=True,

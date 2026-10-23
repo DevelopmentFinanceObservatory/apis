@@ -353,14 +353,21 @@ def _ranges_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return a[0] < b[1] and b[0] < a[1]
 
 
+def plural_forms(noun: str) -> frozenset[str]:
+    """`noun` as written and in the plurals a name is read in: with "s" or "es", and with
+    "ies" for a final "y"."""
+    forms = {noun, f"{noun}s", f"{noun}es"}
+    if noun.endswith("y"):
+        forms.add(f"{noun[:-1]}ies")
+    return frozenset(forms)
+
+
 def names_plain_name(text: str, plain_name: str) -> bool:
     """Whether `text` names a code system by its declared plain name ("flow", "sector"),
-    singular or plural, as a whole word, case-insensitively. A name of the form "X of Y"
-    pluralises its head: "types of finance" names "type of finance"."""
+    singular or plural (`plural_forms`), as a whole word, case-insensitively. A name of the
+    form "X of Y" pluralises its head: "types of finance" names "type of finance"."""
     head, of, rest = plain_name.partition(" of ")
-    forms = {plain_name, f"{head}s{of}{rest}", f"{head}es{of}{rest}"}
-    if head.endswith("y"):
-        forms.add(f"{head[:-1]}ies{of}{rest}")
+    forms = {f"{form}{of}{rest}" for form in plural_forms(head)}
     return any(
         re.search(rf"\b{re.escape(form)}\b", text, re.IGNORECASE) is not None for form in forms
     )

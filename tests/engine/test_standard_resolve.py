@@ -19,7 +19,7 @@ from search.engine.retrieval.retrieve import (
     NoDataDraft,
     materialise,
 )
-from search.engine.retrieval.standard import Candidates, Empty, Keep, Narrow, breakdown_decision
+from search.engine.retrieval.standard import Candidates, Keep, Narrow, breakdown_decision
 from search.engine.shape import ShapeDraft
 from search.models import CoverageBare, TimeWindow
 from tests.engine._binders import elected_reply
@@ -1679,6 +1679,52 @@ def _resolve_in_years(graph: FakeGraph):
     )
 
 
+_PERSON = "Count_Person"
+
+
+@pytest.mark.parametrize(
+    ("with_data", "served", "absent"),
+    [
+        pytest.param(
+            (_PERSON, _PERSON_FEMALE, "sv_unknown"),
+            [_PERSON],
+            None,
+            id="a_total_with_data_answers_alone",
+        ),
+        pytest.param(
+            (_PERSON_FEMALE, _PERSON_MALE, "sv_unknown"),
+            [_PERSON_FEMALE],
+            FamilyTotalAbsent(total=_PERSON, shown=_PERSON_FEMALE, places=(_RECIPIENT,)),
+            id="a_total_without_data_names_it_and_the_member_shown",
+        ),
+    ],
+)
+def test_a_family_with_a_total_answers_by_one_member(monkeypatch, with_data, served, absent):
+    """A recall sample holds the population total, the two by-gender members, which the
+    total does not dominate since an absent gender reads as not declared, and a member
+    whose arcs are empty. The total answers alone where it holds data, though the mint
+    keeps the other three. With no data for it, the first member holding data answers in
+    its place, and the result names both, so the part warns that the total had no data."""
+    from search.engine.retrieval import standard
+
+    monkeypatch.setattr(standard, "absent_readings", lambda _index: {"gender": "not_declared"})
+    shape = replace(
+        _person_shape(),
+        sv_arc_facts={
+            _PERSON: _person_arcs(),
+            _PERSON_FEMALE: _person_arcs(gender="Female"),
+            _PERSON_MALE: _person_arcs(gender="Male"),
+            "sv_unknown": {},
+        },
+    )
+
+    result = _resolve_at_recipient(shape, [_unbound("gender")], _graph_with_data_for(*with_data))
+
+    assert isinstance(result, Materialised)
+    assert result.sv_dcids == served
+    assert result.family_total_absent == absent
+
+
 class TestRootElection:
     def test_a_value_binding_elects_the_root_over_a_dominated_member_first_in_recall(self):
         result = _resolve_at_recipient(
@@ -2274,9 +2320,10 @@ class TestFamilyTotalRule:
         assert result.sv_dcids == ["Count_Person"]
         assert result.family_total_absent is None
 
-    def test_a_member_with_an_empty_arcs_mapping_comes_after_a_known_one(self):
+    def test_a_member_with_an_empty_arcs_mapping_stands_in_after_a_known_one(self):
         """A member whose constraints are unknown may be narrower than any known one, so the
-        female member comes first though recall lists the unknown one first."""
+        female member answers though recall lists the unknown one first. The mint drops the
+        unknown member, so the answer leaves it out though it holds data."""
         shape = replace(
             _person_shape(),
             sv_arc_facts={"sv_unknown": {}, _PERSON_FEMALE: _person_arcs(gender="Female")},
@@ -2286,8 +2333,10 @@ class TestFamilyTotalRule:
         )
 
         assert isinstance(result, Materialised)
-        assert result.sv_dcids == [_PERSON_FEMALE, "sv_unknown"]
-        assert result.family_total_absent is None
+        assert result.sv_dcids == [_PERSON_FEMALE]
+        assert result.family_total_absent == FamilyTotalAbsent(
+            total=None, shown=_PERSON_FEMALE, places=(_RECIPIENT,)
+        )
 
     @pytest.mark.parametrize(
         ("with_data", "has_data"),
@@ -2457,11 +2506,12 @@ def _old_and_new_members(date_request):
     )
 
 
-def test_an_answer_serves_the_kept_members_with_points_in_the_years_read():
-    """`sv_old` holds 2000 to 2015 and `sv_new` 2015 to 2024 at Kenya. Dateless serves
-    both; "since 2021" confirms only `sv_new`, which holds points there, and serves it."""
+def test_a_single_collect_elects_the_first_member_with_points_in_the_years_read():
+    """`sv_old` holds 2000 to 2015 and `sv_new` 2015 to 2024 at Kenya, and neither's
+    constraints are known. Dateless elects `sv_old`, the first confirmed; "since 2021"
+    confirms only `sv_new`, which holds points there, and serves it."""
     dateless = _old_and_new_members(None)
-    assert isinstance(dateless, Materialised) and dateless.sv_dcids == ["sv_old", "sv_new"]
+    assert isinstance(dateless, Materialised) and dateless.sv_dcids == ["sv_old"]
 
     since = _old_and_new_members(
         DateRequest(window=TimeWindow(start_year=2021, end_year=None), latest=False)
@@ -2748,8 +2798,8 @@ class TestBreakdownDecision:
             pytest.param(
                 _ACTIVITY_ARCS,
                 [_activity_source("unbound"), _SECTOR_OPENED],
-                Empty((_ACTIVITY_ONLY, _ACTIVITY_AND_SECTOR)),
-                id="opened_slots_leaving_no_member_are_empty",
+                Candidates((_ACTIVITY_AND_SECTOR,)),
+                id="opened_slots_leaving_no_member_offer_the_signatures_holding_them",
             ),
             pytest.param(
                 {sv: _ACTIVITY_ARCS[sv] for sv in (_GDP_NOMINAL, _GVA_NOMINAL, _NDP_NOMINAL)},

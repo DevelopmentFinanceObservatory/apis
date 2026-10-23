@@ -149,7 +149,7 @@ from search.engine.retrieval.retrieve import (
     UnsupportedDraft,
 )
 from search.engine.retrieval.role_resolve import unrealisable_bound_values
-from search.engine.retrieval.standard import Candidates, Empty, FacetBatch, Narrow
+from search.engine.retrieval.standard import Candidates, FacetBatch, Narrow
 from search.engine.shape import (
     ShapeDraft,
     is_role_bearing,
@@ -429,20 +429,22 @@ def _settle_direction(
 
 def _settle_breakdown(state: ResolveState) -> None:
     """The elected shape's breakdown when its family holds no total and the question names
-    none that serves a member (`standard.Candidates`, `standard.Empty`): one copy of the
-    shape per breakdown signature, each narrowed to the bound properties and that
-    signature (`phase_election.narrowed_to_breakdown`) and bound with the signature's slots
-    open (`_breakdown_bindings`). The copies are ordered by their recalled members with
-    data at the places the part names, then by their recalled members, and capped at
-    `max_candidates`. The first is installed as the elected shape; each other is offered
-    beside it as a `breakdown` candidate (`ResolveState.breakdown_rivals`). A lone copy
-    answers alone, narrower than asked (`standard.Narrow.lone_signature`)."""
+    none that serves a member (`standard.Candidates`): one copy of the shape per breakdown
+    signature, each narrowed to the bound properties and that signature
+    (`phase_election.narrowed_to_breakdown`) and bound with the signature's slots open
+    (`_breakdown_bindings`). The copies are ordered by their recalled members with data at
+    the places the part names, then by their recalled members, and capped at
+    `max_candidates`, a cut the candidate set states (`ResolveState.breakdown_truncated`,
+    `CandidateSet.truncated`). The first is installed as the elected shape; each other is
+    offered beside it as a `breakdown` candidate (`ResolveState.breakdown_rivals`). A lone
+    copy answers alone, narrower than asked (`standard.Narrow.lone_signature`)."""
     decision = state.breakdown
-    if not isinstance(decision, (Candidates, Empty)):
+    if not isinstance(decision, Candidates):
         return
     shape = state.shape_draft
     rank = _breakdown_rank(shape, decision.bound)
     signatures = sorted(decision.signatures, key=rank)[: settings().max_candidates]
+    state.breakdown_truncated = len(signatures) < len(decision.signatures)
     copies = [
         (
             narrowed_to_breakdown(shape, decision.bound | signature),

@@ -84,6 +84,7 @@ from search.engine.qualifier_match import (
     joins,
     match_unsupported_qualifier_phrases,
     names_plain_name,
+    plural_forms,
     read_by_vocabulary,
     slot_noun_named,
 )
@@ -3757,17 +3758,9 @@ def _slot_vocabulary(
 
 
 def _has_word(word: str, words: AbstractSet[str]) -> bool:
-    """Whether `word` is one of `words`, singular or plural: as written, or less a plural
-    "s", "es" or "ies" (which reads "y"), as `qualifier_match.names_plain_name` reads a
-    plural name."""
-    forms = {word}
-    if word.endswith("ies"):
-        forms.add(f"{word[:-3]}y")
-    if word.endswith("es"):
-        forms.add(word[:-2])
-    if word.endswith("s"):
-        forms.add(word[:-1])
-    return not forms.isdisjoint(words)
+    """Whether `word` is one of `words`, singular or plural, in the forms
+    `qualifier_match.names_plain_name` reads a name in (`plural_forms`)."""
+    return any(word in plural_forms(name) for name in words)
 
 
 def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:

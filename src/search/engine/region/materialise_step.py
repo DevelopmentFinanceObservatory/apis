@@ -34,8 +34,7 @@ from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
 from search.models import NoDataReason, RoleAxis, Spec, Warning
 from search.render.heading import heading_for
-from search.render.labels import _join_labels
-from search.render.what import _lower_first_word
+from search.render.what import breakdown_phrase
 from series_coverage.shared import CoverageSnapshot
 
 __all__ = [
@@ -114,13 +113,12 @@ def _family_total_absent_message(
     member shown and, when the family holds a total, the total that had no data where the
     read plan read: at the places, and under a year range in the years asked, since the
     total can hold data there in other years. For a family with no total shown by its one
-    breakdown, the message names that breakdown's slots, each lowered as a phrase inside
-    the sentence (`_lower_first_word`)."""
+    breakdown, the message names that breakdown's slots (`breakdown_phrase`)."""
     if fact.breakdown:
         (shown,) = label_of([fact.shown])
         return (
             "This indicator has no overall figure, so the answer shows it by "
-            f"{_join_labels([_lower_first_word(name) for name in fact.breakdown])}.",
+            f"{breakdown_phrase(fact.breakdown)}.",
             shown,
         )
     if fact.total is None:

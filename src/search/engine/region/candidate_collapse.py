@@ -855,5 +855,8 @@ async def assemble_candidates(
         _note_lone_breakdown(state, grounded, unique_specs[0])
         return await _assemble_definite(state, unique_specs, grounded, rate_cache)
     return await _assemble_candidate_set(
-        state, unique_specs, grounded, admission.candidate_budget_truncated
+        state,
+        unique_specs,
+        grounded,
+        admission.candidate_budget_truncated or state.breakdown_truncated,
     )
