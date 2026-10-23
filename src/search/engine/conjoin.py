@@ -561,6 +561,7 @@ def _build_part(
             assumption_echo=region.assumption_echo,
             asked_axes=region.every_member_axes,
             own_spec=None if representative is region else region.spec,
+            members_in_words=region.members_in_words,
         )
     if region.status == "candidates":
         return build_candidates_part(

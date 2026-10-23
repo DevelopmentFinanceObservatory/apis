@@ -500,7 +500,19 @@ def every_member_axis(phrase: str, *, query: str) -> RoleAxis | None:
     rest = _after_role_prep(tokens)
     if not rest or rest[0] not in _EVERY_WORDS:
         return None
-    nouns = rest[2:] if rest[1:2] == ["the"] else rest[1:]
+    named = _nouns_axes(rest[1:])
+    if named is None:
+        return None
+    if not named:
+        named = {prep_axis} if prep_axis is not None else _governing_axes(_tokenize(query), tokens)
+    return next(iter(named)) if len(named) == 1 else None
+
+
+def _nouns_axes(tokens: list[str]) -> set[RoleAxis] | None:
+    """The axes the nouns of `tokens`, past an optional ``the``, name: empty for place
+    nouns alone (``countries``), None for no noun or any word that names neither a role nor
+    a place."""
+    nouns = tokens[1:] if tokens[:1] == ["the"] else tokens
     if not nouns:
         return None
     named: set[RoleAxis] = set()
@@ -511,9 +523,33 @@ def every_member_axis(phrase: str, *, query: str) -> RoleAxis | None:
         if axis is None:
             return None
         named.add(axis)
-    if not named:
-        named = {prep_axis} if prep_axis is not None else _governing_axes(_tokenize(query), tokens)
-    return next(iter(named)) if len(named) == 1 else None
+    return named
+
+
+# Connectives that ask for one value per member of the role nouns after them: "by donor",
+# "across recipients". "for" asks it only before "each" or "every" ("for each donor").
+_BREAKDOWN_CONNECTIVES: frozenset[str] = frozenset({"by", "across"})
+
+
+def breakdown_axis(phrase: str, *, query: str) -> RoleAxis | None:
+    """The flow axis whose members ``phrase`` asks one value each for, or None.
+
+    The phrase is ``by`` or ``across`` and role nouns (``by donor``, ``across the
+    recipients``, ``by creditor``), or an every-member phrase that asks for the breakdown
+    (`every_member_axis`, `every_member_breakdown`: ``each donor``, ``from every
+    provider``), after an optional ``by``, ``across`` or ``for`` (``for each donor``). Place
+    nouns alone after ``by`` or ``across`` name no side (``by country``), and ``all``
+    phrases ask for no breakdown, since the total over the members meets them.
+    """
+    tokens = _tokenize(phrase)
+    lead = tokens[0] if tokens else None
+    if lead in _BREAKDOWN_CONNECTIVES and not set(tokens[1:2]) & _BREAKDOWN_WORDS:
+        named = _nouns_axes(tokens[1:])
+        return next(iter(named)) if named is not None and len(named) == 1 else None
+    if lead in _BREAKDOWN_CONNECTIVES or lead == "for":
+        tokens = tokens[1:]
+    rest = " ".join(tokens)
+    return every_member_axis(rest, query=query) if every_member_breakdown(rest) else None
 
 
 @dataclass(frozen=True, slots=True)

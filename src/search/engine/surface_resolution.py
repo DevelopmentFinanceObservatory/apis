@@ -7,14 +7,18 @@ and settles between the surface's answer and the name's own:
 
 - a qualified surface ("Asia (DAC)" for the name "Asia") is the only text resolved, so a
   named aggregate never widens to the bare place;
-- otherwise the surface and the name are resolved in one batch, and the more specific
-  text leads. A surface that adds words to the name ("Nairobi county" for "Nairobi") leads,
-  since the extractor dropped words the user wrote. A surface the name rewrites ("Canadian"
-  for "Canada", "Congo" for "Democratic Republic of the Congo") follows, since the name is
-  the extractor's reading of it; "Canadian" alone matches two US towns. The leading answer
-  stands, except that a `NotFound` lead takes the other answer, a `NotHeld` lead takes it
-  unless that is `NotFound`, and an `Ambiguous` lead takes it when it is one of the lead's
-  candidates.
+- otherwise the surface and the name are resolved in one batch, and one leads. A surface
+  that adds words to the name ("Nairobi county" for "Nairobi") leads, since the extractor
+  dropped words the user wrote. So does a surface the name adds words to ("Congo" for
+  "Democratic Republic of the Congo", "Korea" for "South Korea"), since the added words are
+  the extractor's and no word of the query. A surface the name rewrites in other words
+  ("Canadian" for "Canada", "UK" for "United Kingdom", "Kenia" for "Kenya") follows, since
+  the name is the extractor's reading of it; "Canadian" alone matches two US towns. The
+  leading answer stands, except that a `NotFound` lead takes the other answer, a `NotHeld`
+  lead takes it unless that is `NotFound`, and an `Ambiguous` lead takes it when it is one
+  of the lead's candidates. A name that only adds words to its surface never settles the
+  surface's ambiguity: "Congo" names both Congos, and the query does not choose between
+  them.
 """
 
 from __future__ import annotations
@@ -55,13 +59,17 @@ def _settle(name: str, surface: str | None, by_text: Mapping[str, Resolution]) -
     if _is_qualified(surface, name):
         return through_surface
     own = by_text[name]
-    lead, other = (through_surface, own) if _adds_words(surface, name) else (own, through_surface)
+    expands = _adds_words(name, surface)
+    lead, other = (
+        (through_surface, own) if expands or _adds_words(surface, name) else (own, through_surface)
+    )
     if isinstance(lead, NotFound):
         return other
     if isinstance(lead, NotHeld):
         return lead if isinstance(other, NotFound) else other
     if (
-        isinstance(lead, Ambiguous)
+        not expands
+        and isinstance(lead, Ambiguous)
         and isinstance(other, Resolved)
         and other.entity.dcid in {candidate.dcid for candidate in lead.candidates}
     ):

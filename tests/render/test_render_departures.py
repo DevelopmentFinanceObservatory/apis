@@ -650,6 +650,37 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "includes aid not allocated to a country. To list each recipient, search again with "
         "open_roles ['recipient'].",
     ),
+    # The raw-text door asks for a side's members in the question's words.
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            over="origin",
+            group="official donors (DAC)",
+            whole_of=("official",),
+            side_classes=("official", "residual"),
+            inferred=True,
+            members_in_words=True,
+        ),
+        "aid",
+        "No donor was named, so this shows official donors (DAC), the source's total for "
+        'every official donor. To list each donor, add "by donor" to the question.',
+    ),
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="destination:",
+            asked="all recipients",
+            over="destination",
+            group="all recipients (DAC)",
+            whole_of=("official", "residual"),
+            members_in_words=True,
+        ),
+        "aid",
+        "You asked for all recipients. This shows all recipients (DAC), the source's total for "
+        "every recipient, which includes aid not allocated to a country. To list each "
+        'recipient, write "by recipient" in place of all recipients.',
+    ),
     (
         DepartureFact(
             code="whole_total_unpublished",

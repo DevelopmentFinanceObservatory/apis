@@ -407,6 +407,10 @@ class RegionResult:
     # `None` on a door that holds no words for any entity (a resubmit), whose departures
     # then quote none.
     entity_words: Mapping[str, str] | None = field(default_factory=dict)
+    # Whether the part's door asks for a flow side's members in the question's words ("by
+    # donor"), as the raw-text door does (`raw_text._ExtractionPrep.onto`). The other doors
+    # post `open_roles`. A side read whole states its way back to the members in that form.
+    members_in_words: bool = False
     # The flow sides a whole population the part asks for member by member opens
     # (`ResolveState.whole_listed`). The leg warns for each one the answer drops as it
     # does for its own open roles (`with_dropped_open_roles`).
