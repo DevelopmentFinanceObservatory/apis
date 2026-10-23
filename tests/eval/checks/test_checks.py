@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from scripts.sentence_golden import spec_dicts
+from search.eval.cases import CheckName
 from search.eval.checks import CHECKS, PART_CHECKS, ScoreContext, Verdict, WireSchema
 from search.eval.gate import Observation, Outcome, judge
 from tests.eval.checks.conftest import (
@@ -21,6 +22,7 @@ from tests.eval.checks.conftest import (
     no_members_door,
     panel,
     panel_members,
+    refusing_members_door,
     response_schema,
     schema_listing_members,
     serve,
@@ -992,17 +994,35 @@ def test_an_app_listing_its_members_on_the_wire_is_scored_from_them(listed: bool
     assert result.verdict == verdict, result.detail
 
 
-def test_a_failed_members_read_leaves_candidates_to_infrastructure():
-    """A family that pins its StatVars pairs only through the members door, so a door that
-    answers 404 makes the check an infrastructure loss."""
+@pytest.mark.parametrize(
+    ("door", "verdict", "infra"),
+    [(no_members_door, U, True), (refusing_members_door, FAIL, False)],
+    ids=["failed_read", "refused_definition"],
+)
+@pytest.mark.parametrize(
+    ("check", "expect", "response"),
+    [
+        (
+            "candidates",
+            {"candidates": {"include_families": ["crs.disbursement_unserved"]}},
+            as_candidates("crs-032"),
+        ),
+        ("measure", {"definite": {"measure": {"stat_vars": ["Count_Person"]}}}, panel("weo-033")),
+    ],
+    ids=["candidates", "measure"],
+)
+def test_a_members_read_that_fails_is_infrastructure_and_one_refused_fails_the_answer(
+    check: CheckName, expect: dict, response: dict, door, verdict, infra: bool
+):
+    """StatVars pair only through the members door here. A door that answers 404 makes the
+    check an infrastructure loss, and one refusing the definition fails the answer."""
     ctx = ScoreContext(
-        schema=WireSchema.from_document({"response": response_schema()}), members=no_members_door
+        schema=WireSchema.from_document({"response": response_schema()}), members=door
     )
-    case = make_case({"candidates": {"include_families": ["crs.disbursement_unserved"]}})
 
-    result = CHECKS["candidates"](case, as_candidates("crs-032"), ctx)
+    result = CHECKS[check](make_case(expect), response, ctx)
 
-    assert (result.verdict, result.infra) == (U, True), result.detail
+    assert (result.verdict, result.infra) == (verdict, infra), result.detail
 
 
 GROUP_A = (

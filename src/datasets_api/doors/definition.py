@@ -222,7 +222,8 @@ class DefinitionMemberNotResolvable(Refusal):
 
     It maps to `member_not_resolvable`, 422, without a pointer.
 
-    `truncated` is true when the member list was capped.
+    `truncated` is true when the member list was capped, and `retryable` carries the
+    wrapped `MemberNotResolvable`'s.
     """
 
     code = "member_not_resolvable"
@@ -231,13 +232,21 @@ class DefinitionMemberNotResolvable(Refusal):
     def issues(self) -> tuple[ProblemIssue, ...]:
         return tuple(ProblemIssue(member=member) for member in self.members)
 
-    def __init__(self, *, members: tuple[str, ...], truncated: bool = False) -> None:
+    def __init__(
+        self, *, members: tuple[str, ...], truncated: bool = False, retryable: bool = False
+    ) -> None:
         self.members = members
         self.truncated = truncated
+        self.retryable = retryable
         detail = f"member(s) did not resolve to exactly one registered shape: {members!r}"
         if truncated:
             detail += "; more members disagreed than are named here"
         super().__init__(detail)
+
+    @classmethod
+    def wrapping(cls, exc: MemberNotResolvable) -> DefinitionMemberNotResolvable:
+        """The retrieval form of the mint's refusal `exc`."""
+        return cls(members=exc.members, truncated=exc.truncated, retryable=exc.retryable)
 
 
 def classify_definition_exception(exc: BaseException) -> ProblemSpec | None:
@@ -297,7 +306,7 @@ def _rehydrate_stored(
             bounds=member_read_bounds(deps.settings, request_deadline=deps.deadline),
         )
     except MemberNotResolvable as exc:
-        raise DefinitionMemberNotResolvable(members=exc.members, truncated=exc.truncated) from exc
+        raise DefinitionMemberNotResolvable.wrapping(exc) from exc
     return requests
 
 
@@ -328,7 +337,7 @@ def _register_posted_definition(
             body.definition, spec_id=spec_id, scope=None, deps=deps, trace_id=trace_id
         )
     except MemberNotResolvable as exc:
-        raise DefinitionMemberNotResolvable(members=exc.members, truncated=exc.truncated) from exc
+        raise DefinitionMemberNotResolvable.wrapping(exc) from exc
     stored = resolve_served_definition(
         registered, code_index=deps.code_index, registry=deps.registry, trace_id=trace_id
     )
@@ -452,9 +461,7 @@ def _resolve_spec_members(
             assert definition is not None
             recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=None, deps=deps)
         except MemberNotResolvable as exc:
-            raise DefinitionMemberNotResolvable(
-                members=exc.members, truncated=exc.truncated
-            ) from exc
+            raise DefinitionMemberNotResolvable.wrapping(exc) from exc
     return spec_id, recomputed.identity, shapes
 
 
