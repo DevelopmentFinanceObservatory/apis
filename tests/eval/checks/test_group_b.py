@@ -116,7 +116,7 @@ SKILLS_ROWS = [
         id="orphan-on-a-flagged-match",
     ),
     pytest.param(make_case({"definite": {}}), definite(["oda-measures"]), NA, id="not-asserted"),
-    pytest.param(skills_case(present=True), panel("crs-005"), Verdict.UNREACHED, id="no-data-part"),
+    pytest.param(skills_case(present=True), panel("crs-023"), Verdict.UNREACHED, id="no-data-part"),
 ]
 
 
@@ -225,7 +225,7 @@ def first_value_slot(resolved: dict[str, Any]) -> tuple[int, str]:
 
 @pytest.mark.parametrize("where", ["shape", "slot", "entity"])
 def test_groundedness_names_the_path_of_a_fabricated_reference(where: str):
-    response = panel("crs-001")
+    response = panel("crs-032")
     resolved = response["parts"][0]["spec"]["resolved"]
     at = "/parts/0/spec/resolved"
     slot, slot_dcid = first_value_slot(resolved)
@@ -242,7 +242,7 @@ def test_groundedness_names_the_path_of_a_fabricated_reference(where: str):
 
 
 def test_groundedness_walks_candidates_and_equivalent_readings():
-    response = panel("crs-021")
+    response = panel("weo-034")
     specs = response["parts"][0]["candidates"]["specs"]
     twin = copy.deepcopy(specs[0])
     twin["resolved"].pop("equivalent_readings", None)
@@ -259,8 +259,8 @@ def test_groundedness_walks_candidates_and_equivalent_readings():
 @pytest.mark.parametrize(
     ("graph", "response", "verdict", "infra"),
     [
-        pytest.param(RaisingGraphClient(), panel("crs-001"), U, True, id="graph-error"),
-        pytest.param(None, panel("crs-001"), U, True, id="no-graph-client"),
+        pytest.param(RaisingGraphClient(), panel("crs-032"), U, True, id="graph-error"),
+        pytest.param(None, panel("crs-032"), U, True, id="no-graph-client"),
         pytest.param(
             KnownGraph(), {"kind": "declined", "reason": "out_of_scope"}, NA, False, id="no-refs"
         ),
@@ -275,7 +275,7 @@ def test_groundedness_lets_an_error_that_is_no_read_failure_propagate():
     """A bug in the check or its client stops the run; it is no infrastructure result."""
     graph = RaisingGraphClient(ValueError("a bug"))
     with pytest.raises(ValueError, match="a bug"):
-        CHECKS["groundedness"](make_case({"definite": {}}), panel("crs-001"), ctx_with(graph=graph))
+        CHECKS["groundedness"](make_case({"definite": {}}), panel("crs-032"), ctx_with(graph=graph))
 
 
 def test_groundedness_reads_a_renamed_field_as_unverifiable():
@@ -286,14 +286,14 @@ def test_groundedness_reads_a_renamed_field_as_unverifiable():
     ctx = ScoreContext(
         schema=WireSchema.from_document({"response": renamed}), graph=KnownGraph(), side="base"
     )
-    result = score_results(make_case({"definite": {}}), panel("crs-001"), ctx)["groundedness"]
+    result = score_results(make_case({"definite": {}}), panel("crs-032"), ctx)["groundedness"]
     assert (result.verdict, result.infra) == (U, False)
 
 
 @pytest.mark.parametrize(
     ("response", "verdict"),
     [
-        pytest.param(panel("crs-001"), PASS, id="answer"),
+        pytest.param(panel("crs-032"), PASS, id="answer"),
         pytest.param({"task_error": "ReadTimeout: timed out"}, FAIL, id="task-error"),
     ],
 )
@@ -303,5 +303,5 @@ def test_task_outcome(response, verdict, ctx: ScoreContext):
 
 def test_score_skips_the_modal_only_checks_on_other_samples():
     case = make_case({"definite": {}})
-    verdicts = score(case, panel("crs-001"), ctx_with(graph=KnownGraph()), skip=MODAL_ONLY_CHECKS)
+    verdicts = score(case, panel("crs-032"), ctx_with(graph=KnownGraph()), skip=MODAL_ONLY_CHECKS)
     assert list(verdicts) == [name for name in CHECK_NAMES if name != "materialisation"]

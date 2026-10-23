@@ -12,6 +12,7 @@ from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.concurrency import scoped_concurrency
+from search.engine.conjoin import assemble_region
 from search.engine.extract import DateRequest, ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import materialise_step as materialise_step_module
@@ -724,13 +725,14 @@ def test_origin_only_signature_discovers_the_provider_scope(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("role_query", "phrase", "observation_properties", "admitted"),
+    ("role_query", "phrase", "observation_properties", "admitted", "assumed"),
     [
         pytest.param(
             "aid from France to all recipients",
             "to all recipients",
             ["creditor", "debtor"],
             True,
+            False,
             id="open-axis-the-answer-serves-member-by-member",
         ),
         pytest.param(
@@ -738,6 +740,7 @@ def test_origin_only_signature_discovers_the_provider_scope(monkeypatch):
             "to all recipients",
             ["creditor"],
             True,
+            False,
             id="axis-the-answer-totals-over",
         ),
         pytest.param(
@@ -745,12 +748,14 @@ def test_origin_only_signature_discovers_the_provider_scope(monkeypatch):
             "to every recipient",
             ["creditor", "debtor"],
             True,
+            False,
             id="breakdown-over-an-axis-the-answer-declares",
         ),
         pytest.param(
             "aid from France to each recipient",
             "to each recipient",
             ["creditor"],
+            False,
             False,
             id="breakdown-over-an-axis-the-answer-totals-over",
         ),
@@ -759,6 +764,7 @@ def test_origin_only_signature_discovers_the_provider_scope(monkeypatch):
             "all donors",
             ["creditor", "debtor"],
             False,
+            True,
             id="axis-a-named-place-binds",
         ),
         pytest.param(
@@ -766,15 +772,18 @@ def test_origin_only_signature_discovers_the_provider_scope(monkeypatch):
             "in all sectors",
             ["creditor", "debtor"],
             False,
+            True,
             id="all-names-no-role",
         ),
     ],
 )
 def test_a_dropped_phrase_asking_for_every_member_of_a_role_is_met_by_an_answer_leaving_it_unbound(
-    monkeypatch, role_query, phrase, observation_properties, admitted
+    monkeypatch, role_query, phrase, observation_properties, admitted, assumed
 ):
     """The phrase is admitted, so its `query_qualifier_dropped` warning and departure go,
-    when the role-bearing answer binds no place on the axis the phrase names."""
+    when the role-bearing answer binds no place on the axis the phrase names. An admitted
+    phrase asks for its axis, so the part assumes no open role there. The recipients the
+    scope default fills are assumed while no phrase asks for them."""
     sv_dcid = _SV_DCID if "debtor" in observation_properties else _ORIGIN_ONLY_SV_DCID
     if "debtor" in observation_properties:
         rows, role_names = _coverage_seed_for(
@@ -802,6 +811,11 @@ def test_a_dropped_phrase_asking_for_every_member_of_a_role_is_met_by_an_answer_
     assert result.status == "definite", result
     assert result.specs[0].definition.identity.entities.get("origin") == [_FRA]
     assert (phrase in result.admitted_qualifier_phrases) is admitted
+    (part,) = assemble_region(
+        result, extra_warnings=[], start_ms=0, engine_build="test", max_candidates=5
+    ).parts
+    open_roles = [item.binding_ref for item in part.assumptions if item.kind == "open_role"]
+    assert open_roles == (["where:"] if assumed else [])
 
 
 @pytest.mark.parametrize(

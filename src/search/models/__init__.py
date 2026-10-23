@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dfo_platform import WarningSeverity
 
+from .assumption import Assumption
 from .coverage import (
     BreadthDim,
     Coverage,
@@ -158,6 +159,7 @@ from .request import (
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
     SourceMention,
+    asked_open_axes,
 )
 from .response import (
     RESOLVE_RESPONSE_ADAPTER,
@@ -218,6 +220,7 @@ from .vocab import (
     NO_DATA_RESOLUTION_ORDER,
     SCHEMA_VERSION,
     AnswerKind,
+    AssumptionKind,
     Axis,
     BindingKind,
     BindingProvenance,
@@ -270,6 +273,8 @@ __all__ = [
     "AmbiguousSourceCandidate",
     "AmbiguousSourceGroup",
     "AnswerKind",
+    "Assumption",
+    "AssumptionKind",
     "Axis",
     "BaseIdentity",
     "Binding",
@@ -443,6 +448,7 @@ __all__ = [
     "ValueKind",
     "Warning",
     "WarningSeverity",
+    "asked_open_axes",
     "coverage_is_empty",
     "departures_in_precedence_order",
     "elect_no_data_reason",

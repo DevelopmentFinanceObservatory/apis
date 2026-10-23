@@ -146,6 +146,21 @@ def test_search_resolve_response_marks_status_and_every_part_status_as_required(
         assert "status" in components[part_name]["required"], part_name
 
 
+@pytest.mark.parametrize("kind", ["resolution", "catalogue", "declined"])
+def test_every_search_resolve_response_kind_requires_its_discriminator(
+    schema: dict[str, Any], kind: str
+):
+    """Every resolve response carries `kind`, so each kind's served schema lists it as
+    required while its constructor keeps the default. No other defaulted field joins it."""
+    components = schema["components"]["schemas"]
+    op = schema["paths"]["/api/search/resolve"]["post"]
+    union = op["responses"]["200"]["content"]["application/json"]["schema"]
+    ref = union["discriminator"]["mapping"][kind]
+    required = components[ref.rsplit("/", 1)[-1]]["required"]
+    assert "kind" in required
+    assert "schema_version" not in required
+
+
 def test_search_headline_requires_its_recent_years(schema: dict[str, Any]):
     components = schema["components"]["schemas"]
     headline = components["Headline"]

@@ -2,8 +2,9 @@
 
 This module marks the tokens that differ between candidates and writes the part's
 sentence. The sentence gives the count of readings, then each shown reading's heading
-and a byline led by its source and span, then the part's departures. Readings whose
-heading and byline read alike add to the byline the graph name that sets them apart.
+and a byline led by its source and span, then the part's departures and its assumptions
+clause. Readings whose heading and byline read alike add to the byline the graph name that
+sets them apart.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 
 from search.models import (
+    Assumption,
     BindingSet,
     BindingValue,
     Departure,
@@ -22,6 +24,7 @@ from search.models import (
     coverage_is_empty,
 )
 
+from .assumptions import clause_tokens
 from .departures import departure_tokens
 from .heading import (
     LATEST_YEAR_LABEL,
@@ -240,10 +243,11 @@ def candidates_sentence_plan(
     truncated: bool = False,
     total: int | None = None,
     departures: Sequence[Departure] = (),
+    assumptions: Sequence[Assumption] = (),
 ) -> list[SentenceToken]:
     """The candidates part's sentence: how many readings there are ("3 readings."), then
     each shown reading's heading and a byline led by the source and span that set it
-    apart, then the part's departures.
+    apart, then the part's departures, then its assumptions clause (`clause_tokens`).
 
     ``specs`` are the shown readings. Each reads its heading and byline (`heading_for`)
     as its own sentence plan does, keeping the how properties its siblings differ on
@@ -268,6 +272,7 @@ def candidates_sentence_plan(
         tokens.append(SentenceToken(kind="text", text=" "))
         tokens.extend(reading)
     tokens.extend(departure_tokens([d.text for d in departures], after_text=True))
+    tokens.extend(clause_tokens([item.text for item in assumptions], after_text=True))
     return tokens
 
 

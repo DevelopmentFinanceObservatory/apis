@@ -34,6 +34,7 @@ from search.engine.source_scope import AmbiguousSource, SourceRefusal, SourceSco
 from search.engine.spec_build import RoleAxisFactInput
 from search.heading.departure_fact import DepartureFact
 from search.models import (
+    Assumption,
     EntityRoleKey,
     GraphRef,
     NearestRealSpec,
@@ -218,6 +219,10 @@ class RegionResult:
     # beside its own and the envelope's warnings, so a phrase a sibling part applied still
     # departs on this one. No part states them.
     unapplied_qualifier_warnings: tuple[Warning, ...] = ()
+    # The flow axes those every-member phrases ask for ("all donors" asks the origin),
+    # which the part's assumptions read as asked (`render.assumptions.assumptions_for`).
+    # Outside the identity and its hash. Same-shape merges union the sets.
+    every_member_axes: frozenset[RoleAxis] = frozenset()
     # Why a no_data outcome fired (models.NoData's own `cause`), populated
     # only for no_data_reason=="rate_coverage_gap".
     cause: Cause | None = None
@@ -251,6 +256,16 @@ class RegionResult:
     # states. A candidate set the status rule builds is `intent_rank`: the elected reading
     # first, then its rivals in menu order. Assembly keeps the specs' order either way.
     candidate_ordering_override: Ordering | None = None
+    # The assumptions a dataset resubmit identity entry echoed back
+    # (`ResubmitIdentityEntry.assumptions`). Its definite part states those that still hold
+    # (`render.assumptions.assumptions_for`). None when the entry echoes none and on every
+    # other door.
+    assumption_echo: tuple[Assumption, ...] | None = None
+    # The assumptions each reading of a dataset resubmit candidates entry echoed back
+    # (`ResubmitCandidate.assumptions`), keyed by the rebuilt reading's spec_id. Its
+    # candidates part reads each reading with its echo (`render.assumptions.assumptions_for`);
+    # a reading absent here echoed none. Empty on every other door.
+    reading_assumption_echoes: Mapping[str, tuple[Assumption, ...]] = field(default_factory=dict)
     # Unawaited coverage probe for streamed slot options, sent after `response`.
     # It leaves `specs[].slot_options` and the buffered response unchanged.
     # Its events and warnings feed the terminal `done` event.
@@ -553,10 +568,10 @@ def with_dropped_open_roles(region: RegionResult, open_axes: Collection[RoleAxis
 
 def every_member_phrases(
     region: RegionResult, phrases: Sequence[str], *, query: str
-) -> frozenset[str]:
+) -> dict[str, RoleAxis]:
     """The `phrases`, stripped and casefolded, that ask for every member of a flow axis
     (`role_text.every_member_axis`, reading prepositions in `query`) and that `region`'s
-    answer meets.
+    answer meets, each mapped to that axis.
 
     A role-bearing answer (`RegionResult.answered_roles`) that binds no entity on the axis
     holds every member on it: one series per member where it declares a role there, and
@@ -568,22 +583,22 @@ def every_member_phrases(
     with no Spec meet none, so their phrases stay dropped.
     """
     if not region.specs:
-        return frozenset()
+        return {}
     answers = region.candidate_answered_roles or (region.answered_roles or (),)
     declared_by_answer = [
         {axis_for_role(role) for role in roles if role != "observationAbout"} for roles in answers
     ]
     if not all(declared_by_answer):
-        return frozenset()
+        return {}
     declared_by_all = set.intersection(*declared_by_answer)
     bound = {key for spec in region.specs for key in spec.definition.identity.entities}
-    return frozenset(
-        phrase.strip().casefold()
+    return {
+        phrase.strip().casefold(): axis
         for phrase in phrases
         if (axis := every_member_axis(phrase, query=query)) is not None
         and axis not in bound
         and (axis in declared_by_all or not every_member_breakdown(phrase))
-    )
+    }
 
 
 def _bound_open_role_warning(axis: RoleAxis) -> Warning:
