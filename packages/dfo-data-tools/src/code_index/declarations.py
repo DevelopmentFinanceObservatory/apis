@@ -1,10 +1,10 @@
 """The authored declarations the code index export reads.
 
 Code systems, datasets, party kinds and total groups, measure axes, labels and nouns,
-synonyms, concept groups, shape slot defaults, implied values, measure classes and variable
-aliases. The export
-(`code_index.export`) reads them beside the graph. Nothing here reads the graph or imports a
-script, so a build that has no graph client can load them.
+synonyms, concept groups, slot plain names, shape slot defaults, broad readings, implied
+values, measure classes and variable aliases. The export (`code_index.export`) reads them
+beside the graph. Nothing here reads the graph or imports a script, so a build that has no
+graph client can load them.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from code_index.types import (
+    BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
     HouseDefaultCase,
@@ -156,7 +157,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             code="DAC2aAidType206",
             when_bound_under=(),
             when_open=True,
-            note="No aid type was named, so the answer covers official development assistance.",
+            note="The answer covers official development assistance of every aid type.",
         ),
     ),
     # DAC1 aid types nest totals over their parts ("bilateral ODA" under "ODA"), and memo items
@@ -175,7 +176,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             code="DAC1AidType1010",
             when_bound_under=(),
             when_open=True,
-            note="No aid type was named, so the answer covers official development assistance.",
+            note="The answer covers official development assistance of every aid type.",
         ),
     ),
     # DAC2b flow types nest totals over their parts (OOF under official non-concessional
@@ -279,6 +280,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         account="provider",
         rank=20,
         house_default_for=("donor",),
+        ratio_base_axis="origin",
     ),
     DatasetDeclaration(
         provenance=_DAC2A,
@@ -298,6 +300,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
         house_default_for=("recipient",),
+        ratio_base_axis="destination",
     ),
     DatasetDeclaration(
         provenance=_DAC2B,
@@ -1242,12 +1245,63 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
     ),
 )
 # A birth in demographic statistics is a live birth, and the crude birth rate is live births
-# per person. A births question that names no status reads live births.
+# per person. A births question that names no status reads live births. Debt named without a
+# flow word ("Kenya's debt owed to China") is the stock outstanding, so a debt position that
+# names no position type reads the amount outstanding.
 SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
     ShapeSlotDefault(
         population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
     ),
+    ShapeSlotDefault(
+        population_type="FinancialPosition",
+        property_dcid="financialPositionType",
+        value_dcid="AmountOutstanding",
+    ),
 )
+
+# The World Bank's "publicly guaranteed" debt is the private-sector debt a public body
+# guarantees, but the words alone ask for public and publicly guaranteed debt, the aggregate.
+# Every IDS series of the guaranteed claim is the private-sector debtor's, so a question names
+# the narrow category exactly when it names a debtor ("publicly guaranteed private-sector
+# debt").
+BROAD_READINGS: tuple[BroadReading, ...] = (
+    BroadReading(
+        property_dcid="guaranteeStatus",
+        value_dcid="PubliclyGuaranteedClaim",
+        reads_as="PublicOrPubliclyGuaranteed",
+        unless_bound="idsDebtorType",
+        held_with="IDSDebtorTypePrivateSector",
+        note=(
+            "Publicly guaranteed was read as public and publicly guaranteed debt. For "
+            "private-sector debt under a public guarantee, ask for publicly guaranteed "
+            "private-sector debt."
+        ),
+    ),
+)
+
+# The noun naming each constraint property of the index's StatVars that no code system declares,
+# singular, as a question names its slot ("across all types of finance", "held in different
+# currencies"). A code system's own noun is its `CodeSystemConfig.plain_name`. A graph label
+# carries its publisher's prefix ("DAC type of finance", "IDS creditor type"), and a single word
+# of it names no slot, so a slot without a noun here is named by its whole label.
+SLOT_PLAIN_NAMES: Mapping[str, str] = {
+    "currencyOfDenomination": "currency",
+    "dacTypeOfFinance": "type of finance",
+    "financialFlowType": "flow type",
+    "financialObligationType": "obligation type",
+    "financialPositionType": "position type",
+    "financingForm": "financing form",
+    "financingResource": "financing resource",
+    "guaranteeStatus": "guarantee status",
+    "idsConcessionality": "concessionality",
+    "idsCreditorType": "creditor type",
+    "idsDebtorType": "debtor type",
+    "includesIMFCredit": "IMF credit",
+    "interestRateVariability": "interest rate variability",
+    "maturityBand": "maturity",
+    "netOf": "netted flow",
+    "nettingBasis": "netting basis",
+}
 
 # Life expectancy is life expectancy at birth, and gross domestic product is the product of
 # all economic activities. The headline series of each states nothing on the property, and

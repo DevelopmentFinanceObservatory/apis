@@ -907,26 +907,66 @@ def test_each_menu_shape_states_whether_it_has_data_at_the_named_places():
     assert "data at the named places" not in _build_universal_bind_prompt("widget", shapes)
 
 
+_GNI = "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+
+
 @pytest.mark.parametrize(
-    ("denominator", "unresolved", "line"),
+    ("denominator", "unresolved", "datasets", "line"),
     [
-        ("Count_Person", False, "measurementDenominator=per person"),
-        ("PerCapita", True, "measurementDenominator=per person"),
-        ("area", False, "measurementDenominator=per area"),
-        ("Count_Person_15OrMoreYears", False, "measurementDenominator=Count_Person_15OrMoreYears"),
-        (None, True, "measurementDenominator=(present, unresolved)"),
+        ("Count_Person", False, None, "measurementDenominator=per person"),
+        ("PerCapita", True, None, "measurementDenominator=per person"),
+        ("area", False, None, "measurementDenominator=per area"),
+        (
+            "Count_Person_15OrMoreYears",
+            False,
+            None,
+            "measurementDenominator=Count_Person_15OrMoreYears",
+        ),
+        (None, True, None, "measurementDenominator=(present, unresolved)"),
+        (_GNI, False, ("provenance/OECDDAC1",), f"measurementDenominator={_GNI} of the provider"),
+        (
+            _GNI,
+            False,
+            ("provenance/OECDDAC2A",),
+            f"measurementDenominator={_GNI} of the recipient",
+        ),
+        (
+            "Count_Person",
+            False,
+            ("provenance/OECDDAC2A",),
+            "measurementDenominator=per person of the recipient",
+        ),
+        (
+            _GNI,
+            False,
+            ("provenance/OECDDAC1", "provenance/OECDDAC2A"),
+            f"measurementDenominator={_GNI}",
+        ),
     ],
-    ids=["count-person", "per-capita-provisional", "area", "statvar", "dcid-less"],
+    ids=[
+        "count-person",
+        "per-capita-provisional",
+        "area",
+        "statvar",
+        "dcid-less",
+        "donor-gni",
+        "recipient-gni",
+        "recipient-population",
+        "bases-disagree",
+    ],
 )
-def test_a_schema_term_denominator_shows_its_meaning(denominator, unresolved, line):
+def test_a_schema_term_denominator_shows_its_meaning(denominator, unresolved, datasets, line):
     """`Count_Person` and the ProvisionalNode `PerCapita` show the model one per-person
     base, so neither spelling reads as the more precise reading. A StatVar denominator
-    shows its dcid, and an arc with no dcid stays unresolved."""
+    shows its dcid, and an arc with no dcid stays unresolved. A ratio whose datasets declare
+    whose total it divides by (`DatasetDeclaration.ratio_base_axis`) names that party, so
+    DAC1's share of the donor's GNI and DAC2a's share of the recipient's read apart."""
     shape = dataclasses.replace(
         _shape("gdp"),
         meas_qual_dcid="Nominal",
         meas_denom_dcid=denominator,
         meas_denom_unresolved=unresolved,
+        datasets=datasets,
     )
     prompt = _build_universal_bind_prompt("GDP per capita", [shape])
 

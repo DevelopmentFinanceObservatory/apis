@@ -400,9 +400,15 @@ def _direction_discarded(fact: DepartureFact, _family: FlowFamily | None, shows_
         raise ValueError("direction_discarded needs the flow axis the place was named on")
     # The answer's measure has no flow roles, so no family names them.
     noun = GENERIC_ROLE_WORDING.noun(fact.over)
+    asked = _asked(fact)
+    if not shows_data:
+        return (
+            f"You named {asked} as a {noun.singular}, but this measure has no "
+            f"{noun.plural}, so this checked {asked} itself."
+        )
     return (
-        f"You named {_asked(fact)} as a {noun.singular}. This measure has no "
-        f"{noun.plural}, so this {'shows' if shows_data else 'checked'} the place itself."
+        f"You named {asked} as a {noun.singular}. This measure has no "
+        f"{noun.plural}, so this shows the place itself."
     )
 
 

@@ -240,17 +240,23 @@ def test_a_hallucinated_requested_all_phrase_not_in_the_input_list_is_discarded(
 class _TwoLegLLM:
     """Record each variable's bind prompt and claim the breadth phrase on the CRS shape."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        dropped_qualifiers: tuple[str, ...] = (_BREADTH_PHRASE,),
+        second: str = _RESOLVE_DETECT_QUERY,
+    ) -> None:
         self.prompts_by_variable: dict[str, str] = {}
+        self._dropped = list(dropped_qualifiers)
+        self._second = second
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "Extraction":
             return Extraction(
                 kind="resolution",
-                variables=[_QUERY, _RESOLVE_DETECT_QUERY],
+                variables=[_QUERY, self._second],
                 entities=[ExtractedEntity(text="Kenya")],
                 dates=[],
-                dropped_qualifiers=[_BREADTH_PHRASE],
+                dropped_qualifiers=self._dropped,
             ), None
         if schema is QuantityOutput:
             return NO_QUANTITY
@@ -280,12 +286,12 @@ class _TwoLegLLM:
         return elected_reply(0, bindings=[], also_plausible=[]), None
 
 
-def _two_leg_graph() -> FakeGraph:
+def _two_leg_graph(second: str = _RESOLVE_DETECT_QUERY) -> FakeGraph:
     return FakeGraph(
         nodes={**_E2E_NODES, **_RESOLVE_NODES},
         detect={
             _QUERY: {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]},
-            _RESOLVE_DETECT_QUERY: {"svs": [_RESOLVE_SV], "entities": []},
+            second: {"svs": [_RESOLVE_SV], "entities": []},
         },
         resolve=_RESOLVE_RESOLVE,
         obs=_E2E_OBS,
@@ -331,6 +337,39 @@ def test_two_variable_query_broadcasts_dropped_qualifiers_to_every_leg():
     assert len(flow_filters) == 1
     assert flow_filters[0].binding_kind == "unbound"
     assert flow_filters[0].provenance != "declared_default"
+
+
+@pytest.mark.parametrize(
+    ("dropped", "in_bind", "warned"),
+    [
+        # Dropped, and held by the second variable alone: that leg's bind reads it and its
+        # part warns, though the part has no answer.
+        (("multilateral",), True, True),
+        # Held by the variable only: the bind reads it in the variable already, and a part
+        # with no answer leaves it unjudged, since its refusal states why nothing is shown.
+        ((), False, False),
+    ],
+)
+def test_a_narrowing_word_is_judged_on_the_part_whose_variable_holds_it(dropped, in_bind, warned):
+    """A narrowing word the second variable holds reaches that part alone: the first part
+    and the envelope never warn for it."""
+    second = "multilateral population"
+    llm = _TwoLegLLM(dropped_qualifiers=dropped, second=second)
+    response = offline_resolve(
+        make_request(f"standard grants and {second}"),
+        graph=_two_leg_graph(second),
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert "DROPPED QUALIFIERS" not in llm.prompts_by_variable[_QUERY]
+    assert ("DROPPED QUALIFIERS" in llm.prompts_by_variable[second]) is in_bind
+    dropped_warning = 'The requested qualifier "multilateral" was not applied.'
+    assert [w.message for w in response.parts[1].warnings if w.code == QUERY_QUALIFIER_DROPPED] == (
+        [dropped_warning] if warned else []
+    )
+    assert not [w for w in response.parts[0].warnings if w.code == QUERY_QUALIFIER_DROPPED]
+    assert not [w for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED]
 
 
 def test_a_requested_all_claim_on_a_property_the_elected_shape_lacks_keeps_its_warning():

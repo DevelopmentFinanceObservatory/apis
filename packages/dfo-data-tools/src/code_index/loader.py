@@ -11,6 +11,7 @@ from code_index.query import CodeIndex, DuplicateDcid, partly_stated_five_tuples
 from code_index.types import (
     PARTY_KINDS,
     AbsentObservation,
+    BroadReading,
     CodeRow,
     CodeSystemDeclaration,
     DatasetDeclaration,
@@ -63,11 +64,12 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     are optional: an index without the first two declares no party kind, one without the third
     lists no StatVar outside its code systems (`CodeIndex.listed_statvars`), one without the
     fourth holds no series code, and one without the fifth no value parent. So are
-    `shape_slot_defaults`, `partly_stated_values`, `implied_values`, `measure_classes`,
-    `variable_aliases` and `stat_type_words`, each reading as empty where absent; a measure class or stat-type
-    pattern that does not compile, or a variable alias or a `no_vocabulary_terms` entry that
-    is not a non-empty lowercase string, raises `IndexFormatError`. A value that two
-    `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
+    `shape_slot_defaults`, `broad_readings`, `partly_stated_values`, `implied_values`,
+    `measure_classes`, `variable_aliases`, `slot_plain_names` and `stat_type_words`, each
+    reading as empty where absent. A measure class or stat-type pattern that does not compile,
+    a variable alias or a `no_vocabulary_terms` entry that is not a non-empty lowercase string,
+    or a slot plain name that is not a non-empty string raises `IndexFormatError`. A value
+    that two `value_parents` rows name raises `DuplicateDcid`, and a parent chain that cycles
     `CyclicParent`. A `source_codes` row the StatVar rows contradict raises `IndexFormatError`
     (`_check_source_codes`), as does a `partly_stated_values` row they contradict
     (`_check_partly_stated_values`), and an `implied_values` row the code or StatVar rows
@@ -87,12 +89,14 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         shape_slot_defaults = [
             _parse_shape_slot_default(row) for row in payload.get("shape_slot_defaults", ())
         ]
+        broad_readings = [_parse_broad_reading(row) for row in payload.get("broad_readings", ())]
         partly_stated_values = [
             _parse_partly_stated_value(row) for row in payload.get("partly_stated_values", ())
         ]
         implied_values = [_parse_implied_value(row) for row in payload.get("implied_values", ())]
         measure_classes = [_parse_measure_class(row) for row in payload.get("measure_classes", ())]
         variable_aliases = _parse_variable_aliases(payload.get("variable_aliases", {}))
+        slot_plain_names = _parse_slot_plain_names(payload.get("slot_plain_names", {}))
         stat_type_words = [_parse_stat_type_word(row) for row in payload.get("stat_type_words", ())]
         source_codes = [_parse_source_code(row) for row in payload.get("source_codes", ())]
         value_parents = _parse_value_parents(payload.get("value_parents", ()))
@@ -113,10 +117,12 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         parties=parties,
         listed_statvars=listed_statvars,
         shape_slot_defaults=shape_slot_defaults,
+        broad_readings=broad_readings,
         partly_stated_values=partly_stated_values,
         implied_values=implied_values,
         measure_classes=measure_classes,
         variable_aliases=variable_aliases,
+        slot_plain_names=slot_plain_names,
         stat_type_words=stat_type_words,
         source_codes=source_codes,
         value_parents=value_parents,
@@ -128,6 +134,17 @@ def _parse_shape_slot_default(row: Mapping) -> ShapeSlotDefault:
         population_type=row["population_type"],
         property_dcid=row["property"],
         value_dcid=row["value"],
+    )
+
+
+def _parse_broad_reading(row: Mapping) -> BroadReading:
+    return BroadReading(
+        property_dcid=row["property"],
+        value_dcid=row["value"],
+        reads_as=row["reads_as"],
+        unless_bound=row["unless_bound"],
+        held_with=row["held_with"],
+        note=row["note"],
     )
 
 
@@ -188,6 +205,16 @@ def _parse_variable_aliases(payload: Mapping) -> dict[str, str]:
         if not isinstance(expansion, str) or not expansion.strip():
             raise IndexFormatError(f"variable alias {alias!r} expands to {expansion!r}")
     return aliases
+
+
+def _parse_slot_plain_names(payload: Mapping) -> dict[str, str]:
+    """The `slot_plain_names` block, refusing a name that is not a non-empty string without
+    surrounding space."""
+    names = dict(payload)
+    for prop, name in names.items():
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise IndexFormatError(f"slot {prop!r} has plain name {name!r}")
+    return names
 
 
 def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
@@ -416,7 +443,8 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     a `rank` that is not an integer, an empty `label`, an empty `description`,
     a `stated_words` row `_parse_stated_words` refuses or a `party_words` row
     `_parse_party_words` refuses (both keys are optional), a `house_default_for`
-    (optional) that is not a list of `HouseDefaultCase` values, or a
+    (optional) that is not a list of `HouseDefaultCase` values, a `ratio_base_axis`
+    (optional, absent reads as `None`) outside `AXIS_LABELS`, or a
     `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
@@ -436,6 +464,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
                 party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
                 house_default_for=tuple(row.get("house_default_for", ())),
+                ratio_base_axis=row.get("ratio_base_axis"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
@@ -466,6 +495,11 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 f"datasets row for {dataset.provenance!r} carries "
                 f"house_default_for={list(dataset.house_default_for)!r}, outside the "
                 f"vocabulary {sorted(_HOUSE_DEFAULT_CASES)!r}"
+            )
+        if dataset.ratio_base_axis is not None and dataset.ratio_base_axis not in AXIS_LABELS:
+            raise IndexFormatError(
+                f"datasets row for {dataset.provenance!r} carries "
+                f"ratio_base_axis={dataset.ratio_base_axis!r}, outside {sorted(AXIS_LABELS)!r}"
             )
         if not dataset.label:
             raise IndexFormatError(f"datasets row for {dataset.provenance!r} carries no label")
