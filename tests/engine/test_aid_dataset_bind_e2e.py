@@ -60,6 +60,7 @@ from search.models import (
     Operation,
     ParsedInput,
     ParsedPart,
+    RawTextInput,
     ResolveRequest,
     ResolveResponse,
     SourceMention,
@@ -2547,3 +2548,89 @@ def test_of_tables_reading_a_question_alike_one_without_series_at_its_places_lea
     )
 
     assert menus == [menu]
+
+
+_DEU = "country/DEU"
+
+
+def _dac2a_aid_type_siblings() -> list[str]:
+    """DAC2a's gross disbursement members that differ from `_DAC2A_MEMBER` (ODA,
+    `DAC2aAidType206`) in their aid type alone, so the elected shape offers that slot."""
+    index = get_index()
+    base = next(row for row in index.statvars if row.dcid == _DAC2A_MEMBER)
+
+    def rest(row: Any) -> dict[str, str]:
+        return {k: v for k, v in row.constraint_properties.items() if k != "dac2aAidType"}
+
+    return [
+        row.dcid
+        for row in index.statvars
+        if row.provenances == (_DAC2A,)
+        and row_five_tuple(row) == row_five_tuple(base)
+        and rest(row) == rest(base)
+    ]
+
+
+@pytest.mark.parametrize(
+    "drafted",
+    [
+        pytest.param((), id="reply-leaves-the-slot-out"),
+        pytest.param(
+            (SlotBindingDraft(axis="how", property_dcid="dac2aAidType", kind="unbound"),),
+            id="reply-leaves-the-slot-open",
+        ),
+    ],
+)
+def test_the_aid_type_default_binds_a_slot_the_reply_leaves_out(
+    monkeypatch: pytest.MonkeyPatch, drafted: tuple[SlotBindingDraft, ...]
+):
+    """DAC2a's aid type defaults to ODA on every open slot. A bind reply that lists no
+    binding for the slot leaves it as open as one that drafts it unbound, so "German aid to
+    Kenya" binds ODA by the default and warns `slot_defaulted` either way."""
+    members = _dac2a_aid_type_siblings()
+    assert _DAC2A_MEMBER in members and len(members) > 1
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [(member, "dac2a", _DEU, _KEN, [2021]) for member in members],
+        role_names=dict.fromkeys(members, names),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    graph = FakeGraph(
+        nodes={
+            _DEU: {"label": "Germany", "type": "Country"},
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _DAC2A: {"label": "OECD DAC2a"},
+            **{m: {"label": m, "type": "StatisticalVariable", "arcs": _arcs(m)} for m in members},
+        },
+        detect={
+            "aid": {
+                "svs": members,
+                "cosine_scores": [0.9 - 0.01 * rank for rank in range(len(members))],
+            }
+        },
+        resolve={"Germany": _DEU, "Kenya": _KEN},
+        obs={},
+    )
+    germany = ExtractedEntity(text="Germany", span="German", flow_role="origin", role_span="German")
+
+    response = offline_resolve(
+        ResolveRequest(input=RawTextInput(query="German aid to Kenya")),
+        graph=graph,
+        llm=_ScriptedLLM("aid", entities=(germany, _TO_KENYA), drafted=drafted),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    (aid_type,) = [
+        slot
+        for slot in part.spec.resolved.trace.slot_filters
+        if slot.key.property is not None and slot.key.property.ref == "dac2aAidType"
+    ]
+    assert (aid_type.binding_kind, [ref.ref for ref in aid_type.refs], aid_type.provenance) == (
+        "value",
+        ["DAC2aAidType206"],
+        "declared_default",
+    )
+    assert "slot_defaulted" in [warning.code for warning in part.warnings]

@@ -281,7 +281,9 @@ def _settle_bindings(
     reading the shape keeps of each two-reading span
     (`reading_for_shape`), which admission read.
 
-    The source drafts leave and invalid ``requested_all`` claims are demoted
+    Each constraint slot of the shape the reply drafts nothing for gets an ``unbound``
+    draft (`_with_every_slot_drafted`), so every later pass reads one draft per slot. The
+    source drafts leave and invalid ``requested_all`` claims are demoted
     (`bind.validate_requested_all_bindings`). The binder applies it to its pick's drafts,
     and this pass keeps a claim only on a slot of the elected shape. Each slot
     whose taxonomy holds one value and that the reply left unbound is claimed as that
@@ -299,7 +301,9 @@ def _settle_bindings(
     forced into the bindings (`_force_qualifier_bindings`).
     """
     bind_result = state.bind_result
-    bind_result.bindings = without_dataset_drafts(bind_result.bindings)
+    bind_result.bindings = _with_every_slot_drafted(
+        without_dataset_drafts(bind_result.bindings), shape_draft
+    )
     bind_result.bindings, state.applied_dropped_qualifier_phrases = validate_requested_all_bindings(
         bind_result.bindings,
         state.dropped_qualifier_phrases,
@@ -397,6 +401,27 @@ def _settle_bindings(
         _log_admitted_qualifiers(admitted_qualifiers)
 
     return unresolved, readings
+
+
+def _with_every_slot_drafted(
+    bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """`bindings` with an ``unbound`` engine draft for each constraint slot of
+    `shape_draft` they hold no draft for, in slot order after the reply's own.
+
+    The bind prompt asks the reply for one binding per constraint slot, and a reply can
+    leave one out. Every pass after it reads the slot through its draft: a single-member
+    slot is claimed as its sole option (`_claim_single_member_slots`), and a declared
+    default fires on an open slot's draft (`bind_repair.apply_declared_defaults`). A slot
+    left out is open, so it reads as one drafted ``unbound``: "German aid to Kenya" binds
+    DAC2a's ODA aid type by its default whether or not the reply lists the slot."""
+    drafted = {draft.property_dcid for draft in bindings}
+    missing = [
+        SlotBindingDraft(axis=slot.axis, property_dcid=slot.property_dcid, kind="unbound")
+        for slot in shape_draft.slot_keys
+        if slot.property_dcid is not None and slot.property_dcid not in drafted
+    ]
+    return [*bindings, *missing] if missing else bindings
 
 
 def _settle_sole_options(
