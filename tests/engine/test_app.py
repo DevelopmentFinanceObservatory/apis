@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from logging.handlers import BufferingHandler
 
 import pytest
@@ -1039,9 +1042,9 @@ class TestCORS:
         assert "access-control-allow-origin" not in resp.headers
 
 
-@pytest.mark.parametrize("transport", ["buffered", "sse"])
-def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(transport):
-    """Each resolve logs one `resolve` line whose timing matches the response it served."""
+@contextmanager
+def _resolve_log_lines() -> Iterator[list[dict]]:
+    """Collect the JSON object of each `resolve` line logged inside the block."""
     # A handler on the module's own logger, since the `search` logger may stop propagation.
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
@@ -1050,10 +1053,27 @@ def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(tran
     core_logger.addHandler(handler)
     previous_level = core_logger.level
     core_logger.setLevel(logging.INFO)
+    lines: list[dict] = []
+    try:
+        yield lines
+    finally:
+        core_logger.removeHandler(handler)
+        core_logger.setLevel(previous_level)
+        lines.extend(
+            json.loads(r.getMessage().removeprefix("resolve "))
+            for r in records
+            if r.getMessage().startswith("resolve {")
+        )
+
+
+@pytest.mark.parametrize("transport", ["buffered", "sse"])
+def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(transport):
+    """Each resolve logs one `resolve` line whose timing, trace id and outcome match the
+    response it served."""
     headers = {"User-Agent": "dfo-test/1"}
     if transport == "sse":
         headers["Accept"] = "text/event-stream"
-    try:
+    with _resolve_log_lines() as lines:
         resp = make_client().post(
             "/api/search/resolve",
             json={
@@ -1062,9 +1082,6 @@ def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(tran
             },
             headers=headers,
         )
-    finally:
-        core_logger.removeHandler(handler)
-        core_logger.setLevel(previous_level)
     assert resp.status_code == 200
     body = (
         resp.json()
@@ -1072,9 +1089,8 @@ def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(tran
         else next(data["response"] for event, data in _parse_sse(resp.text) if event == "response")
     )
 
-    lines = [r.getMessage() for r in records if r.getMessage().startswith("resolve {")]
-    assert len(lines) == 1
-    logged = json.loads(lines[0].removeprefix("resolve "))
+    [logged] = lines
+    assert logged["trace_id"] == resp.headers["x-dfo-trace-id"] == body["diagnostics"]["trace_id"]
     assert logged["kind"] == "raw_text"
     assert logged["caller"] == "dfo-test/1"
     assert logged["include_observations"] is True
@@ -1088,6 +1104,12 @@ def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(tran
         (part.get("timing_ms") or {}).get("by_step") for part in body["parts"]
     ]
     assert any(logged["parts_by_step"])
+    assert logged["outcome"] == body["status"]
+    assert logged["part_statuses"] == [part["status"] for part in body["parts"]]
+    assert logged["llm_usage"] == body["diagnostics"].get("llm_usage")
+    assert logged["timed_out"] is False
+    assert logged["degraded_leg"] is False
+    assert logged["query_sha256"] == hashlib.sha256(b"fertility rate in kenya").hexdigest()
 
 
 def test_sse_pipeline_failure_logs_its_traceback_once(monkeypatch):
@@ -1171,14 +1193,20 @@ def test_json_route_answers_the_partial_200_when_a_leg_runs_past_the_soft_deadli
     client = make_client()
     started = time.monotonic()
     try:
-        resp = client.post(
-            "/api/search/resolve", json={"input": {"kind": "raw_text", "query": "two things"}}
-        )
+        with _resolve_log_lines() as lines:
+            resp = client.post(
+                "/api/search/resolve", json={"input": {"kind": "raw_text", "query": "two things"}}
+            )
     finally:
         release.set()
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["diagnostics"]["timed_out"] is True
+    # The cut leg is backfilled as variable_not_resolved; only `timed_out` tells it apart.
+    [logged] = lines
+    assert logged["outcome"] == "no_data"
+    assert logged["no_data_reasons"] == ["variable_not_resolved", "variable_not_resolved"]
+    assert logged["timed_out"] is True
     assert time.monotonic() - started < 2.0
     [seen] = deadlines_seen
     assert seen is not None and started + 2.0 < seen < started + 2.6
