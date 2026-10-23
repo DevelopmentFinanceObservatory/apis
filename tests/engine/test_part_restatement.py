@@ -478,12 +478,18 @@ class TestSuccessDirectional:
 class TestPlaceholderNoDataDirectionalRule:
     def test_entities_plus_role_query_with_no_door_axis_yields_no_restatement(self):
         region = _placeholder_no_data(
-            "aid", 0, entities=["France"], role_query="how much aid comes from France"
+            "aid",
+            0,
+            reason="timeout",
+            entities=["France"],
+            role_query="how much aid comes from France",
         )
         assert region.restatement is None
 
     def test_no_role_query_still_yields_a_restatement(self):
-        region = _placeholder_no_data("population", 0, entities=["Brazil"], role_query=None)
+        region = _placeholder_no_data(
+            "population", 0, reason="timeout", entities=["Brazil"], role_query=None
+        )
         assert region.restatement == ParsedPart(
             variable_text="population", entities=[ParsedEntity(text="Brazil")]
         )
@@ -494,6 +500,7 @@ class TestPlaceholderNoDataDirectionalRule:
         region = _placeholder_no_data(
             "aid",
             0,
+            reason="timeout",
             entities=["France"],
             role_query="how much aid comes from France",
             entity_roles={"France": [DoorRole(axis="origin", span="from France")]},
@@ -505,7 +512,7 @@ class TestPlaceholderNoDataDirectionalRule:
 
     def test_no_entities_yields_a_restatement_even_with_a_role_query(self):
         region = _placeholder_no_data(
-            "aid", 0, entities=[], role_query="how much aid comes from France"
+            "aid", 0, reason="timeout", entities=[], role_query="how much aid comes from France"
         )
         assert region.restatement is not None
         assert region.restatement.entities is None

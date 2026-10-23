@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 def _is_none(value: object) -> bool:
@@ -48,3 +49,8 @@ class ExtractedDate(BaseModel):
             "'last year', 'this year', 'los últimos 10 años'); leave start and end null."
         ),
     )
+    # A span counted back from now ("the last five years") asks for that many years ending
+    # at the newest year the answer's data holds, at most the current year that ends
+    # `end`. `time_bind.parse_time_text` sets it; the model's schema leaves it out, and a
+    # dump states it only when set, so a cache key tells the span from its calendar years.
+    trailing_years: SkipJsonSchema[int | None] = Field(default=None, exclude_if=_is_none)

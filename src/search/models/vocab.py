@@ -101,6 +101,7 @@ NoDataReason = Literal[
     "role_incompatible",
     "role_signature_incompatible",
     "qualifier_not_bound",
+    "timeout",
 ]
 NoDataCategory = Literal["unresolved", "absent"]
 QuantityForm = Literal["per_person", "per_head_base", "per_area", "rate", "share"]
@@ -182,6 +183,7 @@ NO_DATA_RESOLUTION_ORDER: tuple[NoDataReason, ...] = (
     "denominator_not_available",
     "no_observations",
     "facet_not_available",
+    "timeout",
 )
 """The contract's own no_data resolution order: source (a part's source words
 compile before anything else resolves, so an unmatched wording, then an ambiguous
@@ -205,7 +207,8 @@ code, maps to `unsupported_code` rather than `no_data_reason` on the `raw_text`/
 resolve doors, so a StatVar with no declared recipe surfaces as an
 `unsupported` part instead of reaching this order), slice
 (binding_mismatch sits at the slice position), denominator, observations,
-facet. When several reasons could apply, the first one in this order is what
+facet, then timeout, which only a part the request's deadline cut short carries, since
+it never ran far enough to meet another reason. When several reasons could apply, the first one in this order is what
 `reason` reports. This documents the contract sequence; it is not the
 enforcement mechanism. Each failure site in the pipeline returns immediately
 (region/pipeline.py, region/resubmit.py), so this constant can drift from
@@ -239,6 +242,7 @@ _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
         "variable_not_resolved",
         "role_not_resolved",
         "unit_not_resolved",
+        "timeout",
     }
 )
 """The NoDataReason values NoData._derive_category maps to category="unresolved"

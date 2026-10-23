@@ -291,15 +291,51 @@ class Extraction(BaseModel):
 
 @dataclass(frozen=True)
 class DateRequest:
-    """A date window or a request for the latest year present in facets."""
+    """A date window or a request for the latest year present in facets.
+
+    `trailing_years` marks a span counted back from now ("the last five years"): the
+    answer reads that many years ending at the newest year its data holds, at most
+    `window.end_year`, the current year. Until an answer settles them (`anchored`),
+    `window` reads every year up to that end, and `asked_window` is the calendar span
+    the wording names.
+    """
 
     window: TimeWindow | None
     latest: bool
+    trailing_years: int | None = None
 
     def __post_init__(self) -> None:
         # A request carries exactly one of `window` or `latest`.
         if self.window is not None and self.latest:
             raise ValueError("DateRequest: set either window or latest=True, not both")
+        if self.trailing_years is not None and (
+            self.window is None
+            or self.window.start_year is not None
+            or self.window.end_year is None
+            or self.trailing_years < 1
+        ):
+            raise ValueError("DateRequest: a trailing span reads an open start to its end year")
+
+    @property
+    def asked_window(self) -> TimeWindow | None:
+        """The calendar years the request names: a trailing span's count of years ending
+        at its end year, else `window`."""
+        if self.trailing_years is None or self.window is None or self.window.end_year is None:
+            return self.window
+        end = self.window.end_year
+        return TimeWindow(start_year=end - self.trailing_years + 1, end_year=end)
+
+    def anchored(self, newest_year: int) -> DateRequest:
+        """The request a trailing span settles to over data whose newest year inside
+        `window` is `newest_year`: its count of years ending there."""
+        if self.trailing_years is None:
+            return self
+        return DateRequest(
+            window=TimeWindow(
+                start_year=newest_year - self.trailing_years + 1, end_year=newest_year
+            ),
+            latest=False,
+        )
 
 
 def _parse_year(s: str | None) -> int | None:
@@ -314,10 +350,22 @@ def _parse_year(s: str | None) -> int | None:
 def dates_to_request(dates: list[ExtractedDate]) -> DateRequest | None:
     """Combine extracted dates. Bounds take precedence over `latest`.
 
-    Return `None` when no date bound parses and no `latest` entry exists.
+    A lone span counted back from now (`ExtractedDate.trailing_years`) yields a trailing
+    request, read up to its end year until the answer's data settles it
+    (`DateRequest.anchored`). Return `None` when no date bound parses and no `latest`
+    entry exists.
     """
     if not dates:
         return None
+    bounded = [d for d in dates if d.kind != "latest"]
+    if len(bounded) == 1 and (trailing := bounded[0].trailing_years) is not None:
+        end = _parse_year(bounded[0].end)
+        if end is not None:
+            return DateRequest(
+                window=TimeWindow(start_year=None, end_year=end),
+                latest=False,
+                trailing_years=trailing,
+            )
     starts: list[int] = []
     ends: list[int] = []
     has_latest = False

@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import contextvars
 import dataclasses
+import datetime
 import threading
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+import search.engine.extract as extract
 import search.engine.region.phase_answer as phase_answer
 import search.engine.region.promote_ground as promote_ground
 import search.engine.region.related_read as related_read
@@ -366,6 +369,41 @@ def test_a_role_range_answer_states_the_span_its_served_data_holds(
     assert requests == resubmit_requests
 
 
+@_ROUTES
+def test_a_trailing_span_ends_at_the_newest_year_the_data_holds(
+    monkeypatch, search_settings, discovered: bool, bulk: bool
+) -> None:
+    """ "The last five years" asked in 2026 of IDS data ending in 2020 reads 2016 to 2020,
+    states those years without a `year_unavailable` departure, and binds them in its
+    identity, so an unchanged resubmit says the same."""
+    span = DateRequest(
+        window=TimeWindow(start_year=None, end_year=2026), latest=False, trailing_years=5
+    )
+    first, index = _role_answer(
+        monkeypatch,
+        search_settings,
+        discovered=discovered,
+        bulk=bulk,
+        rows=_early_unserved_rows(),
+        metadata=_TWO_SOURCES,
+        date_request=span,
+    )
+    assert first.status == "definite", (first.status, first.no_data_reason)
+    spec = first.specs[0]
+    assert _dates(spec) == [DateRange(start="2016", end="2020")]
+    sentence = render_sentence(spec)
+    assert sentence.endswith(", 2016 to 2020. IDS."), sentence
+    assert _year_unavailable_shown(spec) == []
+    assert spec.definition.identity.requested_window == IdentityWindowRange(
+        start_year=2016, end_year=2020
+    )
+
+    again = _resubmit(spec, index)
+
+    assert again.status == "definite", (again.status, again.no_data_reason)
+    assert render_sentence(again.specs[0]) == sentence
+
+
 def _recorded_then_projected_rows() -> list:
     """IDS (`f1`) runs 2010 to 2020 and Alternative (`f9`) 2021 to 2028 at Aland and
     Bland."""
@@ -433,6 +471,22 @@ def test_a_standard_answer_names_the_years_its_plan_serves(monkeypatch, time_tex
     assert related == _STANDARD_RELATED * 2
 
 
+def test_a_standard_trailing_span_ends_at_the_newest_year_the_data_holds(monkeypatch) -> None:
+    """Kenya's fertility rate ends in 2020, so "the last 5 years" on the parsed door reads
+    2016 to 2020 and binds those years. USD Source serves 2018 to 2020 inside them, so the
+    answer departs from 2016 to 2020 alone, never from the calendar years."""
+    monkeypatch.setattr(extract, "date", SimpleNamespace(today=lambda: datetime.date(2026, 6, 23)))
+    first, plan = _fertility(monkeypatch, time_text="the last 5 years")
+
+    assert plan is not None
+    assert list(served_dates(plan).values()) == [("2018", "2020")]
+    assert first.definition.identity.requested_window == IdentityWindowRange(
+        start_year=2016, end_year=2020
+    )
+    assert _year_unavailable_shown(first) == ["2018 to 2020"]
+    assert "2026" not in render_sentence(first)
+
+
 def test_a_source_pin_dates_the_answer_from_the_pinned_source(monkeypatch, search_settings) -> None:
     """A resubmit pinning Alternative serves `f9` alone, so the answer is dated by its
     2016 to 2018, as its sources and coverage are."""
@@ -476,6 +530,41 @@ def _three_recipient_rows() -> list:
 
 
 _DISCOVERED = CoverageForm(variables=True, open_axis=("recipients", "recipient"))
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_an_open_origin_counts_the_parties_its_plan_serves(
+    monkeypatch, search_settings, bulk: bool
+) -> None:
+    """Debt flows to Aland and Bland from an unnamed creditor, 2015 to 2020. The plan serves
+    `f1`, which Creditors A and B hold in those years. Creditor C holds only `f9`, which no
+    election serves, and Creditor D holds `f1` only before 2015, so the answer counts two
+    creditors, as its data holds, on a first answer and on its resubmit."""
+    rows = [
+        (_FLOW, "f1", creditor, place, list(range(2010, 2021)))
+        for creditor in (_CREDITOR, "country/CRB")
+        for place in (_ALAND, _BLAND)
+    ]
+    rows += [
+        (_FLOW, "f9", "country/CRC", _ALAND, list(range(2016, 2019))),
+        (_FLOW, "f1", "country/CRD", _ALAND, list(range(2000, 2006))),
+    ]
+    first, index = _role_answer(
+        monkeypatch,
+        search_settings,
+        discovered=False,
+        bulk=bulk,
+        rows=rows,
+        metadata=_TWO_SOURCES,
+    )
+    assert first.status == "definite", (first.status, first.no_data_reason)
+    again = _resubmit(first.specs[0], index)
+    assert again.status == "definite", (again.status, again.no_data_reason)
+
+    for spec in (first.specs[0], again.specs[0]):
+        facts = [(f.role, f.member_count) for f in spec.resolved.role_axis_facts or ()]
+        assert facts == [("origin", 2)]
+        assert " from 2 providers," in render_sentence(spec), render_sentence(spec)
 
 
 def _stated_scope(result) -> tuple[list[str], int, str]:

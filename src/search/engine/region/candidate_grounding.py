@@ -97,7 +97,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.read_plan import ReadPlan, plan_probes
-from search.engine.retrieval.retrieve import Materialised, MemberPopulation
+from search.engine.retrieval.retrieve import Materialised, MemberPopulation, read_request
 from search.engine.shape import ShapeDraft
 from search.engine.spec_build import (
     RoleAxisFactInput,
@@ -276,7 +276,7 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
             filter_answer(
                 cand.mat,
                 _admission,
-                date_request=state.date_request,
+                date_request=read_request(cand.mat, state.date_request),
                 coverage_index=state.coverage.index,
             )
         )
@@ -378,7 +378,7 @@ def _candidate_conversions(
             rate_cache=state.rate_cache,
             dated_facets=state.graph,
             deadline=state.deadline,
-            date_request=state.date_request,
+            date_request=read_request(cand.mat, state.date_request),
             coverage_index=state.coverage.index,
         )
         gate_plan = answer.plan if answer is not filtered[index] else gate.plan
@@ -704,7 +704,9 @@ def _finish_candidate(
     )
     # Reuse materialised role facts without extra SDMX reads. Labelled entity options are
     # built only for a surviving definite answer.
-    cand_role_axis_facts = role_axis_facts_for_materialised(cand_mat, shape=cand_shape)
+    cand_role_axis_facts = role_axis_facts_for_materialised(
+        cand_mat, shape=cand_shape, plan=groundwork.plan
+    )
     cand_facet_bindings = (
         # A bound outcome guarantees a unit request. The type checker cannot carry that
         # attribute invariant through this access.
@@ -738,7 +740,9 @@ def _finish_candidate(
         slot_options=groundwork.slot_options_raw,
         available_at_place=cand_available_at_place,
         confidence=cand_confidence,
-        requested_window=requested_window_from_date_request(state.date_request),
+        requested_window=requested_window_from_date_request(
+            read_request(cand_mat, state.date_request)
+        ),
         identity_entities=groundwork.identity_entities,
         open_roles=cand_mat.open_axes,
         inapplicable_slots=groundwork.inapplicable_slots,
