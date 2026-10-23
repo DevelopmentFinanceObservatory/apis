@@ -24,6 +24,8 @@ from tests.engine.test_standard_resolve import (
     _un_arcs,
 )
 from tests.engine.test_un_tables_serving import (
+    _EMP_MEMBERS,
+    _EMP_SERIES,
     _FEMALE,
     _MALE,
     _QUINTILES,
@@ -35,6 +37,7 @@ from tests.engine.test_un_tables_serving import (
     _WEALTH,
     _hold_wealth_series,
     _resolve_by_wealth_quintile,
+    _resolve_teachers_in_nauru,
     _resolve_two_breakdowns,
     _two_breakdowns_graph,
 )
@@ -140,6 +143,12 @@ _CASES = {
         resolve=lambda bind: _by_wealth_quintile(bind, un_pass=False, urban=True),
         population_type=_SERIES,
         members=_who_members(urban=True),
+        counted=True,
+    ),
+    "set_bound_occupation_un_pass": _Case(
+        resolve=_resolve_teachers_in_nauru,
+        population_type=_EMP_SERIES,
+        members=_EMP_MEMBERS,
         counted=True,
     ),
     "sex_pair_walked": _Case(

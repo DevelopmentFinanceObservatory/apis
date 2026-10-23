@@ -810,6 +810,117 @@ def test_a_narrowed_part_whose_walk_settles_another_query_raises(bind_catalogue)
     check_breakdown_settled(shape, dataclasses.replace(walked, key=walk_key(query)), answer)
 
 
+_EMP_SERIES = "undata/ilo/SERIES-EMP_TEMP_NB"
+_EMP_TOTAL = "undata/ilo/EMP_TEMP_NB"
+_EMP_OCCUPATION = "undataOccupation"
+_EMP_AGE = "undataAge"
+_EMP_TEACHING = ("undata/OCCUPATION-ISCO08_23", "undata/OCCUPATION-ISCO88_23")
+_EMP_TEACHING_ASSOCIATE = "undata/OCCUPATION-ISCO88_33"
+_EMP_BY_OCCUPATION = {
+    f"{_EMP_TOTAL}.OCCUPATION--{value.rsplit('-', 1)[1]}": {_EMP_OCCUPATION: value}
+    for value in (*_EMP_TEACHING, _EMP_TEACHING_ASSOCIATE)
+}
+_EMP_MEMBERS: dict[str, dict[str, str]] = {
+    _EMP_TOTAL: {},
+    **_EMP_BY_OCCUPATION,
+    f"{_EMP_TOTAL}.OCCUPATION--ISCO08_23__SEX--F": {
+        _EMP_OCCUPATION: _EMP_TEACHING[0],
+        _SEX: "undata/SEX-F",
+    },
+    f"{_EMP_TOTAL}.SEX--F": {_SEX: "undata/SEX-F"},
+    f"{_EMP_TOTAL}.AGE--Y15T19": {_EMP_AGE: "undata/AGE-Y15T19"},
+}
+_EMP_QUERY = "teacher count"
+
+
+class _BindTeachingLLM:
+    """Elects the first shape and binds its occupation slot to the three teaching codes, in
+    an order other than the sorted one an identity states."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        teaching = SlotBindingDraft(
+            axis="how",
+            property_dcid=_EMP_OCCUPATION,
+            kind="set",
+            value_dcids=[_EMP_TEACHING_ASSOCIATE, *_EMP_TEACHING],
+        )
+        return elected_reply(0, bindings=[teaching]), None
+
+
+def _resolve_teachers_in_nauru(bind_catalogue):
+    """Bind tables holding an ILO employment series whole, with a total, one member per
+    teaching occupation, each holding three points at Nauru, and members by sex and by age,
+    and resolve "teacher count" in Nauru, the UN pass recalling every member but the total
+    and binding the occupation slot to the three teaching codes. No member is the total of
+    a set binding, and each teaching member asserts the occupation alone, so the identity
+    carries that slot alone."""
+    names = {_EMP_OCCUPATION: "Occupation", _SEX: "Sex", _EMP_AGE: "Age"}
+    bind_catalogue(
+        restrictive_catalogue(
+            provenances=[provenance_row("undata/p/ILO", UN_SYSTEM, segment="ilo")],
+            un_mirror=un_mirror(
+                {
+                    sv: un_variable(
+                        _EMP_SERIES,
+                        name=sv,
+                        constraints={
+                            prop: (names[prop], value, value) for prop, value in c.items()
+                        },
+                    )
+                    for sv, c in _EMP_MEMBERS.items()
+                }
+            ),
+        )
+    )
+    recalled = [sv for sv in _EMP_MEMBERS if sv != _EMP_TOTAL]
+
+    def node(sv: str, constraints: dict[str, str]) -> dict:
+        member = _member_node(sv, constraints)
+        member["arcs"]["populationType"] = {"nodes": [{"dcid": _EMP_SERIES}]}
+        return member
+
+    graph = FakeGraph(
+        nodes={
+            "country/NRU": {"label": "Nauru", "type": "Country"},
+            _EMP_SERIES: {"label": "Employment"},
+            **{prop: {"label": name} for prop, name in names.items()},
+            **{value: {"label": value} for c in _EMP_MEMBERS.values() for value in c.values()},
+            **{sv: node(sv, c) for sv, c in _EMP_MEMBERS.items()},
+        },
+        obs={
+            f"{sv}|country/NRU": [{"earliestDate": "2013", "latestDate": "2024", "obsCount": 3}]
+            for sv in _EMP_BY_OCCUPATION
+        },
+        detect={_EMP_QUERY: {"svs": [], "cosine_scores": []}},
+        un_detect={
+            _EMP_QUERY: {
+                "svs": recalled,
+                "cosine_scores": [0.9 - 0.01 * i for i in range(len(recalled))],
+            }
+        },
+        resolve={"Nauru": "country/NRU"},
+    )
+    return asyncio.run(
+        resolve_variable(
+            _EMP_QUERY,
+            entities=["Nauru"],
+            date_request=None,
+            detect_query=_EMP_QUERY,
+            role_query=f"{_EMP_QUERY} in Nauru",
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            llm=_BindTeachingLLM(),
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+            options=EngineOptions(deadline=None),
+        )
+    )
+
+
 def _settle_queued_presence_reads() -> None:
     """Wait for every availability read the presence read queued to settle."""
     while flights := [flight for flight in place_scope._flights.values() if not flight.done()]:

@@ -2172,13 +2172,28 @@ type WalkKey = tuple[
 
 def walk_key(query: FamilyQuery) -> WalkKey:
     """What a member walk reads of `query`: its five-tuple, slots, and bound and open role
-    keys."""
+    keys. A walk admits a member stating any ref of a ``set`` binding, so the key holds
+    each set as the identity states it, sorted and deduplicated (`IdentityBindingSet`),
+    and a query built from the binder's order keys the walk of the identity minted from
+    it."""
     return (
         query.five_tuple,
-        tuple(sorted(query.slots.items())),
+        tuple(sorted((prop, _walked_binding(binding)) for prop, binding in query.slots.items())),
         query.role_keys,
         query.open_role_keys,
     )
+
+
+def _walked_binding(binding: SlotBinding) -> SlotBinding:
+    """`binding` as a walk reads it: a ``set`` binding's refs sorted and deduplicated, and
+    a set of one ref the ``value`` binding of it, as `slot_bindings_from_identity` maps
+    one."""
+    match binding:
+        case ("set", refs):
+            ordered = tuple(sorted(set(refs)))
+            return ("set", ordered) if len(ordered) > 1 else ("value", ordered[0])
+        case _:
+            return binding
 
 
 @dataclass(frozen=True)
