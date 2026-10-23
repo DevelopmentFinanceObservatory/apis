@@ -19,6 +19,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.tokens import tokenize
 from entity_resolution import Admission, Entity, EntityResolver, Resolved
 from origin_catalogue import UnTables
+from origin_catalogue.families import FamilyKey
 from origin_catalogue.un_mirror import UnVariable
 from search.engine.bind import DraftBindingKind, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import BindRequest, GeminiBinder, JevBinder
@@ -1031,6 +1032,64 @@ def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(
     assert nominated == ("female", "refugee", "camps")
     assert _unrated_words(state) == unrated
     assert set(unrated) <= set(nominated)
+
+
+@pytest.mark.parametrize("kind", ["unbound", "absent"])
+def test_a_held_total_recall_did_not_find_reads_its_name(bind_catalogue, kind):
+    """ "female unemployment rate" over a family the catalogue holds, of the total and a
+    member by each sex, where recall finds the female member alone and the bind leaves the
+    sex slot unbound or absent: the answer serves the total, whose name reads
+    "unemployment", and "female" is left unrated. The words nominated before the bind are
+    read over the whole family too, so "female" is among them."""
+    series = "undata/ilo/SERIES-UNE_RATE"
+    female = f"{series}.SEX--F"
+    sexes = {
+        female: ("Unemployment rate: Female", "undata/SEX-F", "Female"),
+        f"{series}.SEX--M": ("Unemployment rate: Male", "undata/SEX-M", "Male"),
+    }
+    bind_catalogue(
+        FakeCatalogue(
+            un=UnTables(
+                mirror=un_mirror(
+                    {
+                        series: un_variable(series, name="Unemployment rate"),
+                        **{
+                            sv: un_variable(
+                                series, name=name, constraints={"undataSex": ("Sex", value, label)}
+                            )
+                            for sv, (name, value, label) in sexes.items()
+                        },
+                    }
+                )
+            )
+        )
+    )
+    sample = _value_shape(
+        "unemployment",
+        SlotKeyDraft(axis="how", property_dcid="undataSex", label="sex"),
+        members=[{"undataSex": "undata/SEX-F"}],
+        names=["Unemployment rate: Female"],
+    )
+    shape = replace(
+        sample,
+        pop_type_dcid=series,
+        meas_prop_dcid="value",
+        stat_type_dcid="measuredValue",
+        sv_arc_facts={female: next(iter((sample.sv_arc_facts or {}).values()))},
+        held_family=FamilyKey(series, "value", "measuredValue", None, None, False, False),
+    )
+    state = _state(
+        variable="female unemployment rate",
+        shape_draft=shape,
+        bindings=[_binding("undataSex", kind=kind)],
+        unplaced=[],
+        entities=(),
+    )
+    nominated = _nominated_words(state, state.shape_draft)
+    state.bindings = state.bind_result.bindings
+
+    assert nominated == ("female",)
+    assert _unrated_words(state) == ("female",)
 
 
 _FLOW_ROLES = ("financingProvider", "financingRecipient")

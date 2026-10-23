@@ -20,7 +20,10 @@ from search.engine.region.grounding import (
     carrier_flag_warnings,
     role_scope_defaulted_warnings,
 )
-from search.engine.retrieval.bound_values import bound_values_from_bindings
+from search.engine.retrieval.bound_values import (
+    bound_values_from_bindings,
+    shape_population_arcs,
+)
 from search.engine.retrieval.facts import read_declared_constraint_properties
 from search.engine.retrieval.retrieve import (
     FamilyTotalAbsent,
@@ -148,13 +151,13 @@ def lone_breakdown_absent(
     total by a breakdown the request did not name: its one breakdown signature
     (`standard.Narrow.lone_signature`), or the unopened properties of a family whose opened
     slots no signature holds together (`standard.Keep.unopened`) that a `served` member
-    asserts. The fact names the labels of those slots that `bindings` bind to no value
+    asserts, read over every member `shape` stands for (`shape_population_arcs`). The fact names the labels of those slots that `bindings` bind to no value
     (`slot_label`), in slot order, shown by `served[0]`, the answer's first member. `None`
     for any other decision."""
     if isinstance(decision, Narrow) and decision.lone_signature:
         properties = decision.properties
     elif isinstance(decision, Keep) and decision.unopened:
-        arcs = shape.sv_arc_facts or {}
+        arcs = shape_population_arcs(shape)
         properties = decision.unopened & {
             prop
             for sv in served

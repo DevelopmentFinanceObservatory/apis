@@ -268,6 +268,8 @@ class _BindNothingLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         return elected_reply(0), None
 
 
@@ -618,6 +620,8 @@ _QUINTILES = {
 
 _RESIDENCE = "undataResidenceArea"
 _URBAN = ("undata/RES-U", "Urban")
+_AGE = "undataAge"
+_UNDER_FIVE = ("undata/AGE-Y0T4", "Under 5 years old")
 
 
 def _hold_wealth_series(
@@ -626,16 +630,20 @@ def _hold_wealth_series(
     un_pass: bool,
     urban: bool = False,
     urban_sex: bool = False,
+    aged_sex: bool = False,
     query: str = "under-five mortality by wealth quintile",
 ) -> FakeGraph:
     """Bind tables holding a WHO series whole: five wealth members, each asserting one
     quintile and, with `urban`, the urban residence area too, and two by-sex members, each
-    asserting one sex and, with `urban_sex`, the urban residence area too, each member
+    asserting one sex and, with `urban_sex`, the urban residence area too and, with
+    `aged_sex`, the age under five, each member
     holding five points at Kenya. Return the graph whose recall for `query` scores the
     highest quintile alone, our resolve's or, with `un_pass`, the UN resolve's, ours
     recalling nothing."""
     residence = {_RESIDENCE: _URBAN} if urban else {}
-    sex_residence = {_RESIDENCE: _URBAN} if urban_sex else {}
+    sex_residence = ({_RESIDENCE: _URBAN} if urban_sex else {}) | (
+        {_AGE: _UNDER_FIVE} if aged_sex else {}
+    )
     members = {
         **{
             sv: (
@@ -653,7 +661,12 @@ def _hold_wealth_series(
             {_SEX: ("undata/SEX-M", "Male"), **sex_residence},
         ),
     }
-    slot_names = {_WEALTH: "Wealth quantile", _SEX: "Sex", _RESIDENCE: "Residence area"}
+    slot_names = {
+        _WEALTH: "Wealth quantile",
+        _SEX: "Sex",
+        _RESIDENCE: "Residence area",
+        _AGE: "Age",
+    }
     bind_catalogue(
         restrictive_catalogue(
             provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
@@ -1099,30 +1112,49 @@ def test_a_held_family_past_the_cold_read_cap_answers_unsettled_then_settles(
     assert len(submitted) == reads_first
 
 
+@pytest.mark.parametrize(
+    ("urban_sex", "aged_sex", "slots", "message"),
+    [
+        (
+            True,
+            False,
+            [_RESIDENCE, _SEX, _WEALTH],
+            "This indicator has no overall figure, so the answer shows it by residence area.",
+        ),
+        # Only the by-sex members recall did not find assert the age.
+        (
+            False,
+            True,
+            [_AGE, _RESIDENCE, _SEX, _WEALTH],
+            "This indicator has no overall figure, so the answer shows it by residence area "
+            "and age.",
+        ),
+    ],
+    ids=["shared_residence", "age_outside_the_sample"],
+)
 def test_breakdowns_no_member_holds_together_answer_by_every_member_with_a_departure(
-    bind_catalogue,
+    bind_catalogue, urban_sex: bool, aged_sex: bool, slots: list[str], message: str
 ) -> None:
-    """Every member of the series also asserts the urban residence area, and none asserts
-    both a sex and a wealth quintile, so "by sex and by wealth quintile" opens two slots no
-    breakdown holds together. The family keeps every slot and serves all seven members,
-    and the answer discloses the breakdown the question did not name, the residence area,
-    with the `closest_match` departure."""
+    """Every quintile member of the series also asserts the urban residence area, and none
+    asserts both a sex and a wealth quintile, so "by sex and by wealth quintile" opens two
+    slots no breakdown holds together. The family keeps every slot and serves all seven
+    members, and the answer discloses each breakdown the question did not name that a
+    served member asserts, read over the whole family though recall found one quintile
+    alone, with the `closest_match` departure."""
     query = "under-five mortality by sex and by wealth quintile"
     graph = _hold_wealth_series(
-        bind_catalogue, un_pass=False, urban=True, urban_sex=True, query=query
+        bind_catalogue,
+        un_pass=False,
+        urban=True,
+        urban_sex=urban_sex,
+        aged_sex=aged_sex,
+        query=query,
     )
 
     result = _resolve_by_wealth_quintile(graph, query)
 
     assert result.status == "definite"
     (answer,) = result.specs
-    assert [slot.property for slot in answer.definition.identity.slots] == [
-        _RESIDENCE,
-        _SEX,
-        _WEALTH,
-    ]
+    assert [slot.property for slot in answer.definition.identity.slots] == slots
     assert {sv.ref.ref for sv in answer.resolved.members} == {*_QUINTILES, _FEMALE, _MALE}
-    assert _breakdown_notice(result) == (
-        ["This indicator has no overall figure, so the answer shows it by residence area."],
-        ["closest_match"],
-    )
+    assert _breakdown_notice(result) == ([message], ["closest_match"])
