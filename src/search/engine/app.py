@@ -1235,6 +1235,10 @@ def search_surface(
             UpstreamVersionChangedError("exemplar rate table changed version during its load"),
         ),
         lifespan=lifespan,
+        registry_endpoints={
+            "/api/search/resolve": "search.resolve",
+            "/api/search/options": "search.options",
+        },
         request_scope=lambda: _request_scope(catalogue, release, conversions, variable_breadth),
     )
 

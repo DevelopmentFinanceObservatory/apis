@@ -56,6 +56,22 @@ just check       # lint, type check, and the full suite, as CI runs them
 
 `just check` and CI run the normative identity vector tests (`tests/engine/test_identity_vectors.py`) from the `spec-kit` repository. `just check` and `just test` find a clone at `../dfo-spec-kit`, or at the path in `DFO_SPEC_KIT_DIR`. A git worktree needs `DFO_SPEC_KIT_DIR` set explicitly, because the sibling fallback resolves relative to the worktree's own directory, not the main checkout's. `just check` fails when no clone resolves.
 
+### Changing what the clients read
+
+`tests/contract/test_client_contract.py` checks the app against the client contract spec-kit
+ships as `dfo-spec-kit-client-contract`. Each recorded scenario's requests and responses must
+validate against the app's OpenAPI document, every required member `strict-fields.json` lists
+must stay required and non-nullable, every enum value it lists must stay admitted, and every
+problem code a response carries must stay registered on its route at its status. When the test
+fails for a wire change you intend, commit the change, record the contract against your branch's
+local app with spec-kit's `tools/capture_client_contract.py`
+(`openapi --dfo-apis <checkout>`, then `record --base-url http://127.0.0.1:8083/api`), open the
+spec-kit PR, and cut a spec-kit release. Move all six spec-kit pins to that release's commit in
+the same dfo-apis PR as the change: `dfo-spec-kit` and `dfo-spec-kit-client-contract` in the root
+`pyproject.toml`, and the four in `packages/dfo-data-tools/pyproject.toml`. A change that keeps
+the shape and alters behaviour passes this test, and the sdk's scheduled end-to-end run catches
+it after merge.
+
 ### SDMX live tests
 
 `tests/dc_sdmx/` runs offline against recorded wire fixtures. `test_live.py` calls a real Data Commons deployment and is skipped unless `DFO_SDMX_LIVE_BASE` is set.
