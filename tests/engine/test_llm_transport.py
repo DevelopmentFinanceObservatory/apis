@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import select
 import socket
 import threading
@@ -21,6 +22,7 @@ from google.genai.types import HttpOptions
 from pydantic import BaseModel
 
 import search.engine.clients.llm as llm_module
+import search.engine.config as config
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.llm import LLM, LLMMemo, detached, generate_structured_async
 from search.engine.errors import LLMInfraError, LLMOutputRefused
@@ -573,88 +575,101 @@ def test_an_api_key_override_llm_reuses_one_client(
 
 
 class _ScriptedModels:
-    """`client.aio.models` whose `get` raises or answers each scripted outcome in turn."""
+    """`client.aio.models` whose `get` raises `outcome`, or answers when it is None."""
 
-    def __init__(self, outcomes: list[Exception | None]) -> None:
-        self._outcomes = outcomes
+    def __init__(self, outcome: Exception | None) -> None:
+        self._outcome = outcome
         self.models: list[str] = []
 
-    async def get(self, *, model: str, config: object = None) -> object:
+    async def get(self, *, model: str) -> object:
         self.models.append(model)
-        outcome = self._outcomes.pop(0)
-        if outcome is not None:
-            raise outcome
+        if self._outcome is not None:
+            raise self._outcome
         return object()
 
 
-def _install_models(monkeypatch: pytest.MonkeyPatch, outcomes: list[Exception | None]):
-    models = _ScriptedModels(outcomes)
+def install_scripted_models(
+    monkeypatch: pytest.MonkeyPatch, outcome: Exception | None
+) -> _ScriptedModels:
+    """Make `llm._get_client` return a client whose models.get meets `outcome`."""
+    models = _ScriptedModels(outcome)
     client = type("Client", (), {"aio": type("Aio", (), {"models": models})()})()
     monkeypatch.setattr(llm_module, "_get_client", lambda: client)
-    monkeypatch.setattr(llm_module, "_WARM_RETRY_DELAYS_S", (0.0, 0.0))
     return models
 
 
-def _client_error(code: int, status: str, message: str) -> genai_errors.ClientError:
-    return genai_errors.ClientError(
-        code, {"error": {"code": code, "status": status, "message": message}}
-    )
+def _client_error(code: int, status: str) -> genai_errors.ClientError:
+    return genai_errors.ClientError(code, {"error": {"code": code, "status": status}})
 
 
-_INVALID_KEY = _client_error(400, "INVALID_ARGUMENT", "API key not valid.")
-_RATE_LIMITED = _client_error(429, "RESOURCE_EXHAUSTED", "Quota exceeded.")
-_UNAVAILABLE = genai_errors.ServerError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}})
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [record for record in caplog.records if record.levelno == logging.WARNING]
 
 
 @pytest.mark.parametrize(
     "rejection",
     [
-        _INVALID_KEY,
-        _client_error(401, "UNAUTHENTICATED", "Request had invalid credentials."),
-        _client_error(403, "PERMISSION_DENIED", "Generative Language API has not been used."),
+        _client_error(400, "INVALID_ARGUMENT"),
+        _client_error(401, "UNAUTHENTICATED"),
+        _client_error(403, "PERMISSION_DENIED"),
+        _client_error(404, "NOT_FOUND"),
     ],
+    ids=["400", "401", "403", "404"],
 )
 @pytest.mark.usefixtures("live_client_env")
-def test_warm_fails_at_once_on_a_rejected_key(
+def test_warm_fails_on_a_rejected_key_or_model(
     monkeypatch: pytest.MonkeyPatch, rejection: genai_errors.ClientError
 ):
-    models = _install_models(monkeypatch, [rejection, None])
+    models = install_scripted_models(monkeypatch, rejection)
 
     with pytest.raises(LLMInfraError) as caught:
         asyncio.run(_REAL_WARM())
 
     assert caught.value.__cause__ is rejection
-    assert models.models == ["gemini-3.5-flash-lite"]
+    assert models.models == [config.settings().engine_model]
 
 
 @pytest.mark.parametrize(
-    "transient", [_RATE_LIMITED, _UNAVAILABLE, httpx.ConnectTimeout("connect timed out")]
+    "failure",
+    [
+        genai_errors.ServerError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}}),
+        _client_error(429, "RESOURCE_EXHAUSTED"),
+        httpx.ConnectTimeout("connect timed out"),
+        ValueError("an answer the SDK cannot read"),
+    ],
+    ids=["503", "429", "transport", "unexpected"],
 )
 @pytest.mark.usefixtures("live_client_env")
-def test_warm_retries_a_transient_failure(monkeypatch: pytest.MonkeyPatch, transient: Exception):
-    models = _install_models(monkeypatch, [transient, transient, None])
+def test_warm_serves_with_a_warning_when_gemini_does_not_answer(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failure: Exception
+):
+    models = install_scripted_models(monkeypatch, failure)
 
-    asyncio.run(_REAL_WARM())
+    with caplog.at_level(logging.INFO, logger=llm_module.__name__):
+        asyncio.run(_REAL_WARM())
 
-    assert len(models.models) == 3
+    assert models.models == [config.settings().engine_model]
+    assert [record.args for record in _warnings(caplog)] == [(failure,)]
 
 
 @pytest.mark.usefixtures("live_client_env")
-def test_warm_fails_once_transient_failures_exhaust_its_retries(monkeypatch: pytest.MonkeyPatch):
-    models = _install_models(monkeypatch, [_UNAVAILABLE, _RATE_LIMITED, _UNAVAILABLE, None])
+def test_warm_passes_without_a_warning_when_gemini_accepts_the_key(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    models = install_scripted_models(monkeypatch, None)
 
-    with pytest.raises(LLMInfraError) as caught:
+    with caplog.at_level(logging.INFO, logger=llm_module.__name__):
         asyncio.run(_REAL_WARM())
 
-    assert caught.value.__cause__ is _UNAVAILABLE
-    assert len(models.models) == 3
+    assert models.models == [config.settings().engine_model]
+    assert _warnings(caplog) == []
 
 
 @pytest.mark.usefixtures("live_client_env")
 def test_warm_without_a_key_fails_before_any_request(search_settings):
     search_settings(gemini_api_key="")
 
-    with pytest.raises(LLMInfraError, match="GEMINI_API_KEY"):
+    with pytest.raises(LLMInfraError):
         asyncio.run(_REAL_WARM())
 
     assert llm_module._CLIENT is None

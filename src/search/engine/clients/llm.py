@@ -524,55 +524,38 @@ def _forget_leader(task: asyncio.Task) -> None:
         logger.info("LLM memo leader call failed with no awaiter left: %s", exc)
 
 
-# The startup key check: one models.get per attempt, each bounded by its own timeout, with a
-# pause before each retry. The worst case, three timeouts and both pauses, is 33 seconds.
-_WARM_TIMEOUT_MS = 10_000
-_WARM_RETRY_DELAYS_S = (1.0, 2.0)
+# The startup key check's whole models.get, connect to last byte. HttpOptions.timeout bounds
+# each phase of a request alone, so the bound is set around the call.
+_WARM_TIMEOUT_S = 10.0
 
-# Client errors Gemini answers for load rather than for the request; 401, 403 and the
-# 400 INVALID_ARGUMENT of an invalid key reject it outright.
-_WARM_TRANSIENT_CLIENT_CODES = frozenset({408, 429})
+# The client errors that reject the key or the model outright: 400 INVALID_ARGUMENT for an
+# invalid key, 401 and 403 for credentials Gemini refuses, 404 for an unknown model.
+_WARM_REJECTION_CODES = frozenset({400, 401, 403, 404})
 
 
 async def warm() -> None:
-    """Build the singleton at startup and prove the key with a models.get on the engine model,
-    which spends no tokens.
+    """Build the singleton at startup and check the key with one models.get on the engine
+    model, which spends no tokens.
 
-    Gemini refusing the request (an invalid key, a forbidden project, an unknown model) raises
-    ``LLMInfraError`` at once. Rate limits, 5xx answers and transport failures are retried
-    ``len(_WARM_RETRY_DELAYS_S)`` times, then raise ``LLMInfraError``. A missing key or
-    dependency raises ``LLMInfraError`` before any request.
+    A missing key or dependency, and a client error in ``_WARM_REJECTION_CODES``, raise
+    ``LLMInfraError``, so the instance never serves. Any other failure, a 5xx, a 408 or 429,
+    a transport error, an answer the SDK cannot read or ``_WARM_TIMEOUT_S`` passing, logs a
+    WARNING and returns: the instance serves, and searches answer 503 until Gemini answers.
     """
     client = _get_client()
     from google.genai import errors
-    from google.genai.types import GetModelConfig, HttpOptions
 
     model = config.settings().engine_model
-    request_config = GetModelConfig(http_options=HttpOptions(timeout=_WARM_TIMEOUT_MS))
-    attempts = len(_WARM_RETRY_DELAYS_S) + 1
-    for attempt in range(1, attempts + 1):
-        try:
-            await client.aio.models.get(model=model, config=request_config)
-        except errors.APIError as exc:
-            transient = isinstance(exc, errors.ServerError) or (
-                exc.code in _WARM_TRANSIENT_CLIENT_CODES
-            )
-            if not transient:
-                raise LLMInfraError(f"Gemini refused the startup key check: {exc}") from exc
-            failure: Exception = exc
-        except httpx.TransportError as exc:
-            failure = exc
-        else:
-            logger.info("Gemini key check passed (model=%s attempts=%d)", model, attempt)
-            return
-        if attempt == attempts:
-            raise LLMInfraError(
-                f"Gemini startup key check failed after {attempts} attempts: {failure!r}"
-            ) from failure
-        logger.warning(
-            "Gemini key check attempt %d of %d failed, retrying: %r", attempt, attempts, failure
-        )
-        await asyncio.sleep(_WARM_RETRY_DELAYS_S[attempt - 1])
+    try:
+        async with asyncio.timeout(_WARM_TIMEOUT_S):
+            await client.aio.models.get(model=model)
+    except Exception as exc:
+        if isinstance(exc, errors.ClientError) and exc.code in _WARM_REJECTION_CODES:
+            raise LLMInfraError(f"Gemini rejected the startup key check: {exc}") from exc
+        # Searches report any other failure, request by request, as they did before the check.
+        logger.warning("Gemini key check failed; serving without it: %r", exc)
+    else:
+        logger.info("Gemini key check passed (model=%s)", model)
 
 
 # LLMMemo stores the model's text as bytes by `_memo_key`. ResponseCache supplies the

@@ -11,8 +11,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from google.genai import errors as genai_errors
 
 import search.engine.clients.graph_client as graph_module
+import search.engine.clients.llm as llm_module
 import skills_index.shared as skills_shared_module
 from entity_resolution import release_shared
 from graph_generation import FakeGeneration
@@ -30,9 +32,13 @@ from tests.conftest import OfflineContractViolation
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import EMPTY_SDMX
 from tests.engine._options_fixtures import _options_request
+from tests.engine.test_llm_transport import install_scripted_models
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
 
 _FAKE_LLM = FakeLLM()
+
+# Captured at import, before `_guard_live_client_construction` swaps it for its refusal.
+_REAL_WARM = llm_module.warm
 
 
 # These queries need the dev-finance fixtures to exercise the data path.
@@ -242,12 +248,39 @@ class TestLifespanWarm:
         with (
             patch(
                 "search.engine.clients.llm.warm",
+                new_callable=AsyncMock,
                 side_effect=LLMInfraError("GEMINI_API_KEY is required"),
             ),
             pytest.raises(LLMInfraError),
             TestClient(app, raise_server_exceptions=True),
         ):
             pass  # Startup should raise before reaching here
+
+    @pytest.mark.parametrize(
+        ("outcome", "starts"),
+        [
+            (genai_errors.ClientError(400, {"error": {"status": "INVALID_ARGUMENT"}}), False),
+            (genai_errors.ServerError(503, {"error": {"status": "UNAVAILABLE"}}), True),
+        ],
+        ids=["rejected", "unavailable"],
+    )
+    def test_the_key_check_beside_startup_fails_only_a_rejected_key(
+        self, monkeypatch: pytest.MonkeyPatch, outcome: Exception, starts: bool
+    ):
+        """The real check, run as a task beside startup, against a scripted Gemini."""
+        monkeypatch.setattr(llm_module, "warm", _REAL_WARM)
+        models = install_scripted_models(monkeypatch, outcome)
+        app = create_app(graph=FakeGraph(), sdmx=EMPTY_SDMX)  # llm=None triggers warm
+        with patch("search.engine.app.LLM") as mock_llm:
+            if starts:
+                with TestClient(app):
+                    pass
+            else:
+                with pytest.raises(LLMInfraError), TestClient(app):
+                    pass
+
+        assert len(models.models) == 1
+        assert mock_llm.called is starts
 
 
 class TestLifespanClientOwnership:
@@ -413,6 +446,7 @@ class TestSkillsIndexLifespanOwnership:
             patch.object(app_module, "acquire_shared_index", _spy_acquire_shared_index),
             patch(
                 "search.engine.clients.llm.warm",
+                new_callable=AsyncMock,
                 side_effect=LLMInfraError("GEMINI_API_KEY is required"),
             ),
             pytest.raises(LLMInfraError),

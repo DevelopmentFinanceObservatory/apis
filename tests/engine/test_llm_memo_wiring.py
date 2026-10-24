@@ -9,7 +9,7 @@ import copy
 import logging
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -150,7 +150,7 @@ def wired(monkeypatch):
     search_logger.addHandler(capture)
     app, replay_client, graph, materialise_graph, sdmx = _build()
     monkeypatch.setattr(llm_module, "_get_client", lambda: replay_client)
-    monkeypatch.setattr(llm_module, "warm", lambda: None)
+    monkeypatch.setattr(llm_module, "warm", AsyncMock())
     # The app's own LLM symbol, restored to the real class.
     monkeypatch.setattr(app_module, "LLM", llm_module.LLM)
     try:
