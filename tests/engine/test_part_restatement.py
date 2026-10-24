@@ -6,6 +6,8 @@ parts retain their own restatements.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -25,7 +27,9 @@ from search.engine.region import RegionResult
 from search.engine.role_text import DoorRole
 from search.engine.time_bind import parse_time_text
 from search.models import (
+    DatasetResubmitInput,
     Entity,
+    EntityRefs,
     EntityRoleDirectional,
     EntityRoleSubject,
     GraphRef,
@@ -534,6 +538,7 @@ def _rr(
     no_data_reason: str | None = None,
     extra_specs: tuple = (),
     unsupported: Unsupported | None = None,
+    entity_refs: dict[str, tuple[str, ...]] | None = None,
 ) -> RegionResult:
     if status == "definite":
         specs: tuple = (spec,)
@@ -551,6 +556,7 @@ def _rr(
         earliest_index=earliest_index,
         restatement=restatement,
         unsupported=unsupported,
+        entity_refs=entity_refs or {},
     )
 
 
@@ -611,6 +617,45 @@ class TestPartCarriesRestatementOnEveryStatus:
         assert response.parts[0].restatement == restatement
 
 
+class TestEntityRefs:
+    def test_a_resolved_country_states_its_node(self):
+        """The part names the node its entity text bound, once per text."""
+        for part in offline_resolve(make_request("population and fertility rate in Brazil")).parts:
+            assert part.status == "definite"
+            assert part.entity_refs == [EntityRefs(text="Brazil", refs=["country/BRA"])]
+
+    def test_a_degraded_placeholder_binds_no_text(self):
+        """A soft-deadline placeholder states each restated text with no binding."""
+        region = _placeholder_no_data("GDP", 0, reason="timed_out", entities=["Brazil", "Kenya"])
+        part = _assemble(region).parts[0]
+        assert part.restatement is not None
+        assert part.entity_refs == [
+            EntityRefs(text="Brazil", refs=[]),
+            EntityRefs(text="Kenya", refs=[]),
+        ]
+
+    def test_a_text_on_two_axes_is_stated_once(self):
+        """A text the restatement echoes on both axes names one binding."""
+        restatement = ParsedPart(
+            variable_text="trade",
+            entities=[
+                ParsedEntity(text="Kenya", role_text="from"),
+                ParsedEntity(text="Kenya", role_text="to"),
+            ],
+        )
+        spec = _spec(_PERSON_SHAPE, "Val", sv_dcid="sv")
+        region = _rr(
+            "trade",
+            "definite",
+            spec,
+            restatement=restatement,
+            entity_refs={"Kenya": ("country/KEN",)},
+        )
+        assert _assemble(region).parts[0].entity_refs == [
+            EntityRefs(text="Kenya", refs=["country/KEN"])
+        ]
+
+
 class TestFoldedPartKeepsItsOwnRestatement:
     def test_fold_does_not_overwrite_restatement_with_the_representatives(self):
         # Same shape and StatVar with different values collapse into one spec.
@@ -620,8 +665,22 @@ class TestFoldedPartKeepsItsOwnRestatement:
         restatement_b = ParsedPart(variable_text="var B", entities=[ParsedEntity(text="Angola")])
         response, _effective = combine_regions(
             [
-                _rr("var A", "definite", spec_a, earliest_index=0, restatement=restatement_a),
-                _rr("var B", "definite", spec_b, earliest_index=1, restatement=restatement_b),
+                _rr(
+                    "var A",
+                    "definite",
+                    spec_a,
+                    earliest_index=0,
+                    restatement=restatement_a,
+                    entity_refs={"Brazil": ("country/BRA",)},
+                ),
+                _rr(
+                    "var B",
+                    "definite",
+                    spec_b,
+                    earliest_index=1,
+                    restatement=restatement_b,
+                    entity_refs={"Angola": ("country/AGO",)},
+                ),
             ],
             query="test",
             extra_warnings=[],
@@ -635,6 +694,8 @@ class TestFoldedPartKeepsItsOwnRestatement:
         assert any(w.code == BINDING_FOLDED for w in second.warnings)
         assert first.restatement == restatement_a
         assert second.restatement == restatement_b
+        assert first.entity_refs == [EntityRefs(text="Brazil", refs=["country/BRA"])]
+        assert second.entity_refs == [EntityRefs(text="Angola", refs=["country/AGO"])]
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +732,23 @@ class TestRawTextRestatementRoundTrip:
             assert reparsed_def.identity.entities == original_def.identity.entities
             assert reparsed_def.identity.requested_window == original_def.identity.requested_window
             assert reparsed_def.spec_id == original_def.spec_id
+
+    def test_the_wire_restatement_posts_back_verbatim(self):
+        """A part's restatement, read off the response JSON beside its entity_refs,
+        validates unchanged as a posted part and resolves to the same spec_id."""
+        raw = offline_resolve(make_request("population and fertility rate in Brazil"))
+        wire = json.loads(raw.model_dump_json(exclude_none=True))["parts"][0]
+        assert wire["entity_refs"] == [{"text": "Brazil", "refs": ["country/BRA"]}]
+        posted = ParsedInput.model_validate({"kind": "parsed", "parts": [wire["restatement"]]})
+        reparsed = offline_resolve(ResolveRequest(input=posted))
+        assert reparsed.parts[0].spec.spec_id == raw.parts[0].spec.spec_id
+        assert reparsed.parts[0].entity_refs == raw.parts[0].entity_refs
+        DatasetResubmitInput.model_validate(
+            {
+                "kind": "dataset_resubmit",
+                "entries": [{"entry_kind": "parsed", "part": wire["restatement"]}],
+            }
+        )
 
 
 class TestParsedDoorRestatementRoundTrip:

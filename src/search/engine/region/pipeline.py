@@ -64,7 +64,11 @@ from search.engine.region.phase_rank_bind import (
     exclusion_records,
 )
 from search.engine.region.phase_shared import settle_unjudged_refusal
-from search.engine.region.place_roles import group_request_names, stated_party_words
+from search.engine.region.place_roles import (
+    bound_entity_refs,
+    group_request_names,
+    stated_party_words,
+)
 from search.engine.region.related_read import cancel_related_reads, settle_related_reads
 from search.engine.region.requirements import (
     met_measure_phrases,
@@ -877,6 +881,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                             timing_by_step={**result.timing_by_step, **unbooked},
                             scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
+                            entity_refs=bound_entity_refs(state),
                             listed_axes=frozenset(state.whole_listed.values()),
                             inferred_facts=(
                                 tuple(state.inferred_facts) if result.status == "definite" else ()

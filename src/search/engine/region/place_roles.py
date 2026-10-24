@@ -1513,6 +1513,34 @@ def group_request_names(state: ResolveState) -> dict[str, str]:
     return {**groups, **wholes}
 
 
+def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
+    """The places the part's settled binding (`ResolveState.place`) holds for each entity
+    text, in `place_order` (`RegionResult.entity_refs`).
+
+    A text's set binds one reading (`settle_place_sets`): its node when the binding holds
+    it, else its total (`PlaceSet.total`), else the members the binding holds. A set bound
+    as its members states its own ref first, so a client matches the set it named: its
+    node, else its total, else its registry id (`PlaceSet.group_id`). A text naming a whole
+    population ("all donors", `ResolveState.whole_named`) binds the parties it names that
+    the binding holds. A text with neither, ambiguous or unresolved, is left out, as is
+    every text before the part's places are bound.
+    """
+    bound = {dcid for dcid, _role in state.place.roles.roles}
+    refs: dict[str, tuple[str, ...]] = {}
+    for text, place_set in state.place_sets.items():
+        node = None if place_set.node is None else place_set.node.dcid
+        whole = next((d for d in (node, place_set.total) if d is not None and d in bound), None)
+        if whole is not None:
+            refs[text] = (whole,)
+        elif held := place_order(d for d in place_set.members or () if d in bound):
+            own = next((d for d in (node, place_set.total, place_set.group_id) if d), None)
+            refs[text] = tuple(held) if own is None else (own, *held)
+    for text, dcids in state.whole_named.items():
+        if held := place_order(d for d in dcids if d in bound):
+            refs[text] = tuple(held)
+    return refs
+
+
 def place_order(dcids: Iterable[str]) -> list[str]:
     """The order every answer states a set of places in: distinct dcids, sorted, as the
     identity core stores them (`spec_id._entities_member`). A first answer and a resubmit of
