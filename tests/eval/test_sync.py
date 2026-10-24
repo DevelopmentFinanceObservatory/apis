@@ -53,6 +53,22 @@ KENYA = """
 """
 
 
+RESUBMIT = """
+- id: resubmit
+  query: "dataset_resubmit: aid to Kenya"
+  door: dataset_resubmit
+  why: A resubmitted identity builds its request from the bound release's code index.
+  resubmit:
+    variable_text: aid
+    shape: {kind: statvar_schema, population_type: FinancialFlow, measured_property: amount, stat_type: measuredValue, measurement_qualifier: Nominal}
+    slots: []
+    entity_dcids: [country/KEN]
+  expect:
+    definite:
+      entities: [{dcid: country/KEN, role: destination}]
+"""
+
+
 class FakeLangfuse:
     """Datasets and items in memory, with the SDK calls `sync` makes."""
 
@@ -265,6 +281,19 @@ def test_a_known_task_failure_excuses_only_a_failed_run(tmp_path, monkeypatch, r
     states, _ = m.nightly(by_file, url="http://app", ctx=score_context(graph), langfuse=fake)
 
     assert m.nightly_exit_code(states) == code
+
+
+@pytest.mark.unbound_release
+def test_main_binds_the_served_release_before_it_builds_a_request(tmp_path, monkeypatch):
+    """A `dataset_resubmit` request reads the bound release's code index, so `main` binds one
+    before `sync` builds the dataset items."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"resubmit": RESUBMIT})
+    fake = FakeLangfuse()
+    monkeypatch.setattr(m, "_client", lambda: fake)
+
+    assert m.main([f"--corpus-dir={corpus}"]) == 0
+    assert _active(fake, "search-resubmit") == {"search-resubmit:search-case-resubmit"}
 
 
 def _no_langfuse():
