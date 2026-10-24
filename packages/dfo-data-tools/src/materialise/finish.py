@@ -242,6 +242,7 @@ def _finish_member(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         family=request.family,
+        stub_candidates=request.stub_candidates,
         coverage_gaps=tuple(gap.as_trace_entry() for gap in outcome.coverage_gaps),
     )
 
@@ -351,6 +352,7 @@ def _finish_group(
         capability_version=capability_version,
         # Every request of a group is a member of one definition and carries its family.
         family=requests[0].family,
+        stub_candidates=requests[0].stub_candidates,
     )
 
     return pipeline.MaterialisationResult(

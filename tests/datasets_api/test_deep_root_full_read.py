@@ -65,16 +65,23 @@ def _member_arcs(gender: str | None) -> dict[str, tuple[str, ...]]:
     return arcs
 
 
-def _graph() -> FirstPageWithholdingGraphReader:
-    return FirstPageWithholdingGraphReader(
+def _graph(
+    reader: type[FirstPageWithholdingGraphReader] = FirstPageWithholdingGraphReader,
+    *,
+    extra_arcs: dict[str, dict[str, tuple[str, ...]]] | None = None,
+    **kwargs,
+) -> FirstPageWithholdingGraphReader:
+    return reader(
         withheld=frozenset({_ROOT}),
         arcs={
             _ROOT: _member_arcs(None),
             _MALE: _member_arcs("Male"),
             _FEMALE: _member_arcs("Female"),
+            **(extra_arcs or {}),
         },
         facets={(_ROOT, _RECIPIENT): [_FACET]},
         labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya", _ROOT: "Population"},
+        **kwargs,
     )
 
 
@@ -109,9 +116,14 @@ def _mint_body(document: dict) -> dict:
     }
 
 
-def _client(*, settings: DatasetsBuildSettings | None = None, **kwargs):
+def _client(
+    *,
+    graph: FirstPageWithholdingGraphReader | None = None,
+    settings: DatasetsBuildSettings | None = None,
+    **kwargs,
+):
     return _base_client(
-        graph=_graph(),
+        graph=graph or _graph(),
         head_writer=_FakeHeadStore(),
         sdmx_transport=_sdmx_transport(),
         coverage=_coverage_service(stat_vars=(_ROOT,), recipient=_RECIPIENT),
@@ -130,6 +142,41 @@ def test_a_mint_settles_a_root_past_the_first_page_and_states_its_family():
     trace = resp.json()["trace"]
     assert [entry["ref"] for entry in trace["resolved_stat_vars"]] == [f"dcid:{_ROOT}"]
     assert (trace["family_member_count"], trace["family_member_digest"]) == (3, _FAMILY_DIGEST)
+
+
+class _StubGraphReader(FirstPageWithholdingGraphReader):
+    """Holds every node's arcs complete and answers forward reads of `stubs` with one
+    `memberOf` arc while the reverse read still places them in the family, as dev reads the
+    `dc/base/Mongolia_Demographics` marital-status splits of `Count_Person`."""
+
+    def __init__(self, *, stubs: frozenset[str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._stubs = stubs
+
+    def arcs_complete(self, dcid: str) -> bool:
+        return True
+
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+        read = super().node_arcs_many(dcids, properties=properties)
+        return {
+            dcid: dict.fromkeys(properties, ()) if dcid in self._stubs else arcs
+            for dcid, arcs in read.items()
+        }
+
+
+def test_a_mint_leaves_out_a_stub_under_the_root_and_names_it():
+    stub = "Count_Person_15OrMoreYears_Female_Unmarried"
+    graph = _graph(
+        _StubGraphReader, extra_arcs={stub: _member_arcs("Female")}, stubs=frozenset({stub})
+    )
+
+    resp = _client(graph=graph).post("/api/datasets", json=_mint_body(_identity()))
+
+    assert resp.status_code == 200, resp.text
+    trace = resp.json()["trace"]
+    assert [entry["ref"] for entry in trace["resolved_stat_vars"]] == [f"dcid:{_ROOT}"]
+    assert (trace["family_member_count"], trace["family_member_digest"]) == (3, _FAMILY_DIGEST)
+    assert trace["stub_candidates"] == [f"dcid:{stub}"]
 
 
 def test_a_get_with_no_head_settles_the_registered_definition():

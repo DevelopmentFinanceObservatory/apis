@@ -284,3 +284,125 @@ def test_only_complete_reads_skip_the_absence_re_read(
     first, *rereads = reader.reads
     assert set(first) == set(arcs)
     assert not {dcid for read in rereads for dcid in read} & frozenset(complete_ages)
+
+
+def _gender_arcs(gender: str) -> dict[str, tuple[str, ...]]:
+    return _arcs(constraintProperties=("gender",), gender=(gender,))
+
+
+class _StubReader(_PartlyCompleteReader):
+    """Answers forward reads of the dcids in `bodies` from those bodies, while the reverse
+    query still finds them by `arcs`, as our mixer's in-arcs and out-arcs disagree for the
+    `dc/base/Mongolia_Demographics` StatVars. A `None` body reads absent."""
+
+    def __init__(self, *, bodies: dict[str, dict[str, tuple[str, ...]] | None], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._bodies = bodies
+
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+        read = super().node_arcs_many(dcids, properties=properties)
+        for dcid in set(read) & set(self._bodies):
+            body = self._bodies[dcid]
+            read[dcid] = None if body is None else {prop: body.get(prop, ()) for prop in properties}
+        return read
+
+
+_MEMBER_OF_ONLY = {"memberOf": ("dc/g/Amount_Stub",)}
+
+
+@pytest.mark.parametrize(
+    ("with_root", "slots", "body", "stub_complete", "members", "stubs", "undismissed"),
+    [
+        pytest.param(
+            True,
+            {"gender": _UNBOUND},
+            _MEMBER_OF_ONLY,
+            True,
+            ["Amount"],
+            ("Amount_Stub",),
+            (),
+            id="member_of_only_settled_under_a_confirmed_root",
+        ),
+        pytest.param(
+            True,
+            {"gender": _UNBOUND},
+            None,
+            True,
+            ["Amount"],
+            ("Amount_Stub",),
+            (),
+            id="absent_settled_under_a_confirmed_root",
+        ),
+        pytest.param(
+            True,
+            {"gender": _UNBOUND},
+            _MEMBER_OF_ONLY,
+            False,
+            ["Amount"],
+            (),
+            ("Amount_Stub",),
+            id="refused_when_the_read_is_not_complete",
+        ),
+        pytest.param(
+            True,
+            {"gender": _UNBOUND},
+            {**_MEMBER_OF_ONLY, "typeOf": ("StatisticalVariable",)},
+            True,
+            ["Amount"],
+            (),
+            ("Amount_Stub",),
+            id="refused_when_the_body_carries_a_definition_arc",
+        ),
+        pytest.param(
+            False,
+            {"gender": _UNBOUND},
+            _MEMBER_OF_ONLY,
+            True,
+            ["Amount_Female", "Amount_Male"],
+            (),
+            ("Amount_Stub",),
+            id="refused_without_a_root",
+        ),
+        pytest.param(
+            True,
+            {"gender": ("set", ("Male", "Female"))},
+            _MEMBER_OF_ONLY,
+            True,
+            ["Amount_Female", "Amount_Male"],
+            (),
+            ("Amount_Stub",),
+            id="refused_when_a_set_slot_rules_the_root_out",
+        ),
+    ],
+)
+def test_a_complete_stub_settles_only_under_a_confirmed_root(
+    with_root: bool,
+    slots: dict[str, SlotBinding],
+    body: dict[str, tuple[str, ...]] | None,
+    stub_complete: bool,
+    members: list[str],
+    stubs: tuple[str, ...],
+    undismissed: tuple[str, ...],
+):
+    """The reverse query names `Amount_Stub` under the five-tuple, but its forward body is
+    one `memberOf` arc, as dev's `Count_Person_15OrMoreYears_Female_Unmarried` reads. Under a
+    confirmed root a complete read carrying no definition arc settles it out and the group
+    names it. Without a confirmed root it could stand for the root, a read the reader does not
+    hold complete could have dropped its arcs, and a body with a definition arc contradicts
+    the reverse read, so each of those still refuses."""
+    arcs = {
+        "Amount_Male": _gender_arcs("Male"),
+        "Amount_Female": _gender_arcs("Female"),
+        "Amount_Stub": _arcs(),
+        **({"Amount": _arcs()} if with_root else {}),
+    }
+    complete = frozenset(arcs) - (set() if stub_complete else {"Amount_Stub"})
+    reader = _StubReader(bodies={"Amount_Stub": body}, complete=complete, arcs=arcs)
+
+    group = enumerate_members(five_tuple=_NO_DENOMINATOR_ASK, slots=slots, graph=reader)
+
+    assert [member.stat_var for member in group.members] == members
+    assert group.stub_candidates == stubs
+    assert group.undismissed_candidates == undismissed
+    assert group.undismissed_rereadable is not stub_complete
+    assert "Amount_Stub" not in group.family

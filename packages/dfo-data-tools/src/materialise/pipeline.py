@@ -93,6 +93,10 @@ class MaterialisationRequest:
     # The whole population the definition's identity admits, shared by every request of the
     # definition and stated in the trace. `None` when the resolver could not state it.
     family: MemberFamily | None = None
+    # The `dcid:` refs member resolution left out of that family as stubs, nodes whose complete
+    # read carries no definition arc, shared by every request of the definition and stated in
+    # the trace.
+    stub_candidates: tuple[str, ...] = ()
     # A caller's facet filter over each probed candidate's provenance, method and unit. The
     # member elects only among the candidates it admits (`facets.admitted_candidates`), so
     # a filtered request serves its best admitted facet. None admits every candidate.

@@ -438,6 +438,7 @@ def to_materialisation_request(
         index_sourced=_identity_is_index_sourced(identity, code_index=code_index),
         dataset=shape.dataset,
         family=admitted_family(identity, shape),
+        stub_candidates=shape.stub_candidates,
     )
 
 
@@ -716,7 +717,9 @@ def resolve_definition_members(
     them (`MemberGroup.undismissed_candidates` is empty). A candidate that may
     duplicate the root still refuses, since its roles are unverified. The refusal is
     retryable when a later walk can settle a candidate it names
-    (`MemberGroup.undismissed_rereadable`).
+    (`MemberGroup.undismissed_rereadable`). A possible duplicate whose complete read carries
+    no definition arc is settled out under the root (`MemberGroup.stub_candidates`), and
+    each shape names it (`StatVarShape.stub_candidates`) for the trace.
     Both paths elect one role class (`statvar_members.elect_role_class`): the
     members whose declared roles cover the role keys `entities` is bound under,
     least-constrained first, then those declaring the fewest roles, so a member
@@ -832,6 +835,7 @@ def resolve_definition_members(
 
     walked = frozenset(group.family)
     stated = _member_family(group.stated_family) if group.stated_family is not None else None
+    stubs = tuple(f"{_STAT_VAR_PREFIX}{candidate}" for candidate in group.stub_candidates)
     shapes = tuple(
         StatVarShape(
             stat_var=f"{_STAT_VAR_PREFIX}{member.stat_var}",
@@ -840,6 +844,7 @@ def resolve_definition_members(
             measured_property=five_tuple.measured_property,
             population_type=five_tuple.population_type,
             family=stated,
+            stub_candidates=stubs,
         )
         for member in group.members
     )
