@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import get_type_hints
 
 import httpx
 import pyarrow.parquet as pq
@@ -21,6 +23,7 @@ from materialise import (
     materialise_spec,
 )
 from materialise import finish as finish_module
+from materialise.codes import CountedEntityYears, CountedRefs, MaterialisationWarning
 from materialise.content_version import mint_version
 from materialise.errors import (
     DefaultFacetUndefinedError,
@@ -873,7 +876,7 @@ def test_latest_window_over_a_huge_raw_response_does_not_early_refuse_and_succee
             RequestedWindow(kind="all"),
             "default",
             "The served coverage falls short of the requested scope. "
-            "No observations were served for country/KEN.",
+            "No observations were served for 1 requested entity.",
             id="entity_shortfall",
         ),
         pytest.param(
@@ -921,7 +924,7 @@ def test_coverage_below_scope_warning(
     assert warning["message"] == expected_message
 
 
-def test_coverage_below_scope_names_only_the_unserved_entity():
+def test_coverage_below_scope_carries_only_the_unserved_entity():
     csv_body = _CSV_HEADER + _csv_row(recipient="country/TGO", year="2015", value="1000")
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
@@ -942,11 +945,10 @@ def test_coverage_below_scope_names_only_the_unserved_entity():
     )
 
     warning = {w["code"]: w for w in result.warnings}["coverage_below_scope"]
-    assert "country/SEN" in warning["message"]
-    assert "country/TGO" not in warning["message"]
+    assert warning["unserved_entities"] == {"count": 1, "refs": ["dcid:country/SEN"]}
 
 
-def test_coverage_below_scope_caps_named_entities_at_five():
+def test_coverage_below_scope_caps_carried_entities_at_five():
     bound = ["country/TGO"] + [f"country/Unserved{i}" for i in range(6)]
     csv_body = _CSV_HEADER + _csv_row(recipient="country/TGO", year="2015", value="1000")
     sdmx, _requests = _sdmx_client(csv_body)
@@ -967,9 +969,84 @@ def test_coverage_below_scope_caps_named_entities_at_five():
     warning = {w["code"]: w for w in result.warnings}["coverage_below_scope"]
     assert warning["message"] == (
         "The served coverage falls short of the requested scope. "
-        "No observations were served for country/Unserved0, country/Unserved1, "
-        "country/Unserved2, country/Unserved3, country/Unserved4 and 1 more."
+        "No observations were served for 6 requested entities."
     )
+    assert warning["unserved_entities"] == {
+        "count": 6,
+        "refs": [f"dcid:country/Unserved{i}" for i in range(5)],
+    }
+
+
+def _coverage_warning(
+    *,
+    unserved: Sequence[str] = (),
+    off_cadence: Sequence[str] = (),
+    out_of_window: Sequence[str] = (),
+) -> MaterialisationWarning:
+    return finish_module._coverage_below_scope_warning(
+        unserved,
+        countries_fallback=False,
+        off_cadence=off_cadence,
+        out_of_window=out_of_window,
+        member_count=9,
+    )
+
+
+# The writer of each counted field `MaterialisationWarning` declares, given the refs, bare
+# entity dcids or member `dcid:` refs, that it is to count.
+_COUNTED_FIELD_WRITERS: dict[str, Callable[[Sequence[str]], MaterialisationWarning]] = {
+    "unserved_entities": lambda refs: _coverage_warning(unserved=refs),
+    "off_cadence_members": lambda refs: _coverage_warning(off_cadence=refs),
+    "out_of_window_members": lambda refs: _coverage_warning(out_of_window=refs),
+    "omitted_entities": finish_module.currency_unmapped_omitted_warning,
+    "omitted_entity_years": lambda refs: finish_module.deflator_missing_omitted_warning(
+        (entity, 2020) for entity in refs
+    ),
+}
+_COUNTED_FIELDS = frozenset(
+    key
+    for key, hint in get_type_hints(MaterialisationWarning).items()
+    if hint in (CountedRefs, CountedEntityYears)
+)
+_PIN_REFS = {
+    "off_cadence_members": ["dcid:YouthRate", "dcid:AdultRate"],
+    "out_of_window_members": ["dcid:YouthRate", "dcid:AdultRate"],
+}
+
+
+def test_every_counted_warning_field_has_a_pinned_writer():
+    """A new counted field on `MaterialisationWarning` fails here until its writer joins
+    `test_a_stored_warning_message_names_none_of_its_refs`."""
+    assert set(_COUNTED_FIELD_WRITERS) == _COUNTED_FIELDS
+
+
+@pytest.mark.parametrize("field", sorted(_COUNTED_FIELD_WRITERS))
+def test_a_stored_warning_message_names_none_of_its_refs(field: str):
+    """A stored message that names a ref keeps that name after the label changes, so each
+    writer of a counted field counts its refs in the message and carries them in the field."""
+    refs = _PIN_REFS.get(field, ["africaRegion", "country/PSE"])
+
+    warning = _COUNTED_FIELD_WRITERS[field](refs)
+
+    assert field in warning
+    assert not [ref for ref in refs if ref.removeprefix("dcid:") in warning["message"]]
+
+
+def test_a_deflator_warning_carries_the_first_ten_entities_with_their_years_as_runs():
+    """The ten entities the old message named survive, each with its years as runs."""
+    omitted = [("country/TWN", year) for year in (2004, 1990, 1991, 1992)]
+    omitted += [(f"country/C{i:02d}", 2022) for i in range(11)]
+
+    warning = finish_module.deflator_missing_omitted_warning(omitted)
+
+    assert warning["omitted_entity_years"] == {
+        "count": 12,
+        "entities": [{"ref": f"dcid:country/C{i:02d}", "years": ["2022"]} for i in range(10)],
+    }
+    assert finish_module.deflator_missing_omitted_warning(omitted[:4])["omitted_entity_years"] == {
+        "count": 1,
+        "entities": [{"ref": "dcid:country/TWN", "years": ["1990-1992", "2004"]}],
+    }
 
 
 def test_as_issue_carries_the_wrapped_errors_code_and_message():

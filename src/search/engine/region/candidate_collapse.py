@@ -94,6 +94,7 @@ from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
 from search.engine.unit.bind import with_unit_lexicon_version
 from search.engine.unit.conversion import served_prices
+from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     CandidateBasis,
     IdentityUnitRequest,
@@ -145,7 +146,10 @@ def _apply_bound_unit_filter(
         coverage = grounded.cand_unit_coverage.get(s.spec_id, UnitCoverage())
         if coverage.refusal is None:
             _matched_specs.append(s)
-            if (omitted := coverage.omitted_warning(spec_id=s.spec_id)) is not None:
+            omitted = coverage.omitted_warning(
+                catalogue=current_conversion_catalogue(), spec_id=s.spec_id
+            )
+            if omitted is not None:
                 grounded.cand_unit_omitted[s.spec_id] = omitted
             continue
         sv, exc = coverage.refusal

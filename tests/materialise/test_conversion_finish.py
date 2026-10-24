@@ -621,9 +621,9 @@ def test_a_year_missing_its_deflator_is_left_out_and_named_in_the_manifest():
 
     assert result.coverage.rows == 1
     (warning,) = [w for w in result.warnings if w["code"] == "deflator_missing_omitted"]
-    assert (warning["severity"], warning["message"].endswith("1 entities: country/FRA (2023)")) == (
+    assert (warning["severity"], warning["omitted_entity_years"]) == (
         "warn",
-        True,
+        {"count": 1, "entities": [{"ref": "dcid:country/FRA", "years": ["2023"]}]},
     )
     # The trace counts what the conversion left out, which the description's step states.
     (conversion,) = result.trace.conversion or ()
@@ -850,29 +850,32 @@ _MINT_ENTRIES = ("member", "group")
 
 @pytest.mark.parametrize("entry", _ENTRIES)
 @pytest.mark.parametrize(
-    ("regions", "named"),
+    ("regions", "counted"),
     [
         pytest.param(
-            ["africaRegion", "southOfSahara"], "2 entities: africaRegion, southOfSahara", id="named"
+            ["southOfSahara", "africaRegion"],
+            {"count": 2, "refs": ["dcid:africaRegion", "dcid:southOfSahara"]},
+            id="named",
         ),
         pytest.param(
             [f"region/R{i:02d}" for i in range(12)],
-            "12 entities: " + ", ".join(f"region/R{i:02d}" for i in range(10)) + " (truncated)",
-            id="truncated",
+            {"count": 12, "refs": [f"dcid:region/R{i:02d}" for i in range(10)]},
+            id="capped",
         ),
     ],
 )
 def test_destination_currency_omits_the_recipients_no_currency_names(
-    entry: str, regions: list[str], named: str
+    entry: str, regions: list[str], counted: dict[str, object]
 ):
-    """Kenya converts; the regions' rows are left out and one warning names them. Bound
-    explicitly, they raise no second `coverage_below_scope` warning."""
+    """Kenya converts; the regions' rows are left out and one warning counts them and carries
+    the first five by ref, sorted. Bound explicitly, they raise no second
+    `coverage_below_scope` warning."""
     result = _destination_currency_result(entry, ["country/KEN", *regions])
 
     assert _served_recipients(result) == {"country/KEN"}
     omitted = [w for w in result.warnings if w["code"] == "currency_unmapped_omitted"]
     assert [w["severity"] for w in omitted] == ["warn"]
-    assert omitted[0]["message"].endswith(named)
+    assert omitted[0]["omitted_entities"] == counted
     assert not any(w["code"] == "coverage_below_scope" for w in result.warnings)
     if isinstance(result, MaterialisationResult):
         (conversion,) = result.trace.conversion or ()

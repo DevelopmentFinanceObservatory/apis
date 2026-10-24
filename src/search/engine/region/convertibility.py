@@ -561,18 +561,23 @@ class UnitCoverage:
         """The entities, sorted, whose rows `omitted` names."""
         return tuple(sorted({entity for _sv, _role, entity in self.omitted}))
 
-    def omitted_warning(self, *, spec_id: str | None = None) -> Warning | None:
-        """The `currency_unmapped_omitted` warning naming `omitted_entities`, the one a read
+    def omitted_warning(
+        self, *, catalogue: ConversionCatalogue | None, spec_id: str | None = None
+    ) -> Warning | None:
+        """The `currency_unmapped_omitted` warning counting `omitted_entities`, the one a read
         of the same rows carries (`materialise.finish.currency_unmapped_omitted_warning`),
+        with the entities it carries as `params` (`_omitted_params`) named from `catalogue`,
         or None when no entity was omitted."""
         if not self.omitted_entities:
             return None
         built = currency_unmapped_omitted_warning(self.omitted_entities)
+        counted = built["omitted_entities"]
         return Warning(
             code=CURRENCY_UNMAPPED_OMITTED,
             severity=built["severity"],
             message=built["message"],
             spec_id=spec_id,
+            params=_omitted_params(counted["count"], counted["refs"], catalogue=catalogue),
         )
 
 
@@ -1146,10 +1151,11 @@ def deflator_omission_departure(
     deflator the tables lack in some served years, or in the base year
     (`download.deflator_omissions`, over the rows the answer's counts read). The fact names
     the entities that lose the most years first, by the name the catalogue holds for each
-    (`ConversionCatalogue.entity_names`), and counts those it holds no name for. When the
-    conversion cannot be read in memory (`unit.conversion.counted_conversion` is
-    `UNDECIDED`), a constant-price answer warns that rows may be left out and departs
-    naming no entity, since the mint still leaves out the rows its deflators lack. None
+    (`ConversionCatalogue.entity_names`), and counts those it holds no name for. The
+    warning's `params` carry the entities it counts, named from the same catalogue, with
+    their years (`_omitted_params`). When the conversion cannot be read in memory
+    (`unit.conversion.counted_conversion` is `UNDECIDED`), a constant-price answer warns,
+    with no `params`, that rows may be left out and departs naming no entity, since the mint still leaves out the rows its deflators lack. None
     when no row is left out or at current prices. Every door reads it after the period a
     unit request shows (`unit_request_period`)."""
     if unit_request.prices != "constant":
@@ -1176,6 +1182,7 @@ def deflator_omission_departure(
     built = deflator_missing_omitted_warning(
         (entity, year) for entity, years in omitted.items() for year in years.lost
     )
+    counted = built["omitted_entity_years"]
     ranked = sorted(omitted.items(), key=lambda item: (-len(item[1].lost), item[0]))
     names = catalogue.entity_names
     fact = deflator_omission_fact(
@@ -1187,9 +1194,37 @@ def deflator_omission_departure(
         unnamed=sum(1 for entity in omitted if entity not in names),
     )
     warning = Warning(
-        code=DEFLATOR_MISSING_OMITTED, severity=built["severity"], message=built["message"]
+        code=DEFLATOR_MISSING_OMITTED,
+        severity=built["severity"],
+        message=built["message"],
+        params={
+            **_omitted_params(
+                counted["count"],
+                [entity["ref"] for entity in counted["entities"]],
+                catalogue=catalogue,
+            ),
+            "entity_years": [", ".join(entity["years"]) for entity in counted["entities"]],
+        },
     )
     return warning, fact
+
+
+def _omitted_params(
+    count: int, refs: Sequence[str], *, catalogue: ConversionCatalogue | None
+) -> dict[str, int | str | list[str]]:
+    """The `params` of a conversion's omission warning: `count`, the entities it counts;
+    `entities`, the bare dcids of `refs`, the `dcid:` refs of the first ten it carries; and
+    `entity_labels`, each one's name in `catalogue` (`ConversionCatalogue.entity_names`),
+    `""` where it holds none, in `entities` order. The catalogue names deflator-table
+    entities and places with a national currency, so an entity no currency names, such as
+    a regional aggregate, usually has `""`; its dcid stays in `entities`."""
+    names = catalogue.entity_names if catalogue is not None else {}
+    entities = [ref.removeprefix(_STAT_VAR_REF_PREFIX) for ref in refs]
+    return {
+        "count": count,
+        "entities": entities,
+        "entity_labels": [names.get(entity, "") for entity in entities],
+    }
 
 
 def _reads_tables(selections: Mapping[str, FacetSelection] | None) -> bool:

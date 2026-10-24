@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+from typing import get_args
 
 import pytest
 
 from assembler.bind import BoundSeries, bind_all
 from assembler.errors import BindingInvalid, SchemaInvalid
 from assembler.limits import LABEL_MAX
-from assembler.mint import default_window, mint_component, stamp_envelope, warned_member_refs
-from assembler.mint.provenance import _WARNING_KIND_BY_CODE, DESCRIPTION_PROVENANCE_MEMBERS
+from assembler.mint import default_window, mint_component, stamp_envelope, warned_refs
+from assembler.mint.provenance import (
+    _REF_FIELDS,
+    _WARNING_KIND_BY_CODE,
+    DESCRIPTION_PROVENANCE_MEMBERS,
+)
 from assembler.ports import FrameRef
 from assembler.resolve import ResolvedSeries, resolve_selectors
 from assembler.select import normalize_select
@@ -22,6 +27,7 @@ from assembler.testing import (
     malaria_ethiopia_resolved_frame,
     malaria_ethiopia_rows,
 )
+from datasets_api.manifest_models import CountedEntityYearsModel, CountedRefsModel, WarningModel
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from presentation_api.refusals import binding_invalid_spec
 
@@ -1839,6 +1845,29 @@ _LONG = {f"dcid:Long{i}": _long_label(i) for i in range(10)}
             "No observations in the requested years: 6 series.",
             id="both-long",
         ),
+        # Entities lead the members, as the message counts them first, and a field fitting
+        # no name counts them in its own noun.
+        pytest.param(
+            {
+                "unserved_entities": {"count": 1, "refs": ["dcid:country/KEN"]},
+                "off_cadence_members": {"count": 1, "refs": ["dcid:Health"]},
+            },
+            "Short of scope. Not served: Kenya. At a different frequency: Basic health.",
+            id="unserved-entities",
+        ),
+        pytest.param(
+            {
+                "unserved_entities": {"count": 2, "refs": ["dcid:Long0", "dcid:Long1"]},
+                "off_cadence_members": {
+                    "count": 6,
+                    "refs": [f"dcid:Long{i}" for i in range(2, 7)],
+                },
+                "out_of_window_members": {"count": 1, "refs": ["dcid:Long7"]},
+            },
+            "Short of scope. Not served: 2 entities. At a different frequency: 6 series. "
+            f"No observations in the requested years: {_long_label(7)}.",
+            id="entities-long",
+        ),
     ],
 )
 def test_a_coverage_warning_names_its_members_by_label(release, members, expected):
@@ -1852,15 +1881,72 @@ def test_a_coverage_warning_names_its_members_by_label(release, members, expecte
                 **members,
             }
         ],
-        labels={"dcid:Health": "Basic health", "dcid:Water": "Water", **_LONG},
+        labels={
+            "dcid:Health": "Basic health",
+            "dcid:Water": "Water",
+            "dcid:country/KEN": "Kenya",
+            **_LONG,
+        },
     )
 
     provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
 
     assert provenance["warnings"] == [{"kind": "coverage_gap", "detail": expected}]
-    assert warned_member_refs(manifest=resolved_frame.manifest) == [
+    assert warned_refs(manifest=resolved_frame.manifest) == [
         ref for field in members.values() for ref in field["refs"]
     ]
+
+
+@pytest.mark.parametrize(
+    ("code", "field", "named"),
+    [
+        pytest.param(
+            "currency_unmapped_omitted",
+            {"omitted_entities": {"count": 3, "refs": ["dcid:country/KEN", "dcid:XYZ"]}},
+            "Kenya, XYZ",
+            id="currency",
+        ),
+        # Each entity's name carries the years its rows were left out.
+        pytest.param(
+            "deflator_missing_omitted",
+            {
+                "omitted_entity_years": {
+                    "count": 3,
+                    "entities": [
+                        {"ref": "dcid:country/KEN", "years": ["1990-2001", "2004"]},
+                        {"ref": "dcid:XYZ", "years": ["2020"]},
+                    ],
+                }
+            },
+            "Kenya (1990-2001, 2004), XYZ (2020)",
+            id="deflator",
+        ),
+    ],
+)
+def test_a_conversion_warning_names_the_entities_it_left_out_by_label(release, code, field, named):
+    resolved_frame = _resolved_frame_with_warnings(
+        [{"code": code, "severity": "warn", "message": "It left out 3 entities.", **field}],
+        labels={"dcid:country/KEN": "Kenya"},
+    )
+
+    provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
+
+    assert provenance["warnings"] == [
+        {"kind": "coverage_gap", "detail": f"It left out 3 entities. Left out: {named} and 1 more."}
+    ]
+    assert warned_refs(manifest=resolved_frame.manifest) == ["dcid:country/KEN", "dcid:XYZ"]
+
+
+def test_a_card_names_every_counted_field_a_stored_warning_holds():
+    """Each `WarningModel` field holding counted refs has a `_REF_FIELDS` row, so the frame
+    store labels its refs and a card names them; a field without one would go unnamed."""
+    counted = {
+        name
+        for name, field in WarningModel.model_fields.items()
+        if {CountedRefsModel, CountedEntityYearsModel} & set(get_args(field.annotation))
+    }
+
+    assert counted == {field.key for field in _REF_FIELDS}
 
 
 def test_provenance_warnings_refuses_a_code_absent_from_the_translation_table(release):

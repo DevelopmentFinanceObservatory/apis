@@ -768,7 +768,9 @@ def _bound_unit_refusal(
     # Grounding ran the conversion on every path that reaches here (`_runs_unit_conversion`).
     coverage = state.unit_coverage
     if coverage.refusal is None:
-        if (omitted := coverage.omitted_warning()) is not None:
+        if (
+            omitted := coverage.omitted_warning(catalogue=current_conversion_catalogue())
+        ) is not None:
             state.warnings.append(omitted)
         return None
     # A bound outcome guarantees the unit request.
