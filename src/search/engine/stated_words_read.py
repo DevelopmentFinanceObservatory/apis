@@ -71,7 +71,7 @@ Answer each word once, by its number in the WORDS list.
 
 WORDS_HEADER = "WORDS (words of the variable phrase):"
 
-# The most series names a prompt lists for an answer serving several (`served_series`): a
+# The most series names a prompt lists for an answer serving several (`served_series`). A
 # held family with no total can serve thousands of members, and the first names show what
 # they differ on.
 SERVED_SERIES_SHOWN = 10
@@ -117,7 +117,7 @@ def build_stated_words_prompt(
     # without the line a word naming that value reads as narrower than the series.
     if implied := implied_values(shape, bindings):
         lines.append(f"  fixed by the measure's definition: {implied}")
-    # The label names the series the bind elected; an answer serving other series counts
+    # The label names the series the bind elected. An answer serving other series counts
     # what each of them counts, so a word they do not all state names less than the answer.
     if serves_beyond_label(shape, served):
         lines.append(f"  the answer serves {served_series(served)}")

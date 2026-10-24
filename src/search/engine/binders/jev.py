@@ -8,10 +8,11 @@ words name each contending value, and assembles both rounds' answers with
 `jev_assemble.bind_result`, which runs the request's house-policy step once on an answer
 that elects a shape. The words the bind rated as unread on the elected shape are asked
 again in a request of their own when the final bindings restrict the shape to a value or
-the answer serves series other than its label (`JevBinder.restated`). Every failure of a Jev request, in either round, leaves as one
-`JevFailure`, raised before any answer is assembled, and so does a span rule that passes
-its search budget, raised before the house policies run, so a binder that falls back on it
-runs the house policies at most once per call.
+the answer serves series other than its label (`JevBinder.restated`). Every failure of a
+Jev request, in either round, leaves as one `JevFailure`, raised before any answer is
+assembled, and so does a span rule that passes its search budget, raised before the house
+policies run, so a binder that falls back on it runs the house policies at most once per
+call.
 """
 
 from __future__ import annotations
@@ -215,8 +216,8 @@ class JevBinder:
         bindings restrict the shape to a value (`stated_words_read.restricting`), and every
         rated word when they override a value the measure's definition fixes
         (`stated_words_read.implied_values`) or the answer serves series other than the
-        shape's label (`stated_words_read.serves_beyond_label`), which the bind quoted
-        alone.
+        shape's label (`stated_words_read.serves_beyond_label`), the only name the bind
+        quoted.
 
         The bind asked before any value was bound, so it quoted the shape as parts
         selectable by its slots, and its answer is evidence only about the series as a

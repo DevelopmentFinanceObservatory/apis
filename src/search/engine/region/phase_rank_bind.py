@@ -3244,12 +3244,12 @@ def _form_ranges(variable: str, tokens: Sequence[Token]) -> list[tuple[int, int]
 def _member_measure_words(state: ResolveState) -> frozenset[str] | None:
     """The words that name the elected shape's measure in the names of the members the read
     served (`_label_words`, `served_member_names`), so "refugees" is among the words of
-    "Refugee population": "GDP" in Brazil reads "Nominal gross domestic product", the one
-    member of a family with no total holding data there. A family's total answers before
+    "Refugee population", and "GDP" in Brazil reads "Nominal gross domestic product", the
+    one member of a family with no total holding data there. A family's total answers before
     its breakdowns, so "refugee" in "refugee population" is left for the binder on a family
     holding the total and a refugee member, and a held family's total reads its name though
     recall found the refugee member alone. The words are those every served member holds,
-    which the words the answer reads hold whichever of them it shows. When a served member
+    so they stand whichever member the answer shows. When a served member
     has no name, as a code index row recall did not return has none, or no read served
     any, they are the words every named member holds (`_shape_measure_words`), the fewest
     any name of the family reads, so the named members alone clear no word. None when no

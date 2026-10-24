@@ -153,8 +153,8 @@ def describe(
     `stated_words_read.bound_value_label`, a set's values joined by "or". With
     `definition`, it also quotes the values the measure's definition fixes on properties
     `bindings` leave unrestricted (`stated_words_read.implied_values`), as the stated-word
-    questions and Gemini's stated-words prompt do, and so do both for the `served` series
-    the answer serves when they differ from the label (`stated_words_read.serves_beyond_label`,
+    questions and Gemini's stated-words prompt do. It also quotes the `served` series when
+    they differ from the label (`stated_words_read.serves_beyond_label`,
     `stated_words_read.served_series`)."""
     reading = stated_reading(shape)
     parts = [f"{reading.measured_property} of {reading.population_type}"]

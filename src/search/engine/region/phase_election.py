@@ -760,7 +760,7 @@ async def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> Re
     binding repair named, so the rule runs again there (`_served`), on the bindings every
     identity of the part is minted from. A part none of whose tables holds a row for the
     bindings together refuses (`_unserved_refusal`), with stated-word coverage judged first
-    (`judge_coverage`): no read has served a member, so the judgement reads the shape's
+    (`judge_coverage`). No read has served a member, so the judgement reads the shape's
     named members, and each term the judgement records is named or departs.
     """
     try:
@@ -968,9 +968,9 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
 
 async def judge_coverage(state: ResolveState) -> None:
     """Judge stated-word coverage on the elected shape over the final bindings, once per
-    pass, before its answer is first judged: once the read serves members, or on a refusal
-    returned before it (`pipeline._run_phases`, `phase_shared._elected_flagged_match`). The
-    coverage rule reads the members the read served (`served_member_names`), so the
+    pass, before its answer is first judged. That is once the read serves members, or on a
+    refusal returned before it (`pipeline._run_phases`, `phase_shared._elected_flagged_match`).
+    The coverage rule reads the members the read served (`served_member_names`), so the
     lexical readers, the binder's rating and the answer describe one list.
 
     The binder rates the words the rule leaves unrated (`_rate_unread_words`) and the query
