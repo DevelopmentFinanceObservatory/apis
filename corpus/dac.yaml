@@ -161,11 +161,9 @@
 
 - id: dq-dac-016
   query: GNI of Denmark
-  why: DAC1 carries GNI only as the denominator of the ODA ratio; a plain GNI question elects the World Bank series.
+  why: The DFO series carries the World Bank indicator NY.GNP.MKTP.CD, and DAC1 serves it for Denmark.
   tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [dac1], probe: [source_election]}
-  # Known failure: "GNI of Denmark" returns candidates, not a definite answer.
-  known_failure: {issue: 1249, checks: [disposition]}
-  expect: {definite: {measure: {family: base.gni}, entities: [{dcid: country/DNK, role: observationAbout}]}}
+  expect: {definite: {measure: {family: dac1.gni}, entities: [{dcid: country/DNK, role: observationAbout}]}}
 
 - id: dq-dac-017
   query: oda gni ratio swedan

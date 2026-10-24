@@ -59,8 +59,9 @@ dac1.private_mobilised:
   shape: {measured_property: amountMobilised}
 dac1.gni:
   origin: dfo
-  dataset: {gl: DAC1 provenance}
-  shape: {gl: GNI series about the provider}
+  dataset: provenance/OECDDAC1
+  shape: {population_type: EconomicUnit, measured_property: primaryIncome, stat_type: measuredValue, measurement_qualifier: Nominal, measurement_denominator: null}
+  fixed: {fixedCapitalConsumptionBasis: GrossOfFixedCapitalConsumption}
 dac2a.oda_net_received:
   origin: dfo
   dataset: provenance/OECDDAC2A
