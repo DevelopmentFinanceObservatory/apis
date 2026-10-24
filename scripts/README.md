@@ -225,15 +225,14 @@ Run by `just sentence-panel`. Runnable by hand.
 
 ## `stage_eval_data.py`
 
-Stages the deployed graph release, origin catalogue and coverage build for the eval apps. It copies the release the deployed pointer names, with its manifest and parts. For each checkout it asks `origin_catalogue.schema.FORMAT_ROOT` for the format root, and `series_coverage.schema.FORMAT_ROOT` when the checkout serves coverage from the coverage artifact (`series_coverage.shared.CoverageService`). It reads each distinct root's current pointer from the deployed bucket, downloads that one version into a local root, and prints the `file://` URIs as `GRAPH_RELEASE_URI`, `ORIGIN_CATALOGUE_URI` and, when a checkout reads coverage, `COVERAGE_ARTIFACT_URI`.
+Stages the deployed graph release and origin catalogue for the eval apps. It copies the release the deployed pointer names, with its manifest and parts. For each checkout it asks `origin_catalogue.schema.FORMAT_ROOT` for the format root, reads each distinct root's current pointer from the deployed bucket, downloads that one version into a local root, and prints the `file://` URIs.
 
 ```bash
 uv run python scripts/stage_eval_data.py --checkout <head-checkout> --checkout <base-checkout> \
-    --dest staged --release-uri gs://<release bucket>/ --catalogue-uri gs://<catalogue bucket>/ \
-    --coverage-uri gs://<coverage bucket>/
+    --dest staged --release-uri gs://<release bucket>/ --catalogue-uri gs://<catalogue bucket>/
 ```
 
-`--coverage-uri` is needed only when a checkout reads the coverage artifact. Each URI defaults to its environment variable (`GRAPH_RELEASE_URI`, `ORIGIN_CATALOGUE_URI`, `COVERAGE_ARTIFACT_URI`). Needs read access to the deployed buckets. Exits 3 when a root or the release has no pointer, or a pointer names a build with no objects.
+Needs read access to the deployed release and catalogue buckets. Exits 3 when a root or the release is missing from the bucket.
 
 Run by `.github/workflows/eval-gate.yml` before the apps start.
 
