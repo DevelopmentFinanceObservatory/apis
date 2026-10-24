@@ -1,6 +1,8 @@
-"""Test a stored `stat_vars_summed` warning's structured fields and their absence elsewhere."""
+"""Test a stored warning's structured fields and their absence elsewhere."""
 
 from __future__ import annotations
+
+import pytest
 
 from datasets_api.manifest import warning_model
 from datasets_api.manifest_models import WarningModel
@@ -41,18 +43,62 @@ def test_a_stored_stat_vars_summed_warning_without_a_label_omits_the_label_key()
     assert dumped["contributing_member_count"] == 74
 
 
-def test_a_stored_coverage_warning_with_member_fields_reads_back_unchanged():
-    """A stored version body whose group `coverage_below_scope` carries the member fields
-    reads back, so a revision that does not write them still serves versions that do."""
-    stored = {
-        "code": "coverage_below_scope",
-        "severity": "warn",
-        "message": "2 of 9 series report at a different frequency and are left out of the figures.",
-        "member_count": 9,
-        "off_cadence_members": {"count": 2, "refs": ["dcid:MemberA", "dcid:MemberB"]},
-        "out_of_window_members": {"count": 1, "refs": ["dcid:MemberC"]},
-    }
-
+@pytest.mark.parametrize(
+    "stored",
+    [
+        pytest.param(
+            {
+                "code": "coverage_below_scope",
+                "severity": "warn",
+                "message": "2 of 9 series report at a different frequency and are left out "
+                "of the figures.",
+                "member_count": 9,
+                "off_cadence_members": {"count": 2, "refs": ["dcid:MemberA", "dcid:MemberB"]},
+                "out_of_window_members": {"count": 1, "refs": ["dcid:MemberC"]},
+            },
+            id="group-members",
+        ),
+        pytest.param(
+            {
+                "code": "coverage_below_scope",
+                "severity": "warn",
+                "message": "No observations were served for 6 requested entities.",
+                "unserved_entities": {
+                    "count": 6,
+                    "refs": [f"dcid:country/C{i}" for i in range(5)],
+                },
+            },
+            id="unserved-entities",
+        ),
+        pytest.param(
+            {
+                "code": "currency_unmapped_omitted",
+                "severity": "warn",
+                "message": "It left out 1 entity.",
+                "omitted_entities": {"count": 1, "refs": ["dcid:country/PSE"]},
+            },
+            id="currency-omitted-entities",
+        ),
+        pytest.param(
+            {
+                "code": "deflator_missing_omitted",
+                "severity": "warn",
+                "message": "It left out rows of 2 entities.",
+                "omitted_entity_years": {
+                    "count": 2,
+                    "entities": [
+                        {"ref": "dcid:country/AZE", "years": ["2022"]},
+                        {"ref": "dcid:country/TWN", "years": ["1990-2001", "2004"]},
+                    ],
+                },
+            },
+            id="deflator-omitted-entities",
+        ),
+    ],
+)
+def test_a_stored_warning_with_counted_refs_reads_back_unchanged(stored):
+    """A stored version body whose warning carries counted refs reads back, so a revision
+    that does not write them still serves versions that do."""
     assert WarningModel.model_validate(stored).model_dump(mode="json") == stored
 
 
