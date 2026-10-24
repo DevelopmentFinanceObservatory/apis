@@ -505,8 +505,9 @@ async def _assemble_definite(
     on the same property, or, as a sibling every member of which holds Female, apply
     "female". Its refusal names the terms
     its flagged match's trace records (`requirements.answer_terms`): the elected reading's
-    unbound query terms, which no answer is shown to apply, and each code and value
-    requirement its own answer leaves unmet.
+    unbound query terms other than its coverage records, its own coverage records
+    (`_Candidate.uncovered`), and each code and value requirement its own answer leaves
+    unmet.
     """
     _survivor = grounded.cand_candidates[unique_specs[0].spec_id]
     if unique_specs[0].spec_id != grounded.elected_spec_id:
