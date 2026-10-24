@@ -458,11 +458,13 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
 
 
 @pytest.mark.parametrize(
-    ("query", "name", "span", "answers", "expected"),
+    ("query", "name", "span", "text", "answers", "expected"),
     [
         pytest.param(
             "aid to Congo",
             "Democratic Republic of the Congo",
+            "Congo",
+            # The span names two countries, so the entity reads as the span.
             "Congo",
             {
                 "Congo": Ambiguous(candidates=(_COD, _COG)),
@@ -475,6 +477,7 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "aid to DR Congo",
             "Democratic Republic of the Congo",
             "DR Congo",
+            "Democratic Republic of the Congo",
             {
                 "DR Congo": Resolved(entity=_COD),
                 "Democratic Republic of the Congo": Resolved(entity=_COD),
@@ -486,6 +489,7 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "aid to South Korea",
             "Republic of Korea",
             "South Korea",
+            "Republic of Korea",
             {"South Korea": Resolved(entity=_KOR), "Republic of Korea": Resolved(entity=_KOR)},
             Resolved(entity=_KOR),
             id="mention_names_one_korea",
@@ -494,6 +498,7 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "aid to Korea",
             "Democratic People's Republic of Korea",
             None,
+            "Democratic People's Republic of Korea",
             # The resolver reads "Korea" as South Korea.
             {
                 "Korea": Resolved(entity=_KOR),
@@ -506,6 +511,7 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "German aid to Kenya",
             "Germany",
             None,
+            "Germany",
             {"Germany": Resolved(entity=_DEU)},
             Resolved(entity=_DEU),
             id="demonym",
@@ -514,6 +520,7 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "aid from the UK to Kenya",
             "United Kingdom",
             None,
+            "United Kingdom",
             {"United Kingdom": Resolved(entity=_GBR)},
             Resolved(entity=_GBR),
             id="abbreviation",
@@ -524,6 +531,7 @@ def test_a_name_the_query_does_not_write_resolves_through_the_query_words(
     query: str,
     name: str,
     span: str | None,
+    text: str,
     answers: dict[str, object],
     expected: Resolution,
 ) -> None:
@@ -531,14 +539,15 @@ def test_a_name_the_query_does_not_write_resolves_through_the_query_words(
     span, gets the query's own words for it as its span, which resolution reads: the words
     it shares with the query, grown to the widest stretch around them that resolves to the
     name's place ("DR Congo", "South Korea"). Words that resolve to another place, and a
-    name in other words, which shares none with the query, leave it to resolve as itself."""
+    name in other words, which shares none with the query, leave it to resolve as itself.
+    Words that leave the query's choice of place open become the entity's text ("Congo")."""
     resolver = _Resolver(answers)
 
     recovered = _recover([ExtractedEntity(text=name)], query=query, resolver=resolver)
     found = _lookup(recovered, query=query, resolver=resolver)
 
-    assert recovered == [ExtractedEntity(text=name, span=span)]
-    assert found == {name: expected}
+    assert recovered == [ExtractedEntity(text=text, span=span)]
+    assert found == {text: expected}
 
 
 _COD_NAME = "Democratic Republic of the Congo"
