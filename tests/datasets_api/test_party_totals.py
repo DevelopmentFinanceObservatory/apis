@@ -90,8 +90,8 @@ _EVERY_PAIR = [
             {_FRANCE, _GERMANY, _GATES},
             {_AFRICA_REGIONAL, _KENYA, _GHANA},
             [
-                {"role": _PROVIDER, "entities": [_OFFICIAL, _DAC_TOTAL, _G7]},
-                {"role": _RECIPIENT, "entities": [_DEVELOPING]},
+                {"role": _PROVIDER, "provenance": None, "entities": [_OFFICIAL, _DAC_TOTAL, _G7]},
+                {"role": _RECIPIENT, "provenance": None, "entities": [_DEVELOPING]},
             ],
             id="both-open",
         ),
@@ -99,14 +99,14 @@ _EVERY_PAIR = [
             {"entities": {"destination": [_DEVELOPING, _KENYA]}},
             {_FRANCE, _GERMANY, _GATES},
             {_DEVELOPING, _AFRICA_REGIONAL, _KENYA, _GHANA},
-            [{"role": _PROVIDER, "entities": [_OFFICIAL, _DAC_TOTAL, _G7]}],
+            [{"role": _PROVIDER, "provenance": None, "entities": [_OFFICIAL, _DAC_TOTAL, _G7]}],
             id="recipient-bound-by-axis-label",
         ),
         pytest.param(
             {"entities": {"provider": [_DAC_TOTAL]}},
             {_DAC_TOTAL, _G7, _OFFICIAL, _FRANCE, _GERMANY, _GATES},
             {_AFRICA_REGIONAL, _KENYA, _GHANA},
-            [{"role": _RECIPIENT, "entities": [_DEVELOPING]}],
+            [{"role": _RECIPIENT, "provenance": None, "entities": [_DEVELOPING]}],
             id="provider-bound-by-caller-role",
         ),
     ],
@@ -133,7 +133,7 @@ def test_a_role_whose_every_row_is_a_total_keeps_them():
     kept, trace = _kept(_frame(pairs), identity={"entities": {}})
 
     assert kept == {(_DAC_TOTAL, _KENYA), (_DAC_TOTAL, _GHANA)}
-    assert trace == [{"role": _RECIPIENT, "entities": [_DEVELOPING]}]
+    assert trace == [{"role": _RECIPIENT, "provenance": None, "entities": [_DEVELOPING]}]
 
 
 def test_each_role_reads_the_rows_the_roles_before_it_kept():
@@ -144,7 +144,7 @@ def test_each_role_reads_the_rows_the_roles_before_it_kept():
     kept, trace = _kept(_frame(pairs), identity={"entities": {}})
 
     assert kept == {(_FRANCE, _DEVELOPING)}
-    assert trace == [{"role": _PROVIDER, "entities": [_DAC_TOTAL]}]
+    assert trace == [{"role": _PROVIDER, "provenance": None, "entities": [_DAC_TOTAL]}]
 
 
 @pytest.mark.parametrize(
@@ -272,4 +272,6 @@ def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone(
 
     assert sorted(kept) == sorted(rows[:1] + rows[2:])
     assert sum(value for provenance, _, value in kept if provenance == _DAC2A) == 856_055_477.0
-    assert cut.trace_entries() == [{"role": _PROVIDER, "entities": [_TRUST_FUNDS]}]
+    assert cut.trace_entries() == [
+        {"role": _PROVIDER, "provenance": _DAC2A, "entities": [_TRUST_FUNDS]}
+    ]

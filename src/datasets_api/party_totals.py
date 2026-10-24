@@ -92,15 +92,14 @@ class PartyTotalsCut:
         return cut
 
     def trace_entries(self) -> list[dict[str, object]]:
-        """The trace's `party_totals_left_out` entries: one `{role, entities}` per role that lost
-        rows, in role order, its entities in ref order, each named once whatever datasets it
-        lost rows in."""
+        """The trace's `party_totals_left_out` entries: one `{role, provenance, entities}` per
+        role and provenance it lost rows in, in role order and then provenance order (`None`
+        first), its entities in ref order. A party left out of one dataset's rows is named for
+        that dataset alone, so a frame that keeps its rows from another dataset says so."""
         return [
-            {
-                "role": role,
-                "entities": sorted({ref for refs in by_dataset.values() for ref in refs}),
-            }
+            {"role": role, "provenance": dataset, "entities": list(refs)}
             for role, by_dataset in sorted(self.left_out.items())
+            for dataset, refs in sorted(by_dataset.items(), key=lambda item: item[0] or "")
         ]
 
 

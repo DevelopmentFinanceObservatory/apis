@@ -29,13 +29,14 @@ one batched `node_arcs_many` read, so asking for `type` beside `label` costs no 
 
 PARTY_KIND_FIELD = "party_kind"
 """The field a lookup derives with no graph read: the party's kind (`party`, `total` or
-`residual`) the code index declares (`party_kind_of`) for the row's dataset, empty where the
-row names no dataset and the party's kind differs between datasets."""
+`residual`) the code index declares (`party_kind_of`) for the row's dataset. Where the row names
+no dataset and the party's kind differs between datasets the kind is unavailable, as for a party
+the index does not list."""
 
 PARTY_CLASS_FIELD = "party_class"
 """The party's class (`official`, `private` or `residual`, `PartyRow.class_in`) in the row's
-dataset, for a total the one class its whole markers cover, empty otherwise and where the row
-names no dataset and the party's kind differs between datasets."""
+dataset, for a total the one class its whole markers cover, empty otherwise. Unavailable where
+the row names no dataset and the party's kind differs between datasets."""
 
 PARTY_WHOLE_FIELD = "party_whole"
 """`true` on a row whose party is a whole total for the row's dataset and year
@@ -99,9 +100,9 @@ class EnrichmentLookup:
     ) -> Mapping[str, Mapping[str, str]]:
         """Returns unique refs in input order, mapping available fields to values. Absent refs
         map to `{}`, or to the `party_kind` their `parties` row gives for no dataset
-        (`party_cell`). Cached refs avoid graph
-        calls. New refs are fetched in one unlocked batch, bounded by the absolute monotonic
-        `deadline` when given."""
+        (`party_cell`), which a party whose kind differs between datasets lacks. Cached refs
+        avoid graph calls. New refs are fetched in one unlocked batch, bounded by the absolute
+        monotonic `deadline` when given."""
         requested = list(dict.fromkeys(refs))
         if not requested:
             return {}
@@ -126,7 +127,7 @@ class EnrichmentLookup:
         """The party cells `parties` gives `ref` for no dataset and year (`party_cell` of each
         of `PARTY_FIELDS`), read with no graph call, so they hold when a `lookup` fails. Empty
         for a ref the rows do not list. With no dataset, `party_whole` is empty for a party that
-        carries whole markers (`whole_cell`), and `party_kind` and `party_class` are empty for
+        carries whole markers (`whole_cell`), and `party_kind` and `party_class` are absent for
         a party whose kind differs between datasets."""
         cells = {field: party_cell(field, ref, parties=self._parties()) for field in PARTY_FIELDS}
         return {field: cell for field, cell in cells.items() if cell is not None}
@@ -160,7 +161,7 @@ def _with_party_kind(
     ref: str, fields: Mapping[str, str], *, parties: Mapping[str, PartyRow]
 ) -> Mapping[str, str]:
     """`fields` with `party_kind` set to the ref's cell for no dataset (`party_cell`), unchanged
-    for a ref `parties` does not list. A copy, so the cached fields never carry a kind."""
+    for a ref that has none there. A copy, so the cached fields never carry a kind."""
     if (kind := party_cell(PARTY_KIND_FIELD, ref, parties=parties)) is None:
         return fields
     return {**fields, PARTY_KIND_FIELD: kind}
@@ -232,18 +233,19 @@ def party_cell(
     """The `<role>_<field>` cell of the party `ref`, for `field` one of `PARTY_FIELDS`, on a
     row of `provenance` in `year`: its kind there (`party_kind_of`), its class there
     (`PartyRow.class_in`, empty when it has none), or whether it is a whole total there
-    (`whole_cell`). With no `provenance` the kind and class are those of every dataset, empty
-    for a party whose kind differs between datasets. `None` for a ref the rows do not list."""
+    (`whole_cell`). With no `provenance` the kind and class are those of every dataset. `None`
+    for a ref the rows do not list, and for the kind and class of a party that takes no one kind
+    for the row (`PartyRow.kind_over`), so a reader counts the cell unavailable."""
     party = parties.get(ref)
     if party is None:
         return None
-    if field == PARTY_KIND_FIELD:
+    if field in (PARTY_KIND_FIELD, PARTY_CLASS_FIELD):
         kind = party.kind_over(() if provenance is None else (provenance,))
-        return kind or ""
-    if field == PARTY_CLASS_FIELD:
-        if provenance is not None:
-            return party.class_in(provenance) or ""
-        return (party.party_class or "") if party.kind_over() is not None else ""
+        if kind is None:
+            return None
+        if field == PARTY_KIND_FIELD:
+            return kind
+        return (party.class_in(provenance) if provenance is not None else party.party_class) or ""
     if field == PARTY_WHOLE_FIELD:
         return whole_cell(party, year=year, provenance=provenance)
     raise ValueError(f"{field!r} is not a party field; expected one of {PARTY_FIELDS!r}")

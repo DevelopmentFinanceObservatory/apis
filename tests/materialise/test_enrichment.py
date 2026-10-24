@@ -372,7 +372,8 @@ _TRUST_FUNDS = PartyRow(
 
 def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_dataset():
     """The IMF trust funds are a total in DAC2A, beside the IMF they equal, and a party in the
-    CRS. A reader with no dataset finds no one kind and leaves the kind and class empty."""
+    CRS. A reader with no dataset finds no one kind, so the kind and class are unavailable and
+    a lookup carries no kind."""
     parties = {_TRUST_FUNDS.dcid: _TRUST_FUNDS}
 
     def cells(provenance: str | None) -> tuple[str | None, ...]:
@@ -384,7 +385,7 @@ def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_da
     assert [cells(_DAC2A), cells(_CRS), cells(None)] == [
         ("total", "", "false"),
         ("party", "official", "false"),
-        ("", "", "false"),
+        (None, None, "false"),
     ]
     entity = ("financingProvider", _TRUST_FUNDS.dcid)
     assert [
@@ -392,7 +393,8 @@ def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_da
         for datasets in ((_DAC2A,), (_CRS,), (_CRS, _DAC2A), ())
     ] == [{entity: "total"}, {entity: "party"}, {}, {}]
     lookup = EnrichmentLookup(FakeGraphReader(arcs={}), parties=lambda: parties)
-    assert lookup.lookup([_TRUST_FUNDS.dcid]) == {_TRUST_FUNDS.dcid: {"party_kind": ""}}
+    assert lookup.lookup([_TRUST_FUNDS.dcid]) == {_TRUST_FUNDS.dcid: {}}
+    assert lookup.party_cells(_TRUST_FUNDS.dcid) == {"party_whole": "false"}
 
 
 def test_ref_with_only_a_label_omits_the_missing_fields():

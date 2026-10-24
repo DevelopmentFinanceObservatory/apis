@@ -588,6 +588,8 @@ def test_a_row_without_a_readable_dataset_or_year_reads_total(columns, rows):
     assert _kinds(columns, rows, role="financingRecipient") == ["total"]
 
 
+_CRS = "provenance/OECDCreditorReportingSystem"
+
 _SIDE_PARTIES = {
     "country/FRA": PartyRow(dcid="country/FRA", kind="party", party_class="official"),
     "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
@@ -652,3 +654,41 @@ def test_a_long_kind_cell_reads_the_partys_kind_in_words_for_its_side(
 
     assert _row(projected.table, 0)[f"{role}_kind"] == expected
     assert not any("_party_" in column for column in projected.table.columns)
+
+
+@pytest.mark.parametrize(
+    ("provenance", "expected", "unavailable"),
+    [
+        pytest.param(_DAC2A, "total", 0, id="total-in-dac2a"),
+        pytest.param(_CRS, "official", 0, id="party-in-the-crs"),
+        pytest.param(None, None, 1, id="no-dataset"),
+    ],
+)
+def test_a_party_whose_kind_differs_between_datasets_reads_none_on_a_row_naming_no_dataset(
+    provenance, expected, unavailable
+):
+    """The IMF trust funds are a total in DAC2A and a party in the CRS."""
+    trust_funds = PartyRow(
+        dcid="IMFConcessionalTrustFunds",
+        kind="party",
+        party_class="official",
+        datasets=(_CRS, _DAC2A),
+        axes=("origin",),
+        dataset_kinds=((_DAC2A, "total"),),
+    )
+    columns = ("stat_var", "financingProvider", "time_period", "provenance", "value")
+
+    projected = plan_long_projection(
+        columns,
+        entity_columns=("financingProvider",),
+        axis_codes={},
+        unit_naming=_UNIT_NAMING,
+        grain=None,
+    ).apply(
+        Table(columns=columns, rows=(("dcid:SV_A", trust_funds.dcid, "2021", provenance, 1.0),)),
+        names={},
+        parties={trust_funds.dcid: trust_funds},
+    )
+
+    assert _row(projected.table, 0)["financingProvider_kind"] == expected
+    assert projected.unavailable.get("financingProvider_kind", 0) == unavailable
