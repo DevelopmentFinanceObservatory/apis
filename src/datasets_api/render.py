@@ -70,6 +70,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import IO, cast
 from urllib.parse import urlencode
 
@@ -307,6 +308,23 @@ class DerivedVersion:
     content_version: str
     summed: bool
     party_totals_left_out: tuple[dict[str, object], ...]
+
+
+class FrameMode(StrEnum):
+    """What a stored frame holds of the version it serves, which says how a render of that
+    version reads it (`recorded_rendering.serving_frames`).
+
+    `RAW`: the version's rows before any minting option, the frame of a raw version or the base
+    frame of a derived one. The render cuts party totals, applies the groupby and decodes as the
+    version's options ask. `SUMMED`: a derived version's groupby collapse
+    (`DerivedVersion.summed`). The render skips the cut and the groupby, and the frame is
+    decoded. `CUT`: a derived version's party-totals cut frame. The render skips the cut and
+    applies the version's groupby and decode, which sum the rows when the collapse is not a
+    grammar frame of its own (`_reshape_groupby_collapse`)."""
+
+    RAW = "raw"
+    SUMMED = "summed"
+    CUT = "cut"
 
 
 def check_options_supported(options: MintOptions, *, code_index: CodeIndex | None) -> None:
@@ -2319,6 +2337,76 @@ def _reshape_stream_plain(
     )
 
 
+def _probe_groupby_collapse(
+    first_chunk: Table,
+    *,
+    options: MintOptions,
+    code_index: CodeIndex | None,
+    resolved_stat_var_refs: Sequence[str],
+) -> tuple[bool, DecodePlan | None]:
+    """Whether `options.groupby` sums the `stat_var` of the frame whose first chunk is
+    `first_chunk`, so a render folds it across chunks (`sums_stat_vars`), and the chunk's
+    decode plan, `None` with no groupby or no `code_index`."""
+    if options.groupby is None or code_index is None:
+        return False, None
+    decode_plan = build_decode_plan(
+        first_chunk, index=code_index, extra_refs=resolved_stat_var_refs
+    )
+    sums = sums_stat_vars(
+        by=options.groupby.by,
+        levels=options.groupby.levels,
+        decoded_code_systems=_decoded_code_systems(decode_plan),
+        declarations=code_index.declarations,
+    )
+    return sums, decode_plan
+
+
+def _decoded_code_systems(decode_plan: DecodePlan | None) -> tuple[str, ...]:
+    """The code systems `decode_plan` decodes."""
+    if decode_plan is None:
+        return ()
+    return tuple(code_system for _entity_column, code_system in decode_plan.requests)
+
+
+def groupby_collapse_sha256(
+    frame_chunks: Callable[[], Iterator[Table]],
+    *,
+    options: MintOptions,
+    code_index: CodeIndex,
+    entity_columns: Sequence[str],
+    resolved_stat_var_refs: Sequence[str],
+    provenance_refs: Sequence[str],
+    subject_id: str,
+) -> str | None:
+    """The hash of the frame `options.groupby` collapses the frame `frame_chunks` passes over
+    to, folded as `render_and_store` folds it, or `None` when the groupby sums no `stat_var` or
+    its sum is no grammar frame. Reads no graph name and stores nothing. Raises
+    `RollupNotSummableError` as a render's groupby does."""
+    chunks = _reslice_chunks(frame_chunks())
+    first_chunk = next(chunks, None)
+    if first_chunk is None:
+        return None
+    sums, decode_plan = _probe_groupby_collapse(
+        first_chunk,
+        options=options,
+        code_index=code_index,
+        resolved_stat_var_refs=resolved_stat_var_refs,
+    )
+    if not sums:
+        return None
+    outcome = _reshape_groupby(
+        first_chunk,
+        decode_plan=decode_plan,
+        options=options,
+        code_index=code_index,
+        entity_columns=entity_columns,
+        provenance_refs=provenance_refs,
+        subject_id=subject_id,
+        frame_chunks=itertools.chain((first_chunk,), chunks),
+    )
+    return outcome.collapse.frame_sha256 if outcome.collapse is not None else None
+
+
 def _reshape_stream(
     frame_chunks: Iterable[Table],
     *,
@@ -2369,23 +2457,17 @@ def _reshape_stream(
             decoded=decoded,
         )
 
-    will_stream_groupby_collapse = False
-    probe_decoded_code_systems: tuple[str, ...] = ()
-    if first_chunk is not None and options.groupby is not None and code_index is not None:
-        probe_decode_plan = build_decode_plan(
-            first_chunk, index=code_index, extra_refs=resolved_stat_var_refs
+    will_stream_groupby_collapse, probe_decode_plan = (
+        _probe_groupby_collapse(
+            first_chunk,
+            options=options,
+            code_index=code_index,
+            resolved_stat_var_refs=resolved_stat_var_refs,
         )
-        probe_decoded_code_systems = (
-            tuple(code_system for _entity_column, code_system in probe_decode_plan.requests)
-            if probe_decode_plan is not None
-            else ()
-        )
-        will_stream_groupby_collapse = sums_stat_vars(
-            by=options.groupby.by,
-            levels=options.groupby.levels,
-            decoded_code_systems=probe_decoded_code_systems,
-            declarations=code_index.declarations,
-        )
+        if first_chunk is not None
+        else (False, None)
+    )
+    probe_decoded_code_systems = _decoded_code_systems(probe_decode_plan)
 
     if will_stream_groupby_collapse and first_chunk is not None:
         # `_reshape` recomputes this decision from the same inputs. A chained pivot runs on the
@@ -2572,7 +2654,7 @@ def render_and_store(
     output_profile: OutputProfile | None = None,
     deadline: float | None = None,
     base_frame_sha256: str | None = None,
-    derived_frame: bool = False,
+    frame_mode: FrameMode = FrameMode.RAW,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings.
     `frame_chunks` returns a fresh pass over the materialised frame's chunks in order. Long
@@ -2617,12 +2699,11 @@ def render_and_store(
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is. Every chunk `frame_chunks` yields is then a `Frame`.
 
-    `derived_frame` says `frame_chunks` holds a derived version's own stored frame, which its
-    `groupby` collapse and party-totals cut already made (`DerivedVersion`). The render then
-    neither cuts nor collapses it again and mints no version: the artifact belongs to
-    `content_version`. `options` keep those minting options, so they still name the rendering,
-    the reproducing call and the bundle's description, and a collapse's family ref keeps its
-    label.
+    `frame_mode` says what `frame_chunks` holds of the version (`FrameMode`). A derived
+    version's own stored frame is not cut again, and a summed one is not collapsed again either
+    and mints no version. `options` keep the version's minting options, so they still name the
+    rendering, the reproducing call and the bundle's description, and a collapse's family ref
+    keeps its label.
     """
     check_options_supported(options, code_index=code_index)
     subject_id = str(spec.get("spec_id"))
@@ -2635,7 +2716,7 @@ def render_and_store(
             roles=open_party_roles(identity, entity_columns),
             parties=enrichment.parties,
         )
-        if options.without_party_totals and not derived_frame
+        if options.without_party_totals and frame_mode is FrameMode.RAW
         else None
     )
     cut = (
@@ -2677,7 +2758,11 @@ def render_and_store(
         grain = _frame_period_grain(frame_chunks) if long_output else None
         streamed = _reshape_stream(
             frame_chunks(),
-            options=options.model_copy(update={"groupby": None}) if derived_frame else options,
+            options=(
+                options.model_copy(update={"groupby": None})
+                if frame_mode is FrameMode.SUMMED
+                else options
+            ),
             entity_columns=entity_columns,
             pivot_max_output_cells=pivot_max_output_cells,
             code_index=code_index,
@@ -2693,8 +2778,8 @@ def render_and_store(
             grain=grain,
             totals=totals,
             output_profile=output_profile,
-            # A derived frame's collapse decoded its codes.
-            decoded=derived_frame and options.groupby is not None,
+            # A summed frame's collapse decoded its codes.
+            decoded=frame_mode is FrameMode.SUMMED and options.groupby is not None,
         )
         chunks_for_writer = streamed.chunks_for_writer
         collapse = streamed.collapse
@@ -2708,8 +2793,8 @@ def render_and_store(
         )
         if collapse is not None:
             summed_ref: str | None = collapse.stat_var_ref
-        elif derived_frame and options.groupby is not None:
-            # The family ref a derived frame's collapse wrote. A ref no file holds is not listed.
+        elif frame_mode is FrameMode.SUMMED and options.groupby is not None:
+            # The family ref a summed frame's collapse wrote. A ref no file holds is not listed.
             summed_ref = f"{_STAT_VAR_REF_PREFIX}{subject_id}"
         else:
             summed_ref = None

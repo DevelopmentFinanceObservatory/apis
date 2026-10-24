@@ -754,43 +754,11 @@ _CUT_FAMILY_IDENTITY = {
 }
 
 
-def _cut_family_client(version_store, artifact_store, *, flow_summable: bool = False):
-    """A client over `_CUT_FAMILY`. With `flow_summable`, the index declares `flowAxis`
-    summable too, so a groupby that keeps `testAxis` sums `flowAxis` into a frame of its own."""
-    graph = FakeMintGraphReader(
-        arcs={
-            member: {
-                "typeOf": ("StatisticalVariable",),
-                "populationType": ("DevelopmentFinance",),
-                "measuredProperty": ("amount",),
-                "observationProperties": ("provider", "recipient"),
-                "constraintProperties": ("testAxis", "flowAxis"),
-                "testAxis": (axis,),
-                "flowAxis": (flow,),
-            }
-            for member, (axis, flow) in _CUT_FAMILY.items()
-        },
-        labels={"OECD_DAC2A": "OECD DAC2a", "country/KEN": "Kenya", "country/FRA": "France"},
-    )
-    coverage = FakeCoverageService(
-        build_coverage_index(
-            [
-                (member, "facet1", provider, "country/KEN", [2020])
-                for member in _CUT_FAMILY
-                for provider in (party_totals._DAC_TOTAL, party_totals._FRANCE)
-            ],
-            role_names={
-                member: RoleNames(donor="provider", recipient="recipient") for member in _CUT_FAMILY
-            },
-            facet_metadata={
-                "facet1": FacetMetadata(
-                    provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
-                )
-            },
-        )
-    )
+def _cut_family_code_index(*, flow_summable: bool) -> CodeIndex:
+    """The party-totals fixture index over `_CUT_FAMILY`'s two code axes, `testAxis` summable
+    and `flowAxis` summable with `flow_summable`."""
     index = party_totals._code_index()
-    code_index = CodeIndex(
+    return CodeIndex(
         stamp=index.stamp,
         declarations=tuple(
             CodeSystemDeclaration(
@@ -828,6 +796,50 @@ def _cut_family_client(version_store, artifact_store, *, flow_summable: bool = F
         ),
         parties=list(index.parties.values()),
     )
+
+
+def _cut_family_client(
+    version_store,
+    artifact_store,
+    *,
+    flow_summable: bool = False,
+    store: FakeDatasetStore | None = None,
+):
+    """A client over `_CUT_FAMILY`, registering specs in `store`. With `flow_summable`, the
+    index declares `flowAxis` summable too, so a groupby that keeps `testAxis` sums `flowAxis`
+    into a frame of its own."""
+    graph = FakeMintGraphReader(
+        arcs={
+            member: {
+                "typeOf": ("StatisticalVariable",),
+                "populationType": ("DevelopmentFinance",),
+                "measuredProperty": ("amount",),
+                "observationProperties": ("provider", "recipient"),
+                "constraintProperties": ("testAxis", "flowAxis"),
+                "testAxis": (axis,),
+                "flowAxis": (flow,),
+            }
+            for member, (axis, flow) in _CUT_FAMILY.items()
+        },
+        labels={"OECD_DAC2A": "OECD DAC2a", "country/KEN": "Kenya", "country/FRA": "France"},
+    )
+    coverage = FakeCoverageService(
+        build_coverage_index(
+            [
+                (member, "facet1", provider, "country/KEN", [2020])
+                for member in _CUT_FAMILY
+                for provider in (party_totals._DAC_TOTAL, party_totals._FRANCE)
+            ],
+            role_names={
+                member: RoleNames(donor="provider", recipient="recipient") for member in _CUT_FAMILY
+            },
+            facet_metadata={
+                "facet1": FacetMetadata(
+                    provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
+                )
+            },
+        )
+    )
     return _client(
         graph=graph,
         sdmx_transport=httpx.MockTransport(
@@ -837,34 +849,26 @@ def _cut_family_client(version_store, artifact_store, *, flow_summable: bool = F
                 headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
             )
         ),
+        store=store,
         version_store=version_store,
         head_writer=_FakeHeadStore(),
         artifact_store=artifact_store,
-        code_index=code_index,
+        code_index=_cut_family_code_index(flow_summable=flow_summable),
         coverage=coverage,
     )
 
 
-@pytest.mark.parametrize("aged", ["every-location", "the-minted-file"])
-@_OUTPUTS
-@pytest.mark.parametrize(
-    ("by", "flow_summable"),
-    [
-        pytest.param(["recipient", "testAxis"], False, id="groupby-leaves-the-cut-unchanged"),
-        pytest.param(["recipient"], False, id="groupby-keeps-an-unsummed-axis"),
-        pytest.param(["recipient", "testAxis"], True, id="groupby-sums-and-keeps-a-code-axis"),
-    ],
-)
-def test_a_cut_minted_with_a_groupby_serves_the_file_its_mint_wrote(
-    by: list[str], flow_summable: bool, output: dict[str, Any], aged: str
-):
-    """The groupby leaves the cut frame unchanged, or keeps both values of the unsummed
-    `flowAxis`, so the version is the cut frame (`render._derived_version`), recorded as a
-    collapse would be, or sums a summable `flowAxis` and keeps the code axis `testAxis`. With
-    its minted file aged out and the file's bytes gone, the selector serves the same file."""
+def _cut_with_groupby(
+    by: list[str], *, flow_summable: bool, output: dict[str, Any]
+) -> tuple[Any, FakeDatasetStore, Any, _RenewingArtifactStore, dict[str, Any], dict[str, Any]]:
+    """A client over `_CUT_FAMILY`, its spec, version and artifact stores, a cut of it minted
+    with a groupby by `by` in `output`, and the minted file of `output`'s rendering."""
+    store = FakeDatasetStore()
     version_store = FakeVersionRecordDatasetStore()
     artifact_store = _RenewingArtifactStore(inventory=LiveArtifactInventory(store=version_store))
-    client = _cut_family_client(version_store, artifact_store, flow_summable=flow_summable)
+    client = _cut_family_client(
+        version_store, artifact_store, flow_summable=flow_summable, store=store
+    )
     spec_id = recompute_identity(_CUT_FAMILY_IDENTITY).spec_id
     options = {**output, "without_party_totals": True, "groupby": {"by": by, "op": "sum"}}
     cut = _mint(
@@ -876,6 +880,68 @@ def test_a_cut_minted_with_a_groupby_serves_the_file_its_mint_wrote(
     assert cut["trace"]["party_totals_left_out"] == party_totals._LEFT_OUT
     rendering = artifact_rendering(MintOptions.model_validate(options), site=_SITE)
     [minted] = [a for a in cut["artifacts"] if a["rendering"] == rendering]
+    return client, store, version_store, artifact_store, cut, minted
+
+
+def _frame_summed(version_store, *, subject_id: str, content_version: str) -> bool | None:
+    with version_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT frame_summed FROM datasets.version_record "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, content_version),
+        )
+    assert row is not None
+    return row["frame_summed"]
+
+
+def _drop_base_frame(version_store, artifact_store, *, cut: dict[str, Any]) -> None:
+    """Age every location and delete the bytes of `cut`'s base version's frame."""
+    spec_id = cut["definition"]["spec_id"]
+    base_frame = canonical_frame_digest(
+        version_store,
+        subject_id=spec_id,
+        content_version=_base_content_version(
+            version_store, subject_id=spec_id, content_version=cut["content_version"]
+        ),
+    )
+    _age_every_location(version_store)
+    del artifact_store._objects[(base_frame, Tier.working.value)]
+
+
+# A cut minted with a groupby by `by`, and whether its stored frame is the collapse.
+_CUT_GROUPBYS = pytest.mark.parametrize(
+    ("by", "flow_summable", "summed"),
+    [
+        pytest.param(
+            ["recipient", "testAxis"], False, False, id="groupby-leaves-the-cut-unchanged"
+        ),
+        pytest.param(["recipient"], False, False, id="groupby-keeps-an-unsummed-axis"),
+        pytest.param(
+            ["recipient", "testAxis"], True, True, id="groupby-sums-and-keeps-a-code-axis"
+        ),
+    ],
+)
+
+
+@pytest.mark.parametrize("aged", ["every-location", "the-minted-file"])
+@_OUTPUTS
+@_CUT_GROUPBYS
+def test_a_cut_minted_with_a_groupby_serves_the_file_its_mint_wrote(
+    by: list[str], flow_summable: bool, summed: bool, output: dict[str, Any], aged: str
+):
+    """The groupby leaves the cut frame unchanged, or keeps both values of the unsummed
+    `flowAxis` and sums `testAxis` into rows that are no frame of their own, so the version is
+    the cut frame (`render._derived_version`), or sums a summable `flowAxis` and keeps the
+    code axis `testAxis`, so the version is the collapse. With its minted file aged out and
+    the file's bytes gone, the selector serves the same file."""
+    client, _, version_store, artifact_store, cut, minted = _cut_with_groupby(
+        by, flow_summable=flow_summable, output=output
+    )
+    spec_id = cut["definition"]["spec_id"]
+    assert (
+        _frame_summed(version_store, subject_id=spec_id, content_version=cut["content_version"])
+        is summed
+    )
     if aged == "every-location":
         _age_every_location(version_store)
     else:
@@ -889,3 +955,94 @@ def test_a_cut_minted_with_a_groupby_serves_the_file_its_mint_wrote(
 
     assert resp.status_code == 302, resp.text
     assert _signed_digest(resp.headers["location"]) == minted["artifact_digest"]
+
+
+@pytest.mark.parametrize("via", ["selector", "link"])
+@_OUTPUTS
+@_CUT_GROUPBYS
+def test_a_cut_minted_with_a_groupby_renders_from_its_own_frame_once_its_base_frame_is_gone(
+    by: list[str], flow_summable: bool, summed: bool, output: dict[str, Any], via: str
+):
+    """Every file aged out, the minted file's bytes and the base version's frame bytes gone:
+    the cut renders from its own frame as its recorded `frame_summed` says, and the file it
+    serves is the one its mint wrote."""
+    client, _, version_store, artifact_store, cut, minted = _cut_with_groupby(
+        by, flow_summable=flow_summable, output=output
+    )
+    _drop_base_frame(version_store, artifact_store, cut=cut)
+    del artifact_store._objects[(minted["artifact_digest"], Tier.working.value)]
+
+    path = minted["url"] if via == "link" else _selector(cut, _query(output))
+    resp = client.get(path, follow_redirects=False)
+
+    assert resp.status_code == 302, resp.text
+    assert _signed_digest(resp.headers["location"]) == minted["artifact_digest"]
+
+
+@pytest.mark.parametrize(
+    ("base_frame", "status"),
+    [pytest.param(True, 302, id="base-frame-kept"), pytest.param(False, 410, id="base-frame-gone")],
+)
+@pytest.mark.parametrize("via", ["selector", "link"])
+def test_a_cut_with_a_groupby_recorded_before_frame_summed_renders_from_its_base_alone(
+    via: str, base_frame: bool, status: int
+):
+    """A cut minted with a groupby whose record holds no `frame_summed`, and whose files all
+    record the groupby, cannot say whether its own frame is the collapse. It renders from its
+    base version's frame alone, so once that frame's bytes are gone it serves nothing."""
+    output = {"format": "parquet", "bundle": False}
+    client, _, version_store, artifact_store, cut, minted = _cut_with_groupby(
+        ["recipient"], flow_summable=False, output=output
+    )
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET frame_summed = NULL WHERE content_version = %s",
+            (cut["content_version"],),
+        )
+    if base_frame:
+        _age_every_location(version_store)
+    else:
+        _drop_base_frame(version_store, artifact_store, cut=cut)
+    del artifact_store._objects[(minted["artifact_digest"], Tier.working.value)]
+
+    path = minted["url"] if via == "link" else _selector(cut, _query(output))
+    resp = client.get(path, follow_redirects=False)
+
+    assert resp.status_code == status, resp.text
+    if status == 302:
+        assert _signed_digest(resp.headers["location"]) == minted["artifact_digest"]
+    else:
+        assert resp.json()["code"] == "artifact_expired"
+
+
+@pytest.mark.parametrize("via", ["selector", "link"])
+def test_a_cut_frame_whose_groupby_now_collapses_falls_back_to_the_base_frame(via: str):
+    """The groupby kept the unsummed `flowAxis`, so the cut's frame is the cut frame. Under an
+    index that declares `flowAxis` summable, the same groupby of that frame gives a collapse
+    of its own. That render records no version derived from the cut, and the cut renders from
+    its base version's frame instead, which records its collapse beside the cut."""
+    output = {"format": "parquet", "bundle": False}
+    _, store, version_store, artifact_store, cut, minted = _cut_with_groupby(
+        ["recipient"], flow_summable=False, output=output
+    )
+    spec_id = cut["definition"]["spec_id"]
+    base = _base_content_version(
+        version_store, subject_id=spec_id, content_version=cut["content_version"]
+    )
+    _age_every_location(version_store)
+    del artifact_store._objects[(minted["artifact_digest"], Tier.working.value)]
+    summable = _cut_family_client(version_store, artifact_store, flow_summable=True, store=store)
+
+    path = minted["url"] if via == "link" else _selector(cut, _query(output))
+    resp = summable.get(path, follow_redirects=False)
+
+    assert resp.status_code == 410, resp.text
+    with version_store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT content_version, base_content_version FROM datasets.version_record "
+            "WHERE subject_id = %s AND base_content_version IS NOT NULL",
+            (spec_id,),
+        )
+    derived = {row["content_version"]: row["base_content_version"] for row in rows}
+    assert set(derived.values()) == {base}
+    assert len(derived) == 2

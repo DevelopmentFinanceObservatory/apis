@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import cast
@@ -90,10 +90,11 @@ from datasets_api.operation_store import NullOperationStore, OperationStore
 from datasets_api.operations.submit import submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
-from datasets_api.party_totals import TRACE_KEY
 from datasets_api.query_options import encode_query_options
+from datasets_api.recorded_rendering import serving_frames
 from datasets_api.render import (
     DerivedVersion,
+    FrameMode,
     artifact_rendering_keys,
     entity_roles,
     is_incomplete_rendering,
@@ -449,6 +450,7 @@ def _record_head_hit_derived(
         base_content_version=base_content_version,
         output_profile=output_profile,
         frame_sha256=derived.frame_sha256,
+        frame_summed=derived.summed,
         record_only_artifacts=[derived_frame_record],
         version_writer=deps.version_writer,
         trace_id=trace_id,
@@ -498,22 +500,14 @@ class StoredFrame:
 class StoredRenderPlan:
     """What `plan_stored_render` read from a stored version before its frame is read: the
     stored output profile a pivot reads, the recorded frame hash a groupby compares its
-    collapse with (`StoredVersion.frame_sha256`), and whether the version is a derived one
-    (`StoredVersion.base_content_version` set) that renders from its own stored frame.
-
-    `derived_frame` is set when the record says what that frame is: a collapse that cut no
-    party totals (its trace names none left out), or a party-totals cut minted with no
-    `groupby`. Its `groupby` and cut already made the frame (`render.render_and_store`'s
-    `derived_frame`). `base_frame_only` is set for a cut minted with a `groupby`, whose
-    stored frame is the collapse when the collapse summed, and the cut frame when the groupby
-    left it unchanged or kept several values of an axis it does not sum
-    (`render._derived_version`). The record does not say which, so such a version renders
-    from its base version's frame alone, and its own frame renders nothing."""
+    collapse with (`StoredVersion.frame_sha256`), and how a render reads the version's own
+    stored frame (`render.FrameMode`), as the version's serving frames say
+    (`recorded_rendering.serving_frames`). `frame_mode` is `None` when the version's own frame
+    does not serve it, so the version renders from its base version's frame alone."""
 
     output_profile: OutputProfile | None
     frame_sha256: str | None
-    derived_frame: bool = False
-    base_frame_only: bool = False
+    frame_mode: FrameMode | None = FrameMode.RAW
 
 
 def plan_stored_render(
@@ -523,6 +517,7 @@ def plan_stored_render(
     subject_id: str,
     content_version: str,
     read_version: Callable[[], StoredVersion | None],
+    read_locations: Callable[[], Iterable[StoredArtifactLocation]],
     deps: DefinitionDeps,
 ) -> StoredRenderPlan:
     """Decide from the stored version alone whether its stored frame can render `options`, so
@@ -532,7 +527,8 @@ def plan_stored_render(
     Raise `StoredTraceMissingResolvedStatVars` for a trace without `resolved_stat_vars`,
     which a render needs for the groupby population. A pivot, a groupby, a party-totals cut, or
     a plain long `xlsx` whose identity has an axis to split reads the version record once
-    (`read_version`); a groupby or a cut reads whether the version is a derived one. With
+    (`read_version`); a groupby or a cut reads whether the version is a derived one, and a
+    derived one reads its links (`read_locations`) for its serving frames. With
     no `groupby`, no `columns` and no party-totals cut, a pivot refuses its caps from the
     stored pivot facts (`refuse_pivot_over_stored_caps`). A plain long `xlsx` (no `groupby`,
     no `pivot`, no `columns`, no party-totals cut) refuses `excel_limit` from the stored row
@@ -573,15 +569,18 @@ def plan_stored_render(
                 manifest, options=options, read_version=read_version, deps=deps
             ),
         )
-    derived = stored is not None and stored.base_content_version is not None
-    # A derived version's options carry its recorded minting options, so a groupby here is one
-    # its files record (`recorded_rendering.derived_version_sums`).
-    cut_with_groupby = derived and options.groupby is not None and TRACE_KEY in manifest.trace
+    frame_mode: FrameMode | None = FrameMode.RAW
+    if stored is not None and stored.base_content_version is not None:
+        frames = serving_frames(
+            stored, renderings=[location.rendering for location in read_locations()]
+        )
+        frame_mode = next(
+            (frame.mode for frame in frames if frame.content_version == content_version), None
+        )
     return StoredRenderPlan(
         output_profile=output_profile,
         frame_sha256=stored.frame_sha256 if stored is not None else None,
-        derived_frame=derived and not cut_with_groupby,
-        base_frame_only=cut_with_groupby,
+        frame_mode=frame_mode,
     )
 
 
@@ -638,12 +637,15 @@ def _render_frame(
     Use the same provenance, definition, resolved-member population, and `ReproducingCall` as
     fresh rendering. The full population keeps `groupby` completeness checks consistent,
     including zero-row members. `plan` is what `plan_stored_render` read from the stored
-    version: a pivot reads its stored output profile, and a groupby compares its collapse
-    with the recorded frame hash.
+    version: a pivot reads its stored output profile, a groupby compares its collapse with the
+    recorded frame hash, and its frame mode says how the render reads `frame`.
 
     Return the derived version's manifest when groupby or a party-totals cut changes the frame
-    (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.derived_frame`)
-    renders as it is stored, under the version itself. A groupby that leaves the frame
+    (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.frame_mode`
+    other than `RAW`) renders under the version itself. A render of it that gives another
+    version records nothing and returns `None`, so the caller falls back to the base frame.
+    That happens when the code index changed since the mint, and recording it would let a
+    version derived from a derived one escape its raw version's revocation. A groupby that leaves the frame
     unchanged is the base version, whatever frame grammar minted its token
     (`render_and_store`). Record its artifact, and every other one, under the base version
     and add it to the manifest. A party-totals cut
@@ -655,8 +657,14 @@ def _render_frame(
     (`incomplete_artifact`). The response lists the artifact linked under the request's
     rendering key when a concurrent call linked one first (`with_linked_artifacts`).
     """
+    # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
+    assert plan.frame_mode is not None
     table = read_stored_frame(frame.data, media_type=frame.location.media_type)
-    if options.without_party_totals and not plan.derived_frame and not isinstance(table, Frame):
+    if (
+        options.without_party_totals
+        and plan.frame_mode is FrameMode.RAW
+        and not isinstance(table, Frame)
+    ):
         return None
     # A collapse's kept code axes render as the decoded codes its mint wrote them as.
     entity_columns = entity_roles(frame_entity_columns(table.columns))
@@ -718,16 +726,26 @@ def _render_frame(
                 recorded=plan.frame_sha256,
                 locations=locations,
             )
-            if options.groupby is not None and not plan.derived_frame
+            if options.groupby is not None and plan.frame_mode is not FrameMode.SUMMED
             else None
         ),
-        derived_frame=plan.derived_frame,
+        frame_mode=plan.frame_mode,
     )
     artifact, reshape_warnings, derived = (
         rendered.artifact,
         rendered.warnings,
         rendered.derived,
     )
+    if derived is not None and plan.frame_mode is not FrameMode.RAW:
+        logger.warning(
+            "stored frame render gave another version; falling back to the base frame "
+            "subject_id=%s content_version=%s derived_content_version=%s rendering=%s",
+            subject_id,
+            content_version,
+            derived.content_version,
+            encode_query_options(options),
+        )
+        return None
     rendered_content_version = derived.content_version if derived is not None else content_version
     if not (documentation_complete and rendered.labels_complete):
         artifact = incomplete_artifact(
@@ -852,11 +870,11 @@ def _render_stored_rendering(
     is known only by fetching them, so a refusal the plan makes also answers a version whose
     location row is servable and whose object is gone, which `datasets-maintenance sweep`
     reports as a missing object. A `plan` argument is the one the caller made from this
-    version before it read `frame`. A plan that renders from the base frame alone
-    (`StoredRenderPlan.base_frame_only`) returns `None` before the permit and the frame read.
+    version before it read `frame`. A plan whose version's own frame does not serve it
+    (`StoredRenderPlan.frame_mode` `None`) returns `None` before the permit and the frame read.
     """
 
-    def planned() -> StoredRenderPlan:
+    def planned(read_locations: Callable[[], Iterable[StoredArtifactLocation]]) -> StoredRenderPlan:
         if plan is not None:
             return plan
         return plan_stored_render(
@@ -867,12 +885,17 @@ def _render_stored_rendering(
             read_version=functools.partial(
                 deps.snapshot_reader.read_version, subject_id, content_version
             ),
+            read_locations=read_locations,
             deps=deps,
         )
 
     if frame is not None:
-        decided = planned()
-        if decided.base_frame_only:
+        decided = planned(
+            functools.partial(
+                deps.snapshot_reader.read_artifact_locations, subject_id, content_version
+            )
+        )
+        if decided.frame_mode is None:
             return None
         return _render_frame(
             subject_id=subject_id,
@@ -889,8 +912,8 @@ def _render_stored_rendering(
     location = servable_frame_location(locations, now=deps.now())
     if location is None:
         return None
-    decided = planned()
-    if decided.base_frame_only:
+    decided = planned(lambda: locations)
+    if decided.frame_mode is None:
         return None
     # The frame loads whole, so the load and the render share the semaphore that bounds a
     # mint's materialisation.

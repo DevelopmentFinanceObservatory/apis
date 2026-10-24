@@ -1182,9 +1182,11 @@ def test_definition_version_record_carries_base_content_version_on_the_record():
         materialisation=result,
         artifacts=[],
         base_content_version="cv_base",
+        frame_summed=False,
     )
 
     assert record.base_content_version == "cv_base"
+    assert record.frame_summed is False
 
 
 class _RecordedVersions(NullVersionRecordWriter):
@@ -1239,11 +1241,13 @@ def test_a_version_record_links_its_artifacts_under_the_digest_they_were_rendere
         base_content_version="cv_base",
         output_profile=result.output_profile,
         frame_sha256=result.frame_sha256,
+        frame_summed=False,
         record_only_artifacts=[own],
         version_writer=recorder,
     )
 
     (collapsed,) = recorder.records
+    assert collapsed.frame_summed is False
     for record in (written, collapsed):
         assert [artifact.enrichment_digest for artifact in record.artifacts] == ["current", "own"]
 

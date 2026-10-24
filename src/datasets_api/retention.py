@@ -1,9 +1,13 @@
 """The retention a Manifest reports, which is how long its version can still be fetched.
 
-Every file of a version renders from one stored frame: its own, or, for a derived version
-(`StoredVersion.base_content_version` set: a groupby collapse or a party-totals cut), its base
-version's. The frame is the one `retained_frame_location` gives, which the pin door also
-promotes. A pinned frame has no expiry. A working frame is guaranteed until
+Every file of a version renders from one of its serving frames
+(`recorded_rendering.serving_frames`), tried in order: a raw version's own frame; a derived
+version's (`StoredVersion.base_content_version` set: a groupby collapse or a party-totals cut)
+own frame, then its base version's, or its base version's alone when the record cannot say what
+its own frame holds. Each serving frame's retention is that of the frame `retained_frame_location`
+gives, which the pin door also promotes. The version stays fetchable until its last serving frame
+ages, so it reports pinned when any serving frame is pinned, else the latest of their guarantees.
+A pinned frame has no expiry. A working frame is guaranteed until
 `WORKING_TIER_RETENTION` after its `stored_at`. Inside retention a download signs the stored
 copy and stores nothing, so `stored_at` stays. A download of the frame itself after that point,
 while its bytes survive, renews it (`doors.files.renew_and_resolve`) and restarts the clock.
@@ -15,8 +19,9 @@ an aged frame builds the data from upstream, and a build of unchanged data uploa
 again, which restarts its clock. The snapshot and observations routes refuse `artifact_expired`
 once no listed file of the version is in retention, whatever the frame's bytes.
 
-A version that links no frame renders nothing, so it reports over its own listed data artifacts
-instead: pinned when one is pinned, else the latest of their 30-day guarantees.
+A version none of whose serving frames links a frame renders nothing, so it reports over its own
+listed data artifacts instead: pinned when one is pinned, else the latest of their 30-day
+guarantees.
 
 Each Manifest door sets `Manifest.retention` on its response inside the executor call that
 builds it: the mint, definition, snapshot and operation doors. No stored body holds it, since
@@ -38,6 +43,7 @@ from dataset_store.snapshot import (
 )
 from datasets_api.artifact_delivery import LISTABLE_MEDIA_TYPES
 from datasets_api.manifest_models import Manifest, RetentionModel
+from datasets_api.recorded_rendering import serving_frames
 from datasets_api.render import (
     is_statistics_rendering,
     servable_frame_location,
@@ -78,9 +84,9 @@ def retained_frame_location(
 def version_retention(
     reader: SnapshotReader, *, subject_id: str, content_version: str, now: datetime
 ) -> RetentionModel:
-    """The retention of the version at `content_version` under `subject_id`, its frame judged
-    servable at `now`. One transaction reads the version and its locations, and a derived
-    version's base locations take a second.
+    """The retention of the version at `content_version` under `subject_id`, over its serving
+    frames judged servable at `now`. One transaction reads the version and its locations, and a
+    derived version's base locations take a second.
 
     Raises `RetentionUnreadable` when the version has no record, or links neither a frame nor
     a listed data artifact."""
@@ -89,15 +95,19 @@ def version_retention(
         raise RetentionUnreadable(
             subject_id=subject_id, content_version=content_version, reason="no version record"
         )
-    base_content_version = state.version.base_content_version
-    locations = (
-        state.locations
-        if base_content_version is None
-        else reader.read_artifact_locations(subject_id, base_content_version)
-    )
-    frame = retained_frame_location(locations, now=now)
-    if frame is not None:
-        return _retention_of([frame])
+    renderings = [location.rendering for location in state.locations]
+    frames: list[StoredArtifactLocation] = []
+    for serving in serving_frames(state.version, renderings=renderings):
+        locations = (
+            state.locations
+            if serving.content_version == content_version
+            else reader.read_artifact_locations(subject_id, serving.content_version)
+        )
+        frame = retained_frame_location(locations, now=now)
+        if frame is not None:
+            frames.append(frame)
+    if frames:
+        return _retention_of(frames)
 
     data = [
         location
