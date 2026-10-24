@@ -41,6 +41,7 @@ from search.models import (
     AmbiguousEntityGroup,
     AmbiguousSourceCandidate,
     AmbiguousSourceGroup,
+    EntityRefs,
     NoDataOption,
     NoDataReason,
     ParsedEntity,
@@ -162,6 +163,16 @@ def _shared_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
         if _SHARED_TIMING_STEP in region.timing_by_step:
             return {_SHARED_TIMING_STEP: region.timing_by_step[_SHARED_TIMING_STEP]}
     return {}
+
+
+def _entity_refs(region: RegionResult) -> list[EntityRefs]:
+    """The binding of each entity text of the region's restatement, once per text in
+    restatement order (`Part.entity_refs`). A text the region binds nothing for
+    (`RegionResult.entity_refs`) states []."""
+    if region.restatement is None:
+        return []
+    texts = dict.fromkeys(entity.text for entity in region.restatement.entities or ())
+    return [EntityRefs(text=text, refs=list(region.entity_refs.get(text, ()))) for text in texts]
 
 
 def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[str] | None]:
@@ -539,6 +550,7 @@ def _build_part(
             separate=region.separate,
             timing_ms=timing_ms,
             restatement=region.restatement,
+            entity_refs=_entity_refs(region),
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -576,6 +588,7 @@ def _build_part(
             # dataset_resubmit states its posted ordering through this override.
             ordering=region.candidate_ordering_override or "intent_rank",
             restatement=region.restatement,
+            entity_refs=_entity_refs(region),
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -613,6 +626,7 @@ def _build_part(
             separate=region.separate,
             timing_ms=timing_ms,
             restatement=region.restatement,
+            entity_refs=_entity_refs(region),
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -658,6 +672,7 @@ def _build_part(
         unit_alternatives=list(region.unit_alternatives) or None,
         denominator=region.denominator,
         restatement=region.restatement,
+        entity_refs=_entity_refs(region),
         operations=region.operations,
         include_skills=include_skills,
         skills_index=skills_index,

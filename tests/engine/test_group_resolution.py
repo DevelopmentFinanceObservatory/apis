@@ -413,6 +413,10 @@ class TestGroupRoleBearingExpansion:
         assert spec.resolved.group_totals == ({"origin": party} if members else {})
         codes = [fact.code for fact in spec_departure_facts(spec, operations=())]
         assert ("group_read_as_members" in codes) is members
+        # The group's text states what it bound: the total, or the members it reads as led
+        # by the group's own ref, the total, by which a client matches the set it named.
+        bound = (party, "country/T1", "country/T2") if members else (party,)
+        assert result.entity_refs == {name: bound, "Kenya": ("country/KEN",)}
 
     @pytest.mark.parametrize(
         ("published", "destinations", "total", "kept"),

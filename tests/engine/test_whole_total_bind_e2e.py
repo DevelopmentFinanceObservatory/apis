@@ -522,6 +522,11 @@ def test_all_donors_binds_both_totals(monkeypatch: pytest.MonkeyPatch, text: str
         departure.code for departure in response.parts[0].departures
     ]
     assert "from all donors including private for" in (spec.resolved.rendered_sentence or "")
+    # The text naming the population states the totals it bound.
+    assert [(e.text, e.refs) for e in response.parts[0].entity_refs] == [
+        ("Ethiopia", [_ETH]),
+        (text, [_OFFICIAL, _PRIVATE]),
+    ]
 
 
 _CRS_DONORS_COVERED = (

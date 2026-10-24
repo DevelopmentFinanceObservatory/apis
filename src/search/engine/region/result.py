@@ -411,6 +411,11 @@ class RegionResult:
     # donor"), as the raw-text door does (`raw_text._ExtractionPrep.onto`). The other doors
     # post `open_roles`. A side read whole states its way back to the members in that form.
     members_in_words: bool = False
+    # The places the answer binds for each entity text of the part, by that text
+    # (`place_roles.bound_entity_refs`), read once the part's places have settled. A text
+    # absent here binds none: an ambiguous or unresolved one, every text of a part refused
+    # before its places are bound, and every text of a soft-deadline placeholder.
+    entity_refs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # The flow sides a whole population the part asks for member by member opens
     # (`ResolveState.whole_listed`). The leg warns for each one the answer drops as it
     # does for its own open roles (`with_dropped_open_roles`).

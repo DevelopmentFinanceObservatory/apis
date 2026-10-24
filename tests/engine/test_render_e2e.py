@@ -8,6 +8,7 @@ from search.models import (
     CandidatesPart,
     DatasetResubmitInput,
     DefinitePart,
+    EntityRefs,
     NoDataPart,
     ParsedEntity,
     ParsedInput,
@@ -295,6 +296,8 @@ def test_no_data_restatement_for_directional_ambiguous_entity():
     assert r.restatement is not None
     assert [e.text for e in r.restatement.entities] == ["Congo"]
     assert r.restatement.entities[0].role_text == "to"
+    # An ambiguous text binds no place.
+    assert r.entity_refs == [EntityRefs(text="Congo", refs=[])]
     restated_texts = {e.text for e in r.restatement.entities}
     assert all(g.text in restated_texts for g in r.no_data.ambiguous_entities)
     assert {c.ref for c in r.no_data.ambiguous_entities[0].candidates} == {
