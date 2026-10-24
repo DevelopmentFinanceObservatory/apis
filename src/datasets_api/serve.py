@@ -58,10 +58,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from functools import partial
 from typing import cast
 
 from artifact_store import ArtifactStore, ArtifactStoreError
 from artifact_store.inventory import InventoryBatch, InventoryEntry
+from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
 from dataset_store.clock import utc_now
 from dataset_store.snapshot import (
@@ -610,6 +612,7 @@ def prewrite_definition(
                         precomputed_probe=precomputed_probe,
                         deadline=deadline,
                         progress=progress,
+                        absent_reads_zero=partial(absent_member_reads_zero, code_index),
                     )
             except DefaultFacetUndefinedError as exc:
                 if exc.request is not None:

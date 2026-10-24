@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from dfo_platform.codes import CodeCatalogue
 from dfo_platform.diagnostics import WarningSeverity
+
+
+class UnservedMembers(TypedDict):
+    """The group members of one kind that served nothing: how many, and the `dcid:` refs of
+    the first five in request order."""
+
+    count: int
+    refs: list[str]
 
 
 class MaterialisationWarning(TypedDict):
@@ -15,6 +23,11 @@ class MaterialisationWarning(TypedDict):
     (`dfo_platform.diagnostics.WarningSeverity`), always `"warn"` for the
     warnings this library raises.
 
+    A group's `coverage_below_scope` also carries `member_count`, the series the group
+    requested, with `off_cadence_members`, those reporting the requested years at another
+    frequency than the group serves, and `out_of_window_members`, those holding no observation
+    in the requested years, each present only when it names a member.
+
     This is a `TypedDict`. No shared platform pydantic warning model
     exists yet to alias.
     """
@@ -22,6 +35,9 @@ class MaterialisationWarning(TypedDict):
     code: str
     severity: WarningSeverity
     message: str
+    member_count: NotRequired[int]
+    off_cadence_members: NotRequired[UnservedMembers]
+    out_of_window_members: NotRequired[UnservedMembers]
 
 
 MATERIALISE_CODE_CATALOGUE: CodeCatalogue = {

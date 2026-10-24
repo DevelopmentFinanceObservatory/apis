@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datasets_api.manifest import warning_model
 from datasets_api.manifest_models import WarningModel
 
 
@@ -53,3 +54,19 @@ def test_a_stored_coverage_warning_with_member_fields_reads_back_unchanged():
     }
 
     assert WarningModel.model_validate(stored).model_dump(mode="json") == stored
+
+
+def test_a_coverage_warning_keeps_the_members_it_names_through_the_manifest():
+    """A group's `coverage_below_scope` reaches the stored version with its member fields, and
+    a field naming no member stays out of the dump."""
+    warning = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": "m",
+        "member_count": 9,
+        "off_cadence_members": {"count": 6, "refs": [f"dcid:Member{i}" for i in range(5)]},
+    }
+
+    dumped = warning_model(warning).model_dump(mode="json")
+
+    assert dumped == warning

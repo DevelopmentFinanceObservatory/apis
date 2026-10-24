@@ -59,6 +59,10 @@ is left out, and an input record holding `steps: null` is held, and either leave
 record not final, so a later load reads the inputs again. A
 failed input read raises as a failed record read does.
 
+A version's `coverage_below_scope` warning names the group members that served nothing by
+ref (`assembler.mint.warned_member_refs`). They hold no row, so their refs join the frame's
+label read ahead of its own refs, and a card names them by label.
+
 A frame's continuation (`ResolvedFrame.continuation`, `assembler.frame_view.frame_continuation`)
 comes from its stored version alone: a dataset version's `trace.continuations`, or the
 `continuations` a computed version stored when it was published, inherited from the versions it
@@ -154,6 +158,7 @@ from assembler.frame_view import (
     frame_continuation,
 )
 from assembler.limits import LABEL_MAX, joined_label
+from assembler.mint import warned_member_refs
 from assembler.ports import (
     FrameRef,
     FrameUnavailable,
@@ -772,6 +777,7 @@ class LiveFrameStore:
                 record=record,
                 composed=_composed(record, stored=stored),
                 inputs=inputs,
+                warned=warned_member_refs(manifest=document),
                 deadline=deadline,
             )
             continuation = frame_continuation(manifest=document)
@@ -836,6 +842,7 @@ class LiveFrameStore:
                     record=record,
                     composed=_composed(record, stored=stored),
                     inputs=inputs,
+                    warned=warned_member_refs(manifest=document),
                     deadline=deadline,
                 )
                 if record_changed and not labels_resolved:
@@ -1370,9 +1377,12 @@ class LiveFrameStore:
         record: DescriptionRecord | None,
         composed: Sequence[ComposedVariable],
         inputs: Sequence[DescriptionRecord],
+        warned: Sequence[str],
         deadline: float,
     ) -> tuple[dict[str, str], dict[str, str], bool]:
-        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the refs each of
+        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the group members its
+        version's warnings name (`warned`, `assembler.mint.warned_member_refs`) under their
+        `dcid:` refs, since a member that served nothing has no row, and the refs each of
         `inputs` names in its title (`datasets_api.description_record.title_named`) and the
         entities `record`'s steps record on their sides (`bound_entities`) under their bare dcids,
         then add the name of each variable `record` and `composed` name
@@ -1387,7 +1397,7 @@ class LiveFrameStore:
             )
         labels, resolved = self._resolve_ref_labels(
             doc,
-            leading_stat_vars=_composed_sides(composed),
+            leading_stat_vars=[*_composed_sides(composed), *warned],
             worded=sorted(worded),
             named=frozenset(_named_refs(record, composed=composed)),
             deadline=deadline,

@@ -14,6 +14,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
+from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+
 from assembler.bind import BoundSeries
 from assembler.limits import LABEL_MAX
 from assembler.ports import NamedSeries, ResolvedFrame
@@ -178,10 +180,40 @@ def _build_citation(
     return citation_line(retrieved=retrieved, sources=names, processed=processed)[:_CITATION_MAX]
 
 
-def _translate_warnings(warnings: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+# Each member field of a group's `coverage_below_scope` warning
+# (`datasets_api.manifest_models.WarningModel`), and the words that lead its names on a card.
+_MEMBER_FIELDS = (
+    ("off_cadence_members", "At a different frequency"),
+    ("out_of_window_members", "No observations in the requested years"),
+)
+
+
+def warned_member_refs(*, manifest: Mapping[str, object]) -> list[str]:
+    """The `dcid:` refs the member fields of `manifest`'s warnings name, in warning and field
+    order: the group members a card names by label (`_translate_warnings`)."""
+    warnings = cast("Sequence[Mapping[str, object]]", manifest.get("warnings") or ())
+    return [
+        ref
+        for warning in warnings
+        for field, _lead in _MEMBER_FIELDS
+        for ref in cast("Sequence[str]", _members(warning, field).get("refs", ()))
+    ]
+
+
+def _members(warning: Mapping[str, object], field: str) -> Mapping[str, object]:
+    return cast("Mapping[str, object]", warning.get(field) or {})
+
+
+def _translate_warnings(
+    warnings: Sequence[Mapping[str, object]], *, labels: Mapping[str, str]
+) -> list[dict[str, object]]:
     """Maps manifest warnings to the envelope's closed `{kind, detail}` vocabulary.
 
-    Drops `severity` and raises `AssertionError` for an unmapped code."""
+    A warning's `detail` is its message, then, for each member field it carries, the field's
+    lead words and its refs' `labels`, the bare dcid where `labels` holds none
+    (`_named_members`). The fields share the room the message leaves within
+    `_WARNING_DETAIL_MAX` equally, and a field's unused share passes to the next. Drops
+    `severity` and raises `AssertionError` for an unmapped code."""
     translated: list[dict[str, object]] = []
     for warning in warnings:
         code = cast(str, warning["code"])
@@ -190,9 +222,35 @@ def _translate_warnings(warnings: Sequence[Mapping[str, object]]) -> list[dict[s
                 f"manifest warning code {code!r} has no entry in mint's own "
                 "envelope-kind translation table (_WARNING_KIND_BY_CODE)"
             )
-        detail = str(warning["message"])[:_WARNING_DETAIL_MAX]
-        translated.append({"kind": _WARNING_KIND_BY_CODE[code], "detail": detail})
+        detail = str(warning["message"])
+        present = [
+            (lead, members)
+            for field, lead in _MEMBER_FIELDS
+            if (members := _members(warning, field))
+        ]
+        for index, (lead, members) in enumerate(present):
+            names = [
+                labels.get(ref, ref.removeprefix(STAT_VAR_REF_PREFIX))[:LABEL_MAX]
+                for ref in cast("Sequence[str]", members["refs"])
+            ]
+            room = (_WARNING_DETAIL_MAX - len(detail)) // (len(present) - index)
+            detail += _named_members(lead, names, count=cast(int, members["count"]), budget=room)
+        translated.append(
+            {"kind": _WARNING_KIND_BY_CODE[code], "detail": detail[:_WARNING_DETAIL_MAX]}
+        )
     return translated
+
+
+def _named_members(lead: str, names: Sequence[str], *, count: int, budget: int) -> str:
+    """`" {lead}: "`, then as many whole `names` as fit within `budget` characters, with
+    `" and N more"` for the `count` members not named, closed by a full stop. When no name
+    fits, the count stands for them all, whatever the budget, so the field keeps its count."""
+    for shown in range(len(names), 0, -1):
+        hidden = count - shown
+        text = f" {lead}: {', '.join(names[:shown])}{f' and {hidden} more' if hidden > 0 else ''}."
+        if len(text) <= budget:
+            return text
+    return f" {lead}: {count} series."
 
 
 @dataclass(frozen=True)
@@ -289,7 +347,7 @@ def _build_provenance(
             "next_expected": None,
             "partial_period": False,
         },
-        "warnings": _translate_warnings(warnings),
+        "warnings": _translate_warnings(warnings, labels=resolved_frame.labels),
         "generated_at": clock().astimezone(datetime.UTC).isoformat().replace("+00:00", "Z"),
         "citation": _build_citation(
             sources=sources,

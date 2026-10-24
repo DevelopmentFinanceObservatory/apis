@@ -15,7 +15,7 @@ from dc_sdmx import ContainedIn, EntityFilter
 # `pipeline` imports this module during initialisation. `MaterialisationResult` resolves when
 # `_finish_member` runs, after `pipeline` has loaded.
 from materialise import pipeline
-from materialise.codes import MATERIALISE_CODE_CATALOGUE, MaterialisationWarning
+from materialise.codes import MATERIALISE_CODE_CATALOGUE, MaterialisationWarning, UnservedMembers
 from materialise.content_version import mint_version_from_digest
 from materialise.convert import ConversionRecord
 from materialise.dependencies import Dependencies
@@ -306,6 +306,7 @@ def _finish_group(
     enrichment: EnrichmentLookup,
     dependencies: Dependencies,
     graph_revision: str | None,
+    absent_reads_zero: bool = False,
 ) -> pipeline.MaterialisationResult:
     """Runs after generation returns. Mints from `outcome.frame_sha256`, computed
     during the group's single fetch, so hashing rereads no rows. The group's single fetch builds
@@ -361,7 +362,7 @@ def _finish_group(
         content_version=content_version,
         trace=trace,
         coverage=outcome.coverage,
-        warnings=_build_warnings(requests[0], outcome),
+        warnings=_build_warnings(requests[0], outcome, absent_reads_zero=absent_reads_zero),
         series_statistics=series_statistics,
         output_profile=output_profile,
         conversion_record=None,
@@ -377,16 +378,22 @@ def _finish_group(
 
 
 def _build_warnings(
-    request: MaterialisationRequest, outcome: _MemberOutcome | _GroupOutcome | _PreviewOutcome
+    request: MaterialisationRequest,
+    outcome: _MemberOutcome | _GroupOutcome | _PreviewOutcome,
+    *,
+    absent_reads_zero: bool = False,
 ) -> tuple[MaterialisationWarning, ...]:
     """Adds `empty_result` for zero rows, which suppresses `coverage_below_scope`. Its message
     says the request's places hold no observations when the facet probe returned no candidate
     (`_empty_result_warning`). `coverage_below_scope` covers window clamps and unserved bound
     entities, naming up to five entities, a request binding no place that was served the
-    countries with data in place of every place, and a group member that served nothing
-    because it holds no facet at the group's one cadence, or under a range window none with a
-    point in it (`_GroupOutcome.off_cadence_members`). One `coverage_below_scope` states every
-    cause that applies.
+    countries with data in place of every place, and, when the group served rows, its members
+    that served nothing, which it counts in its message and names by ref in its structured
+    fields: those at another observation period in the requested years
+    (`_GroupOutcome.off_cadence_members`), and those holding observations only outside them
+    (`_GroupOutcome.out_of_window_members`). The second are left out with `absent_reads_zero`,
+    when the served dataset reads an absent member as zero, since such a member adds nothing
+    to the requested years. One `coverage_below_scope` states every cause that applies.
     `currency_unmapped_omitted` applies when any conversion record omitted an entity's rows;
     an omitted entity the request bound counts as reported there, so `coverage_below_scope`
     does not name it. `deflator_missing_omitted` applies when any record left out rows for a
@@ -432,12 +439,17 @@ def _build_warnings(
         if entity not in omitted
     ]
     countries_fallback = row_count > 0 and not outcome.default_scope.every_place
-    off_cadence = (
-        outcome.off_cadence_members if isinstance(outcome, _GroupOutcome) and row_count else ()
-    )
+    off_cadence: Sequence[str] = ()
+    out_of_window: Sequence[str] = ()
+    member_count = 0
+    if isinstance(outcome, _GroupOutcome) and row_count:
+        off_cadence = outcome.off_cadence_members
+        out_of_window = () if absent_reads_zero else outcome.out_of_window_members
+        member_count = len(outcome.member_observation_counts)
     if (
         countries_fallback
         or off_cadence
+        or out_of_window
         or coverage_below_scope(
             outcome.coverage, applied_window=outcome.applied_window, unserved=unserved
         )
@@ -447,7 +459,8 @@ def _build_warnings(
                 unserved,
                 countries_fallback=countries_fallback,
                 off_cadence=off_cadence,
-                range_window=request.window is not None and request.window.kind == "range",
+                out_of_window=out_of_window,
+                member_count=member_count,
             )
         )
 
@@ -497,32 +510,56 @@ def _coverage_below_scope_warning(
     unserved: Sequence[str],
     *,
     countries_fallback: bool,
-    off_cadence: Sequence[str] = (),
-    range_window: bool = False,
+    off_cadence: Sequence[str],
+    out_of_window: Sequence[str],
+    member_count: int,
 ) -> MaterialisationWarning:
-    """Adds up to five unserved dcids to the catalogue detail, then up to five group members
-    in `off_cadence` that served nothing because they hold no facet at the group's
-    observation period, or with `range_window` none with a point in the requested years,
-    then, with `countries_fallback`, that a request binding no place was
-    served the countries with data because the full list of places with data was too large
-    or unavailable (`place_scope.DefaultPlaceScope`). Without any the detail stands for a pure
-    window clamp. Names appear as raw dcids."""
+    """Adds up to five unserved entity dcids to the catalogue detail. Then, of the group's
+    `member_count` series, it counts those in `off_cadence`, which report the requested years
+    at another frequency than the group serves and are left out, and those in
+    `out_of_window`, which hold no observation in the requested years. The message names no
+    member, so a stored version holds no name that can go stale. The warning's
+    `off_cadence_members` and `out_of_window_members` carry each count and the first five
+    refs (`UnservedMembers`), beside `member_count`, for a reader to name them. Then, with
+    `countries_fallback`, it says a request binding no place was served the countries with
+    data because the full list of places with data was too large or unavailable
+    (`place_scope.DefaultPlaceScope`). Without any the detail stands for a pure window
+    clamp."""
     _title, detail = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"]
     message = detail
     if unserved:
         message = f"{message} No observations were served for {_capped_names(unserved)}."
     if off_cadence:
         message = (
-            f"{message} No observations were served for {_capped_names(off_cadence)}, "
-            "which hold none at the observation period the other members serve"
-            f"{' in the requested years' if range_window else ''}."
+            f"{message} {len(off_cadence)} of {member_count} series report at a different "
+            "frequency and are left out of the figures."
+        )
+    if out_of_window:
+        message = (
+            f"{message} {len(out_of_window)} of {member_count} series hold no observations "
+            "in the requested years."
         )
     if countries_fallback:
         message = (
             f"{message} No place was named, so the answer covers the countries with data, "
             "because the full list of places with data was too large or unavailable."
         )
-    return {"code": "coverage_below_scope", "severity": "warn", "message": message}
+    warning: MaterialisationWarning = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": message,
+    }
+    if off_cadence or out_of_window:
+        warning["member_count"] = member_count
+    if off_cadence:
+        warning["off_cadence_members"] = _unserved(off_cadence)
+    if out_of_window:
+        warning["out_of_window_members"] = _unserved(out_of_window)
+    return warning
+
+
+def _unserved(refs: Sequence[str]) -> UnservedMembers:
+    return {"count": len(refs), "refs": list(refs[:_MAX_UNSERVED_NAMED])}
 
 
 def _capped_names(names: Sequence[str]) -> str:
