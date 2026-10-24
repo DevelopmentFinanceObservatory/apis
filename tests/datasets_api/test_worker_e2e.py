@@ -375,6 +375,46 @@ def test_a_submission_that_finds_its_operation_just_completed_serves_the_head_wh
     assert forwarded == [(operation_id, 0)]
 
 
+@pytest.mark.parametrize("door", ["mint", "definition"])
+def test_a_run_that_completes_during_dispatch_leaves_the_202_pending(
+    monkeypatch: pytest.MonkeyPatch, door: str
+):
+    """The fake queue runs the worker inside the enqueue, so the operation is done before the
+    submission records its dispatch. The 202 reads the state the submission recorded, pending,
+    and the poll serves the manifest. Before, `mark_dispatched` returned the done row and the
+    202 read done with no manifest."""
+    clock = {"t": datetime(2026, 10, 24, tzinfo=UTC)}
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+    )
+    if door == "mint":
+        monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+        submit = lambda: api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)  # noqa: E731
+    else:
+        minted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+        assert minted.status_code == 200, minted.text
+        # The head ages out, so the definition door rebuilds, over budget, as an operation.
+        clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 1)
+        monkeypatch.setattr(current_module, "within_sync_budget", lambda estimate, **_: False)
+        spec_id = minted.json()["definition"]["spec_id"]
+        submit = lambda: api_client.get(f"/api/datasets/{spec_id}")  # noqa: E731
+
+    submitted = submit()
+
+    assert submitted.status_code == 202, submitted.text
+    operation_id = submitted.json()["operation"]["operation_id"]
+    assert forwarded == [(operation_id, 0)]
+    stored = operation_store.get(operation_id)
+    assert stored is not None and stored.state == "done"
+    assert submitted.json()["operation"]["status"] == "pending"
+    polled = api_client.get(submitted.headers["location"])
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["manifest"]["content_version"] == stored.content_version
+
+
 def _rendered(manifest: dict) -> list[tuple[str, str]]:
     return sorted(
         (json.dumps(artifact["rendering"], sort_keys=True), artifact["artifact_digest"])
