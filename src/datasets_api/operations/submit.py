@@ -29,6 +29,7 @@ from datasets_api.operations.task_client import TaskClient
 from datasets_api.origin import catalogue_build_id
 from datasets_api.schema import OperationEnvelope, OperationResource
 from datasets_api.timings import phase
+from datasets_api.versions import SubjectHead
 from series_coverage.index import Estimate
 
 # The shortest poll interval an operation advertises, and the refresh door's fixed retry interval.
@@ -62,11 +63,15 @@ def submit_over_budget(
     async_max_rows: int,
     async_max_requests: int,
     members: Sequence[str],
+    rejected_head: SubjectHead | None,
 ) -> None:
     """Returns when the caller's sync-budget decision allows inline work.
 
     `members` are the StatVar refs a door resolved, `dcid:`-prefixed or bare. The operation
-    stores them as `member_dcids`.
+    stores them as `member_dcids`. `rejected_head` is the head `serve_current` rejected before
+    this rebuild, or `None` when the subject has none. A done operation at its version, which
+    could serve nothing, restarts (`OperationStore.create_or_get`), so the 202 reads pending or
+    running.
 
     Otherwise, async row or request limits raise `OverCeilingError` before a row or task exists.
     `OperationBacklogFull` also propagates. The function records or reuses the operation,
@@ -89,6 +94,7 @@ def submit_over_budget(
             coverage_stamp=coverage_stamp,
             origin_catalogue_build_id=catalogue_build_id(),
             estimate=estimate,
+            rejected_version=rejected_head.content_version if rejected_head is not None else None,
         )
     with phase("dispatch"):
         operation = dispatch_if_due(
