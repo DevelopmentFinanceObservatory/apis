@@ -59,7 +59,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.facts import read_constraints
 from search.engine.shape import ShapeDraft
-from search.engine.stated_words_read import restricting
+from search.engine.stated_words_read import implied_values, restricting
 
 if TYPE_CHECKING:
     from search.engine.clients.llm import SupportsLLM
@@ -209,32 +209,49 @@ class JevBinder:
         self, request: StatedWordsRequest
     ) -> tuple[dict[str, float], JevCall | None]:
         """Each word of `request` the bind's answers rate on the elected shape
-        (`stated_words`), with the words rated below `SearchSettings.stated_word_bar` rated
-        again in one request (`jev_request.restated_request`) when the final bindings
-        restrict the shape to a value (`stated_words_read.restricting`), and the request, None when
-        none was sent.
+        (`stated_words`), with some rated again in one request
+        (`jev_request.restated_request`), and the request, None when none was sent. The
+        request covers the words rated below `SearchSettings.stated_word_bar` when the final
+        bindings restrict the shape to a value (`stated_words_read.restricting`), and every
+        rated word when they override a value the measure's definition fixes
+        (`stated_words_read.implied_values`) or the answer serves several series
+        (`StatedWordsRequest.served`), which the bind quoted as the shape's label alone.
 
         The bind asked before any value was bound, so it quoted the shape as parts
         selectable by its slots, and its answer is evidence only about the series as a
-        whole: a completion rate rates "girls" as unread until Sex=Female is bound. The
-        request's answer replaces it, and a word the request leaves unanswered is unrated.
-        A word at or above the bar, and a shape with no bound value, keep the bind's
-        rating and send no request.
+        whole: a completion rate rates "girls" as unread until Sex=Female is bound. It also
+        quoted the definition's values, so a rating at the bar can rest on one the final
+        bindings replace: "birth" on life expectancy at Age=years 0, with age bound to 60.
+        The request's answer replaces the bind's, and a word the request leaves unanswered
+        is unrated. Any other word keeps the bind's rating, and a shape whose bindings
+        override and restrict nothing sends no request.
 
         Raises:
             JevFailure: The request gave no answer.
         """
         ratings = self.stated_words(request)
         bar = settings().stated_word_bar
-        unread = tuple(word for word in request.words if ratings.get(word, bar) < bar)
+        if request.served or implied_values(request.shape, request.bindings) != implied_values(
+            request.shape, ()
+        ):
+            again = tuple(word for word in request.words if word in ratings)
+        elif restricting(request.bindings):
+            again = tuple(word for word in request.words if ratings.get(word, bar) < bar)
+        else:
+            again = ()
         index = request.shape_index
-        if not unread or index is None or not restricting(request.bindings):
+        if not again or index is None:
             return ratings, None
         state, questions = restated_request(
-            request.variable, request.shape, index, unread, bindings=request.bindings
+            request.variable,
+            request.shape,
+            index,
+            again,
+            bindings=request.bindings,
+            served=request.served,
         )
         answers, call = await self._request(state, questions)
-        for k, word in enumerate(unread):
+        for k, word in enumerate(again):
             del ratings[word]
             if (qid := unread_id(index, k)) in answers.nouls:
                 ratings[word] = float(answers.nouls[qid])

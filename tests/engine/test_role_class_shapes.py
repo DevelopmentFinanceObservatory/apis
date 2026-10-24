@@ -85,7 +85,7 @@ from search.engine.shape import (
     ShapeDraft,
     required_role_names,
 )
-from search.engine.stated_words_read import StatedWordsOutput
+from search.engine.stated_words_read import StatedWordsOutput, restricting
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     BaseIdentity,
@@ -998,6 +998,7 @@ def _run(
     nodes: dict = _DEBT_NODES,
     options: EngineOptions | None = None,
     value_nodes: dict | None = None,
+    binder: Binder | None = None,
 ):
     members = list(nodes)
     graph = FakeGraph(
@@ -1023,6 +1024,7 @@ def _run(
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=coverage or _one_role_coverage(nodes, obs),
             options=options,
+            binder=binder,
         )
     )
 
@@ -2938,12 +2940,29 @@ def test_a_standard_part_is_not_relaxed_where_its_walk_finds_no_member(walked):
     assert not result.unbound_qualifiers
 
 
-def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(monkeypatch):
+@pytest.mark.parametrize(
+    ("query", "rated", "outcome"),
+    [
+        ("aged X in Kenya", [], ("definite", None, ["Pop_B"], {"age": "X"}, [])),
+        (
+            "female aged X in Kenya",
+            [(("female",), {"age": ("X",)})],
+            ("no_data", "qualifier_not_bound", ["Pop_B"], {"age": "X"}, []),
+        ),
+    ],
+    ids=["unnamed", "named"],
+)
+def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(
+    monkeypatch, query, rated, outcome
+):
     """Female is drafted as the gender slot's sole option and age X is named. No member
     holds both: A is female at age Y, B male at age X. The sole-option claim gives way
     silently and B answers, where unbinding the named age would refuse on it. Validation
     of the claim against the population (`_validate_sole_option_bindings`) would drop it
-    first here, so it is held off to reach the read."""
+    first here, so it is held off to reach the read. A query naming "female" leaves the
+    word on no bound code once Female is unbound, so the binder rates it on B under the
+    bindings left, and the part refuses on its rating, as it would had the bind never
+    drafted Female."""
     nodes = {
         "Pop_A": _node("Females aged Y", [], positionType="Stock", gender="Female", age="Y"),
         "Pop_B": _node("Males aged X", [], positionType="Stock", gender="Male", age="X"),
@@ -2951,17 +2970,20 @@ def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(monkeypa
     monkeypatch.setattr(
         phase_election, "_validate_sole_option_bindings", lambda bindings, shape: bindings
     )
+    binder = RatingBinder(GeminiBinder(), {"female": 0.0})
 
     result = _run(
         entities=["Kenya"],
         obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
-        query="aged X in Kenya",
+        query=query,
         nodes=nodes,
         llm=_relax_llm(gender=("Female", "sole_option"), age=("X", "mentioned")),
+        binder=binder,
     )
 
-    assert _relax_outcome(result) == ("definite", None, ["Pop_B"], {"age": "X"}, [])
-    assert not result.unbound_qualifiers
+    assert [(request.words, restricting(request.bindings)) for request in binder.requests] == rated
+    assert _relax_outcome(result) == outcome
+    assert bool(result.unbound_qualifiers) == bool(rated)
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])

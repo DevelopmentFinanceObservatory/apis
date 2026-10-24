@@ -61,6 +61,7 @@ from search.engine.function_words import (
     DATA_WORDS,
     FLOW_VERBS,
     FUNCTION_WORDS,
+    PERSON_WORDS,
     RATIO_WORDS,
 )
 from search.engine.interpretation import Interpretation, InterpretationSet
@@ -113,6 +114,7 @@ from search.engine.region.alternate_guard import (
 )
 from search.engine.region.availability import (
     has_data_where_asked,
+    member_has_data_where_asked,
     menu_read_places,
     read_menu_availability,
     series_at_places,
@@ -121,6 +123,7 @@ from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BIN
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.grounding import _shape_with_taxonomy
 from search.engine.region.place_roles import (
+    PlaceAssignment,
     bind_place_roles,
     held_party_words,
     names_a_place,
@@ -151,6 +154,7 @@ from search.engine.region.state import (
 )
 from search.engine.retrieval.bound_values import (
     DefaultReading,
+    RoleKeys,
     applies_one_of,
     applies_value,
     bound_realizable_members,
@@ -167,6 +171,7 @@ from search.engine.retrieval.bound_values import (
     phrases_within,
     price_basis_order,
     query_phrases_read,
+    read_held_families,
     shape_constraint_values,
     shape_datasets,
     shape_five_tuple,
@@ -175,10 +180,12 @@ from search.engine.retrieval.bound_values import (
     shape_population_arcs,
 )
 from search.engine.retrieval.facts import read_constraints, read_five_tuple, read_name
+from search.engine.retrieval.standard import members_served
 from search.engine.role_text import role_axis_for_text
 from search.engine.shape import (
     ShapeDraft,
     SlotKeyDraft,
+    counts_persons,
     is_role_bearing,
     measures_count,
     role_names_by_axis,
@@ -2888,11 +2895,13 @@ def _coverage_records(
     (`_unnamed_bound_code_words`), so "private" in "private grants" is read when the
     answer binds flow type 30, "private development finance", the words naming the
     shape's measure in its members' names (`_member_measure_words`), so "refugees" is read
-    on a series named "Refugee population", and on a shape measuring a count
-    (`shape.measures_count`) the nouns for what it counts (`COUNT_WORDS`), so
-    "population" is read on "Number of refugees, by host country", and a noun naming a role
-    on an axis the shape declares (`role_text.role_axis_for_text`), so "creditors" is read
-    on debt by creditor. The form wording (`_form_ranges`: "rate", "share",
+    on a series named "Refugee population", on a shape measuring a count
+    (`shape.measures_count`) the nouns for what it counts (`COUNT_WORDS`), so "number" is
+    read on "Refugees, by host country", on one counting persons (`shape.counts_persons`)
+    the nouns for people (`PERSON_WORDS`), so "population" is read on "Number of refugees,
+    by host country" and "people" is left for the binder on a count of households, and a
+    noun naming a role on an axis the shape declares (`role_text.role_axis_for_text`), so
+    "creditors" is read on debt by creditor. The form wording (`_form_ranges`: "rate", "share",
     "percent", "per capita") and the question's words for the denominator the quantity
     read names (`NamedDenominator.base_words`) are read, since the materialise gate holds
     the elected shape to both (`quantity.serves_quantity`) and states a denominator it
@@ -2986,7 +2995,7 @@ def _coverage_reading(
         *(choice.code_dcid for choice in state.menu_choices),
     }
     applied = _unnamed_bound_code_words(state.bindings, named, index, shape.value_labels or {})
-    measure_words = _member_measure_words(shape, state.bindings)
+    measure_words = _member_measure_words(state)
     reading = _unread_runs(
         variable,
         tokens,
@@ -3076,12 +3085,14 @@ def _free_readers(
     series code it names, the form wording (`_form_ranges`), the question's words for the
     denominator the quantity read names, the words `_conversational_words` accepts for
     `shape`, on a shape measuring a count (`shape.measures_count`) the nouns for what it
-    counts (`COUNT_WORDS`), and a noun naming a role on an axis `shape` declares
+    counts (`COUNT_WORDS`) and, on one counting persons (`shape.counts_persons`), the nouns
+    for people (`PERSON_WORDS`), and a noun naming a role on an axis `shape` declares
     (`role_text.role_axis_for_text`). The coverage rule reads them after the bind
     (`_coverage_reading`), and the nomination of each menu shape's words before it
     (`_nominated_words`)."""
     named_base = state.named_denominator
     counts = measures_count(shape)
+    persons = counts_persons(shape)
     try:
         axes = frozenset(role_names_by_axis(shape))
     except ValueError:
@@ -3110,7 +3121,10 @@ def _free_readers(
         form=("form", _form_ranges(state.variable, tokens)),
         base=("base", _occurrences(tokens, [named_base.base_words if named_base else None])),
         conversational=("conversational", _conversational_words(state, index, shape)),
-        count=("count", lambda word: counts and word in COUNT_WORDS),
+        count=(
+            "count",
+            lambda word: (counts and word in COUNT_WORDS) or (persons and word in PERSON_WORDS),
+        ),
         role=("role", lambda word: role_axis_for_text(fold_word(word)) in axes),
     )
 
@@ -3132,15 +3146,22 @@ def _measure_reader(words: AbstractSet[str]) -> Callable[[str], bool]:
     return measure
 
 
-def _shape_measure_words(shape: ShapeDraft) -> frozenset[str] | None:
-    """The words every named member of `shape` holds in its name (`_label_words`), which
-    the words of any selection of its members hold too (`_member_measure_words`). None
-    when no member has a name."""
-    names = [
-        _label_words(name)
-        for arcs in (shape.sv_arc_facts or {}).values()
+def _member_names(shape: ShapeDraft) -> dict[str, frozenset[str]]:
+    """The words of the name of each named member `shape` stands for
+    (`shape_population_arcs`, `_label_words`), so a held family's members outside the
+    recall sample read their names too."""
+    return {
+        dcid: _label_words(name)
+        for dcid, arcs in shape_population_arcs(shape).items()
         if (name := read_name(arcs)) is not None
-    ]
+    }
+
+
+def _shape_measure_words(shape: ShapeDraft) -> frozenset[str] | None:
+    """The words every named member `shape` stands for holds in its name
+    (`_member_names`), which the words of any selection of its members hold too
+    (`_member_measure_words`). None when no member has a name."""
+    names = _member_names(shape).values()
     return frozenset.intersection(*names) if names else None
 
 
@@ -3222,42 +3243,54 @@ def _form_ranges(variable: str, tokens: Sequence[Token]) -> list[tuple[int, int]
     return ranges
 
 
-def _member_measure_words(
-    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
-) -> frozenset[str] | None:
-    """The words that name `shape`'s measure in the names of the members `bindings` select
-    (`ShapeDraft.sv_arc_facts`, `_label_words`), so "refugees" is among the words of
-    "Refugee population". A member is selected when each value or set binding holds the
-    value it asserts on that slot, if it asserts one: GDP bound on the activity source
-    selects nominal GDP among the gross value added of each sector. The words are those
-    every selected member asserting the fewest constraints holds, the family's total where
-    it is among them, since its name says least beyond the measure, as "Total population"
-    does among "Population: Years 18 Onwards" and "Count of Households", and those of the
-    first selected member retrieval scored against the question
-    (`ShapeDraft.scored_members`), the one recall matched the words best: "Nominal gross
-    domestic product" for "GDP" on a family whose members of one constraint are GDP and
-    the gross value added of each sector. None when no selected member has a name."""
-    bound = {
-        binding.property_dcid: frozenset(binding.value_dcids)
-        for binding in bindings
-        if binding.kind in ("value", "set") and binding.property_dcid is not None
-    }
-    named: list[tuple[str, int, frozenset[str]]] = []
-    for dcid, arcs in (shape.sv_arc_facts or {}).items():
-        name = read_name(arcs)
-        constraints = read_constraints(arcs)
-        if name is None or any(
-            prop in constraints and constraints[prop] not in values
-            for prop, values in bound.items()
-        ):
-            continue
-        named.append((dcid, len(constraints), _label_words(name)))
-    if not named:
+def _member_measure_words(state: ResolveState) -> frozenset[str] | None:
+    """The words that name the elected shape's measure in the names of the members the
+    answer serves over the bindings (`_label_words`), so "refugees" is among the words of
+    "Refugee population". The members are those `served_member_names` reads: "GDP" in
+    Brazil reads "Nominal gross domestic product", the one member of a family with no total
+    holding data there. A family's total answers before its breakdowns, so "refugee" in
+    "refugee population" is left for the binder on a family holding the total and a refugee
+    member, and a held family's total reads its name though recall found the refugee member
+    alone. The words are those every served member holds, which the words the answer reads
+    hold whichever of them it shows. When a served member has no name, as a code index row
+    recall did not return has none, or none is served, they are the words every named
+    member holds (`_shape_measure_words`), the fewest any name of the family reads, so the
+    named members alone clear no word. None when no member has a name."""
+    shape = state.shape_draft
+    if not _member_names(shape):
         return None
-    fewest = min(count for _dcid, count, _words in named)
-    shared = frozenset.intersection(*(words for _dcid, count, words in named if count == fewest))
-    best = next((words for dcid, _count, words in named if dcid in shape.scored_members), None)
-    return shared | (best or frozenset())
+    served = served_member_names(state).values()
+    if not served or None in served:
+        return _shape_measure_words(shape)
+    return frozenset.intersection(*(_label_words(name) for name in served if name is not None))
+
+
+def served_member_names(state: ResolveState) -> dict[str, str | None]:
+    """The name of each member the answer over the elected shape and the final bindings
+    can serve, None for a member with no name, by dcid in serving order: the members
+    `standard.members_served` gives by the rule the resolve serves by, read over the data
+    the part's availability reads found for each (`member_has_data_where_asked`). A member
+    no read covered is kept, so a failed read costs a rating and clears no word. The places
+    bind under the assignment place binding settled (`ResolveState.elected_place_roles`),
+    a direction among them, else under the one binding repair took
+    (`ResolveState.query_place_roles`). The members are read once for each shape, bindings
+    and assignment (`ResolveState.served_member_memo`), as every coverage reading and the
+    rating it asks for read them."""
+    shape, bindings = state.shape_draft, tuple(state.bindings)
+    assignment = state.elected_place_roles or state.query_place_roles
+    memo = state.served_member_memo
+    if memo is not None and memo[0] is shape and memo[1] == bindings and memo[2] is assignment:
+        return memo[3]
+    role_keys = assignment.role_keys if isinstance(assignment, PlaceAssignment) else RoleKeys()
+    arcs = shape_population_arcs(shape)
+    names = {
+        dcid: read_name(arcs.get(dcid, {}))
+        for dcid in members_served(
+            shape, bindings, role_keys, member_has_data_where_asked(state, shape)
+        )
+    }
+    state.served_member_memo = (shape, bindings, assignment, names)
+    return names
 
 
 def _label_words(label: str) -> frozenset[str]:
@@ -4340,7 +4373,9 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     Each menu shape states whether it has data at the places the part names
     (`has_data_where_asked`), when it names any, and the words of the variable the readers
     that read no binding leave unread on it (`_nominated_words`), which the binder may
-    rate once the bindings settle (`Binder.rate_words_stated`).
+    rate once the bindings settle (`Binder.rate_words_stated`). The menu's held families,
+    whose members' names those words read, are read first, off the event loop
+    (`read_held_families`).
 
     An answer the schema refuses at parse (`LLMOutputRefused`: a binding that names no
     value) refuses ``variable_not_resolved`` with the call's usage and warns
@@ -4364,6 +4399,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     The quantity read ran before admissibility (`_read_stated_quantity`), so the election
     never carries it, and the call's usage adds to the read's.
     """
+    await read_held_families(state.capped_shapes)
     per_shape = [_shape_qualifiers(state, shape) for shape in state.capped_shapes]
     candidate_menus = [_candidate_menus(state, shape) for shape in state.capped_shapes]
     admitted_qualifiers = [matches for matches, _ties, _unheld in per_shape]

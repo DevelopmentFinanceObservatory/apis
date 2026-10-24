@@ -26,7 +26,12 @@ from search.engine.bind import (
 from search.engine.binders.base import BindRequest
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.shape import ShapeDraft
-from search.engine.stated_words_read import bound_value_label, implied_values, restricting
+from search.engine.stated_words_read import (
+    bound_value_label,
+    implied_values,
+    restricting,
+    served_series,
+)
 from search.models import Axis
 
 type Prop = tuple[Axis, str]
@@ -139,6 +144,7 @@ def describe(
     *,
     bindings: Sequence[SlotBindingDraft] = (),
     definition: bool = False,
+    served: Sequence[str] = (),
 ) -> str:
     """One shape as a question quotes it: its label, then what its five-tuple, fixed values
     and the values `bindings` restrict it to (`restricting`) state beyond the label, and the
@@ -146,7 +152,8 @@ def describe(
     `stated_words_read.bound_value_label`, a set's values joined by "or". With
     `definition`, it also quotes the values the measure's definition fixes on properties
     `bindings` leave unrestricted (`stated_words_read.implied_values`), as the stated-word
-    questions and Gemini's stated-words prompt do."""
+    questions and Gemini's stated-words prompt do, and so do both for the `served` series
+    an answer serving several serves (`stated_words_read.served_series`)."""
     reading = stated_reading(shape)
     parts = [f"{reading.measured_property} of {reading.population_type}"]
     if reading.qualifier:
@@ -162,6 +169,8 @@ def describe(
         parts.append("restricted to " + ", ".join(dict.fromkeys(restricted)))
     if definition and (implied := implied_values(shape, bindings)):
         parts.append(f"its definition fixes {implied}")
+    if served:
+        parts.append(f"served as each of these series: {served_series(served)}")
     slots = [
         s.label
         for s in shape.slot_keys

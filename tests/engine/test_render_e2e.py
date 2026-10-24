@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from search.engine.quantity_read import QuantityOutput
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     CandidatesPart,
     DatasetResubmitInput,
@@ -23,7 +24,7 @@ from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph
 from tests.render._helpers import assert_round_trip
 
@@ -154,6 +155,8 @@ class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(0), None
 

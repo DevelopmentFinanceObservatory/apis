@@ -33,6 +33,7 @@ from search.engine.region import (
 )
 from search.engine.region.codes import MEMBERSHIP_UNVERIFIED
 from search.engine.region.state import EngineOptions
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import CoverageExact, TimeWindow
 from search.render.plan import render_sentence_plan
 from search.render.tokens import sentence_from_plan
@@ -42,7 +43,7 @@ from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, member_walk_reader
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._scope_availability import ScopeAvailability
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -570,6 +571,8 @@ class _BindFemaleOldLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         from search.engine.bind import SlotBindingDraft
 
