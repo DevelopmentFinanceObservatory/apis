@@ -25,8 +25,9 @@ holds one chunk at a time.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import cast
 
 import pyarrow as pa
@@ -70,14 +71,43 @@ def open_party_roles(identity: object, entity_columns: Sequence[str]) -> tuple[s
     )
 
 
+class _EveryProvenance(Enum):
+    """The provenance key of refs left out of the rows of every provenance, which a trace entry
+    recorded without a `provenance` names (`PartyTotalsCut.of_trace_entries`)."""
+
+    EVERY = "every"
+
+
+EVERY_PROVENANCE = _EveryProvenance.EVERY
+
+type _Provenance = str | None | _EveryProvenance
+
+
 @dataclass(frozen=True)
 class PartyTotalsCut:
     """The totals a cut leaves out of a frame: each open party role that lost rows, mapped to
     each provenance it lost rows in and the sorted refs of the totals it lost there. The
     provenance is `None` for the rows of a frame without a `provenance` column and the rows
-    whose cell is null."""
+    whose cell is null, and `EVERY_PROVENANCE` for the rows of any provenance, which only a cut
+    rebuilt from a trace entry without a `provenance` holds."""
 
-    left_out: Mapping[str, Mapping[str | None, tuple[str, ...]]]
+    left_out: Mapping[str, Mapping[_Provenance, tuple[str, ...]]]
+
+    @classmethod
+    def of_trace_entries(cls, entries: Iterable[Mapping[str, object]]) -> PartyTotalsCut:
+        """The cut whose `trace_entries` are `entries`, as a version's trace recorded them,
+        whatever the code index now declares of their parties. An entry without a `provenance`,
+        as versions recorded before the cut keyed totals on the dataset, leaves its refs out of
+        the rows of every provenance, as the cut that minted them did."""
+        left_out: dict[str, dict[_Provenance, tuple[str, ...]]] = {}
+        for entry in entries:
+            recorded = entry.get("provenance", EVERY_PROVENANCE)
+            provenance = (
+                recorded if recorded is None or recorded is EVERY_PROVENANCE else str(recorded)
+            )
+            refs = tuple(str(ref) for ref in cast("list[object]", entry["entities"]))
+            left_out.setdefault(str(entry["role"]), {})[provenance] = refs
+        return cls(left_out=left_out)
 
     def chunks(self, frame_chunks: Callable[[], Iterator[Frame]]) -> Callable[[], Iterator[Frame]]:
         """A fresh pass over `frame_chunks` less the rows `left_out` names, on each call. A
@@ -95,11 +125,15 @@ class PartyTotalsCut:
         """The trace's `party_totals_left_out` entries: one `{role, provenance, entities}` per
         role and provenance it lost rows in, in role order and then provenance order (`None`
         first), its entities in ref order. A party left out of one dataset's rows is named for
-        that dataset alone, so a frame that keeps its rows from another dataset says so."""
+        that dataset alone, so a frame that keeps its rows from another dataset says so. Refs
+        left out of every provenance keep the `{role, entities}` entry they were rebuilt from,
+        after the role's other entries."""
         return [
-            {"role": role, "provenance": dataset, "entities": list(refs)}
+            {"role": role, "entities": list(refs)}
+            if dataset is EVERY_PROVENANCE
+            else {"role": role, "provenance": dataset, "entities": list(refs)}
             for role, by_dataset in sorted(self.left_out.items())
-            for dataset, refs in sorted(by_dataset.items(), key=lambda item: item[0] or "")
+            for dataset, refs in sorted(by_dataset.items(), key=lambda item: _order(item[0]))
         ]
 
 
@@ -160,7 +194,7 @@ def cut_party_totals(
     """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds
     from the code index's `parties` for each row's dataset. Reads the frame once per role, each
     pass after the cuts of the roles before it."""
-    left_out: dict[str, dict[str | None, tuple[str, ...]]] = {}
+    left_out: dict[str, dict[_Provenance, tuple[str, ...]]] = {}
     for role in roles:
         totals: defaultdict[str | None, set[str]] = defaultdict(set)
         others = False
@@ -205,10 +239,21 @@ def _distinct(values: pa.Array | pa.ChunkedArray) -> list[object]:
     return pc.unique(values).drop_null().to_pylist()
 
 
-def _without(chunk: Frame, left_out: Mapping[str, Mapping[str | None, tuple[str, ...]]]) -> Frame:
+def _order(provenance: _Provenance) -> tuple[int, str]:
+    """The order of `provenance` among a role's trace entries: `None`, the named provenances,
+    then `EVERY_PROVENANCE`."""
+    if provenance is None:
+        return 0, ""
+    if provenance is EVERY_PROVENANCE:
+        return 2, ""
+    return 1, provenance
+
+
+def _without(chunk: Frame, left_out: Mapping[str, Mapping[_Provenance, tuple[str, ...]]]) -> Frame:
     """`chunk` less each row whose party on a role of `left_out` is one of that role's refs. A
     null cell matches no ref. A ref left out in a provenance leaves out its rows of that
-    provenance alone, and one left out for `None` its rows with no provenance."""
+    provenance alone, one left out for `None` its rows with no provenance, and one left out for
+    `EVERY_PROVENANCE` its rows of any provenance."""
     if not left_out:
         return chunk
     table = chunk.table
@@ -216,14 +261,14 @@ def _without(chunk: Frame, left_out: Mapping[str, Mapping[str | None, tuple[str,
         for dataset, refs in by_dataset.items():
             column = table.column(role)
             match = pc.is_in(column, value_set=pa.array(refs, type=column.type))
-            if PROVENANCE_COLUMN in table.column_names:
+            if dataset is not EVERY_PROVENANCE and PROVENANCE_COLUMN in table.column_names:
                 # A `None` dataset matches the null cells, and a named one no null cell.
                 provenance = table.column(PROVENANCE_COLUMN)
                 in_dataset = pc.is_in(
                     provenance, value_set=pa.array([dataset], type=provenance.type)
                 )
                 match = pc.and_(match, in_dataset)
-            elif dataset is not None:
+            elif dataset is not None and dataset is not EVERY_PROVENANCE:
                 continue
             # Two column operands give a column; the stubs widen it to a scalar too.
             table = table.filter(cast("pa.ChunkedArray", pc.invert(match)))
@@ -231,6 +276,7 @@ def _without(chunk: Frame, left_out: Mapping[str, Mapping[str | None, tuple[str,
 
 
 __all__ = [
+    "EVERY_PROVENANCE",
     "TRACE_KEY",
     "YEARS_DIMENSION",
     "CutFrame",

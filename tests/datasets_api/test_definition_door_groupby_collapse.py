@@ -975,7 +975,8 @@ def test_a_groupby_that_leaves_an_earlier_grammar_versions_frame_unchanged_is_th
 @pytest.mark.parametrize("door", ["mint", "head_hit"])
 def test_every_recorded_version_holds_the_hash_of_its_canonical_frame(door: str):
     """The base version and the collapse a mint or a head hit records each store
-    `frame_sha256`, the hash of the canonical frame linked under them."""
+    `frame_sha256`, the hash of the canonical frame linked under them, and the collapse states
+    that its frame holds its summed rows (`frame_summed`)."""
     version_store = FakeVersionRecordDatasetStore()
     artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
     client = _client(
@@ -997,13 +998,18 @@ def test_every_recorded_version_holds_the_hash_of_its_canonical_frame(door: str)
 
     with version_store.transaction() as tx:
         rows = tx.fetch_all(
-            "SELECT vr.frame_sha256 AS frame_sha256, va.artifact_digest AS artifact_digest "
+            "SELECT vr.frame_sha256 AS frame_sha256, va.artifact_digest AS artifact_digest, "
+            "vr.base_content_version AS base_content_version, vr.frame_summed AS frame_summed "
             "FROM datasets.version_record vr JOIN datasets.version_artifact va "
             "ON va.subject_id = vr.subject_id AND va.content_version = vr.content_version "
             "WHERE vr.subject_id = %s AND va.rendering_key = %s",
             (spec_id, rendering_key(CANONICAL_FRAME_RENDERING)),
         )
     assert len(rows) == 2
+    assert sorted((row["base_content_version"] is None, row["frame_summed"]) for row in rows) == [
+        (False, True),
+        (True, None),
+    ]
     for row in rows:
         frame = read_canonical_frame(
             artifact_store.get(artifact_digest=cast(str, row["artifact_digest"]), tier=Tier.working)

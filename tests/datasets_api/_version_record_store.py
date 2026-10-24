@@ -48,6 +48,7 @@ CREATE TABLE datasets.version_record (
     composed_stat_vars TEXT,
     continuations TEXT,
     frame_sha256 TEXT,
+    frame_summed INTEGER,
     PRIMARY KEY (subject_id, content_version)
 );
 CREATE TABLE datasets.version_artifact (
@@ -205,7 +206,7 @@ _TIMESTAMP_COLUMNS = frozenset(
         "submitted_at",
     }
 )
-_BOOL_COLUMNS = frozenset({"retryable", "final_delivery"})
+_BOOL_COLUMNS = frozenset({"retryable", "final_delivery", "frame_summed"})
 
 
 def _decode_row(row: sqlite3.Row) -> dict[str, object]:
