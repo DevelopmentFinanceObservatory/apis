@@ -1155,6 +1155,102 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
         loser_pool.close_all()
 
 
+class _InterleavingTransaction:
+    """Commits `before` and `after` on another connection around the first reset update."""
+
+    def __init__(self, inner, store: _InterleavingDatasetStore) -> None:
+        self._inner = inner
+        self._store = store
+
+    def _around_reset(self, sql: str, run):
+        hooks = self._store.pending_hooks
+        if hooks is None or not sql.startswith("UPDATE datasets.operation SET state = 'pending'"):
+            return run()
+        self._store.pending_hooks = None
+        before, after = hooks
+        before()
+        result = run()
+        after()
+        return result
+
+    def execute(self, sql: str, params=()) -> None:
+        self._around_reset(sql, lambda: self._inner.execute(sql, params))
+
+    def fetch_one(self, sql: str, params=()):
+        return self._around_reset(sql, lambda: self._inner.fetch_one(sql, params))
+
+    def fetch_all(self, sql: str, params=()):
+        return self._around_reset(sql, lambda: self._inner.fetch_all(sql, params))
+
+
+class _InterleavingDatasetStore:
+    """Wraps each real transaction in `_InterleavingTransaction`."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.pending_hooks = None
+
+    @contextmanager
+    def transaction(self):
+        with self._inner.transaction() as tx:
+            yield _InterleavingTransaction(tx, self)
+
+
+def test_operation_store_create_or_get_decides_again_when_its_reset_matches_nothing(live_store):
+    """A redelivery claims the abandoned row after the locked read and commits, so the reset
+    re-checks the new version and matches nothing. The run completes before the call returns.
+    Under READ COMMITTED a final read would see `done`. The call resets the done row instead."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    run_id = uuid4().hex
+    subject_id = f"spec-test-live-operation-redecide-{run_id}"
+    identity = {"input": {"spec_id": subject_id}}
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+    interleaving = _InterleavingDatasetStore(live_store)
+    store = LiveOperationStore(store=interleaving, now=lambda: now_box["t"], backlog_max=10_000)
+    # The redelivery commits on its own connection while the submission's transaction is open.
+    worker_pool = _pool(size=1)
+    worker = LiveOperationStore(
+        store=LiveDatasetStore(connections=worker_pool), now=lambda: now_box["t"]
+    )
+
+    try:
+
+        def _submit():
+            return store.create_or_get(
+                request_identity=identity,
+                options={"format": "parquet"},
+                coverage_stamp=f"cov-test-live-operation-redecide-{run_id}",
+                origin_catalogue_build_id="fake-catalogue",
+                estimate=Estimate(rows=1, requests=1),
+            )
+
+        first = _submit()
+        assert worker.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+        now_box["t"] += timedelta(seconds=61)
+
+        def _redelivery_claims() -> None:
+            assert worker.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+
+        def _redelivery_completes() -> None:
+            assert worker.complete(
+                first.id,
+                attempt=2,
+                subject_id=subject_id,
+                content_version="cv1",
+                confirmed_at=now_box["t"],
+            )
+
+        interleaving.pending_hooks = (_redelivery_claims, _redelivery_completes)
+
+        resubmitted = _submit()
+
+        assert interleaving.pending_hooks is None
+        assert (resubmitted.state, resubmitted.submission_count) == ("pending", 1)
+        assert worker.get(first.id) == resubmitted
+    finally:
+        worker_pool.close_all()
+
+
 def test_operation_insert_predating_submitted_at_still_succeeds(live_store):
     """An insert without `submitted_at` receives the database's `now()` default.
 

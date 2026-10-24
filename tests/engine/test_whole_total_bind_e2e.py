@@ -1113,6 +1113,98 @@ def test_a_place_named_without_a_direction_reads_the_total_its_direction_leaves(
     assert (_whole_read(answer) is not None) == official
 
 
+# A sole-option claim on DAC2a's aid type that a recall sample alone backs. The walk refutes
+# it, so the answer binds the slot open, and the official donors' total holds a series only
+# under the open slot.
+_SAMPLED_CLAIM = SlotBindingDraft(
+    axis="how",
+    property_dcid="dac2aAidType",
+    kind="value",
+    value_dcids=["AidType207"],
+    evidence="sole_option",
+    sampled=True,
+)
+_NAMED = place_roles.PlaceAssignment()
+_WHOLE = place_roles.PlaceAssignment(open_axes=frozenset({"origin"}))
+
+
+def _holds_only_open(_state: Any, _shape: Any, whole: Any, bindings: Any) -> bool:
+    assert whole is _WHOLE
+    return not any(b.sampled for b in bindings)
+
+
+def test_binding_repair_judges_a_whole_total_on_the_bindings_without_their_sampled_claims(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The settled bindings carry the claim back to its slot, and the total is judged on
+    them read without it, so the donor side binds the total its answer reads."""
+    settled = SimpleNamespace(served=True, shape=None, bindings=[_SAMPLED_CLAIM])
+    monkeypatch.setattr(phase_election, "bind_place_roles", lambda *_args: _NAMED)
+    monkeypatch.setattr(phase_election, "whole_total_candidates", lambda *_args: [_WHOLE])
+    monkeypatch.setattr(phase_election, "_settle_role_bindings", lambda *_args: settled)
+    monkeypatch.setattr(phase_election, "holds_whole_total", _holds_only_open)
+    monkeypatch.setattr(phase_election, "_install_settled", lambda *_args: None)
+    state = SimpleNamespace(shape_draft=None, query_place_roles=None)
+    open_slot = SlotBindingDraft(axis="how", property_dcid="dac2aAidType", kind="unbound")
+
+    phase_election._bind_query_places(
+        cast(ResolveState, state), [open_slot], {"dac2aAidType": _SAMPLED_CLAIM}
+    )
+
+    assert state.query_place_roles is _WHOLE
+
+
+def test_a_direction_settled_after_repair_judges_its_whole_total_without_sampled_claims(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Ethiopia named with no direction holds data as a recipient alone, and the donor side
+    that leaves binds the total the bindings hold read without their claim."""
+    monkeypatch.setattr(
+        phase_place_materialise, "series_at_places", lambda _state: lambda *_args: True
+    )
+    monkeypatch.setattr(
+        phase_place_materialise,
+        "direction_assignments",
+        lambda *_args: [("destination", _NAMED)],
+    )
+    monkeypatch.setattr(phase_place_materialise, "undirected_place_name", lambda _state: "Ethiopia")
+    monkeypatch.setattr(phase_place_materialise, "whole_total_candidates", lambda *_args: [_WHOLE])
+    monkeypatch.setattr(phase_place_materialise, "holds_whole_total", _holds_only_open)
+    state = SimpleNamespace(
+        shape_draft=None,
+        bindings=[_SAMPLED_CLAIM],
+        inferred_facts=[],
+        direction_rivals={},
+        capped_shapes=[],
+    )
+
+    assert phase_place_materialise._settle_direction(cast(ResolveState, state)) is _WHOLE
+
+
+def test_an_alternate_judges_its_whole_total_without_the_sampled_claims_its_bindings_keep(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A breakdown copy of the elected shape keeps its sampled claim, and the alternate
+    binds the total its bindings hold read without it."""
+    settled = SimpleNamespace(shape=None, bindings=[_SAMPLED_CLAIM])
+    monkeypatch.setattr(phase_place_materialise, "whole_total_candidates", lambda *_args: [_WHOLE])
+    monkeypatch.setattr(phase_place_materialise, "settle_alternate", lambda *_a, **_k: settled)
+    monkeypatch.setattr(phase_place_materialise, "_strays_by_property", lambda _state: {})
+    monkeypatch.setattr(phase_place_materialise, "holds_whole_total", _holds_only_open)
+    state = SimpleNamespace(
+        alternate_place_roles={1: _NAMED},
+        capped_shapes=[None, None],
+        scope=None,
+        breakdown_rivals={1: [_SAMPLED_CLAIM]},
+    )
+
+    walked = phase_place_materialise._walk_assignment(
+        cast(ResolveState, state), 1, cast(Any, None), "rep"
+    )
+
+    assert walked is _WHOLE
+
+
 def test_a_place_without_a_direction_beside_a_named_population_takes_the_other_side(
     monkeypatch: pytest.MonkeyPatch,
 ):
