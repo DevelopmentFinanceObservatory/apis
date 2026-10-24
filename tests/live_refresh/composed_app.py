@@ -971,6 +971,7 @@ def compose(
             rate_cache=rate_cache,
             coverage=coverage,
             version_writer=version_writer,
+            head_store=head_store,
             snapshot_reader=snapshot_reader,
             head_recheck_interval=timedelta(seconds=settings.head_recheck_seconds),
             head_max_age=timedelta(seconds=settings.head_max_age_seconds),

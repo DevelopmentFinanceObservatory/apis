@@ -903,6 +903,69 @@ def test_a_recalled_index_row_does_not_take_the_debt_shapes_family():
     } == {"financialFlowType": "ServicingPayment"}
 
 
+_IDS_SERVICE = "Amount_FinancialFlow_ServicingPayment_Nominal"
+_IDS_INTEREST = "Amount_FinancialFlow_InterestPayment_Nominal"
+
+
+def _ids_flow(label: str, flow_type: str) -> dict:
+    return _node(label, _RECIPIENT, population_type="FinancialFlow", financialFlowType=flow_type)
+
+
+@pytest.mark.parametrize(
+    "draft",
+    [
+        SlotBindingDraft(
+            axis="how",
+            property_dcid="financialFlowType",
+            kind="value",
+            value_dcids=["ServicingPayment"],
+            evidence="sole_option",
+        ),
+        SlotBindingDraft(axis="how", property_dcid="financialFlowType", kind="unbound"),
+    ],
+    ids=["claimed-by-the-reply", "claimed-at-settle"],
+)
+def test_debt_service_keeps_the_flow_type_its_family_is_told_apart_by(draft):
+    """ "Total debt service of Kenya", as dq-ids-001 asks of Ghana, recalls the IDS debt service total
+    alone, and the reply binds its one flow type as the slot's sole option, or leaves the
+    slot unbound and settle claims it. The recalled sample is not the whole family, so the
+    claim rests on it. The family shares its five-tuple with the CRS rows the index
+    exports, and the flow type is what tells it apart from them (`bind_shared_values`), so
+    the walk reads the flow type bound. Read open, the walk lists the IDS interest payments
+    total beside it, refutes the claim and answers every flow to Kenya."""
+    recalled = {_IDS_SERVICE: _ids_flow("Debt service on external debt", "ServicingPayment")}
+    interest = {_IDS_INTEREST: _ids_flow("Interest payments on external debt", "InterestPayment")}
+    walked = {**recalled, **interest}
+    obs = {f"{dcid}|country/KEN": _OBS for dcid in walked}
+
+    class _DraftLLM:
+        async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
+            if schema is QuantityOutput:
+                return NO_QUANTITY
+            return elected_reply(0, bindings=[draft], also_plausible=None), None
+
+    result = _run(
+        entities=["Kenya"],
+        obs=obs,
+        query="total debt service of Kenya",
+        nodes=recalled,
+        value_nodes=interest,
+        llm=_DraftLLM(),
+        options=EngineOptions(materialise_graph=_walk_reader(walked)),
+        coverage=_one_role_coverage(walked, obs),
+    )
+
+    assert result.status == "definite"
+    (spec,) = result.specs
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_IDS_SERVICE]
+    assert {
+        slot.property: getattr(slot.binding, "ref", None) for slot in spec.definition.identity.slots
+    } == {"financialFlowType": "ServicingPayment"}
+    assert "membership_unverified" not in {w.code for w in result.warnings}
+
+
 def test_an_unindexed_shape_on_a_five_tuple_the_index_carries_keeps_its_own_slot_keys():
     """By-creditor debt members declare the roles CRS rows declare. The index holds none of
     them, so the shape is the debt family and reads no index row."""
@@ -2992,8 +3055,11 @@ def test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go(monkeypat
     declares a creditor where the others declare the debtor alone. Every member conflicts
     on a sole-option draft, so all three go, and the members left under the named value
     declare role sets the election cannot order: the part refuses
-    `role_signature_incompatible`, as the mint refuses the identity, with no draft still
-    bound and no value refused on."""
+    `role_signature_incompatible`, as the mint refuses the identity, and no value is refused
+    on. The recalled sample does not refute the drafts, so each stands as a sampled claim.
+    The walk reads every sampled claim open, meets those role sets at once and refuses
+    with nothing unbound. With no walk the read unbinds all three drafts, leaving no draft
+    bound."""
     nodes = {
         _RELAX_BONDS: _node(
             "External debt stocks, bonds",
@@ -3028,12 +3094,14 @@ def test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go(monkeypat
     assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
     assert result.flagged_match is None
     assert not result.unbound_qualifiers
-    (state,) = states
-    assert {
-        b.property_dcid: b.value_dcids
-        for b in state.bindings
-        if b.kind == "value" and b.property_dcid is not None
-    } == {"positionType": ["AmountOutstanding"]}
+    assert [
+        {
+            b.property_dcid: b.value_dcids
+            for b in state.bindings
+            if b.kind == "value" and b.property_dcid is not None
+        }
+        for state in states
+    ] == ([] if walked else [{"positionType": ["AmountOutstanding"]}])
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walk-point", "read"])

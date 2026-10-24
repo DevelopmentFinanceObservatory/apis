@@ -818,7 +818,8 @@ def test_a_raw_version_linking_both_renderings_refuses_once_they_differ():
 
 
 def _worker_deps(plain: _PlainRig) -> DefinitionDeps:
-    """The worker's deps over the rig's stores, graph, SDMX body, and coverage."""
+    """The worker's deps over the rig's stores, graph, SDMX body, and coverage. The worker
+    advances the rig's head, as the deployed worker does."""
     rig = plain.rig
     settings = DatasetsBuildSettings()
     return DefinitionDeps(
@@ -847,6 +848,7 @@ def _worker_deps(plain: _PlainRig) -> DefinitionDeps:
         coverage=plain.coverage,
         version_writer=LiveVersionRecordWriter(store=rig.version_store),
         snapshot_reader=LiveSnapshotReader(store=rig.version_store),
+        head_store=rig.head_store,
         head_recheck_interval=timedelta(seconds=settings.head_recheck_seconds),
         head_max_age=timedelta(seconds=settings.head_max_age_seconds),
     )
@@ -907,8 +909,9 @@ def test_a_done_rebuild_of_a_kind_column_frame_is_checked_under_the_current_dige
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A rebuild whose rendering `carries_party_kind` is linked by the worker under the
-    key salted with the serving code index's digest. The refresh checks the same key, so it
-    answers `moved`; a key without the digest would find nothing and run the row again."""
+    key salted with the serving code index's digest. The refresh reads the head the worker
+    advanced under the same key, so it answers `moved`; a key without the digest would find
+    nothing and submit the operation again."""
     real_frame_options = refresh_module._frame_options
     monkeypatch.setattr(
         refresh_module,
@@ -981,7 +984,7 @@ def test_a_done_rebuild_whose_files_left_storage_runs_again_before_it_is_answere
 
     resp = rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
 
-    # The done row is failed and submitted again, so the answer is the rebuild, not its version.
+    # The submission resets the done row and enqueues it again, so the answer is the rerun.
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"status": "pending", "operation_id": operation_id, "retry_after_s": 1.5}
     assert rig.task_client.enqueued == [(operation_id, 0), (operation_id, 1)]

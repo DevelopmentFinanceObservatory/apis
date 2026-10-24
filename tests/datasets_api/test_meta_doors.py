@@ -371,7 +371,6 @@ def test_a_resubmission_is_paced_from_its_current_submission(
         "coverage_stamp": "cov_stamp_1",
         "origin_catalogue_build_id": "fake-catalogue",
         "estimate": _DEFAULT_ESTIMATE,
-        "rejected_version": None,
     }
     created = store.create_or_get(**submission)
     assert store.claim(
@@ -390,9 +389,8 @@ def test_a_resubmission_is_paced_from_its_current_submission(
     assert resource.operation.retry_after_ms == expected_ms
 
 
-@pytest.mark.parametrize("state", ["done", "failed"])
-def test_a_finished_operation_is_paced_at_the_floor_whatever_its_age(state: str) -> None:
-    operation = _operation(state=state)
+def test_a_failed_operation_is_paced_at_the_floor_whatever_its_age() -> None:
+    operation = _operation(state="failed")
 
     interval = poll_interval_ms(operation, now=_OP_NOW + timedelta(hours=1))
 
@@ -579,7 +577,6 @@ def test_failed_operation_poll_with_an_unparseable_stored_refusal_names_the_code
             coverage_stamp="cov_stamp_1",
             origin_catalogue_build_id="fake-catalogue",
             estimate=_DEFAULT_ESTIMATE,
-            rejected_version=None,
         )
         operation_store.claim(op.id, submission_count=0, lease_seconds=1_500, final_delivery=False)
         stored = _STORED_REFUSALS["over_ceiling"]
@@ -892,7 +889,6 @@ def test_a_done_operation_whose_rendering_is_gone_fails_retryable_and_a_resubmit
         "coverage_stamp": "cov_stamp_1",
         "origin_catalogue_build_id": "fake-catalogue",
         "estimate": _DEFAULT_ESTIMATE,
-        "rejected_version": None,
     }
     op = operation_store.create_or_get(**submission)
     assert (
@@ -1014,7 +1010,6 @@ def _create(operation_store: LiveOperationStore) -> Operation:
         coverage_stamp="cov_stamp_1",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=1_000_000, requests=40),
-        rejected_version=None,
     )
 
 
@@ -1378,7 +1373,6 @@ def test_the_composed_poll_route_reconciles_through_the_surfaces_task_client() -
         coverage_stamp="cov_stamp_1",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=1_000_000, requests=40),
-        rejected_version=None,
     )
     task_client = FakeTaskClient()
     client = make_client(

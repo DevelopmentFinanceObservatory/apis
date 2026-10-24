@@ -81,6 +81,8 @@ from search.engine.region.phase_election import (
     _settle_served_dataset,
     narrowed_to_breakdown,
     record_coverage,
+    sampled_claims,
+    without_sampled_claims,
 )
 from search.engine.region.phase_intake import not_admitted_entity
 from search.engine.region.phase_shared import (
@@ -143,6 +145,8 @@ from search.engine.retrieval.bound_values import (
     narrowed_to,
     shape_population_arcs,
     shape_query,
+    sole_shared_value,
+    without_values,
 )
 from search.engine.retrieval.facts import (
     read_constraints,
@@ -272,6 +276,12 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     the rule the read applies (`unrealisable.unbind_unrealisable`), and the family is
     settled again, so the place context is built once, on the family of the bindings the
     answer states. `membership_unverified` then says only that a family could not be read.
+
+    The walk reads each slot a recall sample alone claimed open
+    (`phase_election.without_sampled_claims`), so the family it settles holds the members
+    the claim would exclude, and the claim is confirmed or refuted on that family
+    (`_judge_sampled_claims`). A family no walk settles leaves the claim standing on the
+    sample, under `membership_unverified`.
     """
     _note_named_places(state)
 
@@ -295,7 +305,10 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     # member graph to walk. Members it does not settle still answer, under a warning.
     role_keys = bound.role_keys
     role_query = shape_query(
-        state.shape_draft, state.bindings, role_keys.bound, open_role_keys=role_keys.open
+        state.shape_draft,
+        without_sampled_claims(state.bindings),
+        role_keys.bound,
+        open_role_keys=role_keys.open,
     )
     recalled = state.shape_draft
     try:
@@ -347,7 +360,10 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         recalled = state.shape_draft
         relaxed = True
         role_query = shape_query(
-            recalled, state.bindings, role_keys.bound, open_role_keys=role_keys.open
+            recalled,
+            without_sampled_claims(state.bindings),
+            role_keys.bound,
+            open_role_keys=role_keys.open,
         )
         try:
             resolution = await asyncio.to_thread(
@@ -361,9 +377,13 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         except (RoleSignatureError, FamilyNotResolvableError) as exc:
             return _election_refusal(state, exc)
         state.shape_draft = resolution.value
+    state.walked = resolution.walked
+    if refuted := _judge_sampled_claims(state, role_keys):
+        if (refused := await _unbind_refuted_claims(state, refuted, role_keys)) is not None:
+            return refused
+        relaxed = True
     if not resolution.authority.settled:
         state.warnings.append(membership_unverified_warning())
-    state.walked = resolution.walked
     # The place context below is built for the shape the election returned.
     bound = bound_after_election(state, recalled, bound, state.shape_draft)
     if bound == "role_incompatible":
@@ -1575,6 +1595,65 @@ async def _unbind(
     (`phase_election.record_coverage`), as binding repair reads them: "female" in "female
     aged X" reads no bound code once Sex=Female is unbound."""
     unbind_unrealisable(state, unrealisable)
+    return await _resettle_unbound_part(state, role_keys)
+
+
+def _judge_sampled_claims(state: ResolveState, role_keys: RoleKeys) -> frozenset[str]:
+    """The properties of the claims a recall sample alone backs
+    (`phase_election.sampled_claims`) that the family the walk settled refutes, once each
+    claim it confirms is no longer marked sampled.
+
+    The walk read each claimed slot open (`phase_election.without_sampled_claims`), and its
+    family (`ShapeDraft.sv_arc_facts` of the shape it settled) confirms a claim when every
+    member asserts the claimed value (`sole_shared_value`), the rule a claim on a complete
+    population meets at settle. A confirmed claim keys the walk (`ResolveState.walked`) to
+    the query binding its value (`WalkedMembers.binding`): every walked member asserts it,
+    so the walk of that query settles the same members, and the identity minted under the
+    bindings reads them (`stated_members`). With no family settled (`ResolveState.walked`
+    is None), every claim stands on its sample."""
+    claims = sampled_claims(state.bindings)
+    if not claims or state.walked is None:
+        return frozenset()
+    constraints = [
+        read_constraints(arcs) for arcs in (state.shape_draft.sv_arc_facts or {}).values()
+    ]
+    confirmed = {
+        prop for prop, value in claims.items() if sole_shared_value(constraints, prop) == value
+    }
+    refuted = frozenset(claims.keys() - confirmed)
+    if not confirmed:
+        return refuted
+    state.bindings = [
+        b.model_copy(update={"sampled": False}) if b.property_dcid in confirmed else b
+        for b in state.bindings
+    ]
+    bound_query = shape_query(
+        state.shape_draft,
+        without_values(state.bindings, refuted),
+        role_keys.bound,
+        open_role_keys=role_keys.open,
+    )
+    for prop in confirmed:
+        state.walked = state.walked.binding(prop, bound_query.slots[prop])
+    return refuted
+
+
+async def _unbind_refuted_claims(
+    state: ResolveState, refuted: frozenset[str], role_keys: RoleKeys
+) -> RegionResult | None:
+    """Unbind each slot of `refuted`, claims a recall sample backed and the walked family
+    refutes (`_judge_sampled_claims`), and settle the part again as an unbinding does
+    (`_resettle_unbound_part`). The request's words never named the value, so the answer
+    records no requirement and names no departure for it."""
+    state.bindings = without_values(state.bindings, refuted)
+    state.forget_bound(refuted)
+    return await _resettle_unbound_part(state, role_keys)
+
+
+async def _resettle_unbound_part(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:
+    """Settle the dataset the part is served from under the bindings an unbinding leaves,
+    returning the refusal of a part no table then serves, and rate and record the words the
+    coverage rule reads on them (`phase_election.record_coverage`)."""
     if (refused := _settle_served_dataset(state, role_keys)) is not None:
         return refused
     await record_coverage(state)
