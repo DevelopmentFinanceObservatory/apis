@@ -65,6 +65,7 @@ from datasets_api.manifest_models import Manifest
 from datasets_api.mint_deps import MintDeps
 from datasets_api.mint_models import MintOptions, Scope
 from datasets_api.models import CanonicalDefinition
+from datasets_api.operation_store import OperationBacklogFull
 from datasets_api.operations.submit import submit_over_budget
 from datasets_api.render import linked_under
 from datasets_api.shape import StatVarShape
@@ -429,7 +430,9 @@ def serve_mint(
     (`current.serve_current_head`). Otherwise admission runs once here. It refuses an Excel
     request over the row cap, submits work over the sync budget as an operation, and serves
     the current version (`current.serve_current`) under the admitted estimate, starting from
-    the head and verdict `serve_current_head` reached, so the head is read once.
+    the head and verdict `serve_current_head` reached, so the head is read once. A submission
+    the operation backlog refuses reads the head again and answers from it when it now links
+    the rendering, as it does when another submission's run completed in between.
 
     One coverage snapshot serves the head check, the estimate, the budget decision and the
     fetch.
@@ -466,22 +469,38 @@ def serve_mint(
                 datasets=elected_provenances(requests),
             ),
         )
-    submit_over_budget(
-        subject_id=stored.spec_id,
-        options=options,
-        estimate=estimate,
-        coverage_stamp=coverage_snapshot.stamp,
-        operation_store=deps.operation_store,
-        task_client=deps.task_client,
-        within_budget=within_sync_budget(
-            estimate,
-            sync_budget_rows=deps.settings.sync_budget_rows,
-            sync_budget_requests=deps.settings.sync_budget_requests,
-        ),
-        async_max_rows=deps.settings.async_max_rows,
-        async_max_requests=deps.settings.async_max_requests,
-        members=[request.stat_var for request in requests],
-    )
+    try:
+        submit_over_budget(
+            subject_id=stored.spec_id,
+            options=options,
+            estimate=estimate,
+            coverage_stamp=coverage_snapshot.stamp,
+            operation_store=deps.operation_store,
+            task_client=deps.task_client,
+            within_budget=within_sync_budget(
+                estimate,
+                sync_budget_rows=deps.settings.sync_budget_rows,
+                sync_budget_requests=deps.settings.sync_budget_requests,
+            ),
+            async_max_rows=deps.settings.async_max_rows,
+            async_max_requests=deps.settings.async_max_requests,
+            members=[request.stat_var for request in requests],
+        )
+    except OperationBacklogFull:
+        # The refusal stands only on a head read that follows it.
+        served = serve_current_head(
+            stored,
+            requests=requests,
+            options=options,
+            trigger="mint",
+            deps=definition_deps,
+            trace_id=trace_id,
+            coverage_snapshot=coverage_snapshot,
+            revoked_under=revoked_under,
+        )
+        if isinstance(served, Manifest):
+            return served
+        raise
     return serve_current(
         stored,
         resolve_requests=lambda: requests,

@@ -15,11 +15,12 @@ from artifact_store import LiveArtifactInventory
 from code_index.shared import get_index
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api import current as current_module
 from datasets_api import kinds
 from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
-from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operation_store import LiveOperationStore, Operation
 from datasets_api.operations.oidc import FakeOidcVerifier
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import build_worker_app
@@ -28,6 +29,7 @@ from dc_sdmx import SdmxClient
 from graph_release.service import ReleaseService
 from materialise import EnrichmentLookup
 from materialise.rate_tables import RateTableCache
+from series_coverage.index import Estimate
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from statvar_members import MemberEnumerator
@@ -303,6 +305,74 @@ def test_a_resubmit_after_another_rendering_moved_the_head_serves_the_new_head(
     polled = api_client.get(again_a.headers["location"])
     assert polled.status_code == 200, polled.text
     assert polled.json()["manifest"]["content_version"] == v2
+
+
+def _complete_then_fill_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    operation_store: LiveOperationStore,
+    runs: list[Callable[[], None]],
+) -> None:
+    """Delays the next submission between its head read and the store: the deferred run
+    completes its operation, and another submission takes the backlog's one place."""
+    create_or_get = operation_store.create_or_get
+
+    def _delayed(**submission) -> Operation:
+        runs.pop()()
+        create_or_get(
+            request_identity={"subject_id": "spec_other", "member_dcids": []},
+            options={},
+            coverage_stamp="stamp_other",
+            origin_catalogue_build_id="build_other",
+            estimate=Estimate(rows=1, requests=1),
+        )
+        return create_or_get(**submission)
+
+    monkeypatch.setattr(operation_store, "create_or_get", _delayed)
+
+
+@pytest.mark.parametrize("door", ["mint", "definition"])
+def test_a_submission_that_finds_its_operation_just_completed_serves_the_head_when_the_backlog_is_full(
+    monkeypatch: pytest.MonkeyPatch, door: str
+):
+    """A second submission reads the head before the first one's run completes and reaches the
+    store after it, with the backlog full. It answers 200 from the head that run advanced, and
+    resubmits nothing. Before, it reset the done operation into backlog admission and answered
+    503 for a result the head served."""
+    monkeypatch.setenv("DATASETS_OPERATION_BACKLOG_MAX", "1")
+    clock = {"t": datetime(2026, 10, 24, tzinfo=UTC)}
+    runs: list[Callable[[], None]] = []
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+        deferred=runs,
+    )
+    if door == "mint":
+        monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+        submit = lambda: api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)  # noqa: E731
+    else:
+        minted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+        assert minted.status_code == 200, minted.text
+        # The head ages out, so the definition door rebuilds, over budget, as an operation.
+        clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 1)
+        monkeypatch.setattr(current_module, "within_sync_budget", lambda estimate, **_: False)
+        spec_id = minted.json()["definition"]["spec_id"]
+        submit = lambda: api_client.get(f"/api/datasets/{spec_id}")  # noqa: E731
+
+    first = submit()
+    assert first.status_code == 202, first.text
+    operation_id = first.json()["operation"]["operation_id"]
+    _complete_then_fill_backlog(monkeypatch, operation_store, runs)
+
+    second = submit()
+
+    assert second.status_code == 200, second.text
+    done = operation_store.get(operation_id)
+    assert done is not None and (done.state, done.submission_count) == ("done", 0)
+    assert second.json()["trace"]["served_from"] == "head"
+    assert second.json()["content_version"] == done.content_version
+    assert forwarded == [(operation_id, 0)]
 
 
 def _rendered(manifest: dict) -> list[tuple[str, str]]:

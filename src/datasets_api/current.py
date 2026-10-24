@@ -86,7 +86,11 @@ from datasets_api.manifest import (
 )
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest, year_coverage_counted
 from datasets_api.mint_models import MintOptions
-from datasets_api.operation_store import NullOperationStore, OperationStore
+from datasets_api.operation_store import (
+    NullOperationStore,
+    OperationBacklogFull,
+    OperationStore,
+)
 from datasets_api.operations.submit import submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
@@ -1150,6 +1154,32 @@ _SERVE_COUNTS = (
 )
 
 
+def _serve_judged_head(
+    verdict: _Freshness,
+    *,
+    subject_id: str,
+    deps: DefinitionDeps,
+    coverage_snapshot: CoverageSnapshot,
+    options: MintOptions | None,
+    trace_id: str | None,
+    load_head: HeadLoader | None,
+    revoked_under: Sequence[str],
+) -> Manifest | str:
+    """`_serve_head` on the head `verdict` serves, or the reason the call rebuilds."""
+    if verdict.head is None:
+        return cast(str, verdict.rebuild_reason)
+    return _serve_head(
+        verdict.head,
+        subject_id=subject_id,
+        deps=deps,
+        coverage_snapshot=coverage_snapshot,
+        options=options,
+        trace_id=trace_id,
+        load_head=load_head,
+        revoked_under=revoked_under,
+    )
+
+
 def _labelled(manifest: Manifest, *, trigger: Trigger) -> Manifest:
     label("trigger", trigger)
     label("served_from", cast(str, manifest.trace["served_from"]))
@@ -1280,6 +1310,9 @@ def serve_current(
     `admitted`, which sizes the raw-fetch guard. Otherwise an `options` call refuses an estimate
     over `deps.ceiling` (`refuse_inline_over_ceiling`), and a rendering call refuses Excel over
     its row cap and submits work over the sync budget as an operation (`submit_over_budget`).
+    A submission the operation backlog refuses reads the head again and answers from it when it
+    now serves the call, as it does when that operation's run completed in between, so the
+    backlog refusal stands only on a head read that follows it.
 
     Rebuilds share one run per subject in this process (`deps.rebuilds`). Every other caller
     waits for that run until its own request deadline, then reads the head again and is served
@@ -1356,21 +1389,19 @@ def _check_currency(
             head, stored=stored, requests=requests, now=now, deps=deps, coverage=snapshot.index
         )
     )
-    rebuild_reason = verdict.rebuild_reason
-    if verdict.head is not None:
-        served = _serve_head(
-            verdict.head,
-            subject_id=subject_id,
-            deps=deps,
-            coverage_snapshot=snapshot,
-            options=options,
-            trace_id=trace_id,
-            load_head=load_head,
-            revoked_under=revoked_under,
-        )
-        if not isinstance(served, str):
-            return served
-        rebuild_reason = served
+    answer_from_head = functools.partial(
+        _serve_judged_head,
+        subject_id=subject_id,
+        deps=deps,
+        coverage_snapshot=snapshot,
+        options=options,
+        trace_id=trace_id,
+        load_head=load_head,
+        revoked_under=revoked_under,
+    )
+    rebuild_reason = answer_from_head(verdict)
+    if not isinstance(rebuild_reason, str):
+        return rebuild_reason
     rebuild_requests = requests()
     with deps.rebuilds.turn(
         subject_id,
@@ -1384,20 +1415,38 @@ def _check_currency(
                 current = deps.head_store.read_head(subject_id)
             if _rebuild_mark(current) != _rebuild_mark(head):
                 return None
-        label("rebuild_reason", cast(str, rebuild_reason))
-        served = _materialise_and_record(
-            stored,
-            requests=rebuild_requests,
-            options=options,
-            trigger=trigger,
-            deps=deps,
-            trace_id=trace_id,
-            expected_head=head,
-            coverage_snapshot=snapshot,
-            admitted=admitted,
-            progress=progress,
-            strip_pointer=strip_pointer,
-        )
+        label("rebuild_reason", rebuild_reason)
+        try:
+            served = _materialise_and_record(
+                stored,
+                requests=rebuild_requests,
+                options=options,
+                trigger=trigger,
+                deps=deps,
+                trace_id=trace_id,
+                expected_head=head,
+                coverage_snapshot=snapshot,
+                admitted=admitted,
+                progress=progress,
+                strip_pointer=strip_pointer,
+            )
+        except OperationBacklogFull:
+            # The refusal stands only on a head read that follows it.
+            with phase("head_read"):
+                current = deps.head_store.read_head(subject_id)
+            recheck = answer_from_head(
+                _judge_head(
+                    current,
+                    stored=stored,
+                    requests=requests,
+                    now=deps.now(),
+                    deps=deps,
+                    coverage=snapshot.index,
+                )
+            )
+            if isinstance(recheck, str):
+                raise
+            return recheck
     written = served.head
     if written is None:
         # A concurrent update won the head. Stamp its confirmation.
