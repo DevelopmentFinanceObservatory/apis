@@ -759,45 +759,56 @@ def test_sse_without_include_option_coverage_never_probes():
     assert "slot_options" not in event_types
 
 
-def test_deadline_cancelled_probe_preserves_primary_completion(monkeypatch, search_settings):
+def test_deadline_cancelled_probe_preserves_primary_completion(monkeypatch):
     """A deadline during optional enrichment leaves the completed answer untimed out.
-    The stalled probe is cancelled."""
+    The stalled probe is cancelled.
+
+    The deadline fires when the trailing enrichment starts, after the response event, so the
+    primary fan-out runs under the configured request budget on any runner."""
     import asyncio
+    import threading
     from datetime import date
     from unittest.mock import patch
 
     from search.engine.core import resolve_events
+    from search.engine.entry import raw_text
     from search.engine.region import OPTION_COVERAGE_TIMED_OUT
 
     real_option_coverage = standard_option_coverage
+    real_stream_slot_options = raw_text._stream_slot_options
+    release_probe = threading.Event()
 
     def _hanging_option_coverage(*args, **kwargs):
-        # The worker sleeps 3 seconds, beyond the 1-second deadline.
-        # Cancellation cannot interrupt the thread, so the sleep stays short.
-        time.sleep(3)
-        return real_option_coverage(*args, **kwargs)  # pragma: no cover
+        # Cancellation cannot interrupt the worker thread, so it waits on an event the test
+        # sets. The timeout bounds a deadlock.
+        release_probe.wait(timeout=10.0)
+        return real_option_coverage(*args, **kwargs)
+
+    def _expired_stream_slot_options(*args, **kwargs):
+        return real_stream_slot_options(*args, **{**kwargs, "deadline": time.monotonic()})
 
     monkeypatch.setattr(
         "search.engine.region.option_coverage.standard_option_coverage", _hanging_option_coverage
     )
-    # The 1-second timeout leaves the ~200 ms fake fan-out time to finish on loaded CI.
-    # The coverage probe then exceeds the deadline.
-    search_settings(request_timeout_s=1.0)
+    monkeypatch.setattr(raw_text, "_stream_slot_options", _expired_stream_slot_options)
 
     async def _body():
-        events = [
-            ev
-            async for ev in resolve_events(
-                ResolveRequest(
-                    input=RawTextInput(query="fertility rate in Kenya"),
-                    response_options=ResolveOptions(include_option_coverage=True),
-                ),
-                graph=FakeGraph(),
-                llm=FakeLLM(),
-                stream_slot_options=True,
-                sdmx=FakeSdmxClient(),
-            )
-        ]
+        try:
+            events = [
+                ev
+                async for ev in resolve_events(
+                    ResolveRequest(
+                        input=RawTextInput(query="fertility rate in Kenya"),
+                        response_options=ResolveOptions(include_option_coverage=True),
+                    ),
+                    graph=FakeGraph(),
+                    llm=FakeLLM(),
+                    stream_slot_options=True,
+                    sdmx=FakeSdmxClient(),
+                )
+            ]
+        finally:
+            release_probe.set()
 
         kinds = [e.kind for e in events]
         assert kinds.count("done") == 1
