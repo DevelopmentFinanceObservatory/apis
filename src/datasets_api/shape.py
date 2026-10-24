@@ -45,6 +45,8 @@ class StatVarShape:
     `dataset` is the dataset elected for a family the code index resolved, and `None` for a
     shape read from the graph. `family` is the whole population the identity the shape was
     resolved for admits, and `None` when member resolution could not state it.
+    `stub_candidates` holds the `dcid:` refs the graph walk left out of that family because
+    their complete read carries no definition arc (`MemberGroup.stub_candidates`).
     """
 
     stat_var: str
@@ -54,6 +56,7 @@ class StatVarShape:
     population_type: str | None
     dataset: ElectedDataset | None = None
     family: MemberFamily | None = None
+    stub_candidates: tuple[str, ...] = ()
 
 
 def resolve_shape(stat_var: str, *, graph: GraphReader) -> StatVarShape:

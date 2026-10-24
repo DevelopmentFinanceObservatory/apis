@@ -295,7 +295,7 @@ class MemberEnumerator:
         logger.info(
             "statvar_members.walk spec_id=%s five_tuple=%s truncated=%s proven_complete=%s "
             "candidates_considered=%d full_read=%s inconsistent=%d undismissed=%d "
-            "outcome=%s elapsed_s=%.2f",
+            "stubs=%s outcome=%s elapsed_s=%.2f",
             spec_id,
             _five_tuple_label(five_tuple),
             group.truncated,
@@ -304,6 +304,7 @@ class MemberEnumerator:
             group.full_read,
             len(group.inconsistent_candidates),
             len(group.undismissed_candidates),
+            ",".join(group.stub_candidates) or "-",
             _outcome(group),
             time.monotonic() - started,
         )

@@ -167,13 +167,16 @@ def test_to_dict_carries_the_origin_catalogue_build_only_when_set():
 
 def test_to_dict_states_the_family_beside_the_members_served():
     trace = replace(
-        _build_trace(applied_window=None), family=MemberFamily(digest="ab" * 32, count=3)
+        _build_trace(applied_window=None),
+        family=MemberFamily(digest="ab" * 32, count=3),
+        stub_candidates=("dcid:Count_Person_Stub",),
     )
 
     result = trace.to_dict()
 
     assert result["family_member_digest"] == "ab" * 32
     assert result["family_member_count"] == 3
+    assert result["stub_candidates"] == ["dcid:Count_Person_Stub"]
     assert len(result["resolved_stat_vars"]) == 1
 
 
