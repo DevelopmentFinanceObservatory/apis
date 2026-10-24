@@ -59,6 +59,7 @@ from search.engine.surface_resolution import resolve_names
 from search.models import (
     EntryPath,
     IdentityBindingValue,
+    NoDataReason,
     Operation,
     ParsedEntity,
     ParsedPart,
@@ -314,6 +315,7 @@ def _placeholder_no_data(
     variable: str,
     index: int,
     *,
+    reason: NoDataReason,
     entities: Sequence[str] = (),
     date_request: DateRequest | None = None,
     unit_text: str | None = None,
@@ -326,7 +328,8 @@ def _placeholder_no_data(
     open_axes: Collection[RoleAxis] = (),
     separate: bool = False,
 ) -> RegionResult:
-    """Build a `no_data` result for a leg backfilled after a soft deadline.
+    """Build a `no_data` result for a leg with no answer of its own: `timed_out` for one
+    the soft deadline cut short, `variable_not_resolved` for one whose error was swallowed.
 
     Its restatement and operations use the leg's own inputs. The door's axis map supplies
     entity roles; without an axis, a non-empty `role_query` makes direction
@@ -350,7 +353,7 @@ def _placeholder_no_data(
         variable_text=variable,
         status="no_data",
         specs=(),
-        no_data_reason="variable_not_resolved",
+        no_data_reason=reason,
         warnings=(),
         timing_by_step={},
         earliest_index=index,
@@ -573,6 +576,7 @@ async def _stream_one_variable(
         region = _placeholder_no_data(
             variable_text,
             i,
+            reason="variable_not_resolved",
             entities=entities,
             date_request=date_request,
             unit_text=unit_text,
@@ -1155,6 +1159,7 @@ async def _run_variables_streaming(
             progress.results[i] = _placeholder_no_data(
                 _leg_variable_text(overrides, i),
                 i,
+                reason="timed_out",
                 entities=_leg_entities(overrides, i),
                 date_request=_leg_date_request(overrides, i),
                 unit_text=_leg_unit_text(overrides, i),

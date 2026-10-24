@@ -292,7 +292,6 @@ def test_a_total_is_whole_only_in_the_dataset_and_years_of_its_marker(
 def test_the_lookup_reads_only_the_kind_and_its_cells_no_whole_total():
     lookup = EnrichmentLookup(FakeGraphReader(arcs={}), parties=lambda: {"W": _WINDOWED})
 
-    assert lookup.party_kind("W") == "total"
     assert lookup.party_cells("W") == {
         "party_kind": "total",
         "party_class": "official",
@@ -320,7 +319,7 @@ def test_a_partys_kind_follows_the_party_rows_each_lookup_reads():
 
     assert before["WorldBankGroup"]["party_kind"] == "total"
     assert after["WorldBankGroup"] == {"type": "Organization", "party_kind": "party"}
-    assert lookup.party_kind("WorldBankGroup") == "party"
+    assert lookup.party_cells("WorldBankGroup")["party_kind"] == "party"
     assert graph.calls["node_arcs_many"] == 1
 
 
@@ -340,6 +339,7 @@ def test_party_kinds_read_the_index_alone_for_flow_parties():
             "country/USA": PartyRow(dcid="country/USA", kind="party"),
             "DACAfrica": PartyRow(dcid="DACAfrica", kind="total"),
         },
+        datasets=(),
     )
 
     assert kinds == {
@@ -352,9 +352,49 @@ def test_party_kinds_read_the_index_alone_for_flow_parties():
 def test_search_reads_a_whole_total_as_a_total():
     """Only a frame's `party_whole` cell says a total is whole; the kind on the wire stays
     `total`."""
-    kinds = read_party_kinds([("origin", "DACOfficialDonors")], parties=_ETHIOPIA_2021_PARTIES)
+    kinds = read_party_kinds(
+        [("origin", "DACOfficialDonors")], parties=_ETHIOPIA_2021_PARTIES, datasets=(_DAC2A,)
+    )
 
     assert kinds == {("origin", "DACOfficialDonors"): "total"}
+
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+_TRUST_FUNDS = PartyRow(
+    dcid="IMFConcessionalTrustFunds",
+    kind="party",
+    party_class="official",
+    datasets=(_CRS, _DAC2A),
+    axes=("origin",),
+    dataset_kinds=((_DAC2A, "total"),),
+)
+
+
+def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_dataset():
+    """The IMF trust funds are a total in DAC2A, beside the IMF they equal, and a party in the
+    CRS. A reader with no dataset finds no one kind, so the kind and class are unavailable and
+    a lookup carries no kind."""
+    parties = {_TRUST_FUNDS.dcid: _TRUST_FUNDS}
+
+    def cells(provenance: str | None) -> tuple[str | None, ...]:
+        return tuple(
+            party_cell(field, _TRUST_FUNDS.dcid, parties=parties, year=2020, provenance=provenance)
+            for field in PARTY_FIELDS
+        )
+
+    assert [cells(_DAC2A), cells(_CRS), cells(None)] == [
+        ("total", "", "false"),
+        ("party", "official", "false"),
+        (None, None, "false"),
+    ]
+    entity = ("financingProvider", _TRUST_FUNDS.dcid)
+    assert [
+        read_party_kinds([entity], parties=parties, datasets=datasets)
+        for datasets in ((_DAC2A,), (_CRS,), (_CRS, _DAC2A), ())
+    ] == [{entity: "total"}, {entity: "party"}, {}, {}]
+    lookup = EnrichmentLookup(FakeGraphReader(arcs={}), parties=lambda: parties)
+    assert lookup.lookup([_TRUST_FUNDS.dcid]) == {_TRUST_FUNDS.dcid: {}}
+    assert lookup.party_cells(_TRUST_FUNDS.dcid) == {"party_whole": "false"}
 
 
 def test_ref_with_only_a_label_omits_the_missing_fields():

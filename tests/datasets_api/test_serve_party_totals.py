@@ -160,7 +160,7 @@ def _mint(client, *, spec_id: str, sidecar: dict, options: dict) -> dict:
 
 
 _CUT = {"format": "csv", "bundle": False, "without_party_totals": True}
-_LEFT_OUT = [{"role": "provider", "entities": [_DAC_TOTAL]}]
+_LEFT_OUT = [{"role": "provider", "provenance": _PROVENANCE, "entities": [_DAC_TOTAL]}]
 
 
 def test_a_cut_mint_answers_with_its_own_version_naming_the_totals_it_left_out():

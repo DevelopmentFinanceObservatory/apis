@@ -89,7 +89,8 @@ It fills `frame_summed` on each derived version row recorded without it whose re
 what its own frame holds (`recorded_rendering.own_frame_mode`): a party-totals cut minted with a
 groupby, which otherwise renders from its base frame alone. It reads the base version's stored
 frame from any tier holding its bytes, cuts it as the version's trace recorded
-(`party_totals_left_out`) and hashes the cut frame. A frame is the version's own when its hash
+(`party_totals_left_out`, an entry without a `provenance` cutting its parties from the rows of
+every dataset, `PartyTotalsCut.of_trace_entries`) and hashes the cut frame. A frame is the version's own when its hash
 equals the version's `frame_sha256`, or when the version minted from that hash
 (`mint_version_from_digest`) is the row's `content_version`, which a derived version mints from
 its frame hash alone, so a row recorded before versions stored the hash matches too. The cut

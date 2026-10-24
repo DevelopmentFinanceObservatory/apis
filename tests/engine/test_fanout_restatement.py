@@ -144,6 +144,7 @@ class TestOneAxisRule:
         region = _placeholder_no_data(
             "aid",
             0,
+            reason="timed_out",
             entities=["Kenya"],
             role_query="aid to Kenya",
             entity_roles={"Kenya": [DoorRole(axis="destination", span="Kenya")]},

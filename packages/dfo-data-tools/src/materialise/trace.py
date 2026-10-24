@@ -104,8 +104,8 @@ class ManifestTrace:
     party_totals_left_out: tuple[dict[str, object], ...] = ()
     # The group totals `options.without_party_totals` left out of a version's frame, attached by
     # `datasets_api.serve` (`datasets_api.party_totals.PartyTotalsCut.trace_entries`): one
-    # `role` and its `entities` in dcid order per open party role that lost rows. Omitted from
-    # `to_dict()` when empty.
+    # `role`, `provenance` (null for rows with none) and its `entities` in dcid order per open
+    # party role and provenance that lost rows. Omitted from `to_dict()` when empty.
 
     def to_dict(self) -> dict[str, object]:
         """Returns the wire shape. Optional fields are omitted when `None`.

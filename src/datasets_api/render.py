@@ -241,6 +241,11 @@ _STAT_VAR_REF_PREFIX = "dcid:"
 family ref a collapse to a frame mints when more than one member contributed
 rows."""
 
+_COLUMN_TYPES: Mapping[str, str] = {"value": "number"}
+"""The column types every rendering fixes (`Rendering.column_types`). The grammar types `value`
+as float64 in every frame (`canonical_frame_schema`), so a file with no rows types it as a file
+with rows does."""
+
 _STATUS_COLUMN = "status"
 """`Frame.build` reserves `status`. `_full_collapse_frame` strips it before rebuilding. The local
 constant avoids importing the grammar package for one name."""
@@ -2753,7 +2758,7 @@ def render_and_store(
         datasets=provenance_refs,
     )
     with phase("render"):
-        rendering = Rendering()
+        rendering = Rendering(column_types=_COLUMN_TYPES)
         long_output = options.pivot is None and options.layout is None
         grain = _frame_period_grain(frame_chunks) if long_output else None
         streamed = _reshape_stream(

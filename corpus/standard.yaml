@@ -2000,6 +2000,30 @@
       operations: []
       reason: entity_role_not_admitted
       category: unresolved
+- id: ent-congo-ambiguous
+  query: aid to Congo
+  why: '"Congo" names the Democratic Republic of the Congo and the Republic of the Congo, so the refusal offers both and binds neither.'
+  tags: {theme: aid, entity: country, direction: destination_only, time: none, operation: none, door: raw_text}
+  expect:
+    no_data: {reason: entity_ambiguous, category: unresolved}
+- id: ent-demonym-german-aid
+  query: German aid to Kenya
+  why: The demonym "German" names Germany as the donor, which extraction reads as the place the resolver holds.
+  tags: {theme: aid, entity: two_roles, direction: both, time: none, operation: none, door: raw_text}
+  # Known failure: the binder's reply leaves dac2aAidType out, and a slot left out is not read as open, so the total ODA default does not bind.
+  known_failure: {issue: 99, checks: [measure]}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+- id: ent-abbreviation-uk-aid
+  query: aid from the UK to Kenya
+  why: The abbreviation "UK" names the United Kingdom as the donor, which the resolver holds under its own words.
+  tags: {theme: aid, entity: two_roles, direction: both, time: none, operation: none, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
 - id: ent-04
   query: ODA from the World Bank
   slice: holdout
@@ -3936,6 +3960,36 @@
   expect:
     definite:
       entities: [{dcid: country/KEN, role: destination}]
+- id: whole-total-raw-kenya-each-donor-lists-donors
+  query: ODA to Kenya from each donor, 2020 to 2024
+  why: '"From each donor" asks for one series per donor, so the donor side opens as open_roles does and binds no total.'
+  tags: {theme: aid, entity: country, direction: destination_only, time: range, operation: none, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2020, end: 2024}
+      operations: []
+- id: whole-total-raw-kenya-every-donor-lists-donors
+  query: ODA to Kenya from every donor in 2022
+  why: '"Every donor" on the raw-text door asks for one series per donor, so the donor side opens and binds no whole total set.'
+  tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+      operations: []
+- id: whole-total-raw-kenya-by-donor-lists-donors
+  query: ODA to Kenya by donor in 2022
+  why: '"By donor" is a breakdown and no ranking, so the donor side opens, binds no total and carries no rank operation.'
+  tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+      operations: []
 - id: whole-total-crs-sectors-kenya-keeps-providers
   query: 'parsed: official development assistance by sector, to Kenya, rank over category, 2015 to 2022'
   door: parsed

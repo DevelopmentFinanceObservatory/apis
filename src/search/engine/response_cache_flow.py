@@ -67,6 +67,7 @@ from search.models import (
     ResolveRequest,
     ResolveResponse,
     ResubmitIdentityPayload,
+    RoleAxis,
     SourceMention,
     Warning,
 )
@@ -397,6 +398,7 @@ class CacheScope:
         separate: Sequence[bool] = (),
         extraction_warnings: Sequence[Warning] = (),
         measure_qualifiers: Sequence[tuple[str, ...]] = (),
+        open_axes: Sequence[frozenset[RoleAxis]] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
@@ -408,7 +410,8 @@ class CacheScope:
         (`ExtractionResult.unit_texts`). `separate` runs parallel to
         `variables` and marks each one the raw query compares with another.
         `measure_qualifiers` runs parallel to `variables` and holds the words narrowing each
-        one's measure.
+        one's measure. `open_axes` runs parallel to `variables` and holds the flow roles each
+        one asks one value per member of.
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
         serves as stored. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
@@ -454,6 +457,7 @@ class CacheScope:
             separate=separate,
             extraction_warnings=extraction_warnings,
             measure_qualifiers=measure_qualifiers,
+            open_axes=open_axes,
         )
         self._layer2_key = key
         value, self._layer2_lease = await self._acquire(key)

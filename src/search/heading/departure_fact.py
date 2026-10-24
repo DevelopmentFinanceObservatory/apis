@@ -67,6 +67,9 @@ class DepartureFact:
       dataset holds on the side (`EntityGroup.side_classes`).
     - `inferred` (`whole_total_read`): the request named nothing on the side, so the answer
       read it whole. False on a door that holds no words of the request (a resubmit).
+    - `members_in_words` (`whole_total_read`): the part's door asks for a side's members in
+      the question's words ("for each donor"), as the raw-text door does, where the other doors
+      post `open_roles`.
     - `shown`, `over` and `whole_of` (`whole_total_unpublished`): the name of the dataset
       that publishes no total of the whole population the request named, the side it
       leaves unnamed, and the classes of party the dataset holds there; `asked` is the
@@ -122,6 +125,7 @@ class DepartureFact:
     whole_of: tuple[PartyClass, ...] = ()
     side_classes: tuple[PartyClass, ...] = ()
     inferred: bool = False
+    members_in_words: bool = False
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None
     readings: bool = False

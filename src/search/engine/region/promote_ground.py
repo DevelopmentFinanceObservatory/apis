@@ -532,7 +532,9 @@ def _ground_and_build_spec(
     state.served_filter = _served_filter
     state.served_members = tuple(_served_members)
     # Share role-axis facts between the Spec and entity-option builder.
-    _role_axis_facts = role_axis_facts_for_materialised(mat_result, shape=state.shape_draft)
+    _role_axis_facts = role_axis_facts_for_materialised(
+        mat_result, shape=state.shape_draft, plan=state.narrowed_plan
+    )
     state.role_axis_facts = tuple(_role_axis_facts)
     state.bound_facet_axes = dict.fromkeys(
         bound_facet_axes(slots, state.inp.identity.facets), "bound"

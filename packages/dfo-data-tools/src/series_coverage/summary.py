@@ -16,7 +16,7 @@ does not carry, so `VariableSummary.party_counts` takes it at read time.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -24,7 +24,7 @@ from typing import cast
 import numpy as np
 import pyarrow as pa
 
-from code_index.types import PartyRow
+from code_index.types import PartyKind, PartyRow
 from series_coverage.coverage_types import Role
 from series_coverage.schema import (
     ABSENT_ENTITY,
@@ -39,6 +39,9 @@ from series_coverage.schema import (
 )
 
 _NO_METADATA = FacetMetadata()
+_KIND_PRECEDENCE: tuple[PartyKind, ...] = ("party", "residual", "total")
+"""The kind a party counts under when it takes several across datasets: a kind with figures of
+its own before one holding other parties' figures."""
 _ROLE_COLUMNS: dict[Role, str] = {"donor": DONOR_COLUMN, "recipient": RECIPIENT_COLUMN}
 
 
@@ -51,7 +54,11 @@ class PartyCounts:
     `totals` parties that hold other parties' figures ("Africa, Total"; a whole total such as
     "Official Donors, Total" is one), and `residual` parties holding figures no other party
     does ("Africa, unallocated by country"). `unclassified` counts parties the code index
-    does not list.
+    does not list. Each party counts once, under the first of `party`, `residual` and `total`
+    it takes in the datasets of the facets that hold it (`PartyRow.kinds_over`, every dataset
+    that publishes it for a facet with no provenance), so the kinds sum to the distinct parties.
+    One that is a total in DAC2A and a party in the CRS has figures of its own in the CRS and
+    counts in `parties` across both.
     """
 
     parties: int = 0
@@ -117,29 +124,45 @@ class VariableSummary:
     ) -> dict[Role, PartyCounts]:
         """The distinct parties of each declared role across `facet_ids` (every facet when
         `None`), split by kind through `parties`, the code index's party rows
-        (`CodeIndex.parties`). A party sits in several facets counts once.
+        (`CodeIndex.parties`), each read for the provenances of the facets that hold it. A party
+        that sits in several facets counts once, under the kind `PartyCounts` names for it.
         """
         selected = [
             facet for facet in self.facets if facet_ids is None or facet.facet_id in facet_ids
         ]
-        roles = {role for facet in selected for role in facet.parties}
-        return {
-            role: _split_by_kind(
-                frozenset().union(*(facet.parties.get(role, frozenset()) for facet in selected)),
-                parties,
-            )
-            for role in sorted(roles)
-        }
+        roles = sorted({role for facet in selected for role in facet.parties})
+        held: dict[Role, dict[str, set[str]]] = {role: defaultdict(set) for role in roles}
+        for facet in selected:
+            provenance = facet.metadata.provenance_id
+            for role, dcids in facet.parties.items():
+                for dcid in dcids:
+                    datasets = held[role][dcid]
+                    if provenance is not None:
+                        datasets.add(provenance)
+        return {role: _split_by_kind(held[role], parties) for role in roles}
 
 
-def _split_by_kind(dcids: frozenset[str], parties: Mapping[str, PartyRow]) -> PartyCounts:
-    rows = [parties.get(dcid) for dcid in dcids]
-    kinds = Counter(row.kind if row else None for row in rows)
+def _split_by_kind(
+    held: Mapping[str, Collection[str]], parties: Mapping[str, PartyRow]
+) -> PartyCounts:
+    """`held`'s parties, each mapped to the provenances of the facets holding it, counted once
+    under the first kind of `_KIND_PRECEDENCE` it takes there. A party counted as a `party` is
+    private when its class as a `party` is (`PartyRow.class_of`)."""
+    kinds: Counter[PartyKind | None] = Counter()
+    private = 0
+    for dcid, datasets in held.items():
+        row = parties.get(dcid)
+        if row is None:
+            kinds[None] += 1
+            continue
+        taken = row.kinds_over(datasets)
+        kind = next(kind for kind in _KIND_PRECEDENCE if kind in taken)
+        kinds[kind] += 1
+        if kind == "party" and row.class_of(kind) == "private":
+            private += 1
     return PartyCounts(
         parties=kinds["party"],
-        private=sum(
-            1 for row in rows if row and row.kind == "party" and row.party_class == "private"
-        ),
+        private=private,
         totals=kinds["total"],
         residual=kinds["residual"],
         unclassified=kinds[None],

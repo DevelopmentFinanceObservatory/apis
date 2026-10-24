@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
 
-from code_index.types import WholeMarker
+from code_index.types import PartyRow, WholeMarker
+from dfo_platform.roles import RoleAxis
 from scripts.export_graph_entities import export_entities, merge_records
 
 
@@ -65,16 +67,19 @@ def test_merge_fails_loudly_when_the_pin_no_longer_holds(records):
 
 def _party(
     *,
-    axes: tuple[str, ...],
+    axes: tuple[RoleAxis, ...],
     totals: str | None = None,
     label: str = "total",
     whole: tuple[WholeMarker, ...] = (),
 ):
-    return SimpleNamespace(kind="total", axes=axes, totals=totals, label=label, whole=whole)
+    """A total's index row; `_index` gives it the dcid it is keyed by."""
+    return PartyRow(dcid="", kind="total", axes=axes, totals=totals, label=label, whole=whole)
 
 
-def _index(**parties):
-    return SimpleNamespace(parties=parties)
+def _index(**parties: PartyRow):
+    return SimpleNamespace(
+        parties={dcid: dataclasses.replace(row, dcid=dcid) for dcid, row in parties.items()}
+    )
 
 
 class _Reader:
