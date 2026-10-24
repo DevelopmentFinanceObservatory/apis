@@ -459,12 +459,14 @@ def _settle_direction(
         state.capped_shapes.append(shape)
     # Binding repair settled the bindings under no role keys, so each whole total the
     # served direction offers is judged under them, in the order offered
-    # (`place_roles.whole_total_candidates`).
+    # (`place_roles.whole_total_candidates`). A claim selects no series until the walk
+    # confirms it, so the total is judged on the claim-free bindings.
+    held_bindings = without_sampled_claims(state.bindings)
     return next(
         (
             whole
             for whole in whole_total_candidates(state, shape, served)
-            if holds_whole_total(state, shape, whole, state.bindings)
+            if holds_whole_total(state, shape, whole, held_bindings)
         ),
         served,
     )
@@ -1179,7 +1181,11 @@ def _walk_assignment(
             stray_values=_strays_by_property(state),
             bindings=state.breakdown_rivals.get(index),
         )
-        if settled is not None and holds_whole_total(state, settled.shape, whole, settled.bindings):
+        # A breakdown copy's bindings keep the elected shape's sampled claims, which select no
+        # series until the walk confirms them.
+        if settled is not None and holds_whole_total(
+            state, settled.shape, whole, without_sampled_claims(settled.bindings)
+        ):
             return whole
     return placed
 
