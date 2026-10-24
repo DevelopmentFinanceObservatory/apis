@@ -47,6 +47,7 @@ from search.engine.region.phase_rank_bind import (
     _menu_choices,
     _open_breakdown_slots,
     _open_operation_slots,
+    _query_records,
     _resolve_query_qualifiers,
     _shape_qualifiers,
     _unchosen_matches,
@@ -751,18 +752,21 @@ def narrowed_to_breakdown(shape: ShapeDraft, properties: frozenset[str]) -> Shap
     )
 
 
-def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:
+async def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:
     """Settle the dataset the part is served from under its final bindings
     (`ResolveState.bindings`), or return the refusal of a part no table serves.
 
     An unbinding at materialise can leave bindings that select another table than the one
     binding repair named, so the rule runs again there (`_served`), on the bindings every
     identity of the part is minted from. A part none of whose tables holds a row for the
-    bindings together refuses (`_unserved_refusal`).
+    bindings together refuses (`_unserved_refusal`), with stated-word coverage judged first
+    (`judge_coverage`). No read has served a member, so the judgement reads the shape's
+    named members, and each term the judgement records is named or departs.
     """
     try:
         shape, state.bindings = _served(state, state.shape_draft, state.bindings, role_keys)
     except PartNotServed:
+        await judge_coverage(state)
         return _unserved_refusal(state)
     _install_served_shape(state, shape)
     return None
@@ -827,9 +831,10 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     the bindings under them (`_bind_query_places`): the measure election, the shape's slot
     defaults, the named-member and partition binds, the canonical pins, the slots the
     identity carries (`standard.breakdown_decision`), and the dataset the part is served
-    from, where a part no table serves refuses ``qualifier_not_bound``. The binder then
-    rates the words the coverage rule leaves unrated on the shape and bindings so settled
-    (`_rate_unread_words`), and the query qualifiers resolve against the final bindings.
+    from, where a part no table serves refuses ``qualifier_not_bound``. The query records
+    the coverage rule reads as recorded (`_query_records`) are then kept, so an unbinding
+    reads the terms that name its values (`unrealisable._asked_terms`). Stated-word
+    coverage is judged once the pass reaches its answer (`judge_coverage`).
     """
     bindings: list[SlotBindingDraft] = list(state.bind_result.bindings)
     state.bindings = bindings
@@ -955,25 +960,40 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     if refused is not None:
         return refused
 
-    # Resolve query qualifiers against the final bindings, each one no binding covers a
-    # requirement (`requirements.record_reading`). In "refuse" coverage mode a word of the
-    # variable no reader covers is a record and the part refuses on it. In log mode the
-    # record is kept once here, outside `unrealisable.unbind_unrealisable`'s re-read, for
-    # the line the pass logs when it ends (`log_would_refuse`), and a word of a qualifier
-    # term the elected shape's own reading leaves unread is a term no answer is judged on
-    # (`_unread_qualifier_phrases`). In refuse mode a record already
-    # covers that word. In log mode a term of a part naming no dataset that names only codes
-    # no shape can bind is withheld (`_withheld_qualifiers`), kept here alike, and is a
-    # term no answer is judged on, whatever its property. Each value the request names by
-    # its graph label is recorded once as a requirement (`value_requirements`) in refuse
-    # mode, and in log mode the elected answer's unmet ones are kept by the same
-    # rule (`judge_value_requirements`). Each value the bind drafted on a slot the elected
-    # shape lacks is a requirement judged by the same rule, which bind recorded
-    # (`phase_rank_bind._stray_requirements`), so its query record adds none. Every
-    # requirement departs only if the final answer leaves it unapplied
-    # (`requirements.with_requirement_departures`). The coverage rule reads a word beside
-    # no code as unread only on the binder's rating, read first (`record_coverage`).
-    await record_coverage(state)
+    # The records no rating reads stand until the coverage judgement replaces them
+    # (`judge_coverage`), so an unbinding before it reads the terms naming its values.
+    record_reading(state, _query_records(state))
+    return None
+
+
+async def judge_coverage(state: ResolveState) -> None:
+    """Judge stated-word coverage on the elected shape over the final bindings, once per
+    pass, before its answer is first judged. That is once the read serves members, or on a
+    refusal returned before it (`pipeline._run_phases`, `phase_shared._elected_flagged_match`).
+    The coverage rule reads the members the read served (`served_member_names`), so the
+    lexical readers, the binder's rating and the answer describe one list.
+
+    The binder rates the words the rule leaves unrated (`_rate_unread_words`) and the query
+    records over both replace those binding repair kept (`requirements.record_reading`).
+    In "refuse" coverage mode a word of the variable no reader covers is a record and the
+    part refuses on it. In log mode the records are kept for the line the pass logs when it
+    ends (`log_would_refuse`), and a word of a qualifier term the elected shape's own
+    reading leaves unread is a term no answer is judged on (`_unread_qualifier_phrases`).
+    In refuse mode a record already covers that word. In log mode a term of a part naming
+    no dataset that names only codes no shape can bind is withheld (`_withheld_qualifiers`),
+    kept here alike, and is a term no answer is judged on, whatever its property. Each value
+    the request names by its graph label is recorded once as a requirement
+    (`value_requirements`) in refuse mode, and in log mode the elected answer's unmet ones
+    are kept by the same rule (`judge_value_requirements`). Each value the bind drafted on
+    a slot the elected shape lacks is a requirement judged by the same rule, which bind
+    recorded (`phase_rank_bind._stray_requirements`), so its query record adds none. Every
+    requirement departs only if the final answer leaves it unapplied
+    (`requirements.with_requirement_departures`)."""
+    if state.coverage_judged:
+        return
+    state.coverage_judged = True
+    await _rate_unread_words(state)
+    record_reading(state, _resolve_query_qualifiers(state))
     withheld = _withheld_qualifiers(state)
     log_mode = settings().qualifier_coverage == "log"
     recorded = (*state.query_qualifiers, *withheld)
@@ -1009,39 +1029,29 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     for phrase in _unread_qualifier_phrases(state, withheld):
         state.require_unapplied(phrase, asked=phrase, property_dcid=None, origin="bind")
 
-    return None
-
-
-async def record_coverage(state: ResolveState) -> None:
-    """Rate the words the coverage rule leaves unrated on the elected shape over the final
-    bindings (`_rate_unread_words`), then record the query records over both
-    (`requirements.record_reading`). Binding repair and each unbinding at materialise
-    (`phase_place_materialise._unbind`) record by it, so every reading of the rule rests on
-    ratings of the shape and bindings it reads."""
-    await _rate_unread_words(state)
-    record_reading(state, _resolve_query_qualifiers(state))
-
 
 async def _rate_unread_words(state: ResolveState) -> None:
     """Keep the binder's rating of each word the coverage rule leaves unrated on the
     elected shape over the final bindings (`_unrated_words`) as
-    `ResolveState.stated_word_ratings`, with the read's usage added to the part's. Ratings
-    of an earlier shape or bindings are dropped first, so each word is rated on the series
-    the answer reads, and the binder is asked only when such a word remains. A read that fails
+    `ResolveState.stated_word_ratings`, with the read's usage added to the part's. The
+    binder is asked only when such a word remains. A read that fails
     (`LLMInfraError`) rates no word, so each counts as stated, and is noted as lost
     (`note_degraded_read`), so the response cache stores no answer read without it. A read
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
-    for the word or answering it both ways. The request names the members the answer serves
-    when it serves more than one name (`served_member_names`), a member with no name by its
-    dcid, so a word one of them states and another does not reads as narrower than the
-    answer."""
-    state.stated_word_ratings = {}
+    for the word or answering it both ways. The request names every member the read served
+    (`served_member_names`), and the binder rates the words on them wherever they differ
+    from the shape's label (`stated_words_read.serves_beyond_label`), so a word one of them
+    does not state reads as narrower than the answer. Where a served member has no name,
+    the request names none and the bind's rating on the label stands, as the coverage rule
+    then reads the named members' words (`phase_rank_bind._member_measure_words`)."""
     words = _unrated_words(state)
     if not words:
         return
     shape = state.shape_draft
-    served = tuple(dict.fromkeys(name or dcid for dcid, name in served_member_names(state).items()))
+    names = list(served_member_names(state).values())
+    named = [name for name in names if name is not None]
+    served = tuple(dict.fromkeys(named)) if len(named) == len(names) else ()
     request = StatedWordsRequest(
         variable=state.variable,
         shape=shape,
@@ -1056,7 +1066,7 @@ async def _rate_unread_words(state: ResolveState) -> None:
         words=words,
         bindings=tuple(state.bindings),
         decision=state.bind_decision,
-        served=served if len(served) > 1 else (),
+        served=served,
         part=state.variable_index,
         pool=state.pool,
     )

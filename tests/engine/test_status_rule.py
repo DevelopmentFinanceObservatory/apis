@@ -35,7 +35,7 @@ from search.engine.region.status_rule import (
     plan_status,
 )
 from search.engine.shape import ShapeDraft
-from search.engine.stated_words_read import StatedWordsOutput
+from search.engine.stated_words_read import StatedWord, StatedWordsOutput
 from search.models import TimeWindow
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
@@ -853,6 +853,84 @@ def test_both_directions_with_data_offer_a_direction_candidate(scores, confidenc
 def test_no_direction_with_data_refuses_the_unstated_direction():
     result = _income_of_norway()
     assert (result.status, result.no_data_reason) == ("no_data", "role_not_resolved")
+
+
+_KEN = scenarios._KEN
+_ASSISTANCE_GIVEN = "Amount_EconomicActivity_Assistance_GivenScenario"
+_REFUGEE_ASSISTANCE = "Amount_EconomicActivity_RefugeeAssistance_ReceivedScenario"
+
+
+class _RejectWordsBind(scenarios._Bind):
+    """`scenarios._Bind` whose stated-words read rates every word not stated, counting its
+    calls."""
+
+    word_calls = 0
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            type(self).word_calls += 1
+            return StatedWordsOutput(
+                words=[StatedWord(index=i, stated=False) for i in range(20)]
+            ), None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+def test_a_direction_settled_after_the_bind_judges_the_words_on_the_member_it_serves(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "refugee assistance Kenya" over one shape whose members serve each direction:
+    "Assistance given" a place provides and "Refugee assistance received" a place
+    receives. Kenya is named without a direction, and only the assistance it receives has
+    data, so the direction settles on the recipient after the bind. The words are judged on
+    the member the read served, whose name states "refugee", so the binder is never asked
+    and the answer stands, as it does when the question names the direction."""
+    monkeypatch.setattr(
+        scenarios,
+        "_NODES",
+        {
+            **scenarios._NODES,
+            **{
+                dcid: scenarios._sv(
+                    name,
+                    {
+                        **scenarios._income_arcs("Nominal", _INCOME, (role,)),
+                        "name": {"nodes": [{"value": name}]},
+                    },
+                )
+                for dcid, name, role in (
+                    (_ASSISTANCE_GIVEN, "Assistance given", "financingProvider"),
+                    (_REFUGEE_ASSISTANCE, "Refugee assistance received", "financingRecipient"),
+                )
+            },
+        },
+    )
+    monkeypatch.setattr(
+        scenarios,
+        "_ROLE_NAMES",
+        {
+            **scenarios._ROLE_NAMES,
+            _ASSISTANCE_GIVEN: RoleNames(donor="financingProvider", recipient=None),
+            _REFUGEE_ASSISTANCE: RoleNames(donor=None, recipient="financingRecipient"),
+        },
+    )
+    monkeypatch.setattr(scenarios, "_Bind", _RejectWordsBind)
+    monkeypatch.setattr(_RejectWordsBind, "word_calls", 0)
+
+    result = scenarios._resolve(
+        scenarios._Scenario(
+            query="refugee assistance Kenya",
+            entities=("Kenya",),
+            svs=(_ASSISTANCE_GIVEN, _REFUGEE_ASSISTANCE),
+            scores=(0.85, 0.84),
+            coverage_rows=((_REFUGEE_ASSISTANCE, "f_received", "", _KEN, [2020, 2021, 2022]),),
+        )
+    )
+
+    assert result.status == "definite"
+    assert [sv.ref.ref for spec in result.specs for sv in spec.resolved.members] == [
+        _REFUGEE_ASSISTANCE
+    ]
+    assert _RejectWordsBind.word_calls == 0
 
 
 _ADJUSTED_PAID = "AdjustedAmount_EconomicActivity_GrossNationalIncome_PaidScenario"

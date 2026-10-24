@@ -10,21 +10,27 @@ presence read (`place.read_default_presence`): data anywhere in that scope. A ro
 reading with no place leaves D unknown, and its own read decides.
 
 Derive reads the named countries for every recalled StatVar (`ShapeDraft.place_available`),
-so a part naming only countries makes no further read. A part naming a set makes one more
-at every place the part names (`read_menu_availability`), over the menu's subject-only
+so a part naming only countries makes no further read for D. A part naming a set makes one
+more at every place the part names (`read_menu_availability`), over the menu's subject-only
 StatVars. That read covers every member of every set: a sample can show data present but
 never absent. The request deadline and a response byte cap bound it.
 Each read stamps the places it covered on the shape (`ShapeDraft.availability_places`), and
 a read that found no data settles D as absent only when it covered every place the part
 names (`asked_places`). A failed read, a slow or oversized one among them, leaves D unknown,
 which is no evidence either way, and so does a read of fewer places than the part names.
+
+One more read settles no D. Where `max_candidates` cuts the breakdowns of a family with no
+total, the family's members recall did not return are read at the shape's
+`availability_places`, countries alone included, so the cut ranks each breakdown by its
+data in the years asked for (`phase_place_materialise._breakdown_coverage`). That read
+stamps nothing on the shape, and a part naming no place makes none.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Protocol
 
 from materialise.place_scope import DefaultPresence
@@ -104,32 +110,11 @@ def read_menu_availability(
     stat_vars = list(dict.fromkeys(sv for shape in subject for sv in (shape.sv_arc_facts or {})))
     if not stat_vars or not places:
         return list(shapes), False
-    try:
-        probe = graph.observation_facets_batch(
-            stat_vars,
-            list(places),
-            False,
-            max_bytes=settings().sdmx_max_bytes,
-            deadline=deadline,
-        )
-    except Exception:
-        logger.warning(
-            "availability read failed for %d menu shape(s) at %d place(s); their "
-            "availability stays unknown",
-            len(subject),
-            len(places),
-            exc_info=True,
-        )
-        note_degraded_read("menu availability")
+    coverage = read_coverage(
+        stat_vars, graph=graph, places=places, deadline=deadline, read="menu availability"
+    )
+    if coverage is None:
         return list(shapes), True
-    coverage: dict[str, ReadingCoverage] = {
-        sv: {
-            place: years
-            for place, facets in by_place.items()
-            if (years := observed_years(facets)) is not None
-        }
-        for sv, by_place in probe.items()
-    }
     read: list[ShapeDraft] = []
     for shape in shapes:
         if is_role_bearing(shape):
@@ -142,6 +127,47 @@ def read_menu_availability(
             )
         )
     return read, False
+
+
+def read_coverage(
+    stat_vars: Sequence[str],
+    *,
+    graph: EngineGraphClient,
+    places: Sequence[str],
+    deadline: float | None,
+    read: str,
+) -> dict[str, ReadingCoverage] | None:
+    """The places among `places` at which each of `stat_vars` has observations, each with
+    the years its facets there hold (`reading_coverage.observed_years`), from one batched
+    facet read bounded by `deadline` and the response byte cap (`sdmx_max_bytes`). `None`
+    when the read fails, a slow or oversized one among them, noted as the lost `read`
+    (`degraded_reads.note_degraded_read`)."""
+    try:
+        probe = graph.observation_facets_batch(
+            list(stat_vars),
+            list(places),
+            False,
+            max_bytes=settings().sdmx_max_bytes,
+            deadline=deadline,
+        )
+    except Exception:
+        logger.warning(
+            "%s read failed for %d StatVar(s) at %d place(s); their availability stays unknown",
+            read,
+            len(stat_vars),
+            len(places),
+            exc_info=True,
+        )
+        note_degraded_read(read)
+        return None
+    return {
+        sv: {
+            place: years
+            for place, facets in by_place.items()
+            if (years := observed_years(facets)) is not None
+        }
+        for sv, by_place in probe.items()
+    }
 
 
 class SeriesReader(Protocol):
@@ -205,44 +231,6 @@ def _subject_has_data(
     if window is None or coverage is None or _in_window(coverage, window):
         return True
     return False if covered else None
-
-
-def member_has_data_where_asked(
-    state: ResolveState, shape: ShapeDraft
-) -> Callable[[str], bool | None]:
-    """D for each member of a subject-only `shape`, by the reads D reads for the shape: at
-    the places the part names, whether the member holds data at a place the read covered,
-    inside the requested years when the read states them (`_subject_has_data`), and on a
-    part naming no place, whether its default scope holds a place, known only with no
-    years requested (`_default_scope_has_data`). A member no read covered, and a read that
-    found nothing without covering every place the part names, leave D unknown."""
-    window = requested_window(state.date_request)
-    if not names_a_place(state):
-        presence = state.default_presence
-
-        def in_scope(sv: str) -> bool | None:
-            if presence is None or sv not in presence.scopes:
-                return None
-            if not presence.scopes[sv].places:
-                return False
-            return True if window is None else None
-
-        return in_scope
-    coverage = (
-        shape.named_place_coverage
-        if shape.named_place_coverage is not None
-        else shape.member_coverage
-    )
-    covered = shape.availability_places.issuperset(asked_places(state.place_sets))
-
-    def at_places(sv: str) -> bool | None:
-        if coverage is None or sv not in coverage:
-            return None
-        if holds_in(coverage[sv], window):
-            return True
-        return False if covered else None
-
-    return at_places
 
 
 def _default_scope_has_data(shape: ShapeDraft, presence: DefaultPresence | None) -> bool | None:

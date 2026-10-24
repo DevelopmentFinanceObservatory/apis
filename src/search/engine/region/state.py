@@ -1031,21 +1031,12 @@ class ResolveState:
     # The binder's rating of each casefolded word the coverage rule leaves unrated on the
     # elected shape over the final bindings: the probability that the shape's series states
     # what the word names (`phase_election._rate_unread_words`). The rule reads a word
-    # rated below `SearchSettings.stated_word_bar` as unread. Empty until the bindings
-    # settle, and for a read that failed.
+    # rated below `SearchSettings.stated_word_bar` as unread. Empty until the pass judges
+    # coverage, and for a read that failed.
     stated_word_ratings: Mapping[str, float] = field(default_factory=dict)
-    # The names of the members the answer can serve (`phase_rank_bind.served_member_names`),
-    # None for a member with no name, with the shape, bindings and place assignment they
-    # were read for. `None` until the coverage rule first reads them.
-    served_member_memo: (
-        tuple[
-            ShapeDraft,
-            tuple[SlotBindingDraft, ...],
-            PlaceAssignment | PlaceRoleRefusal | None,
-            dict[str, str | None],
-        ]
-        | None
-    ) = None
+    # Whether the pass judged stated-word coverage (`phase_election.judge_coverage`), which
+    # it does once.
+    coverage_judged: bool = False
     # Every term the request names that each final answer is judged against
     # (`Requirement`), in the order recorded.
     requirements: tuple[Requirement, ...] = ()

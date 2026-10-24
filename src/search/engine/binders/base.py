@@ -148,8 +148,9 @@ class StatedWordsRequest:
     phrase, the elected shape and its index in the bind menu (None for a refused reading
     standing in for a declined menu), the casefolded words, each among the shape's
     `BindRequest.nominated_words`, the final bindings, and the bind call's result. `served`
-    names the members the answer serves (`phase_rank_bind.served_member_names`) when it
-    serves more than one name, and is empty otherwise. `part` and `pool` join a binder's log
+    names the members the read served (`phase_rank_bind.served_member_names`), and is
+    empty before a read; the binder names them only when they differ from the shape's
+    label (`stated_words_read.serves_beyond_label`). `part` and `pool` join a binder's log
     lines to the part's, as on `QuantityRequest`."""
 
     variable: str

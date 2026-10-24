@@ -114,7 +114,6 @@ from search.engine.region.alternate_guard import (
 )
 from search.engine.region.availability import (
     has_data_where_asked,
-    member_has_data_where_asked,
     menu_read_places,
     read_menu_availability,
     series_at_places,
@@ -123,7 +122,6 @@ from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BIN
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.grounding import _shape_with_taxonomy
 from search.engine.region.place_roles import (
-    PlaceAssignment,
     bind_place_roles,
     held_party_words,
     names_a_place,
@@ -154,7 +152,6 @@ from search.engine.region.state import (
 )
 from search.engine.retrieval.bound_values import (
     DefaultReading,
-    RoleKeys,
     applies_one_of,
     applies_value,
     bound_realizable_members,
@@ -180,7 +177,7 @@ from search.engine.retrieval.bound_values import (
     shape_population_arcs,
 )
 from search.engine.retrieval.facts import read_constraints, read_five_tuple, read_name
-from search.engine.retrieval.standard import members_served
+from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.role_text import role_axis_for_text
 from search.engine.shape import (
     ShapeDraft,
@@ -2894,18 +2891,19 @@ def _coverage_records(
     final bindings apply that no span of the reading and no menu choice names
     (`_unnamed_bound_code_words`), so "private" in "private grants" is read when the
     answer binds flow type 30, "private development finance", the words naming the
-    shape's measure in its members' names (`_member_measure_words`), so "refugees" is read
-    on a series named "Refugee population", on a shape measuring a count
-    (`shape.measures_count`) the nouns for what it counts (`COUNT_WORDS`), so "number" is
-    read on "Refugees, by host country", on one counting persons (`shape.counts_persons`)
-    the nouns for people (`PERSON_WORDS`), so "population" is read on "Number of refugees,
-    by host country" and "people" is left for the binder on a count of households, and a
-    noun naming a role on an axis the shape declares (`role_text.role_axis_for_text`), so
-    "creditors" is read on debt by creditor. The form wording (`_form_ranges`: "rate", "share",
-    "percent", "per capita") and the question's words for the denominator the quantity
-    read names (`NamedDenominator.base_words`) are read, since the materialise gate holds
-    the elected shape to both (`quantity.serves_quantity`) and states a denominator it
-    cannot verify (`denominator_unverified`). So are the words of each value the bind
+    shape's measure in the names of the members the read served (`_member_measure_words`),
+    so "refugees" is read on a series named "Refugee population", on a shape measuring a
+    count (`shape.measures_count`) the nouns for what it counts (`COUNT_WORDS`), so
+    "number" is read on "Refugees, by host country", on one counting persons
+    (`shape.counts_persons`) the nouns for people (`PERSON_WORDS`), so "population" is read
+    on "Number of refugees, by host country" and "people" is left for the binder on a
+    count of households, and a noun naming a role on an axis the shape declares
+    (`role_text.role_axis_for_text`), so "creditors" is read on debt by creditor. The form
+    wording (`_form_ranges`: "rate", "share", "percent", "per capita") and the question's
+    words for the denominator the quantity read names (`NamedDenominator.base_words`) are
+    read, since the materialise gate holds the elected shape to both
+    (`quantity.serves_quantity`) and states a denominator it cannot verify
+    (`denominator_unverified`). So are the words of each value the bind
     drafted on a slot the shape lacks, which each answer is judged on
     (`ResolveState.stray_requirements`), and the phrase of each slot the final bindings open
     (``requested_all``, the bind's claim or `_open_operation_slots` and
@@ -3244,18 +3242,18 @@ def _form_ranges(variable: str, tokens: Sequence[Token]) -> list[tuple[int, int]
 
 
 def _member_measure_words(state: ResolveState) -> frozenset[str] | None:
-    """The words that name the elected shape's measure in the names of the members the
-    answer serves over the bindings (`_label_words`), so "refugees" is among the words of
-    "Refugee population". The members are those `served_member_names` reads: "GDP" in
-    Brazil reads "Nominal gross domestic product", the one member of a family with no total
-    holding data there. A family's total answers before its breakdowns, so "refugee" in
-    "refugee population" is left for the binder on a family holding the total and a refugee
-    member, and a held family's total reads its name though recall found the refugee member
-    alone. The words are those every served member holds, which the words the answer reads
-    hold whichever of them it shows. When a served member has no name, as a code index row
-    recall did not return has none, or none is served, they are the words every named
-    member holds (`_shape_measure_words`), the fewest any name of the family reads, so the
-    named members alone clear no word. None when no member has a name."""
+    """The words that name the elected shape's measure in the names of the members the read
+    served (`_label_words`, `served_member_names`), so "refugees" is among the words of
+    "Refugee population", and "GDP" in Brazil reads "Nominal gross domestic product", the
+    one member of a family with no total holding data there. A family's total answers before
+    its breakdowns, so "refugee" in "refugee population" is left for the binder on a family
+    holding the total and a refugee member, and a held family's total reads its name though
+    recall found the refugee member alone. The words are those every served member holds,
+    so they stand whichever member the answer shows. When a served member
+    has no name, as a code index row recall did not return has none, or no read served
+    any, they are the words every named member holds (`_shape_measure_words`), the fewest
+    any name of the family reads, so the named members alone clear no word. None when no
+    member has a name."""
     shape = state.shape_draft
     if not _member_names(shape):
         return None
@@ -3266,31 +3264,16 @@ def _member_measure_words(state: ResolveState) -> frozenset[str] | None:
 
 
 def served_member_names(state: ResolveState) -> dict[str, str | None]:
-    """The name of each member the answer over the elected shape and the final bindings
-    can serve, None for a member with no name, by dcid in serving order: the members
-    `standard.members_served` gives by the rule the resolve serves by, read over the data
-    the part's availability reads found for each (`member_has_data_where_asked`). A member
-    no read covered is kept, so a failed read costs a rating and clears no word. The places
-    bind under the assignment place binding settled (`ResolveState.elected_place_roles`),
-    a direction among them, else under the one binding repair took
-    (`ResolveState.query_place_roles`). The members are read once for each shape, bindings
-    and assignment (`ResolveState.served_member_memo`), as every coverage reading and the
-    rating it asks for read them."""
-    shape, bindings = state.shape_draft, tuple(state.bindings)
-    assignment = state.elected_place_roles or state.query_place_roles
-    memo = state.served_member_memo
-    if memo is not None and memo[0] is shape and memo[1] == bindings and memo[2] is assignment:
-        return memo[3]
-    role_keys = assignment.role_keys if isinstance(assignment, PlaceAssignment) else RoleKeys()
-    arcs = shape_population_arcs(shape)
-    names = {
-        dcid: read_name(arcs.get(dcid, {}))
-        for dcid in members_served(
-            shape, bindings, role_keys, member_has_data_where_asked(state, shape)
-        )
-    }
-    state.served_member_memo = (shape, bindings, assignment, names)
-    return names
+    """The name of each member the elected shape's read served (`ResolveState.mat_result`),
+    None for a member with no name, by dcid in serving order: the members of a
+    `Materialised` answer, and the held or representative member a `NoDataDraft` carries.
+    Empty before the read, and for a result naming no member."""
+    result = state.mat_result
+    served = result.sv_dcids if isinstance(result, Materialised | NoDataDraft) else None
+    if not served:
+        return {}
+    arcs = shape_population_arcs(state.shape_draft)
+    return {dcid: read_name(arcs.get(dcid, {})) for dcid in served}
 
 
 def _label_words(label: str) -> frozenset[str]:
@@ -3833,8 +3816,8 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        covers beside a recognised code, each run ``unbound`` with evidence
        ``"uncovered"``, the words beside none that the binder rates unread, each stretch
        ``no_vocabulary`` with that evidence, and every other exclusion or comparison
-       phrase (`_coverage_records`). In log mode election vetting logs them instead
-       (`phase_election._repair_bindings`) and the answer reads without them.
+       phrase (`_coverage_records`). In log mode the coverage judgement logs them instead
+       (`phase_election.judge_coverage`) and the answer reads without them.
     10. Each value the bind drafted on a property the elected shape has no slot for and a
        recorded term supports (`ResolveState.stray_requirements`), ``unbound`` with
        evidence ``"model"``, in every coverage mode, unless a record above already names

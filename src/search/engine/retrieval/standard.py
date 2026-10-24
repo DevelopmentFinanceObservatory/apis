@@ -384,43 +384,6 @@ def default_scope_members(
     )
 
 
-def members_served(
-    shape: ShapeDraft,
-    bindings: Sequence[SlotBindingDraft],
-    role_keys: RoleKeys,
-    holds: Callable[[str], bool | None],
-) -> list[str]:
-    """The members an answer over `shape` under `bindings`, with its places bound under
-    `role_keys`, can serve, by the rule `standard_resolve` serves by, given whether each
-    member holds a point where and when the part asks (`holds`, None when no read settled
-    it). A set binding collects every kept member holding one, and so does a family with no
-    total (`_serving`), so nominal GDP alone answers "GDP" in Brazil among the gross value
-    added series no read finds there. Any other family answers by its first kept member
-    holding one, so the members are those in election order up to the first that does,
-    skipping each that holds none. With no member that may hold one, the answer names one
-    of the kept members, and they are all returned. A role-bearing shape serves the members
-    a role-bearing answer lists (`_served_under`). Empty when the bindings admit no
-    family."""
-    if is_role_bearing(shape):
-        return list(_served_under(shape, list(bindings), role_keys))
-    admitted = _admit_standard_members(shape, list(bindings), role_keys.bound)
-    if not isinstance(admitted, _AdmittedStandardMembers):
-        return []
-    answer = _answering(admitted, list(bindings))
-    if answer.multi_collect:
-        kept, every = list(answer.family.order), True
-    else:
-        kept, every = _serving(answer.family, admitted.member_facts)
-    served: list[str] = []
-    for sv in kept:
-        held = holds(sv)
-        if held is not False:
-            served.append(sv)
-        if held and not every:
-            break
-    return served or kept
-
-
 @dataclass(frozen=True)
 class _AdmittedStandardMembers:
     """The bound-value-filtered member population a standard-path resolve
@@ -796,15 +759,19 @@ class Narrow:
 
 @dataclass(frozen=True)
 class Candidates:
-    """The members break down by several `signatures`, or the slots the request opened
+    """The members break down by several signatures, or the slots the request opened
     leave no member and every member that asserts them all also asserts a slot it did not
-    open. Each signature is the set of unbound properties some member asserts, in member
-    order, and holds every opened slot, so each candidate carries the breakdown the
-    question named. Each candidate's identity carries the `bound` properties and one
-    signature."""
+    open. `members` maps each signature, the set of unbound properties some member asserts,
+    in member order, to the family's members asserting it, recalled or not. Each signature
+    holds every opened slot, so each candidate carries the breakdown the question named.
+    Each candidate's identity carries the `bound` properties and one signature."""
 
-    signatures: tuple[frozenset[str], ...]
+    members: Mapping[frozenset[str], tuple[str, ...]]
     bound: frozenset[str] = frozenset()
+
+    @property
+    def signatures(self) -> tuple[frozenset[str], ...]:
+        return tuple(self.members)
 
 
 type BreakdownDecision = Keep | Narrow | Candidates
@@ -841,13 +808,11 @@ def breakdown_decision(
     if admitted.family.totals:
         return Keep()
     bound = frozenset(admitted.bound_values)
-    signatures = tuple(
-        dict.fromkeys(
-            properties - bound
-            for sv in admitted.family.members
-            if (properties := asserted_constraint_properties(admitted.member_facts[sv])) is not None
-        )
-    )
+    by_signature: dict[frozenset[str], list[str]] = {}
+    for sv in admitted.family.members:
+        if (properties := asserted_constraint_properties(admitted.member_facts[sv])) is not None:
+            by_signature.setdefault(properties - bound, []).append(sv)
+    signatures = tuple(by_signature)
     if not signatures:
         return Keep()
     opened = frozenset(
@@ -858,7 +823,9 @@ def breakdown_decision(
     if opened:
         if any(signature <= opened for signature in signatures):
             return Narrow(bound | opened)
-        named = tuple(signature for signature in signatures if opened <= signature)
+        named = {
+            signature: tuple(svs) for signature, svs in by_signature.items() if opened <= signature
+        }
         if named:
             return Candidates(named, bound)
         return Keep(frozenset().union(*signatures) - opened)
@@ -866,7 +833,7 @@ def breakdown_decision(
         return Narrow(bound)
     if len(signatures) == 1:
         return Narrow(bound | signatures[0], lone_signature=True)
-    return Candidates(signatures, bound)
+    return Candidates({signature: tuple(svs) for signature, svs in by_signature.items()}, bound)
 
 
 @dataclass(frozen=True)

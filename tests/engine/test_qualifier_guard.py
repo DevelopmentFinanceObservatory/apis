@@ -34,7 +34,7 @@ from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import QualifierSpan
 from search.engine.quantity import NamedDenominator
-from search.engine.region.phase_election import _repair_bindings
+from search.engine.region.phase_election import _repair_bindings, judge_coverage
 from search.engine.region.phase_rank_bind import (
     _coverage_reading,
     _nominated_words,
@@ -46,7 +46,6 @@ from search.engine.region.phase_rank_bind import (
     served_member_names,
     value_requirements,
 )
-from search.engine.region.place_roles import PlaceAssignment
 from search.engine.region.requirements import (
     Judgement,
     Outcome,
@@ -70,10 +69,15 @@ from search.engine.region.unrealisable import (
     _value_requirements,
     unbind_unrealisable,
 )
-from search.engine.retrieval.retrieve import BoundValuesUnrealisable, MemberConflict
+from search.engine.retrieval.retrieve import (
+    BoundValuesUnrealisable,
+    Materialised,
+    MemberConflict,
+    NoDataDraft,
+)
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.models import GraphRef, NoData, NoDataPart, ResolvedQualifier, Spec
+from search.models import CoverageBare, GraphRef, NoData, NoDataPart, ResolvedQualifier, Spec
 from tests.conftest import minimal_spec
 from tests.engine._binders import FakeAsk, RatingBinder, keep_the_pick
 from tests.engine._builders import place_sets
@@ -166,8 +170,14 @@ def _state(
 
 
 def _run(state: ResolveState) -> list[ResolvedQualifier]:
-    result = asyncio.run(_repair_bindings(state))
-    assert result is None, "expected _repair_bindings to fall through"
+    """Repair the bindings, then judge coverage on them as the pass does once it reaches
+    its answer (`judge_coverage`), here with no read served."""
+
+    async def run() -> None:
+        assert await _repair_bindings(state) is None, "expected _repair_bindings to fall through"
+        await judge_coverage(state)
+
+    asyncio.run(run())
     return state.query_qualifiers
 
 
@@ -952,41 +962,56 @@ _GENDER_OPENED = _binding("gender").model_copy(
 
 
 @pytest.mark.parametrize(
-    ("total", "bound", "scored", "unrated"),
+    ("total", "bound", "scored", "served", "unrated"),
     [
-        (True, (), (), ("refugee", "camps")),
-        # The answer serves the total, "Population", whichever member recall scored, so a
+        # Before the read no member is served, so the words every member's name holds read.
+        (True, (), (), (), ("refugee", "camps")),
+        # The read served the total, "Population", whichever member recall scored, so a
         # scored member's name reads no word and the binder rates "refugee". So it does with
         # the gender slot opened, since the family's total answers for every gender.
-        (True, (), ("nominating_1",), ("refugee", "camps")),
-        (True, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
-        (True, (_binding("gender"),), ("nominating_1",), ("refugee", "camps")),
-        (True, (_GENDER_OPENED,), ("nominating_1",), ("refugee", "camps")),
-        # Gender bound to Female serves "Female refugee population" alone, which states
+        (True, (), ("nominating_1",), ("nominating_0",), ("refugee", "camps")),
+        (
+            True,
+            (_binding("gender", kind="absent"),),
+            ("nominating_1",),
+            ("nominating_0",),
+            ("refugee", "camps"),
+        ),
+        (True, (_binding("gender"),), ("nominating_1",), ("nominating_0",), ("refugee", "camps")),
+        (True, (_GENDER_OPENED,), ("nominating_1",), ("nominating_0",), ("refugee", "camps")),
+        # Gender bound to Female served "Female refugee population" alone, which states
         # "refugee" whichever member recall scored.
-        (True, (_FEMALE,), (), ("camps",)),
-        (True, (_FEMALE,), ("nominating_1",), ("camps",)),
-        (True, (_MALE,), ("nominating_2",), ("refugee",)),
-        # A family with no total serves both members, so only the words both names hold
+        (True, (_FEMALE,), (), ("nominating_1",), ("camps",)),
+        (True, (_FEMALE,), ("nominating_1",), ("nominating_1",), ("camps",)),
+        (True, (_MALE,), ("nominating_2",), ("nominating_2",), ("refugee",)),
+        # A family with no total served both members, so only the words both names hold
         # read, whichever recall scored.
-        (False, (), ("nominating_1",), ("refugee", "camps")),
-        (False, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
+        (False, (), ("nominating_1",), ("nominating_1", "nominating_2"), ("refugee", "camps")),
+        (
+            False,
+            (_binding("gender", kind="absent"),),
+            ("nominating_1",),
+            ("nominating_1", "nominating_2"),
+            ("refugee", "camps"),
+        ),
         (
             False,
             (_binding("gender"),),
             ("nominating_1", "nominating_2"),
+            ("nominating_1", "nominating_2"),
             ("refugee", "camps"),
         ),
-        # With none, the words every member's name holds still read.
+        # With none served, the words every member's name holds still read.
         (
             False,
             (_binding("gender", kind="value", value_dcids=["Unknown"]),),
+            (),
             (),
             ("refugee", "camps"),
         ),
     ],
     ids=[
-        "open",
+        "no-read",
         "scored",
         "absent-and-scored",
         "unbound-and-scored",
@@ -1001,13 +1026,13 @@ _GENDER_OPENED = _binding("gender").model_copy(
     ],
 )
 def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(
-    total, bound, scored, unrated
+    total, bound, scored, served, unrated
 ):
     """The words the coverage rule leaves unrated on the elected shape over its bindings
     (`_unrated_words`) are among those nominated for that shape before the bind
     (`_nominated_words`), so a binder that rates the nominated words in the bind holds a
-    rating for each word it is later asked about. Only the names of the members the
-    answer serves read words (`_member_measure_words`)."""
+    rating for each word it is later asked about. Only the names of the members the read
+    `served` read words (`_member_measure_words`)."""
     members = [{"gender": "Female"}, {"gender": "Male"}]
     names = ["Female refugee population", "Male population of camps"]
     shape = _value_shape(
@@ -1033,6 +1058,8 @@ def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(
     )
     nominated = _nominated_words(state, state.shape_draft)
     state.bindings = state.bind_result.bindings
+    if served:
+        state.mat_result = _served(*served)
 
     assert nominated == ("female", "refugee", "camps")
     assert _unrated_words(state) == unrated
@@ -1102,8 +1129,8 @@ def test_a_served_member_with_no_name_clears_no_word_the_named_ones_alone_hold()
     """ "GDP" over a family whose bindings serve nominal GDP and a net domestic product
     member whose name the engine cannot read, beside a gross value added member they leave
     out: the words are those every named member holds, so "gdp" goes to the binder although
-    the one named member served holds it. The source values are no code the index labels,
-    so no bound code reads the word."""
+    the one named member the read served holds it. The source values are no code the index
+    labels, so no bound code reads the word."""
     shape = _value_shape(
         "gdp",
         SlotKeyDraft(axis="what", property_dcid="activitySource", label="activity source"),
@@ -1129,6 +1156,7 @@ def test_a_served_member_with_no_name_clears_no_word_the_named_ones_alone_hold()
         entities=(),
     )
     state.bindings = state.bind_result.bindings
+    state.mat_result = _served("gdp_0", "gdp_2")
 
     assert served_member_names(state) == {
         "gdp_0": "Nominal gross domestic product",
@@ -1137,12 +1165,15 @@ def test_a_served_member_with_no_name_clears_no_word_the_named_ones_alone_hold()
     assert _unrated_words(state) == ("gdp",)
 
 
-def test_the_served_members_read_the_direction_place_binding_settled():
-    """ "aid to Kenya" named with no direction: binding repair refuses the places
-    ``role_not_resolved``, and place binding settles them on the recipient side
-    (`phase_place_materialise._settle_direction`). A coverage reading after it, as an
-    unbinding at materialise makes, reads the members the recipient class serves, though it
-    read both classes under the refusal."""
+def _served(*dcids: str) -> Materialised:
+    """A read that served `dcids`."""
+    return Materialised(sv_dcids=list(dcids), has_data=True, coverage=CoverageBare(has_data=True))
+
+
+def test_the_served_members_are_those_the_read_served():
+    """ "aid" over a shape whose members serve each direction: before the read no member is
+    served, and after it the members are those the read served, the one a refusal carries
+    included, whatever the bindings and places would admit."""
 
     def member(role: str, name: str) -> dict:
         return {
@@ -1160,12 +1191,14 @@ def test_the_served_members_read_the_direction_place_binding_settled():
         },
     )
     state = _state(variable="aid", shape_draft=shape, bindings=[], unplaced=[], entities=())
-    state.query_place_roles = "role_not_resolved"
 
-    assert served_member_names(state) == {"aid_received": "Aid received", "aid_given": "Aid given"}
+    assert served_member_names(state) == {}
 
-    (kenya,) = place_sets({"Kenya": "country/KEN"}).values()
-    state.elected_place_roles = PlaceAssignment(sets={"destination": (kenya,)})
+    state.mat_result = NoDataDraft(reason="no_observations", sv_dcids=["aid_given"])
+
+    assert served_member_names(state) == {"aid_given": "Aid given"}
+
+    state.mat_result = _served("aid_received")
 
     assert served_member_names(state) == {"aid_received": "Aid received"}
 

@@ -97,7 +97,12 @@ from search.engine.region.option_coverage import (
     _maybe_enrich_slot_options,
     option_axis_facts,
 )
-from search.engine.region.phase_election import _phase_settle, _repair_bindings, _vet_election
+from search.engine.region.phase_election import (
+    _phase_settle,
+    _repair_bindings,
+    _vet_election,
+    judge_coverage,
+)
 from search.engine.region.phase_rank_bind import (
     _dataset_candidates,
     _out_of_scope_records,
@@ -1675,7 +1680,7 @@ def _repair(
         disposed.append(list(state.bindings))
         return []
 
-    monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", _dispositions)
+    monkeypatch.setattr(phase_election_module, "_query_records", _dispositions)
     assert asyncio.run(_repair_bindings(state)) is None
     (bindings,) = disposed
     assert bindings == state.bindings
@@ -3375,6 +3380,7 @@ def _settle(monkeypatch: pytest.MonkeyPatch, state: ResolveState) -> RegionResul
         "get_measure_index",
         lambda: MeasureIndex(axes=(), values=(), partition_labels=()),
     )
+    monkeypatch.setattr(phase_election_module, "_query_records", lambda _state: [])
     monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", lambda _state: [])
     return asyncio.run(_phase_settle(state))
 
@@ -3673,6 +3679,8 @@ def _settled_ledger_state(monkeypatch: pytest.MonkeyPatch) -> ResolveState:
     state = _part_state(shape, "donor-recipient", {"sector": "D", "channel": "K1"}, scope=scope)
     _record_stray_female(state)
     assert _settle(monkeypatch, state) is None
+    # The pass judges coverage before it judges a refusal (`judge_coverage`).
+    asyncio.run(judge_coverage(state))
     # The flagged match a refusal giving way to `qualifier_not_bound` carries reads labels.
     state.graph = cast(EngineGraphClient, FakeGraph())
     for code in ("D", "C"):
