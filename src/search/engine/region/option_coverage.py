@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, NamedTuple, get_args
 
@@ -223,12 +223,13 @@ def _enrich_entity_options(
     entity_options: list[EntityOptions],
     *,
     graph: EngineGraphClient,
-    datasets: Collection[str],
+    sv_dcids: Iterable[str],
 ) -> list[EntityOptions]:
     """Resolve member labels in one batch, using the dcid when a label lookup misses, and give
-    each member the party kind the code index lists for it on its axis in `datasets`, the
-    provenances of the Spec's members (`materialise.enrichment.read_party_kinds`). Empty
-    `datasets` reads every dataset, where a party whose kind differs between datasets has none.
+    each member the party kind the code index lists for it on its axis in the datasets that
+    publish the Spec's member StatVars `sv_dcids` (`materialise.enrichment.read_party_kinds`).
+    Without such a dataset every dataset is read, where a party whose kind differs between
+    datasets has none.
 
     Membership and counts come from the materialised result, so only labels require a read.
     """
@@ -236,6 +237,7 @@ def _enrich_entity_options(
         {o.value.ref.ref for eo in entity_options for o in eo.options if o.value.ref is not None}
     )
     labels = graph.node_labels_batch(all_dcids) if all_dcids else {}
+    index = get_index()
     kinds = read_party_kinds(
         (
             (eo.role, o.value.ref.ref)
@@ -243,8 +245,8 @@ def _enrich_entity_options(
             for o in eo.options
             if o.value.ref is not None
         ),
-        parties=get_index().parties,
-        datasets=datasets,
+        parties=index.parties,
+        datasets=index.statvar_provenances(sv_dcids),
     )
     return [
         eo.model_copy(
@@ -1088,8 +1090,8 @@ def _build_and_enrich_entity_options(
     labels in response options. Disabled coverage returns empty response lists, while role facts
     and counts are available on `ResolvedSpec`. A label lookup failure returns raw options with
     `OPTION_COVERAGE_PROBE_FAILED`. Empty facts return two empty lists and no warning.
-    The shared call signature includes `role_entities`, `entities`, and `sv_dcids`. Confirmed
-    populations come from `role_axis_facts`.
+    The shared call signature includes `role_entities` and `entities`. Confirmed populations
+    come from `role_axis_facts`, and their party kinds from the datasets of `sv_dcids`.
     """
     raw = _entity_options_from_facts(role_axis_facts)
     if not raw:
@@ -1097,8 +1099,7 @@ def _build_and_enrich_entity_options(
     if not include_option_coverage:
         return raw, _entity_options_count_only(role_axis_facts), None
     try:
-        datasets = get_index().statvar_provenances(sv_dcids)
-        return raw, _enrich_entity_options(raw, graph=graph, datasets=datasets), None
+        return raw, _enrich_entity_options(raw, graph=graph, sv_dcids=sv_dcids), None
     except GraphInfraError:
         logger.warning(
             "entity_options label probe failed for shape_id=%r; returning unlabelled entity_options",
@@ -1167,12 +1168,9 @@ def _stream_slot_options_events(
         entity_warn: Warning | None = None
         if entity_options:
             try:
-                # `variable_labels` is keyed by the Spec's member StatVars, so a party reads the
-                # kind of the datasets the buffered path reads it in.
+                # `variable_labels` is keyed by the Spec's member StatVars.
                 enriched_entities = _enrich_entity_options(
-                    entity_options,
-                    graph=graph,
-                    datasets=get_index().statvar_provenances(variable_labels),
+                    entity_options, graph=graph, sv_dcids=variable_labels
                 )
             except GraphInfraError:
                 logger.warning(

@@ -208,8 +208,8 @@ resolve doors, so a StatVar with no declared recipe surfaces as an
 `unsupported` part instead of reaching this order), slice
 (binding_mismatch sits at the slice position), denominator, observations,
 facet, then timed_out, which only a part the request's deadline cut short carries, since
-it never ran far enough to meet another reason. When several reasons could apply, the first one in this order is what
-`reason` reports. This documents the contract sequence; it is not the
+it never ran far enough to meet another reason. When several reasons could apply, the first
+one in this order is what `reason` reports. This documents the contract sequence; it is not the
 enforcement mechanism. Each failure site in the pipeline returns immediately
 (region/pipeline.py, region/resubmit.py), so this constant can drift from
 actual behaviour if a check is reordered without updating it. Every site that picks one
