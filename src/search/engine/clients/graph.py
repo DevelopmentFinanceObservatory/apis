@@ -11,7 +11,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import dataclasses
-import functools
 from collections.abc import Iterable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -21,7 +20,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import pydantic
 
 from code_index.query import CodeIndex, IndexFamily
-from code_index.shared import get_index
+from code_index.shared import get_index, per_index
 from code_index.types import StatVarRow
 from dc_graph import Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
@@ -89,7 +88,8 @@ class Detection:
     `candidates` come from our resolve. `un` settles to the UN System Data
     Commons' candidates, or to ``None`` when that resolve failed; it may still be running when
     the detection returns. A part whose scope allows that origin derives the UN shapes
-    beside its own, and only a part whose own pass ends no_data waits for them, at most
+    beside its own, and only a part whose own pass ends no_data or answers on a pick its
+    binder doubted (`region.pipeline._fill_gap`) waits for them, at most
     ``SEARCH_UN_FIRST_PASS_WAIT_S`` from the start of derivation
     (`region.phase_intake.un_pool_shapes`)."""
 
@@ -143,7 +143,7 @@ def _family_roles(family: IndexFamily) -> frozenset[str]:
     return frozenset(role for row in family.rows for role in row.observation_properties)
 
 
-@functools.lru_cache(maxsize=1)
+@per_index
 def _rows_broadest_first(
     index: CodeIndex,
 ) -> dict[tuple[FiveTuple, frozenset[str]], tuple[StatVarRow, ...]]:
@@ -505,7 +505,7 @@ class EngineGraphClient(Protocol):
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         """Fetch confirmed display labels in one ``POST /v2/node``.
 
-        Omit missing nodes. Use the packaged index label when available, which strips the
+        Omit missing nodes. Use the release's code index label when available, which strips the
         graph name's parenthetical code-system suffix. Otherwise return the graph name.
         Transport and HTTP failures raise ``GraphInfraError``.
         """

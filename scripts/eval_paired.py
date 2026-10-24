@@ -18,6 +18,11 @@ has code ``timeout``), which a retry would only repeat. A sample still failing f
 when base answers and the confirm round agrees. On a case whose ``known_failure.checks``
 holds ``task_outcome`` it is a known failure.
 
+A base sample that answers in the expected status on the wrong series or places, failing
+``measure``, ``entities`` or ``provenance``, gives a head that stops answering it nothing
+to regress from on ``disposition`` and ``answer``: those verdicts read
+``wrong_answer_at_base``, which does not block and which the summary lists.
+
 Head sampling is adaptive. Each case runs once at head. A case takes the rest of its
 ``--samples`` and is judged on all of them when a check outside its
 ``known_failure.checks`` did not pass or passed only because no sample reached it, or when
@@ -49,8 +54,9 @@ exactly once. The eval gate workflow runs N shards on parallel jobs, each agains
 head and base apps, and combines their exit codes: 1 if any shard exits 1, else 3 if any
 exits 3, else 0. A shard that holds no case exits 0 and its summary says so.
 
-Scoring reads the graph, SDMX and the coverage index (``search.eval.live_clients``), so
-the environment needs the same graph settings and ``COVERAGE_ARTIFACT_URI`` as the apps.
+Scoring reads the graph, SDMX and the graph release's coverage view
+(``search.eval.live_clients``), so the environment needs the same graph settings and
+``GRAPH_RELEASE_URI`` as the apps.
 ``just eval-paired`` and ``just eval-run`` wrap the two modes.
 """
 
@@ -73,6 +79,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
+from graph_release.context import bound_served_release
+from graph_release.service import ReleaseService, get_release_service
 from origin_catalogue import Catalogue, bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from search.eval.apis_auth import apis_auth
@@ -97,6 +105,8 @@ from search.eval.checks import (
     score_with_answer,
 )
 from search.eval.gate import (
+    CONTENT_CHECKS,
+    WRONG_ANSWER_CHECKS,
     Judgement,
     Observation,
     Outcome,
@@ -120,7 +130,7 @@ from search.eval.summary import paired_markdown, single_markdown, single_text
 if TYPE_CHECKING:
     from search.engine.clients.sdmx import EngineSdmxClient
     from search.eval.graph import GraphClient
-    from series_coverage.shared import CoverageService
+    from series_coverage.shared import ServedCoverage
 
 type Side = Literal["head", "base"]
 type Round = Literal["head", "base", "confirm_head", "confirm_base"]
@@ -131,13 +141,15 @@ _TIMEOUT_S = 90.0
 
 @dataclass(frozen=True)
 class Reads:
-    """The graph, SDMX and coverage reads the checks score against, and the origin
-    catalogue the graph client's reads need bound."""
+    """The graph, SDMX and coverage reads the checks score against, the origin
+    catalogue the graph client's reads need bound, and the release service whose served
+    release a run binds beside it."""
 
     catalogue: Catalogue
+    release: ReleaseService
     graph: GraphClient | None = None
     sdmx: EngineSdmxClient | None = None
-    coverage: CoverageService | None = None
+    coverage: ServedCoverage | None = None
 
     def context(self, schema: Mapping[str, Any], side: Side, *, url: str) -> ScoreContext:
         """The context scoring answers of the app at `url`, whose members door names the
@@ -166,12 +178,25 @@ class SampleScore:
     def infra(self) -> bool:
         return self.sample is None
 
-    def observation(self, check: str, side: Side) -> Observation | None:
+    def observation(
+        self, check: str, side: Side, *, part_count: int | None = None
+    ) -> Observation | None:
         """The check's observation on this sample. A failed run is infra at base and a
-        scored sample at head, where the PR may be what made it fail."""
+        scored sample at head, where the PR may be what made it fail. A base observation of
+        a check a wrong answer can pass carries the sample's content checks
+        (``search.eval.gate.WRONG_ANSWER_CHECKS``) and ``part_count``, the parts the case
+        expects."""
         result = self.results.get(check)
         if result is None:
             return None
+        content = {}
+        wrong_answer_check = side == "base" and check in WRONG_ANSWER_CHECKS
+        if wrong_answer_check:
+            content = {
+                name: o
+                for name in CONTENT_CHECKS
+                if (o := self.observation(name, side)) is not None
+            }
         return Observation(
             verdict=result.verdict,
             infra="run" if self.infra and side == "base" else ("read" if result.infra else None),
@@ -179,6 +204,8 @@ class SampleScore:
             degraded=self.sample is not None and self.sample.degraded,
             run_failed=self.infra and side == "head",
             parts=result.parts,
+            part_count=part_count if wrong_answer_check else None,
+            content=content,
         )
 
 
@@ -198,7 +225,13 @@ class CaseState:
             return None
         side: Side = "base" if round_ in ("base", "confirm_base") else "head"
         scores = self.rounds[round_]
-        return [o for s in scores if (o := s.observation(check, side)) is not None]
+        expected = self.case.expect.parts
+        part_count = len(expected) if expected is not None else None
+        return [
+            o
+            for s in scores
+            if (o := s.observation(check, side, part_count=part_count)) is not None
+        ]
 
     @property
     def known(self) -> frozenset[str]:
@@ -398,7 +431,7 @@ def _score_round(
             state.infra_errors[round_] = run.infra_error
 
     # Checks read the graph and coverage synchronously, so cases score on threads. Each
-    # task runs in a copy of this context, which carries the bound origin catalogue.
+    # task runs in a copy of this context, which carries the bound origin catalogue and release.
     with ThreadPoolExecutor(max_workers=workers) as pool:
         tasks = [pool.submit(contextvars.copy_context().run, one, s) for s in states]
         for task in tasks:
@@ -701,7 +734,7 @@ def _parser() -> argparse.ArgumentParser:
 
 async def run(args: argparse.Namespace, *, reads: Reads, client: httpx.AsyncClient) -> int:
     """Run the mode ``args`` selects, write its outputs, and return the exit code."""
-    with bound_catalogue(reads.catalogue):
+    with bound_catalogue(reads.catalogue), bound_served_release(reads.release):
         return await _run_bound(args, reads=reads, client=client)
 
 
@@ -777,9 +810,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # workflow's override label can release, so every unexpected error exits 2.
     try:
         catalogue = _load_catalogue()
+        release = _load_release()
         with score_clients() as clients:
             reads = Reads(
                 catalogue=catalogue,
+                release=release,
                 graph=clients.graph,
                 sdmx=clients.sdmx,
                 coverage=clients.coverage,
@@ -799,6 +834,14 @@ def _load_catalogue() -> Catalogue:
         return get_catalogue_service().snapshot()
     except Exception as exc:
         raise SetupError(f"the origin catalogue does not load: {exc!r}") from exc
+
+
+def _load_release() -> ReleaseService:
+    """The release service ``GRAPH_RELEASE_URI`` names, opened as the app opens it."""
+    try:
+        return get_release_service()
+    except Exception as exc:
+        raise SetupError(f"the graph release does not load: {exc!r}") from exc
 
 
 async def _main_async(args: argparse.Namespace, reads: Reads) -> int:

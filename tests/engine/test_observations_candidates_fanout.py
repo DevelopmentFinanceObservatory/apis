@@ -16,13 +16,13 @@ from materialise import (
     GraphReader,
 )
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import _UniversalBindOutput
 from search.engine.concurrency import scoped_concurrency
 from search.engine.errors import GraphInfraError
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.state import EngineOptions
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -69,12 +69,7 @@ class _CandidateUnitBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen_shape_index,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
-        ), None
+        return elected_reply(self._chosen_shape_index, also_plausible=self._also_plausible), None
 
 
 _UNIT_CAND_SV_A = "Test_CandidateUnit_SV_A"
@@ -86,14 +81,14 @@ _UNIT_CAND_NODES = {
         "label": "Candidate unit SV A",
         "type": "StatisticalVariable",
         "arcs": _candidate_unit_std_arcs(
-            "Candidate unit SV A", pop_type="EconomicActivity", meas_prop="amountA"
+            "Candidate unit test variable A", pop_type="EconomicActivity", meas_prop="amountA"
         ),
     },
     _UNIT_CAND_SV_B: {
         "label": "Candidate unit SV B",
         "type": "StatisticalVariable",
         "arcs": _candidate_unit_std_arcs(
-            "Candidate unit SV B", pop_type="EconomicActivity", meas_prop="amountB"
+            "Candidate unit test variable B", pop_type="EconomicActivity", meas_prop="amountB"
         ),
     },
 }
@@ -628,7 +623,7 @@ def _constrained_survivor_graph() -> FakeGraph:
     """SV_A as a constrained member: one constraint property whose value has a label."""
     arcs = {
         **_candidate_unit_std_arcs(
-            "Candidate unit SV A", pop_type="EconomicActivity", meas_prop="amountA"
+            "Candidate unit test variable A", pop_type="EconomicActivity", meas_prop="amountA"
         ),
         "constraintProperties": {"nodes": [{"dcid": "crsPurpose"}]},
         "crsPurpose": {"nodes": [{"dcid": _PURPOSE}]},

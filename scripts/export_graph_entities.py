@@ -1,7 +1,8 @@
 """Regenerate graph-derived entity and region packs.
 
 `entities` exports `Organization`, `DACRecipientUnallocatedByCountry` and `DACUnspecifiedParty`
-nodes and every declared origin total, sorted by dcid, then folds each `_MERGED_DCIDS` source
+nodes, every declared origin total and every whole total (a `PartyRow.whole` marker, such as the
+recipient side's `DACAllRecipients`), sorted by dcid, then folds each `_MERGED_DCIDS` source
 record into its target. A record's `dac_code` is the node's numerically lowest `dacCode`; its other
 codes join its aliases, since a resolvekit entity holds one code per system and every code must
 resolve. A total that holds a resolver group lists only its codes, under its dcid as name: its
@@ -10,7 +11,9 @@ names resolve to the group, and its DAC codes name the total itself.
 `place-types` lists `Place` and every class below it by `subClassOf`, sorted, which
 `entity_resolution.types.entity_kind` classes as places.
 
-Every command requires `SEARCH_GRAPH_BASE` and read the live graph. Output JSON is stable.
+Every command requires `SEARCH_GRAPH_BASE` and reads the live graph. `entities` also requires
+`GRAPH_RELEASE_URI`: the declared totals come from the code index of the release it names. Output
+JSON is stable.
 Maintainers author `curated_aliases.json` by hand.
 """
 
@@ -27,6 +30,9 @@ import httpx
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dc_graph import GraphClient
+from dfo_platform.cloud_run_auth import cloud_run_auth
+from graph_release.context import bound_served_release
+from graph_release.service import get_release_service
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_ENTITIES_OUT = (
@@ -119,9 +125,9 @@ def _numeric_code(code: str) -> int:
     return int(code)
 
 
-def _origin_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[str]]:
-    """Return each declared origin total's code-index label, keyed by dcid, and the dcids of the
-    totals that hold a resolver group.
+def _exported_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[str]]:
+    """Return the code-index label of each declared origin total and of each whole total on any
+    axis, keyed by dcid, and the dcids of the totals that hold a resolver group.
 
     An ungrouped total is exported with its names. Organization totals are already covered by the
     organization export; the remaining ungrouped records must be graph `DACGroup` nodes.
@@ -129,11 +135,11 @@ def _origin_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[st
     labels = {}
     grouped = set()
     for dcid, party in index.parties.items():
-        if party.kind != "total" or "origin" not in party.axes:
+        if party.kind != "total" or not ("origin" in party.axes or party.whole):
             continue
         if party.label is None:
             raise SystemExit(
-                f"declared origin total {dcid} has no graph label -- cannot verify its export"
+                f"declared total {dcid} has no graph label -- cannot verify its export"
             )
         labels[dcid] = party.label
         if party.totals is not None:
@@ -144,17 +150,16 @@ def _origin_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[st
 def export_entities(
     reader: GraphClient, *, max_results: int = 1000, index: CodeIndex | None = None
 ) -> list[dict]:
-    """Fetch every `_KIND_BY_TYPE` population and declared donor total in dcid order.
+    """Fetch every `_KIND_BY_TYPE` population, declared donor total and whole total in dcid order.
 
-    Each declared total's code-index label must equal its graph name. A total that holds a group
+    The declared totals come from `index`, by default the bound release's code index. Each
+    declared total's code-index label must equal its graph name. A total that holds a group
     becomes a code-only `aggregate` record, named by its dcid, or no record when it has no DAC
     code. Ungrouped Organization totals stay organization records; any other ungrouped total must
     be a graph `DACGroup`. Raise `SystemExit` if any population exceeds `max_results` and would be
     truncated.
     """
-    origin_total_labels, grouped_totals = _origin_total_labels(
-        get_index() if index is None else index
-    )
+    total_labels, grouped_totals = _exported_total_labels(get_index() if index is None else index)
     dcids_by_type: dict[str, tuple[str, ...]] = {}
     for graph_type in _KIND_BY_TYPE:
         page = reader.node_subjects(graph_type, property="typeOf", max_results=max_results)
@@ -167,7 +172,7 @@ def export_entities(
 
     organization_dcids = set(dcids_by_type["Organization"])
     all_dcids = sorted(
-        {dcid for dcids in dcids_by_type.values() for dcid in dcids} | set(origin_total_labels)
+        {dcid for dcids in dcids_by_type.values() for dcid in dcids} | set(total_labels)
     )
     kind_by_dcid = {
         dcid: _KIND_BY_TYPE[graph_type]
@@ -183,21 +188,20 @@ def export_entities(
         chunk = all_dcids[start : start + chunk_size]
         arcs_by_dcid.update(reader.node_arcs_many(chunk, properties=list(_ENTITY_PROPERTIES)))
 
-    for dcid, label in origin_total_labels.items():
+    for dcid, label in total_labels.items():
         arcs = arcs_by_dcid.get(dcid)
         if arcs is None:
-            raise SystemExit(f"declared origin total {dcid} is absent from the graph")
+            raise SystemExit(f"declared total {dcid} is absent from the graph")
         graph_name = _single_name(list(arcs.get("name", ())))
         if graph_name != label:
             raise SystemExit(
-                f"declared origin total {dcid} has graph name {graph_name!r}, expected {label!r}"
+                f"declared total {dcid} has graph name {graph_name!r}, expected {label!r}"
             )
         if dcid in grouped_totals or dcid in organization_dcids:
             continue
         if _DAC_GROUP_TYPE not in arcs.get("typeOf", ()):
             raise SystemExit(
-                f"declared origin total {dcid} is not a {_DAC_GROUP_TYPE} outside "
-                "the Organization export"
+                f"declared total {dcid} is not a {_DAC_GROUP_TYPE} outside the Organization export"
             )
         kind_by_dcid[dcid] = "aggregate"
 
@@ -323,7 +327,12 @@ def export_regions(*, graph_base_url: str, token: str | None) -> list[dict]:
     headers = {"Content-Type": "application/json"}
     if token:
         headers["x-graph-token"] = token
-    client = httpx.Client(base_url=f"{graph_base_url}/core/api", headers=headers, timeout=30.0)
+    client = httpx.Client(
+        base_url=f"{graph_base_url}/core/api",
+        headers=headers,
+        timeout=30.0,
+        auth=cloud_run_auth(),
+    )
     rows = []
     try:
         for resolvekit_id, entity_type, name in _iter_resolvekit_region_entities():
@@ -371,7 +380,8 @@ def _cmd_entities(args: argparse.Namespace) -> None:
     base = _graph_base_url()
     reader = GraphClient(base_url=f"{base}/core/api", token=os.environ.get("SEARCH_GRAPH_TOKEN"))
     try:
-        records = export_entities(reader)
+        with bound_served_release(get_release_service()):
+            records = export_entities(reader)
     finally:
         reader.close()
     _write_json(Path(args.out), records)

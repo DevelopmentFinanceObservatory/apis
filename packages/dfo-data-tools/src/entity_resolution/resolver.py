@@ -89,9 +89,10 @@ _MEMBER_GRAPH_TYPE = "Country"
 # Resolvekit's `known_groups()` omits entity types, so keep the two group types here.
 _GROUP_TYPES: frozenset[str] = frozenset({"geo.organization", "geo.continental_union"})
 
-# The generation stamp captured for the whole call, the normalized text, the requested kinds
-# (`None` for no filter) and the code system.
-_CacheKey = tuple[str, str, frozenset[EntityKind] | None, str | None]
+# The generation stamp captured for the whole call, the content hash of the code index the call
+# read (`None` without one), the normalized text, the requested kinds (`None` for no filter) and
+# the code system.
+_CacheKey = tuple[str, str | None, str, frozenset[EntityKind] | None, str | None]
 
 # Derive cache expiry from the generation stamp key. `Admission` uses the same rule.
 _ttu = ttu_from_stamp_key
@@ -364,24 +365,44 @@ def _unless_expired[*Ts, R](deadline: float | None, fn: Callable[[*Ts], R], /, *
     return fn(*args)
 
 
-def _group_node_dcids_job(shared: SharedResolver) -> frozenset[str]:
+@dataclass(frozen=True, slots=True)
+class _GroupNodes:
+    """The dcids `Group.entity` can hold (`dcids`), and each of them with the first
+    registered group name that resolves to its group alone (`names`)."""
+
+    dcids: frozenset[str]
+    names: Mapping[str, str]
+
+
+def _group_nodes_job(shared: SharedResolver) -> _GroupNodes:
     """The dcids `Group.entity` can hold, for every group resolvekit knows: the group's own
     id as a dcid, and each organisation that survives the gate beside it
     (`EntityResolver._assemble_group`). A region the membership policy holds is left out,
-    since the policy answers its members ("Africa (DAC)" resolves to `africa`). Runs on the
-    shared resolver's single worker."""
+    since the policy answers its members ("Africa (DAC)" resolves to `africa`).
+
+    Each dcid takes the first registered name that resolves to its group alone: a name whose
+    top survivor is a group the registry holds (`_group_hit`), which `resolve` answers as
+    that `Group` whatever else survives. A name whose top survivor the registry does not
+    hold is an ordinary hit, which can be ambiguous, so its dcids take a later name or none.
+    Runs on the shared resolver's single worker."""
     context = ResolutionContext(entity_types=ADMITTED_TYPES)
     dcids: set[str] = set()
+    names: dict[str, str] = {}
     for name in shared.resolver.known_groups():
         listed, _, _ = _resolve_text_survivors(shared, name, context)
         survivors = [candidate for candidate, _ in listed]
         if not survivors or survivors[0].entity_type not in _GROUP_TYPES:
             continue
+        alone = _group_hit(shared, survivors[0]) is not None
         nodes = [survivors[0]] + [c for c in survivors[1:] if c.entity_type == _ORG_ENTITY_TYPE]
-        dcids.update(
-            dcid for node in nodes if (dcid := identity_to_dcid(node.entity_id)) is not None
-        )
-    return frozenset(dcid for dcid in dcids if not shared.policy.holds_region(dcid))
+        for node in nodes:
+            dcid = identity_to_dcid(node.entity_id)
+            if dcid is None or shared.policy.holds_region(dcid):
+                continue
+            dcids.add(dcid)
+            if alone:
+                names.setdefault(dcid, name)
+    return _GroupNodes(dcids=frozenset(dcids), names=names)
 
 
 def _entity_from_confirmation(
@@ -436,9 +457,12 @@ class EntityResolver:
     executor for every graph call. `generation` defaults to
     `UNKNOWN_GENERATION`, so an uninjected instance keys and expires every
     entry under the "unknown" stamp (1h). `codes` serves the `code` kind; a
-    resolver without it refuses a request for that kind. `code_index` gives the kind rule
-    its code systems, codes and parties (`kinds.classify`); pass the one the Graph API's node
-    route classes by, so both give a node one kind. Without it no node is one of those.
+    resolver without it refuses a request for that kind. `code_index` returns the index that
+    gives the kind rule its code systems, codes and parties (`kinds.classify`); pass the one
+    the Graph API's node route classes by, so both give a node one kind. Without it no node is
+    one of those. Each `resolve` reads it once, on the caller's context, and keys its cache
+    entries on that index's content hash, since the index can change between calls. `codes`
+    must read the same index.
     """
 
     def __init__(
@@ -450,7 +474,7 @@ class EntityResolver:
         cache_size: int = 4096,
         generation: GenerationProvider = UNKNOWN_GENERATION,
         codes: CodeLookup | None = None,
-        code_index: KindIndex | None = None,
+        code_index: Callable[[], KindIndex] | None = None,
     ) -> None:
         self._graph = graph
         self._shared = shared
@@ -463,7 +487,7 @@ class EntityResolver:
         self._cache: TLRUCache[_CacheKey, Resolution] = TLRUCache(maxsize=cache_size, ttu=_ttu)
         self._hits = 0
         self._misses = 0
-        self._group_node_dcids: frozenset[str] | None = None
+        self._group_nodes: _GroupNodes | None = None
 
     @property
     def membership(self) -> MembershipPolicy:
@@ -497,11 +521,21 @@ class EntityResolver:
         """The dcids that are the node of a group the resolver knows, such as
         `EuropeanUnion`: every dcid a `Group.entity` can hold. The packs fix the set, so it is
         computed once and no graph is read."""
-        if self._group_node_dcids is None:
-            self._group_node_dcids = await asyncio.get_running_loop().run_in_executor(
-                self._shared.executor, _group_node_dcids_job, self._shared
+        return (await self._group_node_lookup()).dcids
+
+    async def group_node_names(self) -> Mapping[str, str]:
+        """Each dcid of `group_node_dcids` with a registered group name that resolves to its
+        group alone, such as `EuropeanUnion` to "European Union": the text that asks for the
+        group's members, which a pin on the node cannot. A dcid whose group has no such name
+        is left out. Computed once from the packs, with no graph read."""
+        return (await self._group_node_lookup()).names
+
+    async def _group_node_lookup(self) -> _GroupNodes:
+        if self._group_nodes is None:
+            self._group_nodes = await asyncio.get_running_loop().run_in_executor(
+                self._shared.executor, _group_nodes_job, self._shared
             )
-        return self._group_node_dcids
+        return self._group_nodes
 
     async def resolve(
         self,
@@ -530,6 +564,8 @@ class EntityResolver:
         if wants_codes and self._codes is None:
             raise ValueError("the code kind needs a code lookup, and this resolver has none")
         stamp = self._generation.stamp()
+        code_index = self._code_index() if self._code_index is not None else None
+        index_key = code_index.stamp.content_hash if code_index is not None else None
         results: dict[int, Resolution] = {}
         keys: dict[int, _CacheKey] = {}
         pending_texts: dict[int, str] = {}
@@ -539,7 +575,7 @@ class EntityResolver:
             if not stripped:
                 results[index] = NotFound()
                 continue
-            key = (stamp.key, _normalize_key(stripped), kind_filter, code_system)
+            key = (stamp.key, index_key, _normalize_key(stripped), kind_filter, code_system)
             with self._cache_lock:
                 cached = self._cache.get(key)
             if cached is not None:
@@ -555,6 +591,7 @@ class EntityResolver:
                 results,
                 keys,
                 pending_texts,
+                code_index=code_index,
                 kinds=kind_filter,
                 code_system=code_system,
                 deadline=deadline,
@@ -570,7 +607,7 @@ class EntityResolver:
         sharing a key share one answer."""
         if self._codes is None or kinds is None or _CODE_KIND not in kinds:
             return []
-        _, folded, _, _ = key
+        _, _, folded, _, _ = key
         return [
             (hit.entity, Matched(text=hit.text, matched_as=hit.matched_as))
             for hit in self._codes.codes_by_text(folded, code_system=code_system)
@@ -582,6 +619,7 @@ class EntityResolver:
         keys: dict[int, _CacheKey],
         pending_texts: dict[int, str],
         *,
+        code_index: KindIndex | None,
         kinds: frozenset[EntityKind] | None,
         code_system: str | None,
         deadline: float | None,
@@ -601,7 +639,7 @@ class EntityResolver:
                 deadline,
                 _resolve_batch_job,
                 self._shared,
-                self._code_index,
+                code_index,
                 ordered_texts,
             )
             outcomes = dict(zip(pending_indices, gate_outcomes, strict=True))
@@ -657,9 +695,13 @@ class EntityResolver:
             if outcome is None:
                 result = _choose(codes, kinds=kinds, near_matches=(), reading="entity")
             elif outcome.group is not None and index in hits and group_admitted:
-                result = self._assemble_group(outcome.group, hits[index], outcome, confirmed, codes)
+                result = self._assemble_group(
+                    outcome.group, hits[index], outcome, confirmed, codes, code_index=code_index
+                )
             elif index in hits:
-                result = self._assemble_hit(hits[index], outcome, confirmed, kinds, codes)
+                result = self._assemble_hit(
+                    hits[index], outcome, confirmed, kinds, codes, code_index=code_index
+                )
             elif index in fallback_dcids:
                 result = self._assemble_fallback(
                     fallback_dcids[index],
@@ -668,6 +710,7 @@ class EntityResolver:
                     outcome.near_matches,
                     kinds,
                     codes,
+                    code_index=code_index,
                 )
             else:
                 result = _choose(
@@ -689,9 +732,16 @@ class EntityResolver:
         with self._cache_lock:
             self._cache[keys[index]] = result
 
-    def _confirmed(self, *, dcid: str, arcs: dict[str, tuple[str, ...]], name: str) -> Entity:
+    def _confirmed(
+        self,
+        *,
+        dcid: str,
+        arcs: dict[str, tuple[str, ...]],
+        name: str,
+        code_index: KindIndex | None,
+    ) -> Entity:
         return _entity_from_confirmation(
-            self._shared.policy, self._code_index, dcid=dcid, arcs=arcs, name=name
+            self._shared.policy, code_index, dcid=dcid, arcs=arcs, name=name
         )
 
     def _normalize(self, text: str) -> str:
@@ -704,6 +754,8 @@ class EntityResolver:
         confirmed: dict[str, dict[str, tuple[str, ...]] | None],
         kinds: frozenset[EntityKind] | None,
         codes: list[_Candidate],
+        *,
+        code_index: KindIndex | None,
     ) -> Resolution:
         """Choose among the confirmed hits and codes by `kinds`. A group or region the
         membership policy holds counts as a candidate classed over no graph types when the
@@ -720,16 +772,21 @@ class EntityResolver:
             arcs = confirmed.get(dcid)
             if arcs is not None:
                 entity = self._confirmed(
-                    dcid=dcid, arcs=arcs, name=_confirmed_name(candidate, dcid=dcid, arcs=arcs)
+                    dcid=dcid,
+                    arcs=arcs,
+                    name=_confirmed_name(candidate, dcid=dcid, arcs=arcs),
+                    code_index=code_index,
                 )
             elif dcid in self._shared.policy:
-                entity = self._confirmed(dcid=dcid, arcs={}, name=_candidate_name(candidate))
+                entity = self._confirmed(
+                    dcid=dcid, arcs={}, name=_candidate_name(candidate), code_index=code_index
+                )
             else:
                 entity = Entity(
                     dcid=dcid,
                     name=_candidate_name(candidate),
                     kind=_unconfirmed_kind(
-                        self._shared.policy, self._code_index, dcid=dcid, candidate=candidate
+                        self._shared.policy, code_index, dcid=dcid, candidate=candidate
                     ),
                     graph_type=_UNTYPED_GRAPH_TYPE,
                 )
@@ -752,6 +809,8 @@ class EntityResolver:
         outcome: _GateOutcome,
         confirmed: dict[str, dict[str, tuple[str, ...]] | None],
         codes: list[_Candidate],
+        *,
+        code_index: KindIndex | None,
     ) -> Resolution:
         """`candidate_hits` holds the group and the survivors beside it. The registry confirms
         the group and its members, so the result stands whether or not the graph holds them.
@@ -770,7 +829,9 @@ class EntityResolver:
         entity: Entity | None = None
         group_arcs = confirmed.get(group.ref)
         if group_arcs is not None:
-            entity = self._confirmed(dcid=group.ref, arcs=group_arcs, name=group.label)
+            entity = self._confirmed(
+                dcid=group.ref, arcs=group_arcs, name=group.label, code_index=code_index
+            )
         else:
             for candidate, dcid in candidate_hits:
                 if candidate.entity_type != _ORG_ENTITY_TYPE:
@@ -778,7 +839,10 @@ class EntityResolver:
                 arcs = confirmed.get(dcid)
                 if arcs is not None:
                     entity = self._confirmed(
-                        dcid=dcid, arcs=arcs, name=_confirmed_name(candidate, dcid=dcid, arcs=arcs)
+                        dcid=dcid,
+                        arcs=arcs,
+                        name=_confirmed_name(candidate, dcid=dcid, arcs=arcs),
+                        code_index=code_index,
                     )
                     break
         if codes:
@@ -808,6 +872,8 @@ class EntityResolver:
         near_matches: tuple[Entity, ...],
         kinds: frozenset[EntityKind] | None,
         codes: list[_Candidate],
+        *,
+        code_index: KindIndex | None,
     ) -> Resolution:
         """Choose among the confirmed fallback candidates and codes by `kinds`.
 
@@ -824,7 +890,10 @@ class EntityResolver:
                 "name" if normalized_text is not None and normalized_text in names else "alias"
             )
             entity = self._confirmed(
-                dcid=dcid, arcs=arcs, name=_fallback_name(arcs=arcs, text=text)
+                dcid=dcid,
+                arcs=arcs,
+                name=_fallback_name(arcs=arcs, text=text),
+                code_index=code_index,
             )
             candidates.append((entity, Matched(text=text, matched_as=matched_as)))
         candidates.extend(codes)

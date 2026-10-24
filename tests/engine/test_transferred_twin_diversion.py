@@ -11,11 +11,11 @@ from __future__ import annotations
 import asyncio
 
 from origin_catalogue import BASE, UN_SYSTEM
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -42,7 +42,7 @@ _URBANISATION = "undataUrbanisation"
 def _node(dcid: str, *, population_type: str, urbanisation: str | None = None) -> dict:
     arcs = {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-        "name": {"nodes": [{"value": dcid}]},
+        "name": {"nodes": [{"value": f"Access to electricity ({dcid})"}]},
         "populationType": {"nodes": [{"dcid": population_type}]},
         "measuredProperty": {"nodes": [{"dcid": "value"}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -100,9 +100,7 @@ class _ElectFirstNamingSecond:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
 def _resolve() -> RegionResult:

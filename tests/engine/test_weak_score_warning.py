@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RETRIEVAL_SCORE_WEAK, RegionResult, resolve_variable
+from search.engine.stated_words_read import StatedWordsOutput
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -20,15 +21,12 @@ class _FixedBindLLM:
     """Elects the sole candidate shape with no constraint bindings, unconditionally."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=None,
-            ask=None,
-        ), None
+        return elected_reply(0, also_plausible=None), None
 
 
 # The SV carries the populationType and measuredProperty arcs required by derive_shapes.

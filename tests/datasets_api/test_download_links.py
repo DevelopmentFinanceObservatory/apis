@@ -30,6 +30,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import files as files_module
 from datasets_api.doors.files import build_files_door
 from datasets_api.render import (
+    DATA_LAYOUT_VERSION,
     artifact_rendering,
     incomplete_rendering,
     rendering_options,
@@ -498,7 +499,11 @@ _SITE = DatasetsBuildSettings().site
 @pytest.mark.parametrize(
     ("rendering", "renders"),
     [
-        pytest.param({"format": "csv", "bundle": False, "layout": 3}, True, id="bare-long"),
+        pytest.param(
+            {"format": "csv", "bundle": False, "layout": DATA_LAYOUT_VERSION},
+            True,
+            id="bare-long",
+        ),
         pytest.param(
             {"format": "csv", "bundle": False, "layout": 2}, False, id="superseded-bare-long"
         ),

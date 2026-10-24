@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Collection, Sequence
 
 import pytest
 
 from search.engine.bind import _UniversalBindOutput
+from search.engine.binders import GeminiBinder
 from search.engine.conjoin import assemble_region
 from search.engine.errors import GraphInfraError, LLMInfraError
 from search.engine.quantity_read import QuantityOutput
@@ -24,9 +26,12 @@ from search.engine.region import resolve_variable
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.role_text import DoorRole
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import CoverageBare, NoDataPart
+from tests.engine._binders import RatingBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._quantity import NO_RATING
 from tests.fixtures import FakeGraph, _load_json, make_resolver
 
 _QUERY = "GDP per capita of Vietnam"
@@ -56,16 +61,13 @@ class _ElectSingleShapeLLM:
     read finds no form and no denominator."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return QuantityOutput(), None
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[],
-                also_plausible=[],
-                ask=None,
-            ),
+            elected_reply(0, also_plausible=[]),
             None,
         )
 
@@ -225,10 +227,13 @@ def _resolve(
     without_data: frozenset[str] = frozenset(),
     graph_cls: type[_ArcsSpyGraph] = _ArcsSpyGraph,
     roles: list[DoorRole] | None = None,
+    unstated: Collection[str] = (),
 ):
     """Resolve `query` over `svs`, ranked in that order, with bind electing the first shape
     on its menu, or as `llm` reads it, and every shape materialising with data unless its
-    members are in `without_data`. `roles` are the place's door roles."""
+    members are in `without_data`. `roles` are the place's door roles. The binder rates
+    each word of `unstated` not stated by the elected shape's series, and every other word
+    stated."""
     name, dcid = place
     graph = graph_cls(
         nodes=nodes,
@@ -264,6 +269,7 @@ def _resolve(
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
             entity_roles={name: roles} if roles else None,
+            binder=RatingBinder(GeminiBinder(), dict.fromkeys(unstated, 0.0)),
         )
     )
     return result, graph, llm
@@ -517,6 +523,8 @@ class _ReadingLLM(_MenuLLM):
         self.nearest = nearest
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             self.quantity_prompts.append(prompt)
             return QuantityOutput(
@@ -539,11 +547,9 @@ class _ReadingLLM(_MenuLLM):
             )
             return output, None
         chosen = next(int(i) for i, label in labels if label == self.elect)
-        output = _UniversalBindOutput(
-            chosen_shape_index=chosen,
-            bindings=[],
+        output = elected_reply(
+            chosen,
             also_plausible=[int(i) for i, label in labels if label in self.also],
-            ask=None,
             unplaced=list(self.unplaced),
         )
         return output, None
@@ -566,6 +572,7 @@ def _resolve_debt(
     menu: list[str] = _DEBT_MENU,
     without_data: frozenset[str] = frozenset(),
     nodes: dict = _DEBT_NODES,
+    unstated: Collection[str] = (),
 ):
     result, _, _ = _resolve(
         query,
@@ -576,6 +583,7 @@ def _resolve_debt(
         llm=llm,
         obs=obs,
         without_data=without_data,
+        unstated=unstated,
     )
     return result
 
@@ -584,26 +592,39 @@ def _members(spec) -> list[str]:
     return [sv.ref.ref for sv in spec.resolved.members]
 
 
+def _assert_refuses_unread(result, words: Sequence[str], members: Sequence[str]) -> None:
+    """`result` refuses `qualifier_not_bound` on each of `words`, a run of the variable the
+    binder rated the elected series not stating, with that series, of `members`, as its
+    flagged match."""
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert [(q.text, q.disposition, q.evidence) for q in result.unbound_qualifiers] == [
+        (word, "no_vocabulary", "uncovered") for word in words
+    ]
+    (flagged,) = result.flagged_match or ()
+    assert _members(flagged) == list(members)
+
+
 @pytest.mark.parametrize(
-    ("query", "unplaced"),
+    ("query", "unplaced", "unread"),
     [
-        ("debt to GDP ratio", ()),
-        ("debt service as a share of exports", ()),
-        ("measles debt to GDP ratio", ("measles",)),
+        ("debt to GDP ratio", (), ("GDP",)),
+        ("debt service as a share of exports", (), ("service", "exports")),
+        ("measles debt to GDP ratio", ("measles",), ("GDP",)),
     ],
     ids=["rate", "share", "rate-unplaced-word"],
 )
 def test_a_level_refused_on_its_form_is_flagged_when_bind_declines_and_names_it(
-    query, unplaced, monkeypatch
+    query, unplaced, unread, monkeypatch
 ):
     """A rate or a share the dollar level does not serve leaves the level off the menu as
     not electable. Bind declines the shapes left and names the level as nearest, so the part
     refuses `denominator_not_available` flagging it, before any read
     (`phase_place_materialise._declined_refusal`). The flagged level's trace records the
-    words bind leaves unplaced, which the refusal does not name, and each of them departs
+    words bind leaves unplaced, and the words of the variable the binder rates the level
+    not stating as ``uncovered``, which the refusal does not name, and each of them departs
     once."""
     llm = _ReadingLLM(None, nearest="External debt (current US$)", unplaced=unplaced)
-    result = _resolve_debt(query, llm, monkeypatch)
+    result = _resolve_debt(query, llm, monkeypatch, unstated=[word.casefold() for word in unread])
 
     (prompt,) = llm.prompts
     menu, _, refused = prompt.partition("NOT ELECTABLE")
@@ -613,10 +634,13 @@ def test_a_level_refused_on_its_form_is_flagged_when_bind_declines_and_names_it(
     assert result.no_data_reason == "denominator_not_available"
     (flagged,) = result.flagged_match or ()
     assert _members(flagged) == [_DEBT_LEVEL]
-    assert [q.text for q in flagged.resolved.trace.query_qualifiers] == list(unplaced)
+    assert [(q.text, q.evidence) for q in flagged.resolved.trace.query_qualifiers] == [
+        *((word, None) for word in unplaced),
+        *((word, "uncovered") for word in unread),
+    ]
     assert result.unbound_qualifiers == ()
     assert [(f.code, f.asked) for f in result.departure_facts.values()] == [
-        ("measure_not_applied", word) for word in unplaced
+        ("measure_not_applied", word) for word in (*unplaced, *unread)
     ]
     assert result.nearest_real is None
     assert result.denominator is not None
@@ -624,19 +648,20 @@ def test_a_level_refused_on_its_form_is_flagged_when_bind_declines_and_names_it(
     assert "materialise" not in result.timing_by_step
 
 
+@pytest.mark.parametrize("query", ["aid density", "aid per capita"])
 @pytest.mark.parametrize(
     ("nearest", "flagged"), [("ODA", [_ODA_AMOUNT]), (None, [])], ids=["named", "none-named"]
 )
 def test_a_density_no_reading_serves_binds_over_an_empty_menu(
-    nearest: str | None, flagged: list[str], monkeypatch
+    query: str, nearest: str | None, flagged: list[str], monkeypatch
 ):
-    """Neither the ODA amount nor its share of GNI is a density, so no reading of "aid
-    density" is admissible. Bind runs over an empty menu with both readings not electable,
-    and the part refuses on the form, flagging the reading the model names as nearest, or
-    nothing when it names none."""
+    """Neither the ODA amount nor its share of GNI is a density or a per-person series, so
+    no reading of "aid density" or "aid per capita" is admissible. Bind runs over an empty
+    menu with both readings not electable, and the part refuses on the form, flagging the
+    reading the model names as nearest, or nothing when it names none, with no exception."""
     llm = _ReadingLLM(None, nearest=nearest)
     result, _, _ = _resolve(
-        "aid density",
+        query,
         nodes=_ODA_NODES,
         svs=[_ODA_AMOUNT, _ODA_GNI_SHARE],
         place=("Norway", "country/NOR"),
@@ -907,8 +932,10 @@ def test_ghana_debt_to_gdp_flags_the_share_of_gni_with_the_debt_stock_nearest(mo
     ("elect", "base_words", "also", "status", "unverified"),
     [
         ("External debt (% of GNI)", "exports", (), "definite", ['"Gross national income"']),
-        ("External debt (% of GNI)", None, (), "definite", []),
-        ("External debt (% of GNI)", "export earnings", (), "definite", []),
+        # With no quote of the base, "exports" is a word of the variable no reader reads
+        # and the series does not state.
+        ("External debt (% of GNI)", None, (), "no_data", []),
+        ("External debt (% of GNI)", "export earnings", (), "no_data", []),
         # The quoted base leaves the level not electable, so bind asks, naming it nearest.
         (None, "exports", (), "no_data", []),
         (
@@ -939,7 +966,8 @@ def test_none_of_these_leaves_a_shape_with_a_denominator_arc_unverified(
     warning carries the spec_id of the spec it qualifies, a definite answer's one spec or
     each candidate in candidate order. The quoted base still refuses a level, which
     divides by nothing. A read naming "none of these" on no words of the phrase names no
-    base, and the share of GNI answers without the warning."""
+    base, so "exports" is unread on the share of GNI, which the binder rates not stating
+    it, and the part refuses `qualifier_not_bound` on it without the warning."""
     result = _resolve_debt(
         "debt to exports ratio",
         _ReadingLLM(
@@ -952,6 +980,7 @@ def test_none_of_these_leaves_a_shape_with_a_denominator_arc_unverified(
         monkeypatch,
         menu=[*_DEBT_MENU, _DEBT_GDP, _DEBT_PER_CAPITA],
         obs={f"{sv}|country/GHA": [_OBS] for sv in (_DEBT_GDP, _DEBT_PER_CAPITA)},
+        unstated=["exports"],
     )
     assert result.status == status, result.no_data_reason
     warnings = [w for w in result.warnings if w.code == "denominator_unverified"]
@@ -960,7 +989,9 @@ def test_none_of_these_leaves_a_shape_with_a_denominator_arc_unverified(
         assert '"exports"' in warning.message and found in warning.message
     if warnings:
         assert [w.spec_id for w in warnings] == [spec.spec_id for spec in result.specs]
-    if status == "no_data":
+    if status == "no_data" and elect is not None:
+        _assert_refuses_unread(result, ["exports"], [_DEBT_GNI])
+    elif status == "no_data":
         assert result.no_data_reason == "denominator_not_available"
         assert result.denominator is not None
         assert result.denominator.asked is None
@@ -1041,26 +1072,50 @@ def test_a_form_only_the_model_states_refuses_the_level_before_bind(monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "query,elect,base_words,stated_form,status,traced",
+    "query,elect,base_words,stated_form,status,traced,member",
     [
         # "debt to GDP" names no form a phrase pattern reads; the model's rate joins
-        # beside its quote of the base.
-        ("debt to GDP", "External debt (current US$)", "GDP", None, "definite", None),
-        ("debt to GDP", "External debt to GDP ratio", "GDP", "rate", "definite", "rate"),
-        # "ratio" names a rate, so the model's form is not read.
-        ("debt to GDP ratio", "External debt (% of GNI)", None, "per_person", "definite", None),
+        # beside its quote of the base. With no form joined the dollar level, which does
+        # not state GDP, refuses on it, its trace stating no form.
+        ("debt to GDP", "External debt (current US$)", "GDP", None, "no_data", None, _DEBT_LEVEL),
+        (
+            "debt to GDP",
+            "External debt to GDP ratio",
+            "GDP",
+            "rate",
+            "definite",
+            "rate",
+            _DEBT_UN,
+        ),
+        # "ratio" names a rate, so the model's form is not read, and the share of GNI
+        # refuses on the GDP it does not state.
+        (
+            "debt to GDP ratio",
+            "External debt (% of GNI)",
+            None,
+            "per_person",
+            "no_data",
+            None,
+            _DEBT_GNI,
+        ),
     ],
     ids=["none-stated", "stated-rate-traced", "phrase-form-wins"],
 )
 def test_a_stated_form_joins_only_when_no_phrase_names_one(
-    query, elect, base_words, stated_form, status, traced, monkeypatch
+    query, elect, base_words, stated_form, status, traced, member, monkeypatch
 ):
     result = _resolve_debt(
-        query, _ReadingLLM(elect, base_words=base_words, stated_form=stated_form), monkeypatch
+        query,
+        _ReadingLLM(elect, base_words=base_words, stated_form=stated_form),
+        monkeypatch,
+        unstated=["gdp"],
     )
     assert result.status == status, result.no_data_reason
-    if status == "definite":
-        assert result.specs[0].resolved.trace.stated_form == traced
+    (spec,) = result.specs if status == "definite" else result.flagged_match or ()
+    assert _members(spec) == [member]
+    assert spec.resolved.trace.stated_form == traced
+    if status == "no_data":
+        _assert_refuses_unread(result, ["GDP"], [member])
 
 
 class _QuantityReadFailsLLM(_ReadingLLM):
@@ -1068,6 +1123,8 @@ class _QuantityReadFailsLLM(_ReadingLLM):
     an output that fails validation does."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             raise LLMInfraError("LLM output failed schema validation")
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
@@ -1077,14 +1134,17 @@ def test_a_failed_quantity_read_answers_as_a_phrase_naming_no_form(monkeypatch):
     """ "debt to GDP" names no form a phrase reads. A failed quantity read leaves the part
     answering on the elected level, as a read that states no form does
     (`test_a_stated_form_joins_only_when_no_phrase_names_one[none-stated]`), where a stated
-    rate would refuse it."""
+    rate would refuse it before bind. The level does not state GDP, so it refuses on it
+    as `qualifier_not_bound`, its trace stating no form."""
     result = _resolve_debt(
         "debt to GDP",
         _QuantityReadFailsLLM("External debt (current US$)", stated_form="rate"),
         monkeypatch,
+        unstated=["gdp"],
     )
-    assert result.status == "definite", result.no_data_reason
-    assert result.specs[0].resolved.trace.stated_form is None
+    _assert_refuses_unread(result, ["GDP"], [_DEBT_LEVEL])
+    (flagged,) = result.flagged_match or ()
+    assert flagged.resolved.trace.stated_form is None
 
 
 def test_an_alternate_dividing_by_another_base_is_not_offered(monkeypatch):
@@ -1151,20 +1211,20 @@ def test_an_unverified_series_without_data_raises_no_unverified_warning(monkeypa
 
 
 @pytest.mark.parametrize(
-    ("base_words", "stated_form", "status"),
+    ("base_words", "stated_form", "reason"),
     [
-        (None, None, "definite"),
-        ("Ghana", None, "definite"),
-        ("private creditors", None, "definite"),
-        ("private creditors", "rate", "definite"),
-        ("private", None, "definite"),
-        ("to private creditors", None, "definite"),
-        ("to private creditors", "rate", "definite"),
-        ("to", "rate", "definite"),
-        ("Ghana", "rate", "definite"),
-        (None, "rate", "no_data"),
-        (None, "share", "no_data"),
-        (None, "per_head_base", "no_data"),
+        (None, None, "qualifier_not_bound"),
+        ("Ghana", None, "qualifier_not_bound"),
+        ("private creditors", None, "qualifier_not_bound"),
+        ("private creditors", "rate", "qualifier_not_bound"),
+        ("private", None, "qualifier_not_bound"),
+        ("to private creditors", None, "qualifier_not_bound"),
+        ("to private creditors", "rate", "qualifier_not_bound"),
+        ("to", "rate", "qualifier_not_bound"),
+        ("Ghana", "rate", "qualifier_not_bound"),
+        (None, "rate", "denominator_not_available"),
+        (None, "share", "denominator_not_available"),
+        (None, "per_head_base", "denominator_not_available"),
     ],
     ids=[
         "no-form",
@@ -1181,11 +1241,11 @@ def test_an_unverified_series_without_data_raises_no_unverified_warning(monkeypa
         "stated-per-head-base",
     ],
 )
-def test_the_quantity_read_reads_no_word_a_place_owns(base_words, stated_form, status, monkeypatch):
+def test_the_quantity_read_reads_no_word_a_place_owns(base_words, stated_form, reason, monkeypatch):
     """dq-ids-008 with Ghana left in the variable phrase: Ghana's door role carries its own
     span, so the quantity read reads the phrase without "Ghana", and its role's cue "to"
-    stays. A read naming "none of these" on "Ghana" names no base, and the debt service
-    level answers. Nor does one on "private creditors", on "private" or on "to private
+    stays. A read naming "none of these" on "Ghana" names no base, and bind elects the
+    debt level. Nor does one on "private creditors", on "private" or on "to private
     creditors": each leaves nothing or a function word outside the span of the phrase that
     the label of a value an admitted shape's slot holds occupies, "private creditors (IDS
     creditor type)" read without its property. The live read states a
@@ -1195,9 +1255,10 @@ def test_the_quantity_read_reads_no_word_a_place_owns(base_words, stated_form, s
     stands and refuses the level before bind, which names it as nearest: a share of people
     quotes no base by design, as dq-ext-005's read of "HIV prevalence among young women" (a
     share, no quote) does. A per-head form names its base in its own words, so a stated one
-    stands too."""
+    stands too. The elected level states neither "service" nor "private creditors", so
+    the binder rates them not stated and the part refuses `qualifier_not_bound` on each."""
     llm = _ReadingLLM(
-        "External debt (current US$)" if status == "definite" else None,
+        "External debt (current US$)" if reason == "qualifier_not_bound" else None,
         nearest="External debt (current US$)",
         denominator=None if base_words is None else _NONE_OF_THESE,
         base_words=base_words,
@@ -1211,8 +1272,11 @@ def test_the_quantity_read_reads_no_word_a_place_owns(base_words, stated_form, s
         monkeypatch=monkeypatch,
         llm=llm,
         roles=[DoorRole(axis="destination", span="Ghana")],
+        unstated=["service", "private", "creditors"],
     )
     assert llm.quantity_prompts[0].splitlines()[0] == (
         "Variable phrase: debt service to private creditors"
     )
-    assert result.status == status, result.no_data_reason
+    assert (result.status, result.no_data_reason) == ("no_data", reason)
+    if reason == "qualifier_not_bound":
+        _assert_refuses_unread(result, ["service", "private creditors"], [_DEBT_LEVEL])

@@ -103,6 +103,20 @@ def test_run_returns_the_job_result_under_the_callers_context_and_releases_the_p
     door_executor.executor.shutdown()
 
 
+def test_a_job_submitted_straight_to_the_executor_runs_under_the_submitters_context() -> None:
+    """A door that submits to the executor itself, as publish does, keeps the request's bound
+    state, so no call site has to remember to copy it."""
+    door_executor = build_door_executor(1, "exemplar")
+    marker = contextvars.ContextVar[str]("marker")
+
+    def submit() -> str:
+        marker.set("request")
+        return door_executor.executor.submit(marker.get).result(timeout=5)
+
+    assert contextvars.copy_context().run(submit) == "request"
+    door_executor.executor.shutdown()
+
+
 def test_run_refuses_at_capacity_and_frees_the_permit_when_the_running_job_ends() -> None:
     door_executor = build_door_executor(1, "exemplar")
     started = threading.Event()

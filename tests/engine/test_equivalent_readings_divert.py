@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.config import SearchSettings
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
@@ -18,6 +18,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.engine.region.state import EngineOptions
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -92,11 +93,8 @@ class _CandidateBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen_shape_index,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
+        return elected_reply(
+            self._chosen_shape_index, bindings=[], also_plausible=self._also_plausible
         ), None
 
 
@@ -111,6 +109,7 @@ def _facet(*, provenance_id: str | None) -> dict:
 
 def _run(
     *,
+    binder: Binder | None = None,
     svs: list[str],
     scores: list[float],
     chosen_shape_index: int,
@@ -125,20 +124,21 @@ def _run(
         search_settings(max_candidates=search_max_candidates)
     graph = FakeGraph(
         nodes=_NODES,
-        detect={"electricity or mortality in Kenya": {"svs": svs, "cosine_scores": scores}},
+        detect={"indicators in Kenya": {"svs": svs, "cosine_scores": scores}},
         resolve={"Kenya": "country/KEN"},
         obs=obs,
     )
     return asyncio.run(
         resolve_variable(
-            "electricity or mortality in Kenya",
+            "indicators in Kenya",
             entities=["Kenya"],
             date_request=None,
-            detect_query="electricity or mortality in Kenya",
-            role_query="electricity or mortality in Kenya",
+            detect_query="indicators in Kenya",
+            role_query="indicators in Kenya",
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_CandidateBindLLM(
                 chosen_shape_index=chosen_shape_index, also_plausible=also_plausible
             ),
@@ -314,6 +314,7 @@ def test_elected_no_data_twin_answers(svs, obs, status):
         also_plausible=[1],
         # No entry for the elected StatVar: confirmed structurally, zero observations.
         obs=obs,
+        binder=ReplyBinder(),
     )
     assert result.status == status
     if status == "no_data":
@@ -462,7 +463,7 @@ def test_diverted_twin_carries_no_sentence_or_facet_options_with_both_flags_on()
 
     response = assemble_region(
         region,
-        query="electricity or mortality in Kenya",
+        query="indicators in Kenya",
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",

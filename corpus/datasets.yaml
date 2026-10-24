@@ -39,7 +39,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-disbursements-kenya
@@ -85,7 +85,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-aid-kenya-fr
@@ -94,7 +94,7 @@
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, language: fr}
   # Extraction drops "imputée", and "multilateral" without "imputed" refuses qualifier_not_bound
   # on the CRS answer instead of answering from the imputed table.
-  known_failure: {issue: 1156, checks: [disposition, measure, provenance]}
+  known_failure: {issue: 1156, checks: [measure]}
   expect:
     definite:
       measure: {family: dac2a.imputed_multilateral}
@@ -173,7 +173,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2024, end: 2024}
 
 - id: dataset-bilateral-oda-ida
@@ -251,15 +251,14 @@
 # include_families asserts inclusion only; the exact count of two candidates is unasserted.
 - id: dataset-imputed-student-costs-kenya
   query: imputed student costs from Germany to Kenya
-  why: '"Imputed student costs" is a CRS cooperation modality published on two CRS shapes, so both are offered and no table is named.'
+  why: '"Imputed student costs" is a CRS cooperation modality published as grant equivalent and as commitment; disbursements outrank commitments, so grant equivalent answers and no table is named.'
   tags: {theme: education, entity: two_roles, direction: both, door: raw_text, dataset: none}
   expect:
-    candidates:
-      measure: {bound: {crsCooperationModality: CRSCooperationModalityE02}}
+    definite:
+      measure: {family: crs.grant_equivalent, bound: {crsCooperationModality: CRSCooperationModalityE02}}
       provenance: {bound: false}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
-      include_families: [crs.grant_equivalent, crs.commitment]
 
 - id: dataset-imputed-rent-kenya
   query: imputed rent in Kenya
@@ -272,7 +271,6 @@
   query: education aid to Kenya from the CRS
   why: '"From the CRS" names the source, not a provider, so the CRS answers with its provenance pinned.'
   tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector}
-  known_failure: {issue: 1164, checks: [disposition]}
   expect:
     definite:
       measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
@@ -344,7 +342,7 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 # raw_text cannot require query_qualifier_dropped, so a definite answer that drops the phrase passes.
@@ -398,7 +396,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-oecd-education-aid-kenya
@@ -420,7 +418,7 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-total-oda-reported-to-dac-germany
@@ -494,7 +492,7 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-parsed-gdp-kenya-imf

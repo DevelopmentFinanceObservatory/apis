@@ -9,26 +9,31 @@ Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,
 `GET /api/datasets/{spec_id}/{content_version}/observations`,
 `GET /api/datasets/{spec_id}/{content_version}/files/{digest}`,
+`GET /api/datasets/{spec_id}/{content_version}/file`,
 `GET /api/datasets/{id}/{content_version}/description` and its `/values` page for a `spec_` or
 `ops_` id, `POST /api/datasets/register`,
 `POST /api/datasets`, `POST /api/datasets/frames/publish`, `POST /api/datasets/frames/refresh`,
-and the recipe door's
-`PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe`,
+the recipe door's
+`PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe` and
 `GET /api/datasets/recipes/replays/{replay_key}`, and `GET /api/datasets/{spec_id}/versions`.
 Registration stores definitions for later materialisation. The mint route handles four input
-kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes. It
-mounts before the snapshot door, whose `GET /api/datasets/{spec_id}/{content_version}` would
-otherwise read `versions` as a content version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
+kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes.
+The versions door mounts before the snapshot door, whose
+`GET /api/datasets/{spec_id}/{content_version}` would otherwise read `versions` as a content
+version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
 problem details.
 
-The Data access proxy authenticates and authorises requests and enforces `401`, `413`, `415`, and
-`429`. The deployment bounds request bodies, except publish, which checks its own `Content-Length`
-ceiling before proxy admission.
+Callers reach the API through the website's proxy, which answers `429` once an IP passes its
+allowance, 120 calls a minute on `/api/*` by default, counted in a fixed window that every proxy
+instance shares in Postgres. A call whose count fails goes through. The proxy passes
+`Authorization` upstream unread. The deployment bounds request bodies, and publish also checks its
+own `Content-Length` ceiling at admission, before it reads the body.
 """
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import FastAPI
 
@@ -63,6 +68,7 @@ from datasets_api.doors.register import (
     classify_register_exception,
 )
 from datasets_api.doors.snapshot import build_snapshot_door
+from datasets_api.doors.versions import build_versions_door
 from datasets_api.operation_store import OperationStore, classify_operation_store_exception
 from datasets_api.operations.task_client import TaskClient
 from datasets_api.recipe_store import RecipeStore
@@ -74,11 +80,13 @@ from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
 from dfo_platform.doors import combine_classifiers, flatten
+from graph_release.context import bound_served_release
+from graph_release.service import ReleaseService, get_release_service
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
 from origin_catalogue.service import CatalogueService, get_catalogue_service
-from series_coverage.shared import CoverageService, get_coverage_service
+from series_coverage.shared import ServedCoverage, get_coverage_service
 from spec_registry import SpecRegistry
 from spec_registry.errors import SpecRegistryStoreError
 from spec_registry.reader import SpecReader
@@ -120,11 +128,12 @@ def datasets_surface(
     task_client: TaskClient | None = None,
     code_index: CodeIndex | None = None,
     rate_cache: RateTableCache | None = None,
-    coverage: CoverageService | None = None,
+    coverage: ServedCoverage | None = None,
     now: Clock = utc_now,
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
     catalogue: CatalogueService | None = None,
+    release: ReleaseService | None = None,
 ) -> Surface:
     """Build the Datasets `Surface` from its doors.
 
@@ -134,8 +143,10 @@ def datasets_surface(
     store left out is built over one `dataset_store` pool borrow shared by every omitted store.
     `head_writer` is the head store. `now` is the clock every door reads.
 
-    `code_index` defaults to the process-wide index and `coverage` to the process-wide service,
-    resolved here, so a missing or unreadable `COVERAGE_ARTIFACT_URI` fails construction.
+    A given `code_index` serves every request. Left out, each request reads `get_index()`,
+    which can change between requests. The index is read here, under the served release as a
+    request reads it, so a release without one fails construction. `coverage` defaults to the
+    bound release's coverage (`series_coverage.shared.ReleaseCoverage`).
     `rate_cache` defaults to a cache of this surface's own; pass Search's when composing both.
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
@@ -148,13 +159,46 @@ def datasets_surface(
     so a missing or unloadable `ORIGIN_CATALOGUE_URI` fails startup. Without an injected `graph`,
     the lifespan acquires the process-wide graph generation the live graph client keys its
     caches on, and registers the default-scope memo on it.
+
+    Each request also binds `release`'s served release, and a swap holds every materialise
+    permit. `release` defaults to the process-wide service, so an unset `GRAPH_RELEASE_URI` or
+    an unreadable release fails startup.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
+    _release = release if release is not None else get_release_service()
+    cell = DepsCell()
+    # The doors read the code index as they are built, so they are built under the release a
+    # request would bind, and keep none of what they read.
+    with bound_served_release(_release):
+        if code_index is None:
+            get_index()
+        doors = (
+            build_meta_door(deps=cell, settings=_settings),
+            build_register_door(deps=cell),
+            build_mint_door(deps=cell),
+            build_definition_door(deps=cell),
+            build_refresh_door(deps=cell, settings=_settings),
+            build_recipe_door(
+                deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
+            ),
+            build_versions_door(deps=cell),
+            build_snapshot_door(deps=cell),
+            build_description_door(deps=cell),
+            build_files_door(deps=cell),
+            build_observations_door(deps=cell),
+            build_pin_door(
+                deps=cell, settings=_settings, allowed_principals=pin_allowed_principals
+            ),
+            build_publish_door(
+                deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
+            ),
+        )
     overrides = DepsOverrides(
         coverage=coverage if coverage is not None else get_coverage_service(),
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),
-        code_index=code_index if code_index is not None else get_index(),
+        code_index=code_index,
+        release=_release,
         registry=registry,
         spec_reader=spec_reader,
         snapshot_reader=snapshot_reader,
@@ -171,31 +215,16 @@ def datasets_surface(
         task_client=task_client,
         now=now,
     )
-    cell = DepsCell()
-
-    doors = (
-        build_meta_door(deps=cell, settings=_settings),
-        build_register_door(deps=cell),
-        build_mint_door(deps=cell),
-        build_definition_door(deps=cell),
-        build_refresh_door(deps=cell, settings=_settings),
-        build_recipe_door(
-            deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
-        ),
-        build_snapshot_door(deps=cell),
-        build_description_door(deps=cell),
-        build_files_door(deps=cell),
-        build_observations_door(deps=cell),
-        build_pin_door(deps=cell, settings=_settings, allowed_principals=pin_allowed_principals),
-        build_publish_door(
-            deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
-        ),
-    )
 
     router = flatten(doors)
 
     # Append grammar refusals after real routes. The converter excludes valid ids.
     router.routes.extend(build_id_grammar_refusal_router().routes)
+
+    @contextmanager
+    def request_scope() -> Iterator[None]:
+        with bound_catalogue(_catalogue.snapshot()), bound_served_release(_release):
+            yield
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -207,6 +236,7 @@ def datasets_surface(
 
     return Surface(
         name="datasets",
+        description="Register and mint datasets, poll their operations, and read versions, observations and files.",
         prefix="/api/datasets",
         router=router,
         capability_version=DATASETS_CAPABILITY_VERSION,
@@ -233,5 +263,5 @@ def datasets_surface(
         registry_endpoints={
             path: endpoint for door in doors for path, endpoint in door.registry_endpoints.items()
         },
-        request_scope=lambda: bound_catalogue(_catalogue.snapshot()),
+        request_scope=request_scope,
     )

@@ -488,7 +488,7 @@ class TestMenuSeatsWholeRoots:
         # each shape, which the leaves pass here and miss on the floor there, with the codes
         # read in the vocabularies the pinned parts are judged in and the memo of each
         # judged shape's codes; and the clock.
-        given = {"shapes_found", "rcl", "llm", "coverage", "emit"}
+        given = {"shapes_found", "rcl", "llm", "binder", "coverage", "emit"}
         per_shape = {
             "interpretations",
             "pinned_part_matches",

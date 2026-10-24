@@ -14,7 +14,7 @@ import search.engine.region.phase_rank_bind as phase_rank_bind_module
 from code_index import CodeIndex, IndexStamp, StatVarRow
 from code_index.types import MeasureAxis, MeasureIndex
 from entity_resolution import Admission, EntityResolver
-from search.engine.bind import DraftBindingKind, SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import DraftBindingKind, SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -24,6 +24,7 @@ from search.engine.region.phase_election import _repair_bindings
 from search.engine.region.phase_rank_bind import _phase_bind
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft, SlotKeyDraft
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._quantity import NO_QUANTITY
 
@@ -129,16 +130,14 @@ def _state(*, shape_draft: ShapeDraft, bindings: list[SlotBindingDraft]) -> Reso
         warnings=[],
         # Recall resolved no place, so the minted identity binds no role key.
         rcl=Recall(candidates=[], resolutions={}),
-        bind_result=_UniversalBindOutput(
-            chosen_shape_index=0, bindings=bindings, also_plausible=None, ask=None
-        ),
+        bind_result=elected_reply(0, bindings=bindings, also_plausible=None),
         shape_draft=shape_draft,
         coverage=empty_coverage_snapshot(),
     )
 
 
 def _run_repair(state: ResolveState) -> list[SlotBindingDraft]:
-    result = _repair_bindings(state)
+    result = asyncio.run(_repair_bindings(state))
     assert result is None, "expected _repair_bindings to fall through"
     return state.bindings
 
@@ -165,9 +164,7 @@ class _RecordingBindLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=None), None
 
 
 def test_phase_bind_withholds_the_declared_constraint_measure_axes_from_the_prompt(

@@ -11,8 +11,10 @@ from typing import Final, cast
 
 import dc_graph
 from code_index.shared import get_index
-from entity_resolution import Ambiguous, Group, Resolved
-from origin_catalogue import recording_un_blocked_places
+from code_index.types import PartyClass
+from dfo_platform.timings import PhaseTimings, collecting
+from entity_resolution import Ambiguous, Entity, Group, Resolved
+from origin_catalogue import note_un_unserved, recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
@@ -29,6 +31,7 @@ from search.engine.region.place_roles import (
     place_key,
     set_choices,
     stated_party_words,
+    totalled_axes,
 )
 from search.engine.region.place_set import PlaceNode, PlaceReading, PlaceSet
 from search.engine.region.result import (
@@ -39,13 +42,22 @@ from search.engine.region.result import (
 )
 from search.engine.region.source_choice import allows_un_system
 from search.engine.region.state import ResolveState, UnLeg, UnPool
+from search.engine.region.whole_totals import named_whole, population_totals, side_classes
+from search.engine.retrieval.bound_values import declared_datasets
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, role_names_by_axis
 from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_reason
+from search.render.no_data import UnlistedPopulation
 
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
 # expansion. derive_shapes checks the confirmed count to bound the actual read.
 _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES = 6
+
+# With `SEARCH_UN_ON_FIRST_MENU`, our pass merges the UN leg's shapes, waiting for them,
+# only when no shape of its own has a measured recall score of at least this
+# (`_holds_a_strong_shape`). A pass holding such a shape never takes the UN pool, so its
+# answer does not wait on the leg.
+UN_MERGE_WEAK_SCORE: Final = 0.7
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +126,14 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     asks for the name's members (`ResolveState.member_entities`) or the resolver read the name
     as its members (`reading`). Recall's country dcids are snapshotted for the availability
     floor. The party each word of the part names on an unnamed axis gets a set of its node
-    (`ResolveState.party_sets`, `_party_word_sets`).
+    (`ResolveState.party_sets`, `_party_word_sets`). A text naming a whole population ("all
+    donors") gets no place set: it and each whole total the part can bind on a side it
+    totals get a set of their node (`ResolveState.whole_sets`, `_whole_total_sets`). Such a
+    text asked for its members, or under an operation over its side ("official donors
+    giving more than 100 million"), is listed (`ResolveState.whole_listed`): it opens its side
+    (`ResolveState.open_axes`) in place of naming a total there, on the shapes that list
+    exactly its parties there (`_prune_shapes_by_listing`). Whether the request directs such
+    a text to the other side is recorded too (`ResolveState.whole_misdirected`).
     """
     # The type checker narrows locals, while state attributes need this explicit cast.
     rcl = cast(Recall, state.rcl)
@@ -132,6 +151,31 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         name: resolution.entity
         for name, resolution in rcl.resolutions.items()
         if isinstance(resolution, Resolved)
+    }
+    # A text naming a whole population ("all donors") binds as a whole total
+    # (`_whole_total_sets`), so it holds no place set. Asked for its members, or under an
+    # operation over its side, which may filter, rank or count them, it asks for every
+    # party of its side, which it leaves open and no total binds.
+    whole_named = _whole_named(state, resolved)
+    groups = {name: group for name, group in groups.items() if name not in whole_named}
+    resolved = {name: entity for name, entity in resolved.items() if name not in whole_named}
+    parties = get_index().parties
+    over = {operation.over for operation in state.operations}
+    sides = {name: parties[dcids[0]].axes[0] for name, dcids in whole_named.items()}
+    # A population's side is the one axis the code index publishes its parties on, so a text
+    # the request directs to the other side ("from France to official donors") is refused
+    # `role_incompatible` however it is asked (`_phase_check_entities`).
+    state.whole_misdirected = tuple(
+        name
+        for name, axis in sides.items()
+        if any(role.stated and role.axis != axis for role in state.entity_roles.get(name) or ())
+    )
+    state.whole_listed = {
+        name: axis for name, axis in sides.items() if name in state.member_entities or axis in over
+    }
+    state.open_axes |= set(state.whole_listed.values())
+    whole_named = {
+        name: dcids for name, dcids in whole_named.items() if name not in state.whole_listed
     }
     membership = state.resolver.membership
     regions = [entity for entity in resolved.values() if membership.holds_region(entity.dcid)]
@@ -195,6 +239,46 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         )
     state.place_sets = place_sets
     state.party_sets = await _party_word_sets(state)
+    state.whole_named = whole_named
+    state.whole_sets = _whole_total_sets(state)
+
+
+def _whole_named(state: ResolveState, resolved: Mapping[str, Entity]) -> dict[str, tuple[str, ...]]:
+    """Each text of the part naming a whole population, with the dcids it names
+    (`whole_totals.named_whole`): the phrase of a whole total set, or a name resolving to a
+    whole total of every party on its side."""
+    named: dict[str, tuple[str, ...]] = {}
+    for name in dict.fromkeys(state.entities):
+        entity = resolved.get(name)
+        if (dcids := named_whole(name, None if entity is None else entity.dcid)) is not None:
+            named[name] = dcids
+    return named
+
+
+def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
+    """The place set of each whole total the part can bind (`ResolveState.whole_sets`), by
+    dcid: each party a text names as a whole population (`ResolveState.whole_named`), and
+    the totals of every party on each side the part totals (`place_roles.totalled_axes`,
+    `whole_totals.population_totals`). Each is its node, named by the code index's label
+    for the party.
+
+    A total of a side the part totals binds where the code index marks it on a side its
+    dataset publishes (`place_roles.whole_total_candidates`), and a named one binds as a
+    party on its side (`place_roles.bind_place_roles`). Its set asks role admission nothing
+    (`_prune_shapes_by_admission`): it holds no members, so it reads its node on any role
+    (`place_roles.set_choices`), and its node carries no graph type, so no graph read runs
+    for it."""
+    named = [dcid for dcids in state.whole_named.values() for dcid in dcids]
+    rows = get_index().parties
+
+    def label(dcid: str) -> str:
+        row = rows.get(dcid)
+        return row.label if row is not None and row.label else dcid
+
+    return {
+        dcid: PlaceSet(name=label(dcid), kind="place", node=PlaceNode(dcid=dcid, graph_type=""))
+        for dcid in dict.fromkeys((*named, *population_totals(totalled_axes(state))))
+    }
 
 
 async def _party_word_sets(state: ResolveState) -> dict[str, PlaceSet]:
@@ -241,11 +325,28 @@ def _is_oversized_group(resolution: object) -> bool:
     return isinstance(resolution, Group) and len(resolution.members) > settings().max_child_places
 
 
+def _ambiguous_candidate(
+    candidate: Entity, *, group_nodes: frozenset[str], group_names: Mapping[str, str]
+) -> AmbiguousEntityCandidate:
+    """`candidate` as an ambiguous wording's candidate, marked a group node when it is one
+    of `group_nodes`, the group nodes of a wording asked for its members, with its group's
+    name from `group_names`."""
+    group_node = candidate.dcid in group_nodes
+    return AmbiguousEntityCandidate(
+        dcid=candidate.dcid,
+        name=candidate.name,
+        kind=candidate.kind,
+        group_node=group_node,
+        group_name=group_names.get(candidate.dcid) if group_node else None,
+    )
+
+
 async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     """Refuse a part naming an entity that did not resolve, before shape derivation and
     the bind call.
 
-    Each name with no place set mints one reason: ``entity_ambiguous`` for an Ambiguous
+    Each name with no place set that names no whole population (`ResolveState.whole_named`,
+    `ResolveState.whole_listed`) mints one reason: ``entity_ambiguous`` for an Ambiguous
     resolution, ``entity_set_too_large`` for a Group with more members than a Spec binds,
     and ``entity_not_resolved`` otherwise. The part refuses with the reason
     `elect_no_data_reason` elects over them, and names, whatever the elected reason, an
@@ -254,6 +355,12 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     An oversized group resolved, so it is never among the unresolved. Both keep query
     order. The place sets are final once `_phase_resolve_places` has run,
     so every later phase sees only resolved entities.
+
+    A part whose names all resolved but which directs a whole population to the side other
+    than its own (`ResolveState.whole_misdirected`) refuses ``role_incompatible`` here,
+    naming those texts as unresolved, before any shape is derived or pruned: the conflict
+    is the request's own and holds on every shape, so no listing or variable refusal
+    stands in front of it.
     """
     rcl = cast(Recall, state.rcl)
     # One reason per name, in query order.
@@ -261,26 +368,40 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
         name: _entity_reason(rcl.resolutions.get(name))
         for name in state.entities
         if name not in state.place_sets
+        and name not in state.whole_named
+        and name not in state.whole_listed
     }
     if not reasons:
+        if state.whole_misdirected:
+            return state.no_data(
+                "role_incompatible", unresolved_entity_names=state.whole_misdirected
+            )
         return None
+    ambiguous = [name for name, name_reason in reasons.items() if name_reason == "entity_ambiguous"]
+    # A pin on a group's own node cannot ask for its members, so a candidate of a wording
+    # asked for its members carries whether it is one, and the group's registered name for
+    # its option to post.
+    asks_members = any(name in state.member_entities for name in ambiguous)
+    group_nodes = await state.resolver.group_node_dcids() if asks_members else frozenset()
+    group_names = await state.resolver.group_node_names() if asks_members else {}
     ambiguous_entities = tuple(
         AmbiguousEntity(
             text=name,
             candidates=tuple(
-                AmbiguousEntityCandidate(
-                    dcid=candidate.dcid, name=candidate.name, kind=candidate.kind
+                _ambiguous_candidate(
+                    candidate,
+                    group_nodes=group_nodes if name in state.member_entities else frozenset(),
+                    group_names=group_names,
                 )
                 for candidate in cast(Ambiguous, rcl.resolutions[name]).candidates
             ),
             role=_sole_axis(state, name),
         )
-        for name, name_reason in reasons.items()
-        if name_reason == "entity_ambiguous"
+        for name in ambiguous
     )
-    # The part's `data_query` pins these on an `entity_ambiguous` refusal. A group, and a
-    # set read as its members, stay unpinned: re-resolving the text keeps the members,
-    # whether an alias row or the part's flag asked for them.
+    # Each option of an `entity_ambiguous` refusal pins these. A group, and a set read as
+    # its members, stay unpinned: re-resolving the text keeps the members, whether an alias
+    # row or the part's flag asked for them.
     resolved_entity_dcids = {
         name: place_set.node.dcid
         for name in dict.fromkeys(state.entities)
@@ -421,6 +542,82 @@ async def _prune_shapes_by_admission(
     return [], [not_admitted_entity(place_set) for place_set in refused]
 
 
+def _prune_shapes_by_listing(
+    state: ResolveState, shapes: list[ShapeDraft]
+) -> tuple[list[ShapeDraft], list[RoleNotAdmittedEntity]]:
+    """Keep shapes on which each whole population a text asks the members of
+    (`ResolveState.whole_listed`) opens its side to exactly its parties: the classes of party
+    the shape's declared datasets hold there, totals aside (`whole_totals.side_classes`), are
+    a subset of the ones the population's markers cover (`WholeMarker.covers`). An open side
+    lists every party its dataset holds, and a Spec states no class it leaves out, so
+    "official donors" asked member by member lists on no CRS shape, where private donors
+    stand beside official ones. A shape whose datasets hold no class the index reads on the
+    side, such as one no declared dataset publishes, lists no population, since nothing
+    shows what its open side would hold.
+
+    Return the rejected populations, each named by its first party (`UnlistedPopulation`),
+    only when every shape fails. Where some population fails on every shape, those are the
+    ones named, each with the classes every shape's datasets hold beside it, or with no
+    account (`RoleNotAdmittedEntity.unlisted` `None`) where the shapes share no class they
+    are known to hold beside it, as where one shape's classes cannot be read. Otherwise each
+    population fails only beside the others, and every one some shape fails is named as
+    listing alone. A population every shape lists exactly is no cause of the refusal."""
+    if not state.whole_listed:
+        return shapes, []
+    resolved = {
+        name: resolution.entity
+        for name, resolution in cast(Recall, state.rcl).resolutions.items()
+        if name in state.whole_listed and isinstance(resolution, Resolved)
+    }
+    listed = {
+        name: dcids
+        for name, dcids in _whole_named(state, resolved).items()
+        if name in state.whole_listed
+    }
+    parties = get_index().parties
+    covered = {
+        name: {cls for dcid in dcids for marker in parties[dcid].whole for cls in marker.covers}
+        for name, dcids in listed.items()
+    }
+
+    def left_out(shape: ShapeDraft, name: str) -> set[PartyClass] | None:
+        datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
+        classes = side_classes(state.whole_listed[name], datasets=datasets)
+        return set(classes) - covered[name] if classes else None
+
+    def fails(classes: set[PartyClass] | None) -> bool:
+        return classes is None or bool(classes)
+
+    left_outs = {name: [left_out(shape, name) for shape in shapes] for name in listed}
+    survivors = [
+        shape
+        for position, shape in enumerate(shapes)
+        if not any(fails(classes[position]) for classes in left_outs.values())
+    ]
+    if survivors:
+        return survivors, []
+    nowhere = [name for name, classes in left_outs.items() if all(map(fails, classes))]
+    unlisted: dict[str, UnlistedPopulation | None]
+    if nowhere:
+        held = {name: set.intersection(*(c or set() for c in left_outs[name])) for name in nowhere}
+        unlisted = {
+            name: UnlistedPopulation(axis=state.whole_listed[name], left_out=tuple(sorted(classes)))
+            if classes
+            else None
+            for name, classes in held.items()
+        }
+    else:
+        unlisted = {
+            name: UnlistedPopulation(axis=state.whole_listed[name], left_out=(), listed_alone=True)
+            for name, classes in left_outs.items()
+            if any(map(fails, classes))
+        }
+    return [], [
+        RoleNotAdmittedEntity(text=name, dcid=listed[name][0], graph_type=None, unlisted=population)
+        for name, population in unlisted.items()
+    ]
+
+
 def _set_types(place_set: PlaceSet) -> tuple[str, ...]:
     """The graph types of every reading `place_set` has: its node's, then the one its
     members share."""
@@ -453,10 +650,30 @@ def not_admitted_entity(place_set: PlaceSet) -> RoleNotAdmittedEntity:
     )
 
 
-async def _derive_pool(state: ResolveState, pool: Sequence[DetectedSV]) -> list[ShapeDraft]:
-    """The shapes `pool`'s candidates derive, off the event loop. Raises
-    `RoleSignatureError` when no candidate group has a consistent entity-role signature."""
+async def _derive_pool(
+    state: ResolveState, pool: Sequence[DetectedSV], *, timings: PhaseTimings
+) -> list[ShapeDraft]:
+    """The shapes `pool`'s candidates derive, off the event loop, with derivation's stages
+    (`derive.derive_shapes`) recorded on `timings`. Raises `RoleSignatureError` when no
+    candidate group has a consistent entity-role signature."""
     pool_svs = [c.dcid for c in pool]
+
+    def derive() -> list[ShapeDraft]:
+        with collecting(timings):
+            return derive_shapes(
+                confirmed_svs=pool_svs,
+                graph=state.graph,
+                sv_scores={c.dcid: c.score for c in pool},
+                sv_types={c.dcid: c.type_of for c in pool},
+                rival_svs=frozenset(c.dcid for c in pool if c.rival),
+                # Use recall's country snapshot. Place sets and Group members stay off the
+                # floor.
+                place_dcids=state.recall_only_place_dcids,
+                full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
+                deadline=state.deadline,
+                coverage=state.coverage.index,
+            )
+
     # Dated observation reads use ``needs_dates=True``. This scope lets the availability
     # probe share that cache key when raw recall has at most 6 candidates. derive_shapes
     # rechecks the limit after confirmation and Topic expansion, bounding the full-history
@@ -464,18 +681,7 @@ async def _derive_pool(state: ResolveState, pool: Sequence[DetectedSV]) -> list[
     with force_full_facets(
         state.date_request is not None and len(pool_svs) <= _FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES
     ):
-        return await asyncio.to_thread(
-            derive_shapes,
-            confirmed_svs=pool_svs,
-            graph=state.graph,
-            sv_scores={c.dcid: c.score for c in pool},
-            sv_types={c.dcid: c.type_of for c in pool},
-            rival_svs=frozenset(c.dcid for c in pool if c.rival),
-            # Use recall's country snapshot. Place sets and Group members stay off the floor.
-            place_dcids=state.recall_only_place_dcids,
-            full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
-            deadline=state.deadline,
-        )
+        return await asyncio.to_thread(derive)
 
 
 async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
@@ -497,7 +703,8 @@ async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
         recording_degraded_reads(detached=True) as lost,
     ):
         try:
-            shapes = await _derive_pool(state, candidates)
+            # The leg runs beside our pass, so its stages stay out of the part's timing.
+            shapes = await _derive_pool(state, candidates, timings=PhaseTimings())
         except RoleSignatureError:
             shapes, missed = [], None
         except _UPSTREAM_FAILURES as exc:
@@ -529,6 +736,36 @@ async def un_pool_shapes(leg: UnLeg, *, bound: float | None) -> UnPool:
     return leg.task.result()
 
 
+def _holds_a_strong_shape(shapes: Sequence[ShapeDraft]) -> bool:
+    """Whether a shape of `shapes` has a measured recall score of at least
+    `UN_MERGE_WEAK_SCORE`."""
+    return any(
+        score is not None and score >= UN_MERGE_WEAK_SCORE
+        for score in (shape.measured_score for shape in shapes)
+    )
+
+
+async def _merge_un_pool(state: ResolveState, leg: UnLeg) -> None:
+    """Append the UN leg's shapes to our pass's (`ResolveState.shapes_found`) when our pass
+    holds no strong shape (`_holds_a_strong_shape`), so both pools meet the same admission,
+    each its own score floor, and one menu.
+
+    A part holding a strong shape never takes the pool, whenever the leg finishes, so its
+    answer does not depend on the UN leg's latency; the leg stays for `pipeline._fill_gap`.
+    Any other part waits for the leg (`un_pool_shapes`), and a late or failed leg leaves
+    the pool's reason in `ResolveState.un_pool` for its answer to carry. The reads a merged
+    pool could not serve join the part's records, since the pool reaches its menu."""
+    if _holds_a_strong_shape(state.shapes_found):
+        return
+    state.un_pool = pool = await un_pool_shapes(leg, bound=state.deadline)
+    if pool.missed is not None:
+        return
+    state.shapes_found = [*state.shapes_found, *pool.shapes]
+    note_un_unserved(pool.unserved)
+    for read in pool.lost:
+        note_degraded_read(read)
+
+
 async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     """Confirm the pass's recall candidates and derive role-compatible shapes.
 
@@ -536,15 +773,22 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     and shape derivation as one task beside it (`ResolveState.un_leg`) when the part's
     scope allows a UN provenance (`source_choice.allows_un_system`) and the part names no
     series code, since a code part's answer stands without a UN pass
-    (`pipeline._un_pass_skip`). Our pass never waits
-    for that task; the UN pass, which runs only when ours ends no_data
-    (`pipeline._fill_gap`), takes its shapes, already in `state.shapes_found`. Return
+    (`pipeline._un_pass_skip`). With `SEARCH_UN_ON_FIRST_MENU`, our pass holding no strong
+    shape appends that task's shapes to its own (`_merge_un_pool`). Otherwise our pass never waits for the
+    task; the UN pass, which runs when ours ends no_data (`pipeline._fill_gap`), takes its
+    shapes, already in `state.shapes_found`. Return
     ``role_signature_incompatible`` or ``variable_not_resolved`` when the pass derives no
-    shape, and ``entity_role_not_admitted`` when all shapes fail role checks. A part whose
+    shape, and ``entity_role_not_admitted`` when all shapes fail role checks or none lists
+    a whole population asked member by member exactly (`_prune_shapes_by_listing`). A part whose
     series code named its candidates (`ResolveState.source_code`) and derives no shape from
     them refuses ``source_code_not_held`` in place of ``variable_not_resolved``
     (`ResolveState.no_data`). Surviving
     shapes proceed to ranking.
+
+    Beside `shape`, `state.timing` gets our pass's derivation stages (`derive.derive_shapes`:
+    `shape_arcs`, `shape_probe` with `shape_probe_coverage` inside it, `shape_labels`,
+    `shape_groups`) and the admission prune,
+    `shape_admission`. The UN leg's derivation runs concurrently and records none of them.
     """
     rcl = cast(Recall, state.rcl)
     t0 = state.shape_t0 = now_ms()
@@ -559,10 +803,15 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
         # hit as it did while its provenance was admitted; derivation reads each as its
         # successor.
         ours = rcl.candidates if rcl.hits is None else rcl.hits
+        derive_timings = PhaseTimings()
         try:
-            state.shapes_found = await _derive_pool(state, ours)
+            state.shapes_found = await _derive_pool(state, ours, timings=derive_timings)
         except RoleSignatureError:
             state.shapes_found, signature_refused = [], True
+        finally:
+            state.timing.update({name: round(ms) for name, ms in derive_timings.snapshot().items()})
+        if state.un_leg is not None and settings().un_on_first_menu:
+            await _merge_un_pool(state, state.un_leg)
     shapes_found = state.shapes_found
 
     # No confirmed StatVar means there is no shape to bind.
@@ -586,7 +835,11 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
         return state.no_data("variable_not_resolved")
 
     # Prune before ranking so every later count sees only compatible shapes.
+    admission_t0 = now_ms()
     shapes_found, never_admitted = await _prune_shapes_by_admission(state, shapes_found)
+    if shapes_found:
+        shapes_found, never_admitted = _prune_shapes_by_listing(state, shapes_found)
+    state.timing["shape_admission"] = now_ms() - admission_t0
     state.shapes_found = shapes_found
     if not shapes_found:
         state.timing["shape"] = now_ms() - t0

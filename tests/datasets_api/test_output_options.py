@@ -19,7 +19,7 @@ _DAC2A = "provenance/OECDDAC2A"
 _CRS = "provenance/OECDCreditorReportingSystem"
 
 _derive = functools.partial(derive_output_options, parties=get_index().parties, datasets=())
-"""`derive_output_options` over the packaged index's parties, for a definition whose read
+"""`derive_output_options` over the fixture index's parties, for a definition whose read
 selected no provenance."""
 
 
@@ -189,6 +189,31 @@ class TestEnrichments:
         )
 
         assert document.enrichments == []
+
+    def test_a_party_roles_kind_coverage_lists_every_party_field(self):
+        """A stored profile counts `party_kind` alone; one code-index row gives a party all
+        three cells, so the class and whole cells list the same counts."""
+        coverage = (
+            _coverage(
+                "financingRecipient",
+                "party_kind",
+                entities=3,
+                covered=2,
+                missing=(("country/NOWHERE", ""),),
+            ),
+            _coverage("observationAbout", "party_kind", entities=1, covered=1),
+        )
+        document = _derive(
+            _profile(enrichments=coverage), identity=_NO_OPEN_ROLE, capabilities=_capabilities()
+        )
+
+        assert [
+            (e.token, e.state, e.coverage.covered, [m.ref for m in e.missing])
+            for e in document.enrichments
+        ] == [
+            (f"financingRecipient_{field}", "partial", 2, ["country/NOWHERE"])
+            for field in ("party_kind", "party_class", "party_whole")
+        ]
 
     def test_truncated_flag_passes_through(self):
         coverage = (_coverage("recipient", "iso3", entities=12, covered=1, truncated=True),)

@@ -69,7 +69,6 @@ from datasets_api.admission import (
     refuse_excel_over_stored_rows,
     refuse_inline_over_ceiling,
     sync_estimate,
-    under_current_coverage,
     within_sync_budget,
     xlsx_splits_totals,
 )
@@ -91,10 +90,12 @@ from datasets_api.operation_store import NullOperationStore, OperationStore
 from datasets_api.operations.submit import submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
+from datasets_api.party_totals import TRACE_KEY
 from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
     DerivedVersion,
-    artifact_rendering_key,
+    artifact_rendering_keys,
+    entity_roles,
     is_incomplete_rendering,
     is_statistics_rendering,
     refuse_pivot_over_stored_caps,
@@ -130,6 +131,7 @@ from datasets_api.versions import (
     Trigger,
     VersionLister,
     VersionRecordWriter,
+    link_digest,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.problem import Refusal
@@ -158,7 +160,7 @@ from materialise.profile import OutputProfile
 from materialise.projection import totals_axes
 from materialise.rate_tables import RateTableCache
 from series_coverage.index import CoverageIndex, Estimate
-from series_coverage.shared import CoverageService, CoverageSnapshot
+from series_coverage.shared import CoverageSnapshot, ServedCoverage
 from spec_registry import SpecRegistry
 from spec_registry.reader import SpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
@@ -189,12 +191,12 @@ class DefinitionDeps:
     enumerator: MemberEnumerator
     # Process-wide country-code and label cache, built with the graph and passed to `ServeDeps`.
     enrichment: EnrichmentLookup
-    # Process-wide code index passed to `ServeDeps`.
+    # The code index this request or run reads, passed to `ServeDeps`.
     code_index: CodeIndex
     # Shared by re-materialisations and passed to `ServeDeps`.
     rate_cache: RateTableCache
     # Used for coverage estimates before any SDMX call.
-    coverage: CoverageService
+    coverage: ServedCoverage
     version_writer: VersionRecordWriter = field(default_factory=NullVersionRecordWriter)
     # Freshness reads and confirms the head, and a rebuild advances it. Re-materialisation receives
     # the observed head as `expected_head` to prevent overwriting a concurrent update. The null
@@ -330,7 +332,7 @@ def load_stored(
     content_version: str,
     deps: DefinitionDeps,
     include_artifacts: bool,
-    rendering_key: str | None = None,
+    rendering_keys: tuple[str, ...] | None = None,
     revoked_under: Sequence[str] = (),
 ) -> Manifest:
     """Load a stored version of the served definition through the snapshot loaders.
@@ -341,30 +343,36 @@ def load_stored(
     revocations under it, and a request naming a posted id passes that id, so it honours
     both.
     `include_artifacts=True` uses `read_snapshot_manifest`, which lists servable artifacts under
-    their download links and refuses an expired version. An optional `rendering_key` narrows
+    their download links and refuses an expired version. Optional `rendering_keys` narrow
     artifacts to the requested rendering. `False` uses `read_snapshot_currency`, which returns
-    no artifacts. A fresh head relies on this as its only existence check.
+    no artifacts. A fresh head relies on this as its only existence check. Both time under
+    `snapshot_state`.
+
+    Its artifacts hold the party-kind files linked under the code index's digest only, each
+    carrying it as `enrichment_stamp` (`read_snapshot_manifest`).
     """
-    if not include_artifacts:
-        return read_snapshot_currency(
+    with phase("snapshot_state"):
+        if not include_artifacts:
+            return read_snapshot_currency(
+                id=subject_id,
+                content_version=content_version,
+                spec_reader=None,
+                snapshot_reader=deps.snapshot_reader,
+                now=deps.now,
+                settings=deps.settings,
+                revoked_under=revoked_under,
+            )
+        return read_snapshot_manifest(
             id=subject_id,
             content_version=content_version,
             spec_reader=None,
             snapshot_reader=deps.snapshot_reader,
             now=deps.now,
             settings=deps.settings,
+            rendering_keys=rendering_keys,
             revoked_under=revoked_under,
+            enrichment_digest=deps.code_index.enrichment_digest,
         )
-    return read_snapshot_manifest(
-        id=subject_id,
-        content_version=content_version,
-        spec_reader=None,
-        snapshot_reader=deps.snapshot_reader,
-        now=deps.now,
-        settings=deps.settings,
-        rendering_key=rendering_key,
-        revoked_under=revoked_under,
-    )
 
 
 def _record_head_hit_derived(
@@ -455,12 +463,17 @@ def _record_head_hit_derived(
     )
     if created and not is_incomplete_rendering(artifact.rendering):
         return derived_manifest
-    state = deps.snapshot_reader.read_version_state(subject_id, derived.content_version)
+    with phase("snapshot_state"):
+        state = deps.snapshot_reader.read_version_state(subject_id, derived.content_version)
     if state is None:
         return derived_manifest
     if created:
         return with_linked_artifacts(
-            derived_manifest, subject_id=subject_id, locations=state.locations, now=deps.now()
+            derived_manifest,
+            subject_id=subject_id,
+            locations=state.locations,
+            now=deps.now(),
+            enrichment_digest=deps.code_index.enrichment_digest,
         )
     return persisted_response(
         subject_id=subject_id,
@@ -469,6 +482,7 @@ def _record_head_hit_derived(
         served=derived_manifest,
         call_warnings=call_warnings,
         now=deps.now(),
+        enrichment_digest=deps.code_index.enrichment_digest,
     )
 
 
@@ -483,11 +497,23 @@ class StoredFrame:
 @dataclass(frozen=True)
 class StoredRenderPlan:
     """What `plan_stored_render` read from a stored version before its frame is read: the
-    stored output profile a pivot reads and the recorded frame hash a groupby compares its
-    collapse with (`StoredVersion.frame_sha256`)."""
+    stored output profile a pivot reads, the recorded frame hash a groupby compares its
+    collapse with (`StoredVersion.frame_sha256`), and whether the version is a derived one
+    (`StoredVersion.base_content_version` set) that renders from its own stored frame.
+
+    `derived_frame` is set when the record says what that frame is: a collapse that cut no
+    party totals (its trace names none left out), or a party-totals cut minted with no
+    `groupby`. Its `groupby` and cut already made the frame (`render.render_and_store`'s
+    `derived_frame`). `base_frame_only` is set for a cut minted with a `groupby`, whose
+    stored frame is the collapse when the collapse summed, and the cut frame when the groupby
+    left it unchanged or kept several values of an axis it does not sum
+    (`render._derived_version`). The record does not say which, so such a version renders
+    from its base version's frame alone, and its own frame renders nothing."""
 
     output_profile: OutputProfile | None
     frame_sha256: str | None
+    derived_frame: bool = False
+    base_frame_only: bool = False
 
 
 def plan_stored_render(
@@ -504,8 +530,9 @@ def plan_stored_render(
     materialise permit is taken.
 
     Raise `StoredTraceMissingResolvedStatVars` for a trace without `resolved_stat_vars`,
-    which a render needs for the groupby population. A pivot, a groupby, or a plain long `xlsx`
-    whose identity has an axis to split reads the version record once (`read_version`). With
+    which a render needs for the groupby population. A pivot, a groupby, a party-totals cut, or
+    a plain long `xlsx` whose identity has an axis to split reads the version record once
+    (`read_version`); a groupby or a cut reads whether the version is a derived one. With
     no `groupby`, no `columns` and no party-totals cut, a pivot refuses its caps from the
     stored pivot facts (`refuse_pivot_over_stored_caps`). A plain long `xlsx` (no `groupby`,
     no `pivot`, no `columns`, no party-totals cut) refuses `excel_limit` from the stored row
@@ -518,7 +545,11 @@ def plan_stored_render(
         raise StoredTraceMissingResolvedStatVars(
             subject_id=subject_id, content_version=content_version
         )
-    stored = read_version() if options.pivot is not None or options.groupby is not None else None
+    stored = (
+        read_version()
+        if options.pivot is not None or options.groupby is not None or options.without_party_totals
+        else None
+    )
     output_profile: OutputProfile | None = None
     # A groupby, `columns` or a party-totals cut changes what the stored facts count.
     reshaped = (
@@ -542,9 +573,15 @@ def plan_stored_render(
                 manifest, options=options, read_version=read_version, deps=deps
             ),
         )
+    derived = stored is not None and stored.base_content_version is not None
+    # A derived version's options carry its recorded minting options, so a groupby here is one
+    # its files record (`recorded_rendering.derived_version_sums`).
+    cut_with_groupby = derived and options.groupby is not None and TRACE_KEY in manifest.trace
     return StoredRenderPlan(
         output_profile=output_profile,
         frame_sha256=stored.frame_sha256 if stored is not None else None,
+        derived_frame=derived and not cut_with_groupby,
+        base_frame_only=cut_with_groupby,
     )
 
 
@@ -605,9 +642,11 @@ def _render_frame(
     with the recorded frame hash.
 
     Return the derived version's manifest when groupby or a party-totals cut changes the frame
-    (`render.DerivedVersion`). A groupby that leaves the frame unchanged is the base version,
-    whatever frame grammar minted its token (`render_and_store`). Record its artifact, and
-    every other one, under the base version and add it to the manifest. A party-totals cut
+    (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.derived_frame`)
+    renders as it is stored, under the version itself. A groupby that leaves the frame
+    unchanged is the base version, whatever frame grammar minted its token
+    (`render_and_store`). Record its artifact, and every other one, under the base version
+    and add it to the manifest. A party-totals cut
     reads a canonical frame, so a version whose stored frame is a frame1 document returns
     `None` and the caller rebuilds. Render errors propagate to the shared classifier.
 
@@ -617,9 +656,10 @@ def _render_frame(
     rendering key when a concurrent call linked one first (`with_linked_artifacts`).
     """
     table = read_stored_frame(frame.data, media_type=frame.location.media_type)
-    if options.without_party_totals and not isinstance(table, Frame):
+    if options.without_party_totals and not plan.derived_frame and not isinstance(table, Frame):
         return None
-    entity_columns = frame_entity_columns(table.columns)
+    # A collapse's kept code axes render as the decoded codes its mint wrote them as.
+    entity_columns = entity_roles(frame_entity_columns(table.columns))
     facets = cast("list[dict[str, object]]", manifest.trace.get("facets", []))
     provenance_refs = provenance_refs_of(facets)
     # `plan_stored_render` refused a trace without `resolved_stat_vars`.
@@ -669,7 +709,8 @@ def _render_frame(
         # non-unique refusal name the varying columns.
         output_profile=plan.output_profile,
         deadline=deps.deadline,
-        # Only a groupby yields a collapse frame to compare with the stored one.
+        # Only a groupby of a frame it has not collapsed yields a collapse frame to compare
+        # with the stored one.
         base_frame_sha256=(
             stored_frame_sha256(
                 frame.location,
@@ -677,9 +718,10 @@ def _render_frame(
                 recorded=plan.frame_sha256,
                 locations=locations,
             )
-            if options.groupby is not None
+            if options.groupby is not None and not plan.derived_frame
             else None
         ),
+        derived_frame=plan.derived_frame,
     )
     artifact, reshape_warnings, derived = (
         rendered.artifact,
@@ -715,6 +757,7 @@ def _render_frame(
             artifact_digest=artifact.artifact_digest,
             rendering=artifact.rendering,
             media_type=artifact.media_type,
+            enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
         ),
         trace_id=trace_id,
     )
@@ -730,6 +773,7 @@ def _render_frame(
         subject_id=subject_id,
         locations=deps.snapshot_reader.read_artifact_locations(subject_id, content_version),
         now=deps.now(),
+        enrichment_digest=deps.code_index.enrichment_digest,
     )
     return linked_manifest.model_copy(
         update={"artifacts": [*linked_manifest.artifacts, *manifest.artifacts]}
@@ -794,8 +838,8 @@ def _render_stored_rendering(
     With `frame` `None` this takes the permit: it reads the servable stored frame
     (`servable_frame_location`) inside a `bounded_materialise_slot`, and returns `None` for a
     missing frame location or missing or corrupt frame bytes. A full semaphore raises
-    retryable `MintBackpressure` (503) once the wait runs out, and a `coverage_snapshot` a
-    reload replaced during the wait raises `StaleCoverageSnapshot`.
+    retryable `MintBackpressure` (503) once the wait runs out or once a swap replaced the
+    request's bound release (`bounded_materialise_slot`).
 
     A `frame` argument is the stored frame the caller read and verified under a permit it
     still holds. The render then runs under that permit and takes none, since the permits
@@ -808,7 +852,8 @@ def _render_stored_rendering(
     is known only by fetching them, so a refusal the plan makes also answers a version whose
     location row is servable and whose object is gone, which `datasets-maintenance sweep`
     reports as a missing object. A `plan` argument is the one the caller made from this
-    version before it read `frame`.
+    version before it read `frame`. A plan that renders from the base frame alone
+    (`StoredRenderPlan.base_frame_only`) returns `None` before the permit and the frame read.
     """
 
     def planned() -> StoredRenderPlan:
@@ -826,6 +871,9 @@ def _render_stored_rendering(
         )
 
     if frame is not None:
+        decided = planned()
+        if decided.base_frame_only:
+            return None
         return _render_frame(
             subject_id=subject_id,
             content_version=content_version,
@@ -835,20 +883,21 @@ def _render_stored_rendering(
             trace_id=trace_id,
             coverage_index=coverage_snapshot.index,
             frame=frame,
-            plan=planned(),
+            plan=decided,
         )
     locations = deps.snapshot_reader.read_artifact_locations(subject_id, content_version)
     location = servable_frame_location(locations, now=deps.now())
     if location is None:
         return None
     decided = planned()
+    if decided.base_frame_only:
+        return None
     # The frame loads whole, so the load and the render share the semaphore that bounds a
     # mint's materialisation.
     with bounded_materialise_slot(
         deps.materialise_semaphore,
         wait_seconds=deps.settings.materialise_wait_seconds,
         deadline=deps.deadline,
-        coverage_current=functools.partial(deps.coverage.serves, coverage_snapshot),
     ):
         return _render_located_frame(
             location,
@@ -887,21 +936,25 @@ def head_rendering(
     re-materialises or hands the call on. `coverage_snapshot` feeds an on-demand bundle's
     documentation read.
 
-    The render takes one materialise permit and raises `StaleCoverageSnapshot` when a reload
-    replaced `coverage_snapshot` before the permit was taken, so a caller that took the
-    snapshot earlier runs under `under_current_coverage`. A `frame` argument is the stored
+    The render takes one materialise permit. A `frame` argument is the stored
     frame the caller read and verified under a materialise permit it still holds: the render
     takes those bytes in place of the read, takes no permit, and trusts `coverage_snapshot`
     as taken under that permit. A `plan` argument is the `plan_stored_render` decision the
     caller made from this version, so the render does not make it again.
     """
-    key = artifact_rendering_key(options, site=deps.settings.site) if options is not None else None
+    keys = (
+        artifact_rendering_keys(
+            options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
+        )
+        if options is not None
+        else None
+    )
     manifest = load_stored(
         subject_id=subject_id,
         content_version=content_version,
         deps=deps,
         include_artifacts=options is not None,
-        rendering_key=key,
+        rendering_keys=keys,
         revoked_under=revoked_under,
     )
     # The snapshot loader retains `series-statistics/1` even when the requested rendering is
@@ -1099,7 +1152,8 @@ def serve_fresh_head(
     nothing, and materialises nothing, so it runs on the read executor. A `HeadRead` hands the call
     to the work executor, whose `serve_current` starts from that head.
     """
-    coverage_snapshot = deps.coverage.snapshot()
+    with phase("coverage"):
+        coverage_snapshot = deps.coverage.snapshot()
     with phase("head_read"):
         head = deps.head_store.read_head(stored.spec_id)
     if head is None or not _head_is_fresh(head, now=deps.now(), deps=deps):
@@ -1189,11 +1243,7 @@ def serve_current(
     `revoked_under`.
 
     One coverage snapshot serves each pass's head check, admission estimate, fetch, and response
-    stamp:
-    `coverage_snapshot` when given, else the service's. A pass that reaches its materialise
-    permit after a reload replaced the snapshot raises `StaleCoverageSnapshot` to the caller
-    that passed `coverage_snapshot`, which starts again on the served one
-    (`under_current_coverage`); a pass on the service's own snapshot starts again here. A head confirmed within
+    stamp: `coverage_snapshot` when given, else the service's. A head confirmed within
     `head_recheck_interval` serves with no read and skips rehydration; a missing rendering may
     need artifact-store reads. Past that window a head older than `head_max_age` rebuilds,
     which catches corrections no fingerprint member sees. Otherwise `resolve_requests` runs
@@ -1241,10 +1291,8 @@ def serve_current(
             strip_pointer=strip_pointer,
             revoked_under=revoked_under,
         )
-        manifest = (
-            check(coverage_snapshot)
-            if coverage_snapshot is not None
-            else under_current_coverage(deps.coverage.snapshot, check)
+        manifest = check(
+            coverage_snapshot if coverage_snapshot is not None else deps.coverage.snapshot()
         )
         if manifest is not None:
             return _labelled(manifest, trigger=trigger)
@@ -1268,9 +1316,7 @@ def _check_currency(
     revoked_under: Sequence[str],
 ) -> Manifest | None:
     """One pass of `serve_current` on the coverage snapshot `snapshot`. `None` means another
-    caller rebuilt the subject while this one waited, so the head is read again. Raises
-    `StaleCoverageSnapshot` when a reload replaced `snapshot` while the pass waited its
-    rebuild turn or before it took its materialise permit."""
+    caller rebuilt the subject while this one waited, so the head is read again."""
     subject_id = stored.spec_id
     if head_read is not None:
         head = head_read.head
@@ -1307,7 +1353,6 @@ def _check_currency(
         subject_id,
         deadline=deps.deadline,
         wait_seconds=deps.settings.materialise_wait_seconds,
-        coverage_current=functools.partial(deps.coverage.serves, snapshot),
     ) as waited:
         # A rebuild that ended while this caller waited advanced the head. One that failed
         # left it, and this caller then rebuilds as it would have alone.
@@ -1434,7 +1479,6 @@ def _materialise_and_record(
                 ceiling=ceiling,
                 coverage_stamp=coverage_snapshot.stamp,
                 coverage_index=coverage_snapshot.index,
-                coverage_current=functools.partial(deps.coverage.serves, coverage_snapshot),
                 progress=progress,
             )
     except _BODY_POINTING_REFUSALS as exc:

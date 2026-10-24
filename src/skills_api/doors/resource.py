@@ -14,11 +14,11 @@ from fastapi import APIRouter, Request
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from skills_api.deps import (
+    CACHE_CONTROL,
     SkillIdTooLong,
     SkillNotFound,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
-    cache_control,
     classify_skill_lookup_exception,
 )
 from skills_api.models import SkillResourceContent, media_type
@@ -93,7 +93,7 @@ def _build_response(index: SkillsIndex, skill_id: str, path: str) -> SkillResour
     )
 
 
-async def resource_endpoint(
+async def get_resource(
     skill_id: str,
     path: str,
     request: Request,
@@ -113,7 +113,7 @@ async def resource_endpoint(
         generation=index,
         key=(skill_id, path),
         request=request,
-        cache_control=cache_control(shared),
+        cache_control=CACHE_CONTROL,
         build_payload=lambda: _build_response(index, skill_id, path).model_dump(mode="json"),
     )
 
@@ -122,7 +122,7 @@ def build_resource_door() -> DoorContribution:
     router = APIRouter()
     router.add_api_route(
         "/api/skills/{skill_id:dfo_skill_id}/resources/{path:path}",
-        resource_endpoint,
+        get_resource,
         methods=["GET"],
         response_model=SkillResourceContent,
     )

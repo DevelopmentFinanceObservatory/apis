@@ -93,7 +93,7 @@ def test_two_contributors_with_no_summable_axis_refuses_the_same_way_streamed():
             options=_options(),
             entity_columns=("recipient",),
             reads=_RenderReads(
-                enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
                 known={},
                 deadline=None,
             ),
@@ -113,7 +113,7 @@ def test_two_contributors_with_no_summable_axis_refuses_the_same_way_streamed():
                 options=_options(),
                 entity_columns=("recipient",),
                 reads=_RenderReads(
-                    enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                    enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
                     known={},
                     deadline=None,
                 ),
@@ -156,7 +156,7 @@ def test_no_summable_axis_refuses_before_a_stored_pivot_cap_on_every_chunking(bo
             options=_options(),
             entity_columns=("recipient",),
             reads=_RenderReads(
-                enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
                 known={},
                 deadline=None,
             ),
@@ -208,7 +208,7 @@ def test_a_duplicate_key_pivot_names_the_varying_column_with_or_without_a_groupb
             options=options,
             entity_columns=("recipient",),
             reads=_RenderReads(
-                enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
                 known={},
                 deadline=None,
             ),
@@ -230,7 +230,7 @@ def test_one_contributor_with_no_summable_axis_pivots_successfully_and_matches_w
         options=_options(),
         entity_columns=("recipient",),
         reads=_RenderReads(
-            enrichment=EnrichmentLookup(_GRAPH, parties={}), known={}, deadline=None
+            enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}), known={}, deadline=None
         ),
         code_index=_INDEX_ONE_CONTRIBUTOR,
         resolved_stat_var_refs=("dcid:SV_A",),
@@ -244,7 +244,7 @@ def test_one_contributor_with_no_summable_axis_pivots_successfully_and_matches_w
             options=_options(),
             entity_columns=("recipient",),
             reads=_RenderReads(
-                enrichment=EnrichmentLookup(_GRAPH, parties={}),
+                enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
                 known={},
                 deadline=None,
             ),
@@ -280,7 +280,7 @@ def test_render_and_store_never_builds_a_concatenated_frame_chunks_for_this_comb
         content_version="sha256:" + "0" * 64,
         artifact_store=FakeArtifactStore(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
         code_index=_INDEX_ONE_CONTRIBUTOR,
         resolved_stat_var_refs=("dcid:SV_A",),
         pivot_max_output_cells=5_000_000,

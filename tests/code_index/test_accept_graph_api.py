@@ -1,4 +1,4 @@
-"""Acceptance cases the Graph API design commits against the packaged code index: a roll-up of
+"""Acceptance cases the Graph API design commits against the fixture code index: a roll-up of
 CRS purposes reads each code once, so parent-coded observations count exactly once, and group
 totals are keyed by the design's group ids (P6).
 

@@ -20,6 +20,7 @@ from search.eval.checks.base import (
     NA,
     PASS,
     READ_ERRORS,
+    MembersRefused,
     PartView,
     Result,
     ScoreContext,
@@ -107,6 +108,8 @@ def _stat_vars(form: MeasureForm, answer: Answer, ctx: ScoreContext) -> Result:
         return fail("stat_vars: an unsupported part resolves no StatVar")
     try:
         served = served_stat_vars(answer, ctx)
+    except MembersRefused as exc:
+        return fail(f"stat_vars: {exc}")
     except READ_ERRORS as exc:
         return infra_error(f"stat_vars: the members read failed: {exc}")
     if served is None:
@@ -128,6 +131,8 @@ def _stat_vars_paired(form: MeasureForm, found: list[Answer], ctx: ScoreContext)
     want = list(map(str, expected))
     try:
         served = [served_stat_vars(answer, ctx) for answer in found]
+    except MembersRefused as exc:
+        return fail(f"stat_vars: {exc}")
     except READ_ERRORS as exc:
         return infra_error(f"stat_vars: the members read failed: {exc}")
     if any(stat_vars is None for stat_vars in served):
@@ -141,9 +146,13 @@ def _stat_vars_paired(form: MeasureForm, found: list[Answer], ctx: ScoreContext)
 
 
 def _open(slot: object, bindings: Mapping[str, frozenset[str] | None]) -> Result:
+    """An open slot is in the identity, unbound. An identity that leaves the slot out
+    serves no member asserting it, which excludes the slot."""
     if unconfirmed(slot):
         return unverifiable(f"open slot {slot} is unconfirmed")
-    refs = bindings.get(str(slot))
+    if str(slot) not in bindings:
+        return fail(f"slot {slot} absent, expected open")
+    refs = bindings[str(slot)]
     return PASS if refs is None else fail(f"slot {slot}: got {sorted(refs)}, expected unbound")
 
 

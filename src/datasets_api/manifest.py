@@ -83,6 +83,7 @@ from datasets_api.versions import (
     VersionDescriber,
     VersionRecord,
     VersionRecordWriter,
+    link_digest,
     unlinked_state,
 )
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
@@ -771,11 +772,11 @@ def stored_series_conversions(facts: ManifestFacts) -> dict[SeriesKey, SeriesCon
 
 def version_document(stored: StoredVersion) -> dict[str, object]:
     """The JSON document a Presentation frame carries as its manifest: a dataset version's
-    manifest without `artifacts`, `output_options` and `diagnostics`, or a published frame's
-    `op_spec_hash` (its subject id), `input_content_versions` and `continuations`
-    (`FrameLineage.continuations`): its entries when it stores any, `null` while they are
-    unknown, on a version recorded before versions stored them until `backfill-descriptions`
-    fills them, and left out when nothing continues its series."""
+    manifest without `artifacts`, `output_options`, `diagnostics` and `retention`, or a
+    published frame's `op_spec_hash` (its subject id), `input_content_versions` and
+    `continuations` (`FrameLineage.continuations`): its entries when it stores any, `null` while
+    they are unknown, on a version recorded before versions stored them until
+    `backfill-descriptions` fills them, and left out when nothing continues its series."""
     if isinstance(stored.facts, FrameLineage):
         document: dict[str, object] = {
             "op_spec_hash": stored.subject_id,
@@ -788,7 +789,7 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
             document["continuations"] = [dict(entry) for entry in continuations]
         return document
     return stored_manifest(stored).model_dump(
-        mode="json", exclude={"artifacts", "output_options", "diagnostics"}
+        mode="json", exclude={"artifacts", "output_options", "diagnostics", "retention"}
     )
 
 
@@ -868,7 +869,10 @@ def definition_version_record(
 ) -> VersionRecord:
     """The version record of a definition materialisation, linking `artifacts` and
     `record_only_artifacts`. A groupby collapse stores the raw version it was rendered from as
-    `base_content_version`."""
+    `base_content_version`.
+
+    Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
+    salts (`versions.link_digest`). `record_only_artifacts` carry their own salt."""
     return VersionRecord(
         subject_id=stored.spec_id,
         subject_kind="spec",
@@ -885,6 +889,7 @@ def definition_version_record(
                 artifact_digest=artifact.artifact_digest,
                 rendering=artifact.rendering,
                 media_type=artifact.media_type,
+                enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
             )
             for artifact in artifacts
         )
@@ -964,10 +969,11 @@ def record_collapsed_head_version(
     the record already existed.
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
-    `output_profile` and `frame_sha256` are the collapsed frame's. `ON CONFLICT DO NOTHING` makes repeated writes
-    idempotent. `describer_for` gives the describer that writes the version's description record
-    in the same transaction, from the record this call stores; `None`, or a describer of
-    `None`, writes none.
+    `output_profile` and `frame_sha256` are the collapsed frame's. The artifacts in `manifest`
+    are linked as `definition_version_record` links its `artifacts`. `ON CONFLICT DO NOTHING`
+    makes repeated writes idempotent. `describer_for` gives the describer that writes the
+    version's description record in the same transaction, from the record this call stores;
+    `None`, or a describer of `None`, writes none.
     """
     record = VersionRecord(
         subject_id=subject_id,
@@ -980,6 +986,7 @@ def record_collapsed_head_version(
                 artifact_digest=artifact.artifact_digest,
                 rendering=artifact.rendering,
                 media_type=artifact.media_type,
+                enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
             )
             for artifact in manifest.artifacts
         )

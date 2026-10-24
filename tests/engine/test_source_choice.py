@@ -14,7 +14,7 @@ from typing import Literal, cast
 import pytest
 
 from code_index.shared import get_index
-from origin_catalogue import BASE, UN_SYSTEM, Catalogue, ProvenanceRow, SourceRef
+from origin_catalogue import BASE, UN_SYSTEM, Catalogue, DatasetRef, ProvenanceRow, SourceRef
 from origin_catalogue.context import current_source_scope
 from search.engine.clients.graph import (
     DetectedSV,
@@ -71,6 +71,7 @@ from search.models import (
 )
 from series_coverage.shared import CoverageSnapshot
 from tests.engine import test_pool_election as pools
+from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -123,7 +124,13 @@ class _FirstShapeLLM:
     """A bind model that elects the first shape of its menu and binds nothing."""
 
     async def generate_structured(self, *, prompt, system, schema):
-        return schema(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None), None
+        return schema(
+            chosen_shape_index=0,
+            bindings=[],
+            also_plausible=None,
+            ask=None,
+            measuring=[{"index": 0, "rating": 1.0}],
+        ), None
 
 
 def _resolve(parts: list[ParsedPart], graph: FakeGraph):
@@ -507,7 +514,7 @@ def test_an_unresolved_source_answers_no_data_quoting_its_words():
     assert part.no_data.reason == "source_not_resolved"
     assert part.no_data.source_terms == ["XYZ statistics"]
     assert part.no_data.ambiguous_sources == []
-    assert part.no_data.data_query is None
+    assert part.no_data.options == []
     assert "XYZ statistics" in part.no_data.message
 
 
@@ -598,18 +605,39 @@ def test_a_no_data_outcome_under_a_scope_names_its_sources(
     )
 
 
-def test_an_ambiguous_source_answers_no_data_with_its_candidates_and_the_part_to_post():
-    """The part names each candidate by ref, label and kind, and `data_query` is the part
-    with every resolved mention carrying its ref and the ambiguous one none."""
+@pytest.mark.parametrize(("polarity", "prefix"), [("include", ""), ("exclude", "Excluding ")])
+def test_an_ambiguous_source_answers_no_data_with_an_option_per_candidate(
+    bind_catalogue, polarity, prefix
+):
+    """The part names each candidate by ref, label and kind, and offers one option per
+    candidate: the part with the ambiguous mention carrying that candidate's ref, keeping
+    its words and polarity, and every resolved mention carrying its own ref. An excluded
+    mention's label says so. The bound catalogue admits every ref an option posts."""
+    bind_catalogue(
+        FakeCatalogue(
+            provenances={
+                row.id: row
+                for row in (
+                    _sourced_row("provenance/A1", "Table A1", "dc/s/A", "Source A"),
+                    dataclasses.replace(
+                        _sourced_row("provenance/B1", "Table B1", "dc/s/D", "Source D"),
+                        dataset=DatasetRef(ref="dc/d/B", label="Dataset B"),
+                    ),
+                    _sourced_row("provenance/C", "Table C", "dc/s/C", "Source C"),
+                    _row(_CRS),
+                )
+            }
+        )
+    )
     candidates = (
         SourceReference(ref="dc/s/A", label="Source A", kind="source"),
         SourceReference(ref="dc/d/B", label="Dataset B", kind="dataset"),
         SourceReference(ref="provenance/C", label="Table C", kind="provenance"),
     )
-    mentions = (
-        SourceMention(text="ambiguous"),
-        SourceMention(text="crs", ref="provenance/OECDCreditorReportingSystem", polarity="exclude"),
+    crs = SourceMention(
+        text="crs", ref="provenance/OECDCreditorReportingSystem", polarity="exclude"
     )
+    mentions = (SourceMention(text="ambiguous", polarity=polarity), crs)
     refusal = SourceRefusal(
         reason="source_ambiguous",
         terms=("ambiguous",),
@@ -631,8 +659,14 @@ def test_an_ambiguous_source_answers_no_data_with_its_candidates_and_the_part_to
         ("dc/d/B", "Dataset B", "dataset"),
         ("provenance/C", "Table C", "provenance"),
     ]
-    assert part.no_data.data_query is not None
-    assert part.no_data.data_query.parts[0].sources == list(mentions)
+    assert [(o.mentions, o.label, o.data_query.parts[0].sources) for o in part.no_data.options] == [
+        (
+            ["ambiguous"],
+            f"{prefix}{c.label}",
+            [SourceMention(text="ambiguous", ref=c.ref, polarity=polarity), crs],
+        )
+        for c in candidates
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -826,7 +860,13 @@ class _NominatingLLM(pools._ElectLLM):
             prompt=prompt, system=system, schema=schema
         )
         nominated = [i for i, block in enumerate(pools._menu_blocks(prompt)) if _NUMERATE in block]
-        return output.model_copy(update={"also_plausible": nominated}), usage
+        measuring = [
+            *output.measuring,
+            *nominee_ratings(nominated, rated={e.index for e in output.measuring}),
+        ]
+        return output.model_copy(
+            update={"also_plausible": nominated, "measuring": measuring}
+        ), usage
 
 
 @pytest.mark.parametrize(
@@ -968,7 +1008,13 @@ class _MenuLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         self.prompts.append(prompt)
-        return schema(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None), None
+        return schema(
+            chosen_shape_index=0,
+            bindings=[],
+            also_plausible=None,
+            ask=None,
+            measuring=[{"index": 0, "rating": 1.0}],
+        ), None
 
 
 def test_an_exclusion_of_every_publisher_the_question_reaches_refuses_naming_it(

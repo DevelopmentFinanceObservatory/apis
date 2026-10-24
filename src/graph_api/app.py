@@ -15,12 +15,10 @@ and members doors classify groups and regions by. Surface
 construction loads the origin catalogue, so a missing or unloadable
 `ORIGIN_CATALOGUE_URI` fails startup, and each request binds its loaded
 snapshot. Resolve confirmation and region reads, node reads, and
-source-document reads share them. Resolvekit matching uses its
-own single-worker executor. A live surface also acquires the process-wide
-coverage service when `COVERAGE_ARTIFACT_URI` is set, and the sources door
-reads currency and granularity from it. A missing URI, a missing `coverage`
-extra, or an unreadable artifact leaves coverage unset and startup continues; only the
-unreadable artifact is marked as a failure (`GraphDeps.coverage_load_failed`).
+source-document reads share them. Each request also binds the release service's served
+release, so an unset `GRAPH_RELEASE_URI` or an unreadable release fails startup. Resolvekit
+matching uses its own single-worker executor. The sources door reads currency and granularity
+from the bound release's coverage.
 
 Routes: `GET /healthz`, `GET /capabilities`, `GET /schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
@@ -28,8 +26,10 @@ Routes: `GET /healthz`, `GET /capabilities`, `GET /schema`, `POST /resolve`,
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged
-by its own door, and the platform renders RFC 9457 responses. The fronting Data access proxy handles request
-authentication and enforces `401`, `413`, `415`, and `429`.
+by its own door, and the platform renders RFC 9457 responses. Callers reach the API through the
+website's proxy, which answers `429` once an IP passes its allowance, 120 calls a minute on
+`/api/*` by default, counted in a fixed window that every proxy instance shares in Postgres. A
+call whose count fails goes through. The proxy passes `Authorization` upstream unread.
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import FastAPI
 
@@ -73,11 +73,14 @@ from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
 from graph_api.doors.resolve import build_resolve_door
 from graph_api.doors.schema import build_schema_door
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
+from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, RegistrationHandle
 from graph_generation import acquire_shared as acquire_shared_generation
 from graph_generation import release_shared as release_shared_generation
+from graph_release.context import bound_served_release
+from graph_release.service import get_release_service
 from materialise.facet_profile import (
     FLIGHT_TIMEOUT_S,
     MAX_BYTES,
@@ -104,9 +107,7 @@ from origin_catalogue.graph import (
     build_graph_client,
 )
 from origin_catalogue.service import get_catalogue_service
-
-if TYPE_CHECKING:
-    from series_coverage.shared import CoverageService
+from series_coverage.shared import ServedCoverage, get_coverage_service
 
 logger = logging.getLogger(__name__)
 
@@ -152,46 +153,12 @@ def _classify_deps_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def _acquire_coverage() -> tuple[CoverageService | None, bool]:
-    """Return the process-wide coverage service, or `None` when it is unavailable, and whether
-    the unavailability is a failure. An unset `COVERAGE_ARTIFACT_URI` and a missing `coverage`
-    extra are configuration, so they are not failures; an artifact that failed to load is.
-
-    The first acquisition loads the artifact, so it runs off the event loop.
-    The service is a process singleton that no surface releases.
-    """
-    try:
-        from series_coverage.shared import (
-            CoverageArtifactUriMissingError,
-            get_coverage_service,
-        )
-    except ImportError as exc:
-        logger.info(
-            "Graph surface serves no currency or granularity: the coverage extra is missing (%s)",
-            exc,
-        )
-        return None, False
-    try:
-        return await asyncio.to_thread(get_coverage_service), False
-    except CoverageArtifactUriMissingError:
-        logger.info(
-            "Graph surface serves no currency or granularity: COVERAGE_ARTIFACT_URI is not set"
-        )
-        return None, False
-    except Exception:
-        logger.warning(
-            "Graph surface serves no currency or granularity: the coverage artifact failed to load",
-            exc_info=True,
-        )
-        return None, True
-
-
 def graph_surface(
     *,
     graph: GraphNodeReader | None = None,
     resolver: EntityResolver | None = None,
     node_pool_size: int | None = None,
-    coverage: CoverageService | None = None,
+    coverage: ServedCoverage | None = None,
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
 ) -> Surface:
@@ -200,26 +167,29 @@ def graph_surface(
     Inject `graph` or `resolver` to bypass their live startup resources.
     `node_pool_size` sets the bounded DCP executor's worker count; `None` uses
     `GRAPH_NODE_POOL_SIZE`. `coverage`
-    feeds the sources door's currency and granularity. When it is omitted, a
-    live surface (no injected `graph`) acquires the process-wide service and an
-    injected graph runs without coverage. `profile_graph` and `availability`
+    feeds the sources door's currency and granularity, and defaults to the bound release's
+    coverage (`series_coverage.shared.ReleaseCoverage`). `profile_graph` and `availability`
     feed a facet profile cache of the surface's own, on an executor of its own, for an
     injected graph. A live surface ignores them and acquires the process's shared cache, and
     an injected graph runs without a profile cache unless both are given. An injected
     resolver leaves the membership policy for its caller to publish.
     """
     catalogue = get_catalogue_service()
+    release = get_release_service()
+    resolved_coverage = coverage if coverage is not None else get_coverage_service()
     # Distinct literal prefixes keep documentation and node routes disjoint. The members
     # route goes ahead of the node route, whose dcid convertor accepts slashes and would
-    # take `<dcid>/members` as one dcid.
-    doors: tuple[DoorContribution, ...] = (
-        build_health_door(),
-        build_schema_door(),
-        build_resolve_door(),
-        build_sources_door(),
-        build_members_door(),
-        build_node_door(),
-    )
+    # take `<dcid>/members` as one dcid. The health and node doors read the code index as
+    # they are built, so the doors are built under the release a request would bind.
+    with bound_served_release(release):
+        doors: tuple[DoorContribution, ...] = (
+            build_health_door(),
+            build_schema_door(),
+            build_resolve_door(),
+            build_sources_door(),
+            build_members_door(),
+            build_node_door(),
+        )
 
     router = flatten(doors)
 
@@ -233,13 +203,12 @@ def graph_surface(
         shared_generation: GenerationProvider | None = None
         generation_registration: RegistrationHandle | None = None
         doc_cache_registration: RegistrationHandle | None = None
+        node_entries_registration: RegistrationHandle | None = None
         dcp_executor: DcpReadExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
         graph_dcp_base_url: str | None = None
-        resolved_coverage = coverage
-        coverage_load_failed = False
 
         async def _release_owned() -> None:
             """Drain queued and running DCP reads off-loop, then wait for running card-read
@@ -261,6 +230,8 @@ def graph_surface(
                 await asyncio.to_thread(profile_reads.shutdown, wait=True, cancel_futures=True)
             if doc_cache_registration is not None:
                 doc_cache_registration.close()
+            if node_entries_registration is not None:
+                node_entries_registration.close()
             if generation_registration is not None:
                 generation_registration.close()
             if shared_resolver is not None:
@@ -336,8 +307,8 @@ def graph_surface(
                     shared=shared_resolver,
                     graph_executor=dcp_executor,
                     generation=shared_generation,
-                    codes=CodeIndexCodes(get_index()),
-                    code_index=get_index(),
+                    codes=CodeIndexCodes(get_index),
+                    code_index=get_index,
                 )
                 generation_registration = shared_generation.register(
                     "graph_api.entity_resolver",
@@ -354,9 +325,10 @@ def graph_surface(
                 stats=provenance_docs.stats,
                 clear=provenance_docs.clear,
             )
-
-            if resolved_coverage is None and graph is None:
-                resolved_coverage, coverage_load_failed = await _acquire_coverage()
+            node_entries = NodeEntryCache(generation=resolved_generation)
+            node_entries_registration = resolved_generation.register(
+                "graph_api.node_entries", stats=node_entries.stats, clear=node_entries.clear
+            )
 
             profile_cache: FacetProfileCache | None = None
             if shared_profiles is not None:
@@ -401,8 +373,8 @@ def graph_surface(
             dcp_executor=dcp_executor,
             generation=resolved_generation,
             provenance_docs=provenance_docs,
+            node_entries=node_entries,
             coverage=resolved_coverage,
-            coverage_load_failed=coverage_load_failed,
             profile_cache=profile_cache,
             card_reads=card_reads,
         )
@@ -416,8 +388,14 @@ def graph_surface(
             GRAPH_DEPS_SLOT.clear(_app)
             await _release_owned()
 
+    @contextmanager
+    def request_scope() -> Iterator[None]:
+        with bound_catalogue(catalogue.snapshot()), bound_served_release(release):
+            yield
+
     return Surface(
         name="graph",
+        description="Resolve names to graph nodes and read nodes, members, sources and documentation.",
         prefix="/api/graph",
         router=router,
         capability_version=GRAPH_CAPABILITY_VERSION,
@@ -439,5 +417,5 @@ def graph_surface(
         registry_endpoints={
             path: endpoint for door in doors for path, endpoint in door.registry_endpoints.items()
         },
-        request_scope=lambda: bound_catalogue(catalogue.snapshot()),
+        request_scope=request_scope,
     )

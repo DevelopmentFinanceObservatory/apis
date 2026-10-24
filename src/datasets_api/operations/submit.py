@@ -5,7 +5,7 @@ for identical identity, origin catalogue build, and rendering. The build is the 
 submitting request. Options stay on the row. Their rendering key sets the id. Different
 renderings get separate operations and isolate rendering-specific failures such as
 `excel_limit`. The coverage stamp the estimate ran against is stored for lineage and stays out
-of the id, so a coverage build never orphans a done operation.
+of the id, so a new graph release never orphans a done operation.
 
 `request_identity` also holds `member_dcids`, the StatVars the submitting door resolved. The
 members are part of the operation id: two submissions share an operation only when their doors
@@ -16,7 +16,9 @@ when they differ from `member_dcids`, so a row never records one member set and 
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
 from typing import cast
 
 from datasets_api.admission import refuse_async_over_ceiling
@@ -29,8 +31,11 @@ from datasets_api.schema import OperationEnvelope, OperationResource
 from datasets_api.timings import phase
 from series_coverage.index import Estimate
 
-# Shared 202 response retry interval for mint and definition doors.
+# The shortest poll interval an operation advertises, and the refresh door's fixed retry interval.
 OPERATION_SUBMIT_RETRY_AFTER_MS = 1_500
+
+# The longest poll interval an operation advertises.
+OPERATION_POLL_MAX_MS = 8_000
 
 
 class OperationSubmitted(Exception):
@@ -123,7 +128,31 @@ def request_identity_member_dcids(request_identity: Mapping[str, object]) -> tup
     return tuple(str(dcid) for dcid in cast("Sequence[object]", member_dcids))
 
 
-def operation_submitted_resource(submitted: OperationSubmitted) -> OperationResource:
+def poll_interval_ms(operation: Operation, *, now: datetime) -> int:
+    """The milliseconds a caller waits before polling `operation` again. That is a quarter of the
+    time since its current submission (`submitted_at`), held between
+    `OPERATION_SUBMIT_RETRY_AFTER_MS` and `OPERATION_POLL_MAX_MS`. A repeat submission that
+    joins a long build gets the slow value, a resubmission that restarts a failed build starts
+    at the floor, and a waiting browser backs off as the build runs. A done or failed
+    operation answers its next poll at once, so it gets the shortest interval.
+    """
+    if operation.state in ("done", "failed"):
+        return OPERATION_SUBMIT_RETRY_AFTER_MS
+    age_ms = (now - operation.submitted_at) // timedelta(milliseconds=1)
+    return min(OPERATION_POLL_MAX_MS, max(OPERATION_SUBMIT_RETRY_AFTER_MS, age_ms // 4))
+
+
+def retry_after_headers(envelope: OperationEnvelope) -> dict[str, str]:
+    """The `Retry-After` header for `envelope`: its `retry_after_ms` in whole seconds, rounded
+    up. A done envelope carries no `retry_after_ms` and gets no header."""
+    if envelope.retry_after_ms is None:
+        return {}
+    return {"Retry-After": str(math.ceil(envelope.retry_after_ms / 1000))}
+
+
+def operation_submitted_resource(
+    submitted: OperationSubmitted, *, now: datetime
+) -> OperationResource:
     """Builds the 202 resource from the returned operation state, which may already be running or
     terminal. Progress stays unset in the submit response and appears on polls.
     """
@@ -133,17 +162,20 @@ def operation_submitted_resource(submitted: OperationSubmitted) -> OperationReso
             operation_id=operation.id,
             status=operation.state,
             poll=f"/api/datasets/operations/{operation.id}",
-            retry_after_ms=OPERATION_SUBMIT_RETRY_AFTER_MS,
+            retry_after_ms=poll_interval_ms(operation, now=now),
         )
     )
 
 
 __all__ = [
+    "OPERATION_POLL_MAX_MS",
     "OPERATION_SUBMIT_RETRY_AFTER_MS",
     "OperationSubmitted",
     "member_dcids",
     "operation_submitted_resource",
+    "poll_interval_ms",
     "request_identity_member_dcids",
     "request_identity_subject_id",
+    "retry_after_headers",
     "submit_over_budget",
 ]

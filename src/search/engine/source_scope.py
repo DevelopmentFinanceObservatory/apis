@@ -34,7 +34,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from code_index.shared import get_index
+from code_index.query import CodeIndex
+from code_index.shared import get_index, per_index
 from origin_catalogue import Catalogue, ProvenanceRow, current_catalogue
 from origin_catalogue.registry import Alias, load_registry
 from search.engine.errors import EngineInputError
@@ -197,10 +198,10 @@ def _aliases() -> tuple[Alias, ...]:
     return load_registry().alias
 
 
-@functools.cache
-def _opt_in_products() -> frozenset[str]:
-    """The provenances the code index declares opt-in."""
-    return frozenset(ref for ref, dataset in get_index().datasets.items() if dataset.opt_in)
+@per_index
+def _opt_in_products(index: CodeIndex) -> frozenset[str]:
+    """The provenances `index` declares opt-in."""
+    return frozenset(ref for ref, dataset in index.datasets.items() if dataset.opt_in)
 
 
 _DICTIONARIES_KEPT = 4
@@ -308,7 +309,7 @@ def _expand(dictionary: SourceDictionary, named: NamedSource, *, include: bool) 
     provenances = dictionary.provenances.get(reference.ref, (reference.ref,))
     if not include or reference.kind == "provenance":
         return frozenset(provenances)
-    opt_in = _opt_in_products()
+    opt_in = _opt_in_products(get_index())
     default = frozenset(p for p in provenances if p not in opt_in)
     return default or frozenset(provenances)
 
@@ -326,6 +327,45 @@ def _pinned_reference(dictionary: SourceDictionary, ref: str, *, pointer: str) -
     )
 
 
+def _refuse_every_reading_empty(
+    mentions: Sequence[SourceMention],
+    group: AmbiguousSource,
+    *,
+    catalogue: Catalogue,
+    pointers: Sequence[str],
+) -> None:
+    """Raise `request_invalid` when every candidate of `group`'s words leaves the part no
+    source. Each reading pins every ref-less mention of the words to one candidate and
+    compiles once without `refuse_empty`. A reading that leaves another wording ambiguous
+    counts as viable, so a contradiction spread over two wordings answers
+    `source_ambiguous` until the caller has chosen all but one of them, and the cost stays
+    one compile per candidate. The refusal points at the excluded mention that empties the
+    first candidate's reading, which compiles once more with `refuse_empty` to find it."""
+    readings = [
+        [
+            mention.model_copy(update={"ref": candidate.ref})
+            if mention.ref is None and mention.text == group.text
+            else mention
+            for mention in mentions
+        ]
+        for candidate in group.candidates
+    ]
+    for reading in readings:
+        compiled = compile_sources(
+            reading, catalogue=catalogue, pointers=pointers, refuse_empty=False
+        )
+        if not isinstance(compiled, SourceScope) or compiled.allowed:
+            return
+    try:
+        compile_sources(readings[0], catalogue=catalogue, pointers=pointers)
+    except EngineInputError as empty:
+        raise EngineInputError(
+            f"every source {group.text!r} may name leaves this part no source to answer from",
+            code="request_invalid",
+            pointer=empty.pointer,
+        ) from None
+
+
 def compile_sources(
     mentions: Sequence[SourceMention],
     *,
@@ -340,9 +380,11 @@ def compile_sources(
     unrelated ones, else the scope. Excluded words that match no source resolve to no
     reference and remove nothing. Raises `request_invalid` at a mention whose ref is not
     admitted, and, when `refuse_empty`, at the excluded mention that leaves the scope
-    empty. Without `refuse_empty` such a scope compiles allowing nothing, and its part
-    answers `qualifier_not_bound` (`region.result.empty_scope_result`), since the raw-text
-    door reads mentions an extraction model wrote, which the caller cannot correct."""
+    empty, or that does so under every reading of ambiguous words
+    (`_refuse_every_reading_empty`). Without `refuse_empty` such a scope compiles allowing
+    nothing, and its part answers `qualifier_not_bound` (`region.result.empty_scope_result`),
+    since the raw-text door reads mentions an extraction model wrote, which the caller
+    cannot correct."""
     if not mentions:
         return None
     dictionary = source_dictionary(catalogue)
@@ -379,6 +421,10 @@ def compile_sources(
             reason="source_not_resolved", terms=tuple(unmatched), ambiguous=(), mentions=pinned
         )
     if ambiguous:
+        if refuse_empty:
+            _refuse_every_reading_empty(
+                mentions, ambiguous[0], catalogue=catalogue, pointers=pointers
+            )
         return SourceRefusal(
             reason="source_ambiguous",
             terms=tuple(group.text for group in ambiguous),

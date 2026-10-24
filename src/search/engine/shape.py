@@ -28,8 +28,9 @@ STANDARD_SHAPE_LABEL = "standard Data Commons"
 
 type Pool = Literal["ours", "un_system"]
 """The resolver whose recall reached a shape: ours, or the UN System Data Commons'. Each
-scores on its own scale, so each pool meets its own score floor, and each pool's shapes are
-elected on their own pass (`region.pipeline`)."""
+scores on its own scale, so each pool meets its own score floor. The UN pool's shapes are
+elected on the UN pass (`region.pipeline`), and with `SEARCH_UN_ON_FIRST_MENU` also on our
+pass's menu beside ours (`region.phase_intake._merge_un_pool`)."""
 
 # ShapeDraft is the ungrounded shape representation used inside the pipeline.
 
@@ -107,6 +108,11 @@ class ShapeDraft:
     # stood for (`bound_values.narrowed_to`), the ones it held before, so a walk is seeded
     # with recalled members and never with a held family's. None seeds every member.
     walk_seeds: frozenset[str] | None = field(default=None, compare=False)
+    # The what and how slot properties a breakdown decision left out of slot_keys
+    # (`phase_election._narrow_to_breakdown`). A member asserting one is no member of the
+    # identity minted from the shape, so admission leaves it out
+    # (`standard._admit_standard_members`). Empty on a shape no decision narrowed.
+    omitted_slots: frozenset[str] = field(default=frozenset(), compare=False)
     # Per-shape bind taxonomy: "axis:property_dcid" -> a list of values a
     # member asserts (facts.read_slot_taxonomy).
     slot_taxonomy: dict[str, list[str]] | None = field(default=None, compare=False)

@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
+from search.engine.binders import Binder
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
 from search.engine.extract import DateRequest
@@ -19,12 +19,14 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import FAMILY_TOTAL_ABSENT, ONLY_ALTERNATE_HAS_DATA
 from search.engine.retrieval import standard
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import TimeWindow
 from tests.engine import test_equivalent_readings_divert as twins
 from tests.engine import test_zero_observation_election as reelection
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _KEN = "country/KEN"
@@ -48,18 +50,19 @@ class _BindLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible, ask=None
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=self._also_plausible), None
 
 
 def _resolve(
     query: str,
     nodes: dict[str, dict],
     *,
+    binder: Binder | None = None,
     scores: list[float],
     with_data: dict[str, dict],
     also_plausible: list[int] | None = None,
@@ -81,6 +84,7 @@ def _resolve(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_BindLLM(also_plausible),
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
@@ -123,10 +127,12 @@ _COUNT = "TESTFIXTURE/Deaths/Count"
 _RATE = "TESTFIXTURE/Deaths/Rate"
 _RATE_DISABLED = "TESTFIXTURE/Deaths/Rate_Disabled"
 _RATE_NODES = {
-    _RATE: _node("Rate", meas_prop="fixtureRate"),
-    _RATE_DISABLED: _node("Rate, disabled", meas_prop="fixtureRate", fixtureStatus="Disabled"),
+    _RATE: _node("Death rate", meas_prop="fixtureRate"),
+    _RATE_DISABLED: _node(
+        "Death rate, disabled", meas_prop="fixtureRate", fixtureStatus="Disabled"
+    ),
 }
-_RATE_NOTE = "No data for Rate was found for Kenya, so the answer shows Rate, disabled."
+_RATE_NOTE = "No data for Death rate was found for Kenya, so the answer shows Death rate, disabled."
 
 
 def test_a_definite_part_warns_and_its_sentence_does_not(status_reads_not_declared):
@@ -191,8 +197,8 @@ def test_a_total_with_data_only_outside_the_years_asked_is_said_to_lack_data_in_
     assert inside.status == "definite", inside
     assert _stat_vars(inside.specs[0]) == [_RATE_DISABLED]
     assert _family_notes(inside) == [
-        "No data for Rate was found for Kenya in the years asked, so the answer shows "
-        "Rate, disabled."
+        "No data for Death rate was found for Kenya in the years asked, so the answer shows "
+        "Death rate, disabled."
     ]
 
     between = _resolve_rate_in(_years(2011, 2014))
@@ -230,6 +236,7 @@ def test_a_no_data_part_warns_for_the_alternate_it_holds_and_not_for_the_elected
         scores=[0.9, 0.89, 0.85, 0.8],
         with_data={_RATE_DISABLED: _OBS[0]},
         also_plausible=[1],
+        binder=ReplyBinder(),
     )
 
     assert result.status == "no_data", result
@@ -286,7 +293,7 @@ _TWIN_DATA = {
     twins._MORT_WB: twins._facet(provenance_id="source/WorldBank"),
     twins._MORT_SDG: twins._facet(provenance_id="source/SDG"),
 }
-_TWIN_QUERY = "electricity or mortality in Kenya"
+_TWIN_QUERY = "indicators in Kenya"
 
 
 def test_a_twin_moved_to_equivalent_readings_takes_its_warning_and_note(

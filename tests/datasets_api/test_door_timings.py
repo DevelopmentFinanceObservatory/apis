@@ -21,7 +21,7 @@ from datasets_api.doors.snapshot import build_snapshot_door
 from datasets_api.kinds import spec_id as spec_id_kind
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
-from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
+from datasets_api.versions import NullHeadWriter
 from dc_sdmx import SdmxClient
 from materialise import finish as finish_module
 from spec_registry import LiveSpecRegistry
@@ -37,6 +37,7 @@ from ._operation_store import FakeOperationDatasetStore
 from ._snapshot_doubles import (
     FakeSnapshotReader,
     FakeSpecReader,
+    RecordingVersionWriter,
     _location,
     _store_and_locate,
     _version,
@@ -44,6 +45,10 @@ from ._snapshot_doubles import (
 from ._snapshot_doubles import make_client_for_door as _make_snapshot_client
 from .conftest import FakeDatasetStore, wire_definition_for
 from .test_mint_concurrency import _BODY, _coverage_service, _default_graph
+from .test_mint_primes_head import _client as _primed_client
+from .test_mint_primes_head import _CountingTransport as _PrimedTransport
+from .test_mint_primes_head import _graph as _primed_graph
+from .test_mint_primes_head import _spec_sidecar as _primed_sidecar
 from .test_pin_door import _PRINCIPAL, FakeArtifactReferenceWriter
 
 _NOW = datetime(2026, 6, 1, tzinfo=UTC)
@@ -115,9 +120,12 @@ def test_mint_response_carries_server_timing_with_every_expected_phase():
         "profile",
         "citation",
         "render",
-        "store",
+        "store_statistics",
+        "store_rendering",
+        "store_frame",
         "record",
         "head_advance",
+        "retention",
         "handoff",
     }
     counts = _server_timing_counts(resp.headers["server-timing"])
@@ -146,15 +154,19 @@ def test_definition_retrieval_response_carries_server_timing_and_keeps_no_store(
     assert names == {
         "total",
         "resolve",
+        "coverage",
         "materialise_wait",
         "head_read",
         "materialise",
         "profile",
         "citation",
         "render",
-        "store",
+        "store_statistics",
+        "store_rendering",
+        "store_frame",
         "record",
         "head_advance",
+        "retention",
     }
 
 
@@ -205,11 +217,12 @@ def _spec_id_mint_client(delay: _Delay):
     """Every dependency the spec_id mint path calls sleeps `delay` per call.
 
     The artifact store's `open_put` is exempt: the canonical frame write calls it on its own
-    thread while the requested rendering runs, and that overlapping `store` span
+    thread while the requested rendering runs, and that overlapping `store_frame` span
     would offset an untimed stage in the sum. So is `deferred`, which builds a view of the
     store and calls nothing.
     """
     store = FakeDatasetStore()
+    reader = FakeSnapshotReader()
     return make_client(
         registry=_Delayed(LiveSpecRegistry(store=store), delay=delay),
         spec_reader=_Delayed(LiveSpecReader(store=store), delay=delay),
@@ -218,8 +231,8 @@ def _spec_id_mint_client(delay: _Delay):
         artifact_store=_Delayed(
             FakeArtifactStore(), delay=delay, exempt=frozenset({"open_put", "deferred"})
         ),
-        snapshot_reader=_Delayed(FakeSnapshotReader(), delay=delay),
-        version_writer=_Delayed(NullVersionRecordWriter(), delay=delay),
+        snapshot_reader=_Delayed(reader, delay=delay),
+        version_writer=_Delayed(RecordingVersionWriter(reader=reader), delay=delay),
         head_writer=_Delayed(NullHeadWriter(), delay=delay),
         reference_writer=FakeArtifactReferenceWriter(),
         coverage=_Delayed(_coverage_service(), delay=delay),
@@ -276,9 +289,12 @@ def test_spec_id_mint_server_timing_names_every_stage():
         "profile",
         "citation",
         "render",
-        "store",
+        "store_statistics",
+        "store_rendering",
+        "store_frame",
         "record",
         "head_advance",
+        "retention",
         "handoff",
     }
 
@@ -382,9 +398,10 @@ class _AdvancingClock:
             return current
 
 
-def test_mint_server_timing_store_counts_the_canonical_frame_write(monkeypatch: pytest.MonkeyPatch):
-    """Canonical frame and requested-artifact writes run concurrently and their `store` spans are summed.
-    The clock advances 0.05 s per read, so both spans total at least 95 ms."""
+def test_mint_server_timing_times_each_stored_artifact_kind(monkeypatch: pytest.MonkeyPatch):
+    """The requested rendering, the series statistics and the canonical frame each time their
+    write under their own phase. The clock advances 0.05 s per read, so each span is at least
+    one step."""
     clock = _AdvancingClock(step=0.05)
     monkeypatch.setattr(timings.time, "perf_counter", clock)
     store = FakeDatasetStore()
@@ -401,12 +418,51 @@ def test_mint_server_timing_store_counts_the_canonical_frame_write(monkeypatch: 
 
     mint_resp = client.post("/api/datasets", json=_BODY)
     assert mint_resp.status_code == 200, mint_resp.text
-    assert _server_timing_metric_ms(mint_resp.headers["server-timing"], name="store") >= 95.0
-
     spec_id = mint_resp.json()["definition"]["spec_id"]
     retrieval_resp = client.get(f"/api/datasets/{spec_id}")
     assert retrieval_resp.status_code == 200, retrieval_resp.text
-    assert _server_timing_metric_ms(retrieval_resp.headers["server-timing"], name="store") >= 95.0
+
+    for resp in (mint_resp, retrieval_resp):
+        for name in _STORE_PHASES:
+            assert _server_timing_metric_ms(resp.headers["server-timing"], name=name) >= 49.0
+
+
+_STORE_PHASES = ("store_rendering", "store_statistics", "store_frame")
+
+
+def test_head_hit_mint_server_timing_names_the_version_state_read():
+    """A repeat mint answers from the head. Its version-state read and the coverage snapshot
+    each time under their own phase, so nothing it waits on goes untimed."""
+    graph = _primed_graph()
+    client = _primed_client(graph=graph, transport=_PrimedTransport())
+    spec_id, sidecar = _primed_sidecar(graph=graph)
+    body = {
+        "schema_version": 1,
+        "input": {"kind": "spec_id", "spec_id": spec_id, "definition": sidecar},
+        "options": {"bundle": False},
+    }
+    first = client.post("/api/datasets", json=body)
+    assert first.status_code == 200, first.text
+
+    repeat = client.post("/api/datasets", json=body)
+    retrieval = client.get(f"/api/datasets/{spec_id}?bundle=false")
+
+    for resp in (repeat, retrieval):
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["trace"]["served_from"] == "head"
+    assert _server_timing_metric_names(repeat.headers["server-timing"]) == {
+        "total",
+        "queue",
+        "resolve",
+        "coverage",
+        "head_read",
+        "snapshot_state",
+        "retention",
+        "handoff",
+    }
+    assert {"coverage", "head_read", "snapshot_state"} <= _server_timing_metric_names(
+        retrieval.headers["server-timing"]
+    )
 
 
 def test_mint_server_timing_profile_phase_measures_the_profile_call(
@@ -450,7 +506,7 @@ def test_snapshot_response_carries_server_timing_and_keeps_no_store():
     assert resp.status_code == 200, resp.text
     assert resp.headers["cache-control"] == "no-store"
     names = _server_timing_metric_names(resp.headers["server-timing"])
-    assert names == {"total"}
+    assert names == {"total", "retention"}
 
 
 def _register_client():

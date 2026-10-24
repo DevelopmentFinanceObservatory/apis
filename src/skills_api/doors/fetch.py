@@ -11,11 +11,11 @@ from fastapi import APIRouter, Request
 
 from dfo_platform.doors import DoorContribution
 from skills_api.deps import (
+    CACHE_CONTROL,
     SkillIdTooLong,
     SkillNotFound,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
-    cache_control,
     classify_skill_lookup_exception,
 )
 from skills_api.models import SkillBody, skill_body, split_skill_warnings
@@ -32,7 +32,7 @@ def _build_response(index: SkillsIndex, skill_id: str) -> SkillBody:
     return skill_body(skill_id, entry, skill_warnings.get(skill_id, []))
 
 
-async def fetch_endpoint(skill_id: str, request: Request, deps: SkillsDepsDep) -> object:
+async def get_skill(skill_id: str, request: Request, deps: SkillsDepsDep) -> object:
     if len(skill_id) > SKILL_ID_MAX_LENGTH:
         raise SkillIdTooLong(len(skill_id))
 
@@ -46,7 +46,7 @@ async def fetch_endpoint(skill_id: str, request: Request, deps: SkillsDepsDep) -
         generation=index,
         key=skill_id,
         request=request,
-        cache_control=cache_control(shared),
+        cache_control=CACHE_CONTROL,
         build_payload=lambda: _build_response(index, skill_id).model_dump(mode="json"),
     )
 
@@ -55,7 +55,7 @@ def build_fetch_door() -> DoorContribution:
     router = APIRouter()
     router.add_api_route(
         "/api/skills/{skill_id:dfo_skill_id}",
-        fetch_endpoint,
+        get_skill,
         methods=["GET"],
         response_model=SkillBody,
     )

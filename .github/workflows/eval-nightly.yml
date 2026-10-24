@@ -60,8 +60,14 @@ jobs:
       - name: Install dependencies
         run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
 
-      # The checks read the deployed coverage and origin catalogue buckets, and
-      # the eval calls the dev service with ID tokens it mints as this account.
+      # The checks read the deployed graph release and origin catalogue
+      # buckets, and the eval calls the dev service with ID tokens it mints as
+      # this account. The checks also read the graph service, which admits only
+      # callers holding roles/run.invoker. For each *.run.app host,
+      # dfo_platform.cloud_run_auth mints an ID token from this step's workload
+      # identity credentials as the eval reader, which holds
+      # roles/iam.serviceAccountOpenIdTokenCreator on itself, and refreshes it
+      # before it expires.
       - name: Authenticate to Google Cloud as the eval reader
         uses: google-github-actions/auth@v3
         with:
@@ -77,7 +83,7 @@ jobs:
           # WAF bypass for the graph: CI runner IPs are datacenter ranges the
           # graph's bot protection challenges, and this header exempts them.
           SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
-          COVERAGE_ARTIFACT_URI: gs://dfo-dev-coverage-dev-fin-observatory/
+          GRAPH_RELEASE_URI: gs://dfo-dev-graph-release-dev-fin-observatory/
           ORIGIN_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
           ALERT: ${{ vars.EVAL_NIGHTLY_ALERT }}
           GH_TOKEN: ${{ github.token }}

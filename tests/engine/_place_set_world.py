@@ -38,7 +38,6 @@ from dc_sdmx import SdmxClient
 from entity_resolution import Admission
 from materialise.graph import Facet as MaterialiseFacet
 from origin_catalogue import note_un_blocked_places
-from search.engine.bind import _UniversalBindOutput
 from search.engine.core import resolve_async
 from search.engine.departures import spec_departure_facts
 from search.engine.errors import GraphInfraError
@@ -72,6 +71,7 @@ from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._snapshot_doubles import FakeSnapshotReader
 from tests.datasets_api.conftest import FakeDatasetStore
 from tests.datasets_api.test_pin_door import FakeArtifactReferenceWriter
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import run_pinned
@@ -557,9 +557,7 @@ class _Bind:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=self._also_plausible, ask=None
-        ), None
+        return elected_reply(0, also_plausible=self._also_plausible), None
 
 
 class _Extract(_Bind):
@@ -713,8 +711,10 @@ class Doors:
         operations: Sequence[Operation] = (),
     ) -> ResolveResponse:
         """The parsed door's answer to one part whose text recalls each of `stat_vars`, in
-        that order, where bind elects the first and names the rest as other readings."""
-        text = " or ".join(VARIABLE_TEXT[stat_var] for stat_var in stat_vars)
+        that order, where bind elects the first and names the rest as other readings. The
+        text is a noun naming data itself (`function_words.DATA_WORDS`), so each reading
+        reads every word of it."""
+        text = "indicators"
         self._graph.recall(text, stat_vars)
         return self._ask(
             "first_answer",

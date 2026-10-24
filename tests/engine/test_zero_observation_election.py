@@ -13,7 +13,8 @@ import threading
 import pytest
 
 from search.engine.assemble import build_no_data_part
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
+from search.engine.binders import Binder
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     candidate_collapse,
@@ -30,6 +31,7 @@ from search.engine.region.codes import (
 from search.engine.region.state import EngineOptions
 from search.models import DatasetResubmitInput, Operation, ResolveRequest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
@@ -114,10 +116,10 @@ _RURAL_QUALIFIER_SIBLING_SV = "RuralBareGrowthRateZeroObsGuard"
 _QUALIFIED_NODES = {
     **_GHA_NODE,
     _QUALIFIED_ELECTED_SV: {
-        "label": "Growth rate amount of economic activity (real value)",
+        "label": "Gross domestic product growth rate (real value)",
         "type": "StatisticalVariable",
         "arcs": _arcs(
-            "Growth rate amount of economic activity (real value)",
+            "Gross domestic product growth rate (real value)",
             pop_type="EconomicActivity",
             meas_prop="amount",
             stat_type="growthRate",
@@ -158,12 +160,7 @@ class _NoAmbiguityBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=self._chosen_shape_index,
-            bindings=[],
-            also_plausible=self._also_plausible,
-            ask=None,
-        ), None
+        return elected_reply(self._chosen_shape_index, also_plausible=self._also_plausible), None
 
 
 class _RecordingWalkReader(FakeMintGraphReader):
@@ -184,6 +181,7 @@ class _RecordingWalkReader(FakeMintGraphReader):
 
 def _run(
     *,
+    binder: Binder | None = None,
     svs: list[str],
     scores: list[float],
     obs: dict,
@@ -204,6 +202,7 @@ def _run(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
+            binder=binder,
             llm=_NoAmbiguityBindLLM(chosen_shape_index, also_plausible),
             base_timing={},
             sdmx=FakeSdmxClient(
@@ -298,16 +297,20 @@ _FEMALE_SIBLING_NAME = "Estimated female mortality event count"
 
 
 @pytest.mark.parametrize(
-    ("far_obs", "also_plausible", "status"),
+    ("far_obs", "also_plausible", "status", "binder"),
     [
-        pytest.param({}, None, "definite", id="stand-in-alone"),
+        pytest.param({}, None, "definite", None, id="stand-in-alone"),
         pytest.param(
-            {f"{_FAR_SV}|country/KEN": _KEN_OBS}, [2], "candidates", id="beside-an-alternate"
+            {f"{_FAR_SV}|country/KEN": _KEN_OBS},
+            [2],
+            "candidates",
+            ReplyBinder(),
+            id="beside-an-alternate",
         ),
     ],
 )
 def test_single_sibling_reelection_names_the_stand_in_specs_shape_label(
-    far_obs, also_plausible, status
+    far_obs, also_plausible, status, binder
 ):
     """The sibling shape holds two series. Recall ranks the female one first, so the shape
     is drafted under its name, and only the other holds data in Kenya. The warning's
@@ -333,6 +336,7 @@ def test_single_sibling_reelection_names_the_stand_in_specs_shape_label(
         obs={f"{_SIBLING_SV}|country/KEN": _KEN_OBS, **far_obs},
         nodes=nodes,
         also_plausible=also_plausible,
+        binder=binder,
     )
 
     assert result.status == status
@@ -845,8 +849,8 @@ class _BindsActivityLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what",
@@ -857,7 +861,6 @@ class _BindsActivityLLM:
                 )
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 
@@ -1363,9 +1366,7 @@ class _StrayFemaleBindLLM:
         draft = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[draft], also_plausible=None, ask=None
-        ), None
+        return elected_reply(0, bindings=[draft], also_plausible=None), None
 
 
 @pytest.mark.parametrize(
@@ -1444,9 +1445,7 @@ class _StrayFemaleNominatingLLM:
         draft = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[draft], also_plausible=[1], ask=None
-        ), None
+        return elected_reply(0, bindings=[draft], also_plausible=[1]), None
 
 
 def test_a_rider_holding_the_stray_value_keeps_the_refusal_it_rides_on():
@@ -1530,9 +1529,7 @@ class _StrayGenderNominatingTwoLLM:
             kind="value" if len(self.values) == 1 else "set",
             value_dcids=self.values,
         )
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[draft], also_plausible=[1, 2], ask=None
-        ), None
+        return elected_reply(0, bindings=[draft], also_plausible=[1, 2]), None
 
 
 def _resolve_stray_gender(
@@ -1864,9 +1861,7 @@ class _NoDraftNominatingTwoLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=[], also_plausible=[1, 2], ask=None
-        ), None
+        return elected_reply(0, also_plausible=[1, 2]), None
 
 
 def _resolve_by_sex(

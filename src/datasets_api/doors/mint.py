@@ -25,7 +25,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from datasets_api.deps import MATERIALISE_RAW_FETCH_GUARD_ROWS, Deps, DepsCell
-from datasets_api.doors.definition import ROUTE_EXCEPTION_TYPES
+from datasets_api.doors.definition import OPERATION_SUBMITTED_RESPONSES, ROUTE_EXCEPTION_TYPES
 from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS, MINT_EXCEPTION_TYPES
 from datasets_api.headers import no_store_headers
@@ -37,8 +37,10 @@ from datasets_api.mint_models import MintRequest, StatVarSetInput
 from datasets_api.operations.submit import (
     OperationSubmitted,
     operation_submitted_resource,
+    retry_after_headers,
 )
 from datasets_api.render import check_options_supported
+from datasets_api.retention import retaining
 from datasets_api.schema import OperationResource
 from datasets_api.timings import door_call, run_with_timings
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
@@ -123,7 +125,11 @@ async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
         try:
             manifest = await asyncio.wait_for(
                 deps.work_executor.run(
-                    functools.partial(run_with_timings, mint, call.timings),
+                    functools.partial(
+                        run_with_timings,
+                        retaining(mint, reader=deps.snapshot_reader, now=deps.now),
+                        call.timings,
+                    ),
                     refuse=MintBackpressure,
                     timings=call.timings,
                 ),
@@ -131,7 +137,7 @@ async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
             )
         except OperationSubmitted as submitted:
             # A deferred 202 is a successful outcome, not a refusal.
-            submitted_resource = operation_submitted_resource(submitted)
+            submitted_resource = operation_submitted_resource(submitted, now=deps.now())
     if submitted_resource is not None:
         assert submitted_resource.operation.poll is not None
         return JSONResponse(
@@ -140,6 +146,7 @@ async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
             headers={
                 **no_store_headers(server_timing=call.server_timing),
                 "Location": submitted_resource.operation.poll,
+                **retry_after_headers(submitted_resource.operation),
             },
         )
     return JSONResponse(
@@ -152,8 +159,8 @@ def build_mint_door(*, deps: DepsCell) -> DoorContribution:
     """Build the mint door over the surface's dependency cell."""
     router = APIRouter()
 
-    @router.post("/api/datasets", response_model=Manifest)
-    async def mint_endpoint(body: MintRequest) -> JSONResponse:
+    @router.post("/api/datasets", response_model=Manifest, responses=OPERATION_SUBMITTED_RESPONSES)
+    async def mint(body: MintRequest) -> JSONResponse:
         return await _mint_response(body, deps=deps.get())
 
     return DoorContribution(

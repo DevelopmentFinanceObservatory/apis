@@ -26,7 +26,10 @@ holds the body they were rendered from, and the served version read back.
 `LiveVersionLister.list_versions` reads a subject's versions by `recorded_at`, newest first,
 each with the renderings of the files linked under it. The second statement selects and orders
 those files as `LiveSnapshotReader.read_artifact_locations` does, so a rendering read from the
-list is the one a read of that version's locations gives.
+list is the one a read of that version's locations gives. `list_servable_versions` reads one
+page of the versions recorded under a set of subject ids in the same order, reading each from
+the record the snapshot door's read chooses and leaving out the versions that record shows
+revoked under any of them, as that read does.
 
 An artifact link keeps its digest while that digest is servable, and a new rendering under
 the same key replaces it once it is not (`_insert_artifact`). Every link write and every pin
@@ -84,6 +87,7 @@ from datasets_api.manifest import version_body
 from datasets_api.manifest_models import year_coverage_counted
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
+    NO_PARTY_ROLE,
     RENDERED_FACT_FIELDS,
     ArtifactRecord,
     DescriptionDiverges,
@@ -95,8 +99,11 @@ from datasets_api.versions import (
     SubjectHead,
     VersionDescriber,
     VersionRecord,
+    VersionsPageKey,
     VersionWrite,
     WrittenVersion,
+    carries_party_kind,
+    holds_party_role,
     log_description_build_failure,
 )
 from description.facts import DescriptionRecord
@@ -113,6 +120,35 @@ def utc_now() -> datetime:
 def rendering_key(rendering: Mapping[str, object]) -> str:
     canonical = json.dumps(dict(rendering), sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def enriched_rendering_key(rendering: Mapping[str, object], enrichment_digest: str | None) -> str:
+    """The key a file of `rendering` is linked under when it was rendered under
+    `enrichment_digest` (`versions.link_digest`).
+
+    A rendering that `carries_party_kind` is keyed by the rendering and the digest, so a change
+    to a party's kind or whole markers leaves its old link matching no request, and the next
+    request re-renders. Any other rendering, and any call with no digest, keys as
+    `rendering_key` does. The digest salts the key only. `rendering` itself, which a caller
+    selects an artifact by, never holds it.
+    """
+    if enrichment_digest is None or not carries_party_kind(rendering):
+        return rendering_key(rendering)
+    return rendering_key({"rendering": dict(rendering), "enrichment_digest": enrichment_digest})
+
+
+def current_rendering_keys(
+    rendering: Mapping[str, object], enrichment_digest: str | None
+) -> tuple[str, ...]:
+    """The keys a current file of `rendering` can be linked under while the code index has
+    `enrichment_digest`: salted with the digest for a frame with a party role, and with
+    `NO_PARTY_ROLE` for one without. A lookup needs no fact about the frame, since a file is
+    linked under one of the two only. A rendering `carries_party_kind` rejects, and a call
+    with no digest, have the one unsalted key."""
+    key = enriched_rendering_key(rendering, enrichment_digest)
+    if enrichment_digest is None or not carries_party_kind(rendering):
+        return (key,)
+    return (key, enriched_rendering_key(rendering, NO_PARTY_ROLE))
 
 
 def recorded_frame_sha256(
@@ -189,7 +225,7 @@ def _insert_artifact(
             subject_id,
             content_version,
             artifact.artifact_digest,
-            rendering_key(artifact.rendering),
+            enriched_rendering_key(artifact.rendering, artifact.enrichment_digest),
             dict(artifact.rendering),
             artifact.media_type,
             now - WORKING_TIER_RETENTION,
@@ -497,7 +533,11 @@ class LiveVersionRecordWriter:
                 linked = tx.fetch_one(
                     "SELECT artifact_digest FROM datasets.version_artifact "
                     "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
-                    (subject_id, content_version, rendering_key(artifact.rendering)),
+                    (
+                        subject_id,
+                        content_version,
+                        enriched_rendering_key(artifact.rendering, artifact.enrichment_digest),
+                    ),
                 )
         except Exception as exc:
             failure = (
@@ -555,6 +595,130 @@ class LiveVersionRecordWriter:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
 
 
+_LINKED_RENDERINGS_SQL = (
+    "SELECT va.content_version AS content_version, va.rendering AS rendering, "
+    "va.rendering_key AS rendering_key "
+    "FROM datasets.version_artifact va "
+    "JOIN datasets.artifact_inventory ai "
+    "ON ai.artifact_digest = va.artifact_digest "
+    "JOIN datasets.artifact_location al "
+    "ON al.artifact_digest = va.artifact_digest "
+    "WHERE {where} "
+    "ORDER BY COALESCE((va.rendering ->> 'statistics') = 'series', false), "
+    "va.artifact_digest, va.rendering_key, al.tier"
+)
+
+
+# The names of the role columns a version's stored output profile lists, as a JSON array, and
+# NULL for a version stored without one. Reading only these keeps the listing independent of the
+# rest of the profile's shape.
+_ROLE_COLUMNS_SQL = (
+    "jsonb_path_query_array(output_profile, '$.columns[*] ? (@.kind == \"role\").name') "
+    "AS role_columns"
+)
+
+
+def _placeholders(count: int) -> str:
+    return ", ".join(["%s"] * count)
+
+
+def _listed_versions(
+    rows: Sequence[Mapping[str, object]],
+    linked: Sequence[Mapping[str, object]],
+    role_columns: Mapping[str, Sequence[str]],
+) -> list[ListedVersion]:
+    """The versions `rows` hold, in their order, each with the renderings `linked` holds for
+    its content version, in theirs, and whether its frame holds a party role, read from the
+    role columns `role_columns` holds for it (`_listed_holds_party_role`)."""
+    renderings: dict[str, list[Mapping[str, object]]] = {}
+    party_free: set[str] = set()
+    for link in linked:
+        content_version = cast(str, link["content_version"])
+        rendering = cast("Mapping[str, object]", link["rendering"])
+        renderings.setdefault(content_version, []).append(rendering)
+        if carries_party_kind(rendering) and link["rendering_key"] == enriched_rendering_key(
+            rendering, NO_PARTY_ROLE
+        ):
+            party_free.add(content_version)
+    return [
+        ListedVersion(
+            content_version=(content_version := cast(str, row["content_version"])),
+            base_content_version=cast("str | None", row["base_content_version"]),
+            recorded_at=cast(datetime, row["recorded_at"]),
+            renderings=tuple(renderings.get(content_version, ())),
+            holds_party_role=_listed_holds_party_role(
+                role_columns.get(content_version), party_free_link=content_version in party_free
+            ),
+        )
+        for row in rows
+    ]
+
+
+def _listed_holds_party_role(
+    role_columns: Sequence[str] | None, *, party_free_link: bool
+) -> bool | None:
+    """`ListedVersion.holds_party_role` of a version whose stored output profile names
+    `role_columns` (`_ROLE_COLUMNS_SQL`), `None` when it stored none, and which links a file
+    that `carries_party_kind` under `NO_PARTY_ROLE` when `party_free_link`."""
+    if role_columns is not None:
+        return holds_party_role(role_columns)
+    return False if party_free_link else None
+
+
+def _unrevoked(record: str, in_subjects: str) -> str:
+    """The predicate that the version record aliased `record` is revoked under none of the
+    subjects `in_subjects` binds, neither its content version nor its base version."""
+    return (
+        "NOT EXISTS (SELECT 1 FROM datasets.version_revocation r "
+        f"WHERE r.subject_id IN ({in_subjects}) "
+        f"AND (r.content_version = {record}.content_version "
+        f"OR r.content_version = {record}.base_content_version))"
+    )
+
+
+def _servable_page_query(
+    subjects: Sequence[str], *, after: VersionsPageKey | None, limit: int
+) -> tuple[str, tuple[object, ...]]:
+    """The statement and parameters reading the page of `subjects`' unrevoked versions after
+    `after`, newest first, with `content_version` ordering versions recorded at one instant.
+    Each row names the subject whose record it reads.
+
+    One subject reads its rows through `version_record_recency` (migration 0037): the primary
+    key makes `content_version` unique within a subject, so no choice is needed, and the row
+    comparison bounds the index scan at the cursor and ends it at `limit`. Several subjects
+    choose one record per `content_version` first, the one recorded under the earliest of
+    `subjects`, as `doors.snapshot.read_under_served_id` reads the first subject in served
+    order that records the version. Revocation is then checked against the chosen record, and
+    the version lists at its `recorded_at`."""
+    in_subjects = _placeholders(len(subjects))
+    keyset_params = () if after is None else (after.recorded_at, after.content_version)
+    if len(subjects) == 1:
+        keyset = "" if after is None else "AND (vr.recorded_at, vr.content_version) < (%s, %s) "
+        return (
+            "SELECT vr.subject_id, vr.content_version, vr.base_content_version, vr.recorded_at "
+            "FROM datasets.version_record vr "
+            f"WHERE vr.subject_id = %s AND {_unrevoked('vr', in_subjects)} "
+            f"{keyset}"
+            "ORDER BY vr.recorded_at DESC, vr.content_version DESC LIMIT %s",
+            (*subjects, *subjects, *keyset_params, limit),
+        )
+    served_rank = " ".join(f"WHEN %s THEN {rank}" for rank in range(len(subjects)))
+    keyset = "" if after is None else "AND (chosen.recorded_at, chosen.content_version) < (%s, %s) "
+    return (
+        "SELECT chosen.subject_id, chosen.content_version, chosen.base_content_version, "
+        "chosen.recorded_at FROM ("
+        "SELECT vr.subject_id, vr.content_version, vr.base_content_version, vr.recorded_at, "
+        "ROW_NUMBER() OVER (PARTITION BY vr.content_version "
+        f"ORDER BY CASE vr.subject_id {served_rank} END) AS served_rank "
+        "FROM datasets.version_record vr "
+        f"WHERE vr.subject_id IN ({in_subjects})) chosen "
+        f"WHERE chosen.served_rank = 1 AND {_unrevoked('chosen', in_subjects)} "
+        f"{keyset}"
+        "ORDER BY chosen.recorded_at DESC, chosen.content_version DESC LIMIT %s",
+        (*subjects, *subjects, *subjects, *keyset_params, limit),
+    )
+
+
 class LiveVersionLister:
     def __init__(self, *, store: DatasetStore) -> None:
         self._store = store
@@ -567,42 +731,77 @@ class LiveVersionLister:
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(
-                    "SELECT content_version, base_content_version "
+                    "SELECT content_version, base_content_version, recorded_at, "
+                    f"{_ROLE_COLUMNS_SQL} "
                     "FROM datasets.version_record WHERE subject_id = %s "
                     # `content_version` orders versions recorded at one instant.
                     "ORDER BY recorded_at DESC, content_version DESC",
                     (subject_id,),
                 )
                 linked = tx.fetch_all(
-                    "SELECT va.content_version AS content_version, va.rendering AS rendering "
-                    "FROM datasets.version_artifact va "
-                    "JOIN datasets.artifact_inventory ai "
-                    "ON ai.artifact_digest = va.artifact_digest "
-                    "JOIN datasets.artifact_location al "
-                    "ON al.artifact_digest = va.artifact_digest "
-                    "WHERE va.subject_id = %s "
-                    "ORDER BY COALESCE((va.rendering ->> 'statistics') = 'series', false), "
-                    "va.artifact_digest, va.rendering_key, al.tier",
-                    (subject_id,),
+                    _LINKED_RENDERINGS_SQL.format(where="va.subject_id = %s"), (subject_id,)
                 )
         except Exception as exc:
             failure = f"listing versions subject_id {subject_id!r} failed: {safe_diagnostics(exc)}"
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        renderings: dict[str, list[Mapping[str, object]]] = {}
-        for link in linked:
-            renderings.setdefault(cast(str, link["content_version"]), []).append(
-                cast("Mapping[str, object]", link["rendering"])
-            )
-        return [
-            ListedVersion(
-                content_version=cast(str, row["content_version"]),
-                base_content_version=cast("str | None", row["base_content_version"]),
-                renderings=tuple(renderings.get(cast(str, row["content_version"]), ())),
-            )
-            for row in rows
-        ]
+        return _listed_versions(rows, linked, _stored_role_columns(rows))
+
+    def list_servable_versions(
+        self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
+    ) -> list[ListedVersion]:
+        """The page of `subject_ids`' versions after `after`, as `VersionLister` states, read in
+        one transaction. It reads the page's rows, then the renderings linked under, and the
+        output profiles stored by, the record each row reads.
+
+        A version recorded under several of the ids lists once, from the record under the
+        earliest of them, as the snapshot door reads it (`_servable_page_query`), at that
+        record's `recorded_at`. The revocation filter reads `datasets.version_revocation` in
+        the statement that reads the rows, so a revocation that statement sees removes the
+        version from the page."""
+        subjects = list(dict.fromkeys(subject_ids))
+        failure: str | None = None
+        sqlstate: str | None = None
+        rows: list[Mapping[str, object]] = []
+        linked: list[Mapping[str, object]] = []
+        profiles: list[Mapping[str, object]] = []
+        try:
+            with self._store.transaction() as tx:
+                rows = tx.fetch_all(*_servable_page_query(subjects, after=after, limit=limit))
+                chosen = [(row["subject_id"], row["content_version"]) for row in rows]
+                if chosen:
+                    in_chosen = ", ".join(["(%s, %s)"] * len(chosen))
+                    chosen_params = tuple(value for pair in chosen for value in pair)
+                    linked = tx.fetch_all(
+                        _LINKED_RENDERINGS_SQL.format(
+                            where=f"(va.subject_id, va.content_version) IN ({in_chosen})"
+                        ),
+                        chosen_params,
+                    )
+                    profiles = tx.fetch_all(
+                        f"SELECT content_version, {_ROLE_COLUMNS_SQL} "
+                        "FROM datasets.version_record "
+                        f"WHERE (subject_id, content_version) IN ({in_chosen}) "
+                        "AND output_profile IS NOT NULL",
+                        chosen_params,
+                    )
+        except Exception as exc:
+            failure = f"listing versions subject_ids {subjects!r} failed: {safe_diagnostics(exc)}"
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        return _listed_versions(rows, linked, _stored_role_columns(profiles))
+
+
+def _stored_role_columns(rows: Sequence[Mapping[str, object]]) -> dict[str, Sequence[str]]:
+    """The role columns of the output profile each of `rows` stored, by content version. `rows`
+    hold one record per content version."""
+    return {
+        cast(str, row["content_version"]): cast("Sequence[str]", row["role_columns"])
+        for row in rows
+        if row["role_columns"] is not None
+    }
 
 
 _HEAD_COLUMNS = "content_version, confirmed_at, materialised_at, materialisation_id, dependencies"

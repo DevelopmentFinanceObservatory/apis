@@ -14,7 +14,7 @@ from search.catalogue.counts import catalogue_counts
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.origin_catalogue.support import EUROSTAT_GDP, GDP, SCAN_PLACES, WDI
-from tests.search_catalogue.support import coverage_fixture, origin_snapshot
+from tests.search_catalogue.support import origin_snapshot
 from tests.series_coverage.support import (
     FACET_ACTUALS,
     FACET_METADATA,
@@ -22,6 +22,7 @@ from tests.series_coverage.support import (
     V2,
     V3,
     V5,
+    build_test_index,
     coverage_table,
 )
 
@@ -32,7 +33,7 @@ AID_TABLE = "provenance/AidTable"
 def counted(tmp_path):
     return catalogue_counts(
         catalogue=origin_snapshot(tmp_path / "origin"),
-        coverage=coverage_fixture(tmp_path / "coverage").index,
+        coverage=build_test_index(),
         datasets={metadata.provenance_id for metadata in FACET_METADATA.values()},
         totals=(),
     )

@@ -1,28 +1,31 @@
 """Elect a shape and bind its slots in one asynchronous LLM call per variable.
 
 Retrieval scores order the menu and stay out of the prompt. A memo can serve identical
-requests. The prompt uses extracted text and graph or packaged-index metadata. ``value`` selects one member, ``set``
+requests. The prompt uses extracted text and graph or code-index metadata. ``value`` selects one member, ``set``
 selects 2+ without an aggregate, and ``unbound`` leaves a slot open. ``absent`` marks an
 inapplicable property and maps to wire ``unbound`` plus ``inapplicable_slots``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import functools
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, create_model, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from pydantic_core import PydanticCustomError
 
 from code_index.shared import get_index
+from dfo_platform.roles import GENERIC_ROLE_WORDING
 from search.engine.clients.llm import (
     SCHEMA_REFUSAL,
     SupportsLLM,
     for_stage,
     generate_structured_async,
 )
+from search.engine.qualifier_match import _normalize, names_plain_name
 from search.engine.quantity import (
     DenominatorKind,
     denominator_meaning,
@@ -31,11 +34,13 @@ from search.engine.quantity import (
 from search.engine.retrieval.bound_values import (
     applies_value,
     five_tuple_member_facts,
+    ratio_base_axis,
     shape_invariants,
     shape_partly_stated,
 )
 from search.engine.shape import STANDARD_SHAPE_LABEL, _declared_role_names, is_un_shape
-from search.models import Axis
+from search.models import Axis, RoleAxis
+from search.render.labels import _humanize_ref
 
 if TYPE_CHECKING:
     from code_index.types import CodeRow
@@ -149,10 +154,21 @@ class SlotBindingDraft(BaseModel):
         return self
 
 
+class ShapeRating(BaseModel):
+    """A candidate shape the bind reply says measures the variable phrase, with its rating."""
+
+    index: int = Field(description="Index into the numbered candidate shape list (0-based).")
+    rating: float = Field(
+        description="How well the shape measures what the variable phrase names, from 0 to 1."
+    )
+
+
 class _UniversalBindOutput(BaseModel):
     """LLM output schema for the universal choose+bind call.
 
-    One call elects a shape (chosen_shape_index) AND binds its constraint slots (bindings).
+    One call elects a shape (chosen_shape_index) AND binds its constraint slots (bindings),
+    and rates each shape that measures the variable phrase (measuring). The call sends it
+    bounded to its menu (`bind_schema`).
     """
 
     chosen_shape_index: int = Field(
@@ -202,6 +218,62 @@ class _UniversalBindOutput(BaseModel):
             "never a word a binding above covers, never a place or date."
         ),
     )
+    measuring: list[ShapeRating] = Field(
+        default_factory=list,
+        description=(
+            "Every candidate shape that measures what the variable phrase names, the chosen "
+            "shape included, each with its index and a rating from 0 to 1 of how well it "
+            "measures it. Empty when ask is set."
+        ),
+    )
+
+
+# The header line of the bind prompt's DROPPED QUALIFIERS block. `promptlab.bindmenu` parses it.
+DROPPED_QUALIFIERS_HEADER = (
+    "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
+    "apply them -- for the shape you choose, if one of these phrases asks for "
+    'every value of one of its constraint slots (e.g. "across all flows", '
+    '"regardless of flow type"), bind that slot kind=unbound, evidence=requested_all, '
+    "and set that binding's own requested_all_phrase to the phrase verbatim; "
+    "leave requested_all_phrase null when no phrase names one of the chosen "
+    "shape's own constraint slots):"
+)
+
+
+@functools.cache
+def bind_schema(size: int) -> type[_UniversalBindOutput]:
+    """`_UniversalBindOutput` for a menu of `size` shapes, whose `measuring` holds at most
+    `size` entries, one per shape.
+
+    The bound ends a reply that repeats an entry. Asked to rate a menu none of whose shapes
+    measures the phrase, the bind model can write ``{"index": 0, "rating": 0.0}`` until its
+    output runs out, and the call times out instead of asking.
+
+    An empty menu, every reading refused, has no shape to rate, so its schema leaves
+    `measuring` out of what the model fills and drops whatever a reply writes there. A reply
+    that asks and rates the nearest refused reading validates, with `measuring` empty."""
+    measuring = _UniversalBindOutput.model_fields["measuring"]
+    if size == 0:
+        field = (
+            Annotated[SkipJsonSchema[list[ShapeRating]], BeforeValidator(_unrated)],
+            Field(default_factory=list, description=measuring.description),
+        )
+    else:
+        field = (
+            list[ShapeRating],
+            Field(default_factory=list, max_length=size, description=measuring.description),
+        )
+    return create_model(
+        _UniversalBindOutput.__name__,
+        __base__=_UniversalBindOutput,
+        __module__=__name__,
+        measuring=field,
+    )
+
+
+def _unrated(_: object) -> list[ShapeRating]:
+    """No rating, the `measuring` of a reply over an empty menu whatever it wrote."""
+    return []
 
 
 _UNIVERSAL_BIND_SYSTEM_PROMPT: str = """\
@@ -346,6 +418,38 @@ Example output (completely off-topic variable):
 """
 
 
+def _inserted(text: str, *, before: str, insert: str) -> str:
+    """`text` with `insert` placed before `before`, which it holds exactly once."""
+    if text.count(before) != 1:
+        raise ValueError(f"the bind prompt holds {before!r} {text.count(before)} times")
+    return text.replace(before, insert + before)
+
+
+# The bind system prompt the bind call sends. It is `_UNIVERSAL_BIND_SYSTEM_PROMPT` asking
+# for `_UniversalBindOutput.measuring` in one paragraph before the binding rules and in both
+# example outputs.
+_MEASURING_BIND_SYSTEM_PROMPT: str = _inserted(
+    _inserted(
+        _inserted(
+            _UNIVERSAL_BIND_SYSTEM_PROMPT,
+            before="BINDING RULES (follow exactly",
+            insert="""\
+measuring: list every candidate shape that measures what the variable phrase names, the chosen
+one included, each as {"index": <shape index>, "rating": <0 to 1>}. The rating says how well
+the shape measures what the phrase names: 1 when it measures exactly that, lower the further
+its reading departs from the phrase. Leave out shapes that measure something else, and leave
+measuring empty when ask is set.
+
+""",
+        ),
+        before='  "ask": null,\n  "nearest_refused_index": null\n}\n\nExample output (completely',
+        insert='  "measuring": [{"index": 0, "rating": 1.0}],\n',
+    ),
+    before='  "ask": "Variable',
+    insert='  "measuring": [],\n',
+)
+
+
 # Limit per-slot taxonomy values shown in the prompt.
 _MAX_TAXONOMY_VALUES_SHOWN = 20
 
@@ -365,20 +469,33 @@ _SCHEMA_DENOMINATOR_TEXT: dict[DenominatorKind, str] = {
 UNRESOLVED_DENOMINATOR = "(present, unresolved)"
 
 
-def menu_denominator(denominator: str | None, *, unresolved: bool) -> str | None:
+def menu_denominator(
+    denominator: str | None, *, unresolved: bool, base_axis: RoleAxis | None = None
+) -> str | None:
     """The measurementDenominator text the bind menu shows for a shape, `None` when it
     divides by nothing.
 
     A schema term shows its meaning (`quantity.schema_denominator_kind`) whether or not its
     arc resolves, so `Count_Person` and the ProvisionalNode `PerCapita` show one per-person
     base. Any other unresolved arc shows `UNRESOLVED_DENOMINATOR`, which keeps it distinct
-    from a resolved shape sharing its dcid, and a StatVar denominator shows its dcid."""
+    from a resolved shape sharing its dcid, and a StatVar denominator shows its dcid.
+
+    `base_axis` names the flow end whose party's own total the shape divides by
+    (`bound_values.ratio_base_axis`), and the text names that party after the base: DAC1's
+    ODA as a share of GNI shows "... of the provider", DAC2a's "... of the recipient", so
+    the menu states the two ratios apart."""
     kind = schema_denominator_kind(denominator) if denominator is not None else None
     if kind is not None:
-        return _SCHEMA_DENOMINATOR_TEXT[kind]
-    if unresolved:
-        return UNRESOLVED_DENOMINATOR
-    return denominator or None
+        text = _SCHEMA_DENOMINATOR_TEXT[kind]
+    elif unresolved:
+        text = UNRESOLVED_DENOMINATOR
+    elif denominator:
+        text = denominator
+    else:
+        return None
+    if base_axis is None:
+        return text
+    return f"{text} of the {GENERIC_ROLE_WORDING.noun(base_axis).singular}"
 
 
 class StatedReading(NamedTuple):
@@ -398,8 +515,8 @@ class StatedReading(NamedTuple):
 def stated_reading(shape: ShapeDraft) -> StatedReading:
     """The reading the bind menu states for `shape`: its label, its origin, its family
     (standard, or the roles its series declare), its five-tuple, and its denominator by
-    meaning (`menu_denominator`). The prompt prints these fields and `rank_elected`
-    compares them, so two shapes the menu states alike are equal here. The sample member
+    meaning and the party whose total it is (`menu_denominator`). The prompt prints these
+    fields and `rank_elected` compares them, so two shapes the menu states alike are equal here. The sample member
     dcids a block also prints are examples of its members and state no reading."""
     roles = _declared_role_names(shape)
     return StatedReading(
@@ -410,7 +527,11 @@ def stated_reading(shape: ShapeDraft) -> StatedReading:
         measured_property=shape.meas_prop_dcid,
         stat_type=shape.stat_type_dcid,
         qualifier=shape.meas_qual_dcid,
-        denominator=menu_denominator(shape.meas_denom_dcid, unresolved=shape.meas_denom_unresolved),
+        denominator=menu_denominator(
+            shape.meas_denom_dcid,
+            unresolved=shape.meas_denom_unresolved,
+            base_axis=ratio_base_axis(shape, get_index()),
+        ),
     )
 
 
@@ -433,10 +554,10 @@ def _states_same_reading(
     denominators mean one base (`quantity.denominator_meaning`): a schema term's meaning or
     the same arc, since two unresolved arcs that name no schema term print alike
     (`UNRESOLVED_DENOMINATOR`). Each slot reads the same members on both. A value the
-    bindings bind on it applies to the same taxonomy codes on both (`applies_value`), and
-    to at least one: a code only one of them offers outside the bound value tells no
-    reading apart, and a shape holding only a child of a bound parent reads the child
-    alone. A slot the bindings bind no value on holds one taxonomy on both, since it stays
+    bindings bind on it applies to codes covering the same leaf codes on both, and to at
+    least one (`reads_bound_values_alike`). A code only one of them offers outside the bound value
+    tells no reading apart, and a shape holding only a child of a bound parent reads the
+    child alone. A slot the bindings bind no value on holds one taxonomy on both, since it stays
     open over every value it holds."""
     if stated_reading(elected) != stated_reading(other):
         return False
@@ -444,21 +565,56 @@ def _states_same_reading(
         return False
     if denominator_meaning(elected) != denominator_meaning(other):
         return False
+    if not reads_bound_values_alike(elected, other, bindings):
+        return False
+    bound = _bound_slots(bindings)
+    own, held = elected.slot_taxonomy or {}, other.slot_taxonomy or {}
+    return all(
+        set(own.get(f"{axis}:{prop}", [])) == set(held.get(f"{axis}:{prop}", []))
+        for axis, prop in _slot_properties(elected)
+        if (axis, prop) not in bound
+    )
+
+
+def reads_bound_values_alike(
+    elected: ShapeDraft, other: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+) -> bool:
+    """Whether each value `bindings` bind on a slot of `elected` applies to taxonomy codes
+    of `other`'s slot on that property that cover the same leaf codes as those of
+    `elected`'s (`covered_leaves`), and to at least one (`applies_value`), so
+    `other` holds every bound value as `elected` does. A family that lists a parent code
+    beside its children reads the parent as another listing lists its children alone. A
+    shape with no slot on the property holds none of its values."""
+    bound = _bound_slots(bindings)
+    own, held = elected.slot_taxonomy or {}, other.slot_taxonomy or {}
+    for axis, prop in _slot_properties(elected):
+        key = f"{axis}:{prop}"
+        ours, theirs = own.get(key, []), held.get(key, [])
+        for value in bound.get((axis, prop), ()):
+            read = [code for code in ours if applies_value(value, code)]
+            read_there = [code for code in theirs if applies_value(value, code)]
+            if not read or covered_leaves(read) != covered_leaves(read_there):
+                return False
+    return True
+
+
+def covered_leaves(codes: Iterable[str]) -> frozenset[str]:
+    """The leaf codes `codes` cover in the code index's hierarchy: each code's descendants
+    that have no children (`CodeIndex.descendants`), so a parent covers its subtree's
+    leaves. A leaf, a code of a flat system, and a code the index lacks cover themselves."""
+    index = get_index()
+    return frozenset(
+        leaf for code in codes for leaf in index.descendants(code) if not index.has_children(leaf)
+    )
+
+
+def _bound_slots(bindings: Sequence[SlotBindingDraft]) -> dict[tuple[Axis, str], list[str]]:
+    """The values `bindings` bind, by slot axis and property."""
     bound: dict[tuple[Axis, str], list[str]] = {}
     for draft in bindings:
         if draft.kind in ("value", "set") and draft.property_dcid is not None:
             bound.setdefault((draft.axis, draft.property_dcid), []).extend(draft.value_dcids)
-    own, held = elected.slot_taxonomy or {}, other.slot_taxonomy or {}
-    for axis, prop in _slot_properties(elected):
-        key = f"{axis}:{prop}"
-        ours, theirs = set(own.get(key, [])), set(held.get(key, []))
-        for value in bound.get((axis, prop), ()):
-            read = {code for code in ours if applies_value(value, code)}
-            if not read or read != {code for code in theirs if applies_value(value, code)}:
-                return False
-        if (axis, prop) not in bound and ours != theirs:
-            return False
-    return True
+    return bound
 
 
 def rank_elected(
@@ -466,6 +622,7 @@ def rank_elected(
     output: _UniversalBindOutput,
     *,
     availability: Sequence[bool | None] = (),
+    among: Collection[int] | None = None,
 ) -> int:
     """The menu index of the reading `output` elects, by rank among the shapes the menu
     states alike.
@@ -475,13 +632,19 @@ def rank_elected(
     menu states as one reading (`_states_same_reading`) with the same availability carries
     no information, so the rank that orders the menu makes it: the first such shape is
     elected. A shape the menu tells apart from the model's choice leaves that choice as it
-    is."""
+    is.
+
+    `among` holds the shapes the house policies left standing (`house_policy.PolicyChoice`),
+    `None` where no policy step ran. The rank breaks ties among those survivors alone. A
+    shape the policies set aside, or one outside their pool, is not elected here, so the
+    rank cannot undo a policy's move."""
     chosen = output.chosen_shape_index
     return next(
         (
             index
             for index in range(chosen)
-            if (not availability or availability[index] == availability[chosen])
+            if (among is None or index in among)
+            and (not availability or availability[index] == availability[chosen])
             and _states_same_reading(shapes[chosen], shapes[index], output.bindings)
         ),
         chosen,
@@ -639,7 +802,7 @@ def _build_universal_bind_prompt(
     """Build the user prompt for the choose-and-bind call.
 
     User wording comes from the extracted variable and dropped phrases. Shape metadata and
-    admitted qualifier codes and labels come from the graph or packaged index. Admitted
+    admitted qualifier codes and labels come from the graph or the release's code index. Admitted
     matches contribute only their code and label. Dropped phrases request ``unbound`` plus
     ``requested_all`` evidence
     and a verbatim phrase echo. The block appears only when phrases exist.
@@ -729,15 +892,7 @@ def _build_universal_bind_prompt(
         )
         lines.append("")
     if dropped_qualifier_phrases:
-        lines.append(
-            "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
-            "apply them -- for the shape you choose, if one of these phrases asks for "
-            'every value of one of its constraint slots (e.g. "across all flows", '
-            '"regardless of type"), bind that slot kind=unbound, evidence=requested_all, '
-            "and set that binding's own requested_all_phrase to the phrase verbatim; "
-            "leave requested_all_phrase null when no phrase names one of the chosen "
-            "shape's own constraint slots):"
-        )
+        lines.append(DROPPED_QUALIFIERS_HEADER)
         lines.extend(f"  {phrase}" for phrase in dropped_qualifier_phrases)
         lines.append("")
     lines.append(f"CANDIDATE SHAPES ({len(shapes)} total):")
@@ -929,14 +1084,14 @@ async def bind_universal(
     The prompt holds the variable phrase, dropped-qualifier phrases, the frame, and
     graph-sourced text. The frame shows a place by the places it resolved to and an operation
     by its verb, so the only other user text it holds is a place name that resolved to
-    nothing and a source mention's words.
+    nothing and a source mention's words. The reply also rates each shape that measures the
+    phrase (`_MEASURING_BIND_SYSTEM_PROMPT`), in a schema bounded to the menu
+    (`bind_schema`).
 
-    Returns the structured output and token usage, or ``None`` when usage is unavailable. A
-    source-axis draft comes back unbound, whatever the model wrote (`_without_source_values`),
-    each value on the chosen shape is grounded in its slot's taxonomy
-    (`_grounded_in_taxonomy`), and a value the shape's datasets state on only some of the
-    series that hold it comes back unbound (`_without_partly_stated_values`). Raises `LLMOutputRefused` for an output the schema refuses
-    on purpose, a binding that names no value.
+    Returns the structured output, with the engine's rules applied to its drafts
+    (`ground_bind_output`), and token usage, or ``None`` when usage is unavailable. Raises
+    `LLMOutputRefused` for an output the schema refuses on purpose, a binding that names no
+    value.
     """
     prompt = _build_universal_bind_prompt(
         variable,
@@ -953,16 +1108,105 @@ async def bind_universal(
     output, usage = await generate_structured_async(
         for_stage(llm, "bind"),
         prompt=prompt,
-        system=_UNIVERSAL_BIND_SYSTEM_PROMPT,
-        schema=_UniversalBindOutput,
+        system=_MEASURING_BIND_SYSTEM_PROMPT,
+        schema=bind_schema(len(shapes)),
     )
+    return ground_bind_output(output, shapes), usage
+
+
+def ground_bind_output(
+    output: _UniversalBindOutput, shapes: Sequence[ShapeDraft]
+) -> _UniversalBindOutput:
+    """`output`, a binder's reply over the menu `shapes`, with each draft stamped as the
+    reply's and the engine's rules applied to it, whichever binder wrote it.
+
+    A source-axis draft comes back unbound (`_without_source_values`). When the reply
+    elects a menu shape, each value is grounded in its slot's taxonomy on that shape
+    (`_grounded_in_taxonomy`), and a value the shape's datasets state on only some of the
+    series that hold it comes back unbound (`_without_partly_stated_values`).
+    """
     bindings = _without_source_values(
         [draft.model_copy(update={"drafted_by": "reply"}) for draft in output.bindings]
     )
     if 0 <= output.chosen_shape_index < len(shapes):
         chosen = shapes[output.chosen_shape_index]
         bindings = _without_partly_stated_values(_grounded_in_taxonomy(bindings, chosen), chosen)
-    return output.model_copy(update={"bindings": bindings}), usage
+    return output.model_copy(update={"bindings": bindings})
+
+
+def slot_label(slot_key_draft: SlotKeyDraft) -> str:
+    """The label a slot carries for people: an indexed code system's declared plain_name,
+    else the draft's graph label with a dcid echo humanised. The draft keeps the graph's
+    label for binding."""
+    prop = slot_key_draft.property_dcid
+    if prop is None:
+        return slot_key_draft.label
+    declaration = get_index().declarations.get(prop)
+    if declaration is not None:
+        return declaration.plain_name
+    return _humanize_ref(prop, slot_key_draft.label)
+
+
+def _slot_name(slot_key_draft: SlotKeyDraft) -> str:
+    """The noun a question names the slot `slot_key_draft` keys by: the plain name the
+    index declares for its property outside the code systems
+    (`CodeIndex.slot_plain_names`), else its label (`slot_label`)."""
+    prop = slot_key_draft.property_dcid
+    declared = get_index().slot_plain_names.get(prop) if prop is not None else None
+    return declared or slot_label(slot_key_draft)
+
+
+def _names_slot(phrase: str, slot_key_draft: SlotKeyDraft) -> bool:
+    """Whether `phrase` names the slot `slot_key_draft` keys by its whole name
+    (`_slot_name`), singular or plural (`names_plain_name`).
+
+    "Across all flows" names the flow slot and "across all types of finance" the DAC type
+    of finance, while "total", "total aid" and "all DAC donors" name no slot, so a declared
+    default still binds and the phrase stays disclosed.
+    """
+    return names_plain_name(phrase, _slot_name(slot_key_draft))
+
+
+def validate_requested_all_bindings(
+    bindings: Sequence[SlotBindingDraft],
+    dropped_qualifier_phrases: Sequence[str],
+    *,
+    slot_keys: Collection[SlotKeyDraft],
+) -> tuple[list[SlotBindingDraft], frozenset[str]]:
+    """Validate a binder's ``requested_all`` claims before any holds check, default or
+    warning suppression uses them.
+
+    A claim must be unbound, name a property among `slot_keys` (the elected shape's),
+    reproduce a dropped phrase exactly, and name that slot (`_names_slot`). A phrase the
+    claim does not name a slot with ("total", "bilateral") says nothing about which values
+    the slot spans. Demote invalid claims to ``mentioned`` and clear their phrase. Return
+    bindings in order plus normalised phrases from valid claims only, so a dropped phrase
+    no answer binds stays disclosed. Validated bindings validate to themselves, so each
+    binder applies this to its pick's drafts and the election again to the elected
+    shape's.
+    """
+    keys = {key.property_dcid: key for key in slot_keys if key.property_dcid is not None}
+    applied: set[str] = set()
+    validated: list[SlotBindingDraft] = []
+    for binding in bindings:
+        if binding.evidence == "requested_all":
+            phrase = binding.requested_all_phrase
+            key = keys.get(binding.property_dcid or "")
+            if (
+                binding.kind == "unbound"
+                and key is not None
+                and phrase is not None
+                and phrase in dropped_qualifier_phrases
+                and _names_slot(phrase, key)
+            ):
+                applied.add(_normalize(phrase))
+                validated.append(binding)
+                continue
+            binding = binding.model_copy(
+                update={"evidence": "mentioned", "requested_all_phrase": None}
+            )
+        validated.append(binding)
+    return validated, frozenset(applied)
 
 
 def _without_partly_stated_values(

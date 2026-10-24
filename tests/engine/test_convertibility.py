@@ -15,12 +15,12 @@ from materialise.facets import ElectedDataset, FacetSelection
 from materialise.graph import SubjectPage
 from materialise.rate_tables import RateTableCache
 from materialise.recipes import CONVERSION_NODE_PROPERTIES
-from search.engine.bind import _UniversalBindOutput
 from search.engine.errors import EngineInfraError, EngineInputError
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.convertibility import decide_part_unit, elected_unit_refs
 from search.engine.region.state import EngineOptions
+from search.engine.unit.base_year import TABLE_PROVENANCES
 from search.models import (
     IdentityBindingSet,
     IdentityFacetValueRequest,
@@ -29,6 +29,7 @@ from search.models import (
 )
 from tests.engine import _answer_invariants_world as world_module
 from tests.engine._base_identity import make_identity, subject_entity
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     build_coverage_index,
@@ -48,7 +49,7 @@ class _SoleShapeLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None),
+            elected_reply(0, bindings=[], also_plausible=None),
             None,
         )
 
@@ -82,6 +83,17 @@ _SV_ARCS: dict = {
 _NODES: dict = {
     _ENTITY: {"label": "Kenya", "type": "Country"},
     _SV: {"label": "Convert expenditure", "type": "StatisticalVariable", "arcs": _SV_ARCS},
+    # A constant-price phrase naming no year completes from the tables' base year.
+    **{
+        provenance: {
+            "label": "Conversion tables",
+            "arcs": {
+                "lastDataRefreshDate": {"nodes": [{"value": "2026-10-01"}]},
+                "deflatorBaseYear": {"nodes": [{"value": "2023"}]},
+            },
+        }
+        for provenance in TABLE_PROVENANCES
+    },
 }
 
 _CURRENCY_ARCS = {
@@ -163,9 +175,15 @@ def _run_text(
     qualifier: str | None = None,
     unit_text_best_effort: bool = False,
 ):
+    """A `qualifier` other than `Nominal` is the StatVar's on the search graph too, so its
+    shape carries it."""
     obs = {f"{_SV}|{_ENTITY}": obs_facets}
+    nodes = _NODES
+    if qualifier is not None and not nominal:
+        arcs = {**_SV_ARCS, "measurementQualifier": {"nodes": [{"dcid": qualifier}]}}
+        nodes = {**_NODES, _SV: {**_NODES[_SV], "arcs": arcs}}
     graph = FakeGraph(
-        nodes=_NODES,
+        nodes=nodes,
         detect={_QUERY: {"svs": [_SV], "cosine_scores": [0.95]}},
         resolve={"Kenya": _ENTITY},
         obs=obs,
@@ -309,22 +327,66 @@ def test_no_unit_at_all_refuses_facet_binding_unsupported():
     assert result.unsupported.code == "facet_binding_unsupported"
 
 
-def test_a_typed_unit_phrase_the_data_cannot_convert_to_answers_without_it():
+@pytest.mark.parametrize(
+    ("unit_text", "unit", "qualifier", "departed"),
+    [
+        pytest.param("in US dollars", None, None, [("measure_not_applied", None)], id="no-unit"),
+        # A constant-price series refuses conversion (`nominal_undeclared`); its own basis
+        # and currency are what the phrase asks.
+        pytest.param("in constant US dollars", "CurrencyUSD", "RealValue", [], id="real-usd"),
+        # The UN System Data Commons' US-dollar unit is no currency node
+        # (`NonCurrencyUnitError`), and is denominated in US dollars all the same.
+        pytest.param(
+            "in constant US dollars",
+            "undata/UNIT_MEASURE-CR_USD_K",
+            "RealValue",
+            [],
+            id="real-un-usd",
+        ),
+        pytest.param(
+            "in constant euros",
+            "CurrencyUSD",
+            "RealValue",
+            [("measure_not_applied", "unit:")],
+            id="real-usd-asked-in-euros",
+        ),
+        pytest.param(
+            "in constant 2010 US dollars",
+            "CurrencyUSD",
+            "RealValue",
+            [("measure_not_applied", "unit:")],
+            id="real-usd-asked-a-base-year",
+        ),
+        pytest.param(
+            "in constant US dollars",
+            "CurrencyUSD",
+            "PurchasingPowerParity",
+            [("measure_not_applied", "unit:")],
+            id="ppp-usd-asked-constant",
+        ),
+    ],
+)
+def test_a_typed_unit_phrase_the_data_cannot_convert_to_answers_without_it(
+    unit_text: str, unit: str | None, qualifier: str | None, departed: list[tuple[str, str | None]]
+):
     """The raw-text door's typed unit phrase is best effort. Where the explicit request above
-    refuses, the leg answers unconverted, binds no unit, and departs `measure_not_applied`
-    for the phrase. Data in no currency has no unit token, so no one slot clears it."""
+    refuses, the leg answers unconverted, binds no unit, and departs for the phrase: data in
+    no currency departs `measure_not_applied`, which no unit token clears. An answer whose
+    shape carries the price basis the phrase names, in the currency it names, already is
+    what it asks, so it departs nothing; a currency, base year or basis it lacks departs."""
     result = _run_text(
-        unit_text="in US dollars",
-        obs_facets=[_obs_facet(unit=None)],
-        nominal=True,
+        unit_text=unit_text,
+        obs_facets=[_obs_facet(unit=unit)],
+        nominal=qualifier is None,
+        qualifier=qualifier,
         provenance_declares_recipe={_PROVENANCE: False},
         unit_text_best_effort=True,
     )
     assert result.status == "definite", result.no_data_reason
     assert result.specs[0].definition.identity.facets is None
-    assert [(f.code, f.binding_ref, f.asked) for f in result.departure_facts.values()] == [
-        ("measure_not_applied", None, "in US dollars")
-    ]
+    assert [(f.code, f.binding_ref) for f in result.departure_facts.values()] == departed
+    assert all(f.asked == unit_text for f in result.departure_facts.values())
+    assert ("query_qualifier_dropped" in [w.code for w in result.warnings]) is bool(departed)
 
 
 def test_missing_materialise_graph_raises_infra_error():

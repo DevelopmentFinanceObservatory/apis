@@ -1,4 +1,4 @@
-"""Test `family_label` against the packaged indexes.
+"""Test `family_label` against the fixture indexes.
 
 A family label leads with the identity's measure partition label and follows with its bound
 slots' code labels. Measure-axis slots and the slots the identity's five-tuple pins add nothing,
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from code_index import default_index_path, load_index
 from code_index.labels import family_label
 from code_index.members import canonical_identity
 from code_index.shared import get_measure_index
@@ -19,11 +18,12 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
     imputed_education_aid_identity,
 )
+from tests.code_index.support import INDEX_FIXTURE, load_index
 
 
 @pytest.fixture(scope="module")
 def index():
-    return load_index(default_index_path())
+    return load_index(INDEX_FIXTURE)
 
 
 @pytest.mark.parametrize(

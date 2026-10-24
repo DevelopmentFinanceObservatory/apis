@@ -59,7 +59,7 @@ def _unbound_slot(prop: str) -> Slot:
 
 
 def _purpose_scoped_partitions() -> tuple[tuple, tuple[MeasurePartition, ...]]:
-    """Return the populated partitions for the packaged CRS-purpose family."""
+    """Return the populated partitions for the fixture CRS-purpose family."""
     axes = get_measure_index().axes
     shape = ShapeDraft(
         shape_id="",

@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from code_index.types import PartyRow
 from series_coverage.index import CoverageIndex
-from series_coverage.loader import load_coverage
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from series_coverage.summary import FacetSummary, PartyCounts
 from tests.series_coverage.support import (
@@ -23,15 +20,15 @@ from tests.series_coverage.support import (
     V4,
     V5,
     ZWE,
-    build_test_artifact,
+    build_test_index,
     coverage_table,
 )
 
 _FLOW_ROLES = RoleNames(donor="financingProvider", recipient="financingRecipient")
 
 
-def test_a_variable_summary_folds_each_facet_of_the_loaded_build(tmp_path: Path) -> None:
-    index = load_coverage(build_test_artifact(tmp_path / "coverage")).index
+def test_a_variable_summary_folds_each_facet_of_the_index() -> None:
+    index = build_test_index()
 
     summary = index.facet_summary.variable(V1)
 
@@ -61,9 +58,9 @@ def test_a_variable_summary_folds_each_facet_of_the_loaded_build(tmp_path: Path)
     assert index.facet_summary.variable("NoSuchVariable") is None
 
 
-def test_facet_spans_agree_with_the_summary_for_every_variable(tmp_path: Path) -> None:
+def test_facet_spans_agree_with_the_summary_for_every_variable() -> None:
     """The summary and `facet_spans` with no binding read the same rows."""
-    index = load_coverage(build_test_artifact(tmp_path / "coverage")).index
+    index = build_test_index()
     variables = [V1, V2, V3, V5]
 
     folded = {
@@ -81,6 +78,7 @@ def test_facet_spans_agree_with_the_summary_for_every_variable(tmp_path: Path) -
 
 def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
     africa_total, africa_residual = "DACAfrica", "DACAfricaUnallocated"
+    gates, private_total = "GatesFoundation", "DACPrivateDonors"
     table, horizon = coverage_table(
         [
             ("V-a", "f-1", FRA, KEN, [2020]),
@@ -88,23 +86,29 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
             ("V-a", "f-2", DEU, KEN, [2021]),
             ("V-a", "f-2", DEU, africa_residual, [2021]),
             ("V-a", "f-2", DEU, ZWE, [2021]),
+            ("V-a", "f-2", gates, KEN, [2021]),
+            ("V-a", "f-2", private_total, KEN, [2021]),
         ]
     )
     index = CoverageIndex(table, {"V-a": _FLOW_ROLES}, horizon=horizon)
     parties = {
-        FRA: PartyRow(dcid=FRA, kind="party"),
-        DEU: PartyRow(dcid=DEU, kind="party"),
-        KEN: PartyRow(dcid=KEN, kind="party"),
+        FRA: PartyRow(dcid=FRA, kind="party", party_class="official"),
+        DEU: PartyRow(dcid=DEU, kind="party", party_class="official"),
+        gates: PartyRow(dcid=gates, kind="party", party_class="private"),
+        KEN: PartyRow(dcid=KEN, kind="party", party_class="official"),
+        private_total: PartyRow(dcid=private_total, kind="total", party_class="private"),
         africa_total: PartyRow(dcid=africa_total, kind="total", totals="africa"),
-        africa_residual: PartyRow(dcid=africa_residual, kind="residual"),
+        africa_residual: PartyRow(dcid=africa_residual, kind="residual", party_class="residual"),
     }
 
     summary = index.facet_summary.variable("V-a")
 
     assert summary is not None
-    # KEN sits in both facets and counts once; ZWE is not listed in the code index.
+    # KEN sits in both facets and counts once; ZWE is not listed in the code index. A private
+    # donor is a party, and counts again among the private ones; the private donors' total reads
+    # the private class and is not a private party.
     assert summary.party_counts(parties=parties) == {
-        "donor": PartyCounts(parties=2),
+        "donor": PartyCounts(parties=3, private=1, totals=1),
         "recipient": PartyCounts(parties=1, totals=1, residual=1, unclassified=1),
     }
     assert summary.party_counts(parties=parties, facet_ids={"f-1"}) == {

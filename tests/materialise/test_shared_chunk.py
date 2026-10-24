@@ -246,7 +246,7 @@ def _materialise_rejected_chunk(graph: FakeGraphReader) -> None:
             transport=httpx.MockTransport(handler),
         ),
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,

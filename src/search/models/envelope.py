@@ -35,8 +35,8 @@ def _is_none(value: object) -> bool:
 class Warning(StrictModel):
     """A run-health signal. Note: this name shadows the Python builtin Warning.
 
-    Only `observations_series_truncated`, `elected_shape_no_data` and `un_system_unavailable`
-    set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+    Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`
+    and `whole_total_available` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
     exactly `{code, severity, message}` plus `spec_id` where one applies.
     """
 
@@ -70,7 +70,10 @@ class Warning(StrictModel):
             "failed, each empty when none, and each variable's graph name, in variables "
             "order, '' where the graph holds none; a warning without params says the UN "
             "search itself was "
-            "unavailable. Omitted for every other code"
+            "unavailable. whole_total_available: {total, total_label, whole_of}, the dcid "
+            "and label of the total the source publishes for the side the answer lists "
+            "member by member, and the classes of party it covers, comma-joined (official, "
+            "private, residual). Omitted for every other code"
         ),
     )
 
@@ -79,10 +82,15 @@ class Timing(StrictModel):
     """Latency breakdown, reused at two scopes: the envelope's own
     diagnostics.timing_ms, where total is the whole request's wall-clock
     elapsed time and by_step names the steps that run once per request,
-    shared across every part (e.g. extract), and a part's own timing_ms,
-    where total sums that part's own by_step values and by_step names only
-    the phases that part ran, excluding the shared steps already reported
-    on the envelope.
+    shared across every part (coverage; extract; cache_lookup on a raw-text
+    request with the response cache active; entity_check on a request that
+    runs the place check), and a part's own timing_ms, where total sums
+    that part's own by_step values and by_step names the steps that part
+    ran plus a phase_<name> entry for each phase it ran, holding the time
+    no step booked, excluding the shared steps already reported on the
+    envelope. A part's shape_arcs, shape_probe, shape_probe_coverage,
+    shape_labels, shape_groups and shape_admission steps are nested inside
+    its shape step, so its total leaves them out.
     """
 
     total: int = Field(description="total latency in milliseconds, at whichever scope this sits")
@@ -108,7 +116,10 @@ class Diagnostics(StrictModel):
     timing_ms: Timing | None = Field(default=None, description="latency breakdown")
     llm_usage: dict[str, int] | None = Field(
         default=None,
-        description="per-request LLM token counts {input_tokens, output_tokens, cached_tokens}",
+        description=(
+            "per-request LLM token counts {input_tokens, output_tokens, cached_tokens}, "
+            "plus {jev_input_tokens, jev_output_tokens} when Jev answered a call"
+        ),
     )
     timed_out: bool | None = Field(
         default=None,

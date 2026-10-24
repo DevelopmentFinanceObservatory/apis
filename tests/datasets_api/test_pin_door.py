@@ -468,26 +468,66 @@ def test_re_pinning_an_already_pinned_artifact_pins_a_working_tier_canonical_fra
     assert writer.records[frame_key] == _NOW
 
 
-@pytest.mark.parametrize("frame", ["absent", "aged_out"])
-def test_a_version_without_a_servable_frame_pins_the_named_artifact_alone(frame: str):
+@pytest.mark.parametrize(
+    ("frame", "frame_pinned"),
+    [
+        pytest.param("absent", False, id="absent"),
+        pytest.param("aged_out_bytes_gone", False, id="aged_out_bytes_gone"),
+        pytest.param("aged_out_bytes_survive", True, id="aged_out_bytes_survive"),
+    ],
+)
+def test_a_pin_retains_an_aged_frame_while_its_bytes_survive(
+    frame: str, frame_pinned: bool, caplog: pytest.LogCaptureFixture
+):
+    """With no frame, or an aged one whose bytes are gone, the named artifact pins alone, and a
+    frame whose bytes are gone is logged."""
     store = FakeArtifactStore()
     parquet = _parquet_location(store)
     locations = [parquet]
-    if frame == "aged_out":
+    if frame != "absent":
         long_ago = _NOW - WORKING_TIER_RETENTION - timedelta(days=1)
-        locations.append(_frame_location(store, stored_at=long_ago))
+        aged = _frame_location(store, stored_at=long_ago)
+        locations.append(aged)
+        if frame == "aged_out_bytes_gone":
+            del store._objects[(aged.artifact_digest, Tier.working.value)]
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): locations}
     )
     writer = FakeArtifactReferenceWriter()
 
-    pinned_at = _pin_parquet(reader, store, writer, parquet.artifact_digest)
+    with caplog.at_level(logging.WARNING, logger="datasets_api.doors.pin"):
+        pinned_at = _pin_parquet(reader, store, writer, parquet.artifact_digest)
 
     assert pinned_at == _NOW
-    assert list(writer.records) == [
-        (_PRINCIPAL, parquet.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND)
-    ]
-    assert store.list(tier=Tier.pinned) == {parquet.artifact_digest}
+    if frame == "aged_out_bytes_gone":
+        (record,) = caplog.records
+        message = record.getMessage()
+        assert f"artifact_digest={aged.artifact_digest}" in message
+        assert "subject_id=spec_a" in message
+        assert "content_version=cv1" in message
+    else:
+        assert not caplog.records
+    pinned = {parquet.artifact_digest, *([locations[-1].artifact_digest] if frame_pinned else [])}
+    assert store.list(tier=Tier.pinned) == pinned
+    assert set(writer.records) == {
+        (_PRINCIPAL, digest, "spec_a", "cv1", PIN_REFERENCE_KIND) for digest in pinned
+    }
+
+
+def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired():
+    """The working copy aged out after the location was read, so the copy finds no object."""
+    store = FakeArtifactStore()
+    parquet = _parquet_location(store)
+    del store._objects[(parquet.artifact_digest, Tier.working.value)]
+    reader = FakeSnapshotReader(
+        versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): [parquet]}
+    )
+    writer = FakeArtifactReferenceWriter()
+
+    with pytest.raises(ArtifactExpired):
+        _pin_parquet(reader, store, writer, parquet.artifact_digest)
+
+    assert not writer.records
 
 
 def _writer_with_pinned_copies(*stored_at: datetime) -> FakeArtifactReferenceWriter:
@@ -888,7 +928,7 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
 def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(door_executor, "ThreadPoolExecutor", BrokenSubmitExecutor)
+    monkeypatch.setattr(door_executor, "ContextCarryingExecutor", BrokenSubmitExecutor)
     store = FakeArtifactStore()
     location = _store_and_locate(store, b"pin-broken-pool-data")
     reader = FakeSnapshotReader(

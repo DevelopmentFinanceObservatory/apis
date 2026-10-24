@@ -1,6 +1,6 @@
 """Tests for sibling identity minting from an elected identity. Three synthetic
 shape axes and one constraint axis isolate the rules; the final test uses the
-packaged index.
+fixture index.
 """
 
 from __future__ import annotations
@@ -90,11 +90,11 @@ def _partition(**overrides: str | None) -> MeasurePartition:
 
 
 def _index_with_sibling_row(**constraint_properties: str) -> CodeIndex:
-    """A packaged `CodeIndex` carrying exactly one `StatVarRow`, dcid
+    """A `CodeIndex` carrying exactly one `StatVarRow`, dcid
     `SV_sibling` (`_partition`'s own lone member), declaring
     `constraint_properties`. `mint_sibling_identity`'s own internal
     `get_index()` call is monkeypatched to this, standing in for the
-    packaged index a sibling's real members would be found in.
+    fixture index a sibling's real members would be found in.
     """
     return CodeIndex(
         stamp=IndexStamp(

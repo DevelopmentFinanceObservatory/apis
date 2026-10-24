@@ -14,6 +14,7 @@ from io import BytesIO
 import pytest
 
 from artifact_store import ArtifactNotFoundError, LiveArtifactInventory, Tier
+from code_index.shared import get_index
 from dataset_store.clock import utc_now
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import current, serve
@@ -25,7 +26,7 @@ from datasets_api.render import (
     METADATA_INCOMPLETE,
     METADATA_KEY,
     artifact_rendering,
-    artifact_rendering_key,
+    artifact_rendering_keys,
 )
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import (
@@ -204,7 +205,11 @@ def test_a_bundle_whose_documentation_read_failed_is_linked_incomplete_until_a_r
     servable = rendering_servable(
         subject_id=first.json()["definition"]["spec_id"],
         content_version=first.json()["content_version"],
-        rendering_key=artifact_rendering_key(MintOptions(bundle=True), site=settings.site),
+        rendering_keys=artifact_rendering_keys(
+            MintOptions(bundle=True),
+            site=settings.site,
+            enrichment_digest=get_index().enrichment_digest,
+        ),
         snapshot_reader=LiveSnapshotReader(store=version_store),
         now=utc_now,
         settings=settings,
@@ -591,6 +596,7 @@ def test_a_head_hit_collapse_whose_label_read_failed_lists_the_bundle_a_concurre
     artifact_store = _ReadableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
     groupby_options = {"bundle": True, "groupby": {"by": ["recipient"], "op": "sum"}}
     rival = artifact_store.put(b"the concurrent head hit's bundle", tier=Tier.working)
+    code_index = groupby_fixture._code_index()
     client = definition_door_client(
         graph=graph,
         sdmx_transport=groupby_fixture._sdmx_transport(),
@@ -603,11 +609,12 @@ def test_a_head_hit_collapse_whose_label_read_failed_lists_the_bundle_a_concurre
                     MintOptions.model_validate(groupby_options), site=DatasetsBuildSettings().site
                 ),
                 media_type="application/zip",
+                enrichment_digest=code_index.enrichment_digest,
             ),
         ),
         head_writer=LiveHeadStore(store=version_store),
         artifact_store=artifact_store,
-        code_index=groupby_fixture._code_index(),
+        code_index=code_index,
         coverage=groupby_fixture._coverage_service(),
     )
     spec_id, sidecar = groupby_fixture._spec_id_and_sidecar()

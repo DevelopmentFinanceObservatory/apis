@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -272,9 +271,9 @@ class TestCapRefusalsEndToEnd:
 
 
 class TestPartProvenance:
-    def test_the_request_schema_lists_the_declared_datasets_from_the_code_index(self, monkeypatch):
+    def test_the_request_schema_lists_the_declared_datasets(self, monkeypatch):
         """Each declared dataset is one `const` value of `ParsedPart.provenance`, in rank
-        order, carrying its label, description and opt-in flag from the index."""
+        order, carrying its label, description and opt-in flag from its declaration."""
         declared = [
             DatasetDeclaration(
                 provenance=f"provenance/Table{rank}",
@@ -287,8 +286,7 @@ class TestPartProvenance:
             )
             for rank in (1, 0)
         ]
-        index = SimpleNamespace(datasets={dataset.provenance: dataset for dataset in declared})
-        monkeypatch.setattr(schema_module, "get_index", lambda: index)
+        monkeypatch.setattr(schema_module, "DATASETS", tuple(declared))
 
         schema = schema_module.schema_payload()["request"]
 
@@ -309,7 +307,7 @@ class TestPartProvenance:
             },
         ]
 
-    def test_the_served_schema_lists_the_packaged_index_datasets(self):
+    def test_the_served_schema_lists_the_fixture_index_datasets(self):
         client = make_client()
         body = client.get("/api/search/schema").json()
         field = body["request"]["$defs"]["ParsedPart"]["properties"]["provenance"]

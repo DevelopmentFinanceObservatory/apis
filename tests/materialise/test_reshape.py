@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from code_index.types import PartyRow, WholeMarker
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import (
     _MAX_HOMOGENEITY_VALUES_PER_GROUP,
@@ -1144,6 +1145,21 @@ class TestSelectColumns:
         assert "unit" in str(excinfo.value)
 
 
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
+_WINDOWED_PARTIES = {
+    "donor/ALL": PartyRow(
+        dcid="donor/ALL",
+        kind="total",
+        party_class="official",
+        whole=(WholeMarker(dataset=_DAC2A, covers=("official",), years=(2020, 2021)),),
+    ),
+    "donor/A": PartyRow(dcid="donor/A", kind="party", party_class="private"),
+    "donor/R": PartyRow(dcid="donor/R", kind="residual", party_class="residual"),
+    "donor/MIX": PartyRow(dcid="donor/MIX", kind="total"),
+}
+
+
 class TestEnrichColumns:
     _COLUMNS = ("stat_var", "entity", "donor", "time_period", "value")
 
@@ -1172,6 +1188,97 @@ class TestEnrichColumns:
             (_STAT_VAR, "country/TGO", "donor/A", "2020", 2.0, "TG", "TGO", "Togo"),
         )
         assert warnings == ()
+
+    @pytest.mark.parametrize(
+        ("columns", "rows", "cells"),
+        [
+            pytest.param(
+                ("donor", "time_period", "provenance"),
+                (
+                    ("donor/ALL", "2019", _DAC2A),
+                    ("donor/ALL", "2021", _DAC2A),
+                    ("donor/ALL", "2021", _DAC2B),
+                    ("donor/A", "2021", _DAC2A),
+                    ("donor/R", "2021", _DAC2A),
+                    ("donor/MIX", "2021", _DAC2A),
+                ),
+                [
+                    ("total", "official", "false"),
+                    ("total", "official", "true"),
+                    ("total", "official", "false"),
+                    ("party", "private", "false"),
+                    ("residual", "residual", "false"),
+                    ("total", "", "false"),
+                ],
+                id="the-row-dataset-and-year-decide",
+            ),
+            pytest.param(
+                ("donor", "time_period"),
+                (("donor/ALL", "2021"), ("donor/A", "2021")),
+                [("total", "official", ""), ("party", "private", "false")],
+                id="no-provenance-column-leaves-a-whole-total-empty",
+            ),
+            pytest.param(
+                ("donor", "provenance"),
+                (("donor/ALL", _DAC2A), ("donor/A", _DAC2A)),
+                [("total", "official", ""), ("party", "private", "false")],
+                id="no-time-period-column-leaves-a-windowed-total-empty",
+            ),
+            pytest.param(
+                ("donor", "time_period", "provenance"),
+                (
+                    ("donor/ALL", "2020/2022", _DAC2A),
+                    ("donor/ALL", "bogus", _DAC2A),
+                    ("donor/ALL", None, _DAC2A),
+                    ("donor/ALL", "2021", None),
+                ),
+                [("total", "official", "")] * 4,
+                id="unreadable-or-multi-year-period-or-null-provenance-reads-empty",
+            ),
+        ],
+    )
+    def test_party_cells_follow_the_dataset_and_year_of_their_row(self, columns, rows, cells):
+        """An empty `party_class` of a listed total with no single covered class is its
+        value, so it counts no miss."""
+        table = Table(columns=columns, rows=rows)
+
+        result, warnings = enrich_columns(
+            table,
+            requests=(
+                ("donor", "party_kind"),
+                ("donor", "party_class"),
+                ("donor", "party_whole"),
+            ),
+            lookup={},
+            parties=_WINDOWED_PARTIES,
+        )
+
+        assert result.columns == (
+            *columns,
+            "donor_party_kind",
+            "donor_party_class",
+            "donor_party_whole",
+        )
+        assert [row[-3:] for row in result.rows] == cells
+        assert warnings == ()
+
+    def test_a_party_field_writes_only_its_own_column_and_an_unlisted_party_counts_a_miss(self):
+        table = Table(
+            columns=("donor", "time_period"), rows=(("donor/A", "2021"), ("donor/X", "2021"))
+        )
+
+        result, warnings = enrich_columns(
+            table, requests=(("donor", "party_class"),), lookup={}, parties=_WINDOWED_PARTIES
+        )
+
+        assert result.columns == ("donor", "time_period", "donor_party_class")
+        assert [row[-1] for row in result.rows] == ["private", ""]
+        (warning,) = (cast(EnrichmentUnavailableWarning, warning) for warning in warnings)
+        assert (warning["code"], warning["column"], warning["count"]) == (
+            "enrichment_unavailable",
+            "donor_party_class",
+            1,
+        )
 
     def test_two_entity_columns_in_one_call_each_get_their_own_columns(self):
         table = Table(
@@ -1453,7 +1560,9 @@ class TestParseColumnTokens:
             ("origin_iso2", "origin_iso2"),
             ("origin_iso3", "origin_iso3"),
             ("origin_label", "origin_label"),
+            ("origin_party_class", "origin_party_class"),
             ("origin_party_kind", "origin_party_kind"),
+            ("origin_party_whole", "origin_party_whole"),
             ("origin_type", "origin_type"),
         ]
 
@@ -1471,6 +1580,27 @@ class TestParseColumnTokens:
             select=("value",),
             enrichments=(("destination", "party_kind"), ("origin", "party_kind")),
         )
+
+    @pytest.mark.parametrize("field", ["party_class", "party_whole"])
+    def test_each_party_field_is_a_bare_token_for_party_roles_only(self, field):
+        result = parse_column_tokens(
+            (field, "observationAbout_iso3"),
+            table_columns=self._TABLE_COLUMNS,
+            entity_columns=("destination", "observationAbout", "origin"),
+            supported_fields=SUPPORTED_ENRICHMENTS,
+        )
+
+        assert result == ParsedColumns(
+            select=(),
+            enrichments=(("destination", field), ("origin", field), ("observationAbout", "iso3")),
+        )
+        with pytest.raises(ColumnUnknownError):
+            parse_column_tokens(
+                (f"observationAbout_{field}",),
+                table_columns=self._TABLE_COLUMNS,
+                entity_columns=("observationAbout", "origin"),
+                supported_fields=SUPPORTED_ENRICHMENTS,
+            )
 
     def test_an_entity_column_containing_an_underscore_resolves_correctly(self):
         table_columns = ("stat_var", "observation_about", "time_period", "value")

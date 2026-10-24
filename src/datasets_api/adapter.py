@@ -714,7 +714,9 @@ def resolve_definition_members(
     ids and `truncated=True` when more exist, unless the group holds a
     confirmed root (`MemberGroup.root_confirmed`) that dominates every one of
     them (`MemberGroup.undismissed_candidates` is empty). A candidate that may
-    duplicate the root still refuses, since its roles are unverified.
+    duplicate the root still refuses, since its roles are unverified. The refusal is
+    retryable when a later walk can settle a candidate it names
+    (`MemberGroup.undismissed_rereadable`).
     Both paths elect one role class (`statvar_members.elect_role_class`): the
     members whose declared roles cover the role keys `entities` is bound under,
     least-constrained first, then those declaring the fewest roles, so a member
@@ -817,6 +819,7 @@ def resolve_definition_members(
         raise MemberNotResolvable(
             members=tuple(f"{_STAT_VAR_PREFIX}{candidate}" for candidate in named),
             truncated=len(candidates) > _MAX_NAMED_INCONSISTENT_CANDIDATES,
+            retryable=group.undismissed_rereadable,
         )
     if not group.members:
         raise SpecNotExportable(

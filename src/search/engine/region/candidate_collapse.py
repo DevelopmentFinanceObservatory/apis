@@ -54,6 +54,7 @@ from search.engine.region.codes import (
 )
 from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.equivalent_series import shared_cluster
+from search.engine.region.materialise_step import lone_breakdown_absent
 from search.engine.region.observations.dispatch import (
     _attach_observations,
     _resolve_spec_observations,
@@ -87,9 +88,12 @@ from search.engine.region.requirements import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState, raised_facts
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_nothing
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
+from search.engine.retrieval.standard import Narrow
 from search.engine.unit.bind import with_unit_lexicon_version
+from search.engine.unit.conversion import served_prices
 from search.models import (
     CandidateBasis,
     IdentityUnitRequest,
@@ -230,6 +234,13 @@ def _handle_sparse_survivors(
             _elected_no_data_twin_substituted_warning(state, served_twin.resolved.shape.label)
         )
         return [served_twin]
+    # The elected reading of a family with no total is one of its breakdowns, so the others
+    # with data answer in its place: one alone, several as candidates.
+    breakdowns = [
+        spec for spec in unique_specs if grounded.cand_candidates[spec.spec_id].basis == "breakdown"
+    ]
+    if breakdowns:
+        return breakdowns
     # Rule 1 installs only re-election's siblings as stand-ins (`_offered`). A registry twin
     # the diversion did not serve and a nominated rider stand in for nothing.
     stand_ins = [
@@ -265,6 +276,34 @@ def _handle_sparse_survivors(
         gate=ONLY_ALTERNATE_HAS_DATA,
         llm_usage=state.var_usage,
     )
+
+
+def _note_lone_breakdown(state: ResolveState, grounded: _GroundedCandidates, spec: Spec) -> None:
+    """Record that a family with no total answers by one breakdown, narrower than asked
+    (`standard.Narrow.lone_signature`), when `spec`, the lone survivor, is the elected
+    breakdown or one offered beside it (`ResolveState.breakdown_rivals`). The survivor then
+    carries the `family_total_absent` fact naming that breakdown (`lone_breakdown_absent`)
+    unless its own fact names its single member."""
+    survivor = grounded.cand_candidates[spec.spec_id]
+    if spec.spec_id != grounded.elected_spec_id and survivor.basis != "breakdown":
+        return
+    if state.breakdown_rivals:
+        state.breakdown = Narrow(
+            frozenset(
+                slot.property_dcid
+                for slot in survivor.shape.slot_keys
+                if slot.axis in ("what", "how") and slot.property_dcid is not None
+            ),
+            lone_signature=True,
+        )
+    fact = lone_breakdown_absent(
+        state.breakdown,
+        shape=survivor.shape,
+        bindings=survivor.bindings,
+        served=survivor.mat.sv_dcids,
+    )
+    if fact is not None:
+        state.family_total_absent.setdefault(spec.spec_id, fact)
 
 
 def _settle_lone_survivor(state: ResolveState, grounded: _GroundedCandidates, spec: Spec) -> None:
@@ -458,10 +497,11 @@ async def _assemble_definite(
     or registry-twin substitution.
     A survivor from an alternate answers over its own place context, so its place warnings
     become the answer's own (`install_place_warnings`). The survivor is judged on every
-    requirement on its own shape and bindings (`requirements.settle_answer`), since a
-    stand-in or an alternate binds its values from its own representative and can hold a
-    code the elected shape dropped, bind another code on the same property, or, as a
-    sibling every member of which holds Female, apply "female". Its refusal names the terms
+    requirement on its own shape, bindings and served unit request
+    (`requirements.settle_answer`), since a stand-in or an alternate binds its values from
+    its own representative and can hold a code the elected shape dropped, bind another code
+    on the same property, or, as a sibling every member of which holds Female, apply
+    "female". Its refusal names the terms
     its flagged match's trace records (`requirements.answer_terms`): the elected reading's
     unbound query terms, which no answer is shown to apply, and each code and value
     requirement its own answer leaves unmet.
@@ -473,7 +513,9 @@ async def _assemble_definite(
             grounded.cand_places[unique_specs[0].spec_id],
             departure_facts=state.departure_facts,
         )
-    _survivor_unbound_qualifiers = settle_answer(state, _survivor.shape, _survivor.bindings)
+    _survivor_unbound_qualifiers = settle_answer(
+        state, _survivor.shape, _survivor.bindings, served=served_prices(unique_specs[0])
+    )
     if _survivor_unbound_qualifiers:
         return state.no_data(
             "qualifier_not_bound",
@@ -543,11 +585,10 @@ async def _assemble_definite(
     _family = state.family_total_absent_departures((_survivor_spec,))
     # Place-option tasks run only when `materialise_graph` is available.
     _place_options_materialise_graph = state.materialise_graph
-    # Bind the identity confirmed by materialisation. Candidate merging preserves that identity.
+    # Each launch reads the identity of the Spec it is given, a merged one included.
     _relaunch_place_options_bound = functools.partial(
         _relaunch_place_options,
         state=state,
-        spec_identity=_survivor_spec.definition.identity,
         place_options_materialise_graph=cast(GraphReader, _place_options_materialise_graph),
     )
     _stream_place_options = (
@@ -556,7 +597,7 @@ async def _assemble_definite(
         and state.place_options_pool is not None
     )
     _place_options_task = (
-        _relaunch_place_options_bound(_survivor_spec.spec_id) if _stream_place_options else None
+        _relaunch_place_options_bound(_survivor_spec) if _stream_place_options else None
     )
     _survivor_spec = await with_related(_survivor_spec, _related_read)
     # This is the final await. Passing a live observation task to `RegionResult` keeps it reachable
@@ -587,7 +628,11 @@ async def _assemble_definite(
         status="definite",
         specs=(_survivor_spec,),
         no_data_reason=None,
-        warnings=(*state.warnings, *(warning for warning, _fact in _family)),
+        warnings=(
+            *state.warnings,
+            *(warning for warning, _fact in _family),
+            *whole_total_warnings(_survivor_spec, coverage=state.coverage.index),
+        ),
         departure_facts={**state.departure_facts, **raised_facts(_family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,
@@ -618,7 +663,8 @@ async def _assemble_candidate_set(
     has no data, add a warning describing its failure; assembly states its `closest_match`
     departure (`assemble._with_readings_substituted`). Each candidate the search could not
     check against the denominator the question names warns under its own spec_id
-    (`note_denominator_unverified`).
+    (`note_denominator_unverified`), as each one listing a side whose total its dataset
+    publishes does (`whole_totals.whole_total_warnings`).
     """
     unique_specs = [
         spec.model_copy(
@@ -633,8 +679,9 @@ async def _assemble_candidate_set(
     _offer_place_warnings(state, grounded, unique_specs)
     if not state.elected_has_data:
         state.warnings.append(_elected_no_data_warning(state, unique_specs))
-    # Each survivor is judged on its own shape and bindings, and a requirement departs
-    # unless every survivor meets it (`requirements.settle_candidate_set`).
+    # Each survivor is judged on its own shape and bindings and the unit request its Spec is
+    # served under, and a requirement departs unless every survivor meets it
+    # (`requirements.settle_candidate_set`).
     settle_candidate_set(
         state,
         [
@@ -644,6 +691,7 @@ async def _assemble_candidate_set(
             )
             for spec in unique_specs
         ],
+        served=[served_prices(spec) for spec in unique_specs],
     )
     # State each candidate's unit lexicon version. Its identity already carries the binding,
     # and the outcome's warnings were merged earlier.
@@ -673,13 +721,24 @@ async def _assemble_candidate_set(
         status="candidates",
         specs=tuple(_candidate_specs),
         no_data_reason=None,
-        warnings=(*state.warnings, *(warning for warning, _fact in _family)),
+        warnings=(
+            *state.warnings,
+            *(warning for warning, _fact in _family),
+            *(
+                warning
+                for spec in _candidate_specs
+                for warning in whole_total_warnings(spec, coverage=state.coverage.index)
+            ),
+        ),
         departure_facts={**state.departure_facts, **raised_facts(_family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,
         candidate_budget_truncated=candidate_budget_truncated,
         slot_options_task=_make_slot_options_task(state, grounded, unique_specs),
         answered_roles=grounded.cand_answered_roles[_candidate_specs[0].spec_id],
+        candidate_answered_roles=tuple(
+            grounded.cand_answered_roles[spec.spec_id] for spec in _candidate_specs
+        ),
     )
 
 
@@ -807,7 +866,11 @@ async def assemble_candidates(
         ],
     )
     if len(unique_specs) == 1:
+        _note_lone_breakdown(state, grounded, unique_specs[0])
         return await _assemble_definite(state, unique_specs, grounded, rate_cache)
     return await _assemble_candidate_set(
-        state, unique_specs, grounded, admission.candidate_budget_truncated
+        state,
+        unique_specs,
+        grounded,
+        admission.candidate_budget_truncated or state.breakdown_truncated,
     )

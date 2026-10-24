@@ -167,21 +167,24 @@ def _reworded_description(document: dict) -> None:
 
 
 _UNREADABLE_INDEX_PROBE = """
-import code_index.shared
+import code_index
+import code_index.loader
 
-def unreadable(source):
-    raise FileNotFoundError("the code index was read")
+def unreadable(payload, **kwargs):
+    raise RuntimeError("a code index was parsed")
 
-code_index.shared.load_index = unreadable
+code_index.parse_index = code_index.loader.parse_index = unreadable
 import search.engine.config as config
 print("imported")
 config.settings().capability_version
+print("computed")
 """
 
 
-def test_importing_the_config_reads_no_code_index():
-    """The token hashes the served schema, which reads the code index, so it is computed on
-    first read. An unreadable index lets the import succeed and fails that read."""
+def test_the_capability_token_reads_no_code_index():
+    """The token hashes the served schema, whose datasets come from the declarations, so
+    importing the config and computing the token read no code index. Parsing a code index
+    raises in the probe, and no release is bound for `get_index()` to read."""
     result = subprocess.run(
         [sys.executable, "-c", _UNREADABLE_INDEX_PROBE],
         capture_output=True,
@@ -190,8 +193,7 @@ def test_importing_the_config_reads_no_code_index():
         check=False,
     )
 
-    assert result.stdout.strip() == "imported", result.stderr
-    assert "the code index was read" in result.stderr
+    assert result.stdout.split() == ["imported", "computed"], result.stderr
 
 
 class TestCapabilityVersionPerturbation:

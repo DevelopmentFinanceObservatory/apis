@@ -9,7 +9,6 @@ from dfo_platform.app import create_app
 from dfo_platform.problem import ProblemDetails
 from skills_api.app import skills_surface
 from skills_index.build import build_index
-from skills_index.config import SKILLS_INDEX_REFRESH_SECONDS
 from skills_index.types import SkillIssue
 from tests.skills_index.conftest import FakeSkillsGraph, skill_node, stored
 
@@ -206,11 +205,7 @@ def test_a_left_out_skill_is_a_corpus_warning_naming_its_dcid(code: str):
 
 
 def test_unbuilt_index_refuses_service_unavailable():
-    """`seconds_until_next_rebuild=None` on the double raises if the door
-    ever calls it, so this proves the door checks `index` and refuses 503
-    first, the ordering the real holder requires.
-    """
-    with client_for(None, seconds_until_next_rebuild=None) as client:
+    with client_for(None) as client:
         resp = client.get("/api/skills")
 
     assert resp.status_code == 503
@@ -233,23 +228,25 @@ def test_shared_index_unresolved_before_lifespan_refuses_service_unavailable():
     assert problem.code == "service_unavailable"
 
 
-def test_cache_control_carries_the_seconds_remaining_until_next_rebuild():
-    with client_for(index_of()) as client:
-        resp = client.get("/api/skills")
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/api/skills",
+        "/api/skills/oda-concepts",
+        "/api/skills/oda-concepts/resources/SKILL.md",
+    ],
+)
+def test_every_door_of_an_index_rebuilt_on_each_release_swap_answers_revalidate(url):
+    """A swap can rebuild the index at any moment, so a cache revalidates each response
+    by its ETag, and a 304 keeps the same policy."""
+    with client_for(index_of(skill_entry())) as client:
+        resp = client.get(url)
+        assert resp.status_code == 200, resp.text
+        revalidated = client.get(url, headers={"if-none-match": resp.headers["etag"]})
 
-    assert resp.headers["cache-control"] == f"public, max-age={int(SKILLS_INDEX_REFRESH_SECONDS)}"
-
-
-def test_a_response_served_later_in_a_generation_carries_a_smaller_max_age():
-    index = index_of()
-
-    with client_for(index, seconds_until_next_rebuild=SKILLS_INDEX_REFRESH_SECONDS) as client:
-        early = client.get("/api/skills")
-    with client_for(index, seconds_until_next_rebuild=1.0) as client:
-        late = client.get("/api/skills")
-
-    assert early.headers["cache-control"] == f"public, max-age={int(SKILLS_INDEX_REFRESH_SECONDS)}"
-    assert late.headers["cache-control"] == "public, max-age=1"
+    assert resp.headers["cache-control"] == "public, no-cache"
+    assert revalidated.status_code == 304
+    assert revalidated.headers["cache-control"] == "public, no-cache"
 
 
 def test_strong_etag_and_conditional_requests():

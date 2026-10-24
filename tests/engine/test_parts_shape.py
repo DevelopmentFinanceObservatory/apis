@@ -9,8 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from search.engine.assemble import OBSERVATIONS_OMITTED
-from search.engine.bind import _UniversalBindOutput
-from search.engine.conjoin import BINDING_FOLDED
+from search.engine.conjoin import BINDING_FOLDED, NESTED_SHAPE_STEPS
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.models import (
@@ -24,6 +23,7 @@ from search.models import (
     ResubmitIdentityEntry,
 )
 from tests.engine._axis_doubles import TOTAL_POPULATION_INDIA_FAMILY, axis_confirming_reader
+from tests.engine._binders import BIRTH_RATE_CANDIDATES, KeyedBindReplyLLM, elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     PINNED_DATE,
@@ -39,11 +39,9 @@ from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
 from tests.fixtures.keys import fixture_key
 from tests.materialise.conftest import FakeGraphReader
 
-_EXTRACT_SYS = _EXTRACTION_SYSTEM_PROMPT.replace("[[TODAY]]", PINNED_DATE.isoformat())
-
 
 def _extract_key(query: str) -> str:
-    return fixture_key(Extraction, _EXTRACT_SYS, query)
+    return fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
 
 
 def _llm_with_extraction(query: str, *, variables: list[str], entities: list[str]) -> FakeLLM:
@@ -118,14 +116,16 @@ def test_clamp_truncates_parts_to_the_unique_clamped_list():
 
 
 def test_no_variable_extracted_yields_one_part_with_the_whole_query_as_variable_text():
-    """Zero extracted variables produce one `no_data` part with the query text."""
-    query = "asdfghjkl qwertyuiop no variable here"
+    """A resolution naming an operation and no variable produces one `no_data` part with
+    the query text. With no operation either it would answer as a catalogue."""
+    query = "rank asdfghjkl qwertyuiop no variable here"
     fake_llm = FakeLLM(
         responses={
             _extract_key(query): {
                 "kind": "resolution",
                 "variables": [],
                 "entities": [],
+                "operations": [{"verb": "rank", "variable": 0, "phrase": "rank", "over": None}],
                 "dates": [],
             }
         }
@@ -161,12 +161,7 @@ class _FixedShapeBindLLM:
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema.__name__ == "_UniversalBindOutput":
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
-                bindings=[],
-                also_plausible=None,
-                ask=None,
-            ), None
+            return elected_reply(0, also_plausible=None), None
         if schema is QuantityOutput:
             return NO_QUANTITY
         return await self._fake.generate_structured(prompt=prompt, system=system, schema=schema)
@@ -243,6 +238,7 @@ def test_candidates_part_carries_observations_omitted_alongside_definite_with_ob
     result = offline_resolve(
         request,
         graph=graph,
+        llm=KeyedBindReplyLLM(BIRTH_RATE_CANDIDATES),
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
     )
@@ -264,16 +260,19 @@ def _mixed_obs_app(graph, materialise_graph, materialise_sdmx):
     return search_app(
         graph=graph,
         resolver=make_resolver(graph),
-        llm=FakeLLM(
-            responses={
-                **_load_json("llm_responses.json"),
-                _extract_key(_MIXED_OBS_QUERY): {
-                    "kind": "resolution",
-                    "variables": ["population", "birth rate"],
-                    "entities": [{"text": "Ethiopia"}],
-                    "dates": [],
-                },
-            }
+        llm=KeyedBindReplyLLM(
+            BIRTH_RATE_CANDIDATES,
+            delegate=FakeLLM(
+                responses={
+                    **_load_json("llm_responses.json"),
+                    _extract_key(_MIXED_OBS_QUERY): {
+                        "kind": "resolution",
+                        "variables": ["population", "birth rate"],
+                        "entities": [{"text": "Ethiopia"}],
+                        "dates": [],
+                    },
+                }
+            ),
         ),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         materialise_graph=materialise_graph,
@@ -573,7 +572,7 @@ def test_per_part_timing_by_step_excludes_the_envelopes_shared_step():
 
     assert result.diagnostics.timing_ms is not None
     assert result.diagnostics.timing_ms.by_step is not None
-    assert set(result.diagnostics.timing_ms.by_step) == {"extract"}
+    assert set(result.diagnostics.timing_ms.by_step) == {"coverage", "extract"}
     assert result.diagnostics.timing_ms.by_step["extract"] >= 0
     assert result.diagnostics.timing_ms.total >= 0
 
@@ -581,4 +580,6 @@ def test_per_part_timing_by_step_excludes_the_envelopes_shared_step():
         assert part.timing_ms is not None
         assert part.timing_ms.by_step
         assert "extract" not in part.timing_ms.by_step
-        assert part.timing_ms.total == sum(part.timing_ms.by_step.values())
+        assert part.timing_ms.total == sum(
+            ms for step, ms in part.timing_ms.by_step.items() if step not in NESTED_SHAPE_STEPS
+        )

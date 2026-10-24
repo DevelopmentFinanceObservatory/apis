@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from code_index.members import FamilyQuery
 from code_index.shared import get_index
+from code_index.types import BroadReading
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import Cause
 from entity_resolution import Admission, EntityResolver, Resolution
@@ -24,6 +25,7 @@ from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import UnUnserved
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder, BindResult, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -66,7 +68,12 @@ from search.engine.region.place_context import (
     default_scope_stat_vars,
     empty_place_context,
 )
-from search.engine.region.place_roles import PlaceAssignment, place_order, place_texts
+from search.engine.region.place_roles import (
+    PlaceAssignment,
+    PlaceRoleRefusal,
+    place_order,
+    place_texts,
+)
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.result import (
     AmbiguousEntity,
@@ -76,6 +83,7 @@ from search.engine.region.result import (
     source_code_refusal_result,
 )
 from search.engine.region.status_rule import CLOSED_AXES, OpenAxes, StatusPlan
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     RoleClassWalks,
@@ -100,7 +108,7 @@ from search.engine.retrieval.retrieve import (
     UnsupportedDraft,
 )
 from search.engine.retrieval.role_resolve import role_members_served
-from search.engine.retrieval.standard import default_scope_members
+from search.engine.retrieval.standard import BreakdownDecision, Keep, default_scope_members
 from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft, is_role_bearing, role_names_by_axis
 from search.engine.source_code import SeriesCodeMembers, not_held
@@ -399,8 +407,13 @@ AlternateUnevaluatedReason = Literal["no_capacity", "upstream_error", "timed_out
 
 def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
     """The constraint properties `shape` can carry into binding, its slots' properties, which
-    are also the code systems it reads qualifier text in."""
-    return frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+    are also the code systems it reads qualifier text in. A slot a breakdown decision left out
+    (`ShapeDraft.omitted_slots`) stays in it: the query was read in the family's vocabulary,
+    and a term on that slot is one the answer leaves unapplied."""
+    return (
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        | shape.omitted_slots
+    )
 
 
 def qualifier_dropped_warning(phrase: str) -> Warning:
@@ -437,6 +450,19 @@ class ValueRule:
     code_systems: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class MeasureRule:
+    """A measure value the request's words name (`match`) that the elected shape does not
+    carry under the bindings it was elected with. An answer meets the rule when its shape
+    carries the value or a value its settled bindings bind reads it
+    (`qualifier_readings.answer_reads_measure`), which binding repair can bind after
+    election: activitySource GrossDomesticProduction reads "gross". Otherwise it is judged
+    as `code`, the `CodeRule` on the measure axis."""
+
+    match: QualifierMatch
+    code: CodeRule
+
+
 # Where a requirement was recorded: a model tie the bindings leave unresolved ("tie"), the
 # elected reading's own measure phrases, coverage words and query records ("bind"), a run
 # naming a value by its graph label ("value"), a value the bind drafted on a slot the
@@ -447,11 +473,11 @@ type RequirementOrigin = Literal[
     "tie", "bind", "value", "stray", "set_value", "unbinding", "posted"
 ]
 
-# How an answer is judged on a requirement: by its codes (`CodeRule`), by the values its
-# words name (`ValueRule`), as unmet on every answer ("unbound", a query record of the
-# elected reading no binding covers), or on none (`None`, a term no one slot clears, which
+# How an answer is judged on a requirement: by its codes (`CodeRule`), by the measure value
+# its words name (`MeasureRule`), by the values its words name (`ValueRule`), as unmet on
+# every answer ("unbound", a query record of the elected reading no binding covers), or on none (`None`, a term no one slot clears, which
 # departs unless a refusal names it).
-type RequirementRule = CodeRule | ValueRule | Literal["unbound"] | None
+type RequirementRule = CodeRule | MeasureRule | ValueRule | Literal["unbound"] | None
 
 
 @dataclass(frozen=True)
@@ -469,7 +495,9 @@ class Requirement:
     phrase without the others, for when some of them need no disclosure. `generic` is a
     departure naming no phrase in particular ("A requested gender value was not applied."),
     true of any of its requirements left unapplied, so it discloses those of its phrases
-    that need it whatever the others."""
+    that need it whatever the others. `refuses` is `False` for a value only the bind model
+    read (`phase_rank_bind.model_only_values`). An answer is judged on it, and one leaving
+    it unapplied discloses it and stands."""
 
     term: ResolvedQualifier
     origin: RequirementOrigin
@@ -477,6 +505,7 @@ class Requirement:
     departure: Departed | None = None
     alone: Departed | None = None
     generic: Departed | None = None
+    refuses: bool = True
 
     @property
     def phrase(self) -> str:
@@ -493,11 +522,12 @@ def code_requirement(
     origin: RequirementOrigin,
     alone: Departed | None = None,
     generic: Departed | None = None,
+    refuses: bool = True,
 ) -> Requirement:
     """A requirement that an answer apply `codes` on `property_dcid` (`CodeRule`), named by
     `asked`, the request's words, and `named`, the code rows they read as. A value no name
-    exists for (`asked` `None`) is named by its dcid. `departure`, `alone` and `generic`
-    are the `Requirement`'s."""
+    exists for (`asked` `None`) is named by its dcid. `departure`, `alone`, `generic` and
+    `refuses` are the `Requirement`'s."""
     if asked is None:
         term = ResolvedQualifier(
             text=" and ".join(codes),
@@ -516,6 +546,7 @@ def code_requirement(
         departure=departure,
         alone=alone,
         generic=generic,
+        refuses=refuses,
     )
 
 
@@ -578,8 +609,8 @@ class UnPool:
     has none to fill a gap with (`None` when it need not), and what the leg's own reads could
     not serve, the UN places they named that the UN front door refuses and their failed UN
     reads (`unserved`), and the reads they swallowed (`lost`). Those reads describe the UN
-    pool alone, so they join the part's records only when the UN pass runs
-    (`pipeline._fill_gap`)."""
+    pool alone, so they join the part's records only when the pool reaches a menu: on the
+    UN pass (`pipeline._fill_gap`), or merged onto ours (`phase_intake._merge_un_pool`)."""
 
     shapes: list[ShapeDraft]
     missed: str | None = None
@@ -600,11 +631,14 @@ class UnLeg:
 @dataclass(frozen=True, slots=True)
 class SlotDefaultDisclosure:
     """What one declared default that fired states (`phase_election._repair_bindings`): its
-    `slot_defaulted` warnings, and the normalised dropped phrases it answers, whose
-    entry-level warning those replace."""
+    `slot_defaulted` warnings, the normalised dropped phrases it answers, whose
+    entry-level warning those replace, and the broad reading it is, if any
+    (`bind_repair.apply_broad_readings`), whose broader value applies the words of its
+    narrow one (`phase_rank_bind.judge_value_requirements`)."""
 
     warnings: tuple[Warning, ...] = ()
     phrases: frozenset[str] = frozenset()
+    reading: BroadReading | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -651,6 +685,8 @@ class ResolveState:
     resolver: EntityResolver
     admission: Admission
     llm: SupportsLLM
+    # The binder the part's quantity read and bind call go through, on `llm`.
+    binder: Binder = field(default_factory=GeminiBinder)
     sdmx: EngineSdmxClient
     deadline: float | None
     pre_resolved: dict[str, Resolution] | None
@@ -740,6 +776,28 @@ class ResolveState:
     # `pipeline.resolve_variable` falls back to when the party reading binds no party, and
     # the reading of every UN pass.
     party_words_off: bool = False
+    # The place set of each whole total the part can bind (`whole_totals`), by dcid: the
+    # parties a text of the part names as a whole population (`whole_named`) and the totals
+    # of every party on each side the part totals (`place_roles.totalled_axes`). Set by
+    # `_phase_resolve_places`; binding repair binds a side's total on a shape whose datasets
+    # read it whole (`place_roles.whole_total_candidates`), and a named one binds as a party
+    # on its side (`place_roles.bind_place_roles`).
+    whole_sets: dict[str, PlaceSet] = field(default_factory=dict)
+    # Each text of the part naming a whole population ("all donors"), with the dcids it
+    # names, in query order. Such a text holds no place set: its parties bind as named
+    # parties on its side, read whole where the shape's datasets mark them, and its side
+    # stays unnamed only on a shape that publishes no total of a population covering it
+    # (`place_roles._named_wholes`).
+    whole_named: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Each text of the part naming a whole population that the part asks for member by
+    # member (`member_entities`), with the side it names: it holds no place set and names
+    # no total, and the side is among `open_axes`, so the answer lists that side's parties.
+    whole_listed: dict[str, RoleAxis] = field(default_factory=dict)
+    # The texts of the part naming a whole population, listed or not, that the request
+    # directs to the side other than the one its parties are published on, in query order.
+    # They refuse the part `role_incompatible` before any shape is derived, which names
+    # them (`_phase_check_entities`). Set by `_phase_resolve_places`.
+    whole_misdirected: tuple[str, ...] = ()
     # Start tick for the shape timing span, including derivation and ranking.
     shape_t0: int = 0
     # All confirmed shapes, before eligibility and ranking filters.
@@ -845,6 +903,11 @@ class ResolveState:
     # derivation (`phase_intake._phase_derive_shapes`), `None` on the UN pass and on a part
     # whose scope allows no UN provenance or that ended before derivation.
     un_leg: UnLeg | None = None
+    # The UN leg's pool when our pass took it under `SEARCH_UN_ON_FIRST_MENU`
+    # (`phase_intake._merge_un_pool`): merged onto its menu, or late or failed after the
+    # pass waited for it, which `pipeline._fill_gap` warns on. `None` when the pass left the
+    # leg to the UN pass.
+    un_pool: UnPool | None = None
     # Whether the part posted source mentions, so each answer's identity binds the
     # provenances that served it (`spec_build.build_spec`'s `pin_served_provenance`).
     pin_served_provenance: bool = False
@@ -897,6 +960,9 @@ class ResolveState:
     menu_choices: tuple[QualifierMatch, ...] = ()
     # Bind assigns this before any reader; `cast(None)` avoids an invalid sentinel or Optional checks.
     bind_result: _UniversalBindOutput = field(default=cast(_UniversalBindOutput, None))
+    # The binder's whole answer to the bind call (`binders.BindResult`): its reply before
+    # `split_stray_bindings`, with what the engine reads beside it. `None` before bind.
+    bind_decision: BindResult | None = None
     # Shape selected by the bind call.
     shape_draft: ShapeDraft = field(default=cast(ShapeDraft, None))
     # What each bind menu shape stated of data at the places the part names, in
@@ -915,11 +981,19 @@ class ResolveState:
     # One requirement per value the bind drafted on a property the elected shape has no
     # slot for, judged as a value the request names and named by its label
     # (`phase_rank_bind._stray_requirements`). The drafts leave the bind output, bind
-    # records these in the ledger, and `_resolve_query_qualifiers` records their terms. A
-    # part whose answer leaves one unapplied refuses `qualifier_not_bound` naming it, and a
-    # `qualifier_not_bound` refusal of settlement, which judges no answer, names it too
-    # (`requirements.settle_unanswered`).
+    # records these in the ledger, and `_resolve_query_qualifiers` records the terms of
+    # those that refuse. A part whose answer leaves one a recorded term supports unapplied
+    # refuses `qualifier_not_bound` naming it, and a `qualifier_not_bound` refusal of
+    # settlement, which judges no answer, names it too (`requirements.settle_unanswered`).
+    # One only the model read departs instead (`Requirement.refuses`).
     stray_requirements: tuple[Requirement, ...] = ()
+    # Which what and how slots the elected shape's identity carries, decided once its
+    # bindings settle (`standard.breakdown_decision`, `phase_election._narrow_to_breakdown`).
+    # A `Narrow` decision has narrowed the elected shape's slot keys to its properties.
+    breakdown: BreakdownDecision = field(default_factory=Keep)
+    # The elected shape the decision read, with every slot key: the shape itself unless a
+    # `Narrow` decision narrowed it. None before the decision runs.
+    breakdown_shape: ShapeDraft | None = None
     # Open constraint axes the elected measure's members do not declare; added to
     # `inapplicable_slots` because they are absent from the shape's slot keys.
     measure_dropped_axes: tuple[str, ...] = ()
@@ -948,6 +1022,18 @@ class ResolveState:
     # Each named narrowing term and its outcome; build_spec records these, and
     # coverage and final assembly use them for their guards.
     query_qualifiers: list[ResolvedQualifier] = field(default_factory=list)
+    # Under `SearchSettings.qualifier_coverage="log"`, the terms the elected answer would
+    # refuse on in refuse mode, and each word of the variable with the reader that reads
+    # it (`phase_rank_bind._coverage_reading`), which the pass logs once it ends
+    # (`phase_election.log_would_refuse`). Empty in refuse mode.
+    would_refuse: tuple[ResolvedQualifier, ...] = ()
+    word_verdicts: tuple[tuple[str, str], ...] = ()
+    # The binder's rating of each casefolded word the coverage rule leaves unrated on the
+    # elected shape over the final bindings: the probability that the shape's series states
+    # what the word names (`phase_election._rate_unread_words`). The rule reads a word
+    # rated below `SearchSettings.stated_word_bar` as unread. Empty until the bindings
+    # settle, and for a read that failed.
+    stated_word_ratings: Mapping[str, float] = field(default_factory=dict)
     # Every term the request names that each final answer is judged against
     # (`Requirement`), in the order recorded.
     requirements: tuple[Requirement, ...] = ()
@@ -976,6 +1062,12 @@ class ResolveState:
     # Where the StatVars of the last default-scope read have data; the default scope of the
     # shape in play, when it has one, is taken from it. `None` until a shape needs one.
     default_presence: DefaultPresence | None = None
+    # The elected shape's assignment of the query's place sets, or its refusal, taken once
+    # by binding repair (`phase_election._bind_query_places`): with a whole total only where
+    # the bindings settled under its role keys hold the total's series, and those are the
+    # bindings installed. Place binding (`phase_place_materialise._phase_place_bindings`)
+    # reads it. `None` before repair.
+    query_place_roles: PlaceAssignment | PlaceRoleRefusal | None = None
     # The elected shape's assignment of the query's place sets as admitted, before the
     # role-class election narrows it. An alternate puts a place named with no direction on
     # the axis this assignment gives it (`place_roles._undirected_place_axis`).
@@ -1000,6 +1092,13 @@ class ResolveState:
     # one, by capped-shape index of its copy, when both directions hold data: offered beside
     # it as a `direction` candidate (`phase_place_materialise._settle_direction`).
     direction_rivals: dict[int, PlaceAssignment] = field(default_factory=dict)
+    # The elected shape narrowed to another breakdown of a family with no total, by
+    # capped-shape index of its copy, with its own bindings: offered beside the elected
+    # breakdown as a `breakdown` candidate (`phase_place_materialise._settle_breakdown`).
+    breakdown_rivals: dict[int, list[SlotBindingDraft]] = field(default_factory=dict)
+    # Whether `max_candidates` cut breakdown signatures before their copies were made, so
+    # the candidate set states the cut (`CandidateSet.truncated`).
+    breakdown_truncated: bool = False
     # The departures a definite answer states that no warning discloses: the direction it
     # reads a place named without one on (`RegionResult.inferred_facts`).
     inferred_facts: list[DepartureFact] = field(default_factory=list)
@@ -1034,6 +1133,9 @@ class ResolveState:
     alternate_walks: dict[tuple[object, ...], Future[_Alternate | None]] = field(
         default_factory=dict
     )
+    # The assignment each alternate is walked under, keyed by the walk key of the
+    # alternate as bound (`phase_place_materialise._walk_plan`).
+    alternate_walk_plans: dict[tuple[object, ...], PlaceAssignment] = field(default_factory=dict)
     # The alternate guard's judges of the elected shape this pass, one per set of pins
     # (`phase_place_materialise._guard_judge`), so admission, re-election and the walks read
     # each alternate's members once.
@@ -1259,6 +1361,30 @@ class ResolveState:
             )
         self.requirements = with_requirement(self.requirements, requirement)
 
+    def require_measure(self, phrase: str, match: QualifierMatch, *, discloses: bool) -> None:
+        """Record that the elected shape does not carry the measure value `match` names, by
+        the request's words of normalised `phrase`, as a requirement each final answer is
+        judged on by its own shape and settled bindings (`MeasureRule`). When the part
+        `discloses` the phrase it departs as the code requirement `require_unapplied`
+        records on the measure axis. A phrase the raw text owns (a dropped qualifier) departs
+        and refuses nothing: its raw-text warning discloses it, and the part admits it when
+        every final answer meets it (`requirements.met_measure_phrases`)."""
+        asked, prop = match.matched_text, match.code_system
+        named = tuple(self.codes_named(asked, prop))
+        codes = tuple(ref.ref for ref in named)
+        requirement = code_requirement(
+            property_dcid=prop,
+            codes=codes,
+            asked=asked,
+            named=named,
+            departure=unapplied_departure(phrase, asked=asked, property_dcid=prop),
+            origin="bind",
+        )
+        rule = MeasureRule(match=match, code=CodeRule(property_dcid=prop, codes=codes))
+        if not discloses:
+            requirement = replace(requirement, departure=None, refuses=False)
+        self.requirements = with_requirement(self.requirements, replace(requirement, rule=rule))
+
     def label_dcids(self, dcids: Sequence[str]) -> list[str]:
         """Label DCIDs from query text, one batched graph lookup, or the DCID fallback."""
         label_text_by_dcid = self.entity_label_text_by_dcid
@@ -1315,6 +1441,7 @@ class ResolveState:
         nearest_real: tuple[NearestRealSpec, ...] | None = None,
         llm_usage: dict | None = None,
         unresolved_entity_names: tuple[str, ...] = (),
+        untold_groups: tuple[tuple[str, ...], ...] = (),
         ambiguous_entities: tuple[AmbiguousEntity, ...] = (),
         resolved_entity_dcids: Mapping[str, str] | None = None,
         role_not_admitted_entities: tuple[RoleNotAdmittedEntity, ...] = (),
@@ -1323,6 +1450,7 @@ class ResolveState:
         unbound_sources: tuple[ResolvedQualifier, ...] = (),
         unit_alternatives: tuple[UnitAlternative, ...] = (),
         denominator: NoDataDenominator | None = None,
+        role_assignments: tuple[Mapping[str, RoleAxis], ...] = (),
         candidate: _Candidate | None = None,
     ) -> RegionResult:
         """Build a no-data result, preserving `cause`. A `no_observations` answer over an
@@ -1341,8 +1469,8 @@ class ResolveState:
         `unanswerable` when one did and the part still could not be answered from it.
 
         The part holds `flagged_match` and `alternate_match`, so those Specs raise
-        `family_total_absent`. `elected_stat_vars` names members without a
-        Spec and raises none.
+        `family_total_absent` and `whole_total_available` (`whole_totals.whole_total_warnings`).
+        `elected_stat_vars` names members without a Spec and raises none.
         """
         if (refused := self.source_code_no_data(reason, llm_usage=llm_usage)) is not None:
             return refused
@@ -1350,9 +1478,8 @@ class ResolveState:
             _shape, _mat_result, _place = self.shape_draft, self.mat_result, self.place
         else:
             _shape, _mat_result, _place = candidate.shape, candidate.mat, candidate.place
-        family = self.family_total_absent_departures(
-            [*(flagged_match or ()), *([alternate_match] if alternate_match else [])]
-        )
+        matches = [*(flagged_match or ()), *([alternate_match] if alternate_match else [])]
+        family = self.family_total_absent_departures(matches)
         # Report an open role axis only when materialisation's own no-observation
         # result confirms the discovery gap; later refusals may follow successful discovery.
         return RegionResult(
@@ -1360,7 +1487,15 @@ class ResolveState:
             status="no_data",
             specs=(),
             no_data_reason=reason,
-            warnings=(*self.warnings, *(warning for warning, _fact in family)),
+            warnings=(
+                *self.warnings,
+                *(warning for warning, _fact in family),
+                *(
+                    warning
+                    for match in matches
+                    for warning in whole_total_warnings(match, coverage=self.coverage.index)
+                ),
+            ),
             departure_facts={**self.departure_facts, **raised_facts(family)},
             timing_by_step=dict(self.timing),
             flagged_match=flagged_match,
@@ -1375,6 +1510,7 @@ class ResolveState:
             ),
             llm_usage=llm_usage,
             unresolved_entity_names=unresolved_entity_names,
+            untold_groups=untold_groups,
             ambiguous_entities=ambiguous_entities,
             resolved_entity_dcids=dict(resolved_entity_dcids or {}),
             role_not_admitted_entities=role_not_admitted_entities,
@@ -1388,6 +1524,7 @@ class ResolveState:
             unbound_sources=unbound_sources,
             unit_alternatives=unit_alternatives,
             denominator=denominator,
+            role_assignments=role_assignments,
             no_data_role_axis=(
                 open_role_axis(_shape, _place.roles.resolved_entities)
                 if isinstance(_mat_result, NoDataDraft) and _mat_result.reason == "no_observations"

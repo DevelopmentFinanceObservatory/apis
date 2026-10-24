@@ -19,8 +19,6 @@ from materialise.facets import FacetSelection
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.concurrency import create_owned_task
-from search.engine.envelope import now_ms
 from search.engine.events import PlaceOptionsEvent
 from search.engine.extract import DateRequest
 from search.engine.region.codes import _OptionProbeResult
@@ -33,11 +31,11 @@ from search.engine.region.state import EngineOptions
 from search.engine.retrieval.read_plan import ReadPlan
 from search.engine.shape import ShapeDraft
 from search.models import (
-    BaseIdentity,
     EntityOptions,
     IdentityUnitRequest,
     RoleAxis,
     SlotOptions,
+    Spec,
 )
 from series_coverage.shared import CoverageSnapshot
 
@@ -50,7 +48,7 @@ class PromoteRelaunch:
     The slot-options probe reads the answer's shape, bindings, role entities, open flow axes,
     window, probe places, raw entity options and facet probe, and whether the identity binds a
     facet. The
-    place-options probe reads the answer's identity. The observations probe reads its
+    place-options probe reads the Spec it is launched for. The observations probe reads its
     members, observation entities, facet filter, the bulk scope's places (None for a
     per-pair read), the posted request-form unit, the elected unit and the narrowed plan.
     The slot-options and observations probes name the UN variables of a failed read from
@@ -65,7 +63,6 @@ class PromoteRelaunch:
     entity_options: Sequence[EntityOptions] | None
     facet_probe: FacetProbe
     facets_pinned: bool
-    identity: BaseIdentity
     sv_dcids: Sequence[str]
     obs_entities: Mapping[str, Sequence[str]]
     facet_filter: Mapping[str, FacetAxisFilter] | None
@@ -116,25 +113,22 @@ def bind_relaunches(
             variable_labels=facts.variable_labels,
         )
 
-    def _relaunch_place_options(spec_id: str) -> asyncio.Task[list[PlaceOptionsEvent]]:
-        """The builder reads only the identity and spec id, so a same-shape merge needs no new
-        inputs. A local import defers builder loading until region initialisation finishes."""
-        from search.engine.region.place_options import build_place_options_events
+    def _relaunch_place_options(spec: Spec) -> asyncio.Task[list[PlaceOptionsEvent]]:
+        """The task reads `spec`'s own identity (`place_options.place_options_task`), so a
+        same-shape merge's Spec needs no new inputs. A local import defers builder loading
+        until region initialisation finishes."""
+        from search.engine.region.place_options import place_options_task
 
         assert options.materialise_graph is not None and options.place_options_pool is not None
-        return create_owned_task(
-            build_place_options_events(
-                spec_id,
-                facts.identity,
-                graph=graph,
-                sdmx=sdmx,
-                materialise_graph=options.materialise_graph,
-                materialise_sdmx=options.materialise_sdmx,
-                pool=options.place_options_pool,
-                coverage=coverage,
-                population_memo=options.population_memo,
-                start_ms=now_ms(),
-            )
+        return place_options_task(
+            spec,
+            graph=graph,
+            sdmx=sdmx,
+            materialise_graph=options.materialise_graph,
+            materialise_sdmx=options.materialise_sdmx,
+            pool=options.place_options_pool,
+            coverage=coverage,
+            population_memo=options.population_memo,
         )
 
     stream_place_options = (

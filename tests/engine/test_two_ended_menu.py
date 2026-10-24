@@ -20,7 +20,7 @@ donor totals over CRS flows by recipient.
 
 An axis the query asks every member of removes a shape only when the code index carries
 the shape and another role-bearing shape declares the axis (`without_open_axis_gaps`). The
-index fixtures are packaged rows: a CRS flow, whose dataset declares donor and recipient,
+index fixtures are fixture rows: a CRS flow, whose dataset declares donor and recipient,
 and a DAC1 provider total, whose dataset declares the donor alone. A synthetic index holds
 a provider-only family beside a recipient-only one, for a query that opens both axes.
 """
@@ -31,21 +31,20 @@ import asyncio
 
 import pytest
 
-from code_index import shared as code_index_shared
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration, IndexStamp, StatVarRow
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import phase_rank_bind
 from search.engine.region.pipeline import resolve_variable
 from search.models import Operation, RoleAxis
 from series_coverage.schema import RoleNames
+from tests.engine._binders import MenuRecordingBinder, elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
+from tests.graph_release.support import serving_index
 
 _KEN = "country/KEN"
 _CHN = "country/CHN"
@@ -152,7 +151,7 @@ def _debt_arcs(qualifier: str, roles: tuple[str, ...] = ()) -> dict:
 
 
 def _index_row_node(found: str | StatVarRow) -> dict:
-    """The graph node of the index row `found`, a row or the dcid of a packaged one, with
+    """The graph node of the index row `found`, a row or the dcid of a fixture index row, with
     the roles and constraints the row declares."""
     row = (
         found
@@ -215,11 +214,10 @@ class _ElectFirst:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        return elected_reply(0), None
 
 
 def _resolve(
-    monkeypatch,
     query: str,
     entities: list[str],
     *,
@@ -230,14 +228,7 @@ def _resolve(
 ):
     """Resolve `query` over the `recalled` StatVars and their scores, and return the result
     with the StatVars of each bind-menu shape."""
-    menus: list[list[tuple[str, ...]]] = []
-    real_bind = phase_rank_bind.bind_universal
-
-    async def _spy(variable, shapes, **kwargs):
-        menus.append([tuple(shape.sv_arc_facts or ()) for shape in shapes])
-        return await real_bind(variable, shapes, **kwargs)
-
-    monkeypatch.setattr(phase_rank_bind, "bind_universal", _spy)
+    binder = MenuRecordingBinder()
     graph = FakeGraph(
         nodes=_NODES,
         detect={
@@ -276,19 +267,20 @@ def _resolve(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_ElectFirst(),
+            binder=binder,
             sdmx=FakeSdmxClient(observations={}),
             base_timing={},
             coverage=coverage.snapshot(),
         )
     )
-    assert len(menus) == 1, menus
-    return result, menus[0]
+    assert len(binder.menus) == 1, binder.menus
+    return result, binder.menus[0]
 
 
-def test_a_two_ended_query_elects_the_role_bearing_shape(monkeypatch) -> None:
+def test_a_two_ended_query_elects_the_role_bearing_shape() -> None:
     """With China as origin and Kenya as destination the menu holds only the by-creditor
     series, so the top-ranked government debt series cannot be elected and refuse."""
-    result, menu = _resolve(monkeypatch, "debt from China to Kenya", ["China", "Kenya"])
+    result, menu = _resolve("debt from China to Kenya", ["China", "Kenya"])
 
     assert menu == [(_FLOW_SV,)]
     assert result.status == "definite", result
@@ -312,13 +304,11 @@ def test_a_two_ended_query_elects_the_role_bearing_shape(monkeypatch) -> None:
     ],
 )
 def test_subject_shapes_leave_only_for_a_role_bearing_shape_that_outranks_them(
-    monkeypatch, recalled, menu
+    recalled, menu
 ) -> None:
     """dq-crs-066 asks for aid from Norway to Ethiopia and GDP of Ethiopia, and the GDP part
     carries both flow ends."""
-    _result, got = _resolve(
-        monkeypatch, "debt from China to Kenya", ["China", "Kenya"], recalled=recalled
-    )
+    _result, got = _resolve("debt from China to Kenya", ["China", "Kenya"], recalled=recalled)
 
     assert got == menu
 
@@ -332,10 +322,10 @@ def test_subject_shapes_leave_only_for_a_role_bearing_shape_that_outranks_them(
     ],
 )
 def test_a_query_naming_one_flow_end_or_none_keeps_every_shape(
-    monkeypatch, query: str, entities: list[str]
+    query: str, entities: list[str]
 ) -> None:
     """The subject-only series stays on the menu, ranked first by its recall score."""
-    _result, menu = _resolve(monkeypatch, query, entities)
+    _result, menu = _resolve(query, entities)
 
     assert menu == [(_SUBJECT_SV,), (_FLOW_SV,)]
 
@@ -352,13 +342,12 @@ def test_a_query_naming_one_flow_end_or_none_keeps_every_shape(
     ],
 )
 def test_a_shape_without_an_axis_the_query_needs_leaves_the_menu(
-    monkeypatch, query: str, operations: tuple[Operation, ...]
+    query: str, operations: tuple[Operation, ...]
 ) -> None:
     """The creditor-only series ranks first but declares no debtor, so the menu holds the
     by-creditor series that does."""
     entities = ["Kenya"] if "Kenya" in query else ["China"]
     _result, menu = _resolve(
-        monkeypatch,
         query,
         entities,
         recalled=((_CREDITOR_SV, 0.95), (_FLOW_SV, 0.8)),
@@ -390,13 +379,12 @@ def test_a_shape_without_an_axis_the_query_needs_leaves_the_menu(
     ],
 )
 def test_an_open_axis_keeps_a_shape_the_index_does_not_carry(
-    monkeypatch, query: str, open_axis: RoleAxis, recalled: tuple[str, ...]
+    query: str, open_axis: RoleAxis, recalled: tuple[str, ...]
 ) -> None:
     """Every member of `open_axis` is asked for and the first-ranked series declares no
     role there. The index does not carry it, so its recalled members do not show what its
     family declares, and it stays whatever is recalled beside it."""
     _result, menu = _resolve(
-        monkeypatch,
         query,
         ["Kenya"] if "Kenya" in query else ["China"],
         recalled=tuple((sv, 0.95 - 0.05 * rank) for rank, sv in enumerate(recalled)),
@@ -433,7 +421,6 @@ def test_an_open_axis_keeps_a_shape_the_index_does_not_carry(
     ],
 )
 def test_an_open_axis_removes_an_index_shape_only_for_one_declaring_it(
-    monkeypatch,
     open_axes: frozenset[RoleAxis],
     recalled: tuple[str, ...],
     expected: list[tuple[str, ...]],
@@ -443,7 +430,6 @@ def test_an_open_axis_removes_an_index_shape_only_for_one_declaring_it(
     that lists recipients, and stays when no role-bearing shape does. With no recipient
     asked for, the CRS flow leaves instead."""
     _result, menu = _resolve(
-        monkeypatch,
         "aid from France",
         ["France"],
         variable="aid",
@@ -462,15 +448,14 @@ def test_an_open_axis_removes_an_index_shape_only_for_one_declaring_it(
     ],
 )
 def test_two_open_axes_keep_the_index_shape_declaring_the_destination(
-    monkeypatch, recalled: tuple[str, ...]
+    recalled: tuple[str, ...],
 ) -> None:
     """ "Aid from every donor to every recipient" names no place and recalls two index
     shapes, each declaring one of the two axes. The axes are read in sorted order, so the
     destination is read first: the provider-only shape leaves for the recipient-only one,
     whichever ranks first, and no shape left declares the origin, so that one stays."""
-    with code_index_shared._singleton.poisoned_for_test(_one_end_index()):
+    with serving_index(_one_end_index()):
         _result, menu = _resolve(
-            monkeypatch,
             "aid",
             [],
             variable="aid",
@@ -623,7 +608,6 @@ def test_two_open_axes_keep_the_index_shape_declaring_the_destination(
     ],
 )
 def test_a_shape_publishing_on_an_axis_the_query_does_not_ask_for_leaves_the_menu(
-    monkeypatch,
     query: str,
     entities: list[str],
     variable: str,
@@ -635,7 +619,6 @@ def test_a_shape_publishing_on_an_axis_the_query_does_not_ask_for_leaves_the_men
     five-tuples, unless a named place has no direction. Both shapes are ones the index
     carries."""
     _result, menu = _resolve(
-        monkeypatch,
         query,
         entities,
         variable=variable,

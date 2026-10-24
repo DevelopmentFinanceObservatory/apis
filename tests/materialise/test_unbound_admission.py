@@ -126,7 +126,7 @@ def test_a_member_binding_no_entity_serves_a_facet_only_at_the_default_places_ad
         _unbound(_BARE_B, window=window),
         sdmx=sdmx,
         graph=_graph(),
-        enrichment=EnrichmentLookup(_graph(), parties={}),
+        enrichment=EnrichmentLookup(_graph(), parties=lambda: {}),
         **_SERVICE,
     )
 
@@ -166,7 +166,7 @@ def test_group_members_each_serve_at_their_own_places_under_their_own_admission(
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         precomputed_probe=probe,
         **_SERVICE,
     )

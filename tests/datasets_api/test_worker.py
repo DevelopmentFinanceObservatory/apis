@@ -9,11 +9,11 @@ import logging
 import threading
 import time
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from code_index.shared import get_index
 from dataset_store.snapshot import SnapshotRevoked, StoredArtifactLocation
 from datasets_api import current as current_module
 from datasets_api import serve as serve_module
@@ -34,13 +34,11 @@ from datasets_api.operations.worker import (
 )
 from datasets_api.render import artifact_rendering
 from datasets_api.serve import WorkDeadlinePassed
-from datasets_api.version_store import rendering_key
+from datasets_api.version_store import enriched_rendering_key
 from datasets_api.versions import HeadFence, HeadFenceLost, SubjectHead
 from materialise.errors import VariableBreadthUnreadError
 from materialise.facets import read_variable_breadths
 from series_coverage.index import Estimate
-from series_coverage.shared import CoverageService
-from tests.series_coverage.support import build_test_artifact, index_for, pointer_path
 
 from ._graph_doubles import FakeMintGraphReader
 from ._operation_store import FakeOperationDatasetStore
@@ -61,11 +59,8 @@ class _StubCoverageSnapshot:
 class _StubCoverage:
     """Provides one coverage snapshot to `run_operation`."""
 
-    def snapshot_current(self):
+    def snapshot(self):
         return _StubCoverageSnapshot()
-
-    def serves(self, snapshot: object) -> bool:
-        return True
 
 
 # The options `_claimed_operation` stores. They make a CSV bundle, since `MintOptions.bundle`
@@ -73,15 +68,20 @@ class _StubCoverage:
 _OPTIONS: dict[str, object] = {"format": "csv"}
 
 
-def _location(options: dict[str, object]) -> StoredArtifactLocation:
-    """A working-tier location stored now under the rendering `options` map to."""
+def _location(
+    options: dict[str, object], *, enrichment_digest: str | None = None
+) -> StoredArtifactLocation:
+    """A working-tier location stored now under the rendering `options` map to, rendered under
+    `enrichment_digest`, which defaults to the serving code index's."""
+    if enrichment_digest is None:
+        enrichment_digest = get_index().enrichment_digest
     rendering = artifact_rendering(
         MintOptions.model_validate(options), site=DatasetsBuildSettings().site
     )
     now = datetime.now(UTC)
     return StoredArtifactLocation(
         artifact_digest="sha256:stub",
-        rendering_key=rendering_key(rendering),
+        rendering_key=enriched_rendering_key(rendering, enrichment_digest),
         rendering=rendering,
         media_type="application/zip" if rendering["bundle"] else "application/vnd.apache.parquet",
         size_bytes=1,
@@ -104,10 +104,20 @@ class _LocationsReader:
         return list(self.locations.get((subject_id, content_version), ()))
 
 
-def _linked(subject_id: str, content_version: str, *options: dict[str, object]) -> _LocationsReader:
-    """A snapshot listing one artifact per `options` under `(subject_id, content_version)`."""
+def _linked(
+    subject_id: str,
+    content_version: str,
+    *options: dict[str, object],
+    enrichment_digest: str | None = None,
+) -> _LocationsReader:
+    """A snapshot listing one artifact per `options` under `(subject_id, content_version)`,
+    rendered under `enrichment_digest`."""
     return _LocationsReader(
-        {(subject_id, content_version): tuple(_location(item) for item in options)}
+        {
+            (subject_id, content_version): tuple(
+                _location(item, enrichment_digest=enrichment_digest) for item in options
+            )
+        }
     )
 
 
@@ -128,7 +138,7 @@ def _deps(snapshot_reader: _LocationsReader | None = None) -> DefinitionDeps:
         member_concurrency=4,
         enumerator=None,  # type: ignore[arg-type]
         enrichment=None,  # type: ignore[arg-type]
-        code_index=None,  # type: ignore[arg-type]
+        code_index=get_index(),
         rate_cache=None,  # type: ignore[arg-type]
         coverage=_StubCoverage(),  # type: ignore[arg-type]
         snapshot_reader=snapshot_reader,  # type: ignore[arg-type]
@@ -306,14 +316,14 @@ def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_in
     deps = _deps()
 
     calls = 0
-    real_snapshot = deps.coverage.snapshot_current
+    real_snapshot = deps.coverage.snapshot
 
     def _counting_snapshot():
         nonlocal calls
         calls += 1
         return real_snapshot()
 
-    deps.coverage.snapshot_current = _counting_snapshot  # type: ignore[method-assign]
+    deps.coverage.snapshot = _counting_snapshot  # type: ignore[method-assign]
 
     captured: dict[str, object] = {}
     stub_manifest = _stub_manifest()
@@ -871,99 +881,6 @@ def test_run_re_estimates_at_execution_and_sizes_the_fetch_guard_from_it(
     assert recorded.coverage_stamp == operation.coverage_stamp
 
 
-def _coverage_deps(coverage: CoverageService) -> DefinitionDeps:
-    return dataclasses.replace(_deps(), coverage=coverage)
-
-
-def test_run_loads_a_moved_coverage_pointer_before_it_executes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """At run start, the worker reads a newly published pointer even when the one-hour recheck is not due."""
-    base = tmp_path / "coverage"
-    uri = build_test_artifact(base, stamp="stamp-1")
-    coverage = CoverageService(
-        artifact_uri=uri, index=index_for(uri), recheck_seconds=3_600, clock=lambda: 0.0
-    )
-    build_test_artifact(base, stamp="stamp-2")
-    assert coverage.snapshot().stamp == "stamp-1"
-
-    operation_store = _operation_store()
-    operation = _claimed_operation(operation_store)
-    estimated_against: list[object] = []
-    captured: dict[str, object] = {}
-
-    def _estimate(requests, *, index, member_concurrency):
-        estimated_against.append(index)
-        return Estimate(rows=1, requests=1)
-
-    def _capture_serve(
-        stored,
-        *,
-        resolve_requests,
-        options,
-        trigger,
-        deps,
-        trace_id,
-        admitted,
-        coverage_snapshot,
-        progress,
-    ):
-        captured["coverage_stamp"] = coverage_snapshot.stamp
-        captured["coverage_index"] = coverage_snapshot.index
-        return _stub_manifest()
-
-    monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-    monkeypatch.setattr(worker_module, "sync_estimate", _estimate)
-    monkeypatch.setattr(worker_module, "serve_current", _capture_serve)
-
-    run_operation(
-        operation=operation,
-        deps=_coverage_deps(coverage),
-        operation_store=operation_store,
-    )
-
-    served = coverage.snapshot()
-    assert served.stamp == "stamp-2"
-    assert captured["coverage_stamp"] == "stamp-2"
-    assert captured["coverage_index"] is served.index
-    assert estimated_against == [served.index]
-    stored = operation_store.get(operation.id)
-    assert stored is not None
-    assert stored.state == "done"
-
-
-def test_an_unreadable_coverage_pointer_releases_the_run_without_executing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """An unreadable pointer prevents materialisation and releases the lease for retry."""
-    base = tmp_path / "coverage"
-    uri = build_test_artifact(base, stamp="stamp-1")
-    coverage = CoverageService(artifact_uri=uri, index=index_for(uri), recheck_seconds=0)
-    pointer_path(base).unlink()
-
-    operation_store = _operation_store()
-    operation = _claimed_operation(operation_store)
-
-    def _must_not_serve(*_, **__):
-        raise AssertionError("a run without a current coverage pointer must not materialise")
-
-    monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-    monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
-
-    with pytest.raises(OperationTransientFailure):
-        run_operation(
-            operation=operation,
-            deps=_coverage_deps(coverage),
-            operation_store=operation_store,
-            is_final_attempt=False,
-        )
-
-    stored = operation_store.get(operation.id)
-    assert stored is not None
-    assert stored.state == "pending"
-    assert stored.estimate == operation.estimate
-
-
 def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fetching(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1025,6 +942,20 @@ def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fe
             None,
             None,
             id="other-rendering-only-releases",
+        ),
+        pytest.param(
+            _SUBJECT_ID,
+            _linked(
+                _SUBJECT_ID,
+                "cv_stub",
+                _OPTIONS,
+                enrichment_digest=f"{get_index().enrichment_digest}-before-a-rotation",
+            ),
+            False,
+            "pending",
+            None,
+            None,
+            id="rendered-under-an-older-digest-releases",
         ),
         pytest.param(
             _SUBJECT_ID,

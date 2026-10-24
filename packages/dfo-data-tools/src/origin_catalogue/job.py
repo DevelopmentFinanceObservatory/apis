@@ -4,14 +4,15 @@ A run:
 
 1. skips while `IngestionLock` is held, after checking that the identity
    the last unlocked run saw is published;
-2. computes the build identity from the registry file's hash, the DFO
-   fingerprint (the latest successful `IngestionHistory` row plus the row
-   count and latest `last_update_timestamp` over every `Observation` row),
-   the ISO week, the artifact format version and a hash of the job's own
-   modules (`JOB_MODULES`), and skips when `current.json` already carries
-   it, unless that build carried its UN stage forward, in which case the
-   run retries the UN stage first, over that build's scan places, and goes
-   on to build and publish only if the UN answers;
+2. computes the build identity from the registry file's hash, the import
+   key's stamp (`artifact_publication.jobs.ImportKey`, over the newest
+   `IngestionHistory` row and the newest successful one), the ISO week,
+   the artifact format version and a hash of the job's own modules
+   (`JOB_MODULES`). It skips while the newest `IngestionHistory` row is
+   not a success, and skips when `current.json` already carries the
+   identity, unless that build carried its UN stage forward, in which
+   case the run retries the UN stage first, over that build's scan
+   places, and goes on to build and publish only if the UN answers;
 3. takes the create-only lease `lease.json` at the format root, so
    overlapping scheduler executions do not both build, and skips while
    another run holds an unexpired one;
@@ -68,10 +69,10 @@ A run:
    provenance a UN agency supersedes, with the UN variable standing for it
    where one does. A successor the UN tables do not admit refuses the
    build;
-11. discards the build if the lock or the fingerprint moved while it ran,
-   and otherwise publishes it with a conditional `current.json` write. The
-   manifest records the `IngestionHistory` row the fingerprint read, as the
-   coverage manifest does.
+11. discards the build if the lock was taken or the import key moved while
+   it ran, and otherwise publishes it with a conditional `current.json`
+   write. The manifest records the successful `IngestionHistory` row the
+   build is keyed on, as the coverage manifest does.
 
 Every run prunes old builds. `origin_catalogue_publish_stale` is logged
 once an identity has gone unpublished for more than one cycle (reason
@@ -123,11 +124,9 @@ from artifact_publication.jobs import (
     LiveBigQuery,
     acquire_lease,
     emit,
-    lock_held,
     new_build_id,
-    observation_stats_sql,
     prune_versions,
-    read_ingestion_fingerprint,
+    read_import_key_bq,
     release_lease,
     tracked_stamp,
     unpublished_seconds,
@@ -300,8 +299,8 @@ of datacommonsorg/website pins for its prod environment."""
 
 
 class CatalogueBuildError(Exception):
-    """An input the catalogue cannot represent: no successful ingestion to
-    fingerprint, an observation with no provenance, or a source whose
+    """An input the catalogue cannot represent: an empty `IngestionHistory`
+    to key the build on, an observation with no provenance, or a source whose
     `<-source` list is truncated."""
 
 
@@ -1529,7 +1528,7 @@ def _track_stale(
 
 def _track_stale_under_lock(settings: JobSettings, *, clock: Callable[[], float]) -> None:
     """`_track_stale` for a run that finds `IngestionLock` held. The
-    fingerprint moves during a load, so the run checks the identity the
+    import key moves during a load, so the run checks the identity the
     last unlocked run saw in place of its own, and a lock held past a cycle
     with that identity unpublished still logs `origin_catalogue_publish_stale`."""
     root = format_root(settings.artifact_uri)
@@ -1733,28 +1732,23 @@ def _build(
             f"{settings.artifact_uri!r} is not file://"
         )
     connection = settings.bq_connection
-    if lock_held(bq, connection=connection):
+    import_key = read_import_key_bq(bq, connection=connection)
+    if import_key is None:
+        raise CatalogueBuildError("IngestionHistory has no row to key the build on")
+    if import_key.lock_owner is not None:
         emit("origin_catalogue_job_skipped", reason="ingestion_lock_held")
         _track_stale_under_lock(settings, clock=clock)
         return
 
     registry = parse_registry(registry_raw)
     registry_digest = registry_hash(registry_raw)
-    fingerprint = read_ingestion_fingerprint(
-        bq, connection=connection, observation_sql=observation_stats_sql(connection)
-    )
-    if fingerprint is None:
-        raise CatalogueBuildError(
-            "IngestionHistory has no row with IngestionFailure=false and Status='SUCCESS' "
-            "to fingerprint from"
-        )
     week = iso_week(datetime.fromtimestamp(clock(), UTC))
     enumeration_code = source_digest(ENUMERATION_MODULES)
     base_arc_code = source_digest(BASE_ARC_MODULES)
     un_mirror_code = source_digest(UN_MIRROR_MODULES)
     inputs = identity_inputs(
         registry_digest=registry_digest,
-        dfo_stamp=fingerprint.stamp,
+        dfo_stamp=import_key.stamp,
         week=week,
         job_code=source_digest(JOB_MODULES),
         enumeration_code=enumeration_code,
@@ -1768,6 +1762,9 @@ def _build(
     published, published_generation = _read_published(root)
     published_identity = published.identity if published is not None else None
     _track_stale(settings, identity=identity, published=published_identity, clock=clock)
+    if not import_key.buildable:
+        emit("origin_catalogue_job_skipped", reason="import_not_successful", identity=identity)
+        return
     retrying_un = False
     if published is not None and published.identity == identity:
         if not _published_carries_un(settings.artifact_uri, published.build_id):
@@ -1904,17 +1901,15 @@ def _build(
                 # The published build already carries this UN stage.
                 return
 
-        if lock_held(bq, connection=connection):
+        current = read_import_key_bq(bq, connection=connection)
+        if current is not None and current.lock_owner is not None:
             emit(
                 "origin_catalogue_job_discarded",
                 reason="ingestion_lock_acquired_during_build",
                 identity=identity,
             )
             return
-        current = read_ingestion_fingerprint(
-            bq, connection=connection, observation_sql=observation_stats_sql(connection)
-        )
-        if current is None or current.stamp != fingerprint.stamp:
+        if current is None or not current.buildable or current.stamp != import_key.stamp:
             emit(
                 "origin_catalogue_job_discarded",
                 reason="fingerprint_moved_during_build",
@@ -1947,7 +1942,7 @@ def _build(
             un_mirror=un.mirror,
             arcs=arcs.tables,
             index_presence=arcs.index_presence,
-            ingestion=fingerprint.ingestion,
+            ingestion=import_key.newest.ingestion,
         )
         if not publish_build(
             settings.artifact_uri, build, expected_generation=published_generation

@@ -205,13 +205,19 @@ def _parse_requested_keys(harvest_file: Path, lines: Iterable[str]) -> frozenset
     return frozenset(keys)
 
 
-_RECORDED_SCHEMA_NAMES = ("Extraction", "_UniversalBindOutput", "QuantityOutput")
+_RECORDED_SCHEMA_NAMES = (
+    "Extraction",
+    "_UniversalBindOutput",
+    "QuantityOutput",
+    "StatedWordsOutput",
+)
 
 
 def _schema_and_stage(
     schema_name: str,
-) -> tuple[type[BaseModel], Literal["extract", "bind", "quantity"]]:
-    """Map `Extraction`, `_UniversalBindOutput` and `QuantityOutput` to a schema and stage.
+) -> tuple[type[BaseModel], Literal["extract", "bind", "quantity", "stated_words"]]:
+    """Map `Extraction`, `_UniversalBindOutput`, `QuantityOutput` and `StatedWordsOutput` to
+    a schema and stage.
 
     Unknown names raise `HarvestError`.
     """
@@ -227,6 +233,10 @@ def _schema_and_stage(
         from search.engine.quantity_read import QuantityOutput
 
         return QuantityOutput, "quantity"
+    if schema_name == "StatedWordsOutput":
+        from search.engine.stated_words_read import StatedWordsOutput
+
+        return StatedWordsOutput, "stated_words"
     raise HarvestError(
         f"no schema registered for schema_name={schema_name!r}; add it to "
         f"_schema_and_stage in {Path(__file__).name} before harvesting"
@@ -342,25 +352,20 @@ def _direction_corpus_collect(*, harvest_path: Path) -> None:
     """Run extraction over direction queries and append every requested key to the shared file.
 
     Extraction reads no graph, so this collector runs in-process. A fresh `FakeLLM` per query
-    reloads fixtures written earlier in the same pass. Pin `extract.date` to `PINNED_DATE` because
-    the system prompt includes the date in each fixture key.
+    reloads fixtures written earlier in the same pass. The key hashes the query and the
+    system prompt template, with its year left as `[[YEAR]]`, so the collector needs no
+    pinned date.
     """
-    from datetime import date
-    from unittest.mock import patch
-
     from search.engine.extract import extract as _extract
-    from tests.fixtures import PINNED_DATE, FakeLLM
+    from tests.fixtures import FakeLLM
 
     old_env = os.environ.get(HARVEST_MISS_PATH_ENV)
     os.environ[HARVEST_MISS_PATH_ENV] = str(harvest_path)
     try:
-        with patch("search.engine.extract.date") as mock_date:
-            mock_date.today.return_value = PINNED_DATE
-            mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
-            for query in _direction_corpus_queries():
-                # FakeLLM logs the miss before raising.
-                with contextlib.suppress(MissingFixtureError):
-                    asyncio.run(_extract(query, llm=FakeLLM()))
+        for query in _direction_corpus_queries():
+            # FakeLLM logs the miss before raising.
+            with contextlib.suppress(MissingFixtureError):
+                asyncio.run(_extract(query, llm=FakeLLM()))
     finally:
         if old_env is None:
             os.environ.pop(HARVEST_MISS_PATH_ENV, None)

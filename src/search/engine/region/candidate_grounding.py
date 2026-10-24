@@ -53,6 +53,7 @@ from search.engine.region.grounding import (
     _place_confidence,
     build_identity_entities,
     carrier_flag_warnings,
+    check_breakdown_settled,
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
@@ -105,6 +106,7 @@ from search.engine.spec_build import (
     build_spec,
     build_stat_vars,
 )
+from search.engine.unit.conversion import bound_prices
 from search.engine.unit.refs import unit_currency
 from search.models import (
     Coverage,
@@ -649,9 +651,10 @@ def _finish_candidate(
     # ``available_at_place=False``. Place-less coverage uses ``None``.
     cand_is_elected = cand_index == 0 and state.elected_has_data
     # A reading the status rule offers on a structural or nominated basis is a rival, and
-    # so are the elected reading and its other directions beside one (`rivalled`).
+    # so are the elected reading and its other directions and breakdowns beside one
+    # (`rivalled`).
     cand_has_rival = cand.basis in ("structural", "nominated") or (
-        rivalled and (cand_is_elected or cand.basis == "direction")
+        rivalled and (cand_is_elected or cand.basis in ("direction", "breakdown"))
     )
     cand_available_at_place, cand_confidence = _place_confidence(
         destination_dcid=state.destination_dcid,
@@ -702,6 +705,17 @@ def _finish_candidate(
     # Reuse materialised role facts without extra SDMX reads. Labelled entity options are
     # built only for a surviving definite answer.
     cand_role_axis_facts = role_axis_facts_for_materialised(cand_mat, shape=cand_shape)
+    cand_facet_bindings = (
+        # A bound outcome guarantees a unit request. The type checker cannot carry that
+        # attribute invariant through this access.
+        {"unit": IdentityFacetValueRequest(request=cast(IdentityUnitRequest, state.unit_request))}
+        if state.bound_unit_outcome is not None
+        else (
+            {"unit": cluster_currency_binding(groundwork.confirmed_facets)}
+            if prep.twin_unit_filters[cand_index] is not None
+            else None
+        )
+    )
     cand_spec = build_spec(
         shape=groundwork.shape_model,
         slots=groundwork.slots,
@@ -733,25 +747,15 @@ def _finish_candidate(
         measure_siblings=cand_measure_siblings,
         open_axis_facts=cand_open_axis_facts,
         role_axis_facts=cand_role_axis_facts,
-        facet_bindings=(
-            # A bound outcome guarantees a unit request. The type checker cannot carry that
-            # attribute invariant through this access.
-            {
-                "unit": IdentityFacetValueRequest(
-                    request=cast(IdentityUnitRequest, state.unit_request)
-                )
-            }
-            if state.bound_unit_outcome is not None
-            else (
-                {"unit": cluster_currency_binding(groundwork.confirmed_facets)}
-                if prep.twin_unit_filters[cand_index] is not None
-                else None
-            )
-        ),
+        facet_bindings=cand_facet_bindings,
         text_recognized_properties=(
             text_recognized_properties if cand_bindings is state.bindings else frozenset()
         ),
-        query_qualifiers=answer_terms(state, cand_shape, cand_bindings),
+        # Judged under the unit request this candidate is served under, as the definite
+        # answer's trace is.
+        query_qualifiers=answer_terms(
+            state, cand_shape, cand_bindings, served=bound_prices(cand_facet_bindings)
+        ),
         measure_elected_properties=(
             measure_elected_properties if cand_bindings is state.bindings else frozenset()
         ),
@@ -761,12 +765,15 @@ def _finish_candidate(
         named_groups=request_named_groups(state, cand.place.roles),
         measure_served_rows=measure_served_counter(groundwork.served_filter),
     )
+    check_breakdown_settled(cand_shape, cand.walked, cand_spec)
     cand_spec = apply_declaration_version(cand_spec, cand_bindings)
     cand_role_declaration_unverified = (
         False if cand_is_elected else cand_mat.role_declaration_unverified
     )
     cand_open_origin_defaulted = (
-        False if cand_is_elected else cand_mat.open_origin_dcids is not None
+        not cand_is_elected
+        and cand_mat.open_origin_dcids is not None
+        and "origin" not in cand.place.roles.unnamed_wholes
     )
 
     cand_places = cand.place.roles
@@ -917,6 +924,7 @@ def restate_scope_warning(
         members=own if own is not None else on_axis[0],
         boundary_roles=state.place.roles.roles,
         label_of=state.opposite_labels,
+        unnamed_wholes=state.place.roles.unnamed_wholes,
         state_count=len(distinct) <= 1,
     )
 

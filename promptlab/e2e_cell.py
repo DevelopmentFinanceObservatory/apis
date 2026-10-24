@@ -2,7 +2,7 @@
 
 Both composed prompts pass through `LadderLLM`. The real guard, neighbour check,
 repair, and twin diversion run. Captures supply raw-text cases and the original
-`[[TODAY]]` date, while `GraphCache` serves captured graph reads. Live runs make
+`[[TODAY]]` date and `[[YEAR]]`, while `GraphCache` serves captured graph reads. Live runs make
 new LLM calls. Offline tests use `FakeLLM`. Each response is scored by the eval checks
 (`search.eval.checks`) against the case, as the paired gate scores it. Only raw-text cases
 exercise the ladder. Dataset-resubmit cases bypass extract and bind.
@@ -36,6 +36,7 @@ from search.eval.graph import GraphClient
 from series_coverage.shared import get_coverage_service
 
 _TODAY_PLACEHOLDER = "[[TODAY]]"
+_YEAR_PLACEHOLDER = "[[YEAR]]"
 
 # pipeline.py reads bind top-k from `settings().bind_top_k` on each call. Patch
 # process settings for rung-specific top-k. The harness's `pac` override uses
@@ -127,8 +128,11 @@ async def run_e2e_cell(
     `NotImplementedError`."""
     capture.require_complete()
 
-    extract_system = compose(rung.extract).replace(
-        _TODAY_PLACEHOLDER, capture.manifest.substituted_date
+    substituted_date = capture.manifest.substituted_date
+    extract_system = (
+        compose(rung.extract)
+        .replace(_TODAY_PLACEHOLDER, substituted_date)
+        .replace(_YEAR_PLACEHOLDER, substituted_date[:4])
     )
     bind_system = compose(rung.bind)
     systems = {"extract": extract_system, "bind": bind_system}

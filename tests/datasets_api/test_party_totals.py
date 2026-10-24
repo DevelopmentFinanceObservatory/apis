@@ -6,7 +6,7 @@ import pyarrow as pa
 import pytest
 from dfo_frame_grammar import Frame, frame_sha256
 
-from code_index.types import PartyRow
+from code_index.types import PartyRow, WholeMarker
 from datasets_api.party_totals import cut_frame, cut_party_totals, open_party_roles
 
 _PROVIDER = "financingProvider"
@@ -17,6 +17,8 @@ _DAC_TOTAL = "DACTotal"
 _G7 = "GroupOfSeven"
 _FRANCE = "country/FRA"
 _GERMANY = "country/DEU"
+_OFFICIAL = "DACOfficialDonors"
+_GATES = "GatesFoundation"
 _DEVELOPING = "DevelopingCountries"
 _AFRICA_REGIONAL = "AfricaRegional"
 _KENYA = "country/KEN"
@@ -28,9 +30,16 @@ _PARTIES = {
     for party in (
         PartyRow(dcid=_DAC_TOTAL, kind="total"),
         PartyRow(dcid=_G7, kind="total"),
+        PartyRow(
+            dcid=_OFFICIAL,
+            kind="total",
+            party_class="official",
+            whole=(WholeMarker(dataset="provenance/P", covers=("official",)),),
+        ),
+        PartyRow(dcid=_GATES, kind="party", party_class="private"),
         PartyRow(dcid=_FRANCE, kind="party"),
         PartyRow(dcid=_DEVELOPING, kind="total"),
-        PartyRow(dcid=_AFRICA_REGIONAL, kind="residual"),
+        PartyRow(dcid=_AFRICA_REGIONAL, kind="residual", party_class="residual"),
         PartyRow(dcid=_KENYA, kind="party"),
     )
 }
@@ -68,7 +77,7 @@ def _kept(frame: Frame, *, identity: dict[str, object]) -> tuple[set[tuple[str, 
 
 _EVERY_PAIR = [
     (provider, recipient)
-    for provider in (_DAC_TOTAL, _G7, _FRANCE, _GERMANY)
+    for provider in (_DAC_TOTAL, _G7, _OFFICIAL, _FRANCE, _GERMANY, _GATES)
     for recipient in (_DEVELOPING, _AFRICA_REGIONAL, _KENYA, _GHANA)
 ]
 
@@ -78,24 +87,24 @@ _EVERY_PAIR = [
     [
         pytest.param(
             {"entities": {}},
-            {_FRANCE, _GERMANY},
+            {_FRANCE, _GERMANY, _GATES},
             {_AFRICA_REGIONAL, _KENYA, _GHANA},
             [
-                {"role": _PROVIDER, "entities": [_DAC_TOTAL, _G7]},
+                {"role": _PROVIDER, "entities": [_OFFICIAL, _DAC_TOTAL, _G7]},
                 {"role": _RECIPIENT, "entities": [_DEVELOPING]},
             ],
             id="both-open",
         ),
         pytest.param(
             {"entities": {"destination": [_DEVELOPING, _KENYA]}},
-            {_FRANCE, _GERMANY},
+            {_FRANCE, _GERMANY, _GATES},
             {_DEVELOPING, _AFRICA_REGIONAL, _KENYA, _GHANA},
-            [{"role": _PROVIDER, "entities": [_DAC_TOTAL, _G7]}],
+            [{"role": _PROVIDER, "entities": [_OFFICIAL, _DAC_TOTAL, _G7]}],
             id="recipient-bound-by-axis-label",
         ),
         pytest.param(
             {"entities": {"provider": [_DAC_TOTAL]}},
-            {_DAC_TOTAL, _G7, _FRANCE, _GERMANY},
+            {_DAC_TOTAL, _G7, _OFFICIAL, _FRANCE, _GERMANY, _GATES},
             {_AFRICA_REGIONAL, _KENYA, _GHANA},
             [{"role": _RECIPIENT, "entities": [_DEVELOPING]}],
             id="provider-bound-by-caller-role",
@@ -105,8 +114,8 @@ _EVERY_PAIR = [
 def test_a_cut_leaves_out_the_totals_of_each_open_party_role(
     identity, kept_providers, kept_recipients, entries
 ):
-    """Totals leave an open role; parties, residuals and undeclared parties stay, and a bound
-    role keeps every party whatever its kind."""
+    """Totals, whole totals included, leave an open role; parties of either class, residuals
+    and undeclared parties stay, and a bound role keeps every party whatever its kind."""
     kept, trace = _kept(_frame(_EVERY_PAIR), identity=identity)
 
     assert kept == {

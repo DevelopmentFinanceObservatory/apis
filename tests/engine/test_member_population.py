@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.retrieval.retrieve import Materialised, materialise
@@ -15,6 +15,7 @@ from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.shape import ShapeDraft
 from series_coverage.schema import RoleNames
 from tests.engine import test_index_sourced_grounding as _idx
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._index_slots import index_slot_keys
@@ -103,7 +104,7 @@ def test_set_binding_collected_count_matches_population_confirmed():
 
 
 def _index_sourced_shape() -> ShapeDraft:
-    """The packaged index contains this CRS five-tuple. The one-member recall
+    """The fixture index contains this CRS five-tuple. The one-member recall
     pool is incomplete; `declared_roles` are fixture labels and do not affect
     five-tuple matching.
     """
@@ -129,7 +130,7 @@ def _index_sourced_shape() -> ShapeDraft:
 
 
 def test_index_sourced_population_is_exact(monkeypatch):
-    """The packaged index carries this CRS five-tuple, so its full population
+    """The fixture index carries this CRS five-tuple, so its full population
     is exact despite an incomplete one-member recall pool (#893).
     """
     shape = _index_sourced_shape()
@@ -171,7 +172,7 @@ _RECALL_MEMBER = "TestRecallPoolMember_A"
 
 
 def _recall_pool_shape() -> ShapeDraft:
-    """A fabricated five-tuple this deployment's packaged index does not
+    """A fabricated five-tuple the fixture index does not
     carry, with sv_arc_facts_complete=False -- derive_shapes' own stamp for
     every shape its capped confirm fetch produces, regardless of how many
     members that fetch actually returned."""
@@ -270,7 +271,7 @@ class _NoBindingLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return (
-            _UniversalBindOutput(chosen_shape_index=0, bindings=[], also_plausible=None, ask=None),
+            elected_reply(0, bindings=[], also_plausible=None),
             None,
         )
 

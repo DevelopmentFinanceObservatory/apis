@@ -54,7 +54,7 @@ def _render(chunks: tuple[Table, ...]) -> tuple:
         content_version="sha256:" + "0" * 64,
         artifact_store=FakeArtifactStore(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_GRAPH, parties={}),
+        enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
         prepared_at=PREPARED_AT,
@@ -79,7 +79,7 @@ def test_enrichment_warnings_merge_across_chunks_to_the_whole_table_answer():
         ("recipient_iso3", 2),
         ("stat_var_label", 4),
         ("recipient_label", 4),
-        ("recipient_party_kind", 4),
+        ("recipient_kind", 4),
     ]
     assert two_chunk_enrichment == one_chunk_enrichment
 
@@ -129,7 +129,7 @@ def _render_two_columns(chunks: tuple[Table, ...]) -> tuple:
         content_version="sha256:" + "0" * 64,
         artifact_store=FakeArtifactStore(),
         entity_columns=("recipient",),
-        enrichment=EnrichmentLookup(_TWO_COLUMN_GRAPH, parties={}),
+        enrichment=EnrichmentLookup(_TWO_COLUMN_GRAPH, parties=lambda: {}),
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
         prepared_at=PREPARED_AT,
@@ -160,6 +160,6 @@ def test_streamed_warning_order_matches_whole_table_order_across_two_columns():
         "recipient_iso3",
         "stat_var_label",
         "recipient_label",
-        "recipient_party_kind",
+        "recipient_kind",
     ]
     assert streamed_enrichment == whole_table_enrichment

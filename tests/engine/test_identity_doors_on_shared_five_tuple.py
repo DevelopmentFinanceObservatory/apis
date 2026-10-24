@@ -131,7 +131,7 @@ _RESUBMIT_POINTER = "/input/identity/facets/provenance"
 
 @pytest.fixture
 def index(monkeypatch) -> CodeIndex:
-    """`_index` wherever the options door and the resubmit read the packaged index."""
+    """`_index` wherever the options door and the resubmit read the fixture index."""
     index = _index()
     for module in (bound_values_module, population_module):
         monkeypatch.setattr(module, "get_index", lambda: index)

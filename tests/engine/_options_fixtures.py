@@ -1,6 +1,6 @@
 """Fixtures for options-route tests.
 
-The life-expectancy shape is a fixture-only five-tuple absent from the packaged index, so
+The life-expectancy shape is a fixture-only five-tuple absent from the fixture index, so
 population comes from graph arcs. The GDP shape carries currency facets for elected-unit
 convertibility tests.
 """
@@ -93,7 +93,7 @@ def _place_graph() -> FakeGraph:
 
 _ACTIVITY_SOURCE_PROP = "activitySource"
 
-# This shape has no packaged-index row, so population comes from graph arcs.
+# This shape has no fixture-index row, so population comes from graph arcs.
 GDP_SHAPE: dict = {
     "kind": "statvar_schema",
     "population_type": "EconomicActivity",

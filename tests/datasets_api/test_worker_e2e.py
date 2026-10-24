@@ -15,7 +15,6 @@ from artifact_store import LiveArtifactInventory
 from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import kinds
-from datasets_api import serve as serve_module
 from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
@@ -25,9 +24,9 @@ from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import build_worker_app
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
+from graph_release.service import ReleaseService
 from materialise import EnrichmentLookup
 from materialise.rate_tables import RateTableCache
-from series_coverage.shared import CoverageSnapshot
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from statvar_members import MemberEnumerator
@@ -36,18 +35,14 @@ from tests.engine._fake_coverage import FakeCoverageService
 from ._app_factories import make_client
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
-from .test_materialise_semaphore import _CoverageBuilds, _PermitLog, _reloading_permit
+from .test_materialise_semaphore import (
+    _PermitLog,
+    _SwapBeforePermit,
+    _swapping_release,
+)
 from .test_mint_statvar_set import _CSV_BODY, _HAPPY_PATH_BODY, _coverage_service, _graph
 from .test_pin_door import FakeArtifactReferenceWriter
 from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
-
-
-class _WorkerCoverageService(FakeCoverageService):
-    """Expose the worker's `snapshot_current()` read on the static fixture."""
-
-    def snapshot_current(self) -> CoverageSnapshot:
-        return self.snapshot()
-
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _WORKER_URL = "https://worker.example.org"
@@ -72,13 +67,13 @@ def api_and_worker(
     graph,
     sdmx: Callable[[], SdmxClient],
     coverage: Callable[[], FakeCoverageService],
-    worker_coverage: object | None = None,
     worker_permits: MaterialisePermits | None = None,
+    worker_release: ReleaseService | None = None,
 ) -> tuple[TestClient, LiveOperationStore, list[tuple[str, int]]]:
     """The API app and a worker app sharing stores, head store and graph, as the two services
     do in deployment. The fake queue runs each enqueued operation on the worker inline and
-    records it in the returned list. `worker_coverage` and `worker_permits` replace the
-    worker's static coverage and its one permit."""
+    records it in the returned list. `worker_permits` replaces the worker's one permit.
+    `worker_release` is the graph release service each run binds from."""
     store = FakeDatasetStore()
     version_store = FakeVersionRecordDatasetStore()
     head_store = LiveHeadStore(store=version_store)
@@ -98,15 +93,11 @@ def api_and_worker(
         ceiling=1_000_000,
         member_concurrency=4,
         enumerator=MemberEnumerator(),
-        enrichment=EnrichmentLookup(graph, parties={}),
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
         code_index=get_index(),
         rate_cache=RateTableCache(),
         # The worker probes role-bearing facets from this index.
-        coverage=(
-            worker_coverage
-            if worker_coverage is not None
-            else _WorkerCoverageService(coverage().current())
-        ),
+        coverage=FakeCoverageService(coverage().current()),
         version_writer=LiveVersionRecordWriter(store=version_store),
         snapshot_reader=LiveSnapshotReader(store=version_store),
         head_store=head_store,
@@ -124,6 +115,7 @@ def api_and_worker(
             oidc_verifier=FakeOidcVerifier(),
             worker_url=_WORKER_URL,
             worker_invoker_service_account=_INVOKER,
+            release=worker_release,
         )
     )
 
@@ -277,53 +269,35 @@ def test_a_get_after_the_worker_ran_an_over_budget_mint_is_a_head_hit(
     assert len(requests) == fetched
 
 
-def test_a_worker_run_whose_snapshot_a_reload_replaced_materialises_on_the_served_build(
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_worker_run_bound_to_a_swapped_out_release_takes_no_permit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
-    """The run read build 1 and a reload to build 2 completed before its permit. The run gives
-    the permit back, starts again from the pointer read, and fetches against build 2's index,
-    after build 1's index has left memory, as its first SDMX request observes."""
+    """The run bound the first release at delivery, and the service swapped to the second
+    before the run's permit. The run resolved its members from the first release's code index,
+    so it takes no permit and fetches nothing, and the operation is left for a later delivery,
+    which binds the served release."""
     log = _PermitLog()
-    builds = _CoverageBuilds(monkeypatch, make_index=lambda: _coverage_service().current())
-    permit, schedule = _reloading_permit(log, builds)
+    permit = _SwapBeforePermit(1, log=log)
+    release, swap = _swapping_release(monkeypatch, tmp_path)
     # The worker's lifespan registers the same guard.
-    builds.service.register_load_guard(permit.every_permit)
-    old_index_resident: list[bool] = []
-    fetched_on_served_index: list[bool] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        old_index_resident.append(builds.resident(1))
-        log.record("sdmx")
-        return httpx.Response(
-            200,
-            text=_CSV_BODY,
-            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
-        )
-
-    real_prewrite = serve_module.prewrite_definition
-
-    def observing_prewrite(**kwargs):
-        fetched_on_served_index.append(kwargs["coverage_index"] is builds.indexes[2]())
-        return real_prewrite(**kwargs)
-
-    monkeypatch.setattr(serve_module, "prewrite_definition", observing_prewrite)
-    api_client, operation_store, _forwarded = api_and_worker(
+    release.register_swap_guard(permit.every_permit)
+    requests: list[httpx.Request] = []
+    api_client, operation_store, forwarded = api_and_worker(
         graph=_graph(),
-        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(handler)),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport(requests)),
         coverage=_coverage_service,
-        worker_coverage=builds.service,
         worker_permits=permit,
+        worker_release=release,
     )
     monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
-    schedule(1)
+    permit.before_acquire = swap
 
     submitted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
 
     assert submitted.status_code == 202, submitted.text
     stored = operation_store.get(submitted.json()["operation"]["operation_id"])
-    assert stored is not None and stored.state == "done"
-    assert fetched_on_served_index == [True]
-    assert old_index_resident and not any(old_index_resident)
-    kinds_logged = [kind for kind in log.kinds() if kind != "write"]
-    assert kinds_logged[:5] == ["reload", "acquire", "release", "acquire", "sdmx"]
-    assert kinds_logged.count("acquire") == kinds_logged.count("release") == 2
+    # Released for redelivery, as a transient failure before the final attempt is.
+    assert stored is not None and stored.state == "pending"
+    assert len(forwarded) == 1
+    assert log.kinds() == ["swap"]
+    assert requests == []

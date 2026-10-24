@@ -11,7 +11,6 @@ import asyncio
 
 import pytest
 
-from search.engine.bind import _UniversalBindOutput
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import (
     NO_MEMBER_HAS_DATA_AT_PLACE,
@@ -19,6 +18,7 @@ from search.engine.region import (
     resolve_variable,
 )
 from search.engine.region.state import EngineOptions
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import sdmx_double
@@ -26,7 +26,7 @@ from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
 
-_DETECT_QUERY = "test place scope population or count"
+_DETECT_QUERY = "population count"
 _SV_A = "TEST/AvailAtPlaceUnitFilter_PopulationA"
 _SV_B = "TEST/AvailAtPlaceUnitFilter_PopulationB"
 _EARTH_CHILDREN = {
@@ -48,12 +48,12 @@ _NODES: dict = {
     _SV_A: {
         "label": "Test Population A",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("A", meas_prop="count"),
+        "arcs": _sv_arcs("Population count A", meas_prop="count"),
     },
     _SV_B: {
         "label": "Test Population B",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("B", meas_prop="countAdult"),
+        "arcs": _sv_arcs("Population count B", meas_prop="countAdult"),
     },
 }
 _DETECT: dict = {_DETECT_QUERY: {"svs": [_SV_A, _SV_B], "cosine_scores": [0.9, 0.85]}}
@@ -69,13 +69,7 @@ class _CandidatesBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=[1],
-            ask=None,
-            unplaced=self.unplaced,
-        ), None
+        return elected_reply(0, bindings=[], also_plausible=[1], unplaced=self.unplaced), None
 
 
 def _run(unplaced: list[str]):
@@ -114,7 +108,7 @@ def _run(unplaced: list[str]):
     ("unplaced", "reason", "gate", "trace"),
     [
         ([], "no_observations", NO_MEMBER_HAS_DATA_AT_PLACE, []),
-        (["scope"], "qualifier_not_bound", None, [("scope", "no_vocabulary")]),
+        (["count"], "qualifier_not_bound", None, [("count", "no_vocabulary")]),
     ],
     ids=["every-word-placed", "unplaced-word"],
 )

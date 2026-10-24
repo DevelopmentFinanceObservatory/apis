@@ -17,7 +17,7 @@ from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph
 
-# Real CRS codes from the packaged index.
+# Real CRS codes from the fixture index.
 
 _HEALTH = "CRSPurposeCode120"  # hierarchical (crsPurpose), 23-node closure
 _MALARIA_CONTROL = "CRSPurposeCode12262"  # a leaf under _HEALTH
@@ -108,7 +108,7 @@ def test_slot_expansions_is_empty_when_nothing_was_added():
     assert expansions == {}
 
 
-# A described identity whose five-tuple the packaged index does not carry, so the graph
+# A described identity whose five-tuple the fixture index does not carry, so the graph
 # decides its membership.
 _UNINDEXED_IDENTITY = BaseIdentity.model_validate(
     {

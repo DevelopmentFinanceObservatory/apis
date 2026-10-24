@@ -8,11 +8,13 @@ provenance refuses.
 from __future__ import annotations
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
+from code_index.shared import get_index
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import RollupNotSummableError, Table
+from tests.graph_release.support import serving_index
 
 from ._graph_doubles import FakeMintGraphReader
 
@@ -129,7 +131,7 @@ _RESOLVED_REFS = ("dcid:SV_health", "dcid:SV_malaria")
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), parties={})
+    return EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {})
 
 
 def _options() -> MintOptions:
@@ -218,10 +220,8 @@ def test_two_distinct_provenance_refs_refuse_before_any_declaration_lookup():
 
 
 def test_declaration_follows_the_injected_index_even_when_the_singleton_disagrees():
-    import code_index.shared as shared
-
-    # The singleton carries the opposite declaration. A fallback to it changes the result.
-    with shared._singleton.poisoned_for_test(_index(declares_crs_zero=False)):
+    # The served index carries the opposite declaration. A fallback to it changes the result.
+    with serving_index(_index(declares_crs_zero=False)):
         reshaped = _reshape(
             _TABLE,
             options=_options(),
@@ -236,7 +236,7 @@ def test_declaration_follows_the_injected_index_even_when_the_singleton_disagree
         value_pos = reshaped.table.columns.index("value")
         assert [row[value_pos] for row in reshaped.table.rows] == [10.0]
 
-    with shared._singleton.poisoned_for_test(_index(declares_crs_zero=True)):
+    with serving_index(_index(declares_crs_zero=True)):
         try:
             _reshape(
                 _TABLE,
@@ -253,5 +253,5 @@ def test_declaration_follows_the_injected_index_even_when_the_singleton_disagree
         else:
             raise AssertionError("expected RollupNotSummableError")
 
-        # Confirms both calls ran while the singleton held the poisoned index.
-        assert shared.get_index().absent_observation(_CRS_PROVENANCE) == "zero"
+        # Confirms both calls ran while the served index held the opposite declaration.
+        assert get_index().absent_observation(_CRS_PROVENANCE) == "zero"

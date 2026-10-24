@@ -150,6 +150,7 @@ def _poll(store: LiveOperationStore, operation_id: str, task_client, clock: _Clo
         snapshot_reader=None,
         now=clock,
         settings=_SETTINGS,
+        enrichment_digest="digest",
     )
 
 

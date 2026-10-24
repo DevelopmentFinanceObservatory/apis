@@ -7,12 +7,16 @@ import asyncio
 import dataclasses
 import json
 import logging
+import threading
+import time
 
 import pytest
 
 from code_index.shared import get_index, get_measure_index
 from graph_generation import FakeGeneration
 from origin_catalogue import bound_catalogue
+from search.engine import core
+from search.engine.binders import GeminiBinder
 from search.engine.core import resolve_events
 from search.engine.errors import GraphInfraError
 from search.engine.events import ObservationsEvent, ResponseEvent
@@ -564,3 +568,60 @@ def test_a_zero_byte_bound_turns_the_memo_off():
         memo, build_commit="b", today="2026-10-06", coverage=empty_coverage_snapshot()
     )
     assert not scope.active
+
+
+def test_stats_from_another_thread_waits_for_a_request_in_progress():
+    # The timer runs inside `get`, after the request has entered the memo. From there it starts
+    # `stats` on a second thread, the way the generation provider's refresh thread calls it, and
+    # gives it 0.2 s to finish. `stats` expires entries through `len` and `currsize`, so it must
+    # wait for the request instead of mutating the store under it.
+    outcome: dict[str, bool] = {}
+    caller = threading.get_ident()
+
+    def timer() -> float:
+        if threading.get_ident() == caller and "stats_ran_inside" not in outcome:
+            reader = threading.Thread(target=memo.stats)
+            reader.start()
+            reader.join(timeout=0.2)
+            outcome["stats_ran_inside"] = not reader.is_alive()
+        return time.monotonic()
+
+    memo = PartMemo(timer=timer)
+    memo.get("stamp", "key")
+
+    assert outcome == {"stats_ran_inside": False}
+
+
+class _NoCallBinder(GeminiBinder):
+    """A binder that fails the test when called."""
+
+    async def read_quantity(self, request, *, llm):
+        raise AssertionError("an identity entry read a quantity through the binder")
+
+    async def bind(self, request, *, llm):
+        raise AssertionError("an identity entry bound through the binder")
+
+
+def test_an_identity_entry_makes_no_binder_call(monkeypatch):
+    """The part memo holds identity-entry regions, which bind nothing, so the binder is not
+    in its key (`part_memo_key`). An identity entry resolved under a binder that fails on
+    any call still answers, and memoises."""
+    monkeypatch.setattr(core, "configured_binder", lambda query: _NoCallBinder())
+    graph = _gender_fold_graph()
+    memo = PartMemo()
+    request = ResolveRequest(
+        input=DatasetResubmitInput(
+            entries=[_gender_entry("Female", "Count_Person_Female", window=None)]
+        )
+    )
+
+    response = offline_resolve(
+        request,
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        materialise_graph=member_walk_reader(graph),
+        part_memo=memo,
+    )
+
+    assert response.status == "definite"
+    assert memo.stats()["entries"] == 1

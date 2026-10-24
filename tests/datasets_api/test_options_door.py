@@ -1,7 +1,7 @@
 """`GET /api/datasets/{id}/options` returns output options, version, and coverage without
 rendering the requested artifact. A rebuild records the version and advances the head; a posted
-definition for an unregistered spec writes nothing. Registry and materialisation are real;
-graph, SDMX, and artifact storage are faked.
+definition for an unregistered spec is registered and served the same way. Registry and
+materialisation are real; graph, SDMX, and artifact storage are faked.
 """
 
 from __future__ import annotations
@@ -11,12 +11,12 @@ import json
 import httpx
 import pytest
 
-from artifact_store import LiveArtifactInventory, StoredArtifact, Tier
+from artifact_store import LiveArtifactInventory
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.doors import definition as definition_module
 from datasets_api.schema import OptionsEnvelope as PublishedOptionsEnvelope
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
-from datasets_api.versions import ArtifactRecord, VersionRecord
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
@@ -100,14 +100,19 @@ _ENVELOPE_TOP_LEVEL_FIELDS = {
 }
 
 
-def _graph() -> FakeMintGraphReader:
+def _graph(*, holds_stat_var: bool = True) -> FakeMintGraphReader:
+    """The graph `_body()` mints from, or with `holds_stat_var` false one with no node for
+    `_STAT_VAR`, which no member resolves on."""
+    stat_var_arcs = {
+        _STAT_VAR: {
+            "typeOf": ("StatisticalVariable",),
+            "observationProperties": ("recipient",),
+            "measuredProperty": ("amount",),
+        }
+    }
     return FakeMintGraphReader(
         arcs={
-            _STAT_VAR: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-            },
+            **(stat_var_arcs if holds_stat_var else {}),
             "country/KEN": {
                 "countryAlpha3Code": ("KEN",),
                 "countryAlpha2Code": ("KE",),
@@ -139,38 +144,6 @@ def _body() -> dict:
         "input": {"kind": "statvar_set", "statvars": [_STAT_VAR_REF], "scope": _SCOPE},
         "options": {"bundle": False},
     }
-
-
-class _CountingArtifactStore(FakeArtifactStore):
-    """Counts stored artifacts."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.put_calls = 0
-
-    def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
-        self.put_calls += 1
-        return super().put(data, tier=tier)
-
-
-class _RecordingVersionRecordWriter:
-    """Records version-write calls without persisting them."""
-
-    def __init__(self) -> None:
-        self.records: list[VersionRecord] = []
-
-    def record_version(self, record: VersionRecord, *, trace_id: str | None = None) -> None:
-        self.records.append(record)
-
-    def record_artifact(
-        self,
-        *,
-        subject_id: str,
-        content_version: str,
-        artifact: ArtifactRecord,
-        trace_id: str | None = None,
-    ) -> None:
-        return None
 
 
 def _coverage_service() -> FakeCoverageService:
@@ -298,19 +271,50 @@ def _minted_manifest() -> dict:
     return resp.json()
 
 
-def test_posted_definition_answers_for_an_unregistered_spec_as_its_mint_and_writes_nothing():
+def _versioned_client(*, store: FakeDatasetStore, fetches: list[httpx.Request]):
+    """A client whose version records, heads and artifact inventory persist, so a head it
+    advances serves the next call, and whose SDMX requests land in `fetches`."""
+    version_store = FakeVersionRecordDatasetStore()
+    head_store = LiveHeadStore(store=version_store)
+    respond = _sdmx_transport().handler
+
+    def _counted(request: httpx.Request) -> httpx.Response:
+        fetches.append(request)
+        return respond(request)
+
+    client = _client(
+        store=store,
+        artifact_store=_InventoryRecordingArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        version_writer=LiveVersionRecordWriter(store=version_store),
+        snapshot_reader=LiveSnapshotReader(store=version_store),
+        head_writer=head_store,
+        sdmx_transport=httpx.MockTransport(_counted),
+    )
+    return client, head_store
+
+
+def test_posted_definition_registers_an_unregistered_spec_and_the_next_mint_is_a_head_hit(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """A search result's definition, posted before any mint in this deployment, gets the
-    enrichments its mint reports and the envelope GET serves once a mint has registered it.
-    The registry, version records and artifact store are untouched, and GET still 404s."""
+    envelope its mint reports. The call registers the definition, materialises the members its
+    admission resolved without resolving them again, and advances its head, so a repeat POST
+    and the mint that follows are head hits that fetch nothing."""
+    rehydrated: list[str] = []
+    real_rehydrate = definition_module.rehydrate_definition
+
+    def _counted_rehydrate(stored, **kwargs):
+        rehydrated.append(stored.spec_id)
+        return real_rehydrate(stored, **kwargs)
+
+    monkeypatch.setattr(definition_module, "rehydrate_definition", _counted_rehydrate)
     manifest = _minted_manifest()
     spec_id = manifest["definition"]["spec_id"]
     store = FakeDatasetStore()
-    writer = _RecordingVersionRecordWriter()
-    artifact_store = _CountingArtifactStore()
-    head_store = LiveHeadStore(store=FakeVersionRecordDatasetStore())
-    client = _client(
-        store=store, artifact_store=artifact_store, version_writer=writer, head_writer=head_store
-    )
+    fetches: list[httpx.Request] = []
+    client, head_store = _versioned_client(store=store, fetches=fetches)
 
     resp = client.post(
         f"/api/datasets/{spec_id}/options", json={"definition": manifest["definition"]}
@@ -319,28 +323,75 @@ def test_posted_definition_answers_for_an_unregistered_spec_as_its_mint_and_writ
     assert resp.status_code == 200, resp.text
     envelope = resp.json()
     PublishedOptionsEnvelope.model_validate(envelope)
+    assert envelope["trace"]["served_from"] == "materialise"
     assert envelope["output_options"]["enrichments"]
     assert envelope["output_options"]["enrichments"] == manifest["output_options"]["enrichments"]
     assert envelope["definition"] == manifest["definition"]
     assert envelope["content_version"] == manifest["content_version"]
     assert envelope["coverage"] == manifest["coverage"]
-    assert store.state.spec_registry == {}
-    assert store.state.spec_definition == {}
-    assert writer.records == []
-    assert head_store.read_head(spec_id) is None
-    assert artifact_store.put_calls == 0
-    assert client.get(f"/api/datasets/{spec_id}/options").json()["code"] == "spec_not_found"
+    assert spec_id in store.state.spec_registry
+    assert rehydrated == []
+    head = head_store.read_head(spec_id)
+    assert head is not None
+    assert head.content_version == envelope["content_version"]
+    registered = dict(store.state.spec_registry)
 
-    registered = _client()
-    assert registered.post("/api/datasets", json=_body()).status_code == 200
-    stored = registered.get(f"/api/datasets/{spec_id}/options").json()
-    posted = registered.post(
+    fetches.clear()
+    repeated = client.post(
         f"/api/datasets/{spec_id}/options", json={"definition": manifest["definition"]}
-    ).json()
-    for served in (stored, posted):
-        assert {key: value for key, value in served.items() if key != "trace"} == {
-            key: value for key, value in envelope.items() if key != "trace"
-        }
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["trace"]["served_from"] == "head"
+    assert repeated.json()["content_version"] == envelope["content_version"]
+    assert store.state.spec_registry == registered
+    minted = client.post("/api/datasets", json=_body())
+    assert minted.status_code == 200, minted.text
+    assert minted.json()["trace"]["served_from"] == "head"
+    assert minted.json()["content_version"] == envelope["content_version"]
+    assert fetches == []
+    stored = client.get(f"/api/datasets/{spec_id}/options").json()
+    assert {key: value for key, value in stored.items() if key != "trace"} == {
+        key: value for key, value in envelope.items() if key != "trace"
+    }
+
+
+def _definition_with_method(definition: dict, method: str) -> dict:
+    """`definition` with its measurement method bound to `method`, under the id that hashes to."""
+    identity = json.loads(json.dumps(definition["identity"]))
+    identity["facets"]["measurementMethod"]["ref"] = method
+    return {**definition, "identity": identity, "spec_id": recompute_identity(identity).spec_id}
+
+
+def test_a_posted_definition_refused_at_admission_leaves_no_registry_row():
+    """A posted definition whose StatVar the graph does not hold refuses before the call
+    registers anything."""
+    definition = _minted_manifest()["definition"]
+    store = FakeDatasetStore()
+    client = _client(store=store, graph=_graph(holds_stat_var=False))
+
+    resp = client.post(
+        f"/api/datasets/{definition['spec_id']}/options", json={"definition": definition}
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "member_not_resolvable"
+    assert store.state.spec_registry == {}
+
+
+def test_a_posted_definition_refused_after_registration_keeps_its_registry_row_as_a_mint_does():
+    """A facet the coverage holds no observations for refuses in materialisation, after the
+    call has registered the definition, so the row stays, as a mint's refusal leaves it."""
+    definition = _definition_with_method(_minted_manifest()["definition"], "Commitment")
+    store = FakeDatasetStore()
+    client = _client(store=store)
+
+    resp = client.post(
+        f"/api/datasets/{definition['spec_id']}/options", json={"definition": definition}
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "facet_not_available"
+    assert set(store.state.spec_registry) == {definition["spec_id"]}
 
 
 def _foreign_identity(definition: dict) -> dict:
@@ -408,6 +459,9 @@ def test_a_posted_definition_for_another_spec_refuses_even_when_the_path_id_has_
     version_store = FakeVersionRecordDatasetStore()
     head_store = LiveHeadStore(store=version_store)
     client = _client(
+        artifact_store=_InventoryRecordingArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
         version_writer=LiveVersionRecordWriter(store=version_store),
         head_writer=head_store,
         snapshot_reader=LiveSnapshotReader(store=version_store),

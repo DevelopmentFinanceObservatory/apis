@@ -163,24 +163,38 @@ FacetBinding = Annotated[
 
 
 class Scope(BaseModel):
-    """The `scope` block a mint request may carry: an omitted member means
-    unbound (everything). `window` narrows the result to `all`, `latest`,
-    or a `start_year`/`end_year` range. `entities` binds role names to
-    non-empty lists of dcids (a role's values must each be non-empty and
-    must not contain `+` or `,`). `facets` binds a known axis
-    (`provenance`, `measurementMethod`, `unit`) to a specific ref, or
-    `measurementMethod` or `unit` to a null ref. The `unit` axis alone may
-    instead carry a conversion request (`FacetUnitRequestBinding`) or ask for
-    each entity's own currency (`FacetNationalCurrencyBinding`).
+    """The `scope` block a mint request may carry. On a `spec_id` input each
+    supplied member replaces the stored spec's value for that member whole,
+    and an omitted member keeps the spec's value. On a `statvar_set` input,
+    which has no stored spec, an omitted member is unbound (everything).
+    `window` narrows the result to `all`, `latest`, or a
+    `start_year`/`end_year` range. `entities` binds role names to non-empty
+    lists of dcids (a role's values must each be non-empty and must not
+    contain `+` or `,`). `facets` binds a known axis (`provenance`,
+    `measurementMethod`, `unit`) to a specific ref, or `measurementMethod`
+    or `unit` to a null ref. The `unit` axis alone may instead carry a
+    conversion request (`FacetUnitRequestBinding`) or ask for each entity's
+    own currency (`FacetNationalCurrencyBinding`).
     """
 
     # Validate roles and values against the SDMX client's filter rules before resolution. Empty
     # dcids are rejected here because the client allows them through to HTTP and no dcid grammar
     # accepts them. Identity-core `entities` allows only dcid arrays, so containment bindings fail.
     model_config = ConfigDict(extra="forbid")
-    window: WindowScope | None = None
-    entities: dict[str, list[str]] | None = None
-    facets: dict[str, FacetBinding] | None = None
+    window: WindowScope | None = Field(
+        default=None, description="the years to serve. Replaces the spec's window whole"
+    )
+    entities: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "role name to dcids. Replaces the spec's whole entity binding. A role this map "
+            "omits is unbound, so a client narrowing one role repeats the spec's other roles, "
+            "and {} unbinds every bound role. An open role the map binds is no longer open"
+        ),
+    )
+    facets: dict[str, FacetBinding] | None = Field(
+        default=None, description="axis to binding. Replaces the spec's whole facet binding"
+    )
 
     @model_validator(mode="after")
     def _entities_are_valid(self) -> Scope:
@@ -435,9 +449,9 @@ MintInput = Annotated[SpecIdInput | StatVarSetInput, Field(discriminator="kind")
 
 class DefinitionOptionsRequest(BaseModel):
     """Body of `POST /api/datasets/{id}/options`. It carries the canonical `definition` a search
-    response gives for `id`, so the options route answers before any mint registers it.
+    response gives for `id`, so the options route answers for an id no mint has registered.
 
-    The route admits the definition as a mint admits a `spec_id` sidecar and writes nothing.
+    The route admits and registers the definition as a `spec_id` mint registers its sidecar.
     `definition.spec_id` must equal the path id, and the identity must hash to it.
     """
 

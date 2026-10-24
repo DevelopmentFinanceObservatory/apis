@@ -4,6 +4,7 @@ and broken-pool handling on `GET /api/datasets/{id}`.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
@@ -205,7 +206,8 @@ def test_over_admission_at_pool_size_one_refuses_definition_backpressure(
 
         first_response: list = []
         first_thread = threading.Thread(
-            target=lambda: first_response.append(client.get(f"/api/datasets/{spec_id}"))
+            target=contextvars.copy_context().run,
+            args=(lambda: first_response.append(client.get(f"/api/datasets/{spec_id}")),),
         )
         first_thread.start()
         assert graph.entered.wait(timeout=5.0), (
@@ -249,7 +251,8 @@ def test_timed_out_call_keeps_its_permit_held_until_it_actually_finishes(
 
         first_response: list = []
         first_thread = threading.Thread(
-            target=lambda: first_response.append(client.get(f"/api/datasets/{spec_id}"))
+            target=contextvars.copy_context().run,
+            args=(lambda: first_response.append(client.get(f"/api/datasets/{spec_id}")),),
         )
         first_thread.start()
         assert graph.entered.wait(timeout=5.0), (
@@ -296,7 +299,10 @@ def test_permit_frees_once_the_background_call_finishes(monkeypatch: pytest.Monk
         graph.entered.clear()
         graph.release.clear()
 
-        first_thread = threading.Thread(target=lambda: client.get(f"/api/datasets/{spec_id}"))
+        first_thread = threading.Thread(
+            target=contextvars.copy_context().run,
+            args=(lambda: client.get(f"/api/datasets/{spec_id}"),),
+        )
         first_thread.start()
         assert graph.entered.wait(timeout=5.0), (
             "first request never reached the blocking graph read"
@@ -390,7 +396,7 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     graph = _default_graph()
     spec_id = _mint_one_spec(_client(graph=graph, store=store, work_max_concurrency=1))
 
-    monkeypatch.setattr(door_executor, "ThreadPoolExecutor", BrokenSubmitExecutor)
+    monkeypatch.setattr(door_executor, "ContextCarryingExecutor", BrokenSubmitExecutor)
     client = _client(graph=graph, store=store, work_max_concurrency=1)
 
     with caplog.at_level(logging.ERROR):
@@ -401,3 +407,40 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     assert problem["code"] == "internal_error"
     assert problem["retryable"] is False
     assert "permanently broken" in caplog.text
+
+
+def test_concurrent_posts_of_one_unregistered_definition_register_it_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two options calls posting the same unregistered definition at once both answer with one
+    content version, and the registry holds the one row both registrations wrote."""
+    for var, value in _SETTINGS_ENV.items():
+        monkeypatch.setenv(var, value)
+    graph = _default_graph()
+    definition = _client(graph=graph).post("/api/datasets", json=_MINT_BODY).json()["definition"]
+    spec_id = definition["spec_id"]
+    store = FakeDatasetStore()
+    client = _client(graph=graph, store=store, work_max_concurrency=2)
+    barrier = threading.Barrier(2)
+    responses: list[httpx.Response] = []
+
+    def _post() -> None:
+        barrier.wait(timeout=5.0)
+        responses.append(
+            client.post(f"/api/datasets/{spec_id}/options", json={"definition": definition})
+        )
+
+    with client:
+        threads = [
+            threading.Thread(target=contextvars.copy_context().run, args=(_post,)) for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10.0)
+
+    assert [response.status_code for response in responses] == [200, 200], [
+        response.text for response in responses
+    ]
+    assert len({response.json()["content_version"] for response in responses}) == 1
+    assert set(store.state.spec_registry) == {spec_id}

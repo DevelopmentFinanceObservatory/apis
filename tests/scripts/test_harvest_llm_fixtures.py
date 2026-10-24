@@ -14,9 +14,10 @@ from pydantic import BaseModel
 
 import scripts.harvest_llm_fixtures as m
 import search.engine.extract as extract_module
-from search.engine.bind import _UniversalBindOutput
+from search.engine.bind import _UniversalBindOutput, bind_schema
 from search.engine.extract import Extraction
 from search.engine.quantity_read import QuantityOutput
+from search.engine.stated_words_read import StatedWordsOutput
 from tests._harvest_outcome_plugin import (
     OUTCOME_PATH_ENV,
     SCHEMA_VERSION,
@@ -213,6 +214,7 @@ def test_schema_and_stage_known_schemas():
     assert m._schema_and_stage("Extraction") == (Extraction, "extract")
     assert m._schema_and_stage("_UniversalBindOutput") == (_UniversalBindOutput, "bind")
     assert m._schema_and_stage("QuantityOutput") == (QuantityOutput, "quantity")
+    assert m._schema_and_stage("StatedWordsOutput") == (StatedWordsOutput, "stated_words")
 
 
 def test_schema_and_stage_unknown_name_fails_closed():
@@ -1229,9 +1231,15 @@ def test_drop_stale_fingerprints_drops_and_counts_keys_under_an_unknown_fingerpr
     assert "1 _UniversalBindOutput@111111111111" in out
 
 
-def test_drop_stale_fingerprints_keeps_current_keys_and_metadata(tmp_path):
+@pytest.mark.parametrize(
+    "current",
+    [
+        pytest.param(sorted(m._current_fingerprints())[0], id="recorded-schema"),
+        pytest.param(fixture_key(bind_schema(3), "", "").split(":")[0], id="sized-bind-schema"),
+    ],
+)
+def test_drop_stale_fingerprints_keeps_current_keys_and_metadata(tmp_path, current):
     bank_path = tmp_path / "llm_responses.json"
-    current = sorted(m._current_fingerprints())[0]
     keep = {"_comment": "metadata", **_fake_bank(2, schema=current)}
     bank = {**keep, **_fake_bank(3, schema="Extraction@000000000000")}
 

@@ -39,6 +39,30 @@ class MintRequest(BaseModel):
     options: MintOptions = Field(default_factory=MintOptions)
 
 
+class Retention(ResponseModel):
+    """How long a version can still be fetched: the retention of the frame every file of the
+    version renders from, a derived version's base frame. `held_until` is present when
+    `pinned` is false."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pinned: bool = Field(
+        description="whether the frame the version's files render from is in the pinned tier, "
+        "which has no expiry"
+    )
+    held_until: AwareDatetime | None = Field(
+        default=None,
+        exclude_if=is_none,
+        description="when the working-tier frame stops being guaranteed, 30 days after it was "
+        "stored. A download of the frame after `held_until`, while its bytes survive, renews it "
+        "for 30 days. After it, a file selector or download link request "
+        "that must render its file again renews the frame for 30 days if the frame's bytes "
+        "survive, and otherwise refuses `artifact_expired`. A rebuild of unchanged data through "
+        "`GET /api/datasets/{id}` or `POST /api/datasets` stores the frame again. Absent when "
+        "pinned. It can be in the past",
+    )
+
+
 class Manifest(ResponseModel):
     """The manifest every materialising door returns: the `definition`, the immutable version
     record (`content_version`, `coverage`, `citation`, `trace`, `warnings`), the response's
@@ -57,9 +81,14 @@ class Manifest(ResponseModel):
     `series_coverage_stamp` is lineage only (C156): the
     `series_coverage` artifact this request's sync-admission estimate ran
     against, absent when a served-from-head response ran no estimate this
-    call. `content_version` does not fold it in. `prepared_at` is the
+    call. `content_version` does not fold it in. An artifact entry carries
+    `enrichment_stamp`, the digest of the code index's party kinds and
+    whole-total markers its party-kind cells were read under, when it holds
+    such cells read under the serving call's index
+    (`manifest_models.ArtifactEntryModel`). `prepared_at` is the
     RFC 3339 instant the version was first minted. Every later mint and
-    re-render of the version reports the same instant.
+    re-render of the version reports the same instant. `retention` is
+    computed when the response is served and no stored body holds it.
     """
 
     model_config = ConfigDict(
@@ -79,6 +108,10 @@ class Manifest(ResponseModel):
     series_count: int | None = Field(default=None, exclude_if=is_none)
     output_options: dict[str, object] | None = Field(default=None, exclude_if=is_none)
     series_coverage_stamp: str | None = Field(default=None, exclude_if=is_none)
+    retention: Retention = Field(
+        description="how long this version can still be fetched: the retention of the frame "
+        "every file renders from (a derived version's base frame)"
+    )
 
 
 class OptionsEnvelope(ResponseModel):
@@ -258,17 +291,26 @@ class OperationProgress(ResponseModel):
 class OperationEnvelope(ResponseModel):
     model_config = ConfigDict(extra="forbid")
 
-    operation_id: str = Field(pattern=r"^op_")
+    operation_id: str = Field(
+        pattern=r"^op_",
+        description=(
+            "`op_` plus the SHA-256 of the subject and its sorted member dcids, the origin "
+            "catalogue build, and the rendering key. A repeat submission with the same "
+            "identity joins the running operation and returns this id. Synchronous builds "
+            "coalesce per API instance only."
+        ),
+    )
     status: Literal["pending", "running", "done", "failed"]
     poll: str | None = Field(default=None, exclude_if=is_none)
     retry_after_ms: int | None = Field(
         default=None,
         exclude_if=is_none,
         description=(
-            "present only on the initial 202 submit response; absent on a "
-            "pending/running poll -- a caller polling with no backoff strategy of "
-            "its own gets no ongoing pacing guidance from this field past the "
-            "first response"
+            "Milliseconds to wait before the next poll. Present on the 202 submit response "
+            "and on every pending or running poll. Absent on a done poll. It "
+            "grows as the build runs, at a quarter of the time since the operation's current "
+            "submission, from 1,500 to 8,000. The `Retry-After` response header carries the "
+            "same value in whole seconds, rounded up."
         ),
     )
     progress: OperationProgress | None = Field(default=None, exclude_if=is_none)

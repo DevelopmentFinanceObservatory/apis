@@ -330,11 +330,13 @@ def test_an_answer_whose_walk_settles_nothing_warns_and_is_not_cached(walk):
     base = offline_resolve(
         make_request("total population India"), materialise_graph=member_walk_reader()
     )
-    assert is_storable(base, timed_out=False, degraded_leg=False)
+    assert is_storable(base, timed_out=False, degraded_leg=False, refused_at_build=frozenset())
     tainted = base.model_copy(
         update={"parts": [base.parts[0].model_copy(update={"warnings": [warning]})]}
     )
-    assert not is_storable(tainted, timed_out=False, degraded_leg=False)
+    assert not is_storable(
+        tainted, timed_out=False, degraded_leg=False, refused_at_build=frozenset()
+    )
 
 
 def test_an_answer_with_no_member_graph_warns():

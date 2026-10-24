@@ -24,8 +24,8 @@ def _crs(query: str, index: CodeIndex = _REAL_INDEX) -> VocabularyReading:
 
 
 def _with_dac2a_oda_grant() -> CodeIndex:
-    """The packaged index with DAC2a aid type 201, "ODA grant", whose label covers "ODA
-    grants" in every code system together. The row is added when the packaged index does
+    """The fixture index with DAC2a aid type 201, "ODA grant", whose label covers "ODA
+    grants" in every code system together. The row is added when the fixture index does
     not already hold it."""
     oda_grant = CodeRow(
         dcid="DAC2aAidType201",
@@ -67,13 +67,13 @@ def test_the_crs_vocabulary_reads_budget_support_as_a_tie_it_does_not_match():
 @pytest.mark.parametrize(
     ("index", "claimed_everywhere"),
     [(_REAL_INDEX, ()), (_with_dac2a_oda_grant(), ("ODA grants",))],
-    ids=["packaged", "with-dac2a-oda-grant"],
+    ids=["fixture", "with-dac2a-oda-grant"],
 )
 def test_the_crs_vocabulary_reads_grants_as_the_type_of_finance_tie(index, claimed_everywhere):
     """The CRS reading of "grants" is the CRSTypeOfFinance100/110 tie, also beside a DAC2a
     "ODA grant" label that claims "ODA grants" in every system together. The every-system
-    reading of the packaged index is left unasserted, since it claims "ODA grants" once
-    the packaged index declares DAC2a."""
+    reading of the fixture index is left unasserted, since it claims "ODA grants" once
+    the fixture index declares DAC2a."""
     query = "ODA grants for budget support"
     everywhere = _by_text(read_text(query, index).everywhere.spans)
     for text in claimed_everywhere:

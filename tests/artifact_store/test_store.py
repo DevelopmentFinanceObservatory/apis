@@ -595,16 +595,29 @@ def test_signed_location_url_cache_timestamp_predates_signing_latency(monkeypatc
     assert len(calls) == 3
 
 
-def test_copy_raises_artifact_not_found_when_the_source_tier_has_no_such_digest():
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("never-written", id="no-location"),
+        # The lifecycle rule deleted the object its location still names.
+        pytest.param("object-deleted", id="no-object"),
+    ],
+)
+def test_copy_raises_artifact_not_found_when_the_source_tier_has_no_such_digest(source: str):
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     store = _store(client, inventory)
+    digest = "sha256:never-written"
+    if source == "object-deleted":
+        digest = store.put(b"aged and deleted", tier=Tier.working).digest
+        del client.buckets[_BUCKETS[Tier.working]].objects[digest]
 
     with pytest.raises(ArtifactNotFoundError) as excinfo:
-        store.copy("sha256:never-written", from_tier=Tier.working, to_tier=Tier.pinned)
+        store.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
 
-    assert excinfo.value.digest == "sha256:never-written"
+    assert excinfo.value.digest == digest
     assert excinfo.value.tier == Tier.working
+    assert not [c for c in inventory.calls if c["tier"] == Tier.pinned]
 
 
 def test_copy_is_idempotent_when_the_destination_already_has_the_object():
@@ -624,13 +637,24 @@ def test_copy_is_idempotent_when_the_destination_already_has_the_object():
     assert client.buckets[_BUCKETS[Tier.pinned]].upload_log == [written.digest]
 
 
-def test_copy_raises_artifact_write_error_on_a_non_precondition_failure():
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param("service-unavailable", id="service-unavailable"),
+        # GCS answers 404 for a missing destination bucket while the source exists.
+        pytest.param("destination-bucket-missing", id="destination-bucket-missing"),
+    ],
+)
+def test_copy_raises_artifact_write_error_on_a_non_precondition_failure(failure: str):
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     store = _store(client, inventory)
     data = b"a copy that will fail"
     written = store.put(data, tier=Tier.working)
-    client.buckets[_BUCKETS[Tier.working]].raise_on_next_copy = ServiceUnavailable("gcs hiccup")
+    if failure == "service-unavailable":
+        client.buckets[_BUCKETS[Tier.working]].raise_on_next_copy = ServiceUnavailable("gcs hiccup")
+    else:
+        client.bucket(_BUCKETS[Tier.pinned]).missing = True
 
     with pytest.raises(ArtifactWriteError) as excinfo:
         store.copy(written.digest, from_tier=Tier.working, to_tier=Tier.pinned)

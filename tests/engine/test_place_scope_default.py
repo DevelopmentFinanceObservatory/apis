@@ -19,7 +19,7 @@ import search.engine.region.candidate_collapse as candidate_collapse
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
 from materialise import place_scope
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.departures import spec_departure_facts
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
@@ -38,6 +38,7 @@ from search.render.plan import render_sentence_plan
 from search.render.tokens import sentence_from_plan
 from statvar_members import MemberEnumerator
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, member_walk_reader
@@ -58,7 +59,7 @@ _NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Population"}]},
+            "name": {"nodes": [{"value": "Test place scope population"}]},
             "populationType": {"nodes": [{"dcid": "Person"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -75,12 +76,7 @@ class _FixedBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=None,
-            ask=None,
-        ), None
+        return elected_reply(0, also_plausible=None), None
 
 
 class _CountingFakeGraph(FakeGraph):
@@ -349,12 +345,7 @@ class _CandidatesBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
-            bindings=[],
-            also_plausible=[1],
-            ask=None,
-        ), None
+        return elected_reply(0, also_plausible=[1]), None
 
 
 _SV_A = "TEST/PlaceScopeDefault_Population"
@@ -369,7 +360,7 @@ _CANDIDATES_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Household Population"}]},
+            "name": {"nodes": [{"value": "Test place scope household population"}]},
             "populationType": {"nodes": [{"dcid": "Household"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -488,7 +479,7 @@ _BOUND_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Bare Incidence"}]},
+            "name": {"nodes": [{"value": "Test place scope bare incidence"}]},
             "populationType": {"nodes": [{"dcid": "TestIncidenceEvent"}]},
             "measuredProperty": {"nodes": [{"dcid": "testIncidence"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -536,7 +527,7 @@ def _bound_family_catalogue() -> FakeCatalogue:
         arcs=build_arc_tables(
             dfo={},
             base={
-                _BOUND_SV: arcs("Test Bare Incidence"),
+                _BOUND_SV: arcs("Test place scope bare incidence"),
                 _BOUND_FEMALE_SV: arcs(
                     "Test Female Incidence", asserts=("testSex", "Female", "TestSexEnum")
                 ),
@@ -558,8 +549,8 @@ class _BindFemaleLLM:
         assert schema.__name__ == "_UniversalBindOutput"
         from search.engine.bind import SlotBindingDraft
 
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what",
@@ -569,7 +560,6 @@ class _BindFemaleLLM:
                 ),
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 
@@ -583,8 +573,8 @@ class _BindFemaleOldLLM:
         assert schema.__name__ == "_UniversalBindOutput"
         from search.engine.bind import SlotBindingDraft
 
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what", property_dcid="testSex", kind="value", value_dcids=["Female"]
@@ -594,7 +584,6 @@ class _BindFemaleOldLLM:
                 ),
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 
@@ -649,11 +638,11 @@ def test_no_member_asserts_bound_property_reports_no_matching_slice_zero_probes(
     assert any(w.code == PLACE_SCOPE_DEFAULTED for w in result.warnings)
 
 
-def test_a_value_bound_on_an_aggregate_without_its_slot_refuses_naming_it():
+def test_a_value_bound_on_an_aggregate_without_its_slot_is_disclosed():
     """Recall builds only the bare aggregate, which has no `testSex` slot, and the bind
-    model binds `testSex=Female` on it. The stray value is dropped, so the aggregate
-    answers no narrower question, and the part refuses `qualifier_not_bound` with the
-    aggregate flagged, naming Female."""
+    model binds `testSex=Female` on it, which no word of the question names. The stray
+    value is dropped and the aggregate answers, departing `measure_not_applied` under
+    Female."""
     obs = {
         f"{_BOUND_SV}|country/A1": [
             {
@@ -686,11 +675,10 @@ def test_a_value_bound_on_an_aggregate_without_its_slot_refuses_naming_it():
         )
     )
 
-    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
-    assert result.flagged_match is not None
-    (flagged,) = result.flagged_match
-    assert [m.ref.ref for m in flagged.resolved.members] == [_BOUND_SV]
-    assert [[ref.ref for ref in term.named] for term in result.unbound_qualifiers] == [["Female"]]
+    assert result.status == "definite"
+    (spec,) = result.specs
+    assert [m.ref.ref for m in spec.resolved.members] == [_BOUND_SV]
+    assert [fact.asked for fact in result.departure_facts.values()] == ["Female"]
 
 
 # ---------------------------------------------------------------------------
@@ -869,8 +857,8 @@ class _BindFemaleAdultLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="what", property_dcid="gender", kind="value", value_dcids=["Female"]
@@ -880,7 +868,6 @@ class _BindFemaleAdultLLM:
                 ),
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 
@@ -892,9 +879,15 @@ def test_a_placeless_relaxation_is_suggested_over_the_default_scope_of_its_own_m
     a resubmit of it is, so both are suggested: the first as a worldwide total."""
     graph = FakeGraph(
         nodes={
-            _RELAX_BOTH: _relax_sv("Female adults", "Female", "Years15Onwards"),
-            _RELAX_SEX: _relax_sv("Male adults", "Male", "Years15Onwards"),
-            _RELAX_AGE: _relax_sv("Female seniors", "Female", "Years65Onwards"),
+            _RELAX_BOTH: _relax_sv(
+                "Test place scope population: female adults", "Female", "Years15Onwards"
+            ),
+            _RELAX_SEX: _relax_sv(
+                "Test place scope population: male adults", "Male", "Years15Onwards"
+            ),
+            _RELAX_AGE: _relax_sv(
+                "Test place scope population: female seniors", "Female", "Years65Onwards"
+            ),
             "Female": {"label": "Female"},
             "Male": {"label": "Male"},
             "Years15Onwards": {"label": "15 years or over"},
@@ -966,7 +959,7 @@ _TOTAL_AND_PART_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             **_NODES[_SV]["arcs"],
-            "name": {"nodes": [{"value": "Test Population, female"}]},
+            "name": {"nodes": [{"value": "Test place scope population, female"}]},
             "constraintProperties": {"nodes": [{"dcid": "gender"}]},
             "gender": {"nodes": [{"dcid": "Female"}]},
         },
@@ -1077,9 +1070,11 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
     """The shape serves two members neither of which dominates the other: `_U_FEMALE` holds
     data in A1 and `_U_OVER65` in A2. The shape answers as the elected one, as an alternate
     beside the elected Household shape, or as the lone alternate of an elected shape with no
-    data. One batch reads both members at the union of their scopes, and the answer shows
-    `_U_FEMALE`, counts its own country alone, and a definite answer previews its series
-    there."""
+    data. One batch reads both members at the union of their scopes. Elected, the shape
+    leaves both open and serves both, each counted at its own country; an alternate binds
+    `_U_FEMALE`'s constraint, so it shows that member, counts its own country alone, and the
+    lone alternate previews its series there. The elected answer's two places preview
+    through a scope-wide SDMX read, which this test's SDMX double holds no rows for."""
 
     def facet(year: str) -> list[dict]:
         return [
@@ -1108,8 +1103,10 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
     graph = _ProbeLogGraph(
         nodes={
             _SV_B: _CANDIDATES_NODES[_SV_B],
-            _U_FEMALE: _member_node("Test Population, female", "gender", "Female"),
-            _U_OVER65: _member_node("Test Population, 65 and over", "age", "Years65Onwards"),
+            _U_FEMALE: _member_node("Test place scope population, female", "gender", "Female"),
+            _U_OVER65: _member_node(
+                "Test place scope population, 65 and over", "age", "Years65Onwards"
+            ),
         },
         detect={_DETECT_QUERY: {"svs": svs, "cosine_scores": scores}},
         resolve={},
@@ -1127,17 +1124,23 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
         include_observations=True,
     )
 
-    definite = answer != "alternate"
-    assert result.status == ("definite" if definite else "candidates"), result.no_data_reason
+    assert result.status == ("candidates" if answer == "alternate" else "definite"), (
+        result.no_data_reason
+    )
     spec = next(spec for spec in result.specs if spec.resolved.members[0].ref.ref == _U_FEMALE)
-    assert [sv.ref.ref for sv in spec.resolved.members] == [_U_FEMALE]
+    members, places = (
+        ([_U_FEMALE, _U_OVER65], ["country/A1", "country/A2"])
+        if answer == "elected"
+        else ([_U_FEMALE], ["country/A1"])
+    )
+    assert [sv.ref.ref for sv in spec.resolved.members] == members
     coverage = spec.resolved.coverage
     assert isinstance(coverage, CoverageExact)
-    assert coverage.observation_count == 1
+    assert coverage.observation_count == len(members)
     assert spec.resolved.scope is not None
-    assert [entity.ref for entity in spec.resolved.scope.members] == ["country/A1"]
+    assert [entity.ref for entity in spec.resolved.scope.members] == places
     assert ([_U_FEMALE, _U_OVER65], ["country/A1", "country/A2"]) in graph.probes
-    if definite:
+    if answer == "lone_alternate":
         observations = spec.resolved.observations
         assert observations is not None and observations.series
         assert {entity.ref for series in observations.series for entity in series.entities} == {

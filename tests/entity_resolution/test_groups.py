@@ -6,6 +6,7 @@ from datetime import date
 
 import pytest
 
+from code_index.declarations import TOTAL_GROUPS
 from entity_resolution.groups import GroupRegistry, build_group_registry
 from entity_resolution.membership import (
     COUNTRY_PROJECTIONS,
@@ -16,7 +17,6 @@ from entity_resolution.membership import (
 )
 from entity_resolution.regions import identity_to_dcid, replacing_group_id
 from entity_resolution.shared import SharedResolver, shared_memberships
-from scripts.export_code_index import TOTAL_GROUPS
 
 _DATES = (date(1960, 1, 1), date(1995, 6, 1), date(2015, 6, 1), date(2021, 6, 1))
 

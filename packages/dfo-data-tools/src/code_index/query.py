@@ -1,11 +1,12 @@
 """`CodeIndex`: the in-memory, queryable catalogue built from parsed rows and
-declarations. No graph access and no file I/O here -- `loader.load_index`
-is the file-reading entry point that constructs one of these from a
-committed JSON export.
+declarations. No graph access and no file I/O here -- `loader.parse_index`
+constructs one of these from a code index document.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -15,26 +16,35 @@ from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
+    POPULATION_CLASS,
     AbsentObservation,
     Bound,
     BoundSet,
+    BroadReading,
     CodeRow,
     CodeSystemDeclaration,
     ConstraintQuery,
     DatasetDeclaration,
+    HouseDefaultCase,
+    ImpliedValue,
     IndexStamp,
     LevelOption,
     MeasureClassDeclaration,
     PartlyStatedValue,
+    PartyClass,
     PartyKind,
     PartyRow,
     ShapeSlotDefault,
     SourceCodeRow,
     StatTypeWordDeclaration,
     StatVarRow,
+    WholeTotalSet,
     party_kind,
 )
+from dfo_platform.roles import RoleAxis
 from statvar_members import FiveTuple
+
+_NO_IMPLIED: Mapping[str, str] = MappingProxyType({})
 
 
 class DuplicateDcid(ValueError):
@@ -241,6 +251,24 @@ def _dataset_pins(
     return pins
 
 
+def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
+    """The hex SHA-256 of `parties`' `(dcid, kind, party_class, whole markers)` rows, sorted by
+    dcid, each marker as `(dataset, covers, years)`. Neither row order nor a label, group or
+    dataset-list change moves it. The markers are in it, windows included, because a whole
+    total's frame cell depends on the row's dataset and on whether its year falls inside the
+    window."""
+    rows = sorted(
+        (
+            party.dcid,
+            party.kind,
+            party.party_class,
+            [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
+        )
+        for party in parties
+    )
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
+
+
 def _check_consistent_parents(codes_by_dcid: dict[str, CodeRow]) -> None:
     """Raises `CrossSystemParent` for a parent in another code system.
 
@@ -324,7 +352,7 @@ class CandidateCodes:
     codes: tuple[str, ...]
 
 
-def _fold(word: str) -> str:
+def fold_word(word: str) -> str:
     """`word` casefolded, less one trailing "s" when it is longer than two letters.
     Candidate retrieval applies this one plural allowance to query words and code text
     alike."""
@@ -363,26 +391,34 @@ class CodeIndex:
         "_codes_by_text",
         "_codes_by_tokens",
         "_codes_by_word",
+        "_implied_by_measure",
         "_members_by_source_code",
         "_partly_stated_by_five_tuple",
         "_source_codes_by_dcid",
         "_statvars_by_dcid",
+        "_whole_sets_by_phrase",
         "_words_by_code",
+        "broad_readings",
         "codes",
         "codes_by_system",
         "dataset_pins",
         "datasets",
         "datasets_by_five_tuple",
         "declarations",
+        "enrichment_digest",
         "families_by_five_tuple",
         "family_by_dcid",
+        "implied_values",
         "listed_by_five_tuple",
         "listed_statvars",
         "measure_classes",
         "parties",
         "partly_stated_values",
         "party_types",
+        "population_totals_by_axis",
         "shape_slot_defaults",
+        "side_classes",
+        "slot_plain_names",
         "source_code_provenances",
         "source_codes",
         "stamp",
@@ -392,6 +428,7 @@ class CodeIndex:
         "value_parents",
         "variable_aliases",
         "variables_by_provenance",
+        "whole_total_sets",
     )
 
     def __init__(
@@ -406,25 +443,46 @@ class CodeIndex:
         parties: Iterable[PartyRow] = (),
         listed_statvars: Iterable[StatVarRow] = (),
         shape_slot_defaults: Iterable[ShapeSlotDefault] = (),
+        broad_readings: Iterable[BroadReading] = (),
         partly_stated_values: Iterable[PartlyStatedValue] = (),
+        implied_values: Iterable[ImpliedValue] = (),
         measure_classes: Iterable[MeasureClassDeclaration] = (),
         variable_aliases: Mapping[str, str] | None = None,
+        slot_plain_names: Mapping[str, str] | None = None,
         stat_type_words: Iterable[StatTypeWordDeclaration] = (),
         source_codes: Iterable[SourceCodeRow] = (),
         value_parents: Mapping[str, str] | None = None,
+        whole_total_sets: Iterable[WholeTotalSet] = (),
     ) -> None:
         self.stamp = stamp
         self.shape_slot_defaults = tuple(shape_slot_defaults)
         """The open-slot defaults declared per `populationType` for properties outside the
         code systems, in declaration order."""
+        self.broad_readings = tuple(broad_readings)
+        """The constraint values a question's words read as a broader value unless it names
+        a value on another property (`BroadReading`), in declaration order."""
         self.partly_stated_values = tuple(partly_stated_values)
         """The constraint values a dataset states on only some of its series
         (`PartlyStatedValue`), in declaration order."""
+        self.implied_values = tuple(implied_values)
+        """The constraint values each measure's headline series already means
+        (`ImpliedValue`), in declaration order."""
+        implied_by_measure: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
+        for implied in self.implied_values:
+            implied_by_measure[(implied.population_type, implied.measured_property)][
+                implied.property_dcid
+            ] = implied.value_dcid
+        self._implied_by_measure = {
+            measure: MappingProxyType(values) for measure, values in implied_by_measure.items()
+        }
         self.measure_classes = tuple(measure_classes)
         """The patterns naming each measure class, in declaration order."""
         self.variable_aliases: dict[str, str] = dict(variable_aliases or {})
         """Lowercase words recall reads as the full term each stands for, applied to the
         variable query alone."""
+        self.slot_plain_names: dict[str, str] = dict(slot_plain_names or {})
+        """The noun naming each constraint property no code system declares, as a question
+        names its slot (`code_index.declarations.SLOT_PLAIN_NAMES`)."""
         self.stat_type_words = tuple(stat_type_words)
         """The patterns naming a statType other than `measuredValue`, in declaration order;
         the frame reads the first that matches (`search.engine.frame`)."""
@@ -470,6 +528,38 @@ class CodeIndex:
                 if party.totals in self.totals_by_group:
                     raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
                 self.totals_by_group[party.totals] = party
+        side_classes: dict[tuple[RoleAxis, str], set[PartyClass]] = defaultdict(set)
+        population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
+        for party in self.parties.values():
+            if party.kind != "total" and party.party_class is not None:
+                for axis in party.axes:
+                    for dataset in party.datasets:
+                        side_classes[axis, dataset].add(party.party_class)
+            elif any(POPULATION_CLASS in marker.covers for marker in party.whole):
+                population_totals_by_axis[party.axes[0]].append(party.dcid)
+        self.side_classes: dict[tuple[RoleAxis, str], frozenset[PartyClass]] = {
+            side: frozenset(classes) for side, classes in side_classes.items()
+        }
+        """The classes of party, totals aside, each dataset publishes on each
+        flow axis, by `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a
+        party published on both axes counts on each in every dataset that publishes it."""
+        self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
+            axis: tuple(sorted(dcids)) for axis, dcids in population_totals_by_axis.items()
+        }
+        """The totals some dataset marks as covering the `official` class (`PartyRow.whole`),
+        by the one axis each stands on, sorted by dcid."""
+        self.enrichment_digest = _enrichment_digest(self.parties.values())
+        """SHA-256 over the sorted `(dcid, kind, party_class, whole markers)` rows of `parties`,
+        the part of the index the `{role}_party_kind`, `{role}_party_class` and
+        `{role}_party_whole` cells are read from. A file holding such cells is linked under a key salted with it
+        (`datasets_api.version_store.enriched_rendering_key`), so an export that changes no
+        kind, class or whole marker leaves every link in place."""
+        self.whole_total_sets = tuple(whole_total_sets)
+        """The unions of whole totals read as one population (`WholeTotalSet`), in declaration
+        order. The loader refuses two that share a phrase (`loader._check_whole_totals`)."""
+        self._whole_sets_by_phrase = {
+            fold_text(whole_set.phrase): whole_set for whole_set in self.whole_total_sets
+        }
 
         codes_by_dcid: dict[str, CodeRow] = {}
         codes_by_system_code: dict[tuple[str, str], CodeRow] = {}
@@ -574,8 +664,8 @@ class CodeIndex:
         for row in self.codes:
             for text in (row.label, *row.synonyms):
                 for word in word_tokens(text):
-                    codes_by_word[_fold(word.text)][row.dcid] = None
-                    words_by_code[row.dcid].add(_fold(word.text))
+                    codes_by_word[fold_word(word.text)][row.dcid] = None
+                    words_by_code[row.dcid].add(fold_word(word.text))
         self._codes_by_word = {word: tuple(dcids) for word, dcids in codes_by_word.items()}
         self._words_by_code = {dcid: frozenset(words) for dcid, words in words_by_code.items()}
 
@@ -594,6 +684,12 @@ class CodeIndex:
         }
 
     # --- Lookup ---
+
+    def implied_values_of(self, population_type: str, measured_property: str) -> Mapping[str, str]:
+        """Each property mapped to the value the headline series of the measure
+        (`population_type`, `measured_property`) already means (`implied_values`). Empty
+        for a measure that declares none."""
+        return self._implied_by_measure.get((population_type, measured_property), _NO_IMPLIED)
 
     def partly_stated_on(self, five_tuple: FiveTuple) -> Mapping[str, frozenset[tuple[str, str]]]:
         """Each dataset mapped to the (property, value) pairs it states partly on `five_tuple`:
@@ -647,6 +743,10 @@ class CodeIndex:
         party = self.parties.get(dcid)
         return party.kind if party is not None else party_kind(types, self.party_types)
 
+    def whole_set(self, phrase: str) -> WholeTotalSet | None:
+        """The whole total set a `phrase` names, compared under `fold_text`, or `None`."""
+        return self._whole_sets_by_phrase.get(fold_text(phrase))
+
     def statvar_by_dcid(self, dcid: str) -> StatVarRow | None:
         """The StatVar row for `dcid`, from `statvars` or `listed_statvars`, or `None` if
         this index holds no such row."""
@@ -696,9 +796,9 @@ class CodeIndex:
         shares no CRS purpose's text, while "contraceptive" shares 13030's synonym
         "contraceptive delivery".
         """
-        asked = {_fold(word) for word in words}
+        asked = {fold_word(word) for word in words}
         shared: dict[str, set[str]] = defaultdict(set)
-        for word in asked | {_fold(word) for word in context}:
+        for word in asked | {fold_word(word) for word in context}:
             for dcid in self._codes_by_word.get(word, ()):
                 if self._codes_by_dcid[dcid].code_system in code_systems:
                     shared[dcid].add(word)
@@ -731,7 +831,7 @@ class CodeIndex:
         as `candidate_codes` compares them: casefolded, less one trailing "s" on a word
         longer than two letters, and returned in that form. Empty for an unknown code."""
         held = self._words_by_code.get(dcid, frozenset())
-        return frozenset(folded for word in words if (folded := _fold(word)) in held)
+        return frozenset(folded for word in words if (folded := fold_word(word)) in held)
 
     # --- Source codes ---
 
@@ -783,6 +883,24 @@ class CodeIndex:
         declares `provenance`."""
         dataset = self.datasets.get(provenance)
         return dataset.absent_observation if dataset is not None else "unknown"
+
+    def house_case_systems(self) -> dict[str, HouseDefaultCase]:
+        """Each code system that declares a kind of question (`CodeSystemDeclaration.house_case`)
+        mapped to that kind. A system declaring none is absent."""
+        return {
+            system: declaration.house_case
+            for system, declaration in self.declarations.items()
+            if declaration.house_case is not None
+        }
+
+    def house_defaults(self) -> dict[HouseDefaultCase, str]:
+        """Each kind of question mapped to the provenance of its house default dataset
+        (`DatasetDeclaration.house_default_for`). A kind no dataset claims is absent."""
+        return {
+            case: dataset.provenance
+            for dataset in self.datasets.values()
+            for case in dataset.house_default_for
+        }
 
     # --- Descendants ---
 

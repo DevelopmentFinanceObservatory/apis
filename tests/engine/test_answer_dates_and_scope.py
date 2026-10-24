@@ -171,14 +171,14 @@ def _sdmx_requests(clients: list[FakeSdmxClient]) -> int:
 # stream whether the graph declares facet defaults at all. Dating, scoping and the read decision read the plan and
 # the coverage index alone, so they add none. The trailing label read of each names the values
 # its facet options offer (`_maybe_build_facet_options`), after a facets read on the standard
-# route; a role route reads its facets from the coverage index.
+# route; a role route reads its facets, and the named places' availability, from the coverage
+# index.
 _NAMED_FIRST = [
     "detect_svs",
     "resolve_by_arc",
     "node_names_many",
     "node_arcs_many",
     "node_arcs_batch",
-    "observation_facets_batch",
     "node_labels_batch",
     "node_arcs_many",
     *["default_facet_policy"] * 3,

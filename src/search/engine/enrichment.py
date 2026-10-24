@@ -12,7 +12,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from dataclasses import dataclass
 
 from search.engine.assemble import definite_departures
@@ -37,8 +37,10 @@ PLACE_OPTIONS_BUDGET_S: float = 1.0
 The budget is independent of the request deadline. Cold population-memo reads take
 2.6 to 5.3 s (3.5 s in a delayed-reader test). Warm reads take about 0.12 s against
 the 0.5 s `/options` target. At 1.0 s, an expired task is cancelled and its results
-dropped silently. Running executor work continues to fill the memo. Later stages
-are skipped. Clients can fetch options on demand if this event does not arrive.
+dropped silently. Running executor work continues to fill the memo and the options
+cache. Later stages are skipped. Clients can fetch options on demand if this event does
+not arrive. A response cache hit streams place options under the same budget
+(`stream_place_options`), since its bundle holds none.
 """
 
 
@@ -88,7 +90,7 @@ def _launch_trailing_tasks(
     ):
         region = dataclasses.replace(
             region,
-            place_options_task=region.place_options_relaunch(region.spec.spec_id),
+            place_options_task=region.place_options_relaunch(region.spec),
         )
     if (
         launch_observations
@@ -108,6 +110,7 @@ async def _stream_slot_options(
     deadline: float,
     warnings_out: list[Warning],
     late_departures_out: list[LateDepartures],
+    incomplete_out: list[str],
     response: Resolution | None,
     answered: Sequence[RegionResult],
     place_options_budget_s: float = PLACE_OPTIONS_BUDGET_S,
@@ -117,8 +120,14 @@ async def _stream_slot_options(
     Slot and observation tasks share the request's monotonic deadline. Place tasks
     use the earlier of that deadline and `place_options_budget_s`. Expired tasks
     stop blocking siblings. Slot and observation timeouts add warnings, while
-    place timeouts drop silently. The request's `done.timed_out` still reflects
+    place timeouts drop without one. The request's `done.timed_out` still reflects
     only the primary fan-out.
+
+    Every slot-options or observations task whose result did not reach the stream in full,
+    through a timeout or a graph failure, appends its kind to `incomplete_out`. The caller
+    reports it to the response cache, which then stores no bundle. A place-options task
+    appends nothing, since the bundle holds no place options. The list stays inside the
+    process.
 
     The `finally` cancels and awaits unfinished tasks, including on client disconnect.
     Executor work already running may continue, but its events are dropped. Probe
@@ -163,6 +172,8 @@ async def _stream_slot_options(
                 expired = {t for t in pending if task_deadline[t] <= now}
                 pending -= expired
                 for t in expired:
+                    if task_kind[t] != "place_options":
+                        incomplete_out.append(task_kind[t])
                     if not t.done():
                         t.cancel()
                 n_slot = sum(1 for t in expired if task_kind[t] == "slot_options")
@@ -220,9 +231,10 @@ async def _stream_slot_options(
                     events, warns = t.result()
                 except GraphInfraError:
                     # A graph failure drops this probe. Unexpected errors propagate
-                    # to the route as a terminal failure. Trailing events reach no cache,
-                    # because a transport that streams them stores nothing (`CacheScope`).
+                    # to the route as a terminal failure. The drop is reported through
+                    # `incomplete_out`, so the response cache stores no bundle without it.
                     logger.warning("trailing enrichment probe task failed", exc_info=True)
+                    incomplete_out.append(task_kind[t])
                     continue
                 warnings_out.extend(warns)
                 late_departures_out.extend(
@@ -237,6 +249,33 @@ async def _stream_slot_options(
             if not t.done():
                 t.cancel()
         await asyncio.gather(*all_tasks, return_exceptions=True)
+
+
+async def stream_place_options(
+    tasks: Sequence[asyncio.Task[list[PlaceOptionsEvent]]],
+    *,
+    deadline: float,
+    place_options_budget_s: float = PLACE_OPTIONS_BUDGET_S,
+) -> AsyncGenerator[PlaceOptionsEvent]:
+    """Stream the events of place-options `tasks` as each finishes, as `_stream_slot_options`
+    streams a fresh run's, until the earlier of `deadline` and `place_options_budget_s`
+    from now. Tasks still running then are dropped silently, and the `finally` cancels and
+    awaits every unfinished task, including on client disconnect."""
+    own_deadline = min(deadline, time.monotonic() + place_options_budget_s)
+    pending = set(tasks)
+    try:
+        while pending and (remaining := own_deadline - time.monotonic()) > 0:
+            done, pending = await asyncio.wait(
+                pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in done:
+                for ev in t.result():
+                    yield ev
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @dataclass(frozen=True)
@@ -300,11 +339,11 @@ def late_departures(
 
     The list is built as the part built its own (`assemble.definite_departures`), from its
     own heading words, warnings and operations and the facts raised beside the warnings the
-    part or its envelope holds, so a folded part keeps the list of a folded part. The read's
-    observations join the Spec, so `modelled_values` reads modelled and projected series,
-    and places the UN front door refused during the read join as raised
-    `entity_unavailable` facts (`un_system.refused_places_fact`), merged into one per role
-    with those the part states. A client replaces the part's list with it."""
+    part, its envelope or its region's unapplied qualifiers hold, so a folded part keeps the
+    list of a folded part. The read's observations join the Spec, so `modelled_values` reads
+    modelled and projected series, and places the UN front door refused during the read join
+    as raised `entity_unavailable` facts (`un_system.refused_places_fact`), merged into one
+    per role with those the part states. A client replaces the part's list with it."""
     part = source.part
     spec = part.spec
     observed = next(
@@ -332,7 +371,11 @@ def late_departures(
         return None
     raised = surviving_facts(
         {**source.region.departure_facts, **source.representative.departure_facts},
-        [*part.warnings, *source.envelope_warnings],
+        [
+            *part.warnings,
+            *source.region.unapplied_qualifier_warnings,
+            *source.envelope_warnings,
+        ],
     )
     read = (
         spec
@@ -394,7 +437,7 @@ def _reconcile_after_collapse(
                 r.spec.spec_id, r.spec.resolved.slot_options, r.facet_probe
             )
         if r.place_options_task is None and r.place_options_relaunch is not None:
-            updates["place_options_task"] = r.place_options_relaunch(r.spec.spec_id)
+            updates["place_options_task"] = r.place_options_relaunch(r.spec)
         if id(r) not in original_ids and r.observations_relaunch is not None:
             updates["observations_task"] = r.observations_relaunch(r.spec.spec_id)
         streaming_regions.append(dataclasses.replace(r, **updates) if updates else r)

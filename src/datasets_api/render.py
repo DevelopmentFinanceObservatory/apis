@@ -27,10 +27,19 @@ ignored. Requests, pivot output, frames and collapse frames keep the grammar nam
 does a bare parquet file requested with `options.layout = "frame"` (`FRAME_LAYOUT`), which is
 written as reshaped, with no projection and no name read.
 
+Long output gives each party role one `<role>_kind` column in words
+(`materialise.projection.long_kind_cell`): `official` or `private` for a provider, `country or
+organisation` for a recipient, `total`, `whole total` or `unallocated`. Pivot output and the
+frame layout write the machine cells instead, each only when a token asks for it: `party_kind`
+(`party`, `total` or `residual`), `party_class` (`official`, `private`, `residual` or empty) and
+`party_whole` (`true` on a row whose total is whole for the row's dataset and year, `false`
+otherwise).
+
 A long CSV or XLSX keeps total rows out of its main table (`_TotalRows`). A row is a total when a
 role that can hold a total (`datasets_api.output_options.movable_totals_roles`, the rule the
-options document's `long_layout_totals` reads) holds a party the code index declares a `total`.
-A role bound to one entity makes no total row, and residuals stay with the parties. A bundle's CSV writes the totals as a second data file
+options document's `long_layout_totals` reads) holds a party the code index declares a `total`,
+whole or not. A role bound to one entity makes no total row, and residuals and private parties
+stay with the parties. A bundle's CSV writes the totals as a second data file
 (`data/<slug>-totals.csv`), an XLSX on a second sheet (`totals`), and a bare CSV leaves them
 out. Parquet, pivot output and the frame layout keep every row.
 
@@ -118,8 +127,13 @@ from datasets_api.party_totals import CutFrame, cut_frame, cut_party_totals, ope
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.timings import phase
 from datasets_api.unit_labels import unit_currency, unit_label
-from datasets_api.version_store import recorded_frame_sha256, rendering_key
-from datasets_api.versions import ArtifactRecord
+from datasets_api.version_store import (
+    current_rendering_keys,
+    enriched_rendering_key,
+    recorded_frame_sha256,
+    rendering_key,
+)
+from datasets_api.versions import ArtifactRecord, carries_party_kind, enrichment_stamp
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.config import PublicSiteSettings
@@ -148,7 +162,7 @@ from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import PARTY_KIND_FIELD, EnrichmentLookup, is_party_role
+from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, is_party_role
 from materialise.formats import (
     DATA_SHEET_TITLE,
     FORMAT_COLUMN_CAPS,
@@ -169,6 +183,7 @@ from materialise.formats import (
 from materialise.frame_build import ParquetFrameChunks, build_frame, unit_cell_for_rebuild
 from materialise.profile import OutputProfile, PivotFeasibility
 from materialise.projection import (
+    KIND_SUFFIX,
     LongProjection,
     PriceBasis,
     UnitNaming,
@@ -198,6 +213,7 @@ from materialise.reshape import (
     fold_groupby_sum_chunks,
     fold_pivot_chunks,
     known_pivot_cap_violation,
+    lookup_cell,
     parse_column_tokens,
     select_columns,
 )
@@ -246,6 +262,18 @@ class GroupbyCollapseRendering:
     content_version: str
     stat_var_ref: str
     contributing_member_count: int
+
+
+_KEPT_AXIS_PREFIX = f"{_STAT_VAR_COLUMN}_"
+"""The prefix of the role column a collapse keeps a code axis in (`stat_var_<code_system>`)."""
+
+
+def entity_roles(role_columns: Sequence[str]) -> tuple[str, ...]:
+    """The entity roles among a frame's `role_columns`: every role but the kept code axis
+    columns a collapse adds (`GroupbyCollapseRendering.role_columns`). The render that wrote a
+    collapse read those columns as decoded codes beside the roles of the frame it collapsed, so
+    a render of the stored collapse reads them the same way."""
+    return tuple(role for role in role_columns if not role.startswith(_KEPT_AXIS_PREFIX))
 
 
 @dataclass(frozen=True)
@@ -614,7 +642,7 @@ def _reshape_groupby_collapse(
         }
         for row in current.rows
     ]
-    role_columns = (*entity_columns, *(f"{_STAT_VAR_COLUMN}_{axis}" for axis in kept))
+    role_columns = (*entity_columns, *(f"{_KEPT_AXIS_PREFIX}{axis}" for axis in kept))
     collapsed_frame = build_frame(role_keys=role_columns, rows=rows_as_dicts)
     current = cast(Table, collapsed_frame)
     collapsed_frame_sha256 = frame_sha256(collapsed_frame)
@@ -764,7 +792,8 @@ def _reshape_select_pivot_enrich(
     Without a pivot the output is long and `long_output_selection` widens the selection: decoded
     axis columns come with `stat_var` unless the list names some of them. Long output leaves out
     `status` and writes each role's `<role>_label` by default (`materialise.projection`), so both
-    tokens are accepted and ignored there, and a selection naming `<role>_label` keeps `<role>`.
+    tokens are accepted and ignored there, as are the party field tokens and `<role>_kind`,
+    which its `<role>_kind` column answers, and a selection naming `<role>_label` keeps `<role>`.
     A frame-layout request (`FRAME_LAYOUT`) is not long output: its selection is the list as
     parsed, as for pivot output.
 
@@ -840,6 +869,10 @@ def _reshape_select_pivot_enrich(
         enrichment_plan = EnrichmentPlan(
             requests=parsed.enrichments,
             lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
+            # A pivot's index and columns group rows, so a cell that varied with the period
+            # would split one party into several index rows. Its party cells are read for no
+            # dataset and year, where a whole total's `party_whole` is empty (`whole_cell`).
+            parties=None if pivot is not None else reads.enrichment.parties,
         )
     warning_order = (
         *decoded_column_names,
@@ -893,12 +926,13 @@ def _reshape(
     provenance_refs: Sequence[str],
     subject_id: str | None = None,
     frame_chunks: Iterable[Table] | None = None,
+    decoded: bool = False,
 ) -> ReshapeResult:
     """Applies decode, groupby, selection, enrichment, and pivot before rendering. Inert transforms
     leave the input table unchanged.
 
     A supplied `code_index` enables decode-plan construction even when no decode option is set.
-    `None` skips decoding.
+    `None` skips decoding, as does `decoded`, set for a frame a collapse already decoded.
     `resolved_stat_var_refs` supplies zero-row members to groupby population checks, and
     `provenance_refs` govern its source-wide missing-as-zero rule. `subject_id` is used only for
     the collapse frame's `stat_var`. `frame_chunks` streams the first
@@ -910,7 +944,7 @@ def _reshape(
     """
     decode_plan = (
         build_decode_plan(table, index=code_index, extra_refs=resolved_stat_var_refs)
-        if code_index is not None
+        if code_index is not None and not decoded
         else None
     )
     groupby_outcome = _reshape_groupby(
@@ -1053,10 +1087,25 @@ def _file_shape(rendering: Mapping[str, object]) -> str | None:
 
 
 def stored_artifact_entry(
-    location: StoredArtifactLocation, *, subject_id: str, content_version: str
+    location: StoredArtifactLocation,
+    *,
+    subject_id: str,
+    content_version: str,
+    enrichment_digest: str | None,
 ) -> ArtifactEntryModel:
     """The manifest entry of one linked artifact location, carrying its stable download link.
-    Building it signs nothing."""
+    Building it signs nothing.
+
+    `enrichment_digest` is the serving code index's (`CodeIndex.enrichment_digest`). The entry
+    carries it as `enrichment_stamp` when the location is linked under the key it salts
+    (`version_store.enriched_rendering_key`), which only a file holding party-kind cells read
+    under it is (`versions.link_digest`). A file linked under any other key states no
+    stamp: the key does not say which index an older file was rendered under."""
+    stamped = (
+        enrichment_digest is not None
+        and carries_party_kind(location.rendering)
+        and location.rendering_key == enriched_rendering_key(location.rendering, enrichment_digest)
+    )
     return ArtifactEntryModel(
         artifact_digest=location.artifact_digest,
         rendering=dict(location.rendering),
@@ -1071,6 +1120,7 @@ def stored_artifact_entry(
             content_version=content_version,
             artifact_digest=location.artifact_digest,
         ),
+        enrichment_stamp=enrichment_digest if stamped else None,
     )
 
 
@@ -1319,15 +1369,15 @@ def _codes(
 
 
 def _family(
-    collapse: GroupbyCollapseRendering | None, *, subject_id: str, subject_label: str | None
+    stat_var_ref: str | None, *, subject_id: str, subject_label: str | None
 ) -> tuple[str, str] | None:
-    """The `(ref, label)` of the family ref a summed collapse writes in `stat_var`, `None`
-    without one or without a label."""
-    if collapse is None or subject_label is None:
+    """The `(ref, label)` of `stat_var_ref`, the ref a collapse writes in `stat_var`, when it is
+    the summed family's ref, `None` when it is absent or a member's ref, or without a label."""
+    if stat_var_ref is None or subject_label is None:
         return None
-    if collapse.stat_var_ref != f"{_STAT_VAR_REF_PREFIX}{subject_id}":
+    if stat_var_ref != f"{_STAT_VAR_REF_PREFIX}{subject_id}":
         return None
-    return collapse.stat_var_ref, subject_label
+    return stat_var_ref, subject_label
 
 
 def _rebuild_request(spec: Mapping[str, object], options: MintOptions) -> dict[str, object]:
@@ -1394,8 +1444,10 @@ def _store_artifact(
     subject_id: str,
     content_version: str,
     artifact_store: ArtifactStore,
+    phase_name: str,
 ) -> ArtifactEntryModel:
-    with phase("store"):
+    """Store `data` as a working-tier artifact, timing the write under `phase_name`."""
+    with phase(phase_name):
         try:
             stored = artifact_store.put(data, tier=Tier.working)
         except ArtifactRecordConflictError as exc:
@@ -1444,17 +1496,21 @@ def _long_output_tokens(
 ) -> tuple[list[str], tuple[str, ...]]:
     """The `options.columns` tokens a long output parses, and the roles whose name or kind the
     list asked for. Long output writes `status` nowhere, and writes each role's `<role>_label`
-    and each party role's `<role>_party_kind` by default (`materialise.projection`), so those
-    tokens are dropped. A list that selects keeps each named role's entity column, which its
-    name and kind sit beside."""
+    and each party role's `<role>_kind` by default (`materialise.projection`), so those tokens
+    are dropped. `<role>_kind` reads every party field (`PARTY_FIELDS`), so their tokens, bare
+    or qualified, are dropped too. A list that selects keeps each named role's entity column,
+    which its name and kind sit beside."""
+    party_roles = [role for role in entity_columns if is_party_role(role)]
     defaults = {
         f"{role}_label": role for role in entity_columns if f"{role}_label" not in table_columns
     } | {
-        f"{role}_{PARTY_KIND_FIELD}": role
-        for role in entity_columns
-        if is_party_role(role) and f"{role}_{PARTY_KIND_FIELD}" not in table_columns
+        column: role
+        for role in party_roles
+        for suffix in (KIND_SUFFIX, *(f"_{field}" for field in PARTY_FIELDS))
+        if (column := f"{role}{suffix}") not in table_columns
     }
-    tokens = [token for token in columns if token != _STATUS_COLUMN and token not in defaults]
+    dropped = {_STATUS_COLUMN, *(field for field in PARTY_FIELDS if field not in table_columns)}
+    tokens = [token for token in columns if token not in dropped and token not in defaults]
     named_roles = tuple(dict.fromkeys(defaults[t] for t in columns if t in defaults))
     return tokens, named_roles
 
@@ -1561,17 +1617,19 @@ class _RenderReads:
         self, nodes: Sequence[str], *, fields: Collection[str]
     ) -> dict[str, dict[str, str]]:
         """Each of `nodes` mapped to those of its enrichment `fields` that could be read. A
-        party's `party_kind` is the one the code index declares
-        (`EnrichmentLookup.party_kind`), read with no graph call; a party the index does not
-        list has none. One `lookup` reads the graph fields of every node, and runs only when one
-        is asked for. A read that fails, or follows a failed one, leaves those fields out. An
-        absent field's cells stay empty and count as `enrichment_unavailable`."""
+        party's cells for the party fields (`PARTY_FIELDS`) are the ones the code index declares
+        for no dataset and year (`EnrichmentLookup.party_cells`), read with no graph call; a
+        party the index does not list has none. One `lookup` reads the graph fields of every
+        node, and runs only when one is asked for. A read that fails, or follows a failed one,
+        leaves those fields out. An absent field's cells stay empty and count as
+        `enrichment_unavailable`."""
         read: dict[str, dict[str, str]] = {node: {} for node in nodes}
-        if PARTY_KIND_FIELD in fields:
+        if party_fields := set(fields).intersection(PARTY_FIELDS):
             for node, node_fields in read.items():
-                if kind := self.enrichment.party_kind(node):
-                    node_fields[PARTY_KIND_FIELD] = kind
-        graph_fields = set(fields) - {PARTY_KIND_FIELD}
+                for field_name, cell in self.enrichment.party_cells(node).items():
+                    if field_name in party_fields:
+                        node_fields[field_name] = cell
+        graph_fields = set(fields).difference(PARTY_FIELDS)
         if not graph_fields or not nodes or self.failed:
             return read
         try:
@@ -1600,7 +1658,9 @@ _TOTALS_FORMATS = frozenset(("csv", "xlsx"))
 class _TotalRows:
     """The total rows a long CSV or XLSX render keeps out of its main table
     (`materialise.projection.split_totals`): the rows where one of `roles` holds a party of
-    kind `total`. `roles` are the roles that can hold a total
+    kind `total`, its `<role>_kind` cell reading `total` or `whole total`. Parties and
+    residuals stay in the main table.
+    `roles` are the roles that can hold a total
     (`datasets_api.output_options.movable_totals_roles`), the ones the options document's
     `long_layout_totals` names, read from the definition before the first chunk, since the
     layout streams.
@@ -1721,12 +1781,14 @@ class _LongLayout:
     boundary. The layout is planned from the first table it sees, and every later chunk of the
     same render has the same columns.
 
-    A party's kind is the one the code index declares (`EnrichmentLookup.party_kind`), read
-    with no graph call, so the split of totals is the same in every chunk and every render of
-    a version, whether or not a graph read succeeds. A party the index does not list has an
-    empty kind cell and stays in the main table. Each chunk's names come from one
-    `reads.fields_of` read before it is projected, the read the reshape enrichment also uses,
-    and a value is asked for once per layout. A graph read that fails or runs out of time
+    A party's kind cell is the one the code index declares
+    (`materialise.projection.long_kind_cell`) for the dataset and year of its row, read with no
+    graph call, so the split of totals is the same in every chunk and every render of a
+    version, whether or not a graph read succeeds. A whole total (`PartyRow.whole`) reads
+    `whole total` in the dataset and years its marker holds and `total` outside them. A party
+    the index does not list has an empty kind cell and stays in the main table. Each chunk's
+    names come from one `reads.fields_of` read before it is projected, the read the reshape
+    enrichment also uses, and a value is asked for once per layout. A graph read that fails or runs out of time
     leaves the names it would have given empty and stops further reads for the whole render
     (`_RenderReads`), so the render completes with those cells empty. `warnings` then counts
     the empty name, kind and code cells per column as `enrichment_unavailable`.
@@ -1749,7 +1811,6 @@ class _LongLayout:
     totals: _TotalRows | None = None
     projection: LongProjection | None = None
     names: dict[str, str] = field(default_factory=dict)
-    party_kinds: dict[str, str] = field(default_factory=dict)
     asked: set[str] = field(default_factory=set)
     unavailable: Counter[str] = field(default_factory=Counter)
 
@@ -1807,7 +1868,9 @@ class _LongLayout:
                 grain=self.grain,
             )
         self._read_names(self.projection.refs_to_name(table))
-        projected = self.projection.apply(table, names=self.names, party_kinds=self.party_kinds)
+        projected = self.projection.apply(
+            table, names=self.names, parties=self.reads.enrichment.parties
+        )
         self.unavailable.update(projected.unavailable)
         if self.totals is None:
             return cast(Table, projected.table)
@@ -1828,14 +1891,10 @@ class _LongLayout:
             return
         # StatVar cells carry the frame's `dcid:` spelling. The graph names the bare dcid.
         bare = {ref: ref.removeprefix(_STAT_VAR_REF_PREFIX) for ref in to_read}
-        fields = self.reads.fields_of(
-            tuple(dict.fromkeys(bare.values())), fields=("label", PARTY_KIND_FIELD)
-        )
+        fields = self.reads.fields_of(tuple(dict.fromkeys(bare.values())), fields=("label",))
         for ref, node in bare.items():
             if name := fields[node].get("label"):
                 self.names[ref] = name
-            if kind := fields[node].get(PARTY_KIND_FIELD):
-                self.party_kinds[ref] = kind
 
     def names_complete(self) -> bool:
         """Whether every name read of the render so far answered."""
@@ -1965,9 +2024,11 @@ def _stream_bare_pivot(
     provenance_refs: Sequence[str],
     subject_id: str,
     output_profile: OutputProfile | None = None,
+    decoded: bool = False,
 ) -> ReshapeResult:
     """Folds pivot output from chunked rows in one pass. Decode and selection run per chunk, and
-    the output stays within `column_cap` and `cell_cap`.
+    the output stays within `column_cap` and `cell_cap`. A frame a collapse already decoded
+    (`decoded`) is not decoded again.
 
     A groupby that collapses nothing still validates `by`. When `stat_var` is omitted, multiple
     contributors require a decoded summable axis. This refusal runs before pivot, as in whole-table
@@ -1994,7 +2055,7 @@ def _stream_bare_pivot(
 
     decode_plan = (
         build_decode_plan(first_chunk, index=code_index, extra_refs=resolved_stat_var_refs)
-        if code_index is not None
+        if code_index is not None and not decoded
         else None
     )
     decoded_column_names = (
@@ -2147,7 +2208,7 @@ def _stream_bare_pivot(
         for entity_column, field_name in parsed.enrichments:
             total_missing = enrichment_non_string_counts.get(entity_column, 0)
             for ref, row_count in enrichment_ref_counts.get(entity_column, {}).items():
-                if lookup.get(ref, {}).get(field_name, "") == "":
+                if lookup_cell(lookup, ref, field_name) is None:
                     total_missing += row_count
             if total_missing:
                 missing_counts[(entity_column, field_name)] = total_missing
@@ -2196,10 +2257,11 @@ def _reshape_stream_plain(
     name_reads: _RenderReads,
     grain: str | None,
     totals: _TotalRows | None,
+    decoded: bool = False,
 ) -> _StreamedRender:
     """Streams row-wise decode, selection, and enrichment by reshaping each chunk and putting it
     in the long layout before passing it to the writer. `_merge_enrichment_warnings` combines
-    per-chunk counts."""
+    per-chunk counts. A frame a collapse already decoded (`decoded`) is not decoded again."""
     layout = _LongLayout.for_render(
         options=options,
         entity_columns=entity_columns,
@@ -2225,6 +2287,7 @@ def _reshape_stream_plain(
                 code_index=code_index,
                 resolved_stat_var_refs=resolved_stat_var_refs,
                 provenance_refs=provenance_refs,
+                decoded=decoded,
             )
             collected_warnings.extend(chunk_result.warnings)
             if not first_warning_order:
@@ -2271,6 +2334,7 @@ def _reshape_stream(
     grain: str | None,
     totals: _TotalRows | None,
     output_profile: OutputProfile | None = None,
+    decoded: bool = False,
 ) -> _StreamedRender:
     """Reslices chunks, then dispatches the frame through one of four paths:
 
@@ -2279,7 +2343,9 @@ def _reshape_stream(
     - A bare pivot folds output within its width and cell caps.
     - A no-op groupby streams per chunk and checks its refusal after the writer drains.
 
-    Groupby and pivot folds bound output size. Other paths retain chunk-sized row data.
+    Groupby and pivot folds bound output size. Other paths retain chunk-sized row data. A frame
+    a collapse already decoded (`decoded`, with no `groupby`) takes the plain or the bare pivot
+    path with no decode.
     """
     frame_chunks_iter = iter(_reslice_chunks(frame_chunks))
     first_chunk = next(frame_chunks_iter, None)
@@ -2300,6 +2366,7 @@ def _reshape_stream(
             name_reads=name_reads,
             grain=grain,
             totals=totals,
+            decoded=decoded,
         )
 
     will_stream_groupby_collapse = False
@@ -2375,6 +2442,7 @@ def _reshape_stream(
             provenance_refs=provenance_refs,
             subject_id=subject_id,
             output_profile=output_profile,
+            decoded=decoded,
         )
         return _StreamedRender(
             chunks_for_writer=(result.table,),
@@ -2504,6 +2572,7 @@ def render_and_store(
     output_profile: OutputProfile | None = None,
     deadline: float | None = None,
     base_frame_sha256: str | None = None,
+    derived_frame: bool = False,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings.
     `frame_chunks` returns a fresh pass over the materialised frame's chunks in order. Long
@@ -2525,9 +2594,12 @@ def render_and_store(
     also streams, so wide results can exceed 1,000,000 rows. The raw-fetch guard allows 1.5 times
     the coverage estimate.
 
-    `code_index` controls decoding. `resolved_stat_var_refs` and `provenance_refs` support groupby
-    population and source checks. A collapse frame mints its own version, which its artifact
-    uses; every other artifact uses `content_version`. `serve` writes version records.
+    `code_index` controls decoding, and the artifact carries its `enrichment_digest` as
+    `enrichment_stamp` when it holds party-kind cells (`versions.enrichment_stamp`, over
+    the role columns of the frame it renders). `resolved_stat_var_refs` and `provenance_refs`
+    support groupby population and source checks. A collapse frame mints its own version,
+    which its artifact uses; every other artifact uses `content_version`. `serve` writes
+    version records.
 
     A collapse frame that is the base frame is the base version, so its collapse carries
     `content_version`. The frames are compared by hash. `base_frame_sha256` is the hash of
@@ -2544,6 +2616,13 @@ def render_and_store(
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is. Every chunk `frame_chunks` yields is then a `Frame`.
+
+    `derived_frame` says `frame_chunks` holds a derived version's own stored frame, which its
+    `groupby` collapse and party-totals cut already made (`DerivedVersion`). The render then
+    neither cuts nor collapses it again and mints no version: the artifact belongs to
+    `content_version`. `options` keep those minting options, so they still name the rendering,
+    the reproducing call and the bundle's description, and a collapse's family ref keeps its
+    label.
     """
     check_options_supported(options, code_index=code_index)
     subject_id = str(spec.get("spec_id"))
@@ -2556,7 +2635,7 @@ def render_and_store(
             roles=open_party_roles(identity, entity_columns),
             parties=enrichment.parties,
         )
-        if options.without_party_totals
+        if options.without_party_totals and not derived_frame
         else None
     )
     cut = (
@@ -2598,7 +2677,7 @@ def render_and_store(
         grain = _frame_period_grain(frame_chunks) if long_output else None
         streamed = _reshape_stream(
             frame_chunks(),
-            options=options,
+            options=options.model_copy(update={"groupby": None}) if derived_frame else options,
             entity_columns=entity_columns,
             pivot_max_output_cells=pivot_max_output_cells,
             code_index=code_index,
@@ -2614,6 +2693,8 @@ def render_and_store(
             grain=grain,
             totals=totals,
             output_profile=output_profile,
+            # A derived frame's collapse decoded its codes.
+            decoded=derived_frame and options.groupby is not None,
         )
         chunks_for_writer = streamed.chunks_for_writer
         collapse = streamed.collapse
@@ -2625,9 +2706,16 @@ def render_and_store(
         effective_content_version = (
             derived.content_version if derived is not None else content_version
         )
+        if collapse is not None:
+            summed_ref: str | None = collapse.stat_var_ref
+        elif derived_frame and options.groupby is not None:
+            # The family ref a derived frame's collapse wrote. A ref no file holds is not listed.
+            summed_ref = f"{_STAT_VAR_REF_PREFIX}{subject_id}"
+        else:
+            summed_ref = None
 
     sources = _sources(provenance_refs, citations)
-    with phase("store"):
+    with phase("store_rendering"):
         try:
             with artifact_store.open_put(tier=Tier.working) as sink:
                 if options.bundle:
@@ -2684,7 +2772,7 @@ def render_and_store(
                             scans,
                             citations=citations,
                             family=_family(
-                                collapse, subject_id=subject_id, subject_label=subject_label
+                                summed_ref, subject_id=subject_id, subject_label=subject_label
                             ),
                             code_index=code_index,
                             reads=name_reads,
@@ -2758,8 +2846,13 @@ def render_and_store(
         subject_id=subject_id,
         content_version=effective_content_version,
     )
+    stamp = enrichment_stamp(
+        artifact.rendering,
+        role_columns=derived.role_columns if derived is not None else entity_columns,
+        enrichment_digest=code_index.enrichment_digest if code_index is not None else None,
+    )
     return RenderedDefinition(
-        artifact=artifact,
+        artifact=artifact.model_copy(update={"enrichment_stamp": stamp}),
         warnings=warnings,
         collapse=collapse,
         labels_complete=labels_complete,
@@ -2808,12 +2901,13 @@ def _derived_version(
     )
 
 
-BUNDLE_LAYOUT_VERSION = 3
+BUNDLE_LAYOUT_VERSION = 4
 """The bundle layout `rendition_token` hashes. Bump it with any change to a bundle's files or
 their contents for unchanged data and settings (a file added, renamed or reworded, a column or
 code described differently), so every version renders and links a new bundle on its next
 request while each old bundle stays listed under its own rendering key. Version 3 writes
-integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`)."""
+integer years and keeps total rows out of a CSV or XLSX data table (`_TotalRows`). Version 4
+writes each party role's kind in words as `<role>_kind` in place of `<role>_party_kind`."""
 
 _WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
 """The rendering key `options.without_party_totals` is recorded under, present only when true."""
@@ -2833,13 +2927,14 @@ METADATA_INCOMPLETE = "incomplete"
 """The `METADATA_KEY` value of an artifact rendered without its sources' documentation or
 without graph names, because the read failed."""
 
-DATA_LAYOUT_VERSION = 3
+DATA_LAYOUT_VERSION = 4
 """The column layout of a bare data file. Bump it with any change to a bare file's columns or
 cells for unchanged data and options, so a request renders a new file under a new rendering key
 and cannot match one written in the old layout. Version 2 is the long layout of
 `materialise.projection`. Version 3 adds integer years and keeps total rows out of the main
 table (`_TotalRows`): a bundle's CSV writes them to a second file, a bare CSV drops them, and an
-XLSX moves them to a second sheet. A rendering without `LAYOUT_KEY` predates
+XLSX moves them to a second sheet. Version 4 writes each party role's kind in words as
+`<role>_kind` in place of `<role>_party_kind`. A rendering without `LAYOUT_KEY` predates
 version 2."""
 
 FRAME_LAYOUT = "frame"
@@ -2890,7 +2985,7 @@ def incomplete_rendering(rendering: Mapping[str, object]) -> dict[str, object]:
     its render failed: `rendering` plus `METADATA_KEY`.
 
     Its rendering key differs from `rendering`'s, so the artifact is linked and downloadable
-    while no request's key matches it (`artifact_rendering_key`), and the next render of
+    while no request's key matches it (`artifact_rendering_keys`), and the next render of
     `rendering` reads the graph again and links its artifact beside this one.
     """
     return {**rendering, METADATA_KEY: METADATA_INCOMPLETE}
@@ -2906,12 +3001,52 @@ def complete_rendering(rendering: Mapping[str, object]) -> dict[str, object]:
     return {key: value for key, value in rendering.items() if key != METADATA_KEY}
 
 
-def artifact_rendering_key(options: MintOptions, *, site: PublicSiteSettings) -> str:
-    """The rendering key an artifact rendered under `options` is stored and linked under: the
-    hash (`version_store.rendering_key`) of `artifact_rendering(options, site=site)`. The
-    definition door's currency check, the bundle-link check and the operations poll all derive
-    a request's key here, so they narrow a version to the same rendering."""
-    return rendering_key(artifact_rendering(options, site=site))
+def artifact_rendering_keys(
+    options: MintOptions, *, site: PublicSiteSettings, enrichment_digest: str | None
+) -> tuple[str, ...]:
+    """The rendering keys a current artifact rendered under `options` can be linked under: the
+    keys (`version_store.current_rendering_keys`) of `artifact_rendering(options, site=site)`.
+    The definition door's currency check, the bundle-link check and the operations poll all
+    derive a request's keys here, so they narrow a version to the same rendering.
+
+    `enrichment_digest` is the serving code index's (`CodeIndex.enrichment_digest`). A
+    rendering that asks for a party-kind cell has two keys, salted with the digest and with
+    `versions.NO_PARTY_ROLE`, and its file is linked under the one its frame's roles pick;
+    any other rendering has one. The salt stays out of `artifact_rendering`, so the rendering
+    a caller selects an artifact by is the same under every digest.
+    """
+    return current_rendering_keys(artifact_rendering(options, site=site), enrichment_digest)
+
+
+def current_enrichment_locations(
+    locations: Sequence[StoredArtifactLocation], *, enrichment_digest: str
+) -> list[StoredArtifactLocation]:
+    """`locations` without the files that a re-render under `enrichment_digest` has replaced.
+
+    After a change to a party's kind a version holds both generations of a file with party-kind
+    cells, with equal `rendering` dicts, and a caller selecting by `rendering` takes the first
+    it meets. A file is hidden when it is linked under no current key
+    (`version_store.current_rendering_keys`) and a file of the same `rendering` is linked under
+    one. That is the only case: a stale file with no current twin stays, so an old layout, a
+    superseded or pre-rendition bundle, an incomplete file and a pinned file linked before the
+    digest existed are listed unchanged. A hidden link stays downloadable by its digest.
+    """
+    current = [
+        location.rendering_key in current_rendering_keys(location.rendering, enrichment_digest)
+        for location in locations
+    ]
+    # A rendering identifies itself by its unsalted key: `enriched_rendering_key` with no digest.
+    renderings_under_current = {
+        enriched_rendering_key(location.rendering, None)
+        for location, is_current in zip(locations, current, strict=True)
+        if is_current
+    }
+    return [
+        location
+        for location, is_current in zip(locations, current, strict=True)
+        if is_current
+        or enriched_rendering_key(location.rendering, None) not in renderings_under_current
+    ]
 
 
 def rendering_options(
@@ -3033,6 +3168,7 @@ def render_and_store_series_statistics(
         subject_id=subject_id,
         content_version=content_version,
         artifact_store=artifact_store,
+        phase_name="store_statistics",
     )
 
 
@@ -3046,9 +3182,9 @@ def render_and_store_canonical_frame(
     """Streams the canonical frame of `frame_chunks` into the store as an unsigned artifact,
     holding at most one row group (`materialise.formats.write_canonical_frame`), whatever the
     frame's size. Readers find it on the version record by `CANONICAL_FRAME_RENDERING`. Encoding
-    runs inside the shared `store` phase, so when it runs beside the requested write that phase
-    sums both threads' time."""
-    with phase("store"):
+    runs inside the `store_frame` phase, which overlaps the requested write's `store_rendering`
+    when the two run side by side."""
+    with phase("store_frame"):
         try:
             with artifact_store.open_put(tier=Tier.working) as sink:
                 written = write_canonical_frame(frame_chunks, sink=sink)

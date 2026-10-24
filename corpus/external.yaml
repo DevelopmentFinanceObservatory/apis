@@ -2,7 +2,6 @@
   query: DTP3 immunisation coverage in Chad
   why: Base holds two DTP3 coverage series for Chad (WHO WUENIC, WHO survey) and the UN SDG copy holds SDG 3.b.1, so any of the three answers.
   tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [measure, provenance]}
   expect:
     entities: [{dcid: country/TCD, role: observationAbout}]
     measure: {family: [base.who_immunisation, un.sdg_dtp3, base.who_dtp3_survey]}
@@ -13,7 +12,6 @@
   query: share of pregnant women with at least four antenatal care visits in Nigeria
   why: WHO base holds ANC4 coverage for Nigeria as a headline series and a survey series; either answers.
   tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite: {measure: {family: [base.who_anc4, base.who_anc4_survey]}, entities: [{dcid: country/NGA, role: observationAbout}]}
 
@@ -82,8 +80,7 @@
   query: lower secondary completion rate for girls in rural Nigeria
   why: The UN SDG series holds lower secondary completion for rural girls in Nigeria (2003 to 2024).
   tags: {theme: education, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: residence, door: raw_text, phrasing: casual, overlap: [sdg_base]}
-  # Also known failure under #1298 (disposition): the SDG and UNICEF series are both offered as candidates instead of one definite SDG answer.
-  known_failure: {issue: 1156, checks: [measure, disposition]}
+  known_failure: {issue: 1156, checks: [measure]}
   expect:
     definite:
       measure:
@@ -147,7 +144,6 @@
   query: proportion of seats held by women in local government in Kenya
   why: The SDG goldens cover national parliaments only (SG_GEN_PARL); this is SDG 5.5.1b, served from the UN System copy.
   tags: {theme: gender, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: technical, overlap: [sdg_base]}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: un.sdg_women_local_government}
@@ -232,7 +228,6 @@
   query: share of people who paid a bribe to a public official in Nigeria
   why: SDG 16.5.1 answers from the UN System copy.
   tags: {theme: governance, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [sdg_base]}
-  known_failure: {issue: 1156, checks: [measure, provenance]}
   expect:
     definite: {measure: {family: un.sdg_bribery}, entities: [{dcid: country/NGA, role: observationAbout}]}
 
@@ -307,13 +302,12 @@
 
 - id: dq-ext-032
   query: refugees in Western Sahara
-  why: The SDG refugee series counts refugees by origin only, not by asylum country, and the UN front door refuses Western Sahara, so the answer is no_data.
+  why: No refugee series holds Western Sahara by asylum country, so the answer is no_data; its total population states no refugee.
   tags: {theme: humanitarian, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [waf_blocked]}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     no_data:
       entities: [{dcid: country/ESH, role: observationAbout}]
-      reason: [variable_not_resolved, no_observations]
+      reason: [variable_not_resolved, no_observations, qualifier_not_bound]
 
 - id: dq-ext-033
   query: under-five mortality in Kenya in 2024
@@ -330,7 +324,6 @@
     phrasing: casual
     probe: [source_election]
     overlap: [wdi, sdg_un]
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: base.u5mr}
@@ -341,7 +334,6 @@
   query: unemployment rate of persons with disabilities in Kenya
   why: SDG 8.5.2 holds Kenya's unemployment rate for persons with disability (code PD) for 2019 only; the miss is no_matching_slice.
   tags: {theme: poverty, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: disability, door: raw_text, phrasing: casual, overlap: [sdg_base]}
-  known_failure: {issue: 1156, checks: [measure, provenance]}
   expect:
     entities: [{dcid: country/KEN, role: observationAbout}]
     definite:
@@ -352,7 +344,6 @@
   query: stunting among the poorest children in Nigeria
   why: UNICEF stunting carries wealth-quintile variants for Nigeria; the lowest quintile bound, or candidates over the series, fit.
   tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: wealth, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [measure, provenance]}
   expect:
     entities: [{dcid: country/NGA, role: observationAbout}]
     definite: {measure: {family: un.unicef_stunting, bound: {undataWealthQuantile: undata/WEALTH_QUANTILE-Q1}}}

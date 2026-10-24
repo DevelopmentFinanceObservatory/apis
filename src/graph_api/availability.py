@@ -23,12 +23,11 @@ every place its facet covers. A place with no mapping keeps the facet in the pla
 are unions over places and claim no continuity at any one place.
 
 A request reads each variable's admitted facets once (`held_facets`), and its read targets
-(`HeldFacets.targets`), card (`build_availability`) and `facets` list items (`facet_items`)
-come from that one read. A profile miss is `availability: null` with a transient gap
-(`UNAVAILABLE`), so the response is not cached. A surface that reads no profiles by
-configuration, with no profile cache or no coverage index configured, leaves the permanent
-gap `NOT_SERVED`. A default place scope that fell back to countries is a permanent gap that
-names no cause.
+(`HeldFacets.targets`), card (`build_availability`) and `facets` list items (`facet_items`) come
+from that one read. A profile miss is `availability: null` with a transient gap (`UNAVAILABLE`),
+so the response is not cached. A surface that reads no profiles by configuration, with no
+profile cache, leaves the permanent gap `NOT_SERVED`. A default place scope that fell back to
+countries is a permanent gap that names no cause.
 """
 
 from __future__ import annotations
@@ -88,6 +87,7 @@ class EntityCounts(ResponseModel):
     model_config = ConfigDict(title="GraphAvailabilityEntityCounts")
 
     parties: int = Field(description="entities with figures of their own")
+    private: int = Field(description="the parties whose class is private, a subset of parties")
     totals: int = Field(description="entities that hold other entities' figures")
     residual: int = Field(description="entities holding figures no other entity does")
     unclassified: int = Field(description="entities the code index does not list")
@@ -257,7 +257,7 @@ class AvailabilityRead:
 
 
 UNAVAILABLE = AvailabilityRead(availability=None, gaps=(AVAILABILITY_GAP,), transient=True)
-"""A card whose profile missed, or whose coverage index failed to load."""
+"""A card whose profile missed."""
 
 NOT_SERVED = AvailabilityRead(availability=None, gaps=(NOT_SERVED_GAP,))
 """A card on a surface that reads no facet profiles by configuration."""
@@ -697,6 +697,7 @@ def _entities(fold: _Fold, held: Iterable[_Held]) -> dict[str, EntityCounts] | N
 def _entity_counts(counts: PartyCounts) -> EntityCounts:
     return EntityCounts(
         parties=counts.parties,
+        private=counts.private,
         totals=counts.totals,
         residual=counts.residual,
         unclassified=counts.unclassified,

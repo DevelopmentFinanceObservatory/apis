@@ -40,6 +40,7 @@ from graph_generation import UNKNOWN_GENERATION
 from materialise.graph import GraphReadError
 from origin_catalogue import DFO, Catalogue, DatasetRef, ProvenanceRow, SourceRef, bound_catalogue
 from origin_catalogue.service import get_catalogue_service
+from series_coverage.shared import get_coverage_service
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from .conftest import FakeGraphNodeReader, make_client, make_resolver
@@ -142,6 +143,7 @@ def _surface_app(
                     provenance_docs=new_provenance_doc_cache(
                         executor=dcp, generation=UNKNOWN_GENERATION
                     ),
+                    coverage=get_coverage_service(),
                 ),
             )
             if policy is not None:

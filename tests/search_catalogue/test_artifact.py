@@ -4,6 +4,7 @@ one its pointer names."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,7 @@ def test_a_version_outside_one_path_segment_never_names_a_build(tmp_path: Path, 
     with pytest.raises(ValidationError):
         sample_catalogue(version)
     with pytest.raises(ValidationError):
-        CataloguePointer(catalogue_version=version, key="k")
+        CataloguePointer(catalogue_version=version, key="k", started_at=datetime.now(UTC))
     with pytest.raises(CatalogueArtifactError, match="one path segment"):
         load_build(tmp_path.as_uri(), version)
 

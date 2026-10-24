@@ -25,6 +25,7 @@ from statvar_members.types import (
     EMPTY_READINGS,
     UNRESOLVED_NODE,
     AbsentReading,
+    CompleteArcReads,
     FiveTuple,
     MemberArcReader,
     SubjectPage,
@@ -204,7 +205,8 @@ class MemberGroup:
     refusal a truncated page causes states this as the ceiling it crossed,
     alongside `candidates_considered` as the count: the candidate window is
     the bound this read measured, unlike the member count past it, which no
-    bounded read settles. `CANDIDATE_CAP` for the first page, and the caller's
+    bounded read settles. The walk's first-page cap (`CANDIDATE_CAP` unless the caller
+    passes another) for the first page, and the caller's
     `subject_ceiling` for a group the full read built (`full_read`). Meaningful
     only when `truncated` is `True`: a page that read every candidate was still
     read inside this window, which no candidate ever reached."""
@@ -285,6 +287,11 @@ class MemberGroup:
     duplicate of the root whose roles disagree, and `_read_root_twins` drops each one its
     single-dcid read settles. Role agreement among `members` is then checked regardless,
     so a disagreement among confirmed members raises before any caller reads this."""
+    undismissed_rereadable: bool = False
+    """`True` when a later walk can dismiss one of `undismissed_candidates`: one whose reads
+    the walk's reader does not hold complete (`CompleteArcReads`), so a dropped arc may have
+    left it unsettled. `False` when the walk read every one of them in full, so a later walk
+    reads the same arcs and leaves them undismissed again."""
     full_read: bool = False
     """`True` when the walk read the whole filtered reverse set under a `subject_ceiling`,
     because the first page truncated without proof."""
@@ -308,7 +315,7 @@ class MemberGroup:
 class MemberReadDeadline(TimeoutError):
     """A walk's graph read started, or failed, past the caller's `deadline`.
 
-    `candidate_cap` is the window being read when time ran out, `CANDIDATE_CAP` or the
+    `candidate_cap` is the window being read when time ran out, the first page's cap or the
     caller's `subject_ceiling`, and `candidates_considered` the subjects that window had
     returned, 0 before its page arrived. Running out of time says nothing about the set's
     size, so a caller treats it as a transient timeout. A retry walks again."""
@@ -414,6 +421,7 @@ def enumerate_members(
     deadline: float | None = None,
     full_read_deadline: float | None = None,
     open_role_keys: Collection[str] = (),
+    candidate_cap: int = CANDIDATE_CAP,
 ) -> MemberGroup:
     """Enumerate matching StatVars and reduce them to the minimal-constraint antichain.
 
@@ -434,7 +442,8 @@ def enumerate_members(
     must supply their registry-backed mapping. `member_cap` limits the reduced
     result and defaults to 700. `MemberEnumerator` passes its own `member_cap`.
 
-    `subject_ceiling`, when set, settles a first page that truncates without proof by
+    `candidate_cap` bounds the first page, `CANDIDATE_CAP` by default. `subject_ceiling`,
+    when set, settles a first page that truncates without proof by
     reading the whole filtered reverse set, up to that many subjects, and confirming
     it (`MemberGroup.full_read`). A complete read settles by construction. A set past
     the ceiling returns a truncated, unproven group with `candidate_cap` the ceiling.
@@ -463,6 +472,7 @@ def enumerate_members(
         deadline=deadline,
         full_read_deadline=full_read_deadline,
         open_role_keys=open_role_keys,
+        candidate_cap=candidate_cap,
     )
 
 
@@ -529,6 +539,11 @@ class _Window:
     considered: int = 0
 
 
+def _arcs_unproven(dcid: str) -> bool:
+    """`arcs_complete` for a reader that is not `CompleteArcReads`: no read is known whole."""
+    return False
+
+
 def _enumerate_resolved(
     five_tuple: FiveTuple,
     *,
@@ -542,6 +557,7 @@ def _enumerate_resolved(
     deadline: float | None = None,
     full_read_deadline: float | None = None,
     open_role_keys: Collection[str] = (),
+    candidate_cap: int = CANDIDATE_CAP,
 ) -> MemberGroup:
     """Run `_confirm_group` on the reverse-query page plus caller-supplied candidates,
     then, under `subject_ceiling`, on the whole filtered set when that page truncates
@@ -549,16 +565,19 @@ def _enumerate_resolved(
     empty truncated result leaves matching members beyond the page unaccounted for. An
     unresolved-denominator ask reads through `_ProvisionalDenominatorReader`, above the
     `_DeadlineReader` that bounds every read by the window's deadline: `deadline` for
-    the first page, then `full_read_deadline`, which defaults to `deadline`."""
+    the first page, then `full_read_deadline`, which defaults to `deadline`. A candidate
+    `graph` reads in full (`CompleteArcReads`) and rejects for an absent arc is a non-member
+    without a re-read."""
     if full_read_deadline is None:
         full_read_deadline = deadline
-    window = _Window(cap=CANDIDATE_CAP, deadline=deadline)
+    arcs_complete = graph.arcs_complete if isinstance(graph, CompleteArcReads) else _arcs_unproven
+    window = _Window(cap=candidate_cap, deadline=deadline)
     if deadline is not None or full_read_deadline is not None:
         graph = _DeadlineReader(graph, window)
     if five_tuple.denominator_unresolved:
         graph = _ProvisionalDenominatorReader(graph)
     try:
-        page = _reverse_query(graph, five_tuple, slots=slots, max_results=CANDIDATE_CAP)
+        page = _reverse_query(graph, five_tuple, slots=slots, max_results=candidate_cap)
         window.considered = len(page.dcids)
         if subject_ceiling is None or not page.truncated:
             return _confirm_group(
@@ -568,11 +587,12 @@ def _enumerate_resolved(
                 graph=graph,
                 readings=readings,
                 member_cap=member_cap,
-                candidate_cap=CANDIDATE_CAP,
+                candidate_cap=candidate_cap,
                 truncated=page.truncated,
                 extra_candidates=extra_candidates,
                 role_keys=frozenset(role_keys),
                 open_role_keys=frozenset(open_role_keys),
+                arcs_complete=arcs_complete,
             )
         return _read_whole_set(
             five_tuple,
@@ -587,6 +607,8 @@ def _enumerate_resolved(
             extra_candidates=extra_candidates,
             role_keys=frozenset(role_keys),
             open_role_keys=frozenset(open_role_keys),
+            candidate_cap=candidate_cap,
+            arcs_complete=arcs_complete,
         )
     except _DeadlineCrossed as exc:
         raise MemberReadDeadline(
@@ -610,8 +632,10 @@ def _read_whole_set(
     extra_candidates: Sequence[str],
     role_keys: frozenset[str],
     open_role_keys: frozenset[str],
+    candidate_cap: int,
+    arcs_complete: Callable[[str], bool],
 ) -> MemberGroup:
-    """Settle a truncated first page. Confirm it when it may hold a root that proves it
+    """Settle a truncated first page, read at `candidate_cap`. Confirm it when it may hold a root that proves it
     complete, and otherwise read the whole filtered set up to `subject_ceiling` and
     confirm that.
 
@@ -635,12 +659,13 @@ def _read_whole_set(
                 graph=graph,
                 readings=readings,
                 member_cap=member_cap,
-                candidate_cap=CANDIDATE_CAP,
+                candidate_cap=candidate_cap,
                 truncated=True,
                 extra_candidates=extra_candidates,
                 role_keys=role_keys,
                 open_role_keys=open_role_keys,
                 prior_arcs=page_arcs,
+                arcs_complete=arcs_complete,
             )
             if group.proven_complete:
                 return group
@@ -672,6 +697,7 @@ def _read_whole_set(
         role_keys=role_keys,
         open_role_keys=open_role_keys,
         prior_arcs=page_arcs,
+        arcs_complete=arcs_complete,
     )
     return replace(group, full_read=True)
 
@@ -982,6 +1008,7 @@ def _confirm_group(
     role_keys: frozenset[str] = frozenset(),
     prior_arcs: Mapping[str, dict[str, tuple[str, ...]] | None] = _EMPTY_ARCS,
     open_role_keys: frozenset[str] = frozenset(),
+    arcs_complete: Callable[[str], bool],
 ) -> MemberGroup:
     """Confirm walked and caller-supplied candidates, reduce survivors, and enforce
     `member_cap` on the antichain result. The reverse-query page is capped at
@@ -990,6 +1017,8 @@ def _confirm_group(
     `truncated` and `candidate_cap` pass through unchanged. Completeness is computed
     from the final antichain. Drop candidates with a present, non-StatVar `typeOf`.
     Missing `typeOf` is inconclusive, so winners receive a trusted re-read.
+    A candidate rejected for an absent arc is re-read (`_reconcile_absence_rejected`)
+    unless `arcs_complete` says its read holds every arc, which makes it a non-member.
 
     Extras are deduplicated and receive the same membership and reduction checks,
     and skip filter reconciliation, which applies only to candidates the reverse
@@ -1045,7 +1074,7 @@ def _confirm_group(
         confirmation = _confirm_member(dcid, arcs, five_tuple=five_tuple, slots=slots)
         if confirmation.member is not None:
             consistent.append(confirmation.member)
-        elif confirmation.absence_rejected:
+        elif confirmation.absence_rejected and not arcs_complete(dcid):
             absence_suspects.append(dcid)
     recovered, unresolved_suspects = _reconcile_absence_rejected(
         _root_shaped_first(absence_suspects, arcs_by_dcid=arcs_by_dcid, slots=slots),
@@ -1136,6 +1165,7 @@ def _confirm_group(
         root_confirmed=root_confirmed,
         inconsistent_candidates=unresolved,
         undismissed_candidates=undismissed,
+        undismissed_rereadable=not all(map(arcs_complete, undismissed)),
         elected_open_role_keys=election.role_keys - role_keys,
     )
 

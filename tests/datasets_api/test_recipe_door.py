@@ -1,4 +1,4 @@
-"""Tests recipes at the publish door and the recipe door's four routes.
+"""Tests recipes at the publish door and the recipe door's three routes.
 
 One `FakeVersionRecordDatasetStore` backs the version writer, snapshot reader, recipe store, and
 version lister, so the recipe SQL runs against the rows the publish door wrote. HTTP tests use
@@ -8,7 +8,7 @@ the whole Datasets surface, which also proves no other door's route answers a re
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,7 +20,6 @@ from datasets_api.doors.publish import PublishRecipeStoreMissing, publish_frame
 from datasets_api.publish_models import MAX_RECIPE_BYTES, Recipe
 from datasets_api.recipe_store import LiveRecipeStore, ReplayedFrame
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
-from datasets_api.versions import ArtifactRecord, VersionRecord
 from spec_registry import LiveSpecRegistry
 from tests.artifact_store.conftest import FakeGCSClient
 
@@ -41,7 +40,6 @@ _AUTH_HEADERS = {"x-dfo-principal": _PRINCIPAL}
 
 _RECIPE_PATH = f"/api/datasets/frames/{_SPEC_ID}/{_CONTENT_VERSION}/recipe"
 _REPLAY_PATH = f"/api/datasets/recipes/replays/{_REPLAY_KEY}"
-_VERSIONS_PATH = "/api/datasets/spec_a/versions"
 
 
 def _recipe(**overrides: object) -> dict[str, object]:
@@ -135,37 +133,6 @@ class _Deps:
         record = self.recipe_store.read_recipe(spec_id=spec_id, content_version=content_version)
         return None if record is None else dict(record.body)
 
-    def record_version(
-        self,
-        *,
-        subject_id: str,
-        content_version: str,
-        base_content_version: str | None = None,
-        renderings: tuple[dict[str, object], ...] = (),
-    ) -> None:
-        """Record a version with one stored file linked under it per entry of `renderings`."""
-        artifacts = tuple(
-            ArtifactRecord(
-                artifact_digest=self.artifact_store.put(
-                    f"{content_version}:{index}".encode(), tier=Tier.working
-                ).digest,
-                rendering=rendering,
-                media_type="application/vnd.apache.parquet",
-            )
-            for index, rendering in enumerate(renderings)
-        )
-        self.version_writer.record_version(
-            VersionRecord(
-                subject_id=subject_id,
-                subject_kind="spec",
-                content_version=content_version,
-                schema_version=1,
-                facts=FrameLineage(input_content_versions=[]),
-                artifacts=artifacts,
-                base_content_version=base_content_version,
-            )
-        )
-
 
 @pytest.fixture
 def deps() -> _Deps:
@@ -254,12 +221,26 @@ def test_publish_with_a_recipe_and_no_recipe_store_refuses_before_any_write(deps
     assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
 
 
-def test_put_recipe_is_idempotent_and_readable(deps: _Deps) -> None:
+_STAMPED_ROOT = {
+    "spec_id": "spec_a",
+    "content_version": "cv_00000000000000000000000000abc123",
+    "groupby": None,
+    "enrichment_stamp": "e" * 64,
+}
+
+
+@pytest.mark.parametrize(
+    "roots",
+    [None, [_STAMPED_ROOT]],
+    ids=["root-without-enrichment-stamp", "root-with-enrichment-stamp"],
+)
+def test_put_recipe_is_idempotent_and_readable(deps: _Deps, roots: list[object] | None) -> None:
     client = deps.client()
     deps.publish(client)
+    sent = _recipe(anchor=_anchor(), **({} if roots is None else {"roots": roots}))
 
-    first = client.put(_RECIPE_PATH, json=_recipe(anchor=_anchor()), headers=_AUTH_HEADERS)
-    second = client.put(_RECIPE_PATH, json=_recipe(anchor=_anchor()), headers=_AUTH_HEADERS)
+    first = client.put(_RECIPE_PATH, json=sent, headers=_AUTH_HEADERS)
+    second = client.put(_RECIPE_PATH, json=sent, headers=_AUTH_HEADERS)
     read = client.get(_RECIPE_PATH, headers=_AUTH_HEADERS)
     replay = client.get(_REPLAY_PATH, headers=_AUTH_HEADERS)
 
@@ -272,7 +253,8 @@ def test_put_recipe_is_idempotent_and_readable(deps: _Deps) -> None:
     assert second.status_code == 200, second.text
     assert second.json()["created"] is False
     assert read.status_code == 200, read.text
-    assert read.json() == _recipe(anchor=_anchor())
+    assert read.json() == sent
+    assert deps.stored_recipe() == sent
     assert replay.status_code == 200, replay.text
     assert replay.json() == {"spec_id": _SPEC_ID, "content_version": _CONTENT_VERSION}
 
@@ -371,139 +353,10 @@ def test_recipe_and_replay_reads_are_not_found_when_nothing_is_stored(deps: _Dep
     assert replay.json()["code"] == "recipe_not_found"
 
 
-_FRAME1_RENDERING = {"format": "frame1"}
-_STATISTICS_RENDERING = {"statistics": "series"}
-_PLAIN_RENDERING = {"format": "parquet", "bundle": False, "layout": "frame"}
-_GROUPBY = {"by": ["recipient"], "op": "sum"}
-_LEVELLED_GROUPBY = {"by": ["recipient", "sector"], "op": "sum", "levels": {"sector": 0}}
-
-
-def test_versions_list_is_newest_first_with_each_version_s_rendering(deps: _Deps) -> None:
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000001",
-        base_content_version="cv_00000000000000000000000000000000",
-        renderings=(_FRAME1_RENDERING, {**_PLAIN_RENDERING, "groupby": _LEVELLED_GROUPBY}),
-    )
-    deps.now += timedelta(hours=1)
-    # A raw version lists as plain whatever is linked under it.
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000003",
-        renderings=(_FRAME1_RENDERING, _PLAIN_RENDERING, {**_PLAIN_RENDERING, "groupby": _GROUPBY}),
-    )
-    deps.now += timedelta(hours=1)
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000002",
-        base_content_version="cv_00000000000000000000000000000003",
-        renderings=(
-            _STATISTICS_RENDERING,
-            _FRAME1_RENDERING,
-            {**_PLAIN_RENDERING, "groupby": _GROUPBY},
-        ),
-    )
-    deps.now += timedelta(hours=1)
-    # A collapse holding only its frame1 and statistics files records no groupby.
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000004",
-        base_content_version="cv_00000000000000000000000000000003",
-        renderings=(_FRAME1_RENDERING, _STATISTICS_RENDERING),
-    )
-    deps.now += timedelta(hours=1)
-    # A party-totals cut records the option on its file, alone or beside the groupby.
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000005",
-        base_content_version="cv_00000000000000000000000000000003",
-        renderings=(_FRAME1_RENDERING, {**_PLAIN_RENDERING, "without_party_totals": True}),
-    )
-    deps.now += timedelta(hours=1)
-    deps.record_version(
-        subject_id="spec_a",
-        content_version="cv_00000000000000000000000000000006",
-        base_content_version="cv_00000000000000000000000000000003",
-        renderings=(
-            _FRAME1_RENDERING,
-            {**_PLAIN_RENDERING, "groupby": _GROUPBY, "without_party_totals": True},
-        ),
-    )
-    deps.record_version(
-        subject_id="spec_b",
-        content_version="cv_00000000000000000000000000000009",
-        base_content_version="cv_00000000000000000000000000000008",
-        renderings=({**_PLAIN_RENDERING, "groupby": {"by": ["donor"], "op": "sum"}},),
-    )
-
-    response = deps.client().get(_VERSIONS_PATH, headers=_AUTH_HEADERS)
-
-    assert response.status_code == 200, response.text
-    assert response.json() == {
-        "schema_version": 1,
-        "spec_id": "spec_a",
-        "versions": [
-            {
-                "content_version": "cv_00000000000000000000000000000006",
-                "base_content_version": "cv_00000000000000000000000000000003",
-                "rendering": "groupby",
-                "groupby": _GROUPBY,
-                "without_party_totals": True,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000005",
-                "base_content_version": "cv_00000000000000000000000000000003",
-                "rendering": "without_party_totals",
-                "groupby": None,
-                "without_party_totals": True,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000004",
-                "base_content_version": "cv_00000000000000000000000000000003",
-                "rendering": "not_recorded",
-                "groupby": None,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000002",
-                "base_content_version": "cv_00000000000000000000000000000003",
-                "rendering": "groupby",
-                "groupby": _GROUPBY,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000003",
-                "base_content_version": None,
-                "rendering": "plain",
-                "groupby": None,
-            },
-            {
-                "content_version": "cv_00000000000000000000000000000001",
-                "base_content_version": "cv_00000000000000000000000000000000",
-                "rendering": "groupby",
-                "groupby": _LEVELLED_GROUPBY,
-            },
-        ],
-    }
-
-
-def test_versions_list_is_empty_for_a_dataset_with_no_stored_version(deps: _Deps) -> None:
-    response = deps.client().get(_VERSIONS_PATH, headers=_AUTH_HEADERS)
-
-    assert response.status_code == 200, response.text
-    assert response.json()["versions"] == []
-
-
-def test_versions_list_refuses_an_id_outside_the_dataset_grammar(deps: _Deps) -> None:
-    response = deps.client().get("/api/datasets/ops_abc123/versions", headers=_AUTH_HEADERS)
-
-    assert response.status_code == 404, response.text
-    assert response.json()["code"] == "not_found"
-
-
 _GUARDED_REQUESTS = [
     ("PUT", _RECIPE_PATH),
     ("GET", _RECIPE_PATH),
     ("GET", _REPLAY_PATH),
-    ("GET", _VERSIONS_PATH),
 ]
 
 

@@ -63,7 +63,7 @@ def test_committed_records_have_expected_population():
     organisations = [r for r in records if r["kind"] == "organisation"]
     aggregates = [r for r in records if r["kind"] == "aggregate"]
     assert len(organisations) == 195
-    assert len(aggregates) == 50
+    assert len(aggregates) == 51
 
     dcids = [r["dcid"] for r in records]
     assert len(dcids) == len(set(dcids)), "committed records carry a duplicate dcid"
@@ -80,6 +80,14 @@ def test_curated_aliases_name_only_known_dcids():
     curated = json.loads(pack.curated_path().read_text())
     unknown = set(curated) - known_dcids
     assert not unknown, f"curated_aliases.json names dcid(s) absent from the records: {unknown}"
+
+
+@pytest.mark.parametrize(
+    ("text", "organisation"),
+    [("IMF", True), ("International Monetary Fund", True), ("China", False), ("Kenya", False)],
+)
+def test_an_organisation_name_is_one_the_pack_stores_for_an_organisation(text, organisation):
+    assert pack.is_organisation_name(text) is organisation
 
 
 def test_build_pack_returns_directory_with_module_metadata(tmp_path: Path):

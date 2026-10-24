@@ -21,6 +21,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
+from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -63,6 +64,7 @@ from search.models import (
     ParsedPart,
     RoleAxis,
     SourceMention,
+    asked_open_axes,
 )
 from series_coverage.shared import CoverageSnapshot
 
@@ -112,19 +114,19 @@ class _FanOutResult:
 
     regions: list[RegionResult] = field(default_factory=list)
     timed_out: bool = False
-    # True when at least one leg's exception, other than an EngineInfraError or a
-    # RATE_TABLE_REFUSALS member, was swallowed into a `_placeholder_no_data`
-    # result under `degrade_on_error`.
-    # That leg's response part looks like a genuine no_data answer, so a
-    # consumer that needs to tell a transient upstream failure apart from a
-    # settled negative one, such as the response cache deciding what is safe
-    # to store, reads this flag instead of the response body. It is also True
-    # when a leg's answer states `alternates_unevaluated`
-    # (`RegionResult.alternates_left_out`): an alternate went unevaluated for
-    # want of a presence read, when its presence read left a StatVar's
-    # default scope unsettled (`RegionResult.scope_unsettled`), and when the
-    # leg swallowed a graph read failure (`RegionResult.degraded`). It does not
-    # cover the deadline backfill, which `timed_out` reports.
+    # True when a leg's answer is weaker than its response part shows. A consumer that must
+    # tell a transient upstream failure from a settled negative one, such as the response
+    # cache deciding what is safe to store, reads this flag instead of the response body.
+    # It is True when:
+    # - a leg's exception, other than an EngineInfraError or a RATE_TABLE_REFUSALS member,
+    #   was swallowed into a `_placeholder_no_data` result under `degrade_on_error`, which
+    #   looks like a genuine no_data answer;
+    # - a leg's answer states `alternates_unevaluated` (`RegionResult.alternates_left_out`)
+    #   because an alternate lacked a presence read;
+    # - a presence read left a StatVar's default scope unsettled
+    #   (`RegionResult.scope_unsettled`);
+    # - a leg swallowed a graph read failure (`RegionResult.degraded`).
+    # The deadline backfill is reported by `timed_out` and does not set it.
     degraded_leg: bool = False
 
 
@@ -224,7 +226,7 @@ def _leg_parsed_form(
     open_axes: Collection[RoleAxis] = (),
     separate: bool = False,
 ) -> ParsedPart | None:
-    """Build the leg's inputs as one parsed part, the form `data_query` pins into.
+    """Build the leg's inputs as one parsed part, the form `NoData.options` are built from.
 
     Each entity appears once per distinct axis the door gave it, with that axis as
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
@@ -408,18 +410,6 @@ def _bind_phrases(
     )
 
 
-def _asked_open_axes(
-    open_axes: frozenset[RoleAxis], operations: Sequence[Operation]
-) -> frozenset[RoleAxis]:
-    """The flow axes a leg asks every member of: its own open roles and each axis one of
-    its operations runs over. Place binding drops an axis a place binds."""
-    return open_axes | {
-        operation.over
-        for operation in operations
-        if operation.over == "origin" or operation.over == "destination"
-    }
-
-
 async def _stream_one_variable(
     v: str,
     i: int,
@@ -432,6 +422,7 @@ async def _stream_one_variable(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None,
@@ -488,8 +479,10 @@ async def _stream_one_variable(
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
     bind alone, and the region opens the slots they run over. `open_axes` are the leg's own
     open roles. Together with the flow axes its operations run over they are the axes
-    resolution leaves open (`_asked_open_axes`), and the part warns for each of its own that
-    the answer drops (`with_dropped_open_roles`). `separate` marks a leg compared with the
+    resolution leaves open (`asked_open_axes`). Place binding drops an axis a place binds,
+    and the part warns for each of its own, and each a whole population asked member by
+    member opens (`RegionResult.listed_axes`), that the answer drops
+    (`with_dropped_open_roles`). `separate` marks a leg compared with the
     others (`RegionResult.separate`). The final region is appended to `landed` before
     its terminal marker is queued. `phase` records the step the leg is in
     (`search.engine.leg_phase`). `door` is the door the leg was posted on
@@ -527,7 +520,7 @@ async def _stream_one_variable(
             source_code=source_code if isinstance(source_code, SeriesCodeMembers) else None,
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             operations=operations,
-            open_axes=_asked_open_axes(open_axes, operations),
+            open_axes=asked_open_axes(open_axes, operations),
             query_text=query_text,
             qualifiers=qualifiers,
             pac=pac,
@@ -535,6 +528,7 @@ async def _stream_one_variable(
             resolver=resolver,
             admission=admission,
             llm=llm,
+            binder=binder,
             sdmx=sdmx,
             base_timing=base_timing,
             pre_resolved=pre_resolved,
@@ -635,7 +629,9 @@ async def _stream_one_variable(
                 separate=separate,
             ),
         )
-        region = with_dropped_open_roles(with_runnable_operations(region, operations), open_axes)
+        region = with_dropped_open_roles(
+            with_runnable_operations(region, operations), open_axes | region.listed_axes
+        )
     # Ownership attaches the instant `region` is final, ahead of the marker.
     landed.append(region)
     await queue.put(_RegionDone(index=i, region=region, degraded=degraded))
@@ -673,6 +669,7 @@ class _LegOverrides:
     per_variable_operations: list[tuple[Operation, ...]] | None
     per_variable_open_axes: list[frozenset[RoleAxis]] | None
     per_variable_separate: list[bool] | None
+    per_variable_dropped_qualifier_phrases: list[list[str]] | None
     door: EntryPath
 
 
@@ -734,6 +731,16 @@ def _leg_operations(overrides: _LegOverrides, i: int) -> tuple[Operation, ...]:
         overrides.per_variable_operations[i]
         if overrides.per_variable_operations is not None
         else ()
+    )
+
+
+def _leg_dropped_qualifier_phrases(
+    overrides: _LegOverrides, i: int, broadcast: list[str] | None
+) -> list[str] | None:
+    return (
+        overrides.per_variable_dropped_qualifier_phrases[i]
+        if overrides.per_variable_dropped_qualifier_phrases is not None
+        else broadcast
     )
 
 
@@ -814,6 +821,7 @@ def _launch_variable_tasks(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     deadline: float,
@@ -859,6 +867,7 @@ def _launch_variable_tasks(
                 resolver=resolver,
                 admission=admission,
                 llm=llm,
+                binder=binder,
                 sdmx=sdmx,
                 deadline=deadline,
                 base_timing=base_timing,
@@ -884,7 +893,9 @@ def _launch_variable_tasks(
                 source_scope=_leg_source_scope(overrides, i),
                 source_code=_leg_source_code(overrides, i),
                 qualifiers=_leg_qualifiers(overrides, i),
-                dropped_qualifier_phrases=dropped_qualifier_phrases,
+                dropped_qualifier_phrases=_leg_dropped_qualifier_phrases(
+                    overrides, i, dropped_qualifier_phrases
+                ),
                 operations=_leg_operations(overrides, i),
                 open_axes=_leg_open_axes(overrides, i),
                 separate=_leg_separate(overrides, i),
@@ -950,6 +961,7 @@ async def _run_variables_streaming(
     resolver: EntityResolver,
     admission: Admission,
     llm: SupportsLLM,
+    binder: Binder,
     sdmx: EngineSdmxClient,
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None,
@@ -979,6 +991,7 @@ async def _run_variables_streaming(
     per_variable_open_axes: list[frozenset[RoleAxis]] | None = None,
     per_variable_separate: list[bool] | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
+    per_variable_dropped_qualifier_phrases: list[list[str]] | None = None,
     query_text: str | None = None,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -1000,15 +1013,17 @@ async def _run_variables_streaming(
     pre-resolution values override their broadcast counterparts by index.
     `None` broadcasts the shared value. `per_variable_pre_resolved` replaces
     the shared map; parsed-door callers merge pins before passing it. `entity_surfaces`
-    maps an entity name to the query words every leg's recall resolves it through. Dropped
-    qualifier phrases and request-level dependencies are broadcast unchanged.
+    maps an entity name to the query words every leg's recall resolves it through.
+    Request-level dependencies are broadcast unchanged.
     `per_variable_operations` gives each leg its own operations, which ride on its
     region and restatement and join its bind's dropped phrases; `None` gives every
     leg none. `per_variable_source_scopes` gives each leg its compiled source mentions;
     `None` gives every leg none. `per_variable_source_codes` gives each leg its compiled
     series code, and `None` gives every leg none. `per_variable_open_axes` gives each leg its own open
     roles, and `None` gives every leg none. `per_variable_separate` marks each leg compared
-    with the others (`RegionResult.separate`), and `None` marks none. `member_entities`
+    with the others (`RegionResult.separate`), and `None` marks none.
+    `per_variable_dropped_qualifier_phrases` gives each leg its own dropped phrases in place
+    of the broadcast `dropped_qualifier_phrases`; `None` broadcasts them. `member_entities`
     are the entities every leg is asked the members of, and `per_variable_member_entities`
     gives each leg its own.
     `query_text` is supplied only for a single-variable request.
@@ -1038,6 +1053,7 @@ async def _run_variables_streaming(
         per_variable_operations=per_variable_operations,
         per_variable_open_axes=per_variable_open_axes,
         per_variable_separate=per_variable_separate,
+        per_variable_dropped_qualifier_phrases=per_variable_dropped_qualifier_phrases,
         door=door,
     )
 
@@ -1060,6 +1076,7 @@ async def _run_variables_streaming(
         resolver=resolver,
         admission=admission,
         llm=llm,
+        binder=binder,
         sdmx=sdmx,
         base_timing=base_timing,
         deadline=deadline,

@@ -167,6 +167,11 @@ _gemini-key:
 # an alternate endpoint (e.g., a local development mirror):
 #   just SEARCH_GRAPH_BASE=http://127.0.0.1:8080 dev
 #
+# The default graph is a Cloud Run service that needs an ID token, which user
+# credentials cannot mint. Impersonate a service account, which mints and
+# refreshes tokens:
+#   gcloud auth application-default login --impersonate-service-account=<sa>
+#
 # Hot-reload the Search API on the host (uvicorn --reload)
 dev:
     #!/usr/bin/env bash
@@ -380,6 +385,9 @@ corpus-check *ARGS:
 corpus-schema:
     uv run {{SYNC_ARGS}} python scripts/eval_corpus.py schema
 
+# Reads GRAPH_RELEASE_URI from the environment: the measure labels come from that release's
+# measure index.
+#
 # Trim a sentence panel run (a directory of raw-*.jsonl) into tests/fixtures/sentence_panel
 sentence-golden RUN:
     uv run {{SYNC_ARGS}} python scripts/sentence_golden.py {{RUN}}
@@ -407,16 +415,16 @@ eval-paired HEAD_URL BASE_URL BASE_REF *ARGS:
 eval-run URL *ARGS:
     uv run {{SYNC_ARGS}} python scripts/eval_paired.py --single-url {{URL}} {{ARGS}}
 
-# Reads GEMINI_API_KEY, COVERAGE_ARTIFACT_URI and ORIGIN_CATALOGUE_URI from the environment.
+# Reads GEMINI_API_KEY, GRAPH_RELEASE_URI and ORIGIN_CATALOGUE_URI from the environment.
 #
-# Serve the app with the eval profile: no response cache, no LLM memo, no coverage index check
+# Serve the app with the eval profile: no response cache, no LLM memo, no extraction store
 eval-app PORT:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${GEMINI_API_KEY:?set GEMINI_API_KEY in the environment}"
     export SEARCH_RESPONSE_CACHE_ENABLED=false
     export SEARCH_LLM_MEMO_MAX_BYTES=0
-    export COVERAGE_INDEX_CHECK=off
+    export SEARCH_EXTRACT_STORE=off
     export SEARCH_GRAPH_BASE="{{SEARCH_GRAPH_BASE}}"
     if [ -z "${RESOLVEKIT_CACHE_DIR:-}" ]; then
         export RESOLVEKIT_CACHE_DIR="{{justfile_directory()}}/runs/dev_resolvekit"

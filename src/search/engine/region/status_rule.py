@@ -26,7 +26,8 @@ open (`OpenAxes`).
    read matched to no listed denominator, since the question then picked no reading's
    base (`base_unmatched`). (a) x shares P's population type and measured property, and
    differs from it only on the stat type, the measurement qualifier or the denominator,
-   at least one of them open (`structural`). (b) the model nominated x (`nominated`).
+   at least one of them open (`structural`). (b) the model nominated x (`nominated`). A
+   binder nominates only readings it scores near its best (`gemini.nominated_near_best`).
 3. R empty gives `definite`; else `candidates`, P first and R in menu order.
 4. A pinned part never produces candidates. A reading that fails the form the question
    asks for or a code it names is inadmissible before bind, so it is never on the menu. A

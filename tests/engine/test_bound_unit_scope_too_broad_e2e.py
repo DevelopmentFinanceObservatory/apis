@@ -16,7 +16,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise import UpstreamResponseError
 from materialise.graph import SubjectPage
 from materialise.rate_tables import RateTableCache
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import (
@@ -26,6 +26,7 @@ from search.engine.region.codes import (
 from search.engine.region.observations import fetch as fetch_module
 from search.engine.region.state import EngineOptions
 from search.observations import OBSERVATIONS_PREVIEW_TOO_LARGE
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -72,12 +73,12 @@ _NODES = {
     _SV_A: {
         "label": "Bound unit scope SourceA",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Bound unit scope SourceA", _VAL_A),
+        "arcs": _sv_arcs("Bound unit scope too broad test variable, source A", _VAL_A),
     },
     _SV_B: {
         "label": "Bound unit scope SourceB",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Bound unit scope SourceB", _VAL_B),
+        "arcs": _sv_arcs("Bound unit scope too broad test variable, source B", _VAL_B),
     },
 }
 
@@ -95,8 +96,8 @@ def _set_bind_llm() -> object:
             if schema is QuantityOutput:
                 return NO_QUANTITY
             assert schema.__name__ == "_UniversalBindOutput"
-            return _UniversalBindOutput(
-                chosen_shape_index=0,
+            return elected_reply(
+                0,
                 bindings=[
                     SlotBindingDraft(
                         axis="how",
@@ -106,7 +107,6 @@ def _set_bind_llm() -> object:
                     )
                 ],
                 also_plausible=None,
-                ask=None,
             ), None
 
     return _SetBindLLM()

@@ -25,6 +25,7 @@ from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import WORKER_PLACE_SCOPE_MEMO_NAME, build_worker_app
 from graph_generation import GraphGeneration
 from graph_generation.fake import FakeGeneration
+from graph_release.service import get_release_service
 from materialise.rate_tables import RateTableCache
 from series_coverage.shared import get_coverage_service
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -115,6 +116,7 @@ def _open_deps(**injected: Any) -> None:
     overrides = DepsOverrides(
         coverage=get_coverage_service(),
         rate_cache=RateTableCache(),
+        release=get_release_service(),
         code_index=get_index(),
         task_client=FakeTaskClient(),
         **{name: object() for name in _STORES},
@@ -195,13 +197,14 @@ def test_the_worker_builds_its_graph_client_on_the_shared_generation(
     monkeypatch.setattr(worker_module, "LiveDatasetStore", lambda **_: object())
     monkeypatch.setattr(worker_module, "LiveArtifactStore", lambda **_: object())
     monkeypatch.setattr(worker_module, "LiveArtifactInventory", lambda **_: object())
-    monkeypatch.setattr(worker_module, "get_index", lambda: object())
+    index_reads: list[None] = []
+    monkeypatch.setattr(worker_module, "get_index", lambda: index_reads.append(None))
     monkeypatch.setattr(
         worker_module,
         "get_coverage_service",
         lambda: FakeCoverageService(build_coverage_index([], role_names={})),
     )
-    monkeypatch.setattr(worker_module, "_build_live_definition_deps", lambda **_: object())
+    monkeypatch.setattr(worker_module, "_live_deps_factory", lambda **_: object())
     registered: list[tuple[str, ...]] = []
 
     app = build_worker_app(
@@ -221,6 +224,7 @@ def test_the_worker_builds_its_graph_client_on_the_shared_generation(
     assert events.graph_kwargs["generation"] is events.generation
     assert events.graph_kwargs["un_availability"] is not None
     assert registered == [(WORKER_PLACE_SCOPE_MEMO_NAME,)]
+    assert index_reads == [None]  # the startup read that fails a missing export
     assert events.generation.registered_names() == ()
     assert events.log.index("close graph") < events.log.index("release generation")
 

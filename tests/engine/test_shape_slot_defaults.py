@@ -121,7 +121,8 @@ class _RecordedBirthRateLLM:
         recorded = _UniversalBindOutput.model_validate_json(
             '{"chosen_shape_index":0,"bindings":[{"axis":"how","property_dcid":"medicalStatus",'
             '"kind":"unbound","value_dcids":[],"evidence":"mentioned",'
-            '"requested_all_phrase":null}],"also_plausible":[1],"ask":null,"unplaced":[]}'
+            '"requested_all_phrase":null}],"also_plausible":[1],"ask":null,"unplaced":[],'
+            '"measuring":[{"index":0,"rating":1.0},{"index":1,"rating":0.9}]}'
         )
         return recorded, {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
 
@@ -184,10 +185,11 @@ def _status(
     )
 
 
-def test_births_declare_live_birth_as_the_medical_status_default() -> None:
+def test_the_index_declares_live_births_and_debt_outstanding_as_slot_defaults() -> None:
     defaults = get_index().shape_slot_defaults
     assert [(d.population_type, d.property_dcid, d.value_dcid) for d in defaults] == [
-        ("BirthEvent", "medicalStatus", "LiveBirth")
+        ("BirthEvent", "medicalStatus", "LiveBirth"),
+        ("FinancialPosition", "financialPositionType", "AmountOutstanding"),
     ]
 
 

@@ -82,19 +82,24 @@ class MemberPopulation:
 
 @dataclass(frozen=True)
 class FamilyTotalAbsent:
-    """The single member a result names is not its family's total.
+    """The single member a result names is not its family's total, or the result shows a
+    family with no total by its one breakdown.
 
     ``shown`` is the member the result names. ``total`` is the family's total when
     the family holds one, which then had no point at ``places`` in the years the read
     plan reads, and ``None`` when the family holds none. ``places`` are the probed
     place dcids, empty when no probe ran. ``in_years_asked`` is true when the plan
     read a year range, so the total can hold data at the places in other years.
+    ``breakdown`` names the slots a result on a family with no total shows every member
+    by, its one breakdown signature (`standard.Narrow.lone_signature`); ``shown`` is then
+    its first member. Empty when the result names one member.
     """
 
     total: str | None
     shown: str
     places: tuple[str, ...]
     in_years_asked: bool = False
+    breakdown: tuple[str, ...] = ()
 
 
 @dataclass
@@ -164,7 +169,7 @@ class Materialised:
     population: MemberPopulation | None = None
     # Latest-year summary from the role coverage index; None without role data.
     headline: Headline | None = None
-    # Coverage artifact stamp used for this result's population and headline.
+    # Coverage view stamp used for this result's population and headline.
     coverage_stamp: str | None = None
 
     @property

@@ -18,6 +18,7 @@ from search.engine.spec_build import build_shape_model
 from search.render.heading import heading_from_parts
 from search.render.plan import render_sentence, render_sentence_plan
 from search.render.tokens import plan_tokens, sentence_from_plan
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
@@ -159,8 +160,8 @@ class _FixedBindLLM:
     async def generate_structured(self, *, prompt: str, system: str, schema: type):
         if schema is QuantityOutput:
             return NO_QUANTITY
-        assert schema is _UniversalBindOutput
-        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+        assert issubclass(schema, _UniversalBindOutput)
+        return elected_reply(0), None
 
 
 def test_pipeline_threads_accepted_place_text_to_resolved_entity_and_sentence() -> None:

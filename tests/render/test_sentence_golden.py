@@ -28,6 +28,7 @@ from search.heading.words import content_words
 from search.models import (
     SOURCE_REF,
     UNIT_REF,
+    WHERE_REF,
     CandidatesPart,
     DefinitePart,
     SentenceToken,
@@ -87,7 +88,10 @@ def test_renderer_reproduces_the_recorded_panel(line: dict[str, Any]) -> None:
                 )
             _assert_plan(
                 candidates_sentence_plan(
-                    specs, truncated=part.candidates.truncated, departures=part.departures
+                    specs,
+                    truncated=part.candidates.truncated,
+                    departures=part.departures,
+                    assumptions=part.assumptions,
                 ),
                 part.sentence_plan,
                 f"part {index} candidates",
@@ -149,6 +153,10 @@ def _edit_targets(spec: Spec) -> set[str]:
         where if role == "destination" and where is not None else role_ref(role)
         for role in roles & {"origin", "destination"}
     }
+    if resolved.scope is not None and resolved.scope.axis == "observationAbout":
+        # A request that named no place reads across a place scope the heading states
+        # ("worldwide", "across 210 places"), edited through the where slot's token.
+        role_refs.add(where or WHERE_REF)
     return bound | with_options | when | role_refs | {UNIT_REF, SOURCE_REF}
 
 
@@ -207,15 +215,16 @@ def test_each_edit_target_is_stated_by_at_most_one_token(line: dict[str, Any]) -
     ("query_id", "measure_states", "refine"),
     [
         pytest.param(
-            "crs-001",
+            "crs-033",
             ["how:crsTypeOfFlow", "how:financialFlowType", "how:nettingBasis"],
             {"how:crsCooperationModality", "how:crsPurpose", "how:crsTypeOfFinance"},
             id="label-states-flow-and-measure-axes",
         ),
+        # Every member is a project-type intervention, and finance types vary.
         pytest.param(
-            "crs-007",
-            ["how:crsCooperationModality", "how:crsTypeOfFinance"],
-            {"how:crsPurpose"},
+            "crs-025",
+            ["how:crsCooperationModality"],
+            {"how:crsTypeOfFinance"},
             id="label-states-agreed-open-axes",
         ),
         pytest.param(

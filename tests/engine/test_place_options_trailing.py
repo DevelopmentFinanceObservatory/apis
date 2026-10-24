@@ -18,6 +18,7 @@ from materialise.graph import SubjectPage
 from search.engine.app import create_app, search_surface
 from search.engine.enrichment import PLACE_OPTIONS_BUDGET_S, _stream_slot_options
 from search.engine.events import PlaceOptionsEvent
+from search.engine.options.options_response_cache import OptionsResponseCache
 from search.engine.region.result import RegionResult
 from search.models import ResubmitIdentityEntry
 from tests.engine._base_identity import make_identity, subject_entity
@@ -40,7 +41,7 @@ _FERTILITY_SV = "FertilityRate_Person_Female"
 # this shape. Reusing that same facets mapping (grounding/coverage keep
 # working unchanged) plus a self-authored arcs/subjects pair for
 # FertilityRate_Person_Female -- mirroring test_place_options_event.py's own
-# convention for a shape the packaged code index does not carry -- gives
+# convention for a shape the fixture code index does not carry -- gives
 # build_place_options_events' own resolve_options_target call something real
 # to enumerate, without touching the query's own definite resolution at all.
 _FERTILITY_ARCS: dict[str, dict[str, tuple[str, ...]]] = {
@@ -316,6 +317,7 @@ class TestPlaceOptionsBudget:
                 place_options_task=task,
             )
             warnings_out: list = []
+            incomplete: list[str] = []
             t0 = time.monotonic()
             events = [
                 ev
@@ -324,6 +326,7 @@ class TestPlaceOptionsBudget:
                     deadline=time.monotonic() + 30.0,  # generous shared deadline
                     warnings_out=warnings_out,
                     late_departures_out=[],
+                    incomplete_out=incomplete,
                     response=None,
                     answered=(),
                     place_options_budget_s=0.05,
@@ -333,6 +336,7 @@ class TestPlaceOptionsBudget:
 
             assert events == [], "a budget-expired place_options task must drop silently"
             assert warnings_out == [], "no warning for a place_options timeout (fail-open, no code)"
+            assert incomplete == [], "the bundle holds no place options, so none is missing"
             assert elapsed < 1.0, (
                 f"awaiting the place_options task took {elapsed:.2f}s -- "
                 "the short budget failed to cut it off"
@@ -376,6 +380,7 @@ class TestPlaceOptionsBudget:
                 place_options_task=task,
             )
             warnings_out: list = []
+            incomplete: list[str] = []
             t0 = time.monotonic()
             events = [
                 ev
@@ -384,6 +389,7 @@ class TestPlaceOptionsBudget:
                     deadline=time.monotonic() + 0.05,  # near shared deadline
                     warnings_out=warnings_out,
                     late_departures_out=[],
+                    incomplete_out=incomplete,
                     response=None,
                     answered=(),
                     place_options_budget_s=5.0,  # generous own budget
@@ -393,6 +399,7 @@ class TestPlaceOptionsBudget:
 
             assert events == [], "a deadline-expired place_options task must drop silently"
             assert warnings_out == [], "no warning for a place_options timeout (fail-open, no code)"
+            assert incomplete == [], "the bundle holds no place options, so none is missing"
             assert elapsed < 1.0, (
                 f"awaiting the place_options task took {elapsed:.2f}s -- "
                 "the near shared deadline failed to cut it off before the own budget"
@@ -413,23 +420,28 @@ class TestPlaceOptionsBudget:
 
 class TestPlaceOptionsPoolShutdown:
     def test_lifespan_shutdown_calls_shutdown_on_the_built_pool(self, monkeypatch):
-        """The lifespan builds a default pool and shuts it down exactly once."""
+        """The lifespan builds a default pool carrying the options route's cache, and shuts
+        it down exactly once."""
         built: list[_RecordingPool] = []
 
         class _RecordingPoolFactory:
             @classmethod
-            def build(cls, *, max_workers: int) -> _RecordingPool:
-                pool = _RecordingPool(max_workers)
+            def build(
+                cls, *, max_workers: int, options_cache: OptionsResponseCache | None = None
+            ) -> _RecordingPool:
+                pool = _RecordingPool(max_workers, options_cache=options_cache)
                 built.append(pool)
                 return pool
 
         monkeypatch.setattr("search.engine.app.PlaceOptionsPool", _RecordingPoolFactory)
 
+        options_cache = OptionsResponseCache(enabled=True, max_entries=1)
         surface = search_surface(
             graph=FakeGraph(),
             llm=FakeLLM(),
             sdmx=FakeSdmxClient(),
             materialise_graph=FakeGraphReader(),
+            options_response_cache=options_cache,
         )
 
         lifespan = surface.lifespan
@@ -438,6 +450,7 @@ class TestPlaceOptionsPoolShutdown:
         async def _body() -> None:
             async with lifespan(FastAPI()):
                 assert len(built) == 1, "expected exactly one PlaceOptionsPool built at startup"
+                assert built[0].options_cache is options_cache
                 assert built[0].shutdown_calls == 0
             assert built[0].shutdown_calls == 1
 
@@ -449,8 +462,10 @@ class TestPlaceOptionsPoolShutdown:
 
         class _RecordingPoolFactory:
             @classmethod
-            def build(cls, *, max_workers: int) -> _RecordingPool:
-                pool = _RecordingPool(max_workers)
+            def build(
+                cls, *, max_workers: int, options_cache: OptionsResponseCache | None = None
+            ) -> _RecordingPool:
+                pool = _RecordingPool(max_workers, options_cache=options_cache)
                 built.append(pool)
                 return pool
 
@@ -479,8 +494,11 @@ class TestPlaceOptionsPoolShutdown:
 class _RecordingPool:
     """A pool stand-in that records shutdown calls."""
 
-    def __init__(self, max_workers: int) -> None:
+    def __init__(
+        self, max_workers: int, *, options_cache: OptionsResponseCache | None = None
+    ) -> None:
         self.max_workers = max_workers
+        self.options_cache = options_cache
         self.shutdown_calls = 0
 
     def shutdown(self) -> None:

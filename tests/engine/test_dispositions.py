@@ -197,7 +197,7 @@ def test_a_declining_kind_answers_declined_with_its_reason(reason: str):
         "cached_tokens": 0,
     }
     assert response.diagnostics.timing_ms.by_step is not None
-    assert set(response.diagnostics.timing_ms.by_step) == {"extract"}
+    assert set(response.diagnostics.timing_ms.by_step) == {"coverage", "extract", "entity_check"}
     assert llm.schemas == ["Extraction"], "only extract ran: no bind or other LLM call"
     assert graph.reads == [], "a question naming no place reads nothing from the graph"
     assert _done(events).timed_out is False
@@ -356,10 +356,16 @@ def test_a_repeated_catalogue_question_is_a_layer1_hit():
     stored, served = _response(first), _response(second)
     assert isinstance(served, CatalogueAnswer)
     assert served.scope == stored.scope
+    assert set(stored.diagnostics.timing_ms.by_step) == {
+        "coverage",
+        "extract",
+        "entity_check",
+        "cache_lookup",
+    }, "a miss books the layer-1 lookup that preceded it"
     assert served.query_echo.raw_query == "What can I find  on Kenya?"
     assert served.query_echo.extract_skipped is True
     assert served.diagnostics.timing_ms.by_step is not None
-    assert set(served.diagnostics.timing_ms.by_step) == {"response_cache_layer1"}
+    assert set(served.diagnostics.timing_ms.by_step) == {"coverage", "response_cache_layer1"}
 
 
 def test_a_repeated_declined_question_is_a_layer1_hit():
@@ -393,16 +399,14 @@ def test_a_yielding_kind_that_names_a_measure_resolves(kind: str):
     assert [part.status for part in response.parts] == ["no_data"]
 
 
-def test_a_resolution_with_no_variables_keeps_variable_not_resolved():
+def test_a_resolution_with_no_variables_answers_as_a_catalogue():
     llm = _ExtractOnlyLLM(_extraction("resolution"))
 
     events = _events("hello", llm, _StubResolver())
 
     response = _response(events)
-    assert isinstance(response, Resolution)
-    (part,) = response.parts
-    assert part.status == "no_data"
-    assert part.no_data.reason == "variable_not_resolved"
+    assert isinstance(response, CatalogueAnswer)
+    assert response.scope.place is None
 
 
 _UNRECORDED_PART = ParsedPart(variable_text="zzq unrecorded measure")

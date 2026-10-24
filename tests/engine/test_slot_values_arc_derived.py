@@ -6,9 +6,10 @@ A synthetic two-member set binding exercises values that the recorded query fixt
 from __future__ import annotations
 
 from materialise.graph import SubjectPage
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.models import ParsedEntity, ParsedInput, ParsedPart, ResolveRequest
+from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
@@ -46,12 +47,12 @@ _NODES = {
     _SV_A: {
         "label": "Slot values SourceA",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Slot values SourceA", _VAL_A),
+        "arcs": _sv_arcs("Arc derived slot values test variable, source A", _VAL_A),
     },
     _SV_B: {
         "label": "Slot values SourceB",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Slot values SourceB", _VAL_B),
+        "arcs": _sv_arcs("Arc derived slot values test variable, source B", _VAL_B),
     },
 }
 
@@ -71,8 +72,8 @@ class _SetBindLLM:
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
-        return _UniversalBindOutput(
-            chosen_shape_index=0,
+        return elected_reply(
+            0,
             bindings=[
                 SlotBindingDraft(
                     axis="how",
@@ -82,7 +83,6 @@ class _SetBindLLM:
                 )
             ],
             also_plausible=None,
-            ask=None,
         ), None
 
 

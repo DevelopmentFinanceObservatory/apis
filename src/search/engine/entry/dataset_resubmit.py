@@ -299,6 +299,7 @@ async def handle(
                 memo.store(key, region)
         return dataclasses.replace(
             region,
+            assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),
             variable_text=entry.variable_text,
             earliest_index=index,
             separate=entry.separate,
@@ -370,6 +371,7 @@ async def handle(
                     resolver=resolver,
                     admission=admission,
                     llm=llm,
+                    binder=params.binder,
                     sdmx=sdmx,
                     materialise_graph=materialise_graph,
                     materialise_sdmx=materialise_sdmx,
@@ -479,6 +481,8 @@ async def handle(
             deadline=trailing_deadline,
             warnings_out=slot_options_warnings,
             late_departures_out=late_departures,
+            # This door stores no response bundle, so its trailing losses need no report.
+            incomplete_out=[],
             response=response,
             answered=[region],
         ):
