@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -222,16 +222,19 @@ class TestLifespanWarm:
         # warm(); this test asserts on warm, so the constructor is stubbed
         # as well.
         with (
-            patch("search.engine.clients.llm.warm") as mock_warm,
+            patch("search.engine.clients.llm.warm", new_callable=AsyncMock) as mock_warm,
             patch("search.engine.app.LLM") as mock_llm,
             TestClient(app),
         ):
-            mock_warm.assert_called_once()
+            mock_warm.assert_awaited_once()
         mock_llm.assert_called_once()
 
     def test_warm_not_called_when_llm_injected(self):
         app = create_app(graph=FakeGraph(), llm=FakeLLM(), sdmx=EMPTY_SDMX)
-        with patch("search.engine.clients.llm.warm") as mock_warm, TestClient(app):
+        with (
+            patch("search.engine.clients.llm.warm", new_callable=AsyncMock) as mock_warm,
+            TestClient(app),
+        ):
             mock_warm.assert_not_called()
 
     def test_boot_fails_on_missing_gemini_key(self):
