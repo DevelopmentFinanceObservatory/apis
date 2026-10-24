@@ -43,8 +43,10 @@ from search.engine.region.phase_rank_bind import (
     _unrated_words,
     _unread_runs,
     judge_value_requirements,
+    served_member_names,
     value_requirements,
 )
+from search.engine.region.place_roles import PlaceAssignment
 from search.engine.region.requirements import (
     Judgement,
     Outcome,
@@ -1094,6 +1096,78 @@ def test_a_held_total_recall_did_not_find_reads_its_name(bind_catalogue, kind):
 
     assert nominated == ("female",)
     assert _unrated_words(state) == ("female",)
+
+
+def test_a_served_member_with_no_name_clears_no_word_the_named_ones_alone_hold():
+    """ "GDP" over a family whose bindings serve nominal GDP and a net domestic product
+    member whose name the engine cannot read, beside a gross value added member they leave
+    out: the words are those every named member holds, so "gdp" goes to the binder although
+    the one named member served holds it. The source values are no code the index labels,
+    so no bound code reads the word."""
+    shape = _value_shape(
+        "gdp",
+        SlotKeyDraft(axis="what", property_dcid="activitySource", label="activity source"),
+        members=[
+            {"activitySource": "SourceDomestic"},
+            {"activitySource": "SourceValueAdded"},
+            {"activitySource": "SourceNetDomestic"},
+        ],
+        names=["Nominal gross domestic product", "Gross value added", "unnamed"],
+    )
+    arcs = dict(shape.sv_arc_facts or {})
+    arcs["gdp_2"] = {prop: nodes for prop, nodes in arcs["gdp_2"].items() if prop != "name"}
+    produced = _binding(
+        "activitySource",
+        kind="set",
+        value_dcids=["SourceDomestic", "SourceNetDomestic"],
+    )
+    state = _state(
+        variable="GDP",
+        shape_draft=replace(shape, sv_arc_facts=arcs),
+        bindings=[produced.model_copy(update={"axis": "what"})],
+        unplaced=[],
+        entities=(),
+    )
+    state.bindings = state.bind_result.bindings
+
+    assert served_member_names(state) == {
+        "gdp_0": "Nominal gross domestic product",
+        "gdp_2": None,
+    }
+    assert _unrated_words(state) == ("gdp",)
+
+
+def test_the_served_members_read_the_direction_place_binding_settled():
+    """ "aid to Kenya" named with no direction: binding repair refuses the places
+    ``role_not_resolved``, and place binding settles them on the recipient side
+    (`phase_place_materialise._settle_direction`). A coverage reading after it, as an
+    unbinding at materialise makes, reads the members the recipient class serves, though it
+    read both classes under the refusal."""
+
+    def member(role: str, name: str) -> dict:
+        return {
+            "name": {"nodes": [{"value": name}]},
+            "constraintProperties": {"nodes": []},
+            "observationProperties": {"nodes": [{"dcid": role}]},
+        }
+
+    shape = replace(
+        _shape(),
+        declared_roles=("financingProvider", "financingRecipient"),
+        sv_arc_facts={
+            "aid_received": member("financingRecipient", "Aid received"),
+            "aid_given": member("financingProvider", "Aid given"),
+        },
+    )
+    state = _state(variable="aid", shape_draft=shape, bindings=[], unplaced=[], entities=())
+    state.query_place_roles = "role_not_resolved"
+
+    assert served_member_names(state) == {"aid_received": "Aid received", "aid_given": "Aid given"}
+
+    (kenya,) = place_sets({"Kenya": "country/KEN"}).values()
+    state.elected_place_roles = PlaceAssignment(sets={"destination": (kenya,)})
+
+    assert served_member_names(state) == {"aid_received": "Aid received"}
 
 
 _FLOW_ROLES = ("financingProvider", "financingRecipient")

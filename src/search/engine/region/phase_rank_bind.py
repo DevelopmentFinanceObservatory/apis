@@ -3251,40 +3251,45 @@ def _member_measure_words(state: ResolveState) -> frozenset[str] | None:
     holding data there. A family's total answers before its breakdowns, so "refugee" in
     "refugee population" is left for the binder on a family holding the total and a refugee
     member, and a held family's total reads its name though recall found the refugee member
-    alone. The words are those every served member with a name holds, which the words the
-    answer reads hold whichever of them it shows. With no served member named, they are the
-    words every named member holds (`_shape_measure_words`). None when no member has a
-    name."""
+    alone. The words are those every served member holds, which the words the answer reads
+    hold whichever of them it shows. When a served member has no name, as a code index row
+    recall did not return has none, or none is served, they are the words every named
+    member holds (`_shape_measure_words`), the fewest any name of the family reads, so the
+    named members alone clear no word. None when no member has a name."""
     shape = state.shape_draft
     if not _member_names(shape):
         return None
-    served = [_label_words(name) for name in served_member_names(state).values()]
-    return frozenset.intersection(*served) if served else _shape_measure_words(shape)
+    served = served_member_names(state).values()
+    if not served or None in served:
+        return _shape_measure_words(shape)
+    return frozenset.intersection(*(_label_words(name) for name in served if name is not None))
 
 
-def served_member_names(state: ResolveState) -> dict[str, str]:
-    """The name of each named member the answer over the elected shape and the final
-    bindings can serve, by dcid in serving order: the members `standard.members_served`
-    gives by the rule the resolve serves by, read over the data the part's availability
-    reads found for each (`member_has_data_where_asked`). A member no read covered is kept,
-    so a failed read costs a rating and clears no word. The members are read once for each
-    shape, bindings and place assignment (`ResolveState.served_members`), as every coverage
-    reading and the rating it asks for read them."""
+def served_member_names(state: ResolveState) -> dict[str, str | None]:
+    """The name of each member the answer over the elected shape and the final bindings
+    can serve, None for a member with no name, by dcid in serving order: the members
+    `standard.members_served` gives by the rule the resolve serves by, read over the data
+    the part's availability reads found for each (`member_has_data_where_asked`). A member
+    no read covered is kept, so a failed read costs a rating and clears no word. The places
+    bind under the assignment place binding settled (`ResolveState.elected_place_roles`),
+    a direction among them, else under the one binding repair took
+    (`ResolveState.query_place_roles`). The members are read once for each shape, bindings
+    and assignment (`ResolveState.served_member_memo`), as every coverage reading and the
+    rating it asks for read them."""
     shape, bindings = state.shape_draft, tuple(state.bindings)
-    assignment = state.query_place_roles
-    memo = state.served_members
+    assignment = state.elected_place_roles or state.query_place_roles
+    memo = state.served_member_memo
     if memo is not None and memo[0] is shape and memo[1] == bindings and memo[2] is assignment:
         return memo[3]
     role_keys = assignment.role_keys if isinstance(assignment, PlaceAssignment) else RoleKeys()
     arcs = shape_population_arcs(shape)
     names = {
-        dcid: name
+        dcid: read_name(arcs.get(dcid, {}))
         for dcid in members_served(
             shape, bindings, role_keys, member_has_data_where_asked(state, shape)
         )
-        if (name := read_name(arcs.get(dcid, {}))) is not None
     }
-    state.served_members = (shape, bindings, assignment, names)
+    state.served_member_memo = (shape, bindings, assignment, names)
     return names
 
 

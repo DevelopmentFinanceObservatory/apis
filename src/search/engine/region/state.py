@@ -1035,14 +1035,14 @@ class ResolveState:
     # settle, and for a read that failed.
     stated_word_ratings: Mapping[str, float] = field(default_factory=dict)
     # The names of the members the answer can serve (`phase_rank_bind.served_member_names`),
-    # with the shape, bindings and place assignment they were read for. `None` until the
-    # coverage rule first reads them.
-    served_members: (
+    # None for a member with no name, with the shape, bindings and place assignment they
+    # were read for. `None` until the coverage rule first reads them.
+    served_member_memo: (
         tuple[
             ShapeDraft,
             tuple[SlotBindingDraft, ...],
             PlaceAssignment | PlaceRoleRefusal | None,
-            dict[str, str],
+            dict[str, str | None],
         ]
         | None
     ) = None

@@ -1033,14 +1033,15 @@ async def _rate_unread_words(state: ResolveState) -> None:
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
     for the word or answering it both ways. The request names the members the answer serves
-    when it serves more than one name (`served_member_names`), so a word one of them states
-    and another does not reads as narrower than the answer."""
+    when it serves more than one name (`served_member_names`), a member with no name by its
+    dcid, so a word one of them states and another does not reads as narrower than the
+    answer."""
     state.stated_word_ratings = {}
     words = _unrated_words(state)
     if not words:
         return
     shape = state.shape_draft
-    served = tuple(dict.fromkeys(served_member_names(state).values()))
+    served = tuple(dict.fromkeys(name or dcid for dcid, name in served_member_names(state).items()))
     request = StatedWordsRequest(
         variable=state.variable,
         shape=shape,
