@@ -257,10 +257,21 @@ class CitationModel(BaseModel):
         return by_ref
 
 
+class UnservedMembersModel(BaseModel):
+    """The members of a group of one kind that served nothing (`materialise.codes.UnservedMembers`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    count: int = Field(description="how many members of this kind served nothing")
+    refs: list[str] = Field(
+        description="the `dcid:` refs of the first five of them, in request order"
+    )
+
+
 class WarningModel(BaseModel):
-    """One manifest warning. Only `stat_vars_summed` sets the three structured fields. A `None`
-    field is left out of every dump, so other codes' warnings, on the wire and in stored version
-    bodies, stay exactly `{code, severity, message}`.
+    """One manifest warning. Only `stat_vars_summed` sets its three structured fields, and only
+    a group's `coverage_below_scope` its three member fields. A `None` field is left out of
+    every dump, so other codes' warnings, on the wire and in stored version bodies, stay
+    exactly `{code, severity, message}`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -291,6 +302,32 @@ class WarningModel(BaseModel):
             "gives `stat_var_ref` on a chart (`code_index.labels.family_label` over the spec "
             "identity: its measure partition label, then its bound slots' labels); absent "
             "when neither has a label"
+        ),
+    )
+    member_count: int | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only, when it names a group member: how many series the "
+            "group requested"
+        ),
+    )
+    off_cadence_members: UnservedMembersModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only: the group members holding observations in the "
+            "requested years at another frequency than the group serves, which the figures "
+            "leave out; absent when there are none"
+        ),
+    )
+    out_of_window_members: UnservedMembersModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only: the group members holding no observation in the "
+            "requested years; absent when there are none, and when the served provenance reads "
+            "an absent member as zero"
         ),
     )
 
