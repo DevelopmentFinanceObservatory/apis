@@ -17,11 +17,12 @@ from search.engine.region.phase_intake import _prune_shapes_by_admission
 from search.engine.region.place_set import PlaceNode, PlaceSet, PlaceSetKind
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import StatedWordsOutput
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
-from tests.engine._quantity import NO_QUANTITY, QuantityReadOnlyLLM
+from tests.engine._quantity import NO_QUANTITY, NO_RATING, QuantityReadOnlyLLM
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -31,6 +32,8 @@ class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(0, bindings=[]), None
 

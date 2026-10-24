@@ -345,6 +345,20 @@ def _answering(admitted: _AdmittedStandardMembers, bindings: list[SlotBindingDra
     return _Answering(probe_members, multi_collect, family, answering)
 
 
+def _serving(family: _Family, member_facts: Mapping[str, MemberFacts]) -> tuple[list[str], bool]:
+    """The kept members of `family` an answer can serve, in election order, and whether it
+    serves every one of them holding a point. A family with no total is served as a mint of
+    its definition serves it: every kept member whose constraints are known, since the mint
+    drops the rest. A family with a total, or one whose kept constraints are all unknown,
+    answers by its first kept member holding data."""
+    known = [
+        sv for sv in family.order if asserted_constraint_properties(member_facts[sv]) is not None
+    ]
+    if not family.totals and known:
+        return known, True
+    return list(family.order), False
+
+
 def default_scope_members(
     shape: ShapeDraft, bindings: list[SlotBindingDraft], role_keys: Collection[str]
 ) -> list[str]:
@@ -368,6 +382,43 @@ def default_scope_members(
             ]
         )
     )
+
+
+def members_served(
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    role_keys: RoleKeys,
+    holds: Callable[[str], bool | None],
+) -> list[str]:
+    """The members an answer over `shape` under `bindings`, with its places bound under
+    `role_keys`, can serve, by the rule `standard_resolve` serves by, given whether each
+    member holds a point where and when the part asks (`holds`, None when no read settled
+    it). A set binding collects every kept member holding one, and so does a family with no
+    total (`_serving`), so nominal GDP alone answers "GDP" in Brazil among the gross value
+    added series no read finds there. Any other family answers by its first kept member
+    holding one, so the members are those in election order up to the first that does,
+    skipping each that holds none. With no member that may hold one, the answer names one
+    of the kept members, and they are all returned. A role-bearing shape serves the members
+    a role-bearing answer lists (`_served_under`). Empty when the bindings admit no
+    family."""
+    if is_role_bearing(shape):
+        return list(_served_under(shape, list(bindings), role_keys))
+    admitted = _admit_standard_members(shape, list(bindings), role_keys.bound)
+    if not isinstance(admitted, _AdmittedStandardMembers):
+        return []
+    answer = _answering(admitted, list(bindings))
+    if answer.multi_collect:
+        kept, every = list(answer.family.order), True
+    else:
+        kept, every = _serving(answer.family, admitted.member_facts)
+    served: list[str] = []
+    for sv in kept:
+        held = holds(sv)
+        if held is not False:
+            served.append(sv)
+        if held and not every:
+            break
+    return served or kept
 
 
 @dataclass(frozen=True)
@@ -1500,15 +1551,7 @@ def standard_resolve(
     refuse_declared_defaults(graph, list(member_facts))
 
     probe_members, multi_collect, family, answering = _answering(admitted, bindings)
-    # A family with no total is served as a mint of its definition serves it: every kept
-    # member whose constraints are known, since the mint drops the rest. A family with a
-    # total, or one whose kept constraints are all unknown, answers by its first kept member
-    # holding data, in election order.
-    known = [
-        sv for sv in family.order if asserted_constraint_properties(member_facts[sv]) is not None
-    ]
-    serves_every = not family.totals and bool(known)
-    served = known if serves_every else list(family.order)
+    served, serves_every = _serving(family, member_facts)
     if default_presence is not None:
         if place_dcid is not None:
             raise AssertionError(

@@ -56,6 +56,7 @@ from search.engine.region.phase_rank_bind import (
     _withheld_qualifiers,
     judge_value_requirements,
     operation_slot_phrases,
+    served_member_names,
     value_requirements,
 )
 from search.engine.region.place_roles import (
@@ -1031,12 +1032,15 @@ async def _rate_unread_words(state: ResolveState) -> None:
     (`note_degraded_read`), so the response cache stores no answer read without it. A read
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
-    for the word or answering it both ways."""
+    for the word or answering it both ways. The request names the members the answer serves
+    when it serves more than one name (`served_member_names`), so a word one of them states
+    and another does not reads as narrower than the answer."""
     state.stated_word_ratings = {}
     words = _unrated_words(state)
     if not words:
         return
     shape = state.shape_draft
+    served = tuple(dict.fromkeys(served_member_names(state).values()))
     request = StatedWordsRequest(
         variable=state.variable,
         shape=shape,
@@ -1051,6 +1055,7 @@ async def _rate_unread_words(state: ResolveState) -> None:
         words=words,
         bindings=tuple(state.bindings),
         decision=state.bind_decision,
+        served=served if len(served) > 1 else (),
         part=state.variable_index,
         pool=state.pool,
     )

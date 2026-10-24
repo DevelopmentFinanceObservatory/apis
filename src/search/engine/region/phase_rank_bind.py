@@ -114,6 +114,7 @@ from search.engine.region.alternate_guard import (
 )
 from search.engine.region.availability import (
     has_data_where_asked,
+    member_has_data_where_asked,
     menu_read_places,
     read_menu_availability,
     series_at_places,
@@ -122,6 +123,7 @@ from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BIN
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.grounding import _shape_with_taxonomy
 from search.engine.region.place_roles import (
+    PlaceAssignment,
     bind_place_roles,
     held_party_words,
     names_a_place,
@@ -152,6 +154,7 @@ from search.engine.region.state import (
 )
 from search.engine.retrieval.bound_values import (
     DefaultReading,
+    RoleKeys,
     applies_one_of,
     applies_value,
     bound_realizable_members,
@@ -177,6 +180,7 @@ from search.engine.retrieval.bound_values import (
     shape_population_arcs,
 )
 from search.engine.retrieval.facts import read_constraints, read_five_tuple, read_name
+from search.engine.retrieval.standard import members_served
 from search.engine.role_text import role_axis_for_text
 from search.engine.shape import (
     ShapeDraft,
@@ -2991,7 +2995,7 @@ def _coverage_reading(
         *(choice.code_dcid for choice in state.menu_choices),
     }
     applied = _unnamed_bound_code_words(state.bindings, named, index, shape.value_labels or {})
-    measure_words = _member_measure_words(shape, state.bindings)
+    measure_words = _member_measure_words(state)
     reading = _unread_runs(
         variable,
         tokens,
@@ -3239,87 +3243,49 @@ def _form_ranges(variable: str, tokens: Sequence[Token]) -> list[tuple[int, int]
     return ranges
 
 
-def _member_measure_words(
-    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
-) -> frozenset[str] | None:
-    """The words that name `shape`'s measure in the names of the members the answer serves
-    over `bindings` (`_label_words`), so "refugees" is among the words of "Refugee
-    population". Names and entailment are read over every member `shape` stands for
-    (`_member_names`, `shape_population_arcs`), so a held family's total serves "refugee
-    population", and reads its name, though recall found the refugee member alone. The
-    answer serves a member when each constraint it asserts is entailed: a value
-    or set binding on its slot holds its value, the slot is open (``requested_all``) and
-    serves each value, or, with no binding on it, every member asserts it. An absent or
-    unbound slot entails no value, so "refugee" in "refugee population" is left for the
-    binder on a family holding the total and a refugee member. GDP bound on the activity
-    source serves nominal GDP among the gross value added of each sector. The words are
-    those every served member asserting the fewest constraints holds, the family's total
-    where it is served, since its name says least beyond the measure, as "Total
-    population" does among "Population: Years 18 Onwards" and "Count of Households", or none
-    when no such member has a name, and those of the first served member retrieval scored
-    against the question (`ShapeDraft.scored_members`), the one recall matched the words
-    best: "Nominal gross domestic product" for "GDP".
-
-    On a family whose bindings entail no member, the answer serves some of the members no
-    binding excludes: none asserting a value on an absent or unbound slot the question did
-    not open, or a value a value or set binding leaves out. The words are those every such
-    named member holds, which any selection of them holds too, whichever recall scored.
-    With none, they are the words every named member holds (`_shape_measure_words`). None
-    when no member has a name."""
-    names = _member_names(shape)
-    if not names:
+def _member_measure_words(state: ResolveState) -> frozenset[str] | None:
+    """The words that name the elected shape's measure in the names of the members the
+    answer serves over the bindings (`_label_words`), so "refugees" is among the words of
+    "Refugee population". The members are those `served_member_names` reads: "GDP" in
+    Brazil reads "Nominal gross domestic product", the one member of a family with no total
+    holding data there. A family's total answers before its breakdowns, so "refugee" in
+    "refugee population" is left for the binder on a family holding the total and a refugee
+    member, and a held family's total reads its name though recall found the refugee member
+    alone. The words are those every served member with a name holds, which the words the
+    answer reads hold whichever of them it shows. With no served member named, they are the
+    words every named member holds (`_shape_measure_words`). None when no member has a
+    name."""
+    shape = state.shape_draft
+    if not _member_names(shape):
         return None
-    family = {dcid: read_constraints(arcs) for dcid, arcs in shape_population_arcs(shape).items()}
-    asserted = list(family.values())
-    fixed = {
-        prop: value
-        for prop, value in asserted[0].items()
-        if all(constraints.get(prop) == value for constraints in asserted)
-    }
-    bound = {
-        binding.property_dcid: frozenset(binding.value_dcids)
-        for binding in bindings
-        if binding.kind in ("value", "set") and binding.property_dcid is not None
-    }
-    opened = {binding.property_dcid for binding in bindings if binding.evidence == "requested_all"}
-    closed = {
-        binding.property_dcid
-        for binding in bindings
-        if binding.kind == "absent"
-        or (binding.kind == "unbound" and binding.property_dcid not in opened)
-    }
-    served = {
-        dcid: constraints
-        for dcid, constraints in family.items()
-        if all(
-            value in bound[prop]
-            if prop in bound
-            else prop in opened or (prop not in closed and fixed.get(prop) == value)
-            for prop, value in constraints.items()
+    served = [_label_words(name) for name in served_member_names(state).values()]
+    return frozenset.intersection(*served) if served else _shape_measure_words(shape)
+
+
+def served_member_names(state: ResolveState) -> dict[str, str]:
+    """The name of each named member the answer over the elected shape and the final
+    bindings can serve, by dcid in serving order: the members `standard.members_served`
+    gives by the rule the resolve serves by, read over the data the part's availability
+    reads found for each (`member_has_data_where_asked`). A member no read covered is kept,
+    so a failed read costs a rating and clears no word. The members are read once for each
+    shape, bindings and place assignment (`ResolveState.served_members`), as every coverage
+    reading and the rating it asks for read them."""
+    shape, bindings = state.shape_draft, tuple(state.bindings)
+    assignment = state.query_place_roles
+    memo = state.served_members
+    if memo is not None and memo[0] is shape and memo[1] == bindings and memo[2] is assignment:
+        return memo[3]
+    role_keys = assignment.role_keys if isinstance(assignment, PlaceAssignment) else RoleKeys()
+    arcs = shape_population_arcs(shape)
+    names = {
+        dcid: name
+        for dcid in members_served(
+            shape, bindings, role_keys, member_has_data_where_asked(state, shape)
         )
+        if (name := read_name(arcs.get(dcid, {}))) is not None
     }
-    if served:
-        fewest = min(len(constraints) for constraints in served.values())
-        least = [
-            names[dcid]
-            for dcid, constraints in served.items()
-            if len(constraints) == fewest and dcid in names
-        ]
-        best = next(
-            (names[dcid] for dcid in served if dcid in names and dcid in shape.scored_members),
-            frozenset(),
-        )
-        return (frozenset.intersection(*least) if least else frozenset()) | best
-    kept = [
-        names[dcid]
-        for dcid, constraints in family.items()
-        if dcid in names
-        and not any(
-            prop in closed or (prop in bound and value not in bound[prop])
-            for prop, value in constraints.items()
-        )
-    ]
-    return frozenset.intersection(*kept) if kept else _shape_measure_words(shape)
+    state.served_members = (shape, bindings, assignment, names)
+    return names
 
 
 def _label_words(label: str) -> frozenset[str]:

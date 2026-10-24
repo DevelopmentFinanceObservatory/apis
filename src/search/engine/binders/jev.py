@@ -214,7 +214,8 @@ class JevBinder:
         request covers the words rated below `SearchSettings.stated_word_bar` when the final
         bindings restrict the shape to a value (`stated_words_read.restricting`), and every
         rated word when they override a value the measure's definition fixes
-        (`stated_words_read.implied_values`).
+        (`stated_words_read.implied_values`) or the answer serves several series
+        (`StatedWordsRequest.served`), which the bind quoted as the shape's label alone.
 
         The bind asked before any value was bound, so it quoted the shape as parts
         selectable by its slots, and its answer is evidence only about the series as a
@@ -230,7 +231,9 @@ class JevBinder:
         """
         ratings = self.stated_words(request)
         bar = settings().stated_word_bar
-        if implied_values(request.shape, request.bindings) != implied_values(request.shape, ()):
+        if request.served or implied_values(request.shape, request.bindings) != implied_values(
+            request.shape, ()
+        ):
             again = tuple(word for word in request.words if word in ratings)
         elif restricting(request.bindings):
             again = tuple(word for word in request.words if ratings.get(word, bar) < bar)
@@ -240,7 +243,12 @@ class JevBinder:
         if not again or index is None:
             return ratings, None
         state, questions = restated_request(
-            request.variable, request.shape, index, again, bindings=request.bindings
+            request.variable,
+            request.shape,
+            index,
+            again,
+            bindings=request.bindings,
+            served=request.served,
         )
         answers, call = await self._request(state, questions)
         for k, word in enumerate(again):

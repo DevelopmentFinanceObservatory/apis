@@ -1034,6 +1034,18 @@ class ResolveState:
     # rated below `SearchSettings.stated_word_bar` as unread. Empty until the bindings
     # settle, and for a read that failed.
     stated_word_ratings: Mapping[str, float] = field(default_factory=dict)
+    # The names of the members the answer can serve (`phase_rank_bind.served_member_names`),
+    # with the shape, bindings and place assignment they were read for. `None` until the
+    # coverage rule first reads them.
+    served_members: (
+        tuple[
+            ShapeDraft,
+            tuple[SlotBindingDraft, ...],
+            PlaceAssignment | PlaceRoleRefusal | None,
+            dict[str, str],
+        ]
+        | None
+    ) = None
     # Every term the request names that each final answer is judged against
     # (`Requirement`), in the order recorded.
     requirements: tuple[Requirement, ...] = ()

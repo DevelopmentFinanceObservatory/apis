@@ -953,17 +953,20 @@ _GENDER_OPENED = _binding("gender").model_copy(
     ("total", "bound", "scored", "unrated"),
     [
         (True, (), (), ("refugee", "camps")),
-        # A scored member the bindings do not entail is not what the answer serves, so its
-        # name reads no word: the total answers, and the binder rates "refugee".
+        # The answer serves the total, "Population", whichever member recall scored, so a
+        # scored member's name reads no word and the binder rates "refugee". So it does with
+        # the gender slot opened, since the family's total answers for every gender.
         (True, (), ("nominating_1",), ("refugee", "camps")),
         (True, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
         (True, (_binding("gender"),), ("nominating_1",), ("refugee", "camps")),
-        (True, (_GENDER_OPENED,), ("nominating_1",), ("camps",)),
-        (True, (_FEMALE,), (), ("refugee", "camps")),
+        (True, (_GENDER_OPENED,), ("nominating_1",), ("refugee", "camps")),
+        # Gender bound to Female serves "Female refugee population" alone, which states
+        # "refugee" whichever member recall scored.
+        (True, (_FEMALE,), (), ("camps",)),
         (True, (_FEMALE,), ("nominating_1",), ("camps",)),
         (True, (_MALE,), ("nominating_2",), ("refugee",)),
-        # A family with no total whose bindings entail no member reads only the words every
-        # member no binding excludes holds, whichever recall scored.
+        # A family with no total serves both members, so only the words both names hold
+        # read, whichever recall scored.
         (False, (), ("nominating_1",), ("refugee", "camps")),
         (False, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
         (
@@ -985,8 +988,8 @@ _GENDER_OPENED = _binding("gender").model_copy(
         "scored",
         "absent-and-scored",
         "unbound-and-scored",
-        "opened-and-scored",
-        "bound",
+        "opened-serves-the-total",
+        "bound-serves-the-female-member",
         "bound-and-scored",
         "bound-other",
         "no-total-scored",
@@ -1076,6 +1079,7 @@ def test_a_held_total_recall_did_not_find_reads_its_name(bind_catalogue, kind):
         meas_prop_dcid="value",
         stat_type_dcid="measuredValue",
         sv_arc_facts={female: next(iter((sample.sv_arc_facts or {}).values()))},
+        sv_arc_facts_complete=False,
         held_family=FamilyKey(series, "value", "measuredValue", None, None, False, False),
     )
     state = _state(
