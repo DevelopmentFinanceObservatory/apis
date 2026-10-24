@@ -35,11 +35,12 @@ from search.engine.quantity import (
     serves_quantity,
     stated_denominator,
 )
-from search.engine.reading_coverage import holds_in
+from search.engine.reading_coverage import ReadingCoverage, holds_in
 from search.engine.region.alternate_guard import AlternateJudge, query_pins
 from search.engine.region.availability import (
     _shape_group_key,
     has_data_where_asked,
+    read_coverage,
     series_at_places,
 )
 from search.engine.region.candidate_options import _elected_sibling_warning
@@ -146,7 +147,6 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.facts import (
     read_constraints,
-    read_declared_constraint_properties,
     read_declared_roles,
 )
 from search.engine.retrieval.retrieve import (
@@ -287,7 +287,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     if bound == "no_direction_holds":
         return await _role_not_resolved_no_data(state, offer=False)
     state.elected_place_roles = bound
-    _settle_breakdown(state)
+    await _settle_breakdown(state)
     # The bound roles elect one role class among the shape's members, and every later
     # step reads the shape narrowed to it. The election reads a held family whole, so it
     # runs off the event loop. The mint's walk then settles the members, off the event loop
@@ -450,22 +450,22 @@ def _settle_direction(
     )
 
 
-def _settle_breakdown(state: ResolveState) -> None:
+async def _settle_breakdown(state: ResolveState) -> None:
     """The elected shape's breakdown when its family holds no total and the question names
     none that serves a member (`standard.Candidates`): one copy of the shape per breakdown
     signature, each narrowed to the bound properties and that signature
     (`phase_election.narrowed_to_breakdown`) and bound with the signature's slots open
-    (`_breakdown_bindings`). The copies are ordered by their members with data at the
-    places the part names inside the years it asks for, then by their recalled members,
-    and capped at `max_candidates`, a cut the candidate set states
-    (`ResolveState.breakdown_truncated`, `CandidateSet.truncated`). The first is installed as the elected shape; each other is
+    (`_breakdown_bindings`). The copies are ordered by `_breakdown_rank` and capped at
+    `max_candidates`, a cut the candidate set states (`ResolveState.breakdown_truncated`,
+    `CandidateSet.truncated`). The first is installed as the elected shape; each other is
     offered beside it as a `breakdown` candidate (`ResolveState.breakdown_rivals`). A lone
     copy answers alone, narrower than asked (`standard.Narrow.lone_signature`)."""
     decision = state.breakdown
     if not isinstance(decision, Candidates):
         return
     shape = state.shape_draft
-    rank = _breakdown_rank(shape, decision.bound, requested_window(state.date_request))
+    coverage = await _breakdown_coverage(state, decision)
+    rank = _breakdown_rank(decision, shape, coverage, requested_window(state.date_request))
     signatures = sorted(decision.signatures, key=rank)[: settings().max_candidates]
     state.breakdown_truncated = len(signatures) < len(decision.signatures)
     copies = [
@@ -485,25 +485,56 @@ def _settle_breakdown(state: ResolveState) -> None:
         state.capped_shapes.append(copy)
 
 
+async def _breakdown_coverage(
+    state: ResolveState, decision: Candidates
+) -> Mapping[str, ReadingCoverage]:
+    """The coverage `_breakdown_rank` reads for the members of `decision`: the elected
+    shape's at the places the part names (`ShapeDraft.named_place_coverage`, else
+    `ShapeDraft.member_coverage`). When `max_candidates` cuts a signature, the members
+    recall did not return, which the catalogue's tables or the code index hold in the
+    family, are read at the same places (`ShapeDraft.availability_places`) in one batched
+    facet read (`availability.read_coverage`), so a breakdown holding data only in them is
+    ranked as one recalled would be. A failed read leaves them without data."""
+    shape = state.shape_draft
+    coverage = shape.named_place_coverage or shape.member_coverage
+    if coverage is None:
+        return {}
+    unread = [sv for members in decision.members.values() for sv in members if sv not in coverage]
+    if (
+        len(decision.members) <= settings().max_candidates
+        or not unread
+        or not shape.availability_places
+    ):
+        return coverage
+    read = await asyncio.to_thread(
+        read_coverage,
+        unread,
+        graph=state.graph,
+        places=sorted(shape.availability_places),
+        deadline=state.deadline,
+        read="breakdown availability",
+    )
+    return {**coverage, **(read or {})}
+
+
 def _breakdown_rank(
-    shape: ShapeDraft, bound: frozenset[str], window: TimeWindow | None
+    decision: Candidates,
+    shape: ShapeDraft,
+    coverage: Mapping[str, ReadingCoverage],
+    window: TimeWindow | None,
 ) -> Callable[[frozenset[str]], tuple[int, int]]:
-    """The sort key of a breakdown signature of `shape` under its `bound` properties: its
-    members with data at the places the part names (`ShapeDraft.named_place_coverage`, else
-    `ShapeDraft.member_coverage`) inside `window`, the years the part asks for
+    """The sort key of a breakdown signature of `decision` over `shape`: its members with
+    data in `coverage` inside `window`, the years the part asks for
     (`reading_coverage.holds_in`), then its recalled members (`ShapeDraft.scored_members`),
-    most first. A member's signature is the set of constraint properties it declares
-    outside `bound`."""
-    coverage = shape.named_place_coverage or shape.member_coverage or {}
-    with_data: dict[frozenset[str], int] = {}
-    recalled: dict[frozenset[str], int] = {}
-    for sv, arcs in (shape.sv_arc_facts or {}).items():
-        signature = frozenset(read_declared_constraint_properties(arcs)) - bound
-        if sv in shape.scored_members:
-            recalled[signature] = recalled.get(signature, 0) + 1
-        if holds_in(coverage.get(sv) or {}, window):
-            with_data[signature] = with_data.get(signature, 0) + 1
-    return lambda signature: (-with_data.get(signature, 0), -recalled.get(signature, 0))
+    most first."""
+
+    def rank(signature: frozenset[str]) -> tuple[int, int]:
+        members = decision.members[signature]
+        with_data = sum(holds_in(coverage.get(sv) or {}, window) for sv in members)
+        recalled = sum(sv in shape.scored_members for sv in members)
+        return -with_data, -recalled
+
+    return rank
 
 
 def _breakdown_bindings(

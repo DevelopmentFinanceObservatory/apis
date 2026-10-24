@@ -759,15 +759,19 @@ class Narrow:
 
 @dataclass(frozen=True)
 class Candidates:
-    """The members break down by several `signatures`, or the slots the request opened
+    """The members break down by several signatures, or the slots the request opened
     leave no member and every member that asserts them all also asserts a slot it did not
-    open. Each signature is the set of unbound properties some member asserts, in member
-    order, and holds every opened slot, so each candidate carries the breakdown the
-    question named. Each candidate's identity carries the `bound` properties and one
-    signature."""
+    open. `members` maps each signature, the set of unbound properties some member asserts,
+    in member order, to the family's members asserting it, recalled or not. Each signature
+    holds every opened slot, so each candidate carries the breakdown the question named.
+    Each candidate's identity carries the `bound` properties and one signature."""
 
-    signatures: tuple[frozenset[str], ...]
+    members: Mapping[frozenset[str], tuple[str, ...]]
     bound: frozenset[str] = frozenset()
+
+    @property
+    def signatures(self) -> tuple[frozenset[str], ...]:
+        return tuple(self.members)
 
 
 type BreakdownDecision = Keep | Narrow | Candidates
@@ -804,13 +808,11 @@ def breakdown_decision(
     if admitted.family.totals:
         return Keep()
     bound = frozenset(admitted.bound_values)
-    signatures = tuple(
-        dict.fromkeys(
-            properties - bound
-            for sv in admitted.family.members
-            if (properties := asserted_constraint_properties(admitted.member_facts[sv])) is not None
-        )
-    )
+    by_signature: dict[frozenset[str], list[str]] = {}
+    for sv in admitted.family.members:
+        if (properties := asserted_constraint_properties(admitted.member_facts[sv])) is not None:
+            by_signature.setdefault(properties - bound, []).append(sv)
+    signatures = tuple(by_signature)
     if not signatures:
         return Keep()
     opened = frozenset(
@@ -821,7 +823,9 @@ def breakdown_decision(
     if opened:
         if any(signature <= opened for signature in signatures):
             return Narrow(bound | opened)
-        named = tuple(signature for signature in signatures if opened <= signature)
+        named = {
+            signature: tuple(svs) for signature, svs in by_signature.items() if opened <= signature
+        }
         if named:
             return Candidates(named, bound)
         return Keep(frozenset().union(*signatures) - opened)
@@ -829,7 +833,7 @@ def breakdown_decision(
         return Narrow(bound)
     if len(signatures) == 1:
         return Narrow(bound | signatures[0], lone_signature=True)
-    return Candidates(signatures, bound)
+    return Candidates({signature: tuple(svs) for signature, svs in by_signature.items()}, bound)
 
 
 @dataclass(frozen=True)

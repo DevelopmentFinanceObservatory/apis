@@ -415,14 +415,16 @@ def test_a_cap_below_the_breakdown_count_truncates_the_candidates(
     assert result.candidate_budget_truncated is truncated
 
 
+@pytest.mark.parametrize("urban_recalled", [True, False], ids=["recalled", "held_only"])
 @pytest.mark.parametrize("max_candidates", [2, 3, 6, 7])
 def test_the_cap_keeps_the_breakdown_holding_data_in_the_years_asked_for(
-    bind_catalogue, monkeypatch: pytest.MonkeyPatch, max_candidates: int
+    bind_catalogue, monkeypatch: pytest.MonkeyPatch, max_candidates: int, urban_recalled: bool
 ) -> None:
     """The series breaks down three ways, or seven with four more one-member breakdowns,
     and only the urban member holds data in Kenya in 2020. With `max_candidates` below the
     breakdown count, the cut keeps the residence-area breakdown, the one holding data in the
-    year the question asks for, whatever the cap."""
+    year the question asks for, whatever the cap, and whether recall returned the urban
+    member or the catalogue's tables alone hold it in the family."""
     monkeypatch.setattr(settings(), "max_candidates", max_candidates)
     extra = {
         f"undata/who/MORT_U5_RATE.EXTRA--{i}": (
@@ -442,7 +444,11 @@ def test_the_cap_keeps_the_breakdown_holding_data_in_the_years_asked_for(
     graph._obs[f"{_URBAN_MEMBER}|country/KEN"] = [
         {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1}
     ]
-    graph._detect[query] = next(iter(graph._detect.values()))
+    recalled = [sv for sv in members if urban_recalled or sv != _URBAN_MEMBER]
+    graph._detect[query] = {
+        "svs": recalled,
+        "cosine_scores": [0.9 - 0.01 * i for i in range(len(recalled))],
+    }
 
     result = _resolve_two_breakdowns(
         graph,
@@ -450,6 +456,7 @@ def test_the_cap_keeps_the_breakdown_holding_data_in_the_years_asked_for(
         date_request=DateRequest(window=TimeWindow(start_year=2020, end_year=2020), latest=False),
     )
 
+    assert result.status != "no_data"
     assert _URBAN_MEMBER in {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
 
 

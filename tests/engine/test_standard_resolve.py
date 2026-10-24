@@ -2799,7 +2799,7 @@ class TestBreakdownDecision:
             pytest.param(
                 _ACTIVITY_ARCS,
                 [_activity_source("unbound"), _SECTOR_OPENED],
-                Candidates((_ACTIVITY_AND_SECTOR,)),
+                Candidates({_ACTIVITY_AND_SECTOR: (_GVA_CONSTRUCTION,)}),
                 id="opened_slots_leaving_no_member_offer_the_signatures_holding_them",
             ),
             pytest.param(
@@ -2833,7 +2833,12 @@ class TestBreakdownDecision:
             pytest.param(
                 _ACTIVITY_ARCS,
                 [_activity_source("unbound")],
-                Candidates((_ACTIVITY_ONLY, _ACTIVITY_AND_SECTOR)),
+                Candidates(
+                    {
+                        _ACTIVITY_ONLY: (_GDP_NOMINAL, _GVA_NOMINAL, _NDP_NOMINAL),
+                        _ACTIVITY_AND_SECTOR: (_GVA_CONSTRUCTION,),
+                    }
+                ),
                 id="several_signatures_with_nothing_opened_are_candidates",
             ),
         ],
