@@ -1539,6 +1539,8 @@ class ResolveState:
                 else {}
             ),
             refused_answer=(
-                None if candidate is None else (candidate.shape, tuple(candidate.bindings))
+                None
+                if candidate is None
+                else (candidate.shape, tuple(candidate.bindings), candidate.uncovered)
             ),
         )

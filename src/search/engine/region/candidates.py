@@ -99,7 +99,9 @@ class _Candidate:
     context it is grounded and read over (`PlaceContext.settled` on `mat`), what the
     mint states of the members its walk settled (`MembershipResolution.walked`), and why the
     status rule offers it beside the elected shape (`status_rule`), `None` for the elected
-    shape itself and for a reading that rides on a refusal."""
+    shape itself and for a reading that rides on a refusal, and the phrases its own read
+    leaves unread, its coverage records (`phase_election.judge_answer_coverage`), `None`
+    for the elected shape, which reads the elected answer's (`requirements.judge`)."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
@@ -107,6 +109,7 @@ class _Candidate:
     place: PlaceContext
     walked: WalkedMembers | None
     basis: CandidateBasis | None = None
+    uncovered: frozenset[str] | None = None
 
 
 def _prewarm_places(

@@ -29,13 +29,14 @@ from search.engine.region.codes import (
     PLACE_SCOPE_DEFAULTED,
 )
 from search.engine.region.state import EngineOptions
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import DatasetResubmitInput, Operation, ResolveRequest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine.test_dataset_resubmit import _identity_entry_from_spec
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -159,6 +160,8 @@ class _NoAmbiguityBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(self._chosen_shape_index, also_plausible=self._also_plausible), None
 
@@ -848,6 +851,8 @@ class _BindsActivityLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(
             0,
@@ -1363,6 +1368,8 @@ class _StrayFemaleBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         draft = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
@@ -1442,6 +1449,8 @@ class _StrayFemaleNominatingLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         draft = SlotBindingDraft(
             axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
         )
@@ -1523,6 +1532,8 @@ class _StrayGenderNominatingTwoLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         draft = SlotBindingDraft(
             axis="how",
             property_dcid="gender",
@@ -1861,6 +1872,8 @@ class _NoDraftNominatingTwoLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         return elected_reply(0, also_plausible=[1, 2]), None
 
 

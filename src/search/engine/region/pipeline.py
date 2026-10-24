@@ -815,7 +815,9 @@ async def _run_phases(state: ResolveState) -> RegionResult:
     leaving terms unmet, gives way to the part's `qualifier_not_bound` refusal
     (`refuse_unread_answer`). Stated-word coverage is judged once
     (`phase_election.judge_coverage`): when materialisation has read the answer, or
-    before a refusal returned once the bindings are final is first judged."""
+    before a refusal returned once the bindings are final is first judged. Each candidate
+    offered beside or in place of it is judged on its own read at assembly
+    (`phase_election.judge_answer_coverage`)."""
     scoped = False
     settled = False
     unbooked: dict[str, int] = {}

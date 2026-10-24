@@ -754,7 +754,11 @@ def _finish_candidate(
         # Judged under the unit request this candidate is served under, as the definite
         # answer's trace is.
         query_qualifiers=answer_terms(
-            state, cand_shape, cand_bindings, served=bound_prices(cand_facet_bindings)
+            state,
+            cand_shape,
+            cand_bindings,
+            served=bound_prices(cand_facet_bindings),
+            uncovered=cand.uncovered,
         ),
         measure_elected_properties=(
             measure_elected_properties if cand_bindings is state.bindings else frozenset()

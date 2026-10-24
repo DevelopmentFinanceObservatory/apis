@@ -3773,7 +3773,7 @@ def test_a_refusal_raised_for_a_candidate_is_judged_on_that_candidate(monkeypatc
     )
     refusal = dataclasses.replace(
         state.no_data("rate_coverage_gap"),
-        refused_answer=(state.shape_draft, candidate_bindings),
+        refused_answer=(state.shape_draft, candidate_bindings, None),
     )
 
     result = asyncio.run(settle_unjudged_refusal(state, refusal))

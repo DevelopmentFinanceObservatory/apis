@@ -163,7 +163,9 @@ def _unsupported(
             definition=_unsupported_definition(state, facets, candidate=candidate),
         ),
         refused_answer=(
-            None if candidate is None else (candidate.shape, tuple(candidate.bindings))
+            None
+            if candidate is None
+            else (candidate.shape, tuple(candidate.bindings), candidate.uncovered)
         ),
     )
 
@@ -432,8 +434,8 @@ async def settle_unjudged_refusal(state: ResolveState, result: RegionResult) -> 
     refusal always stands. Either way every requirement is named, departs or is met,
     once."""
     if result.refused_answer is not None:
-        shape, bindings = result.refused_answer
-        settle_flagged(state, shape, bindings)
+        shape, bindings, uncovered = result.refused_answer
+        settle_flagged(state, shape, bindings, uncovered=uncovered)
         return result
     reason = result.no_data_reason
     if (

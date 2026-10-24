@@ -875,15 +875,10 @@ class _RejectWordsBind(scenarios._Bind):
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
 
 
-def test_a_direction_settled_after_the_bind_judges_the_words_on_the_member_it_serves(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """ "refugee assistance Kenya" over one shape whose members serve each direction:
-    "Assistance given" a place provides and "Refugee assistance received" a place
-    receives. Kenya is named without a direction, and only the assistance it receives has
-    data, so the direction settles on the recipient after the bind. The words are judged on
-    the member the read served, whose name states "refugee", so the binder is never asked
-    and the answer stands, as it does when the question names the direction."""
+def _assistance_series(monkeypatch: pytest.MonkeyPatch, *series: tuple[str, str, str]) -> None:
+    """Serve each of `series`, a dcid, its name and the one role it declares, as one
+    reading of assistance, and rate every word the binder is asked about not stated
+    (`_RejectWordsBind`)."""
     monkeypatch.setattr(
         scenarios,
         "_NODES",
@@ -897,10 +892,7 @@ def test_a_direction_settled_after_the_bind_judges_the_words_on_the_member_it_se
                         "name": {"nodes": [{"value": name}]},
                     },
                 )
-                for dcid, name, role in (
-                    (_ASSISTANCE_GIVEN, "Assistance given", "financingProvider"),
-                    (_REFUGEE_ASSISTANCE, "Refugee assistance received", "financingRecipient"),
-                )
+                for dcid, name, role in series
             },
         },
     )
@@ -909,12 +901,34 @@ def test_a_direction_settled_after_the_bind_judges_the_words_on_the_member_it_se
         "_ROLE_NAMES",
         {
             **scenarios._ROLE_NAMES,
-            _ASSISTANCE_GIVEN: RoleNames(donor="financingProvider", recipient=None),
-            _REFUGEE_ASSISTANCE: RoleNames(donor=None, recipient="financingRecipient"),
+            **{
+                dcid: (
+                    RoleNames(donor=role, recipient=None)
+                    if role == "financingProvider"
+                    else RoleNames(donor=None, recipient=role)
+                )
+                for dcid, _name, role in series
+            },
         },
     )
     monkeypatch.setattr(scenarios, "_Bind", _RejectWordsBind)
     monkeypatch.setattr(_RejectWordsBind, "word_calls", 0)
+
+
+def test_a_direction_settled_after_the_bind_judges_the_words_on_the_member_it_serves(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "refugee assistance Kenya" over one shape whose members serve each direction:
+    "Assistance given" a place provides and "Refugee assistance received" a place
+    receives. Kenya is named without a direction, and only the assistance it receives has
+    data, so the direction settles on the recipient after the bind. The words are judged on
+    the member the read served, whose name states "refugee", so the binder is never asked
+    and the answer stands, as it does when the question names the direction."""
+    _assistance_series(
+        monkeypatch,
+        (_ASSISTANCE_GIVEN, "Assistance given", "financingProvider"),
+        (_REFUGEE_ASSISTANCE, "Refugee assistance received", "financingRecipient"),
+    )
 
     result = scenarios._resolve(
         scenarios._Scenario(
@@ -931,6 +945,70 @@ def test_a_direction_settled_after_the_bind_judges_the_words_on_the_member_it_se
         _REFUGEE_ASSISTANCE
     ]
     assert _RejectWordsBind.word_calls == 0
+
+
+_REFUGEE_ASSISTANCE_GIVEN = "Amount_EconomicActivity_RefugeeAssistance_GivenScenario"
+_ASSISTANCE_RECEIVED = "Amount_EconomicActivity_Assistance_ReceivedScenario"
+
+
+@pytest.mark.parametrize(
+    ("given", "received", "unread"),
+    [
+        (
+            (_REFUGEE_ASSISTANCE_GIVEN, "Refugee assistance given"),
+            (_ASSISTANCE_RECEIVED, "Assistance received"),
+            [[], ["refugee"]],
+        ),
+        (
+            (_ASSISTANCE_GIVEN, "Assistance given"),
+            (_REFUGEE_ASSISTANCE, "Refugee assistance received"),
+            [["refugee"], []],
+        ),
+    ],
+    ids=["elected-states-the-word", "candidate-states-the-word"],
+)
+def test_each_direction_candidate_judges_the_words_on_the_members_it_serves(
+    monkeypatch: pytest.MonkeyPatch, given, received, unread
+):
+    """ "refugee assistance Kenya" with data in both directions offers the elected reading,
+    on the direction Kenya gives, and a direction candidate beside it. Each is judged on the
+    members its own read served: the one whose series do not state "refugee" records it
+    and the one whose series state it records nothing, whichever of the two was elected,
+    and the part discloses the word one of its answers drops."""
+    (given_sv, given_name), (received_sv, received_name) = given, received
+    _assistance_series(
+        monkeypatch,
+        (given_sv, given_name, "financingProvider"),
+        (received_sv, received_name, "financingRecipient"),
+    )
+
+    result = scenarios._resolve(
+        scenarios._Scenario(
+            query="refugee assistance Kenya",
+            entities=("Kenya",),
+            svs=(given_sv, received_sv),
+            scores=(0.85, 0.84),
+            coverage_rows=(
+                (given_sv, "f_given", _KEN, "", [2020, 2021, 2022]),
+                (received_sv, "f_received", "", _KEN, [2020, 2021, 2022]),
+            ),
+        )
+    )
+
+    assert result.status == "candidates"
+    assert [
+        ([sv.ref.ref for sv in spec.resolved.members], spec.resolved.basis) for spec in result.specs
+    ] == [([given_sv], None), ([received_sv], "direction")]
+    assert [
+        [q.text for q in spec.resolved.trace.query_qualifiers if q.evidence == "uncovered"]
+        for spec in result.specs
+    ] == unread
+    assert [
+        (fact.code, fact.asked)
+        for key, fact in result.departure_facts.items()
+        if key[0] == "query_qualifier_dropped"
+    ] == [("measure_not_applied", "refugee")]
+    assert _RejectWordsBind.word_calls == 1
 
 
 _ADJUSTED_PAID = "AdjustedAmount_EconomicActivity_GrossNationalIncome_PaidScenario"
