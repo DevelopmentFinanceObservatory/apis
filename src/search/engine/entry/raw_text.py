@@ -17,7 +17,7 @@ from code_index.tokens import word_tokens
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
-from entity_resolution import Admission, EntityResolver, Resolved
+from entity_resolution import Admission, Ambiguous, EntityResolver, Resolution, Resolved
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import current_catalogue
@@ -200,30 +200,43 @@ def _holds_run(words: Sequence[str], run: Sequence[str]) -> bool:
     )
 
 
-def _query_words_of(
+def _named_dcids(resolution: Resolution) -> frozenset[str]:
+    """The dcids `resolution` names: its entity, or each candidate of an ambiguity."""
+    if isinstance(resolution, Resolved):
+        return frozenset({resolution.entity.dcid})
+    if isinstance(resolution, Ambiguous):
+        return frozenset(candidate.dcid for candidate in resolution.candidates)
+    return frozenset()
+
+
+async def _query_words_of(
     name: str,
     query: str,
     *,
     owned: Sequence[tuple[int, int]],
     rivals: Collection[str],
     resolver: EntityResolver,
+    deadline: float,
 ) -> str | None:
     """The query's own words for a `name` the query does not write, as written in `query`.
 
     They are the longest run of whole query words that `name` holds as consecutive whole
     words, holding a word other than a function word: "Congo" in "aid to Congo" for the name
-    "Democratic Republic of the Congo". The run grows to the longest stretch of query words
-    around it that the registry holds as a name of the entity `name` names
-    (`EntityResolver.registered_owners`), so the user's mention keeps the words that
-    choose its place: "DR Congo" and "South Korea" rather than "Congo" and "Korea". A
+    "Democratic Republic of the Congo". The run grows to the widest stretch of query words
+    around it that resolves to the one entity `name` resolves to, so the user's mention
+    keeps the words that choose its place: "DR Congo" and "South Korea" rather than "Congo"
+    and "Korea". A stretch opens and closes on a word other than a function word, beyond the
+    run's own, and the run and every stretch resolve with `name` in one resolver call. A
     stretch naming another place ("South Korea" for "Democratic People's Republic of
-    Korea") is no such name, and two of one length leave the run as it is. Neither takes a
+    Korea") is no such stretch, and two of one width leave the run as it is. Neither takes a
     word inside `owned`, the character ranges of `query` another entity's mention holds.
     `None` when no run holds one, when two runs of different words tie for longest, or
     when a run left as it is is contested: one of the `rivals`, the other entities' names,
     holds it too, so "Congo" in "ODA from DRC to Congo" chooses neither Congo and each
-    resolves by its name. A name in other words ("Germany" for "German", "United Kingdom"
-    for "UK") shares no word with the query and has none."""
+    resolves by its name, or it names entities none of which is the one `name` resolves to,
+    so "Korea" for "Democratic People's Republic of Korea" resolves by the name. A name in
+    other words ("Germany" for "German", "United Kingdom" for "UK") shares no word with the
+    query and has none."""
     tokens = word_tokens(query)
     free = [
         not any(_ranges_overlap((token.start, token.end), span) for span in owned)
@@ -254,19 +267,30 @@ def _query_words_of(
         lo -= 1
     while hi < len(tokens) and free[hi]:
         hi += 1
-    # A name the registry does not hold names no stretch, so it costs no lookups.
-    owners = resolver.registered_owners(name)
-    named = [
+    stretches = [
         (i, j)
         for i in range(lo, start + 1)
         for j in range(end, hi + 1)
-        if owners and (i, j) != (start, end) and owners & resolver.registered_owners(text(i, j))
+        if (i, j) != (start, end)
+        and (i == start or folded[i] not in FUNCTION_WORDS)
+        and (j == end or folded[j - 1] not in FUNCTION_WORDS)
     ]
-    width = max((j - i for i, j in named), default=0)
-    widest = [(i, j) for i, j in named if j - i == width]
-    if len(widest) == 1:
-        return text(*widest[0])
+    texts = list(dict.fromkeys([name, text(start, end), *(text(i, j) for i, j in stretches)]))
+    answers = dict(
+        zip(texts, await _await_bounded(resolver.resolve(texts), deadline=deadline), strict=True)
+    )
+    named = answers[name]
+    if isinstance(named, Resolved):
+        dcid = named.entity.dcid
+        choosing = [(i, j) for i, j in stretches if _named_dcids(answers[text(i, j)]) == {dcid}]
+        width = max((j - i for i, j in choosing), default=0)
+        widest = [(i, j) for i, j in choosing if j - i == width]
+        if len(widest) == 1:
+            return text(*widest[0])
     if any(_holds_run(_folded_words(rival), run) for rival in rivals):
+        return None
+    run_names = _named_dcids(answers[text(start, end)])
+    if run_names and not run_names & _named_dcids(named):
         return None
     return text(start, end)
 
@@ -282,12 +306,13 @@ def _mention_ranges(others: Sequence[ExtractedEntity], *, query: str) -> list[tu
     return ranges
 
 
-def _with_query_span(
+async def _with_query_span(
     entity: ExtractedEntity,
     *,
     others: Sequence[ExtractedEntity],
     query: str,
     resolver: EntityResolver,
+    deadline: float,
 ) -> ExtractedEntity:
     """`entity` whose span is the query's own words for it (`_query_words_of`), where the
     query writes neither its name nor its span: entity resolution then reads those words,
@@ -300,7 +325,7 @@ def _with_query_span(
     span = (entity.span or "").strip()
     if (span and _grounded(span, query)) or _grounded(entity.text.strip(), query):
         return entity
-    own = _query_words_of(
+    own = await _query_words_of(
         entity.text,
         query,
         owned=_mention_ranges(others, query=query),
@@ -310,12 +335,13 @@ def _with_query_span(
             if _normalize(other.text) != _normalize(entity.text)
         },
         resolver=resolver,
+        deadline=deadline,
     )
     return entity if own is None else entity.model_copy(update={"span": own})
 
 
-def _recover_entity_surfaces(
-    entities: list[ExtractedEntity], *, query: str, resolver: EntityResolver
+async def _recover_entity_surfaces(
+    entities: list[ExtractedEntity], *, query: str, resolver: EntityResolver, deadline: float
 ) -> list[ExtractedEntity]:
     """Recover each entity's surface before scans or cache keys read it: the query's own
     words for a name the query writes neither as the name nor as its span
@@ -325,8 +351,12 @@ def _recover_entity_surfaces(
     # Each entity reads the spans the ones before it recovered, so two never take one word.
     spanned = list(entities)
     for i, entity in enumerate(entities):
-        spanned[i] = _with_query_span(
-            entity, others=[*spanned[:i], *spanned[i + 1 :]], query=query, resolver=resolver
+        spanned[i] = await _with_query_span(
+            entity,
+            others=[*spanned[:i], *spanned[i + 1 :]],
+            query=query,
+            resolver=resolver,
+            deadline=deadline,
         )
     recovered: list[ExtractedEntity] = []
     for entity in spanned:
@@ -896,14 +926,18 @@ def _prepare_extraction(
     # The extraction names no series code. A token of the query that writes a held one does.
     per_variable_source_codes = scan_source_codes(query, measures=unique, index=get_index())
     # An entity that only asks for one value per member of a flow role ("every donor",
-    # "each recipient") names no place: it opens that role on every part
-    # (`role_text.breakdown_axis`).
-    entity_axes = [
-        (entity, breakdown_axis(entity.span or entity.text, query=query))
-        for entity in extraction.entities
-        if (entity.span or entity.text) not in scan.source_entities
-    ]
-    extracted_entities = [entity for entity, axis in entity_axes if axis is None]
+    # "across donors") names no place (`role_text.breakdown_axis`): it is a breakdown
+    # phrase, which opens that role as a dropped one does (`_breakdown_under`).
+    entity_breakdowns: list[str] = []
+    extracted_entities: list[ExtractedEntity] = []
+    for entity in extraction.entities:
+        words = entity.span or entity.text
+        if words in scan.source_entities:
+            continue
+        if breakdown_axis(words, query=query) is None:
+            extracted_entities.append(entity)
+        else:
+            entity_breakdowns.append(words)
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
     entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
 
@@ -970,10 +1004,11 @@ def _prepare_extraction(
     )
     # An operation whose phrase only asks for one value per member of a flow role is a
     # breakdown (`_breakdown_under`): it opens that role, as `open_roles` does on the parsed
-    # door, and runs no operation. A dropped phrase asking for it opens that role on each
-    # part whose operations read it so, by the same rule. Beside a sum it opens no part, and
-    # the total meets it (`role_text.breakdown_axis`), so it raises no warning either way.
-    entity_requested_axes = frozenset(axis for _, axis in entity_axes if axis is not None)
+    # door, and runs no operation. A dropped phrase or an entity asking for it opens that
+    # role on each part whose operations read it so, by the same rule. Beside a sum it opens
+    # no part, and the total meets it (`role_text.breakdown_axis`), so it raises no warning
+    # either way.
+    breakdown_phrases = [*entity_breakdowns, *dropped_qualifier_phrases]
     per_variable_operations: list[tuple[Operation, ...]] = []
     per_variable_open_axes: list[frozenset[RoleAxis]] = []
     for v in unique:
@@ -982,15 +1017,13 @@ def _prepare_extraction(
         read = [
             (op, _breakdown_under(op.phrase, verbs=(op.verb,), query=query)) for op in operations
         ]
-        dropped_axes = (
-            _breakdown_under(phrase, verbs=verbs, query=query)
-            for phrase in dropped_qualifier_phrases
+        phrase_axes = (
+            _breakdown_under(phrase, verbs=verbs, query=query) for phrase in breakdown_phrases
         )
         per_variable_operations.append(tuple(op for op, axis in read if axis is None))
         per_variable_open_axes.append(
-            entity_requested_axes
-            | {axis for _, axis in read if axis is not None}
-            | {axis for axis in dropped_axes if axis is not None}
+            frozenset(axis for _, axis in read if axis is not None)
+            | {axis for axis in phrase_axes if axis is not None}
         )
     dropped_qualifier_phrases = [
         phrase
@@ -1403,10 +1436,11 @@ async def handle(
 
     extraction = extraction.model_copy(
         update={
-            "entities": _recover_entity_surfaces(
+            "entities": await _recover_entity_surfaces(
                 extraction.entities,
                 query=query,
                 resolver=resolver,
+                deadline=params.deadline,
             )
         }
     )

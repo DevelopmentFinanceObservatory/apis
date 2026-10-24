@@ -2213,19 +2213,38 @@ def test_a_raw_text_sum_tagged_with_breakdown_words_keeps_its_operation(
     ] == [phrase]
 
 
-def test_a_dropped_by_or_across_phrase_beside_a_sum_opens_no_side(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "extracted",
+    [
+        pytest.param({"dropped": ("across donors",)}, id="dropped"),
+        pytest.param(
+            {
+                "entities": (
+                    ExtractedEntity(
+                        text="across donors",
+                        span="across donors",
+                        flow_role="origin",
+                        role_span="across",
+                    ),
+                )
+            },
+            id="read-as-a-place",
+        ),
+    ],
+)
+def test_a_by_or_across_phrase_beside_a_sum_opens_no_side(
+    monkeypatch: pytest.MonkeyPatch, extracted: dict[str, Any]
 ):
-    """A "by" or "across" phrase extraction dropped beside a sum follows the rule of an
-    operation's own phrase: only a rank reads it as a breakdown, so "total ... across
-    donors" keeps the donor total and opens no side. The total meets the phrase, so
-    neither a warning nor a departure reports it unapplied."""
+    """A "by" or "across" phrase beside a sum, whether extraction drops it or reads it as a
+    place, follows the rule of an operation's own phrase: only a rank reads it as a
+    breakdown, so "total ... across donors" keeps the donor total and opens no side. The
+    total meets the phrase, so neither a warning nor a departure reports it unapplied."""
     _coverage(monkeypatch)
 
     answer = _raw(
         "total official development assistance to Ethiopia across donors",
-        dropped=("across donors",),
         operations=(ExtractedOperation(verb="aggregate", variable=0, phrase="total"),),
+        **extracted,
     )
 
     assert answer.spec.definition.identity.open_roles is None

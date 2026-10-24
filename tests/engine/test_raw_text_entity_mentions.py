@@ -44,33 +44,22 @@ from tests.fixtures import FakeGraph, make_resolver
 
 
 class _Resolver:
-    """Small resolver double that records the one batched lookup. Each of `names` is a
-    registered name of an entity of its own, and each key of `owners` one of the entity its
-    value names."""
+    """Small resolver double that records each batched lookup. Each of `names` is a
+    registered name (`is_exact_registered_name`). `answers` holds each text's resolution,
+    and a text it omits is not found, as the resolver finds no entity for most stretches of
+    query words; a country's names are no registered names, and resolve as any text does."""
 
-    def __init__(
-        self,
-        answers: dict[str, object],
-        *,
-        names: tuple[str, ...] = (),
-        owners: dict[str, str] | None = None,
-    ) -> None:
+    def __init__(self, answers: dict[str, object], *, names: tuple[str, ...] = ()) -> None:
         self.answers = answers
-        self.owners = {name.casefold(): name for name in names} | {
-            name.casefold(): owner for name, owner in (owners or {}).items()
-        }
+        self.names = {name.casefold() for name in names}
         self.calls: list[list[str]] = []
 
     def is_exact_registered_name(self, text: str) -> bool:
-        return bool(self.registered_owners(text))
-
-    def registered_owners(self, text: str) -> frozenset[str]:
-        owner = self.owners.get(text.casefold())
-        return frozenset(() if owner is None else (owner,))
+        return text.casefold() in self.names
 
     async def resolve(self, texts: list[str]) -> list[object]:
         self.calls.append(texts)
-        return [self.answers[text] for text in texts]
+        return [self.answers.get(text, NotFound()) for text in texts]
 
 
 _ASIA = Entity(dcid="asia", name="Asia", kind="continent", graph_type="Continent")
@@ -80,6 +69,20 @@ _DAC_ASIA = Entity(
     kind="aggregate",
     graph_type="StatisticalPopulation",
 )
+
+
+def _recover(
+    entities: list[ExtractedEntity], *, query: str, resolver: _Resolver
+) -> list[ExtractedEntity]:
+    """Recover the entities' surfaces as the raw-text door does before its scans."""
+    return asyncio.run(
+        _recover_entity_surfaces(
+            entities,
+            query=query,
+            resolver=cast(EntityResolver, resolver),
+            deadline=time.monotonic() + 30,
+        )
+    )
 
 
 def _lookup(
@@ -99,10 +102,10 @@ def _lookup(
 
 def test_registered_parenthetical_label_recovers_the_full_source_surface() -> None:
     resolver = _Resolver({}, names=("Asia (DAC)",))
-    entities = _recover_entity_surfaces(
+    entities = _recover(
         [ExtractedEntity(text="Asia", span="Asia")],
         query="France ODA to Asia (DAC)",
-        resolver=cast(EntityResolver, resolver),
+        resolver=resolver,
     )
 
     assert entities == [ExtractedEntity(text="Asia (DAC)", span="Asia (DAC)")]
@@ -110,10 +113,10 @@ def test_registered_parenthetical_label_recovers_the_full_source_surface() -> No
 
 def test_registered_full_span_promotes_the_qualified_canonical_identity() -> None:
     resolver = _Resolver({}, names=("Asia (DAC)",))
-    entities = _recover_entity_surfaces(
+    entities = _recover(
         [ExtractedEntity(text="Asia", span="Asia (DAC)")],
         query="France ODA to Asia (DAC)",
-        resolver=cast(EntityResolver, resolver),
+        resolver=resolver,
     )
 
     assert entities == [ExtractedEntity(text="Asia (DAC)", span="Asia (DAC)")]
@@ -122,10 +125,10 @@ def test_registered_full_span_promotes_the_qualified_canonical_identity() -> Non
 @pytest.mark.parametrize("span", ["Asie", "Asie (DAC)"])
 def test_translated_span_carries_its_qualifier_onto_the_english_name(span: str) -> None:
     resolver = _Resolver({}, names=("Asia (DAC)",))
-    entities = _recover_entity_surfaces(
+    entities = _recover(
         [ExtractedEntity(text="Asia", span=span)],
         query="aide de la France à l'Asie (DAC)",
-        resolver=cast(EntityResolver, resolver),
+        resolver=resolver,
     )
 
     assert entities == [ExtractedEntity(text="Asia (DAC)", span="Asie (DAC)")]
@@ -175,19 +178,17 @@ def test_a_qualifier_inside_a_recovered_name_is_no_entity_of_its_own(
 ) -> None:
     resolver = _Resolver({}, names=("Africa (DAC)",))
 
-    recovered = _recover_entity_surfaces(
-        entities, query=query, resolver=cast(EntityResolver, resolver)
-    )
+    recovered = _recover(entities, query=query, resolver=resolver)
 
     assert recovered == expected
 
 
 def test_unknown_parenthetical_does_not_change_a_bare_place_identity() -> None:
     resolver = _Resolver({})
-    entities = _recover_entity_surfaces(
+    entities = _recover(
         [ExtractedEntity(text="Asia", span="Asia")],
         query="aid to Asia (unknown grouping)",
-        resolver=cast(EntityResolver, resolver),
+        resolver=resolver,
     )
 
     assert entities == [ExtractedEntity(text="Asia", span="Asia")]
@@ -195,13 +196,13 @@ def test_unknown_parenthetical_does_not_change_a_bare_place_identity() -> None:
 
 def test_explicit_qualified_and_unqualified_mentions_stay_distinct() -> None:
     resolver = _Resolver({}, names=("Asia (DAC)",))
-    entities = _recover_entity_surfaces(
+    entities = _recover(
         [
             ExtractedEntity(text="Asia", span="Asia"),
             ExtractedEntity(text="Asia (DAC)", span="Asia (DAC)"),
         ],
         query="aid to Asia and Asia (DAC)",
-        resolver=cast(EntityResolver, resolver),
+        resolver=resolver,
     )
 
     assert [entity.span for entity in entities] == ["Asia", "Asia (DAC)"]
@@ -290,16 +291,6 @@ _COG = Entity(
 )
 _KOR = Entity(dcid="country/KOR", name="South Korea", kind="country", graph_type="Country")
 _PRK = Entity(dcid="country/PRK", name="North Korea", kind="country", graph_type="Country")
-# Registered names of the Congos and the Koreas, each mapped to the place it names.
-_PLACE_NAMES = {
-    "Democratic Republic of the Congo": "country/COD",
-    "DR Congo": "country/COD",
-    "Republic of the Congo": "country/COG",
-    "Republic of Korea": "country/KOR",
-    "South Korea": "country/KOR",
-    "Democratic People's Republic of Korea": "country/PRK",
-    "North Korea": "country/PRK",
-}
 _TTO = Entity(dcid="country/TTO", name="Trinidad and Tobago", kind="country", graph_type="Country")
 _ATG = Entity(dcid="country/ATG", name="Antigua and Barbuda", kind="country", graph_type="Country")
 _VCT = Entity(
@@ -489,7 +480,7 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
                 "Democratic Republic of the Congo": Resolved(entity=_COD),
             },
             Resolved(entity=_COD),
-            id="registered_mention_keeps_its_choosing_word",
+            id="mention_keeps_its_choosing_word",
         ),
         pytest.param(
             "aid to South Korea",
@@ -497,7 +488,19 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "South Korea",
             {"South Korea": Resolved(entity=_KOR), "Republic of Korea": Resolved(entity=_KOR)},
             Resolved(entity=_KOR),
-            id="registered_mention_names_one_korea",
+            id="mention_names_one_korea",
+        ),
+        pytest.param(
+            "aid to Korea",
+            "Democratic People's Republic of Korea",
+            None,
+            # The resolver reads "Korea" as South Korea.
+            {
+                "Korea": Resolved(entity=_KOR),
+                "Democratic People's Republic of Korea": Resolved(entity=_PRK),
+            },
+            Resolved(entity=_PRK),
+            id="mention_naming_another_place",
         ),
         pytest.param(
             "German aid to Kenya",
@@ -526,13 +529,12 @@ def test_a_name_the_query_does_not_write_resolves_through_the_query_words(
 ) -> None:
     """An extraction that names a place in words the query does not write, and cites no
     span, gets the query's own words for it as its span, which resolution reads: the words
-    it shares with the query, grown to the registered name around them ("DR Congo", "South
-    Korea"). A name in other words shares none with the query and resolves as itself."""
-    resolver = _Resolver(answers, owners=_PLACE_NAMES)
+    it shares with the query, grown to the widest stretch around them that resolves to the
+    name's place ("DR Congo", "South Korea"). Words that resolve to another place, and a
+    name in other words, which shares none with the query, leave it to resolve as itself."""
+    resolver = _Resolver(answers)
 
-    recovered = _recover_entity_surfaces(
-        [ExtractedEntity(text=name)], query=query, resolver=cast(EntityResolver, resolver)
-    )
+    recovered = _recover([ExtractedEntity(text=name)], query=query, resolver=resolver)
     found = _lookup(recovered, query=query, resolver=resolver)
 
     assert recovered == [ExtractedEntity(text=name, span=span)]
@@ -558,7 +560,7 @@ _PRK_NAME = "Democratic People's Republic of Korea"
             "ODA from DR Congo to Congo",
             [ExtractedEntity(text=_COD_NAME), ExtractedEntity(text=_COG_NAME)],
             ["DR Congo", None],
-            id="registered_stretch_names_another_congo",
+            id="stretch_names_another_congo",
         ),
         pytest.param(
             "aid from South Korea to North Korea",
@@ -589,8 +591,8 @@ _PRK_NAME = "Democratic People's Republic of Korea"
 def test_a_recovered_span_takes_no_words_another_entity_names(
     query: str, entities: list[ExtractedEntity], spans: list[str | None]
 ) -> None:
-    """Words another entity's span holds are that entity's mention, a registered stretch
-    of query words is the span only of a place it names, and a word both names hold
+    """Words another entity's span holds are that entity's mention, a stretch of query
+    words is the span only of the place it resolves to, and a word both names hold
     chooses neither. A name with no words of its own resolves as itself: each Congo and
     each Korea once."""
     places = {_COD_NAME: _COD, _COG_NAME: _COG, _KOR_NAME: _KOR, _PRK_NAME: _PRK}
@@ -598,16 +600,14 @@ def test_a_recovered_span_takes_no_words_another_entity_names(
         {
             "Congo": Ambiguous(candidates=(_COD, _COG)),
             "DR Congo": Resolved(entity=_COD),
+            "Korea": Resolved(entity=_KOR),
             "South Korea": Resolved(entity=_KOR),
             "North Korea": Resolved(entity=_PRK),
             **{name: Resolved(entity=place) for name, place in places.items()},
-        },
-        owners=_PLACE_NAMES,
+        }
     )
 
-    recovered = _recover_entity_surfaces(
-        entities, query=query, resolver=cast(EntityResolver, resolver)
-    )
+    recovered = _recover(entities, query=query, resolver=resolver)
     found = _lookup(recovered, query=query, resolver=resolver)
 
     assert [entity.span for entity in recovered] == spans
@@ -644,9 +644,7 @@ def test_an_ungrounded_span_neither_promotes_nor_resolves(
 ) -> None:
     resolver = _Resolver(answers, names=registered)
 
-    recovered = _recover_entity_surfaces(
-        [entity], query=query, resolver=cast(EntityResolver, resolver)
-    )
+    recovered = _recover([entity], query=query, resolver=resolver)
     found = _lookup(recovered, query=query, resolver=resolver)
 
     assert recovered == [entity]
@@ -738,10 +736,10 @@ def test_preparation_keeps_canonical_keys_and_query_wording_separate() -> None:
 
 def test_registered_graph_pack_name_recovers_the_qualified_source_surface() -> None:
     resolver = _Resolver({}, names=("World Bank (DAC)",))
-    entities = _recover_entity_surfaces(
+    entities = _recover(
         [ExtractedEntity(text="World Bank", span="World Bank")],
         query="ODA from World Bank (DAC)",
-        resolver=cast(EntityResolver, resolver),
+        resolver=resolver,
     )
 
     assert entities == [ExtractedEntity(text="World Bank (DAC)", span="World Bank (DAC)")]
