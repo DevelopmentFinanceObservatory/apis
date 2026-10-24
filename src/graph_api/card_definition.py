@@ -39,10 +39,11 @@ from pydantic import ConfigDict, Field
 from code_index.labels import compose_measure_label
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex, label_for_pairs
+from dc_graph import display_name
 from description.world_bank import WORLD_BANK_NAMESPACE, world_bank_definition
 from dfo_platform.wire import ResponseModel
 from graph_api.reader import GraphNodeReader, NodeArcsByDcid
-from graph_api.refs import NodeRef, first_name, first_value
+from graph_api.refs import NodeRef, first_value
 from materialise.graph import GraphReadError
 from materialise.roles import DegenerateObservationProperties, declared_roles
 
@@ -498,4 +499,4 @@ def _variable_prose(dcid: str, description: str | None) -> str | None:
 
 
 def _name(arcs: Arcs, dcid: str) -> str | None:
-    return first_name(arcs.get("name", ()), dcid)
+    return display_name(arcs.get("name", ()), dcid)

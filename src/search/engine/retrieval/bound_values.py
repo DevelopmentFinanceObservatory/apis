@@ -1045,8 +1045,8 @@ class OpenAxisFact:
 
     `member_values` maps a member dcid to the value dcid it declares, or `None` when it
     declares none. Keying by member makes a union over overlapping member sets count
-    each member once. `value_names` maps a value dcid to the graph `name` a served
-    member's arc carries, for values the code index does not label.
+    each member once. `value_names` maps a value dcid to its label from the shape's value
+    labels (`ShapeDraft.value_labels`), for values the code index does not label.
     """
 
     property: str
@@ -1068,20 +1068,20 @@ class OpenAxisFact:
 
 
 def open_constraint_axes(
-    bound_values: Mapping[str, list[str]], members: Mapping[str, MemberFacts]
+    bound_values: Mapping[str, list[str]],
+    members: Mapping[str, MemberFacts],
+    *,
+    value_labels: Mapping[str, str],
 ) -> tuple[OpenAxisFact, ...]:
     """Return unbound constraint axes in first-observed member order.
 
     `members` maps each served member's dcid to its facts. Include unresolved
     properties. A member with no resolved value contributes `None`. Each fact carries
-    the members' graph names for its values. Return `()` when no open axis exists.
+    the labels `value_labels` holds for its values: the shape's value labels
+    (`ShapeDraft.value_labels`), which one batched label read gave every constraint value
+    of the shape's members and family. Return `()` when no open axis exists.
     """
     member_constraints = {dcid: m.read_constraints() for dcid, m in members.items()}
-    value_names = {
-        value: name
-        for m in members.values()
-        for value, name in m.read_constraint_value_names().items()
-    }
     order: list[str] = []
     seen: set[str] = set()
     for dcid, m in members.items():
@@ -1100,7 +1100,11 @@ def open_constraint_axes(
             OpenAxisFact(
                 property=prop,
                 member_values=member_values,
-                value_names={v: value_names[v] for v in member_values.values() if v in value_names},
+                value_names={
+                    v: label
+                    for v in member_values.values()
+                    if v is not None and (label := value_labels.get(v)) is not None
+                },
             )
         )
     return tuple(facts)
@@ -3366,7 +3370,10 @@ def walked_family_label(
             prop_labels=prop_labels,
             value_labels=value_labels,
         )
-    return next((name for arcs in members.values() if (name := read_name(arcs)) is not None), None)
+    return next(
+        (name for dcid, arcs in members.items() if (name := read_name(arcs, dcid)) is not None),
+        None,
+    )
 
 
 def _shape_held_family(shape: ShapeDraft) -> FamilySummary | None:
@@ -3433,7 +3440,11 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
         shape.label
         if shape.held_family is not None
         else next(
-            (name for sv in least_constrained if (name := read_name(population[sv])) is not None),
+            (
+                name
+                for sv in least_constrained
+                if (name := read_name(population[sv], sv)) is not None
+            ),
             shape.label,
         )
     )

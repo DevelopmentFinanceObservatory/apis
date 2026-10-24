@@ -116,8 +116,10 @@ _CATALOGUE = FakeCatalogue(
 
 
 class _NameReadFails(FakeGraphNodeReader):
-    def node_names_many(self, dcids, *, deadline=None):
-        raise GraphReadError("names", upstream_status=503)
+    def node_arcs_many(self, dcids, *, properties, deadline=None):
+        if tuple(properties) == ("name",):
+            raise GraphReadError("names", upstream_status=503)
+        return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
 
 
 def _surface_app(
@@ -280,13 +282,25 @@ class TestCatalogueLists:
         )
         assert (page["complete"], page["gaps"]) == (True, [])
 
+    @pytest.mark.parametrize(
+        "unnamed_arcs",
+        [
+            pytest.param(lambda dcid: {"name": (dcid,)}, id="self-named"),
+            pytest.param(
+                lambda dcid: {"name": (dcid,), "alternateName": ("Alternate",)},
+                id="self-named-with-alternate-name",
+            ),
+            pytest.param(lambda dcid: {"alternateName": ("Alternate",)}, id="alternate-name-only"),
+        ],
+    )
     def test_a_variables_page_takes_its_labels_from_one_graph_name_read(
-        self, shared_resolver, serve_catalogue
+        self, shared_resolver, serve_catalogue, unnamed_arcs
     ):
-        """The first variable has a name; the second only a name equal to its dcid."""
-        named, self_named, *_ = get_index().variables_by_provenance[_DAC1]
+        """The first variable has a name. The second has no name but its own dcid, so it
+        takes no label, and an `alternateName` never becomes one, as on the node door."""
+        named, unnamed, *_ = get_index().variables_by_provenance[_DAC1]
         graph = FakeGraphNodeReader(
-            nodes={named: {"name": ("Named variable",)}, self_named: {"name": (self_named,)}}
+            nodes={named: {"name": ("Named variable",)}, unnamed: unnamed_arcs(unnamed)}
         )
         serve_catalogue(_CATALOGUE)
         app = _surface_app(shared=shared_resolver, policy=_POLICY, graph=graph)
@@ -297,7 +311,7 @@ class TestCatalogueLists:
         assert [item["label"] for item in page["items"]][:2] == ["Named variable", None]
         assert page["gaps"] == []
         assert response.headers["cache-control"].startswith("public")
-        assert graph.calls["node_names_many"] == 1
+        assert graph.calls["node_arcs_many"] == 1
 
     def test_a_failed_label_read_leaves_labels_null_and_is_not_stored(
         self, shared_resolver, serve_catalogue

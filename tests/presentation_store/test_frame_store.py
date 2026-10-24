@@ -789,6 +789,25 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     )
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("Ethiopia", "Federal Democratic Republic of Ethiopia"),
+        ("Federal Democratic Republic of Ethiopia", "Ethiopia"),
+    ],
+)
+def test_load_labels_a_node_of_several_names_as_the_node_door_does(bind_catalogue, names):
+    """A card's label is the node's `display_name`, whatever order the graph gives its names."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    graph = _FakeGraphReader(labels={}, arcs={"country/ETH": {"name": names}})
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["country/ETH"] == "Federal Democratic Republic of Ethiopia"
+
+
 def test_load_labels_the_group_members_a_coverage_warning_names():
     """A member that served nothing holds no row, so the refs a `coverage_below_scope`
     warning names join the frame's one label batch."""

@@ -37,7 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Final, Literal, Protocol
 
-from dc_graph import FrontDoorRefused, GraphReadError
+from dc_graph import FrontDoorRefused, GraphReadError, label_or_self_name
 
 READ_CONCURRENCY: Final[int] = 4
 """The most requests `iter_node_arcs` and `iter_node_labels` keep in flight."""
@@ -349,12 +349,13 @@ def _answered_arcs(answer: Mapping | None) -> dict[str, list[dict]]:
 
 def _labels(run: NodeRun, nodes: Sequence[str]) -> dict[str, str | None]:
     """Each node's label from its `->name` arcs (`read_arcs`), as
-    `dc_graph.GraphClient.node_label` picks it: the last non-empty `name`
-    value, `None` for a node a read naming it alone answers with none."""
+    `dc_graph.GraphClient.node_label` picks it (`label_or_self_name`), `None`
+    for a node a read naming it alone answers with none."""
     found: dict[str, str | None] = {}
     for node, arcs in read_arcs(run, nodes, "->name").items():
-        values = [value for entry in arcs.get("name", ()) if (value := entry.get("value"))]
-        found[node] = run.string(values[-1]) if values else None
+        names = [value for entry in arcs.get("name", ()) if (value := entry.get("value"))]
+        label = label_or_self_name(names, node)
+        found[node] = None if label is None else run.string(label)
     return found
 
 
@@ -398,8 +399,8 @@ def iter_node_labels(
     graph: NodeGraph, nodes: Sequence[str], *, deadline: float | None = None
 ) -> Iterator[tuple[str, str | None]]:
     """Each of `nodes` with the label `dc_graph.GraphClient.node_label`
-    gives it, the last non-empty value of its `->name` arcs, or `None` for
-    a node with no name. Nodes are read `_LABEL_NODES_PER_REQUEST` a
+    gives it (`dc_graph.label_or_self_name` over its `->name` arcs), or
+    `None` for a node with no name. Nodes are read `_LABEL_NODES_PER_REQUEST` a
     request, as `node_labels_batch` reads them, `READ_CONCURRENCY` reads in
     flight, by `read_arcs`' rules, so a node a read naming several leaves
     out or answers with no name is read again alone. Nodes come read by

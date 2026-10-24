@@ -107,8 +107,18 @@ def _shape(
     units: frozenset[str | None] | None = None,
     place_available: bool | None = None,
 ) -> ShapeDraft:
-    """A shape. `members` maps member dcids to arcs, or lists dcids with no constraint arcs."""
+    """A shape. `members` maps member dcids to arcs, or lists dcids with no constraint arcs.
+    Its value labels are the names the member arcs give their values, as the shape's one
+    batched label read would."""
     facts = {dcid: {} for dcid in members} if isinstance(members, tuple) else members
+    value_labels = {
+        node["dcid"]: node["name"]
+        for arcs in facts.values()
+        for prop, entry in arcs.items()
+        if prop != "constraintProperties"
+        for node in entry["nodes"]
+        if "name" in node
+    }
     return ShapeDraft(
         shape_id=label or f"{pop}/{prop}/{qual}/{denom}",
         label=label,
@@ -120,6 +130,7 @@ def _shape(
         slot_keys=(),
         meas_denom_unresolved=unresolved,
         sv_arc_facts=facts or None,
+        value_labels=value_labels or None,
         declared_roles=roles,
         place_units=units,
         place_available=place_available,

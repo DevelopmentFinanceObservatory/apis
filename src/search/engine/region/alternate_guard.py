@@ -420,22 +420,24 @@ def _label_residence(label: str) -> frozenset[str]:
     return frozenset(_RESIDENCE_TOKEN_RE.findall(label.lower()))
 
 
-def _read_member(dcid: str, facts: MemberFacts, label: str) -> _Member:
+def _read_member(
+    dcid: str, facts: MemberFacts, label: str, value_labels: Mapping[str, str]
+) -> _Member:
     """Read a member. A member with no constraint arcs, such as a World Bank code series
-    whose code carries the slice, takes its residence from `label`."""
+    whose code carries the slice, takes its residence from `label`. Any other takes it from
+    the labels `value_labels` gives its residence values, or from the values' dcids."""
     constraints = facts.read_constraints()
     unresolved = facts.read_unresolved_constraints()
     if not facts.read_declared_constraint_properties():
         return _Member(
             dcid, constraints, unresolved, _label_residence(label), _RESIDENCE_LABEL_AXIS
         )
-    names = facts.read_constraint_value_names()
     residence_props = [prop for prop in _RESIDENCE_PROPERTIES if prop in constraints]
     tokens = frozenset(
         token
         for prop in residence_props
         for token in _RESIDENCE_TOKEN_RE.findall(
-            names.get(constraints[prop], constraints[prop]).lower()
+            value_labels.get(constraints[prop], constraints[prop]).lower()
         )
     )
     axis = residence_props[0] if residence_props else _RESIDENCE_LABEL_AXIS
@@ -467,7 +469,7 @@ def _index_members(
     rows_key = (shape_five_tuple(shape), datasets)
     if rows_key not in by_rows:
         by_rows[rows_key] = tuple(
-            _read_member(row.dcid, IndexMemberFacts(row=row), "") for row in rows
+            _read_member(row.dcid, IndexMemberFacts(row=row), "", {}) for row in rows
         )
     return by_rows[rows_key]
 
@@ -598,7 +600,7 @@ class AlternateJudge:
             def label(dcid: str) -> str:
                 if count == 1:
                     return shape.label
-                return read_name(arcs.get(dcid) or {}) or ""
+                return read_name(arcs.get(dcid) or {}, dcid) or ""
 
             if rows:
                 # A row with no constraint reads its residence from a label, which belongs
@@ -606,14 +608,16 @@ class AlternateJudge:
                 members = tuple(
                     member
                     if member.constraints
-                    else _read_member(row.dcid, IndexMemberFacts(row=row), label(row.dcid))
+                    else _read_member(row.dcid, IndexMemberFacts(row=row), label(row.dcid), {})
                     for row, member in zip(
                         rows, _index_members(shape, datasets, rows, index), strict=True
                     )
                 )
             else:
                 members = tuple(
-                    _read_member(dcid, ArcsMemberFacts(arcs=a), label(dcid))
+                    _read_member(
+                        dcid, ArcsMemberFacts(arcs=a), label(dcid), shape.value_labels or {}
+                    )
                     for dcid, a in arcs.items()
                 )
             self._members[key] = (

@@ -196,6 +196,7 @@ from datasets_api.manifest_models import CitationModel
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import servable_frame_location
 from datasets_api.subject_ids import served_subject_ids
+from dc_graph import label_or_self_name
 from description.citation import figures_processed
 from description.compose import version_title
 from description.facts import ComposedVariable, DescriptionRecord
@@ -210,7 +211,7 @@ from materialise.formats import (
     canonical_frame_document,
     read_canonical_frame_table,
 )
-from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
+from materialise.graph import GraphReader, GraphReadError
 from materialise.provenance_doc import SourceCitation, read_source_citations
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
@@ -1559,11 +1560,9 @@ class LiveFrameStore:
         for bare, arcs in arcs_by_bare.items():
             if arcs is None:
                 continue
-            # The last truthy resolved name is the fuller roll-up label.
-            values = [value for value in arcs.get("name", ()) if value and value != UNRESOLVED_NODE]
-            if not values:
+            label = label_or_self_name(arcs.get("name", ()), bare)
+            if label is None:
                 continue
-            label = values[-1]
             for ref in graph_bare_to_refs[bare]:
                 labels[ref] = label
         return labels, family_read_ok

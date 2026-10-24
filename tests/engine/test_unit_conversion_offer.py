@@ -577,6 +577,8 @@ class _Graph:
                 unit: {"typeOf": ("CurrencyUnit",), "nationalCurrencyOf": places}
                 for unit, places in self._CURRENCIES.items()
             },
+            "DACCountriesTotal": {"name": ("DAC countries, total",)},
+            "country/GTM": {"name": ("Guatemala",)},
             **(extra or {}),
         }
 
@@ -588,12 +590,6 @@ class _Graph:
             node = self._nodes.get(dcid, {"typeOf": ("Provenance",)})
             arcs[dcid] = {prop: node[prop] for prop in properties if prop in node} or None
         return arcs
-
-    def node_names_many(
-        self, dcids: Sequence[str], *, deadline: float | None = None
-    ) -> dict[str, tuple[str, ...]]:
-        names = {"DACCountriesTotal": ("DAC countries, total",), "country/GTM": ("Guatemala",)}
-        return {dcid: names[dcid] for dcid in dcids if dcid in names}
 
     def node_subjects(
         self,

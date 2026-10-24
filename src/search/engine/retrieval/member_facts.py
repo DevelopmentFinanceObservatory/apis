@@ -12,7 +12,6 @@ from code_index.types import StatVarRow
 from materialise.facets import ElectedDataset
 from search.engine.retrieval.facts import (
     FiveTuple,
-    read_constraint_value_names,
     read_constraints,
     read_declared_constraint_properties,
     read_declared_roles,
@@ -30,7 +29,6 @@ class MemberFacts(Protocol):
     def read_constraints(self) -> dict[str, str]: ...
     def read_declared_constraint_properties(self) -> tuple[str, ...]: ...
     def read_unresolved_constraints(self) -> frozenset[str]: ...
-    def read_constraint_value_names(self) -> dict[str, str]: ...
     def read_declared_roles(self) -> tuple[str, ...]: ...
     def read_dataset(self) -> ElectedDataset | None: ...
 
@@ -46,10 +44,10 @@ def asserted_constraint_properties(facts: MemberFacts) -> frozenset[str] | None:
     return frozenset(facts.read_constraints()) | facts.read_unresolved_constraints()
 
 
-def member_name(facts: MemberFacts) -> str | None:
-    """The graph name of a member whose fetched arcs `facts` holds (`ArcsMemberFacts`).
+def member_name(dcid: str, facts: MemberFacts) -> str | None:
+    """The graph name of member `dcid` whose fetched arcs `facts` holds (`ArcsMemberFacts`).
     None for a member with no name arc and for a code index row, which carries none."""
-    return read_name(facts.arcs) if isinstance(facts, ArcsMemberFacts) else None
+    return read_name(facts.arcs, dcid) if isinstance(facts, ArcsMemberFacts) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,9 +77,6 @@ class ArcsMemberFacts:
 
     def read_unresolved_constraints(self) -> frozenset[str]:
         return read_unresolved_constraints(self.arcs)
-
-    def read_constraint_value_names(self) -> dict[str, str]:
-        return read_constraint_value_names(self.arcs)
 
     def read_declared_roles(self) -> tuple[str, ...]:
         return read_declared_roles(self.arcs)
@@ -125,10 +120,6 @@ class IndexMemberFacts:
 
     def read_unresolved_constraints(self) -> frozenset[str]:
         return frozenset()
-
-    def read_constraint_value_names(self) -> dict[str, str]:
-        # The code index labels every value a row carries.
-        return {}
 
     def read_declared_roles(self) -> tuple[str, ...]:
         return self.row.observation_properties or ("observationAbout",)

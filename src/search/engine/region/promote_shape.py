@@ -26,7 +26,7 @@ from search.engine.retrieval.bound_values import (
     identity_query,
     walked_family_label,
 )
-from search.engine.retrieval.derive import index_shape_label, member_group_class
+from search.engine.retrieval.derive import index_shape_label, member_group_class, value_labels_of
 from search.engine.retrieval.facts import (
     FiveTuple,
     group_roles,
@@ -204,6 +204,17 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
                 for dcid in (state.ft.pop_type_dcid, *held.shared, *held.shared.values())
                 if dcid not in label_dcids
             )
+        # The same read labels the resolved members' constraint values, which open axes and
+        # residence readings label from (`ShapeDraft.value_labels`).
+        member_values = list(
+            dict.fromkeys(
+                value
+                for sv in state.resolved_stat_var_dcids
+                for value in read_constraints(state.resolved_arcs[sv]).values()
+                if value not in label_dcids
+            )
+        )
+        label_dcids.extend(member_values)
         prop_label_map = state.graph.node_labels_batch(label_dcids) if label_dcids else {}
         prop_labels = {p: prop_label_map.get(p, p) for p in constraint_props}
 
@@ -256,6 +267,7 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
                 prop_labels=prop_labels,
                 prop_observed_values=prop_observed_values,
                 sv_arc_facts=sv_arc_facts,
+                value_labels=value_labels_of(member_values, prop_label_map),
                 # These arcs form the complete elected family.
                 sv_arc_facts_complete=True,
                 declared_roles=roles.declared,

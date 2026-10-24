@@ -959,7 +959,9 @@ def _build_definite_spec(
     served_members = [served_member_facts[dcid] for dcid in mat_result.sv_dcids]
     # Record served values for every open constraint axis.
     open_axis_facts = open_constraint_axes(
-        measure_bound_values, dict(zip(mat_result.sv_dcids, served_members, strict=True))
+        measure_bound_values,
+        dict(zip(mat_result.sv_dcids, served_members, strict=True)),
+        value_labels=state.shape_draft.value_labels or {},
     )
     spec = build_spec(
         shape=state.shape_model,

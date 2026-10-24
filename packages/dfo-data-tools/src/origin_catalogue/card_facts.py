@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from dc_graph import UNRESOLVED_NODE
+from dc_graph import UNRESOLVED_NODE, display_name
 from origin_catalogue.catalogue import CardFacts, Licence, SourceDocumentation
 
 DATASET_TYPE = "Dataset"
@@ -98,14 +98,9 @@ def without_unresolved(
 
 
 def node_label(arcs: Arcs | None, dcid: str) -> str | None:
-    """The first non-empty `name` other than the node's own dcid, which some
-    imports also assert as a name."""
-    if arcs is None:
-        return None
-    for value in arcs.get("name", ()):
-        if value and value != dcid:
-            return value
-    return None
+    """The `display_name` of node `dcid` among its arcs `arcs`, `None` for a node
+    the graph does not hold."""
+    return None if arcs is None else display_name(arcs.get("name", ()), dcid)
 
 
 def first_dataset_parent[A: Arcs](

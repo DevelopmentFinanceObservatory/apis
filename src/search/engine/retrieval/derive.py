@@ -541,16 +541,19 @@ def _fetch_constraint_labels(
     labels_raw = graph.node_labels_batch(
         [*all_constraint_props, *all_constraint_values, *population_types]
     )
-    prop_labels_raw = labels_raw
+    return labels_raw, value_labels_of(all_constraint_values, labels_raw)
 
+
+def value_labels_of(values: Iterable[str], labels: Mapping[str, str]) -> dict[str, str]:
+    """A shape's value labels (`ShapeDraft.value_labels`): the graph `labels` of one batched
+    read, with each of `values` the code index holds labelled by its code row instead."""
     code_index = get_index()
-    value_labels = dict(labels_raw)
-    for value_dcid in all_constraint_values:
+    value_labels = dict(labels)
+    for value_dcid in values:
         row = code_index.code_by_dcid(value_dcid)
         if row is not None:
             value_labels[value_dcid] = row.label
-
-    return prop_labels_raw, value_labels
+    return value_labels
 
 
 def _shape_draft_for_group(
