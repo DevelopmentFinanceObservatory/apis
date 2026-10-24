@@ -62,6 +62,7 @@ dac1.gni:
   dataset: provenance/OECDDAC1
   shape: {population_type: EconomicUnit, measured_property: primaryIncome, stat_type: measuredValue, measurement_qualifier: Nominal, measurement_denominator: null}
   fixed: {fixedCapitalConsumptionBasis: GrossOfFixedCapitalConsumption}
+  stat_vars: [PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal]
 dac2a.oda_net_received:
   origin: dfo
   dataset: provenance/OECDDAC2A

@@ -69,7 +69,7 @@ lease has ended, or a `pending` row past the operation deadline (see
 when the subject's head could not answer it, and the rerun serves what the head gives at run
 time. A new row or a reset first
 counts the other live rows (every `pending` or `running` row not abandoned) under an advisory
-lock and refuses `service_unavailable` (503, retryable) at `DATASETS_OPERATION_BACKLOG_MAX` (20).
+lock and refuses `service_unavailable` (503, retryable) at `DATASETS_OPERATION_BACKLOG_MAX` (20). A backlog refusal re-reads the subject's head, and when the head serves the request it answers 200 from the head.
 Every mint and definition door call that reaches this point raises `OperationSubmitted`, caught by
 the door itself. The response is `202 Accepted` with a `Location` header pointing at
 `/api/datasets/operations/{operation_id}` and a body carrying `operation_id`, `status`, `poll`, and

@@ -389,9 +389,8 @@ def test_a_resubmission_is_paced_from_its_current_submission(
     assert resource.operation.retry_after_ms == expected_ms
 
 
-@pytest.mark.parametrize("state", ["done", "failed"])
-def test_a_finished_operation_is_paced_at_the_floor_whatever_its_age(state: str) -> None:
-    operation = _operation(state=state)
+def test_a_failed_operation_is_paced_at_the_floor_whatever_its_age() -> None:
+    operation = _operation(state="failed")
 
     interval = poll_interval_ms(operation, now=_OP_NOW + timedelta(hours=1))
 

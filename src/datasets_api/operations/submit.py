@@ -137,7 +137,7 @@ def poll_interval_ms(operation: Operation, *, now: datetime) -> int:
     at the floor, and a waiting browser backs off as the build runs. A failed operation
     answers its next poll at once, so it gets the shortest interval.
     """
-    if operation.state in ("done", "failed"):
+    if operation.state == "failed":
         return OPERATION_SUBMIT_RETRY_AFTER_MS
     age_ms = (now - operation.submitted_at) // timedelta(milliseconds=1)
     return min(OPERATION_POLL_MAX_MS, max(OPERATION_SUBMIT_RETRY_AFTER_MS, age_ms // 4))
@@ -155,7 +155,7 @@ def operation_submitted_resource(
     submitted: OperationSubmitted, *, now: datetime
 ) -> OperationResource:
     """Builds the 202 resource from the returned operation state, which may already be running or
-    terminal. Progress stays unset in the submit response and appears on polls.
+    failed. Progress stays unset in the submit response and appears on polls.
     """
     operation = submitted.operation
     return OperationResource(
