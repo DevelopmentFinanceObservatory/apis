@@ -57,6 +57,7 @@ from code_index.declarations import (
 from code_index.members import key_sets_cover
 from code_index.tokens import Token, TokenLookup, singular, tokenize
 from code_index.types import (
+    KIND_CLASSES,
     BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
@@ -214,14 +215,17 @@ def _check_private_providers(
 def _check_whole_population_totals(
     whole_totals: Mapping[str, WholePopulationTotal],
     kinds: Mapping[str, PartyKind],
+    dataset_kinds: Mapping[str, Mapping[str, PartyKind]],
     parties: Mapping[str, PartyPublication],
 ) -> None:
     """Raises `ExportRefused` for a `whole_totals` row naming a party that is not a published
     total, a total not published on exactly the row's axis, a dataset that does not publish the
-    total, a window whose first year lies outside the years the dataset publishes the total, or
-    a row with no dataset, no class or no reason. Two rows covering one class on one dataset and
-    axis fail when the finished document loads (`code_index.loader._check_whole_totals`), as
-    does a row whose windows name different classes (`code_index.loader._check_party_class`)."""
+    total or where it takes another kind (`dataset_kinds`, each party's kind by dataset where it
+    differs from `kinds`), a window whose first year lies outside the years the dataset
+    publishes the total, or a row with no dataset, no class or no reason. Two rows covering one
+    class on one dataset and axis fail when the finished document loads
+    (`code_index.loader._check_whole_totals`), as does a row whose windows name different
+    classes (`code_index.loader._check_party_class`)."""
     for dcid, whole in sorted(whole_totals.items()):
         if kinds.get(dcid) != "total":
             raise ExportRefused(
@@ -236,6 +240,11 @@ def _check_whole_population_totals(
         if unpublished := sorted(whole.datasets.keys() - parties[dcid].datasets):
             raise ExportRefused(
                 f"WHOLE_POPULATION_TOTALS marks {dcid!r} in {unpublished!r}, which do not publish it"
+            )
+        if other := sorted(whole.datasets.keys() & dataset_kinds.get(dcid, {}).keys()):
+            raise ExportRefused(
+                f"WHOLE_POPULATION_TOTALS marks {dcid!r} in {other!r}, where PARTY_KIND_OVERRIDES "
+                "gives it another kind"
             )
         if (
             not whole.datasets
@@ -272,11 +281,12 @@ def _check_classes_on_one_axis(
     holds the same way. That is exact for a one-axis party and for an `official` party, because
     every side a two-axis party reaches already holds an `official` row. A private party, a
     residual or a total on both axes would count on both axes in every dataset. `rows` are the
-    exported `parties` rows, each with its `kind` and `party_class`."""
+    exported `parties` rows, each with its `kind`, `party_class` and any `dataset_kinds`; a
+    row taking another kind in some dataset is no official party there."""
     ambiguous = sorted(
         (row["dcid"], row["kind"], row["party_class"], sorted(parties[row["dcid"]].axes))
         for row in rows
-        if (row["kind"], row["party_class"]) != ("party", "official")
+        if ((row["kind"], row["party_class"]) != ("party", "official") or "dataset_kinds" in row)
         and len(parties[row["dcid"]].axes) > 1
     )
     if ambiguous:
@@ -301,8 +311,10 @@ def export_parties(
     publish it on (`parties`, each sorted), the group and residuals a total holds, and for a
     whole population total what it covers in each dataset (`whole`), sorted by dcid.
 
-    A party in `kind_overrides` takes its override's kind. Any other takes the kind its graph
-    types give under `type_kinds`. A `party` whose OECD donor code is in `private_providers` has
+    A party in `kind_overrides` with no `datasets` takes its override's kind. Any other takes
+    the kind its graph types give under `type_kinds`, and one whose override names `datasets`
+    takes the override's kind in each of them (`dataset_kinds`, one `{dataset, kind}` per
+    dataset, sorted). A `party` whose OECD donor code is in `private_providers` has
     the class `private`, every other `party` `official`, on every axis, and every residual
     `residual`. A total in `whole_totals` has the one class its windows cover (`covered_class`),
     none when they cover more than one, and every other total none; the document refuses to
@@ -310,7 +322,10 @@ def export_parties(
     none. A row carries `whole` only for a total in `whole_totals`, and a marker's `years` only
     for a window with a first year, ending in the last year the dataset publishes the total.
 
-    Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a party the
+    Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a
+    `kind_overrides` row naming a dataset that does not publish its party, or none, or every one,
+    or whose party a dataset it was not reviewed against publishes (`_check_override_datasets`),
+    a dataset-scoped override giving the kind the party's types already give, a party the
     graph holds no node or type for, a party carrying a type `type_kinds` does not name, a party
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
@@ -325,6 +340,7 @@ def export_parties(
         raise ExportRefused(
             f"PARTY_KIND_OVERRIDES names {unpublished!r}, which no declared or listed dataset publishes"
         )
+    _check_override_datasets(kind_overrides, parties)
     arcs = _fetch_arcs_many(reader, sorted(published), properties=("typeOf", "name", "dacCode"))
     codes = {dcid: _dac_codes(arcs.get(dcid) or {}) for dcid in published}
     origins = [dcid for dcid in published if "origin" in parties[dcid].axes]
@@ -336,12 +352,20 @@ def export_parties(
     )
     rows = []
     kinds: dict[str, PartyKind] = {}
+    dataset_kinds: dict[str, dict[str, PartyKind]] = {}
     for dcid in sorted(published):
         party_arcs = arcs.get(dcid) or {}
-        if (override := kind_overrides.get(dcid)) is not None:
+        override = kind_overrides.get(dcid)
+        if override is not None and override.datasets is None:
             kind = override.kind
         else:
             kind = _kind_from_types(dcid, party_arcs.get("typeOf", ()), type_kinds)
+        if override is not None and override.datasets is not None:
+            if override.kind == kind:
+                raise ExportRefused(
+                    f"PARTY_KIND_OVERRIDES gives {dcid!r} the kind {kind!r} its types already give"
+                )
+            dataset_kinds[dcid] = dict.fromkeys(sorted(override.datasets), override.kind)
         if dcid in private and kind != "party":
             raise ExportRefused(
                 f"PRIVATE_PROVIDERS lists {dcid!r}, whose types give it the kind {kind!r}; "
@@ -360,17 +384,25 @@ def export_parties(
             "datasets": sorted(parties[dcid].datasets),
             "axes": sorted(parties[dcid].axes),
         }
+        if dcid in dataset_kinds:
+            row["dataset_kinds"] = [
+                {"dataset": dataset, "kind": dataset_kind}
+                for dataset, dataset_kind in dataset_kinds[dcid].items()
+            ]
         rows.append(row)
-    stale = sorted(dcid for dcid in total_groups if kinds.get(dcid) != "total")
+    stale = sorted(
+        dcid for dcid in total_groups if kinds.get(dcid) != "total" or dcid in dataset_kinds
+    )
     if stale:
         raise ExportRefused(
-            f"TOTAL_GROUPS names {stale!r}, which no declared or listed dataset publishes as a total"
+            f"TOTAL_GROUPS names {stale!r}, which the declared and listed datasets do not all "
+            "publish as a total"
         )
     not_residuals = sorted(
         residual
         for total in total_groups.values()
         for residual in total.residuals
-        if kinds.get(residual) != "residual"
+        if kinds.get(residual) != "residual" or residual in dataset_kinds
     )
     if not_residuals:
         raise ExportRefused(
@@ -378,7 +410,7 @@ def export_parties(
             "publishes as a residual"
         )
     _check_classes_on_one_axis(rows, parties)
-    _check_whole_population_totals(whole_totals, kinds, parties)
+    _check_whole_population_totals(whole_totals, kinds, dataset_kinds, parties)
     for row in rows:
         if (whole := whole_totals.get(row["dcid"])) is not None:
             row["party_class"] = covered_class(next(iter(whole.datasets.values())).covers)
@@ -389,14 +421,52 @@ def export_parties(
     return rows
 
 
+def _check_override_datasets(
+    kind_overrides: Mapping[str, KindOverride], parties: Mapping[str, PartyPublication]
+) -> None:
+    """Raises `ExportRefused` for a `kind_overrides` row whose `datasets` are empty, name a
+    provenance that does not publish its party (an unknown provenance among them), or name
+    every dataset that does, where the override holds everywhere and takes no `datasets`, and
+    for a row with `datasets` whose party a dataset outside its `reviewed` publishes."""
+    wrong = sorted(
+        (dcid, sorted(override.datasets - parties[dcid].datasets))
+        for dcid, override in kind_overrides.items()
+        if override.datasets is not None
+        and (not override.datasets or not override.datasets <= parties[dcid].datasets)
+    )
+    if wrong:
+        raise ExportRefused(
+            f"PARTY_KIND_OVERRIDES scopes overrides to datasets that do not publish their party, "
+            f"or to none: {wrong!r} (party, datasets not publishing it)"
+        )
+    everywhere = sorted(
+        dcid
+        for dcid, override in kind_overrides.items()
+        if override.datasets is not None and override.datasets >= parties[dcid].datasets
+    )
+    if everywhere:
+        raise ExportRefused(
+            f"PARTY_KIND_OVERRIDES scopes {everywhere!r} to every dataset that publishes it; "
+            "drop `datasets` so the override holds everywhere"
+        )
+    unreviewed = sorted(
+        (dcid, dataset)
+        for dcid, override in kind_overrides.items()
+        if override.datasets is not None
+        for dataset in parties[dcid].datasets - override.reviewed
+    )
+    if unreviewed:
+        raise ExportRefused(
+            f"PARTY_KIND_OVERRIDES scopes overrides whose party a dataset they were not reviewed "
+            f"against publishes: {unreviewed!r} (party, dataset); check the party's figures "
+            "there and add the dataset to `reviewed`, and to `datasets` if it is a total there"
+        )
+
+
 def _party_class(kind: PartyKind, *, private: bool) -> PartyClass | None:
-    """A row's class before whole markers: `private` or `official` for a `party`, `residual`
-    for a residual, none for a total."""
-    if kind == "residual":
-        return "residual"
-    if kind != "party":
-        return None
-    return "private" if private else "official"
+    """A row's class before whole markers: `private` for a private `party`, else the class its
+    kind gives (`KIND_CLASSES`)."""
+    return "private" if private and kind == "party" else KIND_CLASSES[kind]
 
 
 def strip_system_suffix(name: str) -> str:

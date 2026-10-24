@@ -106,6 +106,19 @@ _LIFE_EXPECTANCY = replace(
             ),
             "  restricted to, on its breakdowns: Age=Years 60\n",
         ),
+        (
+            _LIFE_EXPECTANCY,
+            (
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="age",
+                    kind="unbound",
+                    evidence="requested_all",
+                    requested_all_phrase="by age",
+                ),
+            ),
+            "",
+        ),
     ],
     ids=[
         "no-binding",
@@ -114,6 +127,7 @@ _LIFE_EXPECTANCY = replace(
         "source-binding",
         "implied-value",
         "implied-value-bound-elsewhere",
+        "implied-value-opened",
     ],
 )
 def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, restricted):
@@ -121,7 +135,7 @@ def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, re
     series lists the values its value and set bindings restrict it to, each by its graph
     label less its property's name, so the read can answer that a series bound to Sex=Female
     states "girls". It lists the value its measure's definition fixes on a property no
-    binding restricts, which its headline series states nothing on."""
+    binding restricts or opens, which its headline series states nothing on."""
     assert build_stated_words_prompt(
         "stateless refugee population", shape, ("stateless", "refugee"), bindings=bindings
     ) == (

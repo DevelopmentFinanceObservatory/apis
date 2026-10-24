@@ -661,7 +661,9 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
     # Entity options have no bound-unit gate, so launch them immediately. Their raw
     # values feed relaunch. Shared role-axis facts keep options and Spec aligned.
     t0 = now_ms()
-    role_axis_facts = role_axis_facts_for_materialised(mat_result, shape=state.shape_draft)
+    role_axis_facts = role_axis_facts_for_materialised(
+        mat_result, shape=state.shape_draft, plan=state.elected_plan
+    )
     entity_task = asyncio.create_task(
         asyncio.to_thread(
             _build_and_enrich_entity_options,

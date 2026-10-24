@@ -18,6 +18,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import DetectedSV, DetectLegs, admit_legs
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.config import settings
+from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import PLACE_SCOPE_DEFAULTED
 from search.engine.region.pipeline import resolve_variable
@@ -26,6 +27,7 @@ from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.facts import read_constraints, read_five_tuple
 from search.engine.retrieval.standard import _admit_standard_members, _AdmittedStandardMembers
 from search.engine.stated_words_read import StatedWordsOutput
+from search.models import TimeWindow
 from statvar_members import member_digest
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -266,6 +268,8 @@ class _BindNothingLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         return elected_reply(0), None
 
 
@@ -329,15 +333,19 @@ def _two_breakdowns_graph(
     )
 
 
-def _resolve_two_breakdowns(graph: FakeGraph):
-    """Resolve "under-five mortality by wealth quintile" in Kenya over `graph`
-    (`_two_breakdowns_graph`), naming no breakdown the binder opens."""
-    query = "under-five mortality by wealth quintile"
+def _resolve_two_breakdowns(
+    graph: FakeGraph,
+    *,
+    query: str = "under-five mortality by wealth quintile",
+    date_request: DateRequest | None = None,
+):
+    """Resolve `query` in Kenya over `graph` (`_two_breakdowns_graph`) for the years of
+    `date_request`, naming no breakdown the binder opens."""
     return asyncio.run(
         resolve_variable(
             query,
             entities=["Kenya"],
-            date_request=None,
+            date_request=date_request,
             detect_query=query,
             role_query=query,
             pac=True,
@@ -405,6 +413,44 @@ def test_a_cap_below_the_breakdown_count_truncates_the_candidates(
     assert result.status == "candidates"
     assert len(result.specs) == min(max_candidates, 3)
     assert result.candidate_budget_truncated is truncated
+
+
+@pytest.mark.parametrize("max_candidates", [2, 3, 6, 7])
+def test_the_cap_keeps_the_breakdown_holding_data_in_the_years_asked_for(
+    bind_catalogue, monkeypatch: pytest.MonkeyPatch, max_candidates: int
+) -> None:
+    """The series breaks down three ways, or seven with four more one-member breakdowns,
+    and only the urban member holds data in Kenya in 2020. With `max_candidates` below the
+    breakdown count, the cut keeps the residence-area breakdown, the one holding data in the
+    year the question asks for, whatever the cap."""
+    monkeypatch.setattr(settings(), "max_candidates", max_candidates)
+    extra = {
+        f"undata/who/MORT_U5_RATE.EXTRA--{i}": (
+            f"Under-five mortality rate [Extra{i}=Group]",
+            f"undataExtra{i}",
+            "G",
+        )
+        for i in range(4)
+    }
+    members = {
+        **_TWO_BREAKDOWNS,
+        **(extra if max_candidates >= 6 else {}),
+        _URBAN_MEMBER: ("Under-five mortality rate [Residence area=Urban]", _RESIDENCE, "U"),
+    }
+    query = "under-five mortality"
+    graph = _two_breakdowns_graph(bind_catalogue, with_data=frozenset(members), members=members)
+    graph._obs[f"{_URBAN_MEMBER}|country/KEN"] = [
+        {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1}
+    ]
+    graph._detect[query] = next(iter(graph._detect.values()))
+
+    result = _resolve_two_breakdowns(
+        graph,
+        query=query,
+        date_request=DateRequest(window=TimeWindow(start_year=2020, end_year=2020), latest=False),
+    )
+
+    assert _URBAN_MEMBER in {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
 
 
 def test_one_breakdown_left_with_data_answers_by_it_with_a_departure(bind_catalogue) -> None:
@@ -574,15 +620,29 @@ _QUINTILES = {
 
 _RESIDENCE = "undataResidenceArea"
 _URBAN = ("undata/RES-U", "Urban")
+_AGE = "undataAge"
+_UNDER_FIVE = ("undata/AGE-Y0T4", "Under 5 years old")
 
 
-def _hold_wealth_series(bind_catalogue, *, un_pass: bool, urban: bool = False) -> FakeGraph:
+def _hold_wealth_series(
+    bind_catalogue,
+    *,
+    un_pass: bool,
+    urban: bool = False,
+    urban_sex: bool = False,
+    aged_sex: bool = False,
+    query: str = "under-five mortality by wealth quintile",
+) -> FakeGraph:
     """Bind tables holding a WHO series whole: five wealth members, each asserting one
     quintile and, with `urban`, the urban residence area too, and two by-sex members, each
-    holding five points at Kenya. Return the graph whose recall for "under-five mortality by
-    wealth quintile" scores the highest quintile alone, our resolve's or, with `un_pass`,
-    the UN resolve's, ours recalling nothing."""
+    asserting one sex and, with `urban_sex`, the urban residence area too and, with
+    `aged_sex`, the age under five, each member holding five points at Kenya. Return the
+    graph whose recall for `query` scores the highest quintile alone, our resolve's or,
+    with `un_pass`, the UN resolve's, ours recalling nothing."""
     residence = {_RESIDENCE: _URBAN} if urban else {}
+    sex_residence = ({_RESIDENCE: _URBAN} if urban_sex else {}) | (
+        {_AGE: _UNDER_FIVE} if aged_sex else {}
+    )
     members = {
         **{
             sv: (
@@ -591,10 +651,21 @@ def _hold_wealth_series(bind_catalogue, *, un_pass: bool, urban: bool = False) -
             )
             for sv, (value, label) in _QUINTILES.items()
         },
-        _FEMALE: ("Under-five mortality rate [Sex=Female]", {_SEX: ("undata/SEX-F", "Female")}),
-        _MALE: ("Under-five mortality rate [Sex=Male]", {_SEX: ("undata/SEX-M", "Male")}),
+        _FEMALE: (
+            "Under-five mortality rate [Sex=Female]",
+            {_SEX: ("undata/SEX-F", "Female"), **sex_residence},
+        ),
+        _MALE: (
+            "Under-five mortality rate [Sex=Male]",
+            {_SEX: ("undata/SEX-M", "Male"), **sex_residence},
+        ),
     }
-    slot_names = {_WEALTH: "Wealth quantile", _SEX: "Sex", _RESIDENCE: "Residence area"}
+    slot_names = {
+        _WEALTH: "Wealth quantile",
+        _SEX: "Sex",
+        _RESIDENCE: "Residence area",
+        _AGE: "Age",
+    }
     bind_catalogue(
         restrictive_catalogue(
             provenances=[provenance_row("undata/p/WHO", UN_SYSTEM, segment="who")],
@@ -613,7 +684,7 @@ def _hold_wealth_series(bind_catalogue, *, un_pass: bool, urban: bool = False) -
             ),
         )
     )
-    recalled = {_WEALTH_QUERY: {"svs": [_Q5], "cosine_scores": [0.9]}}
+    recalled = {query: {"svs": [_Q5], "cosine_scores": [0.9]}}
     return FakeGraph(
         nodes={
             "country/KEN": {"label": "Kenya", "type": "Country"},
@@ -635,7 +706,7 @@ def _hold_wealth_series(bind_catalogue, *, un_pass: bool, urban: bool = False) -
             f"{sv}|country/KEN": [{"earliestDate": "2010", "latestDate": "2014", "obsCount": 5}]
             for sv in members
         },
-        detect={_WEALTH_QUERY: {"svs": [], "cosine_scores": []}} if un_pass else recalled,
+        detect={query: {"svs": [], "cosine_scores": []}} if un_pass else recalled,
         un_detect=recalled if un_pass else {},
         resolve={"Kenya": "country/KEN"},
     )
@@ -644,14 +715,14 @@ def _hold_wealth_series(bind_catalogue, *, un_pass: bool, urban: bool = False) -
 _WEALTH_QUERY = "under-five mortality by wealth quintile"
 
 
-def _resolve_by_wealth_quintile(graph: FakeGraph):
+def _resolve_by_wealth_quintile(graph: FakeGraph, query: str = _WEALTH_QUERY):
     return asyncio.run(
         resolve_variable(
-            _WEALTH_QUERY,
+            query,
             entities=["Kenya"],
             date_request=None,
-            detect_query=_WEALTH_QUERY,
-            role_query=f"{_WEALTH_QUERY} in Kenya",
+            detect_query=query,
+            role_query=f"{query} in Kenya",
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
@@ -685,15 +756,28 @@ def test_a_breakdown_on_a_series_with_no_total_serves_its_members_alone(
     assert "membership_unverified" not in {warning.code for warning in result.warnings}
 
 
-def test_a_resubmit_of_a_breakdown_identity_keeps_its_spec_id(bind_catalogue) -> None:
+def _breakdown_notice(result) -> tuple[list[str], list[str]]:
+    """The `family_total_absent` messages and the departure codes `result` states."""
+    return (
+        [w.message for w in result.warnings if w.code == "family_total_absent"],
+        [departure.code for departure in result.departure_facts.values()],
+    )
+
+
+@pytest.mark.parametrize("un_pass", [False, True], ids=["our_pass", "un_pass"])
+def test_a_resubmit_of_a_breakdown_identity_keeps_its_spec_id(
+    bind_catalogue, un_pass: bool
+) -> None:
     """The identity the breakdown answer mints carries the wealth slot alone. A resubmit of
     it reads its slots as posted, so it serves the same five quintiles under the same
-    spec_id."""
+    spec_id. The slot it leaves open counts as named, as the first answer's phrase named
+    it, so neither states that the family has no total."""
     from search.engine.region import resolve_spec_resubmit
     from search.models import ResubmitIdentityPayload
 
-    graph = _hold_wealth_series(bind_catalogue, un_pass=False)
-    (answer,) = _resolve_by_wealth_quintile(graph).specs
+    graph = _hold_wealth_series(bind_catalogue, un_pass=un_pass)
+    result = _resolve_by_wealth_quintile(graph)
+    (answer,) = result.specs
 
     resubmitted = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(identity=answer.definition.identity),
@@ -707,6 +791,7 @@ def test_a_resubmit_of_a_breakdown_identity_keeps_its_spec_id(bind_catalogue) ->
     assert spec.spec_id == answer.spec_id
     assert {sv.ref.ref for sv in spec.resolved.members} == set(_QUINTILES)
     assert spec.resolved.stat_vars.served_count == len(_QUINTILES)
+    assert _breakdown_notice(resubmitted) == _breakdown_notice(result) == ([], [])
 
 
 @pytest.mark.parametrize("quintiles_hold_data", [True, False], ids=["with_data", "no_data"])
@@ -742,20 +827,26 @@ def test_a_breakdown_no_member_holds_alone_answers_by_the_breakdown_holding_it(
 
 
 @pytest.mark.parametrize("answer", ["lone_breakdown", "by_sex_candidate"])
-def test_a_resubmit_of_a_breakdown_answer_keeps_its_spec_id_warning_and_departure(
+def test_a_resubmit_of_a_breakdown_answer_keeps_its_spec_id_and_names_its_breakdown(
     bind_catalogue, answer: str
 ) -> None:
     """A resubmit of a definite lone-breakdown answer's identity, or of the by-sex candidate
-    a series with two breakdowns offers, reads its slots as posted, so it answers definite over the same series
-    under the same spec_id. The breakdown decision the first answer takes, over the shape
-    the posted slots give, finds one signature, so the resubmit states that the family has
-    no total and the answer shows it by its breakdown, with the `closest_match` departure."""
+    a series with two breakdowns offers, reads its slots as posted, so it answers definite
+    over the same series under the same spec_id. The sex slot the identity leaves open
+    counts as named, so the resubmit states the warnings and departures "under-five
+    mortality by sex" states over the same series: no `family_total_absent` warning and no
+    `closest_match` departure, though the lone-breakdown first answer, which named none,
+    states both."""
     from search.engine.region import resolve_spec_resubmit
     from search.models import ResubmitIdentityPayload
 
     if answer == "lone_breakdown":
         result, graph = _resolve_one_breakdown(bind_catalogue)
         (first,) = result.specs
+        assert _breakdown_notice(result) == (
+            ["This indicator has no overall figure, so the answer shows it by sex."],
+            ["closest_match"],
+        )
     else:
         graph = _two_breakdowns_graph(bind_catalogue, with_data=frozenset(_TWO_BREAKDOWNS))
         result = _resolve_two_breakdowns(graph)
@@ -775,11 +866,14 @@ def test_a_resubmit_of_a_breakdown_answer_keeps_its_spec_id_warning_and_departur
     assert spec.spec_id == first.spec_id
     assert {sv.ref.ref for sv in spec.resolved.members} == {_FEMALE, _MALE}
     assert spec.resolved.stat_vars.served_count == 2
-    assert [w.message for w in resubmitted.warnings if w.code == "family_total_absent"] == [
-        "This indicator has no overall figure, so the answer shows it by sex."
-    ]
-    assert [departure.code for departure in resubmitted.departure_facts.values()] == [
-        "closest_match"
+    assert _breakdown_notice(resubmitted) == ([], [])
+    named_query = "under-five mortality by sex"
+    graph._detect[named_query] = next(iter(graph._detect.values()))
+    named = _resolve_two_breakdowns(graph, query=named_query)
+    assert named.status == "definite"
+    assert [w.code for w in resubmitted.warnings] == [w.code for w in named.warnings]
+    assert [d.code for d in resubmitted.departure_facts.values()] == [
+        d.code for d in named.departure_facts.values()
     ]
 
 
@@ -1015,3 +1109,51 @@ def test_a_held_family_past_the_cold_read_cap_answers_unsettled_then_settles(
     assert reads_first == 2
     assert (second.scope_unsettled, second.leg_degraded) == (False, False)
     assert len(submitted) == reads_first
+
+
+@pytest.mark.parametrize(
+    ("urban_sex", "aged_sex", "slots", "message"),
+    [
+        (
+            True,
+            False,
+            [_RESIDENCE, _SEX, _WEALTH],
+            "This indicator has no overall figure, so the answer shows it by residence area.",
+        ),
+        # Only the by-sex members recall did not find assert the age.
+        (
+            False,
+            True,
+            [_AGE, _RESIDENCE, _SEX, _WEALTH],
+            "This indicator has no overall figure, so the answer shows it by residence area "
+            "and age.",
+        ),
+    ],
+    ids=["shared_residence", "age_outside_the_sample"],
+)
+def test_breakdowns_no_member_holds_together_answer_by_every_member_with_a_departure(
+    bind_catalogue, urban_sex: bool, aged_sex: bool, slots: list[str], message: str
+) -> None:
+    """Every quintile member of the series also asserts the urban residence area, and none
+    asserts both a sex and a wealth quintile, so "by sex and by wealth quintile" opens two
+    slots no breakdown holds together. The family keeps every slot and serves all seven
+    members, and the answer discloses each breakdown the question did not name that a
+    served member asserts, read over the whole family though recall found one quintile
+    alone, with the `closest_match` departure."""
+    query = "under-five mortality by sex and by wealth quintile"
+    graph = _hold_wealth_series(
+        bind_catalogue,
+        un_pass=False,
+        urban=True,
+        urban_sex=urban_sex,
+        aged_sex=aged_sex,
+        query=query,
+    )
+
+    result = _resolve_by_wealth_quintile(graph, query)
+
+    assert result.status == "definite"
+    (answer,) = result.specs
+    assert [slot.property for slot in answer.definition.identity.slots] == slots
+    assert {sv.ref.ref for sv in answer.resolved.members} == {*_QUINTILES, _FEMALE, _MALE}
+    assert _breakdown_notice(result) == ([message], ["closest_match"])

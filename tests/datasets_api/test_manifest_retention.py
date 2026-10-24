@@ -1,15 +1,17 @@
 """`Manifest.retention`: every Manifest door reports how long the version it serves can still be
-fetched, from the frame its files render from (`datasets_api.retention`), and no stored body
-holds it."""
+fetched, from the frames that serve it (`datasets_api.retention`), and no stored body holds it.
+The pin door promotes the first of those frames whose bytes survive."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
 
-from artifact_store import LiveArtifactInventory, Tier
-from dataset_store.snapshot import WORKING_TIER_RETENTION, LiveSnapshotReader
+from artifact_store import LiveArtifactInventory, StoredArtifact, Tier
+from dataset_store.snapshot import WORKING_TIER_RETENTION, LiveSnapshotReader, StoredVersion
 from datasets_api import manifest as manifest_module
 from datasets_api.doors.pin import pin_artifact
 from datasets_api.manifest import version_document
@@ -120,21 +122,76 @@ def test_a_version_reports_the_retention_of_the_frame_its_files_render_from(own,
     assert retention.model_dump(mode="json", exclude_none=True) == expected
 
 
-def test_a_derived_version_reports_its_base_frame_and_ignores_its_own():
+_LEFT_OUT = {"party_totals_left_out": [{"role": "recipient", "entities": ["X"]}]}
+# A party-totals cut whose file records a groupby, minted before `frame_summed`: the record
+# cannot say what its own frame holds, so its base frame alone serves it.
+_CUT_AND_SUMMED = {
+    "format": "parquet",
+    "bundle": False,
+    "groupby": {"by": ["recipient"], "op": "sum"},
+    "without_party_totals": True,
+}
+
+
+def _derived(*, trace: dict | None = None) -> StoredVersion:
+    version = _version(content_version="cv2", base_content_version="cv1")
+    if trace is None:
+        return version
+    return replace(version, facts=replace(version.facts, trace=trace))
+
+
+@pytest.mark.parametrize(
+    ("derived", "own", "base", "expected"),
+    [
+        pytest.param(
+            _derived(),
+            [_frame(digest="sha256:own", tier="pinned", stored_at=_NOW)],
+            [_frame(digest="sha256:base", stored_at=_LONG_AGO)],
+            {"pinned": True},
+            id="own-frame-pinned-base-aged",
+        ),
+        pytest.param(
+            _derived(),
+            [_frame(digest="sha256:own", stored_at=_NOW)],
+            [_frame(digest="sha256:base", tier="pinned", stored_at=_LONG_AGO)],
+            {"pinned": True},
+            id="base-frame-pinned-own-working",
+        ),
+        pytest.param(
+            _derived(),
+            [_frame(digest="sha256:own", stored_at=_NOW)],
+            [_frame(digest="sha256:base", stored_at=_LONG_AGO)],
+            _held_wire(_NOW),
+            id="the-latest-held-until-among-serving-frames",
+        ),
+        pytest.param(
+            _derived(),
+            [_frame(digest="sha256:own", stored_at=_NOW)],
+            [],
+            _held_wire(_NOW),
+            id="own-frame-alone",
+        ),
+        pytest.param(
+            _derived(trace=_LEFT_OUT),
+            [
+                _frame(digest="sha256:own", tier="pinned", stored_at=_NOW),
+                _location(digest="sha256:file", rendering=_CUT_AND_SUMMED, media_type=_PARQUET),
+            ],
+            [_frame(digest="sha256:base", stored_at=_LONG_AGO)],
+            _held_wire(_LONG_AGO),
+            id="base-only-version-ignores-its-own-frame",
+        ),
+    ],
+)
+def test_a_derived_version_reports_the_frames_that_serve_it(derived, own, base, expected):
     reader = FakeSnapshotReader(
-        versions={
-            ("spec_a", "cv1"): _version(),
-            ("spec_a", "cv2"): _version(content_version="cv2", base_content_version="cv1"),
-        },
-        locations={
-            ("spec_a", "cv1"): [_frame(digest="sha256:base", tier="pinned", stored_at=_LONG_AGO)],
-            ("spec_a", "cv2"): [_frame(digest="sha256:own", stored_at=_NOW)],
-        },
+        versions={("spec_a", "cv1"): _version(), ("spec_a", "cv2"): derived},
+        locations={("spec_a", "cv1"): base, ("spec_a", "cv2"): own},
     )
 
     retention = version_retention(reader, subject_id="spec_a", content_version="cv2", now=_NOW)
 
-    assert retention.model_dump(mode="json", exclude_none=True) == {"pinned": True}
+    assert retention.model_dump(mode="json", exclude_none=True) == expected
 
 
 @pytest.mark.parametrize(
@@ -247,17 +304,38 @@ def test_a_done_operation_poll_reports_retention():
 # --- Pinning a derived version ---
 
 
-def _derived_world(*, parquet_tier: Tier = Tier.working, base_stored_at: datetime = _NOW):
-    """`cv2` is a derived version of `cv1`. Each links its own working canonical frame, stored
-    at different instants, the base one at `base_stored_at`, and `cv2` links a parquet
-    rendering."""
-    store = FakeArtifactStore()
+class _CopyRecordingArtifactStore(FakeArtifactStore):
+    """Records each digest a copy promotes, in call order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.copied: list[str] = []
+
+    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+        stored = super().copy(digest, from_tier=from_tier, to_tier=to_tier)
+        self.copied.append(digest)
+        return stored
+
+
+def _derived_world(
+    *,
+    parquet_tier: Tier = Tier.working,
+    own_tier: Tier = Tier.working,
+    base_stored_at: datetime = _NOW,
+    trace: dict | None = None,
+    parquet_rendering: Mapping[str, object] | None = None,
+):
+    """`cv2` is a derived version of `cv1`, served by its own frame then its base frame unless
+    `trace` and `parquet_rendering` say otherwise. Each links its own canonical frame, stored at
+    different instants, the base one at `base_stored_at`, and `cv2` links a parquet rendering."""
+    store = _CopyRecordingArtifactStore()
     base_frame = _store_and_locate(
         store, b"PAR1-base-frame", rendering=_FRAME, media_type=_PARQUET, stored_at=base_stored_at
     )
     own_frame = _store_and_locate(
         store,
         b"PAR1-own-frame",
+        tier=own_tier,
         rendering=_FRAME,
         media_type=_PARQUET,
         stored_at=_NOW + timedelta(days=3),
@@ -266,18 +344,15 @@ def _derived_world(*, parquet_tier: Tier = Tier.working, base_stored_at: datetim
         store,
         b"PAR1-derived-rendering",
         tier=parquet_tier,
-        rendering={"format": "parquet", "bundle": False},
+        rendering=parquet_rendering or {"format": "parquet", "bundle": False},
         media_type=_PARQUET,
     )
     reader = StoreBackedSnapshotReader(
-        versions={
-            ("spec_a", "cv1"): _version(),
-            ("spec_a", "cv2"): _version(content_version="cv2", base_content_version="cv1"),
-        },
+        versions={("spec_a", "cv1"): _version(), ("spec_a", "cv2"): _derived(trace=trace)},
         locations={("spec_a", "cv1"): [base_frame], ("spec_a", "cv2"): [parquet, own_frame]},
         store=store,
     )
-    return store, reader, base_frame, parquet
+    return store, reader, base_frame, own_frame, parquet
 
 
 def _pin(store, reader, writer, digest: str, *, daily_max: int = 500) -> datetime:
@@ -295,69 +370,103 @@ def _pin(store, reader, writer, digest: str, *, daily_max: int = 500) -> datetim
     )
 
 
+def _pin_key(frame, content_version: str) -> tuple[str, str, str, str, str]:
+    return (_PRINCIPAL, frame.artifact_digest, "spec_a", content_version, PIN_REFERENCE_KIND)
+
+
 @pytest.mark.parametrize(
     "base_stored_at",
     [
         pytest.param(_NOW, id="servable-base-frame"),
-        # On day 31 a click had renewed the parquet file alone, and the base frame aged.
-        pytest.param(_LONG_AGO, id="aged-base-frame-whose-bytes-survive"),
+        pytest.param(_LONG_AGO, id="aged-base-frame-whose-bytes-are-gone"),
     ],
 )
-def test_pinning_a_derived_version_promotes_its_base_frame_and_reports_it_pinned(
-    base_stored_at: datetime,
-):
-    store, reader, base_frame, parquet = _derived_world(base_stored_at=base_stored_at)
+def test_pinning_a_derived_version_promotes_its_own_frame_and_stops(base_stored_at: datetime):
+    """The own frame serves the version, so the base frame is neither copied nor referenced,
+    and the version reports pinned whether or not the base bytes survive."""
+    store, reader, base_frame, own_frame, parquet = _derived_world(base_stored_at=base_stored_at)
+    if base_stored_at == _LONG_AGO:
+        del store._objects[(base_frame.artifact_digest, Tier.working.value)]
     writer = FakeArtifactReferenceWriter()
-    before = version_retention(reader, subject_id="spec_a", content_version="cv2", now=_NOW)
-    assert before.model_dump(mode="json") == {
-        "pinned": False,
-        "held_until": (base_frame.stored_at + WORKING_TIER_RETENTION)
-        .isoformat()
-        .replace("+00:00", "Z"),
-    }
 
     _pin(store, reader, writer, parquet.artifact_digest)
 
-    assert (base_frame.artifact_digest, Tier.pinned.value) in store._objects
-    base_key = (_PRINCIPAL, base_frame.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND)
-    assert writer.records[base_key] == _NOW
+    assert store.copied == [parquet.artifact_digest, own_frame.artifact_digest]
+    assert writer.records[_pin_key(own_frame, "cv2")] == _NOW
+    assert _pin_key(base_frame, "cv1") not in writer.records
     after = version_retention(reader, subject_id="spec_a", content_version="cv2", now=_NOW)
     assert after.model_dump(mode="json", exclude_none=True) == {"pinned": True}
 
 
-def test_a_pin_whose_base_frame_bytes_are_gone_pins_the_named_file_alone():
-    """The aged base frame's bytes are gone, so nothing is left to pin. The named parquet still
-    pins and the version keeps the base frame's past `held_until`."""
-    store, reader, base_frame, parquet = _derived_world(base_stored_at=_LONG_AGO)
+def test_a_pin_of_a_derived_version_whose_own_frame_is_pinned_copies_no_frame():
+    """A pinned own frame already serves the version: the pin records a reference to it and
+    leaves the base frame alone."""
+    store, reader, base_frame, own_frame, parquet = _derived_world(own_tier=Tier.pinned)
+    writer = FakeArtifactReferenceWriter()
+
+    _pin(store, reader, writer, parquet.artifact_digest)
+
+    assert store.copied == [parquet.artifact_digest]
+    assert writer.records[_pin_key(own_frame, "cv2")] == _NOW
+    assert _pin_key(base_frame, "cv1") not in writer.records
+
+
+@pytest.mark.parametrize(
+    ("trace", "parquet_rendering"),
+    [
+        pytest.param(None, None, id="own-frame-bytes-gone"),
+        pytest.param(_LEFT_OUT, _CUT_AND_SUMMED, id="base-only-version"),
+    ],
+)
+def test_a_pin_promotes_the_base_frame_when_the_own_frame_cannot_serve(trace, parquet_rendering):
+    """An own frame whose bytes are gone is skipped, and a version its own frame cannot serve
+    never promotes it. Either way the base frame is promoted and the version reports pinned."""
+    store, reader, base_frame, own_frame, parquet = _derived_world(
+        trace=trace, parquet_rendering=parquet_rendering
+    )
+    if trace is None:
+        del store._objects[(own_frame.artifact_digest, Tier.working.value)]
+    writer = FakeArtifactReferenceWriter()
+
+    _pin(store, reader, writer, parquet.artifact_digest)
+
+    assert store.copied == [parquet.artifact_digest, base_frame.artifact_digest]
+    assert writer.records[_pin_key(base_frame, "cv1")] == _NOW
+    assert _pin_key(own_frame, "cv2") not in writer.records
+    after = version_retention(reader, subject_id="spec_a", content_version="cv2", now=_NOW)
+    assert after.model_dump(mode="json", exclude_none=True) == {"pinned": True}
+
+
+def test_a_pin_whose_serving_frames_bytes_are_gone_pins_the_named_file_alone():
+    """Neither frame's bytes survive, so nothing is left to pin. The named parquet still pins
+    and the version keeps the latest `held_until` of its frames."""
+    store, reader, base_frame, own_frame, parquet = _derived_world(base_stored_at=_LONG_AGO)
+    del store._objects[(own_frame.artifact_digest, Tier.working.value)]
     del store._objects[(base_frame.artifact_digest, Tier.working.value)]
     writer = FakeArtifactReferenceWriter()
 
     pinned_at = _pin(store, reader, writer, parquet.artifact_digest)
 
     assert pinned_at == _NOW
-    assert (parquet.artifact_digest, Tier.pinned.value) in store._objects
-    assert (_PRINCIPAL, base_frame.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND) not in (
-        writer.records
-    )
+    assert store.copied == [parquet.artifact_digest]
+    assert set(writer.records) == {_pin_key(parquet, "cv2")}
     after = version_retention(reader, subject_id="spec_a", content_version="cv2", now=_NOW)
-    assert after.model_dump(mode="json") == _held_wire(_LONG_AGO)
+    assert after.model_dump(mode="json") == _held_wire(own_frame.stored_at)
 
 
-def test_the_base_frame_copy_skips_an_exhausted_budget_and_counts_toward_later_calls():
-    """The named rendering is already pinned, so this call waits on no budget, and the frames
-    are copied though the trailing count sits at the budget. The base frame's copy holds a
-    `pin` reference, which is what the trailing count reads, so it counts toward later calls."""
-    store, reader, base_frame, parquet = _derived_world(parquet_tier=Tier.pinned)
+def test_the_frame_copy_skips_an_exhausted_budget_and_counts_toward_later_calls():
+    """The named rendering is already pinned, so this call waits on no budget, and the frame is
+    copied though the trailing count sits at the budget. The frame's copy holds a `pin`
+    reference, which is what the trailing count reads, so it counts toward later calls."""
+    store, reader, _, own_frame, parquet = _derived_world(parquet_tier=Tier.pinned)
     writer = FakeArtifactReferenceWriter(pinned_copies={"sha256:seed": _NOW})
     writer.records[(_PRINCIPAL, "sha256:seed", "spec_seed", "cv1", PIN_REFERENCE_KIND)] = _NOW
     assert writer.count_pinned_copies_since(reference_kind=PIN_REFERENCE_KIND, since=_NOW) == 1
 
     _pin(store, reader, writer, parquet.artifact_digest, daily_max=1)
 
-    assert (base_frame.artifact_digest, Tier.pinned.value) in store._objects
-    assert (_PRINCIPAL, base_frame.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND) in (
-        writer.records
-    )
+    assert store.copied == [own_frame.artifact_digest]
+    assert _pin_key(own_frame, "cv2") in writer.records
 
 
 def test_the_version_document_leaves_out_a_retention_its_manifest_holds(

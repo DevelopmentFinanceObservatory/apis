@@ -20,6 +20,7 @@ from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.option_coverage import (
+    _build_and_enrich_entity_options,
     _maybe_build_facet_options,
     _stream_slot_options_events,
     count_slot_options,
@@ -29,6 +30,7 @@ from search.engine.region.un_system import NO_LABELS
 from search.engine.retrieval.bound_values import OptionServedFact, SeriesRows
 from search.engine.same_shape import collapse_same_shape
 from search.engine.shape import ShapeDraft, SlotKeyDraft, identity_shape_for
+from search.engine.spec_build import RoleAxisFactInput
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
     RecipeTables,
@@ -1475,3 +1477,62 @@ def test_a_constant_price_answer_the_tables_cannot_count_warns_rows_may_be_left_
     download = region.specs[0].resolved.download
     assert download is not None
     assert download.rows_exact is False
+
+
+_DAC2A_MEMBER = "Amount_FinancialFlow_Disbursement_DAC2aAidType210_Nominal"
+
+
+def test_both_transports_give_a_dac2a_donor_menu_the_trust_funds_dac2a_kind():
+    """The IMF trust funds are a total in DAC2A and a party in the CRS. A DAC2A answer's open
+    donor menu reads them a total on the buffered response and on the trailing streamed event,
+    since both read the kind in the datasets that publish the Spec's members."""
+    shape = ShapeDraft(
+        shape_id="s",
+        label="s",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+    )
+    facts = [
+        RoleAxisFactInput(
+            role="origin",
+            member_dcids=frozenset({"IMFConcessionalTrustFunds", "InternationalMonetaryFund"}),
+        )
+    ]
+    raw, buffered, _warn = _build_and_enrich_entity_options(
+        shape,
+        {},
+        [],
+        [_DAC2A_MEMBER],
+        date_request=None,
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        include_option_coverage=True,
+        role_axis_facts=facts,
+    )
+    events, _warnings = _stream_slot_options_events(
+        "spec_x",
+        shape,
+        [],
+        [],
+        entities={},
+        date_request=None,
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        materialise_graph=None,
+        entity_options=raw,
+        coverage=empty_coverage_snapshot().index,
+        deadline=None,
+        facets_pinned=False,
+        variable_labels={_DAC2A_MEMBER: "ODA"},
+        open_axes=frozenset(),
+    )
+
+    def kinds(menus) -> dict[str, str | None]:
+        return {o.value.ref.ref: o.party_kind for menu in menus for o in menu.options}
+
+    expected = {"IMFConcessionalTrustFunds": "total", "InternationalMonetaryFund": "party"}
+    assert (kinds(buffered), kinds(events)) == (expected, expected)

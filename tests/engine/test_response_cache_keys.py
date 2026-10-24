@@ -131,6 +131,7 @@ def _layer2_key(
     written_variable_phrases: list[str | None] | None = None,
     every_member_axes: list[str | None] | None = None,
     measure_qualifiers: list[tuple[str, ...]] | None = None,
+    open_axes: list[frozenset[str]] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -182,6 +183,7 @@ def _layer2_key(
         ),
         every_member_axes=every_member_axes if every_member_axes is not None else (),
         measure_qualifiers=measure_qualifiers if measure_qualifiers is not None else (),
+        open_axes=open_axes if open_axes is not None else (),
     )
 
 
@@ -684,6 +686,18 @@ def test_the_axis_a_dropped_phrase_asks_every_member_of_changes_layer2_key() -> 
     destination = _layer2_key(dropped_qualifiers=dropped, every_member_axes=["destination"])
     assert len({plain, origin, destination}) == 3
     assert plain == _layer2_key(dropped_qualifiers=dropped, every_member_axes=[None])
+
+
+def test_the_role_a_part_lists_member_by_member_changes_layer2_key() -> None:
+    """ "aid to Kenya by donor" leaves extraction no operation and opens the donor side, so
+    it keys apart from "aid to Kenya", and the side opened on another variable keys apart
+    too. No open side keys as an extraction without the field."""
+    variables = ["aid", "GDP"]
+    plain = _layer2_key(variables=variables)
+    first = _layer2_key(variables=variables, open_axes=[frozenset({"origin"}), frozenset()])
+    second = _layer2_key(variables=variables, open_axes=[frozenset(), frozenset({"origin"})])
+    assert len({plain, first, second}) == 3
+    assert plain == _layer2_key(variables=variables, open_axes=[frozenset(), frozenset()])
 
 
 def test_both_spellings_of_a_series_code_share_the_parsed_key() -> None:

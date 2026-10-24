@@ -489,6 +489,7 @@ def _plan_xlsx_with_stored_rows(rows: int, *, identity: dict) -> None:
         subject_id="s",
         content_version="v",
         read_version=lambda: None,
+        read_locations=lambda: (),
         deps=cast(DefinitionDeps, SimpleNamespace(code_index=SimpleNamespace(parties=_PARTIES))),
     )
 

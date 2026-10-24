@@ -157,7 +157,9 @@ def test_a_cut_that_leaves_totals_out_renders_a_version_minted_from_the_kept_row
     assert derived.content_version == mint_version(_MEMBERS) != mint_version(_WITH_TOTAL)
     assert derived.rows == _MEMBERS.num_rows
     assert not derived.summed
-    assert derived.party_totals_left_out == ({"role": "recipient", "entities": [_DEVELOPING]},)
+    assert derived.party_totals_left_out == (
+        {"role": "recipient", "provenance": "p1", "entities": [_DEVELOPING]},
+    )
     assert [chunk.table for chunk in derived.frame_chunks()] == [_MEMBERS.table]
     assert _DEVELOPING not in body
     assert _KENYA in body
@@ -189,7 +191,9 @@ def test_a_groupby_with_a_cut_sums_the_kept_members_under_one_version():
     assert derived.summed
     assert derived.content_version == summed_members.derived.content_version
     assert derived.content_version != summed_with_total.derived.content_version
-    assert derived.party_totals_left_out == ({"role": "recipient", "entities": [_DEVELOPING]},)
+    assert derived.party_totals_left_out == (
+        {"role": "recipient", "provenance": "p1", "entities": [_DEVELOPING]},
+    )
     assert _DEVELOPING not in body
     assert "15.0" in body
 

@@ -15,7 +15,8 @@ migration 0030's insert trigger fills a row written with only `immutable_body` f
 and migration 0031 fills the rows older than the trigger. A row holding neither, whose body
 names neither `prepared_at` nor `input_content_versions`, refuses with `VersionFactsMissing`.
 `frame_sha256` holds the hash of the version's frame, NULL on a row written before versions
-stored it.
+stored it. `frame_summed` says whether a derived version's frame holds its summed rows (migration
+0038).
 """
 
 from __future__ import annotations
@@ -248,6 +249,11 @@ class StoredVersion:
     # The hash of the version's frame (`dfo_frame_grammar.frame_sha256`), the same for every
     # encoding of the same rows. `None` on a version recorded before versions stored it.
     frame_sha256: str | None = None
+    # On a derived version (`base_content_version` set), whether its frame holds its summed
+    # rows: `True` for the groupby collapse, `False` for the party-totals cut frame. `None` on a
+    # version naming no base, and on a derived version not recorded with it, which renders from
+    # its base frame when it is a party-totals cut with a groupby.
+    frame_summed: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -345,7 +351,7 @@ _LOCATIONS_SQL = (
 )
 
 _VERSION_SQL = (
-    "SELECT subject_kind, schema_version, base_content_version, frame_sha256, "
+    "SELECT subject_kind, schema_version, base_content_version, frame_sha256, frame_summed, "
     f"{', '.join(VERSION_FACT_COLUMNS)} "
     "FROM datasets.version_record WHERE subject_id = %s AND content_version = %s"
 )
@@ -368,6 +374,7 @@ def _stored_version(
         facts=_version_facts(row, subject_id=subject_id, content_version=content_version),
         base_content_version=cast("str | None", row["base_content_version"]),
         frame_sha256=cast("str | None", row["frame_sha256"]),
+        frame_summed=cast("bool | None", row["frame_summed"]),
     )
 
 
@@ -435,7 +442,7 @@ class LiveSnapshotReader:
         with self._store.transaction() as tx:
             rows = tx.fetch_all(
                 "SELECT subject_id, content_version, subject_kind, schema_version, "
-                f"base_content_version, frame_sha256, {', '.join(VERSION_FACT_COLUMNS)} "
+                f"base_content_version, frame_sha256, frame_summed, {', '.join(VERSION_FACT_COLUMNS)} "
                 "FROM datasets.version_record "
                 f"WHERE content_version IN ({', '.join(['%s'] * len(requested))})",
                 tuple(requested),

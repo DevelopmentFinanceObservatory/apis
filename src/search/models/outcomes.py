@@ -269,7 +269,10 @@ class NoData(StrictModel):
             '"qualifier_not_bound" means the variable resolved to a '
             "series family, but a narrowing term the request's text named "
             "bound no constraint slot: no code system in the packaged index "
-            "carries it, or its registered rows landed in no binding"
+            "carries it, or its registered rows landed in no binding; "
+            '"timed_out" means the request reached its time limit before this part was '
+            "answered (diagnostics.timed_out is true); the question may hold data, so "
+            "asking it again, alone or narrower, can answer it"
         )
     )
     cause: Cause | None = Field(
@@ -287,8 +290,8 @@ class NoData(StrictModel):
             '"entity_not_resolved", "entity_ambiguous", "entity_set_too_large", '
             '"entity_role_not_admitted", "variable_not_resolved", "role_not_resolved", '
             '"source_not_resolved", "source_ambiguous", "source_code_not_held", '
-            '"source_code_ambiguous", "source_code_shares_variable", and '
-            '"unit_not_resolved" are '
+            '"source_code_ambiguous", "source_code_shares_variable", '
+            '"unit_not_resolved", and "timed_out" are '
             '"unresolved" (the request could not be read into the graph); every other '
             'code is "absent" (the read request names a place holding nothing)'
         ),

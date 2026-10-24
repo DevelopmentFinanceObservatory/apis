@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, NamedTuple, get_args
 
@@ -79,6 +79,7 @@ from search.engine.retrieval.read_plan import (
     ReadPlan,
     minimal_constraint_svs,
     points_in_years,
+    served_role_entities,
 )
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_scope import open_role_axis_members
@@ -119,41 +120,49 @@ logger = logging.getLogger(__name__)
 
 
 def role_axis_facts_for_materialised(
-    mat: Materialised, *, shape: ShapeDraft
+    mat: Materialised, *, shape: ShapeDraft, plan: ReadPlan | None
 ) -> list[RoleAxisFactInput]:
     """Return one fact per open directional role axis, reusing `mat`'s resolved populations.
 
     An open origin uses `open_origin_dcids`. Discovered scope supplies its axis and members.
     When both axes are open, the companion population comes from `role_index_by_sv`.
-    Unknown role-index data yields `member_dcids=None`. A known empty population is an empty
-    set. Returns `[]` when no role axis is open. These facts add no SDMX reads and feed both
-    the resolved spec and entity options.
+    Each population is the one the answer's `plan` serves on the axis's role
+    (`read_plan.served_role_entities`), so the count the sentence states is the count of
+    parties its data holds; a population the resolver found holds parties in years or
+    series the plan does not read. Without a plan, or for an axis the shape names no role
+    on, the resolver's population stands. Unknown role-index data yields
+    `member_dcids=None`. A known empty population is an empty set. Returns `[]` when no
+    role axis is open. These facts add no SDMX reads and feed both the resolved spec and
+    entity options.
     """
+    role_names = role_names_by_axis(shape)
+
+    def fact(axis: RoleAxis, population: frozenset[str] | None) -> RoleAxisFactInput:
+        role_name = role_names.get(axis)
+        if plan is not None and population is not None and role_name is not None:
+            population = served_role_entities(plan, role_name)
+        return RoleAxisFactInput(role=axis, member_dcids=population)
+
     if mat.open_origin_dcids is not None:
-        return [RoleAxisFactInput(role="origin", member_dcids=mat.open_origin_dcids)]
+        return [fact("origin", mat.open_origin_dcids)]
     if mat.discovered_scope is None:
         return []
     facts: list[RoleAxisFactInput] = []
     discovered_axis = mat.discovered_scope.axis
     if discovered_axis in ("origin", "destination"):
-        facts.append(
-            RoleAxisFactInput(
-                # Materialised.discovered_scope exists only for role-bearing resolves.
-                # This check narrows its EntityRoleKey to the two accepted axes.
-                role=discovered_axis,
-                member_dcids=frozenset(mat.discovered_scope.member_dcids),
-            )
-        )
+        # Materialised.discovered_scope exists only for role-bearing resolves. This check
+        # narrows its EntityRoleKey to the two accepted axes.
+        facts.append(fact(discovered_axis, frozenset(mat.discovered_scope.member_dcids)))
     companion_axis = mat.also_defaulted_axis
     if companion_axis is not None:
         companion_dcids: frozenset[str] | None = None
         if mat.role_index_by_sv is not None:
-            companion_role_name = role_names_by_axis(shape).get(companion_axis)
+            companion_role_name = role_names.get(companion_axis)
             if companion_role_name is not None:
                 companion_dcids = open_role_axis_members(
                     mat.role_index_by_sv, role_name=companion_role_name, svs=mat.sv_dcids
                 )
-        facts.append(RoleAxisFactInput(role=companion_axis, member_dcids=companion_dcids))
+        facts.append(fact(companion_axis, companion_dcids))
     return facts
 
 
@@ -211,11 +220,16 @@ def _entity_options_count_only(
 
 
 def _enrich_entity_options(
-    entity_options: list[EntityOptions], *, graph: EngineGraphClient
+    entity_options: list[EntityOptions],
+    *,
+    graph: EngineGraphClient,
+    sv_dcids: Iterable[str],
 ) -> list[EntityOptions]:
     """Resolve member labels in one batch, using the dcid when a label lookup misses, and give
-    each member the party kind the code index lists for it on its axis
-    (`materialise.enrichment.read_party_kinds`).
+    each member the party kind the code index lists for it on its axis in the datasets that
+    publish the Spec's member StatVars `sv_dcids` (`materialise.enrichment.read_party_kinds`).
+    Without such a dataset every dataset is read, where a party whose kind differs between
+    datasets has none.
 
     Membership and counts come from the materialised result, so only labels require a read.
     """
@@ -223,6 +237,7 @@ def _enrich_entity_options(
         {o.value.ref.ref for eo in entity_options for o in eo.options if o.value.ref is not None}
     )
     labels = graph.node_labels_batch(all_dcids) if all_dcids else {}
+    index = get_index()
     kinds = read_party_kinds(
         (
             (eo.role, o.value.ref.ref)
@@ -230,7 +245,8 @@ def _enrich_entity_options(
             for o in eo.options
             if o.value.ref is not None
         ),
-        parties=get_index().parties,
+        parties=index.parties,
+        datasets=index.statvar_provenances(sv_dcids),
     )
     return [
         eo.model_copy(
@@ -1074,8 +1090,8 @@ def _build_and_enrich_entity_options(
     labels in response options. Disabled coverage returns empty response lists, while role facts
     and counts are available on `ResolvedSpec`. A label lookup failure returns raw options with
     `OPTION_COVERAGE_PROBE_FAILED`. Empty facts return two empty lists and no warning.
-    The shared call signature includes `role_entities`, `entities`, and `sv_dcids`. Confirmed
-    populations come from `role_axis_facts`.
+    The shared call signature includes `role_entities` and `entities`. Confirmed populations
+    come from `role_axis_facts`, and their party kinds from the datasets of `sv_dcids`.
     """
     raw = _entity_options_from_facts(role_axis_facts)
     if not raw:
@@ -1083,7 +1099,7 @@ def _build_and_enrich_entity_options(
     if not include_option_coverage:
         return raw, _entity_options_count_only(role_axis_facts), None
     try:
-        return raw, _enrich_entity_options(raw, graph=graph), None
+        return raw, _enrich_entity_options(raw, graph=graph, sv_dcids=sv_dcids), None
     except GraphInfraError:
         logger.warning(
             "entity_options label probe failed for shape_id=%r; returning unlabelled entity_options",
@@ -1152,7 +1168,10 @@ def _stream_slot_options_events(
         entity_warn: Warning | None = None
         if entity_options:
             try:
-                enriched_entities = _enrich_entity_options(entity_options, graph=graph)
+                # `variable_labels` is keyed by the Spec's member StatVars.
+                enriched_entities = _enrich_entity_options(
+                    entity_options, graph=graph, sv_dcids=variable_labels
+                )
             except GraphInfraError:
                 logger.warning(
                     "entity_options label probe failed for spec_id=%r; returning unlabelled "

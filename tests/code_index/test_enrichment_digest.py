@@ -1,5 +1,5 @@
-"""`CodeIndex.enrichment_digest` moves with a party's kind, class or whole markers and with
-nothing else, so an export that changes none of them re-renders no party-kind file."""
+"""`CodeIndex.enrichment_digest` moves with a party's kind, dataset kinds, class or whole markers
+and with nothing else, so an export that changes none of them re-renders no party-kind file."""
 
 from __future__ import annotations
 
@@ -84,6 +84,9 @@ def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[st
         _replaced(1, datasets=[_DAC2A, _DAC2B], whole=[*_WHOLE, {**_WHOLE[0], "dataset": _DAC2B}]),
         _replaced(1, whole=[], party_class=None),
         _ROWS[:-1],
+        _replaced(
+            0, datasets=[_DAC2A, _DAC2B], dataset_kinds=[{"dataset": _DAC2A, "kind": "total"}]
+        ),
     ],
     ids=[
         "kind",
@@ -95,6 +98,7 @@ def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[st
         "marker_added",
         "markers_dropped",
         "party_dropped",
+        "dataset_kind",
     ],
 )
 def test_the_digest_moves_when_a_kind_a_class_a_marker_or_a_window_changes(

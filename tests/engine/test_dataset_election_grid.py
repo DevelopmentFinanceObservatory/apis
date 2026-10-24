@@ -89,7 +89,6 @@ from search.engine.region import option_coverage as option_coverage_module
 from search.engine.region import phase_election as phase_election_module
 from search.engine.region import phase_rank_bind as phase_rank_bind_module
 from search.engine.region import related_read as related_read_module
-from search.engine.region import unrealisable as unrealisable_module
 from search.engine.region.alternate_guard import AlternateJudge, inadmissible_reason, query_pins
 from search.engine.region.candidates import walk_alternate
 from search.engine.region.grounding import _ground_answer
@@ -1778,7 +1777,6 @@ def test_unbinding_a_default_and_the_measure_partition_takes_back_what_they_stat
     assert [w.code for w in state.warnings] == ["slot_defaulted"]
     assert state.slot_default_phrases == {"sector"}
     assert state.measure_elected_partition is not None
-    monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
 
     unbind_unrealisable(
         state,
@@ -1829,7 +1827,6 @@ def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
     state.text_recognized_properties = frozenset({"sector"})
     state.variable = "sector A aid"
     state.graph = cast(EngineGraphClient, FakeGraph(nodes={}, obs={}, detect={}, resolve={}))
-    monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
 
     unbind_unrealisable(
         state,

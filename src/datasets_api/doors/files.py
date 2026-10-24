@@ -98,7 +98,7 @@ from datasets_api.manifest import stored_manifest, stored_manifest_facts
 from datasets_api.manifest_models import CitationModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.query_options import QueryOptionsInvalid, parse_query_options, pointer_for_key
-from datasets_api.recorded_rendering import recorded_minting
+from datasets_api.recorded_rendering import recorded_minting, serving_frames
 from datasets_api.render import (
     artifact_rendering,
     artifact_rendering_keys,
@@ -288,7 +288,7 @@ def _render_from_stored_frame(
     """Render `options` of the version `source` from its stored frame through the definition
     head path (`current.head_rendering`), and return the manifest that path gives, or `None`
     when no frame bytes of `source` are left to render from or its frame renders nothing
-    (`current.StoredRenderPlan.base_frame_only`).
+    (`current.StoredRenderPlan.frame_mode` `None`, or a render that gives another version).
 
     A servable frame renders first, read by the head path under its own slot. Only when the
     version lists none, or it renders nothing (its object gone, or a frame1 document a
@@ -321,9 +321,10 @@ def _render_from_stored_frame(
         subject_id=source.version.subject_id,
         content_version=source.version.content_version,
         read_version=lambda: source.version,
+        read_locations=lambda: (*source.servable, *source.aged_out),
         deps=deps,
     )
-    if plan.base_frame_only:
+    if plan.frame_mode is None:
         return None
     with bounded_materialise_slot(
         deps.materialise_semaphore,
@@ -340,35 +341,44 @@ def render_version_from_frame(
     options: MintOptions,
     deps: DefinitionDeps,
 ) -> Manifest | None:
-    """Render `options` of the version `stored` from its stored frame
-    (`_render_from_stored_frame`), through the definition head path, which links the result,
-    and return the manifest that path gives, or `None` when no frame bytes are left to render
-    from. The files door's renewal (`renew_and_resolve`) and the version file selector
-    (`render_and_select`) both render here.
+    """Render `options` of the version `stored` from the first of its serving frames
+    (`recorded_rendering.serving_frames`) that renders it (`_render_from_stored_frame`),
+    through the definition head path, which links the result, and return the manifest that
+    path gives, or `None` when no frame bytes are left to render from. The files door's
+    renewal (`renew_and_resolve`) and the version file selector (`render_and_select`) both
+    render here.
 
     A derived version (`base_content_version` set: a groupby collapse or a party-totals cut)
-    stored its own frame when it was minted, and renders from it as stored
-    (`current.StoredRenderPlan.derived_frame`), so the render reads only what the version
-    pinned. `options` carry the derived version's own minting options, which name the
-    rendering. With no bytes of that frame left, or for a cut minted with a groupby, whose
-    record does not say whether its frame is the collapse (`StoredRenderPlan.base_frame_only`),
-    the derived version renders from its base version's frame, as its mint did, read under
-    `subject_ids`, so a revoked base refuses `snapshot_revoked`. That render derives again
-    under the current declarations and serves the version only when it gives the same content
-    version, which the callers check."""
-    rendered = _render_from_stored_frame(
-        stored, subject_ids=subject_ids, options=options, deps=deps
+    stored its own frame when it was minted, and renders from it first when its record says
+    what that frame holds, so the render reads only what the version pinned. `options` carry
+    the derived version's own minting options, which name the rendering. With no bytes of
+    that frame left, or a frame that renders nothing, the derived version renders from its
+    base version's frame, as its mint did, read under `subject_ids`, so a revoked base
+    refuses `snapshot_revoked`. That render derives again under the current declarations and
+    serves the version only when it gives the same content version, which the callers
+    check."""
+    frames = serving_frames(
+        stored.version,
+        renderings=[location.rendering for location in (*stored.servable, *stored.aged_out)],
     )
-    if rendered is not None or stored.version.base_content_version is None:
-        return rendered
-    base = read_servable_version(
-        deps.snapshot_reader,
-        subject_id=stored.version.subject_id,
-        content_version=stored.version.base_content_version,
-        now=deps.now(),
-        revoked_under=subject_ids,
-    )
-    return _render_from_stored_frame(base, subject_ids=subject_ids, options=options, deps=deps)
+    for frame in frames:
+        source = (
+            stored
+            if frame.content_version == stored.version.content_version
+            else read_servable_version(
+                deps.snapshot_reader,
+                subject_id=stored.version.subject_id,
+                content_version=frame.content_version,
+                now=deps.now(),
+                revoked_under=subject_ids,
+            )
+        )
+        rendered = _render_from_stored_frame(
+            source, subject_ids=subject_ids, options=options, deps=deps
+        )
+        if rendered is not None:
+            return rendered
+    return None
 
 
 def renew_and_resolve(*, id: str, content_version: str, digest: str, deps: DefinitionDeps) -> str:

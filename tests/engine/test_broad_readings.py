@@ -22,11 +22,12 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import SLOT_DEFAULTED
 from search.engine.retrieval.bound_values import served_members
 from search.engine.shape import ShapeDraft, shape_draft_from
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import ParsedEntity, ParsedInput, ParsedPart, Resolution, ResolveRequest
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _IDS = "provenance/WorldBankInternationalDebtStatistics"
@@ -154,6 +155,8 @@ class _BindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return _UniversalBindOutput(
             chosen_shape_index=0,

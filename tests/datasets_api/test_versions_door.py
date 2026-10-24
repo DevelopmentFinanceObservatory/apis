@@ -124,6 +124,7 @@ class _Rig:
                 facts=facts if facts is not None else FrameLineage(input_content_versions=[]),
                 artifacts=artifacts,
                 base_content_version=base_content_version,
+                frame_summed=None if base_content_version is None else True,
             )
         )
 
