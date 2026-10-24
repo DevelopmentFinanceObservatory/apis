@@ -1042,7 +1042,9 @@ def _dfo_rows(
                     ),
                 )
             )
-        label = entry.label if entry is not None else _first(names.get(source), "name") or source
+        label = (
+            entry.label if entry is not None else node_label(names.get(source), source) or source
+        )
         dataset = _dataset(arcs.get(provenance), parents)
         row = _row(
             provenance,

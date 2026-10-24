@@ -499,6 +499,7 @@ def _ground_and_build_spec(
     _open_axis_facts = open_constraint_axes(
         _measure_bound_values,
         dict(zip(state.resolved_stat_var_dcids, _served_members, strict=True)),
+        value_labels=state.shape_draft.value_labels or {},
     )
     state.open_axis_facts = _open_axis_facts
     # Count the menus before the Spec takes them, so the finalisation probe and the

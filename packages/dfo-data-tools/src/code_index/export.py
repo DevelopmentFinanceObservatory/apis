@@ -5,7 +5,7 @@ declarations (`code_index.declarations`). `export_index` completes those blocks 
 document: provenances and parties from the coverage it joins, and the stamp.
 `graph_release.dfo` builds a release's code index part with it. `index_bytes` is the one
 serialisation of an index document, so the same document gives the same bytes. Nothing here
-imports `dc_graph`: a reader supplies the graph reads, and the two names the export needs from
+imports `dc_graph`: a reader supplies the graph reads, and the names the export needs from
 `dc_graph` are imported where they are used.
 """
 
@@ -377,7 +377,7 @@ def export_parties(
             "dcid": dcid,
             "kind": kind,
             "party_class": _party_class(kind, private=dcid in private),
-            "label": _first_or_none(party_arcs.get("name", ())),
+            "label": _graph_label(dcid, party_arcs),
             "totals": None if total is None else total.group,
             "residuals": [] if total is None else sorted(total.residuals),
             "sums_members": True if total is None else total.sums_members,
@@ -538,6 +538,20 @@ class ExportReader(Protocol):
         ...
 
 
+def _graph_label(dcid: str, arcs: Mapping[str, tuple[str, ...]]) -> str | None:
+    """The node's label as `GraphClient.node_label` gives it (`dc_graph.label_or_self_name`)."""
+    from dc_graph import label_or_self_name
+
+    return label_or_self_name(arcs.get("name", ()), dcid)
+
+
+def _required_name(dcid: str, arcs: Mapping[str, tuple[str, ...]]) -> str:
+    name = _graph_label(dcid, arcs)
+    if name is None:
+        raise ExportRefused(f"{dcid} carries no name arc -- cannot export a row missing it")
+    return name
+
+
 def _first_or_none(values: tuple[str, ...]) -> str | None:
     return values[0] if values else None
 
@@ -554,7 +568,7 @@ def _fetch_arcs_many(
 
 def _build_code_row(dcid: str, code_system: str, arcs: dict[str, tuple[str, ...]]) -> dict:
     code = _single_value(dcid, "classificationCode", arcs.get("classificationCode", ()))
-    name = _single_value(dcid, "name", arcs.get("name", ()))
+    name = _required_name(dcid, arcs)
     label = strip_system_suffix(name)
     synonyms = sorted(
         {v for v in arcs.get("alternateName", ()) if v and v != label}
@@ -1746,7 +1760,7 @@ def export_measure_values(
                     f"{dcid} is a {axis.axis!r} measure value an exported StatVar row carries "
                     "or the export declares, but the graph holds no node for it"
                 )
-            name = _single_value(dcid, "name", arcs.get("name", ()))
+            name = _required_name(dcid, arcs)
             overrides = MEASURE_VALUE_TEXT.get(dcid, MeasureValueText())
             label = overrides.label if overrides.label is not None else strip_system_suffix(name)
             synonyms = sorted(

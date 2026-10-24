@@ -143,7 +143,7 @@ def read_denominators(
         arcs = arcs_by_dcid.get(denominator)
         reads[denominator] = DenominatorRead(
             kind=denominator_kind_from_arcs(arcs),
-            name=read_name(arcs) if arcs is not None else None,
+            name=read_name(arcs, denominator) if arcs is not None else None,
         )
     return reads
 

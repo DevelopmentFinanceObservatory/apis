@@ -462,7 +462,11 @@ def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -
             for prop, value in read_constraints(member["arcs"]).items():
                 values.setdefault(prop, {})[value] = None
         total = next(
-            (m for m in members if not read_constraints(m["arcs"]) and read_name(m["arcs"])),
+            (
+                m
+                for m in members
+                if not read_constraints(m["arcs"]) and read_name(m["arcs"], m["dcid"])
+            ),
             None,
         )
         expected[key] = FamilySummary(
@@ -474,7 +478,7 @@ def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -
                 if len(found) == 1 and all(prop in read_constraints(m["arcs"]) for m in members)
             },
             total=None if total is None else total["dcid"],
-            total_name=None if total is None else read_name(total["arcs"]),
+            total_name=None if total is None else read_name(total["arcs"], total["dcid"]),
             un_only=False,
         )
 
@@ -682,7 +686,9 @@ def _flagged_member_constraint_properties(shape: ShapeDraft) -> list[list[str] |
     materialise elected, which recall did not find, under a request's memo. The state holds
     what the refusal reads; the rest are placeholders."""
     graph = FakeGraph(
-        nodes={dcid: {"label": read_name(arcs), "arcs": arcs} for dcid, arcs in _DEBT.items()},
+        nodes={
+            dcid: {"label": read_name(arcs, dcid), "arcs": arcs} for dcid, arcs in _DEBT.items()
+        },
         obs={},
         detect={},
         resolve={},
@@ -787,7 +793,9 @@ def _value_state(shape: ShapeDraft) -> ResolveState:
             id="pre-bind-members",
         ),
         pytest.param(
-            lambda shape: [read_name(arcs) for arcs in _selected_members(shape, [_imf()])],
+            lambda shape: [
+                read_name(arcs, dcid) for dcid, arcs in _selected_members(shape, [_imf()]).items()
+            ],
             ["Outstanding external debt to the IMF, general government"],
             id="requirement-judging",
         ),

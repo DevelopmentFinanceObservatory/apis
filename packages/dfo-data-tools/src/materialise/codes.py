@@ -2,10 +2,35 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from dfo_platform.codes import CodeCatalogue
 from dfo_platform.diagnostics import WarningSeverity
+
+
+class CountedRefs(TypedDict):
+    """The things of one kind a warning counts: how many, and the `dcid:` refs of the first
+    five, a group's members in request order and entities sorted, or of the first ten
+    entities a conversion left out."""
+
+    count: int
+    refs: list[str]
+
+
+class EntityYears(TypedDict):
+    """One entity a conversion left rows out of: its `dcid:` ref, and the years of those rows
+    as runs of consecutive years, `1990-2001` or `2004`."""
+
+    ref: str
+    years: list[str]
+
+
+class CountedEntityYears(TypedDict):
+    """The entities a conversion left rows out of: how many, and the first ten, sorted, each
+    with its years."""
+
+    count: int
+    entities: list[EntityYears]
 
 
 class MaterialisationWarning(TypedDict):
@@ -15,6 +40,16 @@ class MaterialisationWarning(TypedDict):
     (`dfo_platform.diagnostics.WarningSeverity`), always `"warn"` for the
     warnings this library raises.
 
+    A group's `coverage_below_scope` also carries `member_count`, the series the group
+    requested, with `off_cadence_members`, those reporting the requested years at another
+    frequency than the group serves, and `out_of_window_members`, those holding no observation
+    in the requested years, each present only when it names a member. `coverage_below_scope`
+    carries `unserved_entities`, the bound entities that served no observation,
+    `currency_unmapped_omitted` `omitted_entities`, the entities whose rows the conversion
+    left out, and `deflator_missing_omitted` `omitted_entity_years`, those entities with the
+    years of their rows. Each message counts what these fields hold
+    and names none of it, so a stored version holds no name that can go stale.
+
     This is a `TypedDict`. No shared platform pydantic warning model
     exists yet to alias.
     """
@@ -22,6 +57,12 @@ class MaterialisationWarning(TypedDict):
     code: str
     severity: WarningSeverity
     message: str
+    member_count: NotRequired[int]
+    off_cadence_members: NotRequired[CountedRefs]
+    out_of_window_members: NotRequired[CountedRefs]
+    unserved_entities: NotRequired[CountedRefs]
+    omitted_entities: NotRequired[CountedRefs]
+    omitted_entity_years: NotRequired[CountedEntityYears]
 
 
 MATERIALISE_CODE_CATALOGUE: CodeCatalogue = {

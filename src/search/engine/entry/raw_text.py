@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
+from collections import Counter
 from collections.abc import AsyncGenerator, Collection, Sequence
 from contextlib import aclosing
 
@@ -350,7 +351,11 @@ async def _recover_entity_surfaces(
     `query` (`_grounded`) is read for the qualifier. A name that settles on its surface's
     ambiguity takes the surface as its text (`surface_resolution.ambiguous_surface_names`),
     so "Congo" in "ODA to Congo", which the extraction names "Democratic Republic of the
-    Congo", asks its choice in the query's words.
+    Congo", asks its choice in the query's words. It does so only when no other name in
+    the query would carry the same text: the parsed door reads one text as one place per
+    part, so "aid from Congo to Congo", which the extraction names "Republic of the Congo"
+    and "Democratic Republic of the Congo", keeps both names and asks each end's choice on
+    its own.
     """
     # Each entity reads the spans the ones before it recovered, so two never take one word.
     spanned = list(entities)
@@ -396,9 +401,15 @@ async def _recover_entity_surfaces(
             recovered.append(entity)
     kept = _without_absorbed(recovered, query=query)
     surfaces = _entity_surfaces(kept, query=query)
-    as_written = await _await_bounded(
+    ambiguous = await _await_bounded(
         ambiguous_surface_names(surfaces, resolver=resolver), deadline=deadline
     )
+    # The text each name would carry on the wire: its surface when renamed, else itself.
+    claims = Counter(
+        _normalize(surfaces[key] if key in ambiguous else key)
+        for key in dict.fromkeys(_entity_key(entity) for entity in kept)
+    )
+    as_written = {key for key in ambiguous if claims[_normalize(surfaces[key])] == 1}
     return [
         entity.model_copy(update={"text": surfaces[key], "span": surfaces[key]})
         if (key := _entity_key(entity)) in as_written

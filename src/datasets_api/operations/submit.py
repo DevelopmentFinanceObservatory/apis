@@ -29,7 +29,6 @@ from datasets_api.operations.task_client import TaskClient
 from datasets_api.origin import catalogue_build_id
 from datasets_api.schema import OperationEnvelope, OperationResource
 from datasets_api.timings import phase
-from datasets_api.versions import SubjectHead
 from series_coverage.index import Estimate
 
 # The shortest poll interval an operation advertises, and the refresh door's fixed retry interval.
@@ -63,15 +62,12 @@ def submit_over_budget(
     async_max_rows: int,
     async_max_requests: int,
     members: Sequence[str],
-    rejected_head: SubjectHead | None,
 ) -> None:
     """Returns when the caller's sync-budget decision allows inline work.
 
     `members` are the StatVar refs a door resolved, `dcid:`-prefixed or bare. The operation
-    stores them as `member_dcids`. `rejected_head` is the head `serve_current` rejected before
-    this rebuild, or `None` when the subject has none. A done operation at its version, which
-    could serve nothing, restarts (`OperationStore.create_or_get`), so the 202 reads pending or
-    running.
+    stores them as `member_dcids`. A done operation restarts (`OperationStore.create_or_get`),
+    so the 202 reads pending or running, or failed for a deterministic failure.
 
     Otherwise, async row or request limits raise `OverCeilingError` before a row or task exists.
     `OperationBacklogFull` also propagates. The function records or reuses the operation,
@@ -94,7 +90,6 @@ def submit_over_budget(
             coverage_stamp=coverage_stamp,
             origin_catalogue_build_id=catalogue_build_id(),
             estimate=estimate,
-            rejected_version=rejected_head.content_version if rejected_head is not None else None,
         )
     with phase("dispatch"):
         operation = dispatch_if_due(
@@ -139,10 +134,10 @@ def poll_interval_ms(operation: Operation, *, now: datetime) -> int:
     time since its current submission (`submitted_at`), held between
     `OPERATION_SUBMIT_RETRY_AFTER_MS` and `OPERATION_POLL_MAX_MS`. A repeat submission that
     joins a long build gets the slow value, a resubmission that restarts a failed build starts
-    at the floor, and a waiting browser backs off as the build runs. A done or failed
-    operation answers its next poll at once, so it gets the shortest interval.
+    at the floor, and a waiting browser backs off as the build runs. A failed operation
+    answers its next poll at once, so it gets the shortest interval.
     """
-    if operation.state in ("done", "failed"):
+    if operation.state == "failed":
         return OPERATION_SUBMIT_RETRY_AFTER_MS
     age_ms = (now - operation.submitted_at) // timedelta(milliseconds=1)
     return min(OPERATION_POLL_MAX_MS, max(OPERATION_SUBMIT_RETRY_AFTER_MS, age_ms // 4))
@@ -160,7 +155,7 @@ def operation_submitted_resource(
     submitted: OperationSubmitted, *, now: datetime
 ) -> OperationResource:
     """Builds the 202 resource from the returned operation state, which may already be running or
-    terminal. Progress stays unset in the submit response and appears on polls.
+    failed. Progress stays unset in the submit response and appears on polls.
     """
     operation = submitted.operation
     return OperationResource(

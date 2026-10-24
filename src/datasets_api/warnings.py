@@ -45,14 +45,15 @@ DATASETS_WARNING_CATALOGUE: dict[str, tuple[str, str, str]] = {
     "currency_unmapped_omitted": (
         "Currency Unmapped Omitted",
         "A conversion into each entity's own currency left out the rows of the entities "
-        "that no single currency names through nationalCurrencyOf; the warning names them.",
+        "that no single currency names through nationalCurrencyOf; the warning counts them "
+        "and carries the refs of the first ten.",
         "warn",
     ),
     "deflator_missing_omitted": (
         "Deflator Missing Omitted",
         "A constant-price conversion left out each entity's rows in the years the deflator "
         "table holds no value for it, and every row of an entity it holds no value for in "
-        "the base year; the warning names them.",
+        "the base year; the warning counts them and carries the refs of the first ten.",
         "warn",
     ),
     "stat_vars_summed": (

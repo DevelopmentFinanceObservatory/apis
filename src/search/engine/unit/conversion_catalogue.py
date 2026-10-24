@@ -35,6 +35,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
+from dc_graph import label_or_self_name
 from dc_sdmx import SdmxClient
 from dfo_platform.executor import submit_with_context
 from materialise.convert import converted_facets, deflator_key
@@ -208,7 +209,9 @@ def load_conversion_catalogue(
             }
             | national.keys()
         )
-        names = reader.node_names_many(named, deadline=deadline) if named else {}
+        names = (
+            reader.node_arcs_many(named, properties=("name",), deadline=deadline) if named else {}
+        )
         return ConversionCatalogue(
             recipes=MappingProxyType(recipes.result()),
             tables=MappingProxyType(
@@ -222,7 +225,11 @@ def load_conversion_catalogue(
             national_currencies=MappingProxyType(national),
             default_base_year=base_year.result(),
             entity_names=MappingProxyType(
-                {dcid: found[0] for dcid, found in names.items() if found}
+                {
+                    dcid: name
+                    for dcid, arcs in names.items()
+                    if arcs is not None and (name := label_or_self_name(arcs.get("name", ()), dcid))
+                }
             ),
         )
 

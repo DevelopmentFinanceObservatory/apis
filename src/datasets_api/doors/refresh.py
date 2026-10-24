@@ -56,13 +56,11 @@ from that file. When a derived version's frame file has expired the door renders
 the head's stored frame and records it. When that cannot be done, or the head's own frame file has
 expired, the door rebuilds the dataset.
 
-A dataset whose rebuild is always over the inline budget holds no head, because the worker
-advances none. Each refresh of it probes and then reads the operation its request submits
-(`operation_store.compute_operation_id`): done answers that operation's version. A done
-operation answers only while a snapshot read still lists its rendering's file
-(`snapshot.rendering_servable`, the check the operations poll makes). When the file has left
-storage the door fails the row (`OperationStore.fail_unservable_done`) and submits again, which
-re-runs the operation and answers `pending`.
+A rebuild over the inline budget submits the request's operation
+(`operations.submit.submit_over_budget`). The submission resets a done operation, so the door
+answers `pending` for it, and the worker's run serves through `serve_current`, which advances
+the head, so a later refresh answers from that head. An operation that failed and will not be
+retried refuses non-retryable `internal_error` (500).
 
 The door reads the surface's `Deps`, so it shares the definition door's clients, materialise
 semaphore, and `RebuildFlights`. Refreshes run on the work executor beside mints and rebuilds, so
@@ -94,7 +92,6 @@ from datasets_api.doors.definition import (
     _served_spec,
     request_definition_deps,
 )
-from datasets_api.doors.snapshot import rendering_servable
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions
@@ -106,7 +103,7 @@ from datasets_api.recorded_rendering import (
     records_plain_file,
 )
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import artifact_rendering_keys, servable_frame_location
+from datasets_api.render import servable_frame_location
 from datasets_api.timings import door_call, phase
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
@@ -185,20 +182,6 @@ class RefreshBackpressure(Backpressure):
 
     def __init__(self) -> None:
         super().__init__("the frame refresh door is at its concurrent capacity right now; retry")
-
-
-class RefreshRebuildUnservable(Refusal):
-    """The queued rebuild is done and its file has left storage, again after this call
-    submitted it to run once more. Maps to retryable `service_unavailable` (503)."""
-
-    code = "service_unavailable"
-    retryable = True
-
-    def __init__(self, *, operation_id: str) -> None:
-        super().__init__(
-            f"the queued rebuild {operation_id!r} is done but its file is no longer in "
-            "storage; retry"
-        )
 
 
 def classify_refresh_exception(exc: BaseException) -> ProblemSpec | None:
@@ -555,46 +538,24 @@ def _refresh_frame(
                 )
         return FrameMoved(frame=frame)
 
-    # A second pass runs only after this call failed a done operation whose file is gone.
-    for _ in range(2):
-        try:
-            manifest = _serve_spec(
-                stored=served,
-                options=options,
-                trigger="refresh",
-                deps=deps,
-                trace_id=trace_id,
-                load_head=_load_head_frame,
-            )
-        except OperationSubmitted as submitted:
-            operation = submitted.operation
-        else:
-            return _answer(manifest.content_version)
-        # The operation's options are the rendering's, so its version is the current frame.
-        if operation.state == "failed":
-            raise RefreshRebuildFailed(
-                operation_id=operation.id, refusal_code=operation.refusal_code
-            )
-        if operation.state != "done" or operation.content_version is None:
-            return FramePending(
-                operation_id=operation.id, retry_after_s=OPERATION_SUBMIT_RETRY_AFTER_MS / 1000
-            )
-        if rendering_servable(
-            subject_id=spec_id,
-            content_version=operation.content_version,
-            rendering_keys=artifact_rendering_keys(
-                options,
-                site=deps.settings.site,
-                enrichment_digest=deps.code_index.enrichment_digest,
-            ),
-            snapshot_reader=deps.snapshot_reader,
-            now=deps.now,
-            settings=deps.settings,
-        ):
-            return _answer(operation.content_version)
-        # The file has left storage. Failing the row makes the next submit re-run it.
-        deps.operation_store.fail_unservable_done(operation.id, attempt=operation.attempt_count)
-    raise RefreshRebuildUnservable(operation_id=operation.id)
+    try:
+        manifest = _serve_spec(
+            stored=served,
+            options=options,
+            trigger="refresh",
+            deps=deps,
+            trace_id=trace_id,
+            load_head=_load_head_frame,
+        )
+    except OperationSubmitted as submitted:
+        operation = submitted.operation
+    else:
+        return _answer(manifest.content_version)
+    if operation.state == "failed":
+        raise RefreshRebuildFailed(operation_id=operation.id, refusal_code=operation.refusal_code)
+    return FramePending(
+        operation_id=operation.id, retry_after_s=OPERATION_SUBMIT_RETRY_AFTER_MS / 1000
+    )
 
 
 def build_refresh_door(
@@ -651,7 +612,6 @@ def build_refresh_door(
             FrameNotRefreshable,
             RenderingNotRecorded,
             RefreshRebuildFailed,
-            RefreshRebuildUnservable,
             RefreshBackpressure,
             RefreshNotPermitted,
         ),
@@ -659,7 +619,6 @@ def build_refresh_door(
             FrameNotRefreshable(spec_id="ops_exemplar"),
             RenderingNotRecorded(spec_id="spec_exemplar", content_version="cv_exemplar"),
             RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
-            RefreshRebuildUnservable(operation_id="op_exemplar"),
             RefreshBackpressure(),
             RefreshNotPermitted(presented=False),
         ),
@@ -675,7 +634,6 @@ __all__ = [
     "RefreshBackpressure",
     "RefreshFrameRequest",
     "RefreshRebuildFailed",
-    "RefreshRebuildUnservable",
     "RenderingNotRecorded",
     "StoredRendering",
     "build_refresh_door",

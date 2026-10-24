@@ -29,7 +29,7 @@
     ["FakeGraphReader.node_arcs_many",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale","TEST/ResubmitPlaceScopeDefault_PopulationOver65"],"properties":["age","constraintProperties","gender","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":null,"deadline":null}],
     ["FakeGraphReader.node_arcs_many",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale","TEST/ResubmitPlaceScopeDefault_PopulationOver65"],"properties":["age","constraintProperties","gender","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":null,"deadline":null}],
     ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale","TEST/ResubmitPlaceScopeDefault_PopulationOver65"]}],
-    ["FakeGraph.node_labels_batch",{"dcids":["age","gender"]}],
+    ["FakeGraph.node_labels_batch",{"dcids":["Female","Years65Onwards","age","gender"]}],
     ["FakeGraph.generation_stamp",{}],
     ["FakeGraph.source_key",{}],
     ["FakeSdmxClient.source_key",{}],

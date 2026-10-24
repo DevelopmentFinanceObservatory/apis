@@ -43,6 +43,7 @@ from cachetools import TLRUCache
 from resolvekit import ResolutionContext, ResolutionStatus, Resolver
 from resolvekit.core.model.result import CandidateSummary
 
+from dc_graph import label_or_self_name
 from dc_graph.errors import GraphDeadlineExceededError
 from dfo_platform.executor import run_in_executor_with_context
 from entity_resolution import pack
@@ -185,7 +186,7 @@ def _confirmed_name(
     """The candidate's pack name, or its graph name for a code-only row, which the pack names by
     its dcid."""
     name = _candidate_name(candidate)
-    return _fallback_name(arcs=arcs, text=name) if name == dcid else name
+    return _fallback_name(dcid=dcid, arcs=arcs, text=name) if name == dcid else name
 
 
 def _unconfirmed_kind(
@@ -423,9 +424,8 @@ def _entity_from_confirmation(
     return Entity(dcid=dcid, name=name, kind=kind, graph_type=graph_type)
 
 
-def _fallback_name(*, arcs: dict[str, tuple[str, ...]], text: str) -> str:
-    names = arcs.get("name", ())
-    return names[0] if names else text
+def _fallback_name(*, dcid: str, arcs: dict[str, tuple[str, ...]], text: str) -> str:
+    return label_or_self_name(arcs.get("name", ()), dcid) or text
 
 
 def _admits(kinds: frozenset[EntityKind] | None, entity: Entity) -> bool:
@@ -892,7 +892,7 @@ class EntityResolver:
             entity = self._confirmed(
                 dcid=dcid,
                 arcs=arcs,
-                name=_fallback_name(arcs=arcs, text=text),
+                name=_fallback_name(dcid=dcid, arcs=arcs, text=text),
                 code_index=code_index,
             )
             candidates.append((entity, Matched(text=text, matched_as=matched_as)))

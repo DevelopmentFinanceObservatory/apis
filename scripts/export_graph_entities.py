@@ -29,7 +29,7 @@ import httpx
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index
-from dc_graph import GraphClient
+from dc_graph import GraphClient, label_or_self_name
 from dfo_platform.cloud_run_auth import cloud_run_auth
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
@@ -105,10 +105,12 @@ def _graph_base_url() -> str:
     return base
 
 
-def _single_name(values: list[str]) -> str:
-    if not values:
+def _single_name(dcid: str, values: tuple[str, ...]) -> str:
+    """The node's label as `GraphClient.node_label` gives it (`label_or_self_name`)."""
+    name = label_or_self_name(values, dcid)
+    if name is None:
         raise SystemExit("a node's own name property is empty -- cannot export a nameless entity")
-    return values[0]
+    return name
 
 
 def _split_dac_codes(values: list[str]) -> tuple[str | None, list[str]]:
@@ -194,7 +196,7 @@ def export_entities(
         arcs = arcs_by_dcid.get(dcid)
         if arcs is None:
             raise SystemExit(f"declared total {dcid} is absent from the graph")
-        graph_name = _single_name(list(arcs.get("name", ())))
+        graph_name = _single_name(dcid, arcs.get("name", ()))
         if graph_name != label:
             raise SystemExit(
                 f"declared total {dcid} has graph name {graph_name!r}, expected {label!r}"
@@ -231,7 +233,7 @@ def export_entities(
         records.append(
             {
                 "dcid": dcid,
-                "name": _single_name(list(arcs.get("name", ()))),
+                "name": _single_name(dcid, arcs.get("name", ())),
                 "kind": kind_by_dcid[dcid],
                 "aliases": list(dict.fromkeys([*aliases, *other_codes])),
                 "dac_code": dac_code,

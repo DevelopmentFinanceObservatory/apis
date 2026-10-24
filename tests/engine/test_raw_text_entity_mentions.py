@@ -624,6 +624,45 @@ def test_a_recovered_span_takes_no_words_another_entity_names(
 
 
 @pytest.mark.parametrize(
+    ("query", "entities", "texts"),
+    [
+        pytest.param(
+            "ODA disbursements from Germany to Congo",
+            [ExtractedEntity(text="Germany"), ExtractedEntity(text=_COD_NAME, span="Congo")],
+            ["Germany", "Congo"],
+            id="one_name_takes_the_words",
+        ),
+        pytest.param(
+            "aid from Congo to Congo",
+            [
+                ExtractedEntity(text=_COG_NAME, span="Congo", flow_role="origin"),
+                ExtractedEntity(text=_COD_NAME, span="Congo", flow_role="destination"),
+            ],
+            [_COG_NAME, _COD_NAME],
+            id="two_names_keep_their_own",
+        ),
+    ],
+)
+def test_words_that_leave_a_choice_open_become_one_name_s_text(
+    query: str, entities: list[ExtractedEntity], texts: list[str]
+) -> None:
+    """A name its words leave open reads as those words only when no other name would read
+    the same, since the parsed door reads one text as one place per part."""
+    resolver = _Resolver(
+        {
+            "Congo": Ambiguous(candidates=(_COD, _COG)),
+            "Germany": Resolved(entity=_DEU),
+            _COD_NAME: Resolved(entity=_COD),
+            _COG_NAME: Resolved(entity=_COG),
+        }
+    )
+
+    recovered = _recover(entities, query=query, resolver=resolver)
+
+    assert [entity.text for entity in recovered] == texts
+
+
+@pytest.mark.parametrize(
     ("query", "entity", "registered", "answers", "expected"),
     [
         pytest.param(

@@ -73,6 +73,7 @@ from dc_graph import (
     ReadErrorFactory,
     SubjectPage,
     SubjectsCoverageFlag,
+    label_or_self_name,
     parse_arcs,
 )
 from graph_generation import (
@@ -258,13 +259,14 @@ def _table_names(catalogue: Catalogue, dcid: str) -> tuple[str, ...] | _Unmirror
 
 
 def _table_label(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
-    """A dcid's label as `GraphClient.node_label` picks it: a held node's last `name`
-    value, the label the arc tables read for a node an arc of theirs names, or the name
-    a UN arc naming the node carries."""
+    """A dcid's label as `GraphClient.node_label` picks it: a held node's
+    `label_or_self_name`, the label the arc tables read for a node an arc of theirs names, or
+    the name a UN arc naming the node carries."""
     arcs = _node_arcs(catalogue, dcid)
     if arcs is not None:
         names = [arc.value for arc in arcs if arc.property == "name" and arc.value]
-        return names[-1] if names else _OMITTED
+        label = label_or_self_name(names, dcid)
+        return _OMITTED if label is None else label
     if _absent(catalogue, dcid):
         return _OMITTED
     if is_un_dcid(dcid):

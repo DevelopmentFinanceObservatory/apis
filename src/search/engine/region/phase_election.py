@@ -99,6 +99,7 @@ from search.engine.retrieval.bound_values import (
     shape_invariants,
     shape_query,
     sole_shared_value,
+    without_values,
 )
 from search.engine.retrieval.member_facts import MemberFacts, asserted_constraint_properties
 from search.engine.retrieval.standard import (
@@ -289,7 +290,9 @@ def _settle_bindings(
     ``sole_option`` value (`_claim_single_member_slots`). A
     ``sole_option`` claim on a value the shape's population shows the slot a reading
     without leaves the slot unbound (`_validate_sole_option_bindings`), as does a value the
-    measure's headline series already means (`_unbind_implied_values`). One value drafted
+    measure's headline series already means (`_unbind_implied_values`). A claim a recall
+    sample alone backs stays bound, marked `SlotBindingDraft.sampled`, until the walk of the
+    family confirms or refutes it (`phase_place_materialise._judge_sampled_claims`). One value drafted
     on two properties no member holds together keeps the property a measure noun pins
     (`_keep_the_noun_pinned_property`). An operation
     over a category slot opens that slot, and so does a breakdown phrase naming it ("by
@@ -415,6 +418,24 @@ def _settle_sole_options(
     ]
 
 
+def sampled_claims(bindings: Sequence[SlotBindingDraft]) -> dict[str, str]:
+    """The value each bound ``sole_option`` claim of the reply in `bindings` that rests on a
+    recall sample (`SlotBindingDraft.sampled`) claims, by its property."""
+    return {
+        b.property_dcid: b.value_dcids[0]
+        for b in bindings
+        if b.sampled and b.kind == "value" and b.property_dcid is not None
+    }
+
+
+def without_sampled_claims(bindings: Sequence[SlotBindingDraft]) -> list[SlotBindingDraft]:
+    """`bindings` with the slot of each claim resting on a recall sample
+    (`sampled_claims`) left unbound: a sampled claim selects no member until the walk of
+    the family confirms it."""
+    sampled = sampled_claims(bindings)
+    return without_values(bindings, sampled.keys()) if sampled else list(bindings)
+
+
 def _claim_single_member_slots(
     bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
 ) -> list[SlotBindingDraft]:
@@ -426,9 +447,11 @@ def _claim_single_member_slots(
     where the taxonomy holds only ``Years0``. The claim is the one the prompt asks of the
     reply, so it is stamped as the reply's (`SlotBindingDraft.drafted_by`) and every reader
     of the reply's claims judges it. A taxonomy read from a recall sample can show one value
-    the family's total does not hold (a population shape whose sample holds one gender),
-    which `_validate_sole_option_bindings` refutes. A ``requested_all`` draft asks for the
-    slot in full and stays."""
+    the family's total does not hold (a population shape whose sample holds one gender).
+    `_validate_sole_option_bindings` refutes the claim where the sample shows it, and
+    otherwise marks it `SlotBindingDraft.sampled`, so the walk of the family reads the slot
+    open and refutes it on the total (`phase_place_materialise._judge_sampled_claims`). A
+    ``requested_all`` draft asks for the slot in full and stays."""
     taxonomy = shape_draft.slot_taxonomy or {}
     claimed: list[SlotBindingDraft] = []
     for draft in bindings:
@@ -483,8 +506,11 @@ def _validate_sole_option_bindings(
     by-creditor member, which asserts only the flow type every member shares, is the
     total and asserts none of them. A member that asserts none but narrows on another
     property is no reading without the value: "infant mortality rate" binds ``age=Years0``
-    beside members that state an age group classification instead. A shape with no
-    members passes every claim through.
+    beside members that state an age group classification instead. A claim the sample
+    does not refute is kept as `SlotBindingDraft.sampled`: a member outside the sample may
+    still lack the value, and the walk of the family, which reads the slot open
+    (`without_sampled_claims`), settles it (`phase_place_materialise._judge_sampled_claims`).
+    A shape with no members passes every claim through.
     """
     population, index_sourced = five_tuple_member_facts(shape_draft)
     if not population:
@@ -507,6 +533,8 @@ def _validate_sole_option_bindings(
                 binding = binding.model_copy(
                     update={"kind": "unbound", "value_dcids": [], "evidence": "mentioned"}
                 )
+            elif not complete:
+                binding = binding.model_copy(update={"sampled": True})
         validated.append(binding)
     return validated
 

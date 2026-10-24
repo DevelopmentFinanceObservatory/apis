@@ -1045,8 +1045,8 @@ class OpenAxisFact:
 
     `member_values` maps a member dcid to the value dcid it declares, or `None` when it
     declares none. Keying by member makes a union over overlapping member sets count
-    each member once. `value_names` maps a value dcid to the graph `name` a served
-    member's arc carries, for values the code index does not label.
+    each member once. `value_names` maps a value dcid to its label from the shape's value
+    labels (`ShapeDraft.value_labels`), for values the code index does not label.
     """
 
     property: str
@@ -1068,20 +1068,20 @@ class OpenAxisFact:
 
 
 def open_constraint_axes(
-    bound_values: Mapping[str, list[str]], members: Mapping[str, MemberFacts]
+    bound_values: Mapping[str, list[str]],
+    members: Mapping[str, MemberFacts],
+    *,
+    value_labels: Mapping[str, str],
 ) -> tuple[OpenAxisFact, ...]:
     """Return unbound constraint axes in first-observed member order.
 
     `members` maps each served member's dcid to its facts. Include unresolved
     properties. A member with no resolved value contributes `None`. Each fact carries
-    the members' graph names for its values. Return `()` when no open axis exists.
+    the labels `value_labels` holds for its values: the shape's value labels
+    (`ShapeDraft.value_labels`), which one batched label read gave every constraint value
+    of the shape's members and family. Return `()` when no open axis exists.
     """
     member_constraints = {dcid: m.read_constraints() for dcid, m in members.items()}
-    value_names = {
-        value: name
-        for m in members.values()
-        for value, name in m.read_constraint_value_names().items()
-    }
     order: list[str] = []
     seen: set[str] = set()
     for dcid, m in members.items():
@@ -1100,7 +1100,11 @@ def open_constraint_axes(
             OpenAxisFact(
                 property=prop,
                 member_values=member_values,
-                value_names={v: value_names[v] for v in member_values.values() if v in value_names},
+                value_names={
+                    v: label
+                    for v in member_values.values()
+                    if v is not None and (label := value_labels.get(v)) is not None
+                },
             )
         )
     return tuple(facts)
@@ -2241,6 +2245,21 @@ class WalkedMembers:
         asked (`asked`)."""
         return walk_key(query) in (self.key, self.asked)
 
+    def binding(self, prop: str, slot: SlotBinding) -> WalkedMembers:
+        """These members keyed with `prop` bound by `slot`, for a walk that read `prop`
+        open and whose every member asserts the value `slot` binds. The walk of the query
+        binding it admits exactly those members, so it settles the same members and
+        family."""
+
+        def bound(key: WalkKey) -> WalkKey:
+            five_tuple, slots, role_keys, open_role_keys = key
+            rebound = {**dict(slots), prop: _walked_binding(slot)}
+            return five_tuple, tuple(sorted(rebound.items())), role_keys, open_role_keys
+
+        return replace(
+            self, key=bound(self.key), asked=None if self.asked is None else bound(self.asked)
+        )
+
 
 def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> StatedMembers | None:
     """What a Datasets mint of `identity`, a described identity, states of its members, when
@@ -3366,7 +3385,10 @@ def walked_family_label(
             prop_labels=prop_labels,
             value_labels=value_labels,
         )
-    return next((name for arcs in members.values() if (name := read_name(arcs)) is not None), None)
+    return next(
+        (name for dcid, arcs in members.items() if (name := read_name(arcs, dcid)) is not None),
+        None,
+    )
 
 
 def _shape_held_family(shape: ShapeDraft) -> FamilySummary | None:
@@ -3433,7 +3455,11 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
         shape.label
         if shape.held_family is not None
         else next(
-            (name for sv in least_constrained if (name := read_name(population[sv])) is not None),
+            (
+                name
+                for sv in least_constrained
+                if (name := read_name(population[sv], sv)) is not None
+            ),
             shape.label,
         )
     )
@@ -3485,7 +3511,9 @@ def _unexported_shared_values(
     shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> dict[str, str]:
     """Each open slot the exported family shares, mapped to the one value every member of
-    `shape`'s unexported family holds on it (`bind_shared_values`)."""
+    `shape`'s unexported family holds on it (`bind_shared_values`). A slot a sampled claim
+    binds (`SlotBindingDraft.sampled`) counts as open, since the claim selects no member
+    until something beside its sample backs it."""
     members = shape.sv_arc_facts
     index = get_index()
     five_tuple = shape_five_tuple(shape)
@@ -3503,7 +3531,8 @@ def _unexported_shared_values(
     closed = {
         binding.property_dcid
         for binding in bindings
-        if binding.kind in ("value", "set") or binding.evidence == "requested_all"
+        if (binding.kind in ("value", "set") and not binding.sampled)
+        or binding.evidence == "requested_all"
     }
     shared: dict[str, str] = {}
     for slot in shape.slot_keys:
@@ -3539,9 +3568,30 @@ def bind_shared_values(
     value there that the family's total does not hold. A slot the query asked to see in full
     (`requested_all`) stays open.
 
+    A ``sole_option`` claim of the reply on such a slot that rests on the recalled sample
+    (`SlotBindingDraft.sampled`) and claims the shared value is backed by this rule, which
+    reads the value as what tells the family apart, so it is no longer marked sampled and
+    the walk reads the slot bound, as it reads a value this rule binds. Read open, the walk
+    of "debt service" lists the interest payments total of the same five-tuple and refutes
+    the claim (`phase_place_materialise._judge_sampled_claims`), and the answer serves
+    every flow. A sampled claim of another value stays as it is, for the walk to judge.
+
     Returns the bindings with each such slot bound as a `sole_option` value, and the
     bindings added. Both follow slot-key order."""
-    return _bind_sole_options(shape, bindings, _unexported_shared_values(shape, bindings))
+    shared = _unexported_shared_values(shape, bindings)
+    sampled = {
+        b.property_dcid: b.value_dcids
+        for b in bindings
+        if b.sampled and b.property_dcid is not None
+    }
+    backed = {prop for prop, value in shared.items() if sampled.get(prop) == [value]}
+    if backed:
+        bindings = [
+            b.model_copy(update={"sampled": False}) if b.property_dcid in backed else b
+            for b in bindings
+        ]
+    unclaimed = {prop: value for prop, value in shared.items() if prop not in sampled}
+    return _bind_sole_options(shape, bindings, unclaimed)
 
 
 def bind_member_values(
