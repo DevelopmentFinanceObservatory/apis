@@ -147,8 +147,10 @@ class StatedWordsRequest:
     elected shape over the final bindings (`phase_rank_bind._unrated_words`): the variable
     phrase, the elected shape and its index in the bind menu (None for a refused reading
     standing in for a declined menu), the casefolded words, each among the shape's
-    `BindRequest.nominated_words`, the final bindings, and the bind call's result. `part`
-    and `pool` join a binder's log lines to the part's, as on `QuantityRequest`."""
+    `BindRequest.nominated_words`, the final bindings, and the bind call's result. `served`
+    names the members the answer serves (`phase_rank_bind.served_member_names`) when it
+    serves more than one name, and is empty otherwise. `part` and `pool` join a binder's log
+    lines to the part's, as on `QuantityRequest`."""
 
     variable: str
     shape: ShapeDraft
@@ -156,6 +158,7 @@ class StatedWordsRequest:
     words: tuple[str, ...]
     bindings: tuple[SlotBindingDraft, ...]
     decision: BindResult | None
+    served: tuple[str, ...] = ()
     part: int | None = None
     pool: Pool | None = None
 

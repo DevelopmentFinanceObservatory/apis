@@ -129,9 +129,9 @@ def _catalogue(*, un_system_enabled: bool = True, transfer: bool = True) -> Cata
         successors={_BASE: _SDG, _BASE_VARIANT: _SDG, _BASE_ALONE: None} if transfer else {},
         un_mirror=un_mirror(
             {
-                _SDG: un_variable(_SDG_SERIES, name=_SDG),
-                _SDG_FEMALE: un_variable(_SDG_SERIES, name=_SDG_FEMALE),
-                _WHO: un_variable(_WHO_SERIES, name=_WHO),
+                _SDG: un_variable(_SDG_SERIES, name=_NAMES[_SDG]),
+                _SDG_FEMALE: un_variable(_SDG_SERIES, name=_NAMES[_SDG_FEMALE]),
+                _WHO: un_variable(_WHO_SERIES, name=_NAMES[_WHO]),
             }
         ),
         un_system_enabled=un_system_enabled,

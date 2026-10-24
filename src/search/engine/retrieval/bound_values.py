@@ -2664,9 +2664,10 @@ def held_family_exact(shape: ShapeDraft) -> bool:
 async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
     """Read the family each of `shapes` stands for (`ShapeDraft.held_family`) into the
     request's memo (`held_family_memo`) off the event loop, so a reader that runs on it
-    finds the family read. The phases call it before their first on-loop reader: settling
-    the election reads the bind menu's, the elected shape's among them, which candidate
-    admission, the alternates' walks and refusals read after it. Reads nothing with no
+    finds the family read. The phases call it before their first on-loop reader: the bind
+    reads the menu's, the elected shape's among them, before the words it nominates read
+    their members' names, and settling the election reads any the bind did not, which
+    candidate admission, the alternates' walks and refusals read after it. Reads nothing with no
     memo bound or every family already read."""
     memo = _held_family_memo.get()
     if memo is None:

@@ -35,6 +35,7 @@ from search.engine.quantity import (
     serves_quantity,
     stated_denominator,
 )
+from search.engine.reading_coverage import holds_in
 from search.engine.region.alternate_guard import AlternateJudge, query_pins
 from search.engine.region.availability import (
     _shape_group_key,
@@ -56,6 +57,7 @@ from search.engine.region.codes import (
     SEAM_OFF_INFO_CODE,
     _elect_no_data_reason,
 )
+from search.engine.region.coverage_series import requested_window
 from search.engine.region.decisions import (
     PlaceSetNotAdmittedError,
     PlaceSetRefusedError,
@@ -75,7 +77,11 @@ from search.engine.region.materialise_step import (
 from search.engine.region.observations.dispatch import _attach_observations
 from search.engine.region.observations.entities import _observation_entities
 from search.engine.region.observations.fetch import _build_observations
-from search.engine.region.phase_election import _settle_served_dataset, narrowed_to_breakdown
+from search.engine.region.phase_election import (
+    _settle_served_dataset,
+    narrowed_to_breakdown,
+    record_coverage,
+)
 from search.engine.region.phase_intake import not_admitted_entity
 from search.engine.region.phase_shared import (
     _elected_flagged_match,
@@ -166,6 +172,7 @@ from search.models import (
     NearestRealSpec,
     NoDataDenominator,
     Relaxation,
+    TimeWindow,
     UnitAlternative,
     Warning,
 )
@@ -335,7 +342,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         is not None
     ):
         state.shape_draft = recalled
-        if (refused := _unbind(state, unrealisable, role_keys)) is not None:
+        if (refused := await _unbind(state, unrealisable, role_keys)) is not None:
             return refused
         recalled = state.shape_draft
         relaxed = True
@@ -448,17 +455,17 @@ def _settle_breakdown(state: ResolveState) -> None:
     none that serves a member (`standard.Candidates`): one copy of the shape per breakdown
     signature, each narrowed to the bound properties and that signature
     (`phase_election.narrowed_to_breakdown`) and bound with the signature's slots open
-    (`_breakdown_bindings`). The copies are ordered by their recalled members with data at
-    the places the part names, then by their recalled members, and capped at
-    `max_candidates`, a cut the candidate set states (`ResolveState.breakdown_truncated`,
-    `CandidateSet.truncated`). The first is installed as the elected shape; each other is
+    (`_breakdown_bindings`). The copies are ordered by their members with data at the
+    places the part names inside the years it asks for, then by their recalled members,
+    and capped at `max_candidates`, a cut the candidate set states
+    (`ResolveState.breakdown_truncated`, `CandidateSet.truncated`). The first is installed as the elected shape; each other is
     offered beside it as a `breakdown` candidate (`ResolveState.breakdown_rivals`). A lone
     copy answers alone, narrower than asked (`standard.Narrow.lone_signature`)."""
     decision = state.breakdown
     if not isinstance(decision, Candidates):
         return
     shape = state.shape_draft
-    rank = _breakdown_rank(shape, decision.bound)
+    rank = _breakdown_rank(shape, decision.bound, requested_window(state.date_request))
     signatures = sorted(decision.signatures, key=rank)[: settings().max_candidates]
     state.breakdown_truncated = len(signatures) < len(decision.signatures)
     copies = [
@@ -479,13 +486,14 @@ def _settle_breakdown(state: ResolveState) -> None:
 
 
 def _breakdown_rank(
-    shape: ShapeDraft, bound: frozenset[str]
+    shape: ShapeDraft, bound: frozenset[str], window: TimeWindow | None
 ) -> Callable[[frozenset[str]], tuple[int, int]]:
     """The sort key of a breakdown signature of `shape` under its `bound` properties: its
-    recalled members with data at the places the part names
-    (`ShapeDraft.named_place_coverage`, else `ShapeDraft.member_coverage`), then its
-    recalled members (`ShapeDraft.scored_members`), most first. A member's signature is the
-    set of constraint properties it declares outside `bound`."""
+    members with data at the places the part names (`ShapeDraft.named_place_coverage`, else
+    `ShapeDraft.member_coverage`) inside `window`, the years the part asks for
+    (`reading_coverage.holds_in`), then its recalled members (`ShapeDraft.scored_members`),
+    most first. A member's signature is the set of constraint properties it declares
+    outside `bound`."""
     coverage = shape.named_place_coverage or shape.member_coverage or {}
     with_data: dict[frozenset[str], int] = {}
     recalled: dict[frozenset[str], int] = {}
@@ -493,7 +501,7 @@ def _breakdown_rank(
         signature = frozenset(read_declared_constraint_properties(arcs)) - bound
         if sv in shape.scored_members:
             recalled[signature] = recalled.get(signature, 0) + 1
-        if coverage.get(sv):
+        if holds_in(coverage.get(sv) or {}, window):
             with_data[signature] = with_data.get(signature, 0) + 1
     return lambda signature: (-with_data.get(signature, 0), -recalled.get(signature, 0))
 
@@ -1554,16 +1562,23 @@ class _RelaxedPartRefused(Exception):
         self.result = result
 
 
-def _unbind(
+async def _unbind(
     state: ResolveState, unrealisable: BoundValuesUnrealisable, role_keys: RoleKeys
 ) -> RegionResult | None:
     """Unbind values of `unrealisable` (`unbind_unrealisable`) and settle the dataset the
     part is served from again under what remains, returning the refusal of a part no table
     then serves. The dataset is named from the bindings wherever the index decides the
     part's membership (`bound_values.part_source`), and a query the index did not decide
-    can be one it decides once a value on a property no index row declares is unbound."""
+    can be one it decides once a value on a property no index row declares is unbound.
+    On a part a table serves, the words the coverage rule then leaves unrated are rated on
+    the shape and bindings so settled, and the qualifier records read again over them
+    (`phase_election.record_coverage`), as binding repair reads them: "female" in "female
+    aged X" reads no bound code once Sex=Female is unbound."""
     unbind_unrealisable(state, unrealisable)
-    return _settle_served_dataset(state, role_keys)
+    if (refused := _settle_served_dataset(state, role_keys)) is not None:
+        return refused
+    await record_coverage(state)
+    return None
 
 
 async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
@@ -1581,7 +1596,7 @@ async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
     try:
         place, mat_result = await materialise_task
         while isinstance(mat_result, BoundValuesUnrealisable):
-            refused = _unbind(
+            refused = await _unbind(
                 state,
                 mat_result,
                 entity_role_keys(

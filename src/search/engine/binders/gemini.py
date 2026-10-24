@@ -95,7 +95,12 @@ class GeminiBinder:
         fixed schema leaves the bind schema as it is. Raises `LLMInfraError` for a read
         that failed."""
         return await read_stated_words(
-            request.variable, request.shape, request.words, bindings=request.bindings, llm=llm
+            request.variable,
+            request.shape,
+            request.words,
+            bindings=request.bindings,
+            served=request.served,
+            llm=llm,
         )
 
     async def bind(

@@ -34,9 +34,10 @@ The door promotes a working-tier frame to the pinned tier and records the same p
 to it, with the same revocation recheck, on every pin call, including a repeat pin of an artifact
 that is already pinned, so a retry or a re-pin heals a version whose frame is still working-tier. A
 derived version (`base_content_version` set: a groupby collapse or a party-totals cut) renders its
-files from its base version's frame, so its pin also retains that frame, with the reference naming
-the base version, and the derived version stays fetchable in every format and reports
-`retention.pinned`. A version whose frame's bytes are gone, or that links no frame, pins the
+files from its own frame and falls back to its base version's frame
+(`doors.files.render_version_from_frame`), so its pin also retains that base frame, with the
+reference naming the base version, and the derived version stays fetchable in every format and
+reports `retention.pinned`. A version whose frame's bytes are gone, or that links no frame, pins the
 named artifact alone. A frame copy skips the budget check. It holds a `pin` reference, so it counts
 toward later calls. A pin of a derived version can add three pinned copies to the count (the named
 artifact, the version's own frame and its base frame), and only the first waits on the budget.

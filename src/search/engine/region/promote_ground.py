@@ -53,7 +53,6 @@ from search.engine.region.grounding import (
     restate_role_scope_warnings,
 )
 from search.engine.region.materialise_step import (
-    lone_breakdown_absent,
     resubmit_family_total_absent_departure,
 )
 from search.engine.region.observations.entities import (
@@ -102,8 +101,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.elected_dataset import elected_datasets, published
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import plan_probes, serves_nothing
-from search.engine.retrieval.retrieve import FamilyTotalAbsent, Materialised
-from search.engine.retrieval.standard import breakdown_decision
+from search.engine.retrieval.retrieve import Materialised
 from search.engine.shape import is_role_bearing
 from search.engine.spec_build import (
     bind_when_slot,
@@ -599,7 +597,10 @@ def _ground_and_build_spec(
         plans=(state.narrowed_plan,) if state.narrowed_plan is not None else (),
     )
     spec = state.spec = apply_declaration_version(spec, state.bindings)
-    if (family_total_absent := _family_total_absent(state, mat_result)) is not None:
+    # The resubmit states the `family_total_absent` fact its member read states. The slots
+    # its posted identity leaves open count as named, so every signature of the family it
+    # admits lies inside them and no lone breakdown is stated (`lone_breakdown_absent`).
+    if (family_total_absent := mat_result.family_total_absent) is not None:
         state.ground_warnings.append(
             state.depart(
                 *resubmit_family_total_absent_departure(
@@ -610,27 +611,6 @@ def _ground_and_build_spec(
             )
         )
     return spec
-
-
-def _family_total_absent(
-    state: _PromoteState, mat_result: Materialised
-) -> FamilyTotalAbsent | None:
-    """The `family_total_absent` fact of the resubmit's answer: the one its member read
-    states, else the one a family with no total shown by its one breakdown states
-    (`lone_breakdown_absent`), under the breakdown decision a first answer takes
-    (`standard.breakdown_decision`), here over the shape and bindings the posted identity
-    gives."""
-    if mat_result.family_total_absent is not None:
-        return mat_result.family_total_absent
-    role_keys = entity_role_keys(
-        state.place.roles.resolved_entities, open_axes=state.place.roles.open_axes
-    )
-    return lone_breakdown_absent(
-        breakdown_decision(state.shape_draft, state.bindings, role_keys.bound),
-        shape=state.shape_draft,
-        bindings=state.bindings,
-        served=mat_result.sv_dcids,
-    )
 
 
 def _no_data_gate_holds(

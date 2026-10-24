@@ -19,6 +19,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.tokens import tokenize
 from entity_resolution import Admission, Entity, EntityResolver, Resolved
 from origin_catalogue import UnTables
+from origin_catalogue.families import FamilyKey
 from origin_catalogue.un_mirror import UnVariable
 from search.engine.bind import DraftBindingKind, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import BindRequest, GeminiBinder, JevBinder
@@ -42,8 +43,10 @@ from search.engine.region.phase_rank_bind import (
     _unrated_words,
     _unread_runs,
     judge_value_requirements,
+    served_member_names,
     value_requirements,
 )
+from search.engine.region.place_roles import PlaceAssignment
 from search.engine.region.requirements import (
     Judgement,
     Outcome,
@@ -398,19 +401,35 @@ def test_an_uncovered_word_beside_a_code_is_a_record(search_settings, variable, 
     ]
 
 
-def _reader_shape(name: str, *, meas_prop: str = _MEAS_PROP_DCID) -> ShapeDraft:
-    """A one-member shape named `name`, with no slot, measuring `meas_prop`."""
+def _reader_shape(
+    name: str, *, meas_prop: str = _MEAS_PROP_DCID, pop_type: str = _POP_TYPE_DCID
+) -> ShapeDraft:
+    """A one-member shape named `name`, with no slot, measuring `meas_prop` of
+    `pop_type`."""
     return replace(
         _shape(),
+        pop_type_dcid=pop_type,
         meas_prop_dcid=meas_prop,
         sv_arc_facts={"reader_member": {"name": {"nodes": [{"value": name}]}}},
     )
 
 
-_READER_PERSONS = _reader_shape("Total population", meas_prop="count")
-_READER_REFUGEES = _reader_shape("Refugee population", meas_prop="count")
+_READER_PERSONS = _reader_shape("Total population", meas_prop="count", pop_type="Person")
+_READER_REFUGEES = _reader_shape("Refugee population", meas_prop="count", pop_type="Person")
 _READER_TAX = _reader_shape("Tax revenue")
-_READER_REFUGEE_COUNT = _reader_shape("Refugees, by host country", meas_prop="count")
+_READER_REFUGEE_COUNT = _reader_shape(
+    "Refugees, by host country", meas_prop="count", pop_type="Person"
+)
+_READER_HOUSEHOLD_COUNT = _reader_shape(
+    "Refugee households", meas_prop="count", pop_type="Household"
+)
+# A UN System series has its own population type and says it counts persons by its unit.
+_READER_UN_PERSON_COUNT = replace(
+    _reader_shape(
+        "Refugees under UNHCR's mandate", meas_prop="value", pop_type="undata/unhcr/REFUGEES"
+    ),
+    place_units=frozenset({"undata/UNIT_MEASURE-COUNT_PERSONS"}),
+)
 _READER_REFUGEE_SHARE = _reader_shape("Refugees, by host country", meas_prop="amount")
 _READER_DEBT_BY_CREDITOR = replace(
     _reader_shape("External debt stocks"),
@@ -461,6 +480,30 @@ _READER_DEBT_BY_CREDITOR = replace(
                 None,
                 [("refugee", "measure"), (noun, "count")],
                 id=f"count-shape-{noun}",
+            )
+            for noun in ("number", "population", "populations", "people", "persons")
+        ),
+        # On a count of anything but persons, only the nouns for a count: the binder rates
+        # the nouns for people.
+        *(
+            pytest.param(
+                f"refugee {noun}",
+                _READER_HOUSEHOLD_COUNT,
+                None,
+                None,
+                [("refugee", "measure"), (noun, "count" if noun == "number" else "unrated")],
+                id=f"count-of-households-{noun}",
+            )
+            for noun in ("number", "population", "populations", "people", "persons")
+        ),
+        *(
+            pytest.param(
+                f"refugee {noun}",
+                _READER_UN_PERSON_COUNT,
+                None,
+                None,
+                [("refugee", "measure"), (noun, "count")],
+                id=f"un-count-of-persons-{noun}",
             )
             for noun in ("number", "population", "populations", "people", "persons")
         ),
@@ -621,6 +664,14 @@ _READER_DEBT_BY_CREDITOR = replace(
         "count-shape-populations",
         "count-shape-people",
         "count-shape-persons",
+        *(
+            f"count-of-households-{noun}"
+            for noun in ("number", "population", "populations", "people", "persons")
+        ),
+        *(
+            f"un-count-of-persons-{noun}"
+            for noun in ("number", "population", "populations", "people", "persons")
+        ),
         "no-count-shape-number",
         "no-count-shape-population",
         "no-count-shape-people",
@@ -893,32 +944,90 @@ def test_jev_rates_the_nominated_words_in_the_bind_and_the_rule_reads_its_rating
     assert _has_miss(qualifiers) == bool(records)
 
 
-@pytest.mark.parametrize(
-    ("bound", "scored", "unrated"),
-    [
-        ((), (), ("refugee", "camps")),
-        ((), ("nominating_1",), ("camps",)),
-        ((("gender", ["Female"]),), (), ("refugee", "camps")),
-        ((("gender", ["Female"]),), ("nominating_1",), ("camps",)),
-        ((("gender", ["Male"]),), ("nominating_2",), ("refugee",)),
-    ],
-    ids=["open", "scored", "bound", "bound-and-scored", "bound-other"],
+_FEMALE = _binding("gender", kind="value", value_dcids=["Female"])
+_MALE = _binding("gender", kind="value", value_dcids=["Male"])
+_GENDER_OPENED = _binding("gender").model_copy(
+    update={"evidence": "requested_all", "requested_all_phrase": "by gender"}
 )
-def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(bound, scored, unrated):
+
+
+@pytest.mark.parametrize(
+    ("total", "bound", "scored", "unrated"),
+    [
+        (True, (), (), ("refugee", "camps")),
+        # The answer serves the total, "Population", whichever member recall scored, so a
+        # scored member's name reads no word and the binder rates "refugee". So it does with
+        # the gender slot opened, since the family's total answers for every gender.
+        (True, (), ("nominating_1",), ("refugee", "camps")),
+        (True, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
+        (True, (_binding("gender"),), ("nominating_1",), ("refugee", "camps")),
+        (True, (_GENDER_OPENED,), ("nominating_1",), ("refugee", "camps")),
+        # Gender bound to Female serves "Female refugee population" alone, which states
+        # "refugee" whichever member recall scored.
+        (True, (_FEMALE,), (), ("camps",)),
+        (True, (_FEMALE,), ("nominating_1",), ("camps",)),
+        (True, (_MALE,), ("nominating_2",), ("refugee",)),
+        # A family with no total serves both members, so only the words both names hold
+        # read, whichever recall scored.
+        (False, (), ("nominating_1",), ("refugee", "camps")),
+        (False, (_binding("gender", kind="absent"),), ("nominating_1",), ("refugee", "camps")),
+        (
+            False,
+            (_binding("gender"),),
+            ("nominating_1", "nominating_2"),
+            ("refugee", "camps"),
+        ),
+        # With none, the words every member's name holds still read.
+        (
+            False,
+            (_binding("gender", kind="value", value_dcids=["Unknown"]),),
+            (),
+            ("refugee", "camps"),
+        ),
+    ],
+    ids=[
+        "open",
+        "scored",
+        "absent-and-scored",
+        "unbound-and-scored",
+        "opened-serves-the-total",
+        "bound-serves-the-female-member",
+        "bound-and-scored",
+        "bound-other",
+        "no-total-scored",
+        "no-total-absent",
+        "no-total-unbound",
+        "no-member-served",
+    ],
+)
+def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(
+    total, bound, scored, unrated
+):
     """The words the coverage rule leaves unrated on the elected shape over its bindings
     (`_unrated_words`) are among those nominated for that shape before the bind
     (`_nominated_words`), so a binder that rates the nominated words in the bind holds a
-    rating for each word it is later asked about."""
+    rating for each word it is later asked about. Only the names of the members the
+    answer serves read words (`_member_measure_words`)."""
+    members = [{"gender": "Female"}, {"gender": "Male"}]
+    names = ["Female refugee population", "Male population of camps"]
     shape = _value_shape(
         "nominating",
         SlotKeyDraft(axis="how", property_dcid="gender", label="gender"),
-        members=[{}, {"gender": "Female"}, {"gender": "Male"}],
-        names=["Population", "Female refugee population", "Male population of camps"],
+        members=[{}, *members] if total else members,
+        names=["Population", *names] if total else names,
     )
+    if not total:
+        shape = replace(
+            shape,
+            sv_arc_facts={
+                f"nominating_{i + 1}": arcs
+                for i, arcs in enumerate((shape.sv_arc_facts or {}).values())
+            },
+        )
     state = _state(
         variable="female refugee population of camps",
         shape_draft=replace(shape, scored_members=frozenset(scored)),
-        bindings=[_binding(prop, kind="value", value_dcids=dcids) for prop, dcids in bound],
+        bindings=list(bound),
         unplaced=[],
         entities=(),
     )
@@ -928,6 +1037,137 @@ def test_every_word_left_unrated_after_the_bind_was_nominated_before_it(bound, s
     assert nominated == ("female", "refugee", "camps")
     assert _unrated_words(state) == unrated
     assert set(unrated) <= set(nominated)
+
+
+@pytest.mark.parametrize("kind", ["unbound", "absent"])
+def test_a_held_total_recall_did_not_find_reads_its_name(bind_catalogue, kind):
+    """ "female unemployment rate" over a family the catalogue holds, of the total and a
+    member by each sex, where recall finds the female member alone and the bind leaves the
+    sex slot unbound or absent: the answer serves the total, whose name reads
+    "unemployment", and "female" is left unrated. The words nominated before the bind are
+    read over the whole family too, so "female" is among them."""
+    series = "undata/ilo/SERIES-UNE_RATE"
+    female = f"{series}.SEX--F"
+    sexes = {
+        female: ("Unemployment rate: Female", "undata/SEX-F", "Female"),
+        f"{series}.SEX--M": ("Unemployment rate: Male", "undata/SEX-M", "Male"),
+    }
+    bind_catalogue(
+        FakeCatalogue(
+            un=UnTables(
+                mirror=un_mirror(
+                    {
+                        series: un_variable(series, name="Unemployment rate"),
+                        **{
+                            sv: un_variable(
+                                series, name=name, constraints={"undataSex": ("Sex", value, label)}
+                            )
+                            for sv, (name, value, label) in sexes.items()
+                        },
+                    }
+                )
+            )
+        )
+    )
+    sample = _value_shape(
+        "unemployment",
+        SlotKeyDraft(axis="how", property_dcid="undataSex", label="sex"),
+        members=[{"undataSex": "undata/SEX-F"}],
+        names=["Unemployment rate: Female"],
+    )
+    shape = replace(
+        sample,
+        pop_type_dcid=series,
+        meas_prop_dcid="value",
+        stat_type_dcid="measuredValue",
+        sv_arc_facts={female: next(iter((sample.sv_arc_facts or {}).values()))},
+        sv_arc_facts_complete=False,
+        held_family=FamilyKey(series, "value", "measuredValue", None, None, False, False),
+    )
+    state = _state(
+        variable="female unemployment rate",
+        shape_draft=shape,
+        bindings=[_binding("undataSex", kind=kind)],
+        unplaced=[],
+        entities=(),
+    )
+    nominated = _nominated_words(state, state.shape_draft)
+    state.bindings = state.bind_result.bindings
+
+    assert nominated == ("female",)
+    assert _unrated_words(state) == ("female",)
+
+
+def test_a_served_member_with_no_name_clears_no_word_the_named_ones_alone_hold():
+    """ "GDP" over a family whose bindings serve nominal GDP and a net domestic product
+    member whose name the engine cannot read, beside a gross value added member they leave
+    out: the words are those every named member holds, so "gdp" goes to the binder although
+    the one named member served holds it. The source values are no code the index labels,
+    so no bound code reads the word."""
+    shape = _value_shape(
+        "gdp",
+        SlotKeyDraft(axis="what", property_dcid="activitySource", label="activity source"),
+        members=[
+            {"activitySource": "SourceDomestic"},
+            {"activitySource": "SourceValueAdded"},
+            {"activitySource": "SourceNetDomestic"},
+        ],
+        names=["Nominal gross domestic product", "Gross value added", "unnamed"],
+    )
+    arcs = dict(shape.sv_arc_facts or {})
+    arcs["gdp_2"] = {prop: nodes for prop, nodes in arcs["gdp_2"].items() if prop != "name"}
+    produced = _binding(
+        "activitySource",
+        kind="set",
+        value_dcids=["SourceDomestic", "SourceNetDomestic"],
+    )
+    state = _state(
+        variable="GDP",
+        shape_draft=replace(shape, sv_arc_facts=arcs),
+        bindings=[produced.model_copy(update={"axis": "what"})],
+        unplaced=[],
+        entities=(),
+    )
+    state.bindings = state.bind_result.bindings
+
+    assert served_member_names(state) == {
+        "gdp_0": "Nominal gross domestic product",
+        "gdp_2": None,
+    }
+    assert _unrated_words(state) == ("gdp",)
+
+
+def test_the_served_members_read_the_direction_place_binding_settled():
+    """ "aid to Kenya" named with no direction: binding repair refuses the places
+    ``role_not_resolved``, and place binding settles them on the recipient side
+    (`phase_place_materialise._settle_direction`). A coverage reading after it, as an
+    unbinding at materialise makes, reads the members the recipient class serves, though it
+    read both classes under the refusal."""
+
+    def member(role: str, name: str) -> dict:
+        return {
+            "name": {"nodes": [{"value": name}]},
+            "constraintProperties": {"nodes": []},
+            "observationProperties": {"nodes": [{"dcid": role}]},
+        }
+
+    shape = replace(
+        _shape(),
+        declared_roles=("financingProvider", "financingRecipient"),
+        sv_arc_facts={
+            "aid_received": member("financingRecipient", "Aid received"),
+            "aid_given": member("financingProvider", "Aid given"),
+        },
+    )
+    state = _state(variable="aid", shape_draft=shape, bindings=[], unplaced=[], entities=())
+    state.query_place_roles = "role_not_resolved"
+
+    assert served_member_names(state) == {"aid_received": "Aid received", "aid_given": "Aid given"}
+
+    (kenya,) = place_sets({"Kenya": "country/KEN"}).values()
+    state.elected_place_roles = PlaceAssignment(sets={"destination": (kenya,)})
+
+    assert served_member_names(state) == {"aid_received": "Aid received"}
 
 
 _FLOW_ROLES = ("financingProvider", "financingRecipient")

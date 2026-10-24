@@ -5,8 +5,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
+import dc_sdmx.client as sdmx_client_module
 from dc_sdmx.client import ContainedIn, SdmxClient
-from dc_sdmx.errors import SdmxQueryError, SdmxUnsupportedFilterError
+from dc_sdmx.errors import SdmxQueryError, SdmxTransportError, SdmxUnsupportedFilterError
+from dfo_platform.cloud_run_auth import CloudRunAuthError, CloudRunIdTokenAuth, IdTokenMinter
 
 from .conftest import read_fixture_text
 
@@ -244,25 +246,44 @@ def test_invalid_component_id_rejected_before_http(recording_transport):
     assert transport.requests == []
 
 
-# An unsigned JWT whose `aud` is the run.app origin below; the auth reads `aud` unverified.
-_ID_TOKEN = "h.eyJhdWQiOiJodHRwczovL2Rmby1kZXYtZGMtZGF0YWNvbW1vbnMtc2VydmljZS1hYmMxMjMtbm4uYS5ydW4uYXBwIn0.s"
+_DCP = "https://dfo-dev-dc-datacommons-service-abc123-nn.a.run.app"
+# An unsigned JWT whose `exp` is far in the future; the minter reads `exp` unverified.
+_ID_TOKEN = "h.eyJleHAiOiA0MTAyNDQ0ODAwfQ.s"
+
+
+def _use_minter(monkeypatch, fetch_token) -> None:
+    auth = CloudRunIdTokenAuth(minter=IdTokenMinter(fetch_token=fetch_token))
+    monkeypatch.setattr(sdmx_client_module, "cloud_run_auth", lambda: auth)
 
 
 @pytest.mark.parametrize(
     ("base_url", "sent"),
-    [
-        (
-            "https://dfo-dev-dc-datacommons-service-abc123-nn.a.run.app/core/api",
-            f"Bearer {_ID_TOKEN}",
-        ),
-        (_BASE_URL, None),
-    ],
+    [(f"{_DCP}/core/api", f"Bearer {_ID_TOKEN}"), (_BASE_URL, None)],
 )
 def test_run_app_hosts_get_a_cloud_run_id_token(recording_transport, monkeypatch, base_url, sent):
-    monkeypatch.setenv("DCP_ID_TOKEN", _ID_TOKEN)
+    _use_minter(monkeypatch, lambda audience: _ID_TOKEN)
     transport = recording_transport(_AVAILABILITY_RESPONSE)
     SdmxClient(base_url=base_url, transport=transport).availability(
         variables=["Count_Person"], component="observationAbout"
     )
     assert transport.last_request.headers.get("x-serverless-authorization") == sent
     assert "authorization" not in transport.last_request.headers
+
+
+@pytest.mark.parametrize("read", ["availability", "data"])
+def test_a_failed_mint_raises_the_transport_error_before_sending(
+    recording_transport, monkeypatch, read
+):
+    def refuse(audience: str) -> str:
+        raise CloudRunAuthError(f"cannot mint an ID token for {audience}")
+
+    _use_minter(monkeypatch, refuse)
+    transport = recording_transport(_AVAILABILITY_RESPONSE)
+    client = SdmxClient(base_url=f"{_DCP}/core/api", transport=transport)
+
+    with pytest.raises(SdmxTransportError, match="cannot mint an ID token"):
+        if read == "availability":
+            client.availability(variables=["Count_Person"], component="observationAbout")
+        else:
+            client.data(variables=["Count_Person"], entities={"observationAbout": ["country/USA"]})
+    assert transport.requests == []

@@ -19554,6 +19554,26 @@
       }
     ]
   },
+  "StatedWordsOutput@e3e465c89a54:78ad55fae309d7618b0c4fb9843ec2a0f4f403fd": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      },
+      {
+        "index": 1,
+        "stated": false
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:7fa47a9da00a3f5ec46c34ca42ccc271ac73e73d": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
   "Extraction@501cb31acc6e:1f38abcfd0d055d94e0db151355f29e604f91175": {
     "kind": "resolution",
     "variables": [
