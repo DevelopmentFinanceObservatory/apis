@@ -3511,9 +3511,7 @@ def _unexported_shared_values(
     shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> dict[str, str]:
     """Each open slot the exported family shares, mapped to the one value every member of
-    `shape`'s unexported family holds on it (`bind_shared_values`). A slot a sampled claim
-    binds (`SlotBindingDraft.sampled`) counts as open, since the claim selects no member
-    until something beside its sample backs it."""
+    `shape`'s unexported family holds on it (`bind_shared_values`)."""
     members = shape.sv_arc_facts
     index = get_index()
     five_tuple = shape_five_tuple(shape)
@@ -3531,8 +3529,7 @@ def _unexported_shared_values(
     closed = {
         binding.property_dcid
         for binding in bindings
-        if (binding.kind in ("value", "set") and not binding.sampled)
-        or binding.evidence == "requested_all"
+        if binding.kind in ("value", "set") or binding.evidence == "requested_all"
     }
     shared: dict[str, str] = {}
     for slot in shape.slot_keys:
@@ -3568,30 +3565,9 @@ def bind_shared_values(
     value there that the family's total does not hold. A slot the query asked to see in full
     (`requested_all`) stays open.
 
-    A ``sole_option`` claim of the reply on such a slot that rests on the recalled sample
-    (`SlotBindingDraft.sampled`) and claims the shared value is backed by this rule, which
-    reads the value as what tells the family apart, so it is no longer marked sampled and
-    the walk reads the slot bound, as it reads a value this rule binds. Read open, the walk
-    of "debt service" lists the interest payments total of the same five-tuple and refutes
-    the claim (`phase_place_materialise._judge_sampled_claims`), and the answer serves
-    every flow. A sampled claim of another value stays as it is, for the walk to judge.
-
     Returns the bindings with each such slot bound as a `sole_option` value, and the
     bindings added. Both follow slot-key order."""
-    shared = _unexported_shared_values(shape, bindings)
-    sampled = {
-        b.property_dcid: b.value_dcids
-        for b in bindings
-        if b.sampled and b.property_dcid is not None
-    }
-    backed = {prop for prop, value in shared.items() if sampled.get(prop) == [value]}
-    if backed:
-        bindings = [
-            b.model_copy(update={"sampled": False}) if b.property_dcid in backed else b
-            for b in bindings
-        ]
-    unclaimed = {prop: value for prop, value in shared.items() if prop not in sampled}
-    return _bind_sole_options(shape, bindings, unclaimed)
+    return _bind_sole_options(shape, bindings, _unexported_shared_values(shape, bindings))
 
 
 def bind_member_values(
