@@ -235,16 +235,10 @@ class TestRelativeSpans:
     )
     def test_spans_measured_from_now(self, text: str, start: str) -> None:
         """A lead, an article, "past" or "last", a count in digits or words, decades,
-        "recent years" and the Spanish and French forms all close at current_year. A span
-        counted back carries its count of years, which the answer's data ends; "this
-        decade" names calendar years."""
+        "recent years" and the Spanish and French forms all close at current_year."""
         dates, warning = parse_time_text(text, current_year=_CURRENT_YEAR)
         assert warning is None
-        calendar = {"this decade", "over this decade", "en esta década", "cette décennie"}
-        trailing = None if text in calendar else 2026 - int(start) + 1
-        assert [(d.kind, d.start, d.end, d.trailing_years) for d in dates] == [
-            ("range", start, "2026", trailing)
-        ]
+        assert [(d.kind, d.start, d.end) for d in dates] == [("range", start, "2026")]
 
     @pytest.mark.parametrize(
         ("text", "end"),

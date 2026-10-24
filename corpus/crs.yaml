@@ -620,14 +620,13 @@
 
 - id: dq-crs-051
   query: aid from Sweden to Tanzania over the last decade
-  why: The last decade is the ten years ending at DAC2a's newest year, 2024, so the window is 2015 to 2024; DAC2a answers the aid measure.
+  why: '''The last decade'' is a relative window; the start lands between 2014 and 2016, so the case asserts no window; DAC2a answers the aid measure.'
   reuse: panel/crs-042
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/SWE, role: origin}, {dcid: country/TZA, role: destination}]
-      window: {kind: range, start: 2015, end: 2024}
 
 - id: dq-crs-052
   query: aid from Germany to Kenya in 1975

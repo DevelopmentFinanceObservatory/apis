@@ -19554,31 +19554,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:aeb1552962e6521a6336f829797b6b8aca753c05": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "gender",
-        "kind": "value",
-        "value_dcids": [
-          "Female"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
   "Extraction@501cb31acc6e:1f38abcfd0d055d94e0db151355f29e604f91175": {
     "kind": "resolution",
     "variables": [

@@ -255,10 +255,9 @@ def _window(date_request: DateRequest | None, stated_by: StatedBy) -> Stated[Fra
         return Stated[FrameWindow](value="all", stated_by="default")
     if date_request.latest:
         return Stated[FrameWindow](value="latest", stated_by=stated_by)
-    window = date_request.asked_window
-    if window is None:
+    if date_request.window is None:
         return Stated[FrameWindow](value="all", stated_by="default")
-    return Stated[FrameWindow](value=window, stated_by=stated_by)
+    return Stated[FrameWindow](value=date_request.window, stated_by=stated_by)
 
 
 def _stated_operations(

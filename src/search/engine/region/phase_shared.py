@@ -45,7 +45,6 @@ from search.engine.retrieval.bound_values import (
     shape_population_arcs,
     slot_expansions,
 )
-from search.engine.retrieval.coverage import bare_coverage
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.shape import identity_shape_for
 from search.engine.spec_build import (
@@ -57,6 +56,7 @@ from search.engine.spec_build import (
     pair_slot_drafts,
 )
 from search.models import (
+    CoverageBare,
     GraphRef,
     IdentityFacetBinding,
     IdentityFacetValueRequest,
@@ -373,7 +373,10 @@ async def _elected_flagged_match(
         slots=slots,
         stat_vars=stat_vars,
         entities=entities,
-        coverage=bare_coverage(state.date_request, has_data=False),
+        coverage=CoverageBare(
+            has_data=False,
+            window=state.date_request.window if state.date_request is not None else None,
+        ),
         default_reading=state.default_reading,
         stated_form=state.stated_form,
         resolved_sources=[],

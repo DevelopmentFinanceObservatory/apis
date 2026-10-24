@@ -207,7 +207,7 @@ def test_an_untargeted_operation_serialises_without_a_target_year():
 def test_a_leg_backfilled_at_the_deadline_keeps_its_operations():
     """The soft-deadline placeholder carries the leg's operations and restates them."""
     region = _placeholder_no_data(
-        "education aid", 0, reason="timeout", entities=["Kenya"], operations=(_RANK_PLACES,)
+        "education aid", 0, reason="timed_out", entities=["Kenya"], operations=(_RANK_PLACES,)
     )
 
     assert region.operations == (_RANK_PLACES,)

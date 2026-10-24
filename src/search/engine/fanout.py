@@ -134,16 +134,14 @@ class _FanOutResult:
 def _date_request_to_time_text(date_request: DateRequest | None) -> str | None:
     """Encode the date request in the parsed door's `time_text` grammar.
 
-    Returns `latest`, a trailing span's "last N years", a year/range/`since` phrase, or
-    `None` when the request is dateless, open-start, or reversed. The latter windows
-    have no phrase that round-trips through the parser.
+    Returns `latest`, a year/range/`since` phrase, or `None` when the request
+    is dateless, open-start, or reversed. The latter windows have no phrase
+    that round-trips through the parser.
     """
     if date_request is None:
         return None
     if date_request.latest:
         return "latest"
-    if date_request.trailing_years is not None:
-        return f"last {date_request.trailing_years} years"
     window = date_request.window
     if window is None or window.start_year is None:
         return None
@@ -330,7 +328,7 @@ def _placeholder_no_data(
     open_axes: Collection[RoleAxis] = (),
     separate: bool = False,
 ) -> RegionResult:
-    """Build a `no_data` result for a leg with no answer of its own: `timeout` for one
+    """Build a `no_data` result for a leg with no answer of its own: `timed_out` for one
     the soft deadline cut short, `variable_not_resolved` for one whose error was swallowed.
 
     Its restatement and operations use the leg's own inputs. The door's axis map supplies
@@ -1161,7 +1159,7 @@ async def _run_variables_streaming(
             progress.results[i] = _placeholder_no_data(
                 _leg_variable_text(overrides, i),
                 i,
-                reason="timeout",
+                reason="timed_out",
                 entities=_leg_entities(overrides, i),
                 date_request=_leg_date_request(overrides, i),
                 unit_text=_leg_unit_text(overrides, i),

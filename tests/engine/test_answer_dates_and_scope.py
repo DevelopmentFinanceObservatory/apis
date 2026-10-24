@@ -14,14 +14,11 @@ from __future__ import annotations
 
 import contextvars
 import dataclasses
-import datetime
 import threading
-from types import SimpleNamespace
 
 import httpx
 import pytest
 
-import search.engine.extract as extract
 import search.engine.region.phase_answer as phase_answer
 import search.engine.region.promote_ground as promote_ground
 import search.engine.region.related_read as related_read
@@ -369,41 +366,6 @@ def test_a_role_range_answer_states_the_span_its_served_data_holds(
     assert requests == resubmit_requests
 
 
-@_ROUTES
-def test_a_trailing_span_ends_at_the_newest_year_the_data_holds(
-    monkeypatch, search_settings, discovered: bool, bulk: bool
-) -> None:
-    """ "The last five years" asked in 2026 of IDS data ending in 2020 reads 2016 to 2020,
-    states those years without a `year_unavailable` departure, and binds them in its
-    identity, so an unchanged resubmit says the same."""
-    span = DateRequest(
-        window=TimeWindow(start_year=None, end_year=2026), latest=False, trailing_years=5
-    )
-    first, index = _role_answer(
-        monkeypatch,
-        search_settings,
-        discovered=discovered,
-        bulk=bulk,
-        rows=_early_unserved_rows(),
-        metadata=_TWO_SOURCES,
-        date_request=span,
-    )
-    assert first.status == "definite", (first.status, first.no_data_reason)
-    spec = first.specs[0]
-    assert _dates(spec) == [DateRange(start="2016", end="2020")]
-    sentence = render_sentence(spec)
-    assert sentence.endswith(", 2016 to 2020. IDS."), sentence
-    assert _year_unavailable_shown(spec) == []
-    assert spec.definition.identity.requested_window == IdentityWindowRange(
-        start_year=2016, end_year=2020
-    )
-
-    again = _resubmit(spec, index)
-
-    assert again.status == "definite", (again.status, again.no_data_reason)
-    assert render_sentence(again.specs[0]) == sentence
-
-
 def _recorded_then_projected_rows() -> list:
     """IDS (`f1`) runs 2010 to 2020 and Alternative (`f9`) 2021 to 2028 at Aland and
     Bland."""
@@ -469,22 +431,6 @@ def test_a_standard_answer_names_the_years_its_plan_serves(monkeypatch, time_tex
     assert render_sentence(again) == sentence
     assert requests == _STANDARD_RESUBMIT
     assert related == _STANDARD_RELATED * 2
-
-
-def test_a_standard_trailing_span_ends_at_the_newest_year_the_data_holds(monkeypatch) -> None:
-    """Kenya's fertility rate ends in 2020, so "the last 5 years" on the parsed door reads
-    2016 to 2020 and binds those years. USD Source serves 2018 to 2020 inside them, so the
-    answer departs from 2016 to 2020 alone, never from the calendar years."""
-    monkeypatch.setattr(extract, "date", SimpleNamespace(today=lambda: datetime.date(2026, 6, 23)))
-    first, plan = _fertility(monkeypatch, time_text="the last 5 years")
-
-    assert plan is not None
-    assert list(served_dates(plan).values()) == [("2018", "2020")]
-    assert first.definition.identity.requested_window == IdentityWindowRange(
-        start_year=2016, end_year=2020
-    )
-    assert _year_unavailable_shown(first) == ["2018 to 2020"]
-    assert "2026" not in render_sentence(first)
 
 
 def test_a_source_pin_dates_the_answer_from_the_pinned_source(monkeypatch, search_settings) -> None:

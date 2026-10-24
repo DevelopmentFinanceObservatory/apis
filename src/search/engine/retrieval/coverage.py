@@ -61,16 +61,6 @@ if TYPE_CHECKING:
 # Shared label for served-variable coverage.
 MEMBER_VARIABLES_LABEL = "variables"
 
-
-def bare_coverage(date_request: DateRequest | None, *, has_data: bool) -> CoverageBare:
-    """Coverage with no counts, stating the years `date_request` asks for
-    (`DateRequest.asked_window`), so a trailing span that has not settled states its calendar
-    years. A `latest` request or none leaves the window unset."""
-    return CoverageBare(
-        has_data=has_data, window=date_request.asked_window if date_request is not None else None
-    )
-
-
 type ServedRow = tuple[str, str, str | None, str | None]
 """A served coverage row pattern: variable, facet id, recipient and donor, where `None`
 matches any dcid on that role."""

@@ -844,8 +844,8 @@ def _default_scope_short_circuit(
     ``family_total_absent`` when the representative is not the family's total.
     ``["Earth"]`` proceeds to the probe.
     """
-    from search.engine.retrieval.coverage import bare_coverage
     from search.engine.retrieval.retrieve import Materialised, MemberPopulation
+    from search.models import CoverageBare
 
     active = place_dcid is None and place_dcids is not None
     if not active:
@@ -857,7 +857,9 @@ def _default_scope_short_circuit(
             terminal=Materialised(
                 sv_dcids=[representative_sv],
                 has_data=False,
-                coverage=bare_coverage(date_request, has_data=False),
+                coverage=CoverageBare(
+                    has_data=False, window=date_request.window if date_request else None
+                ),
                 scope_member_dcids=[],
                 member_facts=member_facts,
                 population=MemberPopulation(
@@ -871,7 +873,9 @@ def _default_scope_short_circuit(
             terminal=Materialised(
                 sv_dcids=[representative_sv],
                 has_data=False,
-                coverage=bare_coverage(date_request, has_data=False),
+                coverage=CoverageBare(
+                    has_data=False, window=date_request.window if date_request else None
+                ),
                 available_at_place=False,
                 family_total_absent=family.total_absent(representative_sv, ()),
                 scope_member_dcids=[],
@@ -905,21 +909,22 @@ def _no_entity_disambiguation(
     ``available_at_place=None``.
     Explicit windows are echoed, while latest requests leave the window unset.
     """
-    from search.engine.retrieval.coverage import bare_coverage
     from search.engine.retrieval.retrieve import Materialised, MemberPopulation
+    from search.models import CoverageBare
 
+    no_entity_window = date_request.window if date_request is not None else None
     if not family.members:
         return Materialised(
             sv_dcids=[representative_sv],
             has_data=False,
-            coverage=bare_coverage(date_request, has_data=False),
+            coverage=CoverageBare(has_data=False, window=no_entity_window),
             member_facts=member_facts,
             population=MemberPopulation(admitted=0, admitted_dcids=(), confirmed=0, exact=exact),
         )
     return Materialised(
         sv_dcids=list(served),
         has_data=True,
-        coverage=bare_coverage(date_request, has_data=True),
+        coverage=CoverageBare(has_data=True, window=no_entity_window),
         family_total_absent=(family.total_absent(served[0], ()) if len(served) == 1 else None),
         member_facts=member_facts,
         population=MemberPopulation(
@@ -1253,13 +1258,13 @@ def _no_data_at_place(
     flagged_match. ``family_total_absent`` is set when the representative is
     not its family's total.
     """
-    from search.engine.retrieval.coverage import bare_coverage
     from search.engine.retrieval.retrieve import Materialised
+    from search.models import CoverageBare
 
     return Materialised(
         sv_dcids=[representative_sv],
         has_data=False,
-        coverage=bare_coverage(date_request, has_data=False),
+        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
         available_at_place=False,
         family_total_absent=family_total_absent,
         scope_member_dcids=[] if default_scope_probe else None,
@@ -1320,8 +1325,8 @@ def _no_data_in_years(
     a range leaves data outside the years read: under a latest or every-date read it is the
     flagged-unavailable carrier (`_no_data_at_place`).
     ``family_total_absent`` is set when `member` is not its family's total."""
-    from search.engine.retrieval.coverage import bare_coverage
     from search.engine.retrieval.retrieve import Materialised
+    from search.models import CoverageBare
 
     sv, facets, _entities = member
     years = asked_years(date_request)
@@ -1337,7 +1342,7 @@ def _no_data_in_years(
     return Materialised(
         sv_dcids=[sv],
         has_data=False,
-        coverage=bare_coverage(date_request, has_data=False),
+        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
         facets_by_sv={sv: list(facets)},
         available_at_place=True,
         window_gap=window_gap(dateless_plan, years),

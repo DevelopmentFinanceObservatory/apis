@@ -25,7 +25,7 @@ from search.engine.retrieval import standard
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.standard import facets_at_own_places, standard_resolve
 from search.engine.shape import ShapeDraft
-from search.models import CoverageBare, TimeWindow
+from search.models import TimeWindow
 from tests.fixtures import FakeGraph
 
 _KEN, _TZA, _GHA = "country/KEN", "country/TZA", "country/GHA"
@@ -273,33 +273,16 @@ def test_a_set_binding_settles_on_the_members_that_serve() -> None:
     assert _place_facts(mat) == _place_facts(_resubmitted(mat, obs, presence, bindings, window))
 
 
-@pytest.mark.parametrize(
-    ("date_request", "window"),
-    [
-        pytest.param(None, None, id="no-date"),
-        pytest.param(
-            DateRequest(
-                window=TimeWindow(start_year=None, end_year=2026), latest=False, trailing_years=5
-            ),
-            TimeWindow(start_year=2022, end_year=2026),
-            id="trailing-span-states-its-calendar-years",
-        ),
-    ],
-)
-def test_no_member_with_presence_reads_no_facets(
-    date_request: DateRequest | None, window: TimeWindow | None
-) -> None:
-    """Neither member has data anywhere: the scope is empty and the probe is skipped. The
-    coverage states the years asked for, so "the last five years" reads 2022 to 2026."""
+def test_no_member_with_presence_reads_no_facets() -> None:
+    """Neither member has data anywhere: the scope is empty and the probe is skipped."""
     graph = _BatchRecordingGraph({})
     presence = _presence({_FEMALE: [], _MALE: []})
 
-    mat = _resolve(_shape(_FEMALE, _MALE), graph, presence, date_request=date_request)
+    mat = _resolve(_shape(_FEMALE, _MALE), graph, presence)
 
     assert graph.batches == []
     assert mat.available_at_place is False
     assert mat.default_scope == _countries()
-    assert mat.coverage == CoverageBare(has_data=False, window=window)
 
 
 @pytest.mark.parametrize(

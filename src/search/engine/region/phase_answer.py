@@ -397,10 +397,6 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     # The phase spine narrows this result to ``Materialised``. The attribute loses that
     # narrowing here.
     mat_result = cast(Materialised, state.mat_result)
-    # A trailing span reads, and the answer states, the years it settled to over this
-    # answer's data (`retrieve.materialise`).
-    if mat_result.anchored_request is not None:
-        state.date_request = mat_result.anchored_request
     start_elected_related_read(state, mat_result)
 
     early = await _decide_bound_unit_convertibility(state, mat_result)

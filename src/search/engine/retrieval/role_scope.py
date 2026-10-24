@@ -29,7 +29,6 @@ from search.engine.retrieval.coverage import (
     CoverageForm,
     answer_coverage,
     answer_headline,
-    bare_coverage,
     plan_election,
     scope_members,
 )
@@ -53,7 +52,7 @@ from search.engine.retrieval.read_plan import (
     role_years,
     window_gap,
 )
-from search.models import EntityRoleKey
+from search.models import CoverageBare, EntityRoleKey
 from series_coverage.schema import ABSENT_ENTITY
 
 if TYPE_CHECKING:
@@ -712,7 +711,7 @@ def _no_point_in_years(
         sv_dcids=[sv],
         facets_by_sv={sv: by_sv[sv]},
         has_data=False,
-        coverage=bare_coverage(date_request, has_data=False),
+        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
         available_at_place=True,
         window_gap=window_gap(dateless.plan, years),
         role_declaration_unverified=role_declaration_unverified,

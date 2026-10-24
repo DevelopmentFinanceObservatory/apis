@@ -14,7 +14,7 @@ Result types:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -23,7 +23,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.errors import RoleEntityUnplaced
-from search.engine.retrieval.read_plan import preview_years, served_dates, year_of
+from search.engine.retrieval.read_plan import preview_years
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.retrieval.standard import FacetBatch, standard_resolve
 from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
@@ -171,9 +171,6 @@ class Materialised:
     headline: Headline | None = None
     # Coverage view stamp used for this result's population and headline.
     coverage_stamp: str | None = None
-    # The request a trailing span settled to over this answer's data (`materialise`), which
-    # the answer reads and states in place of the span. None for any other request.
-    anchored_request: DateRequest | None = None
 
     @property
     def preview_years(self) -> PlanYears:
@@ -300,9 +297,6 @@ class MaterialisedCandidates:
     candidates: list[Materialised]
 
 
-type MaterialiseOutcome = Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft
-
-
 def materialise(
     shape: ShapeDraft,
     bindings: list[SlotBindingDraft],
@@ -318,103 +312,7 @@ def materialise(
     open_axes: frozenset[RoleAxis] = frozenset(),
     coverage: CoverageSnapshot,
     facet_batch: FacetBatch | None = None,
-) -> MaterialiseOutcome:
-    """Resolve a shape through the standard or role-bearing path (`_resolve`), a trailing
-    span settled over the answer's data (`read_settled`)."""
-
-    def resolve(request: DateRequest | None) -> MaterialiseOutcome:
-        return _resolve(
-            shape,
-            bindings,
-            entities,
-            graph=graph,
-            sdmx=sdmx,
-            date_request=request,
-            deadline=deadline,
-            place_dcids=place_dcids,
-            default_presence=default_presence,
-            discover_scope=discover_scope,
-            open_axes=open_axes,
-            coverage=coverage,
-            facet_batch=facet_batch,
-        )
-
-    return read_settled(resolve, date_request)
-
-
-def read_settled[R](
-    resolve: Callable[[DateRequest | None], R], date_request: DateRequest | None
-) -> R:
-    """`resolve`'s answer for `date_request`, a trailing span ("the last five years",
-    `DateRequest.trailing_years`) ending at the newest year the answer's data holds up to
-    the span's end year.
-
-    The span is read over every year up to its end. When that answer serves a dated
-    point, it is read again over the span's count of years ending at its newest one, the
-    answer a request naming those years builds, and each of its results records the
-    request it settled to (`Materialised.anchored_request`). Any other outcome of the
-    first read is the answer.
-    """
-    result = resolve(date_request)
-    if date_request is None or date_request.trailing_years is None:
-        return result
-    newest = max(
-        (year for mat in _results(result) if (year := _newest_served_year(mat)) is not None),
-        default=None,
-    )
-    if newest is None:
-        return result
-    anchored = date_request.anchored(newest)
-    settled = resolve(anchored)
-    for mat in _results(settled):
-        mat.anchored_request = anchored
-    return settled
-
-
-def read_request(result: MaterialiseOutcome, requested: DateRequest | None) -> DateRequest | None:
-    """The request `result` was read under: the one a trailing span settled to over its
-    data (`Materialised.anchored_request`), else `requested`."""
-    if isinstance(result, Materialised) and result.anchored_request is not None:
-        return result.anchored_request
-    return requested
-
-
-def _results(outcome: object) -> list[Materialised]:
-    """The materialised results `outcome` holds: itself, or the candidates of a partition."""
-    if isinstance(outcome, Materialised):
-        return [outcome]
-    if isinstance(outcome, MaterialisedCandidates):
-        return list(outcome.candidates)
-    return []
-
-
-def _newest_served_year(mat: Materialised) -> int | None:
-    """The newest year `mat`'s plan serves a point in (`read_plan.served_dates`), or None
-    without a plan or a dated point."""
-    if mat.read_plan is None:
-        return None
-    years = [
-        year for _first, last in served_dates(mat.read_plan).values() if (year := year_of(last))
-    ]
-    return max(years, default=None)
-
-
-def _resolve(
-    shape: ShapeDraft,
-    bindings: list[SlotBindingDraft],
-    entities: Mapping[str, list[str]],
-    *,
-    graph: EngineGraphClient,
-    sdmx: EngineSdmxClient,
-    date_request: DateRequest | None,
-    deadline: float | None,
-    place_dcids: list[str] | None,
-    default_presence: DefaultPresence | None,
-    discover_scope: bool,
-    open_axes: frozenset[RoleAxis],
-    coverage: CoverageSnapshot,
-    facet_batch: FacetBatch | None,
-) -> MaterialiseOutcome:
+) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Resolve a shape through the standard or role-bearing path.
 
     Role-bearing shapes use ``graph_confirm_resolve`` with entities keyed by

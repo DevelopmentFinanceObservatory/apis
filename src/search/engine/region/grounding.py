@@ -182,14 +182,12 @@ def reject_reversed_window(window: RequestedWindow | None) -> None:
 def requested_window_from_date_request(date_request: DateRequest | None) -> RequestedWindow | None:
     """Map a date request to identity data: `"latest"`, a concrete window, or None.
 
-    The sentinel distinguishes an explicit latest request from no date request. A trailing
-    span no answer settled states the calendar years its wording names
-    (`DateRequest.asked_window`). Reversed windows raise
-    `EngineInputError(code="request_invalid")` before spec construction.
+    The sentinel distinguishes an explicit latest request from no date request. Reversed
+    windows raise `EngineInputError(code="request_invalid")` before spec construction.
     """
     if date_request is None:
         return None
-    window = "latest" if date_request.latest else date_request.asked_window
+    window = "latest" if date_request.latest else date_request.window
     reject_reversed_window(window)
     return window
 
@@ -1163,19 +1161,16 @@ def _relaxed_binding_suggestion(
     resolved response intact.
     """
     from search.engine.region.place_context import settle_sets, settled_shape, with_where
-    from search.engine.retrieval.retrieve import Materialised, read_request, read_settled
+    from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_resolve import graph_confirm_resolve
 
     ground_warnings: list[Warning] | None = None
     probe_warning: Warning | None = None
 
-    def read(
-        place: PlaceContext, facet_batch: FacetBatch | None, date_request: DateRequest | None
-    ) -> object:
-        """The relaxed query's own resolve in `place` under `date_request`. A standard
-        shape resolves as the standard route answers it, over the context's entities and
-        places or its default-scope presence read; a role-bearing shape confirms against
-        coverage."""
+    def read(place: PlaceContext, facet_batch: FacetBatch | None) -> object:
+        """The relaxed query's own resolve in `place`. A standard shape resolves as the
+        standard route answers it, over the context's entities and places or its
+        default-scope presence read; a role-bearing shape confirms against coverage."""
         if is_role_bearing(shape):
             return graph_confirm_resolve(
                 shape=shape,
@@ -1184,7 +1179,7 @@ def _relaxed_binding_suggestion(
                 origin_dcids=place.roles.origin_dcids,
                 graph=ctx.graph,
                 sdmx=ctx.sdmx,
-                date_request=date_request,
+                date_request=ctx.date_request,
                 deadline=ctx.deadline,
                 open_axes=place.roles.open_axes,
                 coverage_snapshot=ctx.coverage,
@@ -1194,19 +1189,14 @@ def _relaxed_binding_suggestion(
             bindings=relaxed,
             entities=place.roles.resolved_entities,
             graph=ctx.graph,
-            date_request=date_request,
+            date_request=ctx.date_request,
             place_dcids=place.probe_places,
             default_presence=place.presence_for(ctx.presence),
             facet_batch=facet_batch,
         )
 
     try:
-        bound, mat = settle_sets(
-            _relaxation_place(ctx, shape),
-            lambda place, facet_batch: read_settled(
-                functools.partial(read, place, facet_batch), ctx.date_request
-            ),
-        )
+        bound, mat = settle_sets(_relaxation_place(ctx, shape), read)
         if not isinstance(mat, Materialised):
             return None, None, None, None
         # A flagged-unavailable carrier represents the original binding.
@@ -1366,9 +1356,7 @@ def _relaxed_binding_suggestion(
             slot_options=slot_opts,
             available_at_place=available_at_place,
             confidence=confidence,
-            requested_window=requested_window_from_date_request(
-                read_request(mat, ctx.date_request)
-            ),
+            requested_window=requested_window_from_date_request(ctx.date_request),
             open_roles=mat.open_axes,
             inapplicable_slots=inapplicable_slots,
             unresolved_slots=unresolved_slots,
