@@ -70,7 +70,11 @@ lock and refuses `service_unavailable` (503, retryable) at `DATASETS_OPERATION_B
 Every mint and definition door call that reaches this point raises `OperationSubmitted`, caught by
 the door itself. The response is `202 Accepted` with a `Location` header pointing at
 `/api/datasets/operations/{operation_id}` and a body carrying `operation_id`, `status`, `poll`, and
-`retry_after_ms` (1,500).
+`retry_after_ms`. A `Retry-After` header carries the same wait in whole seconds, rounded up.
+`retry_after_ms` is a quarter of the time since the operation's current submission (`submitted_at`),
+held between 1,500 and 8,000, so a submission that joins a long build gets the slow value and a
+resubmission that restarts a failed build starts at 1,500. Every pending or running poll carries
+both. A done poll carries neither.
 
 ### Dispatch
 
@@ -249,7 +253,7 @@ a separate number, `dfo-data-tools`' own generic default for a caller of `materi
 
 ## Publish
 
-`POST /frames/publish` has no coverage artifact to estimate against, so it keeps its own fixed,
+`POST /frames/publish` has no coverage view to estimate against, so it keeps its own fixed,
 non-env-tunable row ceiling, `PUBLISH_MAX_ROWS = 250_000`
 (`datasets_api.doors.publish.PUBLISH_MAX_ROWS`), enforced by the same `OverCeilingError` the
 mid-fetch backstop raises. The door builds the whole frame in memory before it stores the canonical

@@ -20,7 +20,7 @@ donor totals over CRS flows by recipient.
 
 An axis the query asks every member of removes a shape only when the code index carries
 the shape and another role-bearing shape declares the axis (`without_open_axis_gaps`). The
-index fixtures are packaged rows: a CRS flow, whose dataset declares donor and recipient,
+index fixtures are fixture rows: a CRS flow, whose dataset declares donor and recipient,
 and a DAC1 provider total, whose dataset declares the donor alone. A synthetic index holds
 a provider-only family beside a recipient-only one, for a query that opens both axes.
 """
@@ -151,7 +151,7 @@ def _debt_arcs(qualifier: str, roles: tuple[str, ...] = ()) -> dict:
 
 
 def _index_row_node(found: str | StatVarRow) -> dict:
-    """The graph node of the index row `found`, a row or the dcid of a packaged one, with
+    """The graph node of the index row `found`, a row or the dcid of a fixture index row, with
     the roles and constraints the row declares."""
     row = (
         found

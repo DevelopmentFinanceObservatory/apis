@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from search.engine.assemble import with_sentence
+from search.heading.departure_fact import DepartureFact
 from search.models import (
     Coverage,
     DateRange,
@@ -23,7 +24,7 @@ from search.models import (
     StatVar,
     TimeWindow,
 )
-from search.render.departures import no_data_limit_text
+from search.render.departures import departures_from_facts, no_data_limit_text
 from search.render.heading import LATEST_YEAR_LABEL
 from search.render.no_data import (
     composed_variable_outcome,
@@ -136,6 +137,32 @@ def test_a_no_data_plan_ends_with_its_departures():
         "This check covered only the education sector and ODA.",
         "These values are modelled estimates.",
     ]
+
+
+def test_a_place_gap_on_a_discarded_direction_leads_with_the_missing_flow_end():
+    """ "climate finance to Bangladesh" on a provider-side series with no declared side: the
+    sentence says the measure has no recipients before it says Bangladesh holds no data, in
+    place of the heading's "No data for Bangladesh's ...", and the other departures follow."""
+    flagged = _matched_spec(_spec(entities=[_entity_subject("country/BGD", "Bangladesh")]))
+    discarded = DepartureFact(
+        code="direction_discarded", binding_ref="where:", asked="Bangladesh", over="destination"
+    )
+    plan = no_data_sentence_plan(
+        "no_observations",
+        gate="no_member_has_data_at_place",
+        flagged_match=flagged,
+        departures=departures_from_facts(
+            [discarded, DepartureFact(code="modelled_values", binding_ref=None)],
+            family=None,
+            shows_data=False,
+        ),
+    )
+
+    assert sentence_from_plan(plan) == (
+        "You named Bangladesh as a recipient, but this measure has no recipients, so this "
+        "checked Bangladesh itself. No data was found there. "
+        "These values are modelled estimates."
+    )
 
 
 @pytest.mark.parametrize(
@@ -721,3 +748,35 @@ def test_ids_028_a_role_refusal_is_a_claim():
     assert sentence_from_plan(plan) == (
         'No data for "debt share" as a flow to or from any place named in this query.'
     )
+
+
+@pytest.mark.parametrize(
+    ("entity_terms", "closing"),
+    [
+        pytest.param(
+            ["all donors"],
+            ' "all donors" belongs on the other side of the flow. Swap its "from" or "to".',
+            id="one",
+        ),
+        pytest.param(
+            ["all donors", "official donors"],
+            ' "all donors" and "official donors" belong on the other side of the flow. Swap '
+            'their "from" or "to".',
+            id="two",
+        ),
+    ],
+)
+def test_a_role_refusal_naming_misdirected_populations_closes_on_them(
+    entity_terms: list[str], closing: str
+):
+    """A role_incompatible refusal naming the whole populations the request directs to the
+    other side keeps its claim as the first token, which a composed envelope reframes, and
+    names them in a token of their own, which it keeps."""
+    plan = no_data_sentence_plan(
+        "role_incompatible", variable_term="debt share", entity_terms=entity_terms
+    )
+
+    assert [token.text for token in plan] == [
+        'No data for "debt share" as a flow to or from any place named in this query.',
+        closing,
+    ]

@@ -67,7 +67,7 @@ def classify_schema_exception(_exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def schema(request: Request) -> Response:
+async def get_schema(request: Request) -> Response:
     return _frozen_schema().respond(request)
 
 
@@ -76,5 +76,7 @@ def build_schema_door() -> DoorContribution:
     _frozen_schema()
     router = APIRouter()
     # `response_model` documents the response body in `/openapi.json`.
-    router.add_api_route("/api/graph/schema", schema, methods=["GET"], response_model=GraphSchema)
+    router.add_api_route(
+        "/api/graph/schema", get_schema, methods=["GET"], response_model=GraphSchema
+    )
     return DoorContribution(router=router, classify=classify_schema_exception)

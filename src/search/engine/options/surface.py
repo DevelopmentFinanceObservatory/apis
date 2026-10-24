@@ -710,8 +710,9 @@ def _directional_options_set(
 
     Coverage already contains members with data, so no separate presence
     probe is needed. Sort members before labelling for deterministic output;
-    omit dcids without labels. Each item carries the party kind the code index lists for it
-    (`materialise.enrichment.read_party_kinds`). No network cap applies to this local lookup,
+    omit dcids without labels. Each item carries the party kind the code index lists for it in
+    the datasets of the population's StatVars (`materialise.enrichment.read_party_kinds`), none
+    for a party whose kind differs between them. No network cap applies to this local lookup,
     so the set is never truncated.
     """
     sv_dcids = list(target.population.stat_var_dcids)
@@ -730,8 +731,11 @@ def _directional_options_set(
         return OptionsSet(items=[], truncated=False)
 
     labels = graph.node_labels_batch(members)
+    index = get_index()
     kinds = read_party_kinds(
-        ((axis, dcid) for dcid in members if dcid in labels), parties=get_index().parties
+        ((axis, dcid) for dcid in members if dcid in labels),
+        parties=index.parties,
+        datasets=index.statvar_provenances(sv_dcids),
     )
     items = [
         SlotOption(

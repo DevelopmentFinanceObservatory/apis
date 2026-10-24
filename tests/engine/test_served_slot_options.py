@@ -1,6 +1,6 @@
 """Slot menus count the rows each option would serve and drop the options serving none.
 
-The resubmit cases resolve a CRS aid identity from Germany to Guatemala against the packaged
+The resubmit cases resolve a CRS aid identity from Germany to Guatemala against the fixture
 code index, with a coverage index holding rows for a handful of its members. Each count is
 the rows a resubmit binding that option would download, one per series and year, so every
 assertion below states the fixture rows behind it.
@@ -20,6 +20,7 @@ from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.option_coverage import (
+    _build_and_enrich_entity_options,
     _maybe_build_facet_options,
     _stream_slot_options_events,
     count_slot_options,
@@ -29,6 +30,7 @@ from search.engine.region.un_system import NO_LABELS
 from search.engine.retrieval.bound_values import OptionServedFact, SeriesRows
 from search.engine.same_shape import collapse_same_shape
 from search.engine.shape import ShapeDraft, SlotKeyDraft, identity_shape_for
+from search.engine.spec_build import RoleAxisFactInput
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
     RecipeTables,
@@ -105,7 +107,7 @@ _SECTOR_BUDGET_SUPPORT = "CRSCooperationModalityA02"
 
 
 def _member(population: str = "FinancialFlow", **values: str) -> str:
-    """The one packaged-index row of the aid five-tuple with exactly `values`."""
+    """The one fixture-index row of the aid five-tuple with exactly `values`."""
     rows = [
         row
         for row in get_index().statvars
@@ -241,7 +243,7 @@ _CRS_SLOTS: dict[str, str | None] = {
 
 @functools.cache
 def _index_member_nodes() -> dict[str, dict]:
-    """A graph node for every StatVar the packaged index lists, as the live graph holds
+    """A graph node for every StatVar the fixture index lists, as the live graph holds
     them, so an answer whose index election spans the whole family re-reads every member's
     arcs and drops none under `members_absent_from_graph`."""
     return {
@@ -629,7 +631,7 @@ def test_a_merged_menu_counts_a_series_two_members_serve_once():
 # and every counted option is reachable by a resubmit of the client's member list
 # ---------------------------------------------------------------------------
 
-# Debt service, a family the packaged index carries no row of, so the mint's graph walk
+# Debt service, a family the fixture index carries no row of, so the mint's graph walk
 # decides it. It has a total. A pick of a creditor reads the parts under it.
 _DS_TOTAL = "Amount_FinancialFlow_ServicingPayment_Nominal"
 _DS_OFFICIAL = "Amount_FinancialFlow_ServicingPayment_IDSCreditorTypeOFFT_Nominal"
@@ -1475,3 +1477,62 @@ def test_a_constant_price_answer_the_tables_cannot_count_warns_rows_may_be_left_
     download = region.specs[0].resolved.download
     assert download is not None
     assert download.rows_exact is False
+
+
+_DAC2A_MEMBER = "Amount_FinancialFlow_Disbursement_DAC2aAidType210_Nominal"
+
+
+def test_both_transports_give_a_dac2a_donor_menu_the_trust_funds_dac2a_kind():
+    """The IMF trust funds are a total in DAC2A and a party in the CRS. A DAC2A answer's open
+    donor menu reads them a total on the buffered response and on the trailing streamed event,
+    since both read the kind in the datasets that publish the Spec's members."""
+    shape = ShapeDraft(
+        shape_id="s",
+        label="s",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+    )
+    facts = [
+        RoleAxisFactInput(
+            role="origin",
+            member_dcids=frozenset({"IMFConcessionalTrustFunds", "InternationalMonetaryFund"}),
+        )
+    ]
+    raw, buffered, _warn = _build_and_enrich_entity_options(
+        shape,
+        {},
+        [],
+        [_DAC2A_MEMBER],
+        date_request=None,
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        include_option_coverage=True,
+        role_axis_facts=facts,
+    )
+    events, _warnings = _stream_slot_options_events(
+        "spec_x",
+        shape,
+        [],
+        [],
+        entities={},
+        date_request=None,
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        materialise_graph=None,
+        entity_options=raw,
+        coverage=empty_coverage_snapshot().index,
+        deadline=None,
+        facets_pinned=False,
+        variable_labels={_DAC2A_MEMBER: "ODA"},
+        open_axes=frozenset(),
+    )
+
+    def kinds(menus) -> dict[str, str | None]:
+        return {o.value.ref.ref: o.party_kind for menu in menus for o in menu.options}
+
+    expected = {"IMFConcessionalTrustFunds": "total", "InternationalMonetaryFund": "party"}
+    assert (kinds(buffered), kinds(events)) == (expected, expected)

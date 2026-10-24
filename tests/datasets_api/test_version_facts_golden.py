@@ -68,7 +68,7 @@ _STATS = _ARTIFACT.model_copy(
     update={"artifact_digest": "sha256:" + "cd" * 32, "rendering": {"statistics": "series"}}
 )
 # The stamp the golden bodies carry in `trace.code_index_stamp`. The cases mint against an index
-# that holds it, so a re-export of the packaged code index cannot move a body.
+# that holds it, so a re-export of the fixture code index cannot move a body.
 _GOLDEN_CODE_INDEX = CodeIndex(
     stamp=IndexStamp(
         graph_endpoint="https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app",
@@ -251,6 +251,7 @@ def _written_records() -> dict[str, VersionRecord]:
             base_content_version=result.content_version,
             output_profile=result.output_profile,
             frame_sha256=result.frame_sha256,
+            frame_summed=True,
         ),
         "warnings": _definition_record(warned_result, warned),
         "conversions": _definition_record(converted_result, converted),

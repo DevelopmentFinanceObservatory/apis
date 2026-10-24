@@ -396,10 +396,10 @@ def _facet_from_coverage_candidate(candidate: _CoverageFacetCandidate) -> Facet:
     """Maps a coverage candidate's `n_obs`, `first_year` and `last_year` to facet count and
     year-grain dates, its first series' end to `first_series_end`, and its years with data
     (from the row year masks) to `dates`, so `overlaps_window` tests the points a window
-    holds. Its `observation_period` comes from the
-    coverage artifact's facet metadata, so `cadences_by_member` can tell a quarterly facet from
-    an annual one whatever the year-grain dates say. Four-digit years sort lexically through
-    9999. This artifact's horizon starts in 1960."""
+    holds. Its `observation_period` comes from the coverage view's facet metadata, so
+    `cadences_by_member` can tell a quarterly facet from an annual one whatever the year-grain
+    dates say. Four-digit years sort lexically through
+    9999. The coverage view's horizon starts in 1960."""
     return Facet(
         dates=tuple(str(year) for year in candidate.years),
         facet_id=candidate.facet_id,

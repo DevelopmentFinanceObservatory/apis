@@ -3,8 +3,7 @@
 `run_gate` reads the staged platform files back and checks what ships: the invariants, the DFO
 parts rebuilt byte for byte from the files, the serving views built from the files, the parts'
 size, the mixer differential, the blind spots of the release's member walks and the SDMX
-counts. The shadow diff (`graph_release.shadow`) returns a `GateResult` of its own, which
-`merge` joins.
+counts.
 
 A result has two kinds of failure, and notices, which fail nothing. A finding is deterministic: the same inputs fail the same
 way, so the builder records them as the last failed build and does not retry them. An
@@ -107,8 +106,6 @@ class GateCode(StrEnum):
     DFO_REBUILD_MISMATCH = "dfo_rebuild_mismatch"
     MIXER_ARC_MISMATCH = "mixer_arc_mismatch"
     SDMX_COUNT_MISMATCH = "sdmx_count_mismatch"
-    SHADOW_COVERAGE_DIFF = "shadow_coverage_diff"
-    SHADOW_ARC_DIFF = "shadow_arc_diff"
     UNSUPPORTED_OBSERVATION_PERIOD = "unsupported_observation_period"
     INCONSISTENT_FACET = "inconsistent_facet"
     CODE_INDEX_EXPORT_REFUSED = "code_index_export_refused"
@@ -127,8 +124,6 @@ class Dependency(StrEnum):
     SDMX = "sdmx"
     BUCKET = "bucket"
     ADMIN_API = "admin_api"
-    COVERAGE_BUILD = "coverage_build"
-    ORIGIN_CATALOGUE = "origin_catalogue"
     SPANNER = "spanner"
 
 

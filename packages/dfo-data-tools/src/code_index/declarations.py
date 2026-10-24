@@ -1,10 +1,10 @@
 """The authored declarations the code index export reads.
 
-Code systems, datasets, party kinds and total groups, measure axes, labels and nouns,
-synonyms, concept groups, shape slot defaults, implied values, measure classes and variable
-aliases. The export
-(`code_index.export`) reads them beside the graph. Nothing here reads the graph or imports a
-script, so a build that has no graph client can load them.
+Code systems, datasets, party kinds and total groups, the private providers, the
+whole-population totals, measure axes, labels and nouns, synonyms, concept groups, slot plain
+names, shape slot defaults, broad readings, implied values, measure classes and variable
+aliases. The export (`code_index.export`) reads them beside the graph. Nothing here reads the
+graph or imports a script, so a build that has no graph client can load them.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from code_index.types import (
+    BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
     HouseDefaultCase,
@@ -22,12 +23,15 @@ from code_index.types import (
     MeasureClassDeclaration,
     MeasurePartitionLabel,
     PartlyStatedValue,
+    PartyClass,
     PartyKind,
     PartyWord,
     ShapeSlotDefault,
     StatedWord,
     StatTypeWordDeclaration,
+    WholeTotalSet,
 )
+from dfo_platform.roles import RoleAxis
 
 
 @dataclass(frozen=True)
@@ -156,7 +160,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             code="DAC2aAidType206",
             when_bound_under=(),
             when_open=True,
-            note="No aid type was named, so the answer covers official development assistance.",
+            note="The answer covers official development assistance of every aid type.",
         ),
     ),
     # DAC1 aid types nest totals over their parts ("bilateral ODA" under "ODA"), and memo items
@@ -175,7 +179,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             code="DAC1AidType1010",
             when_bound_under=(),
             when_open=True,
-            note="No aid type was named, so the answer covers official development assistance.",
+            note="The answer covers official development assistance of every aid type.",
         ),
     ),
     # DAC2b flow types nest totals over their parts (OOF under official non-concessional
@@ -279,6 +283,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         account="provider",
         rank=20,
         house_default_for=("donor",),
+        ratio_base_axis="origin",
     ),
     DatasetDeclaration(
         provenance=_DAC2A,
@@ -298,6 +303,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
         house_default_for=("recipient",),
+        ratio_base_axis="destination",
     ),
     DatasetDeclaration(
         provenance=_DAC2B,
@@ -354,10 +360,18 @@ PARTY_TYPE_KINDS: Mapping[str, PartyKind | None] = {
 
 @dataclass(frozen=True)
 class KindOverride:
-    """The kind one party takes in place of its graph types' kind, and why."""
+    """The kind one party takes in place of its graph types' kind, and why.
+
+    `datasets` are the provenances the override holds in, each publishing the party; in every
+    other dataset the party keeps its types' kind (`PartyRow.dataset_kinds`). `None` holds it in
+    every dataset. `reviewed` are the provenances publishing the party whose figures the override
+    was checked against, `datasets` among them; the export refuses a scoped override whose party
+    another dataset publishes, so a dataset that starts publishing it is reviewed first."""
 
     kind: PartyKind
     reason: str
+    datasets: frozenset[str] | None = None
+    reviewed: frozenset[str] = frozenset()
 
 
 # The parties whose kind differs from what their graph types give. An organisation is typed
@@ -368,14 +382,35 @@ class KindOverride:
 # 972), at DACAllRecipients and, wherever the group reports there, at Bangladesh, Ethiopia, India
 # and Kenya. A search over every subset of the other donors' gross disbursements at
 # DACAllRecipients, for each of the 122 organisation donors of the two datasets, finds a sum for
-# these four and for the IMF only. The IMF equals its Concessional Trust Funds from 1986 (DAC2A)
-# and its Resilience and Sustainability Trust (DAC2B), but reports alone in 1977 to 1985, so no sum
-# covers every year and it holds no row. Neither trust fund holds a row either: in DAC2A and DAC2B
-# each equals the IMF in every year and series it reports, but the CRS publishes both and never the
-# IMF, and a kind holds in every dataset, so a `total` would drop the IMF's CRS figures from a sum.
+# these four and for the IMF only.
+#
+# An override holds in the datasets it names, and a party keeps its types' kind in the others.
+# The IMF reports alone in 1977 to 1981 (Kenya 1977: 6.0m; Bangladesh 1977: 15.6m in DAC2A gross
+# ODA), so it is no sum of its trust funds and holds no row. Each IMF trust fund equals the IMF in
+# every year and series it reports in DAC2A and DAC2B, so there it is a `total` that the IMF's own
+# row already counts. The CRS publishes both trust funds and never the IMF, so there each stays a
+# `party` and a sum of CRS donors keeps the IMF's figures. DAC2A publishes the Concessional Trust
+# Funds and not the Resilience and Sustainability Trust, and DAC2B the reverse, so each override
+# names the one dataset that publishes it beside the IMF.
 PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
     "AfricanDevelopmentBankGroup": KindOverride(
         "total", "AfricanDevelopmentBank plus AfricanDevelopmentFund"
+    ),
+    "IMFConcessionalTrustFunds": KindOverride(
+        "total",
+        "InternationalMonetaryFund in DAC2A: equal to the dollar in gross ODA in every year the "
+        "trust funds report (Kenya 1988 to 2024, 19 years, 756.1m in 2020; Bangladesh 1987 to "
+        "2024, 18 years); a party in the CRS, which never publishes the IMF",
+        datasets=frozenset({_DAC2A}),
+        reviewed=frozenset({_CRS, _DAC2A}),
+    ),
+    "IMFResilienceAndSustainabilityTrust": KindOverride(
+        "total",
+        "InternationalMonetaryFund in DAC2B: equal to the dollar in gross disbursements in the "
+        "one year it reports (Kenya 2024: 180.2m); a party in the CRS, which never publishes "
+        "the IMF",
+        datasets=frozenset({_DAC2B}),
+        reviewed=frozenset({_CRS, _DAC2B}),
     ),
     "InterAmericanDevelopmentBankGroup": KindOverride(
         "total", "InterAmericanDevelopmentBank plus IDBInvest"
@@ -519,6 +554,180 @@ TOTAL_GROUPS: Mapping[str, TotalGroup] = {
     "WorldBankHighIncome": TotalGroup("groups/WB.IncomeGroup.High"),
     "WorldBankLowIncome": TotalGroup("groups/WB.IncomeGroup.Low"),
 }
+
+# The private providers of development finance, by OECD donor code (`dacCode` in the graph) and the
+# party each code names. The OECD donor code list
+# (`dfo-pipelines/dbt/seeds/oecd/dac_codelists/dac_donor_code_codelist.csv`) types 48 donors
+# `Private donor`, codes 1601 to 1650, and the graph types them `Organization` like any
+# multilateral, so the table is the only record of the grouping until the ontology types them. A
+# listed party takes the class `private` (`PartyRow.party_class`); every other party is `official`.
+# A listed party keeps the kind `party` its types give. 46 of the 48 codes name a
+# party a declared dataset publishes. Code 1645 (CHANEL Foundation) has no graph node, and 1649
+# (`NovoNordiskFoundation`) has one that no dataset publishes;
+# `code_index.export._check_private_providers` aborts the export when either, or any other code
+# from 1601 to 1699, reaches a published donor unlisted.
+# Code 1014 (Private Infrastructure Development Group) is a multilateral on the same list and stays
+# `official`; the Postcode Lottery Group (20035) stays a `total` override, and its five national
+# lotteries are `private`.
+PRIVATE_PROVIDERS: Mapping[int, str] = {
+    1601: "GatesFoundation",  # Gates Foundation
+    1602: "DutchPostcodeLottery",  # Dutch Postcode Lottery
+    1603: "SwedishPostcodeLottery",  # Swedish Postcode Lottery
+    1604: "PeoplesPostcodeLottery",  # People's Postcode Lottery
+    1605: "MetLifeFoundation",  # MetLife Foundation
+    1606: "MastercardFoundation",  # Mastercard Foundation
+    1608: "IKEAFoundation",  # IKEA Foundation
+    1609: "VanLeerFoundation",  # Van Leer Foundation
+    1610: "MAVAFoundation",  # MAVA Foundation
+    1611: "OakFoundation",  # Oak Foundation
+    1612: "HAndMFoundation",  # H&M Foundation
+    1613: "LaudesFoundation",  # Laudes Foundation
+    1614: "ComicRelief",  # Charity Projects Ltd (Comic Relief)
+    1615: "ChildrensInvestmentFundFoundation",  # Children's Investment Fund Foundation
+    1616: "GatsbyFoundation",  # Gatsby Charitable Foundation
+    1617: "ConradNHiltonFoundation",  # Conrad N. Hilton Foundation
+    1618: "DavidAndLucilePackardFoundation",  # David and Lucile Packard Foundation
+    1619: "JohnDAndCatherineTMacArthurFoundation",  # John D. and Catherine T. MacArthur Foundation
+    1620: "AndrewCarnegieFoundation",  # Carnegie Corporation of New York
+    1621: "MichaelAndSusanDellFoundation",  # Michael & Susan Dell Foundation
+    1622: "OmidyarNetwork",  # Omidyar Network Fund, Inc.
+    1623: "RockefellerFoundation",  # Rockefeller Foundation
+    1624: "WilliamAndFloraHewlettFoundation",  # William and Flora Hewlett Foundation
+    1625: "ArcusFoundation",  # Arcus Foundation
+    1626: "GordonAndBettyMooreFoundation",  # Gordon and Betty Moore Foundation
+    1627: "FordFoundation",  # Ford Foundation
+    1628: "WellcomeTrust",  # Wellcome Trust
+    1629: "UBSOptimusFoundation",  # UBS Optimus Foundation
+    1630: "WorldDiabetesFoundation",  # World Diabetes Foundation
+    1631: "McKnightFoundation",  # McKnight Foundation
+    1632: "CitiFoundation",  # Citi Foundation
+    1633: "LEGOFoundation",  # LEGO Foundation
+    1634: "NorwegianPostcodeLottery",  # Norwegian Postcode Lottery
+    1636: "JacobsFoundation",  # Jacobs Foundation
+    1637: "Arcadia",  # Arcadia
+    1638: "MargaretACargillFoundation",  # Margaret A. Cargill Foundation
+    1639: "LaCaixaFoundation",  # La Caixa Banking Foundation
+    1640: "BloombergPhilanthropies",  # Bloomberg Family Foundation
+    1641: "SusanThompsonBuffettFoundation",  # Susan T. Buffett Foundation
+    1642: "HowardGBuffettFoundation",  # Howard G. Buffett Foundation
+    1643: "OpenSocietyFoundations",  # Open Society Foundations
+    1644: "FondationBotnar",  # Fondation Botnar
+    1646: "BezosEarthFund",  # Bezos Earth Fund
+    1647: "GermanPostcodeLottery",  # German Postcode Lottery
+    1648: "LeonaMAndHarryBHelmsleyCharitableTrust",  # Leona M. and Harry B. Helmsley Charitable Trust
+    1650: "GoodVenturesFoundation",  # Good Ventures Foundation
+}
+
+
+@dataclass(frozen=True)
+class WholeWindow:
+    """What a total holds in one dataset: every party of the classes in `covers` on its axis, from
+    `first_year` through the last year the dataset publishes the total, or in every year it
+    publishes it when `first_year` is `None` (`code_index.types.WholeMarker`). The export reads
+    the last year from the release's series coverage (`graph_release.dfo`), so the window grows
+    as the dataset adds years."""
+
+    covers: tuple[PartyClass, ...]
+    first_year: int | None = None
+
+
+@dataclass(frozen=True)
+class WholePopulationTotal:
+    """A total that holds a whole population on `axis`, with the datasets where it does.
+
+    `datasets` maps a provenance to what the total holds there. A dataset that publishes the total
+    and is not named reads it as an ordinary total. `reason` states the composition check and the
+    figures it found."""
+
+    axis: RoleAxis
+    datasets: Mapping[str, WholeWindow]
+    reason: str
+
+
+# The totals that hold a whole population on their axis, per dataset: in a named dataset the total
+# covers every party of the classes given on its axis, so a sum of those parties and the total count
+# the same population. The published figure can still differ from the sum of the listed members,
+# by late reporters for example, as the DACOfficialDonors paragraph below records. The index
+# loader checks that no two markers cover a class in common on one dataset and axis, and the frame
+# cells mark a total whole (in the window's years, in the named dataset). A dataset is named when the total's composition check holds
+# there, from the first year given through the last year the dataset publishes the total, or in
+# every year it publishes it when no first year is given. The checks read the dev graph on
+# coverage build 20261013T115221Z-ab2a6880. A party sum is the sum of the official party donors'
+# own rows, and a component with no row in a year counts zero.
+#
+# DACOfficialDonors equals DACCountriesTotal + DACNonDACCountries + DACMultilaterals to the dollar
+# in every year it is published, 1960 to 2024, at Bangladesh, Ethiopia, India and Kenya, in DAC2A
+# (aid type 206) and DAC2B (aid type 972). The sum of the official party donors differs from the total by
+# what late reporters leave out (Ethiopia 2021: 4,267.6m against 4,250.8m). The total has no row
+# at DACAllRecipients in either dataset.
+#
+# DACPrivateDonors is published in DAC2A only, from 2009 (DAC2B has no row at Bangladesh, Ethiopia,
+# India or Kenya, 1960 to 2024). It equals the sum of the PRIVATE_PROVIDERS rows to the dollar in
+# every year at Ethiopia, Kenya and India (Ethiopia 2021: 310.8m).
+#
+# DACAllRecipients is published in DAC2A and DAC2B and holds in DAC2A alone. The sum of its official
+# and residual recipients equals the total from 1984 to 2024 for France, the United States,
+# Germany, Japan, the United Kingdom, IDA and the EU institutions, except in Japan 1988 (members
+# 19.5m above the total, 0.19%), Germany 2002 (14.8m, 0.22%) and France 2008 (0.04m), which are
+# OECD revision noise. Before 1984 the members exceed it by 0.02% to 0.83% (France 1976 to 1983,
+# Japan and the United Kingdom 1976 to 1982), the Part II and MADCT recipients outside the
+# developing-country population, so the window starts in 1984. The export ends the window in the
+# last year DAC2A publishes the total, so a year after 2024 joins it without a composition check:
+# the check covers 1984 to 2024 alone. In DAC2B the check fails in nearly every year for every
+# DAC donor checked, because DAC2B publishes regional totals with no country rows for most donors
+# (France 2020: 965.1m at DACAllRecipients against 77.9m of residual rows and no country row;
+# Japan 2020: short by 8.6bn), so DAC2B is not named.
+WHOLE_POPULATION_TOTALS: Mapping[str, WholePopulationTotal] = {
+    "DACAllRecipients": WholePopulationTotal(
+        axis="destination",
+        datasets={_DAC2A: WholeWindow(("official", "residual"), first_year=1984)},
+        reason=(
+            "DAC2A: official plus residual recipients equal the total from 1984 to 2024 for seven "
+            "donors, apart from Japan 1988 (0.19%), Germany 2002 (0.22%) and France 2008 "
+            "(0.04m), which are OECD revision noise; DAC2B fails in nearly every donor-year"
+        ),
+    ),
+    "DACOfficialDonors": WholePopulationTotal(
+        axis="origin",
+        datasets={_DAC2A: WholeWindow(("official",)), _DAC2B: WholeWindow(("official",))},
+        reason=(
+            "DACCountriesTotal plus DACNonDACCountries plus DACMultilaterals, to the dollar in "
+            "every year, DAC2A and DAC2B, at four recipients"
+        ),
+    ),
+    "DACPrivateDonors": WholePopulationTotal(
+        axis="origin",
+        datasets={_DAC2A: WholeWindow(("private",))},
+        reason=(
+            "the sum of the PRIVATE_PROVIDERS rows, to the dollar in every year from 2009, "
+            "DAC2A, at three recipients; DAC2B does not publish it"
+        ),
+    ),
+}
+
+# Whole totals read as one population under a phrase. The members cover disjoint classes of party
+# and are published together in one dataset (`code_index.loader._check_whole_totals`). Official
+# plus private donors is 4,578.4m for Ethiopia 2021 (4,267.6m and 310.8m). "All donors" and
+# "every donor" name the same population as "all donors including private"; the first phrase
+# labels it.
+WHOLE_TOTAL_SETS: tuple[WholeTotalSet, ...] = (
+    WholeTotalSet(
+        phrase="all donors including private",
+        axis="origin",
+        members=("DACOfficialDonors", "DACPrivateDonors"),
+    ),
+    WholeTotalSet(
+        phrase="all donors",
+        axis="origin",
+        members=("DACOfficialDonors", "DACPrivateDonors"),
+    ),
+    WholeTotalSet(
+        phrase="every donor",
+        axis="origin",
+        members=("DACOfficialDonors", "DACPrivateDonors"),
+    ),
+)
+
 
 # Axis order controls partition election.
 # `measuredProperty` is the basis axis, and either basis value generalises.
@@ -1242,18 +1451,69 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
     ),
 )
 # A birth in demographic statistics is a live birth, and the crude birth rate is live births
-# per person. A births question that names no status reads live births.
+# per person. A births question that names no status reads live births. Debt named without a
+# flow word ("Kenya's debt owed to China") is the stock outstanding, so a debt position that
+# names no position type reads the amount outstanding.
 SHAPE_SLOT_DEFAULTS: tuple[ShapeSlotDefault, ...] = (
     ShapeSlotDefault(
         population_type="BirthEvent", property_dcid="medicalStatus", value_dcid="LiveBirth"
     ),
+    ShapeSlotDefault(
+        population_type="FinancialPosition",
+        property_dcid="financialPositionType",
+        value_dcid="AmountOutstanding",
+    ),
 )
+
+# The World Bank's "publicly guaranteed" debt is the private-sector debt a public body
+# guarantees, but the words alone ask for public and publicly guaranteed debt, the aggregate.
+# Every IDS series of the guaranteed claim is the private-sector debtor's, so a question names
+# the narrow category exactly when it names a debtor ("publicly guaranteed private-sector
+# debt").
+BROAD_READINGS: tuple[BroadReading, ...] = (
+    BroadReading(
+        property_dcid="guaranteeStatus",
+        value_dcid="PubliclyGuaranteedClaim",
+        reads_as="PublicOrPubliclyGuaranteed",
+        unless_bound="idsDebtorType",
+        held_with="IDSDebtorTypePrivateSector",
+        note=(
+            "Publicly guaranteed was read as public and publicly guaranteed debt. For "
+            "private-sector debt under a public guarantee, ask for publicly guaranteed "
+            "private-sector debt."
+        ),
+    ),
+)
+
+# The noun naming each constraint property of the index's StatVars that no code system declares,
+# singular, as a question names its slot ("across all types of finance", "held in different
+# currencies"). A code system's own noun is its `CodeSystemConfig.plain_name`. A graph label
+# carries its publisher's prefix ("DAC type of finance", "IDS creditor type"), and a single word
+# of it names no slot, so a slot without a noun here is named by its whole label.
+SLOT_PLAIN_NAMES: Mapping[str, str] = {
+    "currencyOfDenomination": "currency",
+    "dacTypeOfFinance": "type of finance",
+    "financialFlowType": "flow type",
+    "financialObligationType": "obligation type",
+    "financialPositionType": "position type",
+    "financingForm": "financing form",
+    "financingResource": "financing resource",
+    "guaranteeStatus": "guarantee status",
+    "idsConcessionality": "concessionality",
+    "idsCreditorType": "creditor type",
+    "idsDebtorType": "debtor type",
+    "includesIMFCredit": "IMF credit",
+    "interestRateVariability": "interest rate variability",
+    "maturityBand": "maturity",
+    "netOf": "netted flow",
+    "nettingBasis": "netting basis",
+}
 
 # Life expectancy is life expectancy at birth, and gross domestic product is the product of
 # all economic activities. The headline series of each states nothing on the property, and
 # the series stating the value covers fewer years (`LifeExpectancy_Person_0Years` runs 1980
-# to 2020). The export refuses a declaration no StatVar of the measure states
-# (`code_index.export.verify_implied_values`).
+# to 2020). A live test fails on a declaration no StatVar of the measure states in the graph
+# (`tests/code_index/test_implied_values_live.py`).
 IMPLIED_VALUES: tuple[ImpliedValue, ...] = (
     ImpliedValue(
         population_type="Person",

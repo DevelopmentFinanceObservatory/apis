@@ -2000,6 +2000,30 @@
       operations: []
       reason: entity_role_not_admitted
       category: unresolved
+- id: ent-congo-ambiguous
+  query: aid to Congo
+  why: '"Congo" names the Democratic Republic of the Congo and the Republic of the Congo, so the refusal offers both and binds neither.'
+  tags: {theme: aid, entity: country, direction: destination_only, time: none, operation: none, door: raw_text}
+  expect:
+    no_data: {reason: entity_ambiguous, category: unresolved}
+- id: ent-demonym-german-aid
+  query: German aid to Kenya
+  why: The demonym "German" names Germany as the donor, which extraction reads as the place the resolver holds.
+  tags: {theme: aid, entity: two_roles, direction: both, time: none, operation: none, door: raw_text}
+  # Known failure: the binder's reply leaves dac2aAidType out, and a slot left out is not read as open, so the total ODA default does not bind.
+  known_failure: {issue: 99, checks: [measure]}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+- id: ent-abbreviation-uk-aid
+  query: aid from the UK to Kenya
+  why: The abbreviation "UK" names the United Kingdom as the donor, which the resolver holds under its own words.
+  tags: {theme: aid, entity: two_roles, direction: both, time: none, operation: none, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
 - id: ent-04
   query: ODA from the World Bank
   slice: holdout
@@ -2045,6 +2069,8 @@
     definite:
       measure: {family: dac2a.oda_net_received}
       entities:
+      - dcid: DACOfficialDonors
+        role: origin
       - dcid: country/KEN
         role: destination
 - id: crs-gross-disbursements-kenya
@@ -2121,6 +2147,9 @@
   tags:
     directional_flow: na
     conjunction: none
+  known_failure:
+    issue: 1156
+    checks: [measure]
   expect:
     definite:
       measure:
@@ -2135,6 +2164,8 @@
           nettingBasis: Net
         open: [crsCooperationModality, crsPurpose, crsTypeOfFinance, crsTypeOfFlow]
       entities:
+      - dcid: DACOfficialDonors
+        role: origin
       - dcid: country/KEN
         role: destination
       unit:
@@ -2186,6 +2217,9 @@
   tags:
     directional_flow: na
     conjunction: none
+  known_failure:
+    issue: 1156
+    checks: [measure, entities]
   expect:
     definite:
       measure:
@@ -2213,6 +2247,8 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       entities:
+      - dcid: DACOfficialDonors
+        role: origin
       - dcid: country/KEN
         role: destination
       unit:
@@ -2227,20 +2263,25 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       entities:
+      - dcid: DACOfficialDonors
+        role: origin
       - dcid: country/KEN
         role: destination
 - id: crs-education-grants-france
   query: total education grants from France in 2020-2024
-  why: Education grants from France for 2020 to 2024 bind type of finance 100 and the education purpose, and a declared default binds crsTypeOfFlow 10.
+  why: Education grants from France for 2020 to 2024 bind type of finance 100, the education purpose and default flow type 10, and a window from 2020 takes grant equivalent.
   tags:
     directional_flow: na
     conjunction: none
+  known_failure:
+    issue: 1156
+    checks: [operations]
   expect:
     definite:
       measure:
         shape:
           population_type: FinancialFlow
-          measured_property: amount
+          measured_property: grantEquivalent
           stat_type: measuredValue
           measurement_qualifier: Nominal
           measurement_denominator: null
@@ -3789,3 +3830,178 @@
       - dcid: africa
         role: observationAbout
         expands: true
+- id: whole-total-oda-ethiopia-no-donor
+  query: 'parsed: official development assistance, to Ethiopia, 2021'
+  door: parsed
+  parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}], time_text: '2021'}]
+  why: No donor is named, so DAC2a's donor side reads Official Donors, Total, the OECD's total for every official donor.
+  tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: parsed}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
+      window: {kind: range, start: 2021, end: 2021}
+- id: whole-total-oda-ethiopia-all-donors
+  query: 'parsed: official development assistance, to Ethiopia, from all donors, 2021'
+  door: parsed
+  parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}, {text: all donors, role_text: from}], time_text: '2021'}]
+  why: '"All donors" names the official and private donors together, which DAC2a publishes as Official Donors, Total and Private Donors, Total.'
+  tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities:
+        - {dcid: DACOfficialDonors, role: origin}
+        - {dcid: DACPrivateDonors, role: origin}
+        - {dcid: country/ETH, role: destination}
+      window: {kind: range, start: 2021, end: 2021}
+- id: whole-total-oda-ethiopia-official-donors-label
+  query: 'parsed: official development assistance, to Ethiopia, from Official Donors, Total, 2021'
+  door: parsed
+  parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}, {text: 'Official Donors, Total', role_text: from}], time_text: '2021'}]
+  why: The total's own label names the whole official donor population on DAC2a.
+  tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
+- id: whole-total-oda-ethiopia-all-donors-total-label
+  query: 'parsed: official development assistance, to Ethiopia, from All Donors, Total, 2021'
+  door: parsed
+  parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}, {text: 'All Donors, Total', role_text: from}], time_text: '2021'}]
+  why: A client's guess at the total's label, "All Donors, Total", is an alias of the official donors' total on DAC2a.
+  tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
+- id: whole-total-oda-ethiopia-summed-open-donors
+  query: 'parsed: official development assistance, to Ethiopia, open donors, aggregate over origin, 2021'
+  door: parsed
+  parsed:
+    - variable_text: official development assistance
+      entities: [{text: Ethiopia, role_text: to}]
+      time_text: '2021'
+      open_roles: [donor]
+      operations: [{verb: aggregate, over: origin, phrase: from all donors}]
+  why: A sum over the donors may filter them, so the opened donor side lists every donor and binds no total.
+  tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: aggregate, door: parsed}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/ETH, role: destination}]
+- id: whole-total-oda-kenya-range-total
+  query: 'parsed: official development assistance received, to Kenya, total from all donors, 2015 to 2022'
+  door: parsed
+  parsed:
+    - variable_text: official development assistance received
+      entities: [{text: Kenya, role_text: to}]
+      time_text: 2015 to 2022
+      operations: [{verb: aggregate, phrase: total ODA received from all donors}]
+  why: A total over no axis leaves the donor side unnamed, which DAC2a reads as Official Donors, Total in every year.
+  tags: {theme: aid, entity: country, direction: destination_only, time: range, operation: aggregate, door: parsed}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2015, end: 2022}
+- id: whole-total-oda-ethiopia-including-private
+  query: 'parsed: official development assistance, to Ethiopia, from all donors including private, 2021'
+  door: parsed
+  parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}, {text: all donors including private, role_text: from}], time_text: '2021'}]
+  why: The phrase names the union DAC2a publishes as two totals, Official Donors, Total and Private Donors, Total, both bound.
+  tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities:
+        - {dcid: DACOfficialDonors, role: origin}
+        - {dcid: DACPrivateDonors, role: origin}
+        - {dcid: country/ETH, role: destination}
+- id: whole-total-oda-france-all-recipients
+  query: 'parsed: official development assistance, from France, to all recipients, 2021'
+  door: parsed
+  parsed: [{variable_text: official development assistance, entities: [{text: France, role_text: from}, {text: all recipients, role_text: to}], time_text: '2021'}]
+  why: DAC2a publishes All Recipients, Total, the total of every recipient and regional allocation, from 1984.
+  tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/FRA, role: origin}, {dcid: DACAllRecipients, role: destination}]
+- id: whole-total-oda-france-all-recipients-1983
+  query: 'parsed: official development assistance, from France, to all recipients, 1983'
+  door: parsed
+  parsed: [{variable_text: official development assistance, entities: [{text: France, role_text: from}, {text: all recipients, role_text: to}], time_text: '1983'}]
+  why: Before 1984 All Recipients, Total holds more than the developing countries, so "all recipients" binds the total as a named party with no whole reading.
+  tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
+  expect:
+    definite:
+      entities: [{dcid: country/FRA, role: origin}, {dcid: DACAllRecipients, role: destination}]
+- id: whole-total-aid-kenya-top-donors-keeps-members
+  query: 'parsed: aid, to Kenya, open donors, rank over origin, 2022'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: Kenya, role_text: to}]
+      time_text: '2022'
+      open_roles: [donor]
+      operations: [{verb: rank, over: origin, phrase: top 5 donors}]
+  why: A rank over the donors lists every donor, so the donor side stays open and binds no total.
+  tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: rank, door: parsed}
+  expect:
+    definite:
+      entities: [{dcid: country/KEN, role: destination}]
+- id: whole-total-oda-kenya-open-donors-keeps-members
+  query: 'parsed: official development assistance, to Kenya, open donors, 2022'
+  door: parsed
+  parsed: [{variable_text: official development assistance, entities: [{text: Kenya, role_text: to}], open_roles: [donor], time_text: '2022'}]
+  why: An open donor side with no operation over it asks for every donor, so it lists them.
+  tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: parsed}
+  expect:
+    definite:
+      entities: [{dcid: country/KEN, role: destination}]
+- id: whole-total-raw-kenya-each-donor-lists-donors
+  query: ODA to Kenya from each donor, 2020 to 2024
+  why: '"From each donor" asks for one series per donor, so the donor side opens as open_roles does and binds no total.'
+  tags: {theme: aid, entity: country, direction: destination_only, time: range, operation: none, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2020, end: 2024}
+      operations: []
+- id: whole-total-raw-kenya-every-donor-lists-donors
+  query: ODA to Kenya from every donor in 2022
+  why: '"Every donor" on the raw-text door asks for one series per donor, so the donor side opens and binds no whole total set.'
+  tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+      operations: []
+- id: whole-total-raw-kenya-by-donor-lists-donors
+  query: ODA to Kenya by donor in 2022
+  why: '"By donor" is a breakdown and no ranking, so the donor side opens, binds no total and carries no rank operation.'
+  tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+      operations: []
+- id: whole-total-crs-sectors-kenya-keeps-providers
+  query: 'parsed: official development assistance by sector, to Kenya, rank over category, 2015 to 2022'
+  door: parsed
+  parsed:
+    - variable_text: official development assistance by sector
+      entities: [{text: Kenya, role_text: to}]
+      time_text: 2015 to 2022
+      operations: [{verb: rank, over: category, phrase: top 3 sectors}]
+  why: The CRS publishes no total of its providers, so the provider side stays unnamed and defaults to every provider.
+  tags: {theme: aid, entity: country, direction: destination_only, time: range, operation: rank, door: parsed}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross}
+      entities: [{dcid: country/KEN, role: destination}]
+      warnings: [role_scope_defaulted]

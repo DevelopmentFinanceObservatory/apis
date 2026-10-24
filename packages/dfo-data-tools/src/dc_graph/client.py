@@ -43,6 +43,7 @@ from dc_graph.errors import (
     ReadErrorFactory,
 )
 from dc_graph.visible_arcs import dfo_visible
+from dfo_platform.cloud_run_auth import cloud_run_auth
 from dfo_platform.executor import submit_with_context
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
@@ -351,6 +352,8 @@ class GraphClient:
     Facet reads take `domains`, sent as `filter.domains`: the mixer then returns only facets whose
     provenance URL hostname ends with one of them. Presence reads select no facet, and the mixer
     ignores the filter there.
+
+    A request to a `*.run.app` host carries a Cloud Run ID token (`dfo_platform.cloud_run_auth`).
     """
 
     def __init__(
@@ -435,6 +438,7 @@ class GraphClient:
         self._client = httpx.Client(
             base_url=_base,
             headers=headers,
+            auth=cloud_run_auth(),
             timeout=timeout,
             transport=transport,
             limits=httpx.Limits(

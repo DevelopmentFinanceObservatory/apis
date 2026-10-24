@@ -516,7 +516,7 @@ def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_walked
 
 
 def _index_listing(*rows: StatVarRow) -> CodeIndex:
-    """The packaged index with `rows` as its only listed rows."""
+    """The fixture index with `rows` as its only listed rows."""
     index = copy.copy(get_index())
     index.listed_statvars = rows
     index.listed_by_five_tuple = {_FLOW_FIVE_TUPLE: rows} if rows else {}

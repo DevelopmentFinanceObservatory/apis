@@ -26,6 +26,7 @@ from search.engine.region.related_read import joined_related, stating_related
 from search.engine.region.result import RegionResult, answered_roles
 from search.engine.region.state import EngineOptions, _elected_stat_vars
 from search.engine.region.un_system import member_labels
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import plan_window_gap, serves_nothing
@@ -315,6 +316,10 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         state, spec, _fetched_obs, resubmit_warnings
     )
     spec = stating_related(spec, joined_related(state.related_read))
+    resubmit_warnings = (
+        *resubmit_warnings,
+        *whole_total_warnings(spec, coverage=state.coverage.index),
+    )
 
     region = RegionResult(
         variable_text=state.variable_text,

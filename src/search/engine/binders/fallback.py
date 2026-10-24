@@ -10,7 +10,9 @@ an answer its configured binder did not give. A successful fallback is a normal 
 marks nothing degraded.
 
 A part whose Jev call fell back sends its later calls straight to the fallback, so a slow
-Jev costs each part one Jev ceiling (`Settings.jev_ceiling_s`), not one per call.
+Jev costs each part one Jev ceiling (`Settings.jev_ceiling_s`), not one per call. Those
+later calls log ``fallback=inherited`` on their ``binder_part`` line, so only a call whose
+Jev request failed carries a ``jev_error``.
 
 A Jev request fails before its answer is assembled, so the house policies have not run when
 the fallback starts. A bind call whose Jev path raised after they ran raises
@@ -35,10 +37,12 @@ from search.engine.binders.base import (
     BindResult,
     PolicyContractError,
     QuantityRequest,
+    StatedWordsRequest,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev import FallbackCause, JevCall, JevFailure
 from search.engine.binders.part_log import Call, elapsed_ms, log_binder_part
+from search.engine.errors import LLMInfraError
 
 if TYPE_CHECKING:
     from search.engine.binders.base import Binder
@@ -112,6 +116,7 @@ class FallbackBinder:
     ) -> tuple[QuantityOutput, dict | None]:
         started = time.perf_counter()
         failure = self._earlier_failure(request.part)
+        inherited = failure is not None
         if failure is None:
             try:
                 output, call = await self.primary.quantity(request)
@@ -133,6 +138,7 @@ class FallbackBinder:
             served_by=self.fallback.name,
             ms=elapsed_ms(started),
             failure=failure,
+            inherited=inherited,
         )
         return answer
 
@@ -154,6 +160,7 @@ class FallbackBinder:
 
         step: ApplyPolicies = apply_policies
         failure = self._earlier_failure(request.part)
+        inherited = failure is not None
         if failure is None:
             try:
                 result, call = await self.primary.elect(
@@ -181,8 +188,43 @@ class FallbackBinder:
             served_by=self.fallback.name,
             ms=elapsed_ms(started),
             failure=failure,
+            inherited=inherited,
         )
         return result, usage
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """The rating of the binder that answered the bind call (`BindResult.binder`): the
+        primary's (`JevBinder.restated`), else the fallback's. A primary request logs a
+        ``binder_part`` line of its own. A failed one falls back on nothing: it raises
+        `LLMInfraError`, so each word it was asked counts as stated and the read is noted as
+        lost, since the bind's rating described the shape before any value was bound."""
+        decision = request.decision
+        if decision is None or decision.binder != self.primary.name:
+            return await self.fallback.rate_words_stated(request, llm=llm)
+        started = time.perf_counter()
+        try:
+            ratings, call = await self.primary.restated(request)
+        except Exception as exc:
+            failure = exc
+            if not isinstance(failure, JevFailure):
+                logger.error("jev stated call raised", exc_info=exc)
+                failure = JevFailure("error", type(exc).__name__, JevCall(ms=elapsed_ms(started)))
+            log_binder_part(
+                call="stated",
+                binder=self.name,
+                served_by="-",
+                ms=elapsed_ms(started),
+                failure=failure,
+            )
+            raise LLMInfraError(f"jev stated words read: {failure.kind}") from exc
+        if call is None:
+            return ratings, None
+        log_binder_part(
+            call="stated", binder=self.name, served_by=self.name, ms=elapsed_ms(started), jev=call
+        )
+        return ratings, call.usage
 
     def _earlier_failure(self, part: int | None) -> JevFailure | None:
         """The failure an earlier call of `part` fell back on, recorded for this call as one

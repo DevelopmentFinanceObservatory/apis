@@ -1,4 +1,5 @@
-"""The Gemini binder: the engine's own quantity read and choose-and-bind call."""
+"""The Gemini binder: the engine's own quantity read, choose-and-bind call and stated-words
+read."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from search.engine.bind import (
     covered_leaves,
     reads_bound_values_alike,
     stated_reading,
+    validate_requested_all_bindings,
 )
 from search.engine.bind_repair import _label_named_in_text
 from search.engine.binders.base import (
@@ -22,10 +24,12 @@ from search.engine.binders.base import (
     BindResult,
     PolicyContractError,
     QuantityRequest,
+    StatedWordsRequest,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.config import settings
 from search.engine.quantity_read import read_stated_quantity
+from search.engine.stated_words_read import read_stated_words
 
 if TYPE_CHECKING:
     from search.engine.clients.llm import SupportsLLM
@@ -48,17 +52,20 @@ _BOUND_SLACK = 1e-9
 
 
 class GeminiBinder:
-    """Reads the quantity with `quantity_read.read_stated_quantity` and elects and binds with
-    `bind.bind_universal`, on the injected LLM client. A reply that elects a shape goes
-    through the house policies over its pool, and a moved election takes the reply's drafts
-    onto the shape the policies elect (`reelect`).
+    """Reads the quantity with `quantity_read.read_stated_quantity`, elects and binds with
+    `bind.bind_universal`, and rates the words the coverage rule leaves unread with
+    `stated_words_read.read_stated_words`, on the injected LLM client. A reply that elects a
+    shape goes through the house policies over its pool, and a moved election takes the
+    reply's drafts onto the shape the policies elect (`reelect`).
 
     The reply rates each shape that measures the phrase, and the pool is the shapes it rates
     near the best and the pick's twins (`rated_pool`), over which all six policies run with
     the ratings. Each pool shape holds the pick's constraints when it holds each value the
     reply drafted as named and every value of each slot the reply asks for in full
-    (`holds_mentioned_values`), which the pool reads as it admits each shape. A nomination in `also_plausible` stands only when the reply
-    rates it near its best rating, whatever its denominator (`nominated_near_best`).
+    (`holds_mentioned_values`), which the pool reads as it admits each shape, once the
+    reply's ``requested_all`` claims are validated (`with_valid_requested_all`). A
+    nomination in `also_plausible` stands only when the reply rates it near its best
+    rating, whatever its denominator (`nominated_near_best`).
 
     A reply that rates neither its pick nor a twin of it in `measuring`, an empty one
     included, or rates it below `DECLINE_FLOOR` (`pick_rating`), says the pick measures
@@ -81,6 +88,21 @@ class GeminiBinder:
     ) -> tuple[QuantityOutput, dict | None]:
         return await read_stated_quantity(request.variable, request.denominators, llm=llm)
 
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """The rating of each word from one call of its own (`read_stated_words`), whose
+        fixed schema leaves the bind schema as it is. Raises `LLMInfraError` for a read
+        that failed."""
+        return await read_stated_words(
+            request.variable,
+            request.shape,
+            request.words,
+            bindings=request.bindings,
+            served=request.served,
+            llm=llm,
+        )
+
     async def bind(
         self, request: BindRequest, *, llm: SupportsLLM
     ) -> tuple[BindResult, dict | None]:
@@ -100,6 +122,9 @@ class GeminiBinder:
         if output.ask or not 0 <= output.chosen_shape_index < len(request.shapes):
             return BindResult(output=output, binder=self.name), usage
         shapes = request.shapes
+        output = with_valid_requested_all(
+            output, shapes[output.chosen_shape_index], request.dropped_qualifier_phrases
+        )
         ratings = shape_ratings(output, len(shapes))
         if pick_rating(shapes, output, ratings) < DECLINE_FLOOR:
             return BindResult(output=declined(output), binder=self.name), usage
@@ -132,6 +157,18 @@ def declined(output: _UniversalBindOutput) -> _UniversalBindOutput:
             "unplaced": [],
         }
     )
+
+
+def with_valid_requested_all(
+    output: _UniversalBindOutput, pick: ShapeDraft, dropped_qualifier_phrases: Sequence[str]
+) -> _UniversalBindOutput:
+    """`output` with its ``requested_all`` claims validated on its `pick`
+    (`bind.validate_requested_all_bindings`), before the pool and `reelect` read them, so
+    a "total" that names no slot keeps no shape out."""
+    bindings, _applied = validate_requested_all_bindings(
+        output.bindings, dropped_qualifier_phrases, slot_keys=pick.slot_keys
+    )
+    return output.model_copy(update={"bindings": bindings})
 
 
 def shape_ratings(output: _UniversalBindOutput, size: int) -> dict[int, float]:

@@ -963,7 +963,7 @@ def graph_confirm_resolve(
 ) -> Materialised | NoDataDraft | UnsupportedDraft:
     """Filter a role-bearing shape's members by bound values, then confirm observations.
 
-    Member facts come from the packaged index when available, otherwise from
+    Member facts come from the release's code index when available, otherwise from
     the shape's fetched arcs. A member must assert every bound constraint
     property at a bound value; a silent, unresolved or out-of-bound value
     fails. Confirmation reads this request's coverage snapshot with fixed

@@ -5,18 +5,18 @@ The tick builds the recorded slice (`tests.graph_release.recorded`) for real. Sp
 that answers the import-key and ingested-imports statements, with `read_inputs` returning the
 recorded `RawInputs` under the key the fake snapshot holds. The Admin API is `CloudRunAdmin`
 over an `httpx.MockTransport`; the mixer answers from the slice's own arcs and parties; SDMX
-returns each series row's count; the release root is a `file://` directory. With shadow on, the
-comparators' published builds come from `Builder.comparators`.
+returns each series row's count; the release root is a `file://` directory.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pyarrow as pa
@@ -26,6 +26,7 @@ from google.api_core.exceptions import ServiceUnavailable
 from google.auth.exceptions import RefreshError
 from pydantic import ValidationError
 
+import code_index.export as code_index_export
 from artifact_publication.jobs import acquire_lease, read_import_key, release_lease
 from artifact_publication.uri import (
     join_uri,
@@ -41,8 +42,6 @@ from graph_release.format import Manifest, manifest_uri, pointer_uri, read_point
 from graph_release.gate import (
     MAX_PART_BYTES,
     Dependency,
-    GateCode,
-    GateFinding,
     GateResult,
     GateUnavailable,
     release_arcs,
@@ -52,7 +51,6 @@ from graph_release.hold import main as hold_main
 from graph_release.origin import origin_view
 from graph_release.publish import clear_hold, hold_release
 from graph_release.serving_revision import CloudRunAdmin, ServingRevisionError
-from graph_release.shadow import ComparatorBuild
 from tests.graph_generation.conftest import FakeCredentials
 from tests.graph_release.recorded import (
     MIXER_PARTIES,
@@ -279,27 +277,9 @@ class Builder:
     sdmx: FakeSdmx
     capsys: pytest.CaptureFixture[str]
     stamp: str
-    shadow: bool = False
     now: datetime = _NOW
-    behind: frozenset[Dependency] = frozenset()
-    coverage_build_id: str = "coverage-1"
-    comparator_error: GateUnavailable | None = None
     catalogue_job: str = ""
     max_part_bytes: int = MAX_PART_BYTES
-
-    def comparators(self) -> tuple[ComparatorBuild, ...] | GateUnavailable:
-        """The comparators' published builds: those in `behind` hold an earlier import."""
-        if self.comparator_error is not None:
-            return self.comparator_error
-        return tuple(
-            ComparatorBuild(
-                dependency, "an-earlier-import" if dependency in self.behind else self.stamp, build
-            )
-            for dependency, build in (
-                (Dependency.COVERAGE_BUILD, self.coverage_build_id),
-                (Dependency.ORIGIN_CATALOGUE, "origin-1"),
-            )
-        )
 
     def settings(self) -> job.JobSettings:
         return job.JobSettings(
@@ -310,14 +290,11 @@ class Builder:
             datacommons_service=_SERVICE,
             graph_base_url="http://graph.invalid/core/api",
             sdmx_base_url="http://graph.invalid/core/api",
-            shadow=self.shadow,
-            coverage_uri="file:///coverage" if self.shadow else "",
-            origin_uri="file:///origin" if self.shadow else "",
             search_catalogue_job=self.catalogue_job,
             max_part_bytes=self.max_part_bytes,
         )
 
-    def run(self) -> None:
+    def run(self, **options: Any) -> None:
         job.run(
             self.settings(),
             database=self.database,
@@ -325,7 +302,7 @@ class Builder:
             graph=self.mixer,
             sdmx=self.sdmx,
             declarations=SLICE_DECLARATIONS,
-            clock=self.now.timestamp,
+            **{"clock": self.now.timestamp, **options},
         )
 
     def events(self) -> list[dict]:
@@ -368,7 +345,7 @@ def builder(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> 
     with FakeDatabase().snapshot() as snapshot:
         key = read_import_key(snapshot)
     assert key is not None
-    built = Builder(
+    return Builder(
         root=tmp_path.joinpath("releases").as_uri(),
         database=FakeDatabase(),
         admin=FakeAdminApi(),
@@ -377,8 +354,6 @@ def builder(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> 
         capsys=capsys,
         stamp=key.stamp,
     )
-    monkeypatch.setattr(job, "shadow_builds", lambda **_: built.comparators())
-    return built
 
 
 # ---------------------------------------------------------------- publish and step 3
@@ -557,6 +532,62 @@ def test_a_held_lease_stops_the_tick(builder):
     assert read_pointer(builder.root) is None
 
 
+def _run_waiting(
+    builder: Builder, sleep: Callable[[float], None], clock: Callable[[], float]
+) -> list[dict]:
+    builder.capsys.readouterr()
+    builder.run(wait_for_lease=True, clock=clock, sleep=sleep)
+    return builder.events()
+
+
+def test_a_waiting_run_builds_once_the_holder_releases_the_lease(builder, monkeypatch):
+    start = builder.now.timestamp()
+    elapsed = [0.0]
+    holder = acquire_lease(builder.root, build_id="other", ttl_seconds=600, now=lambda: start)
+    assert holder is not None
+
+    def sleep(seconds: float) -> None:
+        elapsed[0] += seconds
+        release_lease(builder.root, holder)
+
+    taken = []
+    acquire = job.acquire_lease
+
+    def acquiring(*args, **kwargs):
+        lease = acquire(*args, **kwargs)
+        taken.append(lease)
+        return lease
+
+    monkeypatch.setattr(job, "acquire_lease", acquiring)
+
+    events = _run_waiting(builder, sleep, clock=lambda: start + elapsed[0])
+
+    assert _outcome(events) == "published"
+    assert [e["wait_seconds"] for e in _named(events, "graph_release_waiting")] == [
+        job.LEASE_WAIT_SECONDS
+    ]
+    assert elapsed == [30.0]
+    # The lease lasts until the run's task timeout, the wait plus one build, ends it.
+    assert taken[0] is None
+    assert taken[1].expires_at == start + job.LEASE_WAIT_SECONDS + job.LEASE_TTL_SECONDS
+    assert builder.lease_free()
+
+
+def test_a_waiting_run_gives_up_after_one_lease_and_one_poll(builder):
+    start = builder.now.timestamp()
+    elapsed = [0.0]
+    acquire_lease(builder.root, build_id="other", ttl_seconds=10_000, now=lambda: start)
+
+    def sleep(seconds: float) -> None:
+        elapsed[0] += seconds
+
+    events = _run_waiting(builder, sleep, clock=lambda: start + elapsed[0])
+
+    assert _outcome(events) == "lease_held"
+    assert elapsed == [job.LEASE_WAIT_SECONDS]
+    assert read_pointer(builder.root) is None
+
+
 # ---------------------------------------------------------------- steps 1 and 2
 
 
@@ -622,57 +653,6 @@ def test_the_oldest_serving_revision_decides_step_two() -> None:
     )
     with pytest.raises(ServingRevisionError):
         naive.created_at("b")
-
-
-# ---------------------------------------------------------------- shadow
-
-
-@pytest.mark.parametrize("behind", [Dependency.COVERAGE_BUILD, Dependency.ORIGIN_CATALOGUE])
-def test_shadow_waits_for_both_comparators_before_building(builder, behind):
-    builder.shadow = True
-    builder.behind = frozenset({behind})
-
-    events = builder.tick()
-
-    assert _outcome(events) == "shadow_waiting"
-    assert _named(events, "graph_release_shadow_waiting")[0]["stamp"] == builder.stamp
-    assert len(builder.database.snapshots) == 1
-    assert builder.lease_free() and read_pointer(builder.root) is None
-
-
-def test_shadow_diffs_the_release_once_both_comparators_are_ready(builder, monkeypatch):
-    builder.shadow = True
-    diffed = []
-
-    def diff(parts, **kwargs):
-        diffed.append(
-            (kwargs["import_stamp"], kwargs["coverage_build_id"], kwargs["origin_build_id"])
-        )
-        return GateResult(reports={"shadow_arcs": {"pinned": 0}})
-
-    monkeypatch.setattr(job, "shadow_diff", diff)
-
-    events = builder.tick()
-
-    assert _outcome(events) == "published"
-    assert diffed == [(builder.stamp, "coverage-1", "origin-1")]
-    assert "shadow" in _named(events, "graph_release_published")[0]["phases"]
-
-
-def test_a_shadow_finding_builds_again_once_a_comparator_is_republished(builder, monkeypatch):
-    builder.shadow = True
-    finding = GateFinding(GateCode.SHADOW_COVERAGE_DIFF, "1 coverage row differs")
-    monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult(findings=(finding,)))
-    assert _outcome(builder.tick()) == "gate_failed"
-    assert _outcome(builder.tick()) == "inputs_failed"
-
-    builder.coverage_build_id = "coverage-2"
-    monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult())
-
-    events = builder.tick()
-
-    assert _outcome(events) == "published"
-    assert builder.state()["last_built"]["inputs"]["coverage_build_id"] == "coverage-2"
 
 
 # ---------------------------------------------------------------- gate outcomes
@@ -748,6 +728,27 @@ def test_a_platform_refusal_is_a_finding(builder, monkeypatch):
     assert "last_failed" in builder.state()
 
 
+def test_a_code_index_the_loader_refuses_is_a_gate_finding(builder, monkeypatch):
+    """A built code index whose two code rows share a dcid stages, and the gate refuses it as
+    `code_index_unloadable`, as for any document `parse_index` refuses."""
+    export_graph_blocks = code_index_export.export_graph_blocks
+
+    def duplicated_code(*args, **kwargs):
+        blocks = export_graph_blocks(*args, **kwargs)
+        blocks["codes"].append(dict(blocks["codes"][0]))
+        return blocks
+
+    monkeypatch.setattr(code_index_export, "export_graph_blocks", duplicated_code)
+
+    events = builder.tick()
+
+    assert _outcome(events) == "gate_failed"
+    (failed,) = _named(events, "graph_release_gate_failed")
+    assert "code_index_unloadable" in [f["code"] for f in failed["findings"]]
+    assert read_pointer(builder.root) is None
+    assert "last_failed" in builder.state()
+
+
 def _unreadable_bucket(error: Exception):
     def unreadable(builder: Builder, monkeypatch: pytest.MonkeyPatch) -> None:
         def read(uri):
@@ -806,17 +807,6 @@ def test_an_unavailable_dependency_records_nothing(
     assert read_pointer(builder.root) is None
     assert "last_failed" not in builder.state()
     assert builder.lease_free()
-
-
-def test_an_unavailable_shadow_comparator_records_nothing(builder):
-    builder.shadow = True
-    builder.comparator_error = GateUnavailable(Dependency.COVERAGE_BUILD, "pointer unreadable")
-
-    events = builder.tick()
-
-    assert _outcome(events) == "unavailable"
-    assert len(builder.database.snapshots) == 1
-    assert builder.state() == {}
 
 
 def test_inputs_that_ended_unavailable_back_off_for_ten_minutes(builder):
@@ -1124,49 +1114,6 @@ def test_a_published_import_is_never_stale(builder):
     assert _named(builder.tick(), "graph_release_stale") == []
 
 
-def test_time_spent_waiting_for_the_shadow_comparators_is_not_stale(builder, monkeypatch):
-    builder.shadow = True
-    builder.behind = frozenset({Dependency.ORIGIN_CATALOGUE})
-
-    builder.now = _COMPLETED + timedelta(minutes=20)
-    builder.tick()
-    builder.now = _COMPLETED + timedelta(minutes=45)
-    assert _named(builder.tick(), "graph_release_stale") == []
-
-    # Ready at 50 minutes, so 30 minutes were shadow waiting. The build fails, so the clock
-    # runs on.
-    builder.behind = frozenset()
-    monkeypatch.setattr(job, "shadow_diff", lambda parts, **_: GateResult())
-    builder.now = _COMPLETED + timedelta(minutes=50)
-    builder.sdmx.extra = 1
-    assert _outcome(builder.tick()) == "gate_failed"
-    builder.now = _COMPLETED + timedelta(minutes=59)
-    assert _named(builder.tick(), "graph_release_stale") == []
-    builder.now = _COMPLETED + timedelta(minutes=61)
-    (stale,) = _named(builder.tick(), "graph_release_stale")
-    assert stale["waited_seconds"] == pytest.approx(31 * 60)
-
-
-def test_a_shadow_wait_past_its_limit_is_unavailable_and_stale_resumes(builder):
-    builder.shadow = True
-    builder.behind = frozenset({Dependency.COVERAGE_BUILD})
-    builder.now = _COMPLETED + timedelta(minutes=20)
-    assert _outcome(builder.tick()) == "shadow_waiting"
-    builder.now += timedelta(seconds=job.SHADOW_WAIT_LIMIT_SECONDS + 60)
-
-    events = builder.tick()
-
-    assert _outcome(events) == "unavailable"
-    (unavailable,) = _named(events, "graph_release_unavailable")
-    assert [u["dependency"] for u in unavailable["unavailable"]] == ["coverage_build"]
-    # 3 h 21 min since the import, less the 3 hours of wait the limit discounts.
-    assert _named(events, "graph_release_stale") == []
-
-    builder.now += timedelta(minutes=10)
-    (stale,) = _named(builder.tick(), "graph_release_stale")
-    assert stale["waited_seconds"] == pytest.approx(31 * 60)
-
-
 # ---------------------------------------------------------------- settings
 
 
@@ -1174,7 +1121,6 @@ def test_a_shadow_wait_past_its_limit_is_unavailable_and_stale_resumes(builder):
     "change",
     [
         pytest.param({"datacommons_service": "dfo-dev-dc-datacommons-service"}, id="bare_service"),
-        pytest.param({"shadow": True, "coverage_uri": ""}, id="shadow_without_coverage"),
         pytest.param({"search_catalogue_job": "search-catalogue"}, id="bare_catalogue_job"),
     ],
 )

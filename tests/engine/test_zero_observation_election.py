@@ -116,10 +116,10 @@ _RURAL_QUALIFIER_SIBLING_SV = "RuralBareGrowthRateZeroObsGuard"
 _QUALIFIED_NODES = {
     **_GHA_NODE,
     _QUALIFIED_ELECTED_SV: {
-        "label": "Growth rate amount of economic activity (real value)",
+        "label": "Gross domestic product growth rate (real value)",
         "type": "StatisticalVariable",
         "arcs": _arcs(
-            "Growth rate amount of economic activity (real value)",
+            "Gross domestic product growth rate (real value)",
             pop_type="EconomicActivity",
             meas_prop="amount",
             stat_type="growthRate",

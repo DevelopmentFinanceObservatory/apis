@@ -502,6 +502,38 @@ def test_a_head_wrong_differently_on_each_sample_regresses_on_answer(corpus, tmp
     )
 
 
+@pytest.mark.parametrize(
+    ("known", "answer_verdict"),
+    [
+        ("", "pre_existing"),
+        ("  known_failure: {issue: 1, checks: [entities]}\n", "wrong_answer_at_base"),
+    ],
+    ids=["entities asserted", "entities a known failure"],
+)
+def test_a_head_refusing_a_wrong_base_answer_does_not_block(tmp_path, known, answer_verdict):
+    """Base answers definite on the wrong recipient and head answers no data. The head has
+    no right answer to regress from on `disposition`, nor on `answer` when `entities` is a
+    known failure that `answer` leaves out."""
+    head_case = f"- id: eth-health\n  query: {REGRESSING}\n"
+    cases = CASES.replace(head_case, head_case + known)
+    corpus = make_corpus(tmp_path, base=cases, head=cases)
+    refusing = for_regressing(lambda q, n: (200, no_data()))
+
+    code, _, _ = run_driver(
+        paired_args(corpus, tmp_path),
+        head=refusing,
+        base=for_regressing(lambda q, n: (200, kenya())),
+    )
+
+    assert code == 0
+    verdicts = _verdicts(tmp_path, "eth-health")
+    assert (verdicts["disposition"], verdicts["answer"]) == ("wrong_answer_at_base", answer_verdict)
+    summary = (tmp_path / "summary.md").read_text()
+    assert "### Wrong answers at base" in summary
+    assert "- `eth-health` disposition: head status: got 'no_data'" in summary
+    assert "; base entities: " in summary
+
+
 def test_a_known_failure_passing_on_one_sample_of_three_is_not_fixed(tmp_path):
     case = f"""
 - id: flaky

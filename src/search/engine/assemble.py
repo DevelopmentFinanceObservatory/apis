@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from dfo_platform import Cause
@@ -29,20 +30,22 @@ from search.models import (
     UNIT_REF,
     AmbiguousEntityGroup,
     AmbiguousSourceGroup,
+    Assumption,
     CandidateSet,
     CandidatesPart,
     DefinitePart,
     Departure,
     DepartureCode,
+    EntityRefs,
     EntityRoleKey,
     NoData,
     NoDataDenominator,
     NoDataGate,
+    NoDataOption,
     NoDataPart,
     NoDataReason,
     Operation,
     Ordering,
-    ParsedInput,
     ParsedPart,
     ResolvedQualifier,
     RoleAxis,
@@ -52,6 +55,7 @@ from search.models import (
     UnsupportedPart,
     Warning,
 )
+from search.render.assumptions import assumptions_for, common_assumptions
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.departures import departures_from_facts
 from search.render.heading import (
@@ -62,6 +66,7 @@ from search.render.heading import (
 )
 from search.render.no_data import (
     ScopeSources,
+    UnlistedPopulation,
     alternate_preserves_bound_role,
     no_data_message,
     no_data_sentence_plan,
@@ -86,6 +91,9 @@ OBSERVATIONS_OMITTED = "observations_omitted"
 SKILLS_INDEX_UNAVAILABLE = "skills_index_unavailable"
 SKILLS_INDEX_INCOMPLETE = "skills_index_incomplete"
 SKILLS_NOT_MATCHABLE = "skills_not_matchable"
+
+NO_READING_FACTS: Mapping[str, Sequence[DepartureFact]] = MappingProxyType({})
+"""No departure facts for any reading of a candidates part."""
 
 
 def _observations_omitted_msg() -> str:
@@ -212,10 +220,23 @@ def _surviving_qualifier_warnings(
     """Keep dropped-qualifier warnings that remain true across all regions.
 
     Each warning stays paired with its extracted phrase. One region admitting a phrase
-    makes the request-wide warning false. Compare with the same strip-and-casefold
-    normalisation used by ``admitted_qualifier_phrases``.
+    makes the request-wide warning false. A part's departures read its own region's
+    admission (`unapplied_qualifier_warnings`, `RegionResult.unapplied_qualifier_warnings`).
     """
-    admitted = {phrase for region in regions for phrase in region.admitted_qualifier_phrases}
+    admitted = frozenset(
+        phrase for region in regions for phrase in region.admitted_qualifier_phrases
+    )
+    return unapplied_qualifier_warnings(qualifier_warnings, phrases, admitted=admitted)
+
+
+def unapplied_qualifier_warnings(
+    qualifier_warnings: Sequence[Warning],
+    phrases: Sequence[str],
+    *,
+    admitted: frozenset[str],
+) -> list[Warning]:
+    """The `qualifier_warnings` whose paired phrase `admitted` does not hold, compared with
+    the strip-and-casefold normalisation ``admitted_qualifier_phrases`` uses."""
     return [
         warning
         for warning, phrase in zip(qualifier_warnings, phrases, strict=True)
@@ -229,18 +250,25 @@ def part_departure_facts(
     raised: Sequence[DepartureFact],
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    members_in_words: bool = False,
 ) -> tuple[DepartureFact, ...]:
     """A part's departure facts in `DEPARTURE_ORDER`, without repeats. They are `raised`,
     the facts whose warnings the part or its envelope holds, and those read off the `spec`
     it answers with and the `operations` it carries (`departures.spec_departure_facts`,
-    which asks a group in `entity_words`). A part answering with no Spec reads only its
+    which asks a group in `entity_words` and words a whole side's way back to its members as
+    `members_in_words` says). A part answering with no Spec reads only its
     operations. The `entity_unavailable` facts of one role merge into one
     (`departures.merged_entity_facts`), the Spec's first, so its entities lead in the
     answer's entity order."""
     return ordered_facts(
         merged_entity_facts(
             [
-                *spec_departure_facts(spec, operations=operations, entity_words=entity_words),
+                *spec_departure_facts(
+                    spec,
+                    operations=operations,
+                    entity_words=entity_words,
+                    members_in_words=members_in_words,
+                ),
                 *raised,
             ]
         )
@@ -333,6 +361,7 @@ def _definite_departure_facts(
     raised: Sequence[DepartureFact],
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None,
+    members_in_words: bool,
 ) -> tuple[DepartureFact, ...]:
     """A definite part's departure facts (`part_departure_facts`), with the byline's price
     basis as `shown` on a price-basis fact that lacks it, and the `closest_match` fact of its
@@ -340,7 +369,11 @@ def _definite_departure_facts(
     facts = [
         _with_price_basis_shown(fact, unit_text=heading.byline.unit_text or "")
         for fact in part_departure_facts(
-            spec, raised=raised, operations=operations, entity_words=entity_words
+            spec,
+            raised=raised,
+            operations=operations,
+            entity_words=entity_words,
+            members_in_words=members_in_words,
         )
     ]
     return _with_closest_match(
@@ -377,11 +410,16 @@ def build_definite_part(
     separate: bool = False,
     timing_ms: Timing | None = None,
     restatement: ParsedPart | None = None,
+    entity_refs: Sequence[EntityRefs] = (),
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    assumption_echo: Sequence[Assumption] | None = None,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
+    own_spec: Spec | None = None,
+    members_in_words: bool = False,
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -391,6 +429,15 @@ def build_definite_part(
     its envelope holds. ``definite_departures`` adds those the spec, the operations
     and the reading's match carry. ``entity_words`` are the request's own words for each
     entity name (`RegionResult.entity_words`), in which a group read as members is asked.
+    ``assumption_echo`` is the list a dataset resubmit entry echoed
+    (`RegionResult.assumption_echo`), of which the part states those that still hold
+    (`render.assumptions.assumptions_for`), None when it echoed none. ``asked_axes`` are
+    the flow axes the request's words asked every member of
+    (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
+    open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
+    ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
+    ``members_in_words`` is whether the part's door asks for a flow side's members in the
+    question's words (`RegionResult.members_in_words`).
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
@@ -405,6 +452,7 @@ def build_definite_part(
         timing_ms=timing_ms,
         spec=spec,
         restatement=restatement,
+        entity_refs=list(entity_refs),
         operations=list(operations),
         departures=definite_departures(
             spec,
@@ -413,6 +461,14 @@ def build_definite_part(
             raised=departure_facts,
             operations=operations,
             entity_words=entity_words,
+            members_in_words=members_in_words,
+        ),
+        assumptions=assumptions_for(
+            spec,
+            echo=assumption_echo,
+            asked_axes=asked_axes,
+            operations=operations,
+            own_spec=own_spec,
         ),
     )
 
@@ -425,6 +481,7 @@ def definite_departures(
     raised: Sequence[DepartureFact],
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    members_in_words: bool = False,
 ) -> list[Departure]:
     """The `departures` of a definite part answering with `spec`: the facts
     `_definite_departure_facts` reads off it, its `raised` facts and its reading's match,
@@ -440,6 +497,7 @@ def definite_departures(
             raised=raised,
             operations=operations,
             entity_words=entity_words,
+            members_in_words=members_in_words,
         ),
         family=heading.heading.family,
         shown=[spec],
@@ -465,12 +523,14 @@ def build_no_data_part(
     alternate_match: Spec | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
     entity_terms: list[str] | None = None,
+    unlisted: Mapping[str, UnlistedPopulation] | None = None,
+    entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
     ambiguous_entities: list[AmbiguousEntityGroup] | None = None,
     ambiguous_roles: Mapping[str, RoleAxis] | None = None,
-    data_query: ParsedInput | None = None,
+    options: list[NoDataOption] | None = None,
     source_terms: list[str] | None = None,
     ambiguous_sources: list[AmbiguousSourceGroup] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
@@ -479,12 +539,14 @@ def build_no_data_part(
     unit_alternatives: list[UnitAlternative] | None = None,
     denominator: NoDataDenominator | None = None,
     restatement: ParsedPart | None = None,
+    entity_refs: Sequence[EntityRefs] = (),
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
     cause: Cause | None = None,
     window_gap_fact: DepartureFact | None = None,
     departure_facts: Sequence[DepartureFact] = (),
+    reading_facts: Mapping[str, Sequence[DepartureFact]] = NO_READING_FACTS,
     request_words: bool = True,
     source_code_refusal: SourceCodeRefusal | None = None,
 ) -> NoDataPart:
@@ -496,13 +558,15 @@ def build_no_data_part(
     code lives on ``NoData.gate``. ``elected_stat_vars`` lets sentence composition name an
     exact series match before a nearest substitute.
 
-    ``entity_terms`` preserves the place wording seen by the engine. ``role_axis`` names an
+    ``entity_terms`` preserves the place wording seen by the engine, ``unlisted`` the
+    populations among them no source lists exactly (`UnlistedPopulation`), and ``entity_groups``
+    groups a ``role_not_resolved`` refusal's terms by the place each names. ``role_axis`` names an
     open origin or destination axis in ``no_observations`` copy. ``bound_role_dcids`` records
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
-    the sentence marks as a slot. ``data_query`` is the part's parsed form for
-    ``entity_ambiguous``, ``source_ambiguous`` and ``source_code_ambiguous``.
+    the sentence marks as a slot. ``options`` are the ready requests of a refusal that
+    asks for a choice (`conjoin._options`).
     ``source_terms`` are the source wordings a ``source_not_resolved`` or
     ``source_ambiguous`` outcome rests on, or the series code a ``source_code_*`` outcome
     rests on, and ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
@@ -527,7 +591,8 @@ def build_no_data_part(
     ``departure_facts`` are the raised facts whose warnings the part or its envelope holds,
     stated without the request's words when ``request_words`` is false (a resubmit).
     An alternate the sentence shows (`alternate_preserves_bound_role`) adds its reading's
-    `closest_match` fact (`_with_closest_match`). The part shows no data, so no departure
+    `closest_match` fact (`_with_closest_match`) and its facts in ``reading_facts``, by
+    `spec_id` (`RegionResult.unpublished_whole_facts`). The part shows no data, so no departure
     text claims it shows anything.
     A check limited to the values the engine chose for the flagged match adds a
     `scope_limited` departure (`departures.scope_limited_fact`).
@@ -545,9 +610,17 @@ def build_no_data_part(
     # holds them, so the fact would misstate what the part shows.
     year_facts = [window_gap_fact] if window_gap_fact and shown_alternate is None else []
     scope_fact = scope_limited_fact(flagged_match) if flagged_match is not None else None
+    alternate_facts = (
+        reading_facts.get(shown_alternate.spec_id, ()) if shown_alternate is not None else ()
+    )
     facts = part_departure_facts(
         None,
-        raised=[*departure_facts, *year_facts, *([scope_fact] if scope_fact else [])],
+        raised=[
+            *departure_facts,
+            *year_facts,
+            *([scope_fact] if scope_fact else []),
+            *alternate_facts,
+        ],
         operations=operations,
     )
     if reason in _UNRESOLVED_NO_DATA_REASONS:
@@ -590,6 +663,8 @@ def build_no_data_part(
         elected_stat_vars=elected_stat_vars,
         variable_term=variable_text,
         entity_terms=entity_terms,
+        unlisted=unlisted,
+        entity_groups=entity_groups,
         role_axis=role_axis,
         bound_role_dcids=bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
@@ -631,6 +706,8 @@ def build_no_data_part(
                 reason,
                 variable_term=variable_text,
                 entity_terms=entity_terms,
+                unlisted=unlisted,
+                entity_groups=entity_groups,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,
@@ -653,11 +730,12 @@ def build_no_data_part(
             unbound_qualifiers=[*(qualifier_terms or ()), *(unbound_sources or ())],
             unit_alternatives=unit_alternatives,
             denominator=denominator,
-            data_query=data_query,
+            options=options or [],
         ),
         rendered_sentence=rendered,
         sentence_plan=plan,
         restatement=restatement,
+        entity_refs=list(entity_refs),
         operations=list(operations),
         departures=departures,
     )
@@ -674,6 +752,7 @@ def build_unsupported_part(
     separate: bool = False,
     timing_ms: Timing | None = None,
     restatement: ParsedPart | None = None,
+    entity_refs: Sequence[EntityRefs] = (),
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
@@ -704,6 +783,7 @@ def build_unsupported_part(
             cause=cause,
         ),
         restatement=restatement,
+        entity_refs=list(entity_refs),
         operations=list(operations),
     )
 
@@ -720,11 +800,15 @@ def build_candidates_part(
     budget_truncated: bool = False,
     ordering: Ordering = "intent_rank",
     restatement: ParsedPart | None = None,
+    entity_refs: Sequence[EntityRefs] = (),
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
     departure_facts: Sequence[DepartureFact] = (),
+    reading_facts: Mapping[str, Sequence[DepartureFact]] = NO_READING_FACTS,
     request_words: bool = True,
+    asked_axes: frozenset[RoleAxis] = frozenset(),
+    assumption_echoes: Mapping[str, Sequence[Assumption]] = MappingProxyType({}),
 ) -> CandidatesPart:
     """Build a candidates part from competing specs, in the order given: the elected
     reading first and its rivals in menu order (`region.status_rule`), or the order a
@@ -740,10 +824,21 @@ def build_candidates_part(
     is selected for observation retrieval. Requested skills attach to each clamped candidate
     when the index snapshot is available. ``departure_facts`` are the raised facts that
     hold for every reading the part shows; no single spec answers, so none is read off one.
-    Their text names roles in the flow family every clamped reading shares. A part warned
+    ``reading_facts`` are the facts of each reading by `spec_id`, each naming the dataset
+    it holds for (`RegionResult.unpublished_whole_facts`); the part states those of the
+    readings it shows, once each. Their text names roles in the flow family every clamped
+    reading shares. A part warned
     `elected_shape_no_data` states one `closest_match` departure
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
+    ``asked_axes`` are the flow axes the request's words asked every member of
+    (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
+    open role. `CandidatesPart.reading_assumptions` holds each shown reading's own list, as
+    a definite part answering it would carry (`assumptions_for`), and the part's
+    assumptions are the items every one of those lists holds alike (`common_assumptions`).
+    ``assumption_echoes`` holds the list a dataset resubmit candidates entry echoed for a
+    reading, under its spec_id (`RegionResult.reading_assumption_echoes`), with which that
+    reading's list is read.
     """
     cap = max_candidates if max_candidates is not None else len(specs)
     clamped = list(specs)[:cap]
@@ -761,7 +856,14 @@ def build_candidates_part(
 
     departures = part_departures(
         _with_readings_substituted(
-            part_departure_facts(None, raised=departure_facts, operations=operations),
+            part_departure_facts(
+                None,
+                raised=[
+                    *departure_facts,
+                    *(fact for spec in clamped for fact in reading_facts.get(spec.spec_id, ())),
+                ],
+                operations=operations,
+            ),
             shown=clamped,
             warnings=warnings,
             variable_text=variable_text,
@@ -772,9 +874,25 @@ def build_candidates_part(
         keep_how_properties=keep_how_properties,
         request_words=request_words,
     )
+    # What each reading assumes once picked: the list its definite part would carry. The
+    # part assumes what every one of them holds.
+    reading_lists = [
+        assumptions_for(
+            spec,
+            echo=assumption_echoes.get(spec.spec_id),
+            asked_axes=asked_axes,
+            operations=operations,
+        )
+        for spec in clamped
+    ]
+    assumptions = common_assumptions(reading_lists)
+    reading_assumptions = {
+        spec.spec_id: items for spec, items in zip(clamped, reading_lists, strict=True)
+    }
     plan = candidates_sentence_plan(
         clamped,
         departures=departures,
+        assumptions=assumptions,
         truncated=truncated,
         # Show the pre-clamp total only when no upstream budget hid candidates.
         total=len(specs) if not budget_truncated else None,
@@ -801,6 +919,9 @@ def build_candidates_part(
         rendered_sentence=rendered,
         sentence_plan=plan,
         restatement=restatement,
+        entity_refs=list(entity_refs),
         operations=list(operations),
         departures=departures,
+        assumptions=assumptions,
+        reading_assumptions=reading_assumptions,
     )

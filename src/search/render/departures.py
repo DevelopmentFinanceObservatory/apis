@@ -21,11 +21,12 @@ A fact missing a value its code's text states raises `ValueError`. Every constru
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Final
 
 from code_index.labels import HOW_PHRASE_LEADS_WITH_PREPOSITION
+from code_index.types import PartyClass
 from dfo_platform.roles import GENERIC_ROLE_WORDING, FlowFamily, role_wording
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
@@ -34,6 +35,7 @@ from search.models import (
     DepartureCode,
     EntityGroup,
     OperationVerb,
+    RoleAxis,
     SentenceToken,
 )
 
@@ -395,14 +397,121 @@ def _group_read_as_members(
     return f"This {verb} {members}, each on its own{left_out}."
 
 
+WHOLE_MEMBER_NOUNS: Final[Mapping[RoleAxis, str]] = MappingProxyType(
+    {"origin": "donor", "destination": "recipient"}
+)
+"""The `open_roles` word naming the members of each side a whole population is read on."""
+
+
+def private_outside(
+    axis: RoleAxis, whole_of: Collection[PartyClass], side_classes: Collection[PartyClass]
+) -> bool:
+    """Whether the private donors a dataset holds on a donor side (`side_classes`) are
+    outside a whole population covering the `whole_of` classes there."""
+    return axis == "origin" and "private" in side_classes and "private" not in whole_of
+
+
+def whole_population_text(axis: RoleAxis, whole_of: Collection[PartyClass]) -> str:
+    """The members a whole population covering the `whole_of` classes on `axis` holds:
+    "every official donor" for a donor side covering no private donor, else "every donor"
+    or "every recipient"."""
+    noun = WHOLE_MEMBER_NOUNS.get(axis, "member")
+    official = axis == "origin" and "private" not in whole_of
+    return f"every official {noun}" if official else f"every {noun}"
+
+
+def whole_residual_text(whole_of: Collection[PartyClass]) -> str:
+    """The clause saying a whole population covering the `whole_of` classes holds aid
+    allocated to no country, empty when it covers no residual."""
+    return ", which includes aid not allocated to a country" if "residual" in whole_of else ""
+
+
+def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:
+    """The whole population the side shows (`DepartureFact.group`), what it holds, and the
+    way back to the side's members. A request that named nothing on the side reads "No donor
+    was named, so this shows ..."; one that named it ("all donors") is asked in its words,
+    and its way back replaces those words. A union of totals names each
+    (`DepartureFact.entities`). A donor total that holds no private donor says they are
+    outside it where the answer's dataset holds private donors on the side
+    (`DepartureFact.side_classes`), and a total holding residuals says it holds aid allocated
+    to no country. The way back takes the door's form (`_members_way_back`)."""
+    if fact.over is None or fact.group is None:
+        raise ValueError("whole_total_read needs the side and the population it shows")
+    noun = WHOLE_MEMBER_NOUNS.get(fact.over, "member")
+    verb = "shows" if shows_data else "checked"
+    if fact.entities:
+        shown = " plus ".join(fact.entities)
+    else:
+        every = whole_population_text(fact.over, fact.whole_of)
+        holds = whole_residual_text(fact.whole_of)
+        outside = (
+            " Private donors are outside it."
+            if private_outside(fact.over, fact.whole_of, fact.side_classes)
+            else ""
+        )
+        shown = f"{fact.group}, the source's total for {every}{holds}.{outside}"
+    if not shown.endswith("."):
+        shown += "."
+    if fact.asked is not None:
+        lead = f"You asked for {_asked(fact)}. This {verb}"
+    elif fact.inferred:
+        lead = f"No {noun} was named, so this {verb}"
+    else:
+        lead = f"This {verb}"
+    return f"{lead} {shown} To list each {noun}, {_members_way_back(fact, noun)}."
+
+
+def _members_way_back(fact: DepartureFact, noun: str) -> str:
+    """How the request lists each member of a side read whole, in its door's form: on a
+    door that asks in the question's words (`members_in_words`), an each phrase, which the
+    raw-text door reads as the breakdown under any verb
+    (`role_text.every_member_breakdown_axis`), else `open_roles`. The each phrase takes the
+    place of the request's words for the population, where it gave some, so "ODA from
+    Germany to all recipients" becomes "ODA from Germany to each recipient"; otherwise
+    "for each recipient" joins the question. `open_roles` replaces those words likewise."""
+    if fact.members_in_words:
+        if fact.asked is not None:
+            return f'write "each {noun}" in place of "{_asked(fact)}"'
+        return f'add "for each {noun}" to the question'
+    instead = f" in place of {_asked(fact)}" if fact.asked is not None else ""
+    return f"search again with open_roles ['{noun}']{instead}"
+
+
+def _whole_total_unpublished(
+    fact: DepartureFact, _family: FlowFamily | None, shows_data: bool
+) -> str:
+    """The whole population asked for, on a side the dataset (`DepartureFact.shown`)
+    publishes no total of, which the answer leaves unnamed: it covers every party the
+    dataset holds there with data, the private donors and the aid allocated to no country
+    among them where the dataset holds those (`DepartureFact.whole_of`). A part that shows
+    no data states it for the closest match it shows, which holds data
+    (`only_alternate_has_data`)."""
+    if fact.over is None or fact.shown is None:
+        raise ValueError("whole_total_unpublished needs the side and the dataset")
+    noun = WHOLE_MEMBER_NOUNS.get(fact.over, "member")
+    among = ", private donors among them" if "private" in fact.whole_of else ""
+    holds = whole_residual_text(fact.whole_of)
+    subject = "this" if shows_data else "the closest match"
+    return (
+        f"You asked for {_asked(fact)}. {fact.shown} publishes no total of every {noun}, so "
+        f"{subject} covers every {noun} it holds with data{among}{holds}."
+    )
+
+
 def _direction_discarded(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:
     if fact.over is None:
         raise ValueError("direction_discarded needs the flow axis the place was named on")
     # The answer's measure has no flow roles, so no family names them.
     noun = GENERIC_ROLE_WORDING.noun(fact.over)
+    asked = _asked(fact)
+    if not shows_data:
+        return (
+            f"You named {asked} as a {noun.singular}, but this measure has no "
+            f"{noun.plural}, so this checked {asked} itself."
+        )
     return (
-        f"You named {_asked(fact)} as a {noun.singular}. This measure has no "
-        f"{noun.plural}, so this {'shows' if shows_data else 'checked'} the place itself."
+        f"You named {asked} as a {noun.singular}. This measure has no "
+        f"{noun.plural}, so this shows the place itself."
     )
 
 
@@ -437,6 +546,8 @@ _TEXT_BY_CODE: Final[Mapping[DepartureCode, _TextWriter]] = MappingProxyType(
         "year_unavailable": _year_unavailable,
         "modelled_values": _modelled_values,
         "group_read_as_members": _group_read_as_members,
+        "whole_total_read": _whole_total_read,
+        "whole_total_unpublished": _whole_total_unpublished,
         "direction_discarded": _direction_discarded,
         "direction_inferred": _direction_inferred,
         "scope_limited": _scope_limited,

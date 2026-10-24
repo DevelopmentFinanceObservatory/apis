@@ -117,13 +117,13 @@ def test_identical_requests_share_one_warm_cache():
     assert r2.parts == r1.parts
 
 
-def test_differently_worded_query_hits_layer2():
-    """Identical extractions share the bind result, while each query is extracted."""
+def test_differently_worded_single_variable_queries_keep_separate_results():
+    """The full query grounds graph values, so matching extractions can answer differently."""
     llm = _CountingLLM(_AliasedLLM(alias_query=_QUERY_B, canonical_query=_QUERY_A))
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_B), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput", "Extraction"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
 
     # Each response retains its request's wording.
     assert r2.query_echo.raw_query == _QUERY_B
@@ -133,10 +133,7 @@ def test_differently_worded_query_hits_layer2():
     assert r2.diagnostics.trace_id != r1.diagnostics.trace_id
     assert r2.diagnostics.llm_usage != r1.diagnostics.llm_usage
     assert r2.diagnostics.llm_usage is not None and r1.diagnostics.llm_usage is not None
-    assert r2.diagnostics.llm_usage["input_tokens"] < r1.diagnostics.llm_usage["input_tokens"]
-
-    # Everything the query itself determines is shared between the two.
-    assert r1.parts == r2.parts
+    assert r1.status == r2.status == "definite"
     assert r1.rendered_sentence == r2.rendered_sentence
 
 
@@ -523,8 +520,8 @@ def test_role_direction_contradiction_is_not_masked_by_a_shared_extraction(monke
     assert r2.status == "no_data", r2
 
 
-def test_role_direction_agreement_still_hits_layer2(monkeypatch):
-    """Different wordings with the same role verdict share the layer-2 result."""
+def test_role_direction_agreement_keeps_distinct_query_sources_separate(monkeypatch):
+    """A shared role verdict leaves each query's graph-value grounding independent."""
     _auto_coverage_index_1 = patch_coverage(
         monkeypatch, _ROLE_COVERAGE_ROWS, role_names=_ROLE_NAMES
     )
@@ -546,10 +543,10 @@ def test_role_direction_agreement_still_hits_layer2(monkeypatch):
         sdmx=FakeSdmxClient(observations={}),
         materialise_graph=_role_bearing_member_graph(),
     )
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput", "Extraction"]
+    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
     assert r1.status == "definite", r1
     assert r2.status == "definite", r2
-    assert r1.parts == r2.parts
+    assert r1.rendered_sentence == r2.rendered_sentence
 
 
 class _UnparsedDateLLM(_FixedExtractionLLM):

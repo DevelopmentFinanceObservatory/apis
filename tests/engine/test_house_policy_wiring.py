@@ -654,6 +654,7 @@ def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFix
             "pool": [0, 1],
             "fired": ["default_dataset"],
             "ratings": [{"index": 0, "rating": 1.0}, {"index": 1, "rating": 1.0}],
+            "scores": {},
             "refused": False,
         }
         for pool in ("ours", "un_system")
@@ -681,6 +682,7 @@ def test_a_schema_refusal_logs_a_refused_bind_decision(caplog: pytest.LogCapture
         "pool": [],
         "fired": [],
         "ratings": None,
+        "scores": {},
         "facts": [],
         "refused": True,
     }
@@ -899,7 +901,11 @@ _NETTING = SlotKeyDraft(axis="how", property_dcid="nettingBasis", label="netting
 _EVERY_SECTOR = _shape(
     "every_sector",
     _SECTOR_SLOT,
-    taxonomy={"how:crsPurpose": ["CRSPurposeCode111", "CRSPurposeCode112"]},
+    _NETTING,
+    taxonomy={
+        "how:crsPurpose": ["CRSPurposeCode111", "CRSPurposeCode112"],
+        "how:nettingBasis": ["Net"],
+    },
 )
 # A rival offering Gross, which `net_vs_gross` elects, on one sector of the two.
 _ONE_SECTOR_GROSS = _shape(
@@ -910,9 +916,10 @@ _ONE_SECTOR_GROSS = _shape(
 )
 
 
-def _bind_every_sector(binder: str, *, every: bool) -> BindResult:
-    """`binder`'s answer electing `_EVERY_SECTOR` over `_ONE_SECTOR_GROSS` for "aid across
-    all sectors" (`every`) or plain "aid", through the engine's house-policy step."""
+def _bind_every_sector(binder: str, *, phrase: str | None) -> BindResult:
+    """`binder`'s answer electing `_EVERY_SECTOR` over `_ONE_SECTOR_GROSS` for plain "aid"
+    (`phrase` None) or with the dropped `phrase` the answer claims every sector on, through
+    the engine's house-policy step."""
     shapes = [_EVERY_SECTOR, _ONE_SECTOR_GROSS]
     step = _HousePolicyStep(
         shapes=shapes,
@@ -925,7 +932,7 @@ def _bind_every_sector(binder: str, *, every: bool) -> BindResult:
         variable="aid",
         shapes=shapes,
         admitted_qualifiers=[(), ()],
-        dropped_qualifier_phrases=("across all sectors",) if every else (),
+        dropped_qualifier_phrases=(phrase,) if phrase else (),
         frame=_NO_PLACE,
         query_text=None,
         apply_policies=step,
@@ -936,8 +943,8 @@ def _bind_every_sector(binder: str, *, every: bool) -> BindResult:
             axis="how",
             property_dcid="crsPurpose",
             kind="unbound",
-            evidence="requested_all" if every else "mentioned",
-            requested_all_phrase="across all sectors" if every else None,
+            evidence="requested_all" if phrase else "mentioned",
+            requested_all_phrase=phrase,
         )
         reply = _reply(0, sectors, rated=(0, 1))
         result, _usage = asyncio.run(GeminiBinder().bind(request, llm=_StubLLM(reply)))
@@ -954,12 +961,17 @@ def _bind_every_sector(binder: str, *, every: bool) -> BindResult:
 
 
 @pytest.mark.parametrize("binder", ["gemini", "jev"])
-@pytest.mark.parametrize(("every", "elected"), [(True, 0), (False, 1)])
+@pytest.mark.parametrize(
+    ("phrase", "elected"), [("across all sectors", 0), (None, 1), ("in total", 1)]
+)
 def test_a_slot_asked_for_in_full_keeps_every_value_through_the_policies(
-    binder: str, every: bool, elected: int
+    binder: str, phrase: str | None, elected: int
 ):
     """`net_vs_gross` moves plain "aid" to the rival offering Gross, and "across all
-    sectors" keeps the shape holding both sectors, since the rival holds one."""
-    result = _bind_every_sector(binder, every=every)
+    sectors" keeps the shape holding both sectors, since the rival holds one. "In total"
+    names no slot, so the binder demotes its claim on the sectors before the pool reads it
+    (`bind.validate_requested_all_bindings`) and the policy moves the election as for plain
+    "aid"."""
+    result = _bind_every_sector(binder, phrase=phrase)
 
     assert result.output.chosen_shape_index == elected

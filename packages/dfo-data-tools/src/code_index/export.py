@@ -1,9 +1,11 @@
-"""Build the code index's graph blocks from a graph reader.
+"""Build the code index document from a graph reader.
 
 `export_graph_blocks` reads the graph through `ExportReader` and joins it with the authored
-declarations (`code_index.declarations`). `index_bytes` is the one serialisation of an index
-document, so the same document gives the same bytes. Nothing here imports `scripts/` or
-`dc_graph`: a reader supplies the graph reads, and the two names the export needs from
+declarations (`code_index.declarations`). `export_index` completes those blocks into the
+document: provenances and parties from the coverage it joins, and the stamp.
+`graph_release.dfo` builds a release's code index part with it. `index_bytes` is the one
+serialisation of an index document, so the same document gives the same bytes. Nothing here
+imports `dc_graph`: a reader supplies the graph reads, and the two names the export needs from
 `dc_graph` are imported where they are used.
 """
 
@@ -16,10 +18,11 @@ import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from code_index.declarations import (
+    BROAD_READINGS,
     CODE_SHORT_NAMES,
     CODE_SYNONYMS,
     CODE_SYSTEMS,
@@ -34,18 +37,28 @@ from code_index.declarations import (
     MEASURE_VALUE_TEXT,
     MEASURE_WORD_SYNONYMS_KEPT,
     PARTLY_STATED_VALUES,
+    PARTY_KIND_OVERRIDES,
     PARTY_TYPE_KINDS,
+    PRIVATE_PROVIDERS,
     SHAPE_SLOT_DEFAULTS,
+    SLOT_PLAIN_NAMES,
     STAT_TYPE_WORDS,
+    TOTAL_GROUPS,
     VARIABLE_ALIASES,
+    WHOLE_POPULATION_TOTALS,
+    WHOLE_TOTAL_SETS,
     CodeSystemConfig,
     KindOverride,
     MeasureValueText,
     TotalGroup,
+    WholePopulationTotal,
+    WholeWindow,
 )
 from code_index.members import key_sets_cover
 from code_index.tokens import Token, TokenLookup, singular, tokenize
 from code_index.types import (
+    KIND_CLASSES,
+    BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
     ImpliedValue,
@@ -53,11 +66,14 @@ from code_index.types import (
     MeasureClassDeclaration,
     MeasurePartitionLabel,
     PartlyStatedValue,
+    PartyClass,
     PartyKind,
     PartyWord,
     ShapeSlotDefault,
     StatedWord,
     StatTypeWordDeclaration,
+    WholeTotalSet,
+    covered_class,
     invalid_when_named_entry,
     label_for_pairs,
     party_kind,
@@ -77,6 +93,9 @@ _UNSPLIT_MAX_RESULTS = 40_000
 _MAX_PARTITION_DEPTH = 6
 
 _SOURCE_CODE = "sourceIndicatorCode"
+
+_PRIVATE_CODE_BLOCK = range(1601, 1700)
+"""The OECD donor codes reserved for private donors."""
 
 _LABEL_SUFFIX_RE = re.compile(r"\s*\((?:CRS|DAC)\s[^()]*\)\s*$")
 
@@ -112,10 +131,12 @@ class ExportRefused(Exception):
 @dataclass(frozen=True)
 class PartyPublication:
     """The datasets that publish one party, by provenance, and the flow axes they publish it
-    on: `origin` as a donor, `destination` as a recipient."""
+    on: `origin` as a donor, `destination` as a recipient. `years` gives the first and last
+    year, inclusive, in which each dataset publishes it."""
 
     datasets: frozenset[str]
     axes: frozenset[RoleAxis]
+    years: Mapping[str, tuple[int, int]] = field(default_factory=dict)
 
 
 def _kind_from_types(
@@ -140,6 +161,142 @@ def _kind_from_types(
     return kind
 
 
+def _dac_codes(arcs: Mapping[str, tuple[str, ...]]) -> tuple[int, ...]:
+    """The numeric OECD donor codes in a party's `dacCode` arcs. A code that is not an integer is
+    not a donor code and is left out."""
+    return tuple(int(code) for code in arcs.get("dacCode", ()) if code.isdecimal())
+
+
+def _check_private_providers(
+    codes: Mapping[str, tuple[int, ...]],
+    origins: Collection[str],
+    private_providers: Mapping[int, str],
+    kind_overrides: Mapping[str, KindOverride],
+) -> None:
+    """Raises `ExportRefused` when `private_providers` and the published parties disagree.
+
+    `codes` is each published party's donor codes and `origins` the parties published as a donor.
+    A listed code must be carried by its listed party alone once either is published; an origin
+    party carrying a code in `_PRIVATE_CODE_BLOCK` must be listed; a listed party takes no kind
+    override, since only a `party` can be private."""
+    holders: dict[int, list[str]] = defaultdict(list)
+    for dcid, party_codes in codes.items():
+        for code in party_codes:
+            holders[code].append(dcid)
+    wrong = sorted(
+        (code, dcid, sorted(holders[code]))
+        for code, dcid in private_providers.items()
+        if (code in holders or dcid in codes) and holders.get(code) != [dcid]
+    )
+    if wrong:
+        raise ExportRefused(
+            f"PRIVATE_PROVIDERS lists a code for a different party than the graph gives it: "
+            f"{wrong!r} (code, listed party, parties carrying the code)"
+        )
+    missing = sorted(
+        (code, dcid)
+        for dcid in origins
+        for code in codes.get(dcid, ())
+        if code in _PRIVATE_CODE_BLOCK and code not in private_providers
+    )
+    if missing:
+        raise ExportRefused(
+            f"published donors carry OECD private donor codes (1601 to 1699) that PRIVATE_PROVIDERS "
+            f"does not list: {missing!r} (code, party) -- review each and add it"
+        )
+    overridden = sorted(set(private_providers.values()) & kind_overrides.keys())
+    if overridden:
+        raise ExportRefused(
+            f"PRIVATE_PROVIDERS and PARTY_KIND_OVERRIDES both name {overridden!r}; a private "
+            "provider is a party"
+        )
+
+
+def _check_whole_population_totals(
+    whole_totals: Mapping[str, WholePopulationTotal],
+    kinds: Mapping[str, PartyKind],
+    dataset_kinds: Mapping[str, Mapping[str, PartyKind]],
+    parties: Mapping[str, PartyPublication],
+) -> None:
+    """Raises `ExportRefused` for a `whole_totals` row naming a party that is not a published
+    total, a total not published on exactly the row's axis, a dataset that does not publish the
+    total or where it takes another kind (`dataset_kinds`, each party's kind by dataset where it
+    differs from `kinds`), a window whose first year lies outside the years the dataset
+    publishes the total, or a row with no dataset, no class or no reason. Two rows covering one
+    class on one dataset and axis fail when the finished document loads
+    (`code_index.loader._check_whole_totals`), as does a row whose windows name different
+    classes (`code_index.loader._check_party_class`)."""
+    for dcid, whole in sorted(whole_totals.items()):
+        if kinds.get(dcid) != "total":
+            raise ExportRefused(
+                f"WHOLE_POPULATION_TOTALS names {dcid!r}, which no declared or listed dataset "
+                "publishes as a total"
+            )
+        if parties[dcid].axes != {whole.axis}:
+            raise ExportRefused(
+                f"WHOLE_POPULATION_TOTALS gives {dcid!r} the axis {whole.axis!r}, but the datasets "
+                f"publish it on {sorted(parties[dcid].axes)!r}"
+            )
+        if unpublished := sorted(whole.datasets.keys() - parties[dcid].datasets):
+            raise ExportRefused(
+                f"WHOLE_POPULATION_TOTALS marks {dcid!r} in {unpublished!r}, which do not publish it"
+            )
+        if other := sorted(whole.datasets.keys() & dataset_kinds.get(dcid, {}).keys()):
+            raise ExportRefused(
+                f"WHOLE_POPULATION_TOTALS marks {dcid!r} in {other!r}, where PARTY_KIND_OVERRIDES "
+                "gives it another kind"
+            )
+        if (
+            not whole.datasets
+            or not all(window.covers for window in whole.datasets.values())
+            or not whole.reason
+        ):
+            raise ExportRefused(
+                f"WHOLE_POPULATION_TOTALS row {dcid!r} names no dataset, covers no class or "
+                "gives no reason"
+            )
+        outside = []
+        for dataset, window in sorted(whole.datasets.items()):
+            span = parties[dcid].years.get(dataset)
+            if window.first_year is not None and (
+                span is None or not span[0] <= window.first_year <= span[1]
+            ):
+                outside.append((dataset, window.first_year, span))
+        if outside:
+            raise ExportRefused(
+                f"WHOLE_POPULATION_TOTALS starts {dcid!r} outside the years its datasets publish "
+                f"it: {outside!r} (dataset, first year, published years)"
+            )
+
+
+def _check_classes_on_one_axis(
+    rows: Sequence[Mapping], parties: Mapping[str, PartyPublication]
+) -> None:
+    """Raises `ExportRefused` for a party of any class but `official`, or a total, published on
+    more than one axis.
+
+    A row keeps `axes` and `datasets` as two lists, so a reader cannot tell which dataset holds
+    which axis. `datasets_api.output_options` reads the totals a side holds in a dataset from
+    `axis in party.axes and dataset in party.datasets`, and search reads the classes a side
+    holds the same way. That is exact for a one-axis party and for an `official` party, because
+    every side a two-axis party reaches already holds an `official` row. A private party, a
+    residual or a total on both axes would count on both axes in every dataset. `rows` are the
+    exported `parties` rows, each with its `kind`, `party_class` and any `dataset_kinds`; a
+    row taking another kind in some dataset is no official party there."""
+    ambiguous = sorted(
+        (row["dcid"], row["kind"], row["party_class"], sorted(parties[row["dcid"]].axes))
+        for row in rows
+        if ((row["kind"], row["party_class"]) != ("party", "official") or "dataset_kinds" in row)
+        and len(parties[row["dcid"]].axes) > 1
+    )
+    if ambiguous:
+        raise ExportRefused(
+            f"parties other than official parties are published on more than one axis: "
+            f"{ambiguous!r} (party, kind, class, axes) -- the index format cannot tell which "
+            "dataset holds which axis"
+        )
+
+
 def export_parties(
     reader: ExportReader,
     parties: Mapping[str, PartyPublication],
@@ -147,18 +304,35 @@ def export_parties(
     type_kinds: Mapping[str, PartyKind | None],
     kind_overrides: Mapping[str, KindOverride],
     total_groups: Mapping[str, TotalGroup],
+    private_providers: Mapping[int, str],
+    whole_totals: Mapping[str, WholePopulationTotal],
 ) -> list[dict]:
-    """Each party's kind, label, the datasets that publish it and the flow axes they publish it
-    on (`parties`, each sorted), and the group and residuals a total holds, sorted by dcid.
+    """Each party's kind, class, label, the datasets that publish it and the flow axes they
+    publish it on (`parties`, each sorted), the group and residuals a total holds, and for a
+    whole population total what it covers in each dataset (`whole`), sorted by dcid.
 
-    A party in `kind_overrides` takes its override's kind. Any other takes the kind its graph
-    types give under `type_kinds`. Its label is its graph name, `None` when the graph gives it
-    none.
+    A party in `kind_overrides` with no `datasets` takes its override's kind. Any other takes
+    the kind its graph types give under `type_kinds`, and one whose override names `datasets`
+    takes the override's kind in each of them (`dataset_kinds`, one `{dataset, kind}` per
+    dataset, sorted). A `party` whose OECD donor code is in `private_providers` has
+    the class `private`, every other `party` `official`, on every axis, and every residual
+    `residual`. A total in `whole_totals` has the one class its windows cover (`covered_class`),
+    none when they cover more than one, and every other total none; the document refuses to
+    load when two windows of a total name different classes. Its label is its graph name, `None` when the graph gives it
+    none. A row carries `whole` only for a total in `whole_totals`, and a marker's `years` only
+    for a window with a first year, ending in the last year the dataset publishes the total.
 
-    Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a party the
+    Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a
+    `kind_overrides` row naming a dataset that does not publish its party, or none, or every one,
+    or whose party a dataset it was not reviewed against publishes (`_check_override_datasets`),
+    a dataset-scoped override giving the kind the party's types already give, a party the
     graph holds no node or type for, a party carrying a type `type_kinds` does not name, a party
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
-    of `parties`, and a `total_groups` residual that is not a residual of `parties`.
+    of `parties`, a `total_groups` residual that is not a residual of `parties`, a
+    `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
+    types give a kind other than `party`, a party of a class other than `official` or a total
+    published on more than one axis (`_check_classes_on_one_axis`), and a `whole_totals` row the
+    parties contradict (`_check_whole_population_totals`).
     """
     published = frozenset(parties)
     unpublished = sorted(kind_overrides.keys() - published)
@@ -166,45 +340,133 @@ def export_parties(
         raise ExportRefused(
             f"PARTY_KIND_OVERRIDES names {unpublished!r}, which no declared or listed dataset publishes"
         )
-    arcs = _fetch_arcs_many(reader, sorted(published), properties=("typeOf", "name"))
+    _check_override_datasets(kind_overrides, parties)
+    arcs = _fetch_arcs_many(reader, sorted(published), properties=("typeOf", "name", "dacCode"))
+    codes = {dcid: _dac_codes(arcs.get(dcid) or {}) for dcid in published}
+    origins = [dcid for dcid in published if "origin" in parties[dcid].axes]
+    _check_private_providers(codes, origins, private_providers, kind_overrides)
+    private = frozenset(
+        dcid
+        for dcid in published
+        if any(private_providers.get(code) == dcid for code in codes[dcid])
+    )
     rows = []
+    kinds: dict[str, PartyKind] = {}
+    dataset_kinds: dict[str, dict[str, PartyKind]] = {}
     for dcid in sorted(published):
         party_arcs = arcs.get(dcid) or {}
-        if (override := kind_overrides.get(dcid)) is not None:
+        override = kind_overrides.get(dcid)
+        if override is not None and override.datasets is None:
             kind = override.kind
         else:
             kind = _kind_from_types(dcid, party_arcs.get("typeOf", ()), type_kinds)
+        if override is not None and override.datasets is not None:
+            if override.kind == kind:
+                raise ExportRefused(
+                    f"PARTY_KIND_OVERRIDES gives {dcid!r} the kind {kind!r} its types already give"
+                )
+            dataset_kinds[dcid] = dict.fromkeys(sorted(override.datasets), override.kind)
+        if dcid in private and kind != "party":
+            raise ExportRefused(
+                f"PRIVATE_PROVIDERS lists {dcid!r}, whose types give it the kind {kind!r}; "
+                "only a party can be private"
+            )
+        kinds[dcid] = kind
         total = total_groups.get(dcid)
-        rows.append(
-            {
-                "dcid": dcid,
-                "kind": kind,
-                "label": _first_or_none(party_arcs.get("name", ())),
-                "totals": None if total is None else total.group,
-                "residuals": [] if total is None else sorted(total.residuals),
-                "sums_members": True if total is None else total.sums_members,
-                "datasets": sorted(parties[dcid].datasets),
-                "axes": sorted(parties[dcid].axes),
-            }
-        )
-    kinds = {row["dcid"]: row["kind"] for row in rows}
-    stale = sorted(dcid for dcid in total_groups if kinds.get(dcid) != "total")
+        row: dict = {
+            "dcid": dcid,
+            "kind": kind,
+            "party_class": _party_class(kind, private=dcid in private),
+            "label": _first_or_none(party_arcs.get("name", ())),
+            "totals": None if total is None else total.group,
+            "residuals": [] if total is None else sorted(total.residuals),
+            "sums_members": True if total is None else total.sums_members,
+            "datasets": sorted(parties[dcid].datasets),
+            "axes": sorted(parties[dcid].axes),
+        }
+        if dcid in dataset_kinds:
+            row["dataset_kinds"] = [
+                {"dataset": dataset, "kind": dataset_kind}
+                for dataset, dataset_kind in dataset_kinds[dcid].items()
+            ]
+        rows.append(row)
+    stale = sorted(
+        dcid for dcid in total_groups if kinds.get(dcid) != "total" or dcid in dataset_kinds
+    )
     if stale:
         raise ExportRefused(
-            f"TOTAL_GROUPS names {stale!r}, which no declared or listed dataset publishes as a total"
+            f"TOTAL_GROUPS names {stale!r}, which the declared and listed datasets do not all "
+            "publish as a total"
         )
     not_residuals = sorted(
         residual
         for total in total_groups.values()
         for residual in total.residuals
-        if kinds.get(residual) != "residual"
+        if kinds.get(residual) != "residual" or residual in dataset_kinds
     )
     if not_residuals:
         raise ExportRefused(
             f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
             "publishes as a residual"
         )
+    _check_classes_on_one_axis(rows, parties)
+    _check_whole_population_totals(whole_totals, kinds, dataset_kinds, parties)
+    for row in rows:
+        if (whole := whole_totals.get(row["dcid"])) is not None:
+            row["party_class"] = covered_class(next(iter(whole.datasets.values())).covers)
+            row["whole"] = [
+                _whole_marker_to_dict(dataset, window, parties[row["dcid"]])
+                for dataset, window in sorted(whole.datasets.items())
+            ]
     return rows
+
+
+def _check_override_datasets(
+    kind_overrides: Mapping[str, KindOverride], parties: Mapping[str, PartyPublication]
+) -> None:
+    """Raises `ExportRefused` for a `kind_overrides` row whose `datasets` are empty, name a
+    provenance that does not publish its party (an unknown provenance among them), or name
+    every dataset that does, where the override holds everywhere and takes no `datasets`, and
+    for a row with `datasets` whose party a dataset outside its `reviewed` publishes."""
+    wrong = sorted(
+        (dcid, sorted(override.datasets - parties[dcid].datasets))
+        for dcid, override in kind_overrides.items()
+        if override.datasets is not None
+        and (not override.datasets or not override.datasets <= parties[dcid].datasets)
+    )
+    if wrong:
+        raise ExportRefused(
+            f"PARTY_KIND_OVERRIDES scopes overrides to datasets that do not publish their party, "
+            f"or to none: {wrong!r} (party, datasets not publishing it)"
+        )
+    everywhere = sorted(
+        dcid
+        for dcid, override in kind_overrides.items()
+        if override.datasets is not None and override.datasets >= parties[dcid].datasets
+    )
+    if everywhere:
+        raise ExportRefused(
+            f"PARTY_KIND_OVERRIDES scopes {everywhere!r} to every dataset that publishes it; "
+            "drop `datasets` so the override holds everywhere"
+        )
+    unreviewed = sorted(
+        (dcid, dataset)
+        for dcid, override in kind_overrides.items()
+        if override.datasets is not None
+        for dataset in parties[dcid].datasets - override.reviewed
+    )
+    if unreviewed:
+        raise ExportRefused(
+            f"PARTY_KIND_OVERRIDES scopes overrides whose party a dataset they were not reviewed "
+            f"against publishes: {unreviewed!r} (party, dataset); check the party's figures "
+            "there and add the dataset to `reviewed`, and to `datasets` if it is a total there"
+        )
+
+
+def _party_class(kind: PartyKind, *, private: bool) -> PartyClass | None:
+    """A row's class before whole markers: `private` for a private `party`, else the class its
+    kind gives (`KIND_CLASSES`)."""
+    return "private" if private and kind == "party" else KIND_CLASSES[kind]
 
 
 def strip_system_suffix(name: str) -> str:
@@ -520,6 +782,37 @@ def _shape_slot_default_to_dict(default: ShapeSlotDefault) -> dict:
     }
 
 
+def _broad_reading_to_dict(reading: BroadReading) -> dict:
+    return {
+        "property": reading.property_dcid,
+        "value": reading.value_dcid,
+        "reads_as": reading.reads_as,
+        "unless_bound": reading.unless_bound,
+        "held_with": reading.held_with,
+        "note": reading.note,
+    }
+
+
+def _verify_broad_readings(
+    statvars: Sequence[dict], broad_readings: Sequence[BroadReading]
+) -> None:
+    """Require every row holding a broad reading's narrow value to hold its `held_with`
+    value on `unless_bound`. A row that does not raises `ExportRefused`, since a question could
+    then name the narrow category without naming a value on `unless_bound`, and the reading
+    would take that category from it."""
+    for reading in broad_readings:
+        for row in statvars:
+            constraints = row["constraint_properties"]
+            if constraints.get(reading.property_dcid) != reading.value_dcid:
+                continue
+            if constraints.get(reading.unless_bound) != reading.held_with:
+                raise ExportRefused(
+                    f"{row['dcid']} holds {reading.property_dcid}={reading.value_dcid} without "
+                    f"{reading.unless_bound}={reading.held_with}, so the broad reading of "
+                    f"{reading.value_dcid} as {reading.reads_as} cannot be declared"
+                )
+
+
 def _partly_stated_value_to_dict(declared: PartlyStatedValue) -> dict:
     return {
         "provenance": declared.provenance,
@@ -535,30 +828,6 @@ def _implied_value_to_dict(declared: ImpliedValue) -> dict:
         "property": declared.property_dcid,
         "value": declared.value_dcid,
     }
-
-
-def verify_implied_values(reader: ExportReader, implied_values: Sequence[ImpliedValue]) -> None:
-    """Reject with `ExportRefused` a declaration no StatVar of its measure states: the graph
-    holds no StatVar of the declared `populationType` and `measuredProperty` with the value
-    on the property, so the value is no reading of the measure. The index holds no row of
-    a catalogue family such as life expectancy, so the loader cannot check it
-    (`code_index.loader._check_implied_values`)."""
-    for declared in implied_values:
-        page = reader.node_subjects(
-            declared.value_dcid,
-            property=declared.property_dcid,
-            filters={
-                "populationType": declared.population_type,
-                "measuredProperty": declared.measured_property,
-            },
-            max_results=1,
-        )
-        if not page.dcids:
-            raise ExportRefused(
-                f"no {declared.population_type}/{declared.measured_property} StatVar states "
-                f"{declared.property_dcid}={declared.value_dcid} -- delete the declaration "
-                "from IMPLIED_VALUES"
-            )
 
 
 def _measure_class_to_dict(declaration: MeasureClassDeclaration) -> dict:
@@ -1058,9 +1327,7 @@ def _verify_five_tuple_completeness(
     Truncated or exhausted reads refuse, as does a subject the forward read finds no node for.
 
     A decided StatVar whose codes lie outside the typed enums escapes both the spine and this
-    check, and nothing else catches it. The check proves completeness at export time. The live
-    drift test (`tests/code_index/test_export_drift.py`) re-exports through
-    `export_graph_blocks` and catches rows changed or removed since the committed index.
+    check, and nothing else catches it. The check proves completeness at export time.
     """
     key_sets: dict[_FiveTuple, set[frozenset[str]]] = {}
     for row in statvars:
@@ -1125,8 +1392,7 @@ def listed_dcids(
 ) -> tuple[str, ...]:
     """Return the sorted StatVars `provenances` assigns to any of `datasets`.
 
-    `provenances` maps a StatVar to the datasets publishing it: a coverage build's
-    (`CoverageJoin.provenances`), or the committed index's listed rows for the drift test. A
+    `provenances` maps a StatVar to the datasets publishing it (`CoverageJoin.provenances`). A
     dataset of `datasets` with no StatVar raises `ExportRefused`, since the export could not list
     its rows."""
     found = {dcid: set(datasets).intersection(sets) for dcid, sets in provenances.items()}
@@ -1361,9 +1627,8 @@ def export_statvars(reader: ExportReader, statvar_dcids: Sequence[str]) -> list[
         arcs = pass1.get(dcid)
         if arcs is None:
             raise ExportRefused(
-                f"the graph holds no node for {dcid} -- it is either a StatVar this "
-                "export just enumerated and the graph dropped mid-read, or a row the "
-                "committed index still carries and the graph no longer holds"
+                f"the graph holds no node for {dcid} -- a StatVar this export enumerated "
+                "or the coverage lists"
             )
         _check_typed_as_statvar(dcid, arcs.get("typeOf", ()))
         for prop in _STATVAR_SHAPE_PROPERTIES:
@@ -1633,6 +1898,19 @@ def _stated_word_to_dict(stated: StatedWord) -> dict:
     }
 
 
+def _whole_marker_to_dict(dataset: str, window: WholeWindow, publication: PartyPublication) -> dict:
+    """A `PartyRow.whole` entry, its `years` running from the window's first year to the last
+    year `publication` gives `dataset`. `years` is left out when the window has no first year."""
+    marker: dict = {"dataset": dataset, "covers": sorted(window.covers)}
+    if window.first_year is not None:
+        marker["years"] = [window.first_year, publication.years[dataset][1]]
+    return marker
+
+
+def _whole_total_set_to_dict(whole_set: WholeTotalSet) -> dict:
+    return {"phrase": whole_set.phrase, "axis": whole_set.axis, "members": list(whole_set.members)}
+
+
 def _party_word_to_dict(named: PartyWord) -> dict:
     return {
         "word": named.word,
@@ -1666,6 +1944,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
         **(
             {"house_default_for": list(dataset.house_default_for)}
             if dataset.house_default_for
+            else {}
+        ),
+        **(
+            {"ratio_base_axis": dataset.ratio_base_axis}
+            if dataset.ratio_base_axis is not None
             else {}
         ),
     }
@@ -1712,23 +1995,24 @@ def export_graph_blocks(
     party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
     listed: Collection[str] = (),
     shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
+    broad_readings: Sequence[BroadReading] = BROAD_READINGS,
     partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
     implied_values: Sequence[ImpliedValue] = IMPLIED_VALUES,
     measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
     variable_aliases: Mapping[str, str] = VARIABLE_ALIASES,
     stat_type_words: Sequence[StatTypeWordDeclaration] = STAT_TYPE_WORDS,
+    whole_total_sets: Sequence[WholeTotalSet] = WHOLE_TOTAL_SETS,
 ) -> dict:
     """Build every document block the graph and the authored config determine, sorted.
 
     `listed` names the StatVars of the datasets no code system enumerates (`listed_dcids`),
     read into `listed_statvars` and checked by `_verify_listed_five_tuples`, their series
     codes into `source_codes` (`export_source_codes`), and the parents of their constraint
-    values into `value_parents` (`export_value_parents`).
+    values into `value_parents` (`export_value_parents`). Each of `broad_readings` is checked
+    against the rows of both blocks (`_verify_broad_readings`).
 
     StatVar rows carry no `provenances` and the result has no stamp, so it does not load as an
-    index. `export_index` completes it from a coverage build. The drift test compares it with the
-    committed export, listing the same StatVars the committed index lists, so it needs graph
-    credentials alone.
+    index. `export_index` completes it.
     """
     declarations = []
     codes = []
@@ -1759,6 +2043,7 @@ def export_graph_blocks(
     )
     listed_statvars = export_statvars(reader, sorted(listed)) if listed else []
     _verify_listed_five_tuples(reader, statvars, listed_statvars)
+    _verify_broad_readings([*statvars, *listed_statvars], broad_readings)
     source_codes = export_source_codes(reader, sorted(listed)) if listed else []
     value_parents = export_value_parents(reader, listed_statvars)
     _verify_measure_partition_labels(statvars, measure_axes, measure_partition_labels)
@@ -1787,12 +2072,106 @@ def export_graph_blocks(
             {"type": type_, "kind": kind} for type_, kind in sorted(party_type_kinds.items())
         ],
         "shape_slot_defaults": [_shape_slot_default_to_dict(d) for d in shape_slot_defaults],
+        "broad_readings": [_broad_reading_to_dict(r) for r in broad_readings],
         "partly_stated_values": [_partly_stated_value_to_dict(v) for v in partly_stated_values],
         "implied_values": [_implied_value_to_dict(v) for v in implied_values],
         "measure_classes": [_measure_class_to_dict(d) for d in measure_classes],
         "variable_aliases": dict(variable_aliases),
+        "slot_plain_names": dict(SLOT_PLAIN_NAMES),
         "stat_type_words": [_stat_type_word_to_dict(d) for d in stat_type_words],
+        "whole_total_sets": [_whole_total_set_to_dict(d) for d in whole_total_sets],
     }
+
+
+@dataclass(frozen=True)
+class CoverageJoin:
+    """What the export takes from the coverage it joins: each covered variable's sorted
+    provenances, and the donors and recipients of the declared and listed datasets."""
+
+    provenances: Mapping[str, Sequence[str]]
+    parties: Mapping[str, PartyPublication]
+
+
+def export_index(
+    reader: ExportReader,
+    *,
+    graph_endpoint: str,
+    coverage: CoverageJoin,
+    party_reader: ExportReader,
+    code_systems: Sequence[CodeSystemConfig] = CODE_SYSTEMS,
+    measure_axes: Sequence[MeasureAxis] = MEASURE_AXES,
+    measure_partition_labels: Sequence[MeasurePartitionLabel] = MEASURE_PARTITION_LABELS,
+    measure_nouns: Sequence[MeasurePartitionLabel] = MEASURE_NOUNS,
+    datasets: Sequence[DatasetDeclaration] = DATASETS,
+    party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
+    shape_slot_defaults: Sequence[ShapeSlotDefault] = SHAPE_SLOT_DEFAULTS,
+    broad_readings: Sequence[BroadReading] = BROAD_READINGS,
+    partly_stated_values: Sequence[PartlyStatedValue] = PARTLY_STATED_VALUES,
+    implied_values: Sequence[ImpliedValue] = IMPLIED_VALUES,
+    measure_classes: Sequence[MeasureClassDeclaration] = MEASURE_CLASSES,
+    variable_aliases: Mapping[str, str] = VARIABLE_ALIASES,
+    stat_type_words: Sequence[StatTypeWordDeclaration] = STAT_TYPE_WORDS,
+    party_kind_overrides: Mapping[str, KindOverride] = PARTY_KIND_OVERRIDES,
+    total_groups: Mapping[str, TotalGroup] = TOTAL_GROUPS,
+    private_providers: Mapping[int, str] = PRIVATE_PROVIDERS,
+    whole_totals: Mapping[str, WholePopulationTotal] = WHOLE_POPULATION_TOTALS,
+    whole_total_sets: Sequence[WholeTotalSet] = WHOLE_TOTAL_SETS,
+    listed_datasets: Collection[str] = (),
+) -> dict:
+    """Build the index document: the graph blocks (`export_graph_blocks`), with the StatVars
+    `coverage` assigns to `listed_datasets` as listed rows (`listed_dcids`), each row's
+    provenances from `coverage`, every party of `coverage` with its kind, class, group and
+    whole markers (`export_parties`, read through `party_reader`), and the stamp.
+
+    The stamp holds only what the blocks determine and `graph_endpoint`: an empty
+    `exported_at` and no `coverage_build`, which `graph_release.views` fills from the release
+    manifest, so an unchanged index keeps its bytes. `statvars_without_coverage` counts the
+    StatVar rows `coverage` gives no provenance.
+
+    Raises `ExportRefused` where a step refuses the graph or the declarations. Whether the
+    finished document loads is checked once, where it is read: the release gate refuses a code
+    index part `parse_index` or `parse_measure_axes` refuses (`code_index_unloadable`).
+    """
+    blocks = export_graph_blocks(
+        reader,
+        code_systems=code_systems,
+        measure_axes=measure_axes,
+        measure_partition_labels=measure_partition_labels,
+        measure_nouns=measure_nouns,
+        datasets=datasets,
+        party_type_kinds=party_type_kinds,
+        listed=listed_dcids(coverage.provenances, listed_datasets),
+        shape_slot_defaults=shape_slot_defaults,
+        broad_readings=broad_readings,
+        partly_stated_values=partly_stated_values,
+        implied_values=implied_values,
+        measure_classes=measure_classes,
+        variable_aliases=variable_aliases,
+        stat_type_words=stat_type_words,
+        whole_total_sets=whole_total_sets,
+    )
+    for block in ("statvars", "listed_statvars"):
+        for row in blocks[block]:
+            row["provenances"] = sorted(coverage.provenances.get(row["dcid"], ()))
+    verify_complete_systems(blocks["statvars"], code_systems)
+    blocks["parties"] = export_parties(
+        party_reader,
+        coverage.parties,
+        type_kinds=party_type_kinds,
+        kind_overrides=party_kind_overrides,
+        total_groups=total_groups,
+        private_providers=private_providers,
+        whole_totals=whole_totals,
+    )
+    stamp = {
+        "graph_endpoint": graph_endpoint,
+        "exported_at": "",
+        **stamp_counts(blocks),
+        "content_hash": content_hash(blocks),
+        "coverage_build": None,
+        "statvars_without_coverage": sum(not row["provenances"] for row in blocks["statvars"]),
+    }
+    return {"stamp": stamp, **blocks}
 
 
 def stamp_counts(blocks: Mapping[str, list[dict]]) -> dict[str, dict[str, int]]:

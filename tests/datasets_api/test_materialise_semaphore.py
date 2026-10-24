@@ -38,7 +38,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.operation_store import NullOperationStore
 from datasets_api.operations.task_client import NullTaskClient
-from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter, SubjectHead
+from datasets_api.versions import NullHeadWriter, SubjectHead
 from dc_sdmx import SdmxClient
 from dfo_platform.app import create_app
 from graph_release.context import bound_release, current_release
@@ -58,7 +58,7 @@ from tests.graph_release.support import build_test_release, sample_tables
 from ._app_factories import offline_recipe_stores
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
-from ._snapshot_doubles import FakeSnapshotReader
+from ._snapshot_doubles import offline_version_pair
 from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
 
@@ -229,9 +229,8 @@ def _client(
         graph=graph,
         sdmx=sdmx,
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
-        snapshot_reader=FakeSnapshotReader(),
+        **offline_version_pair(version_writer=None, snapshot_reader=None),
         reference_writer=FakeArtifactReferenceWriter(),
-        version_writer=NullVersionRecordWriter(),
         head_writer=head_writer if head_writer is not None else NullHeadWriter(),
         operation_store=NullOperationStore(),
         task_client=NullTaskClient(),
@@ -1110,7 +1109,7 @@ def _swapping_release(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> tuple[ReleaseService, Callable[[], None]]:
     """A graph release service serving the first of two published releases, and the function
-    that swaps it to the second. Each release's views are the packaged code index and
+    that swaps it to the second. Each release's views are the fixture code index and
     `_coverage_index()`, and each one's origin view is the session release's, so a request
     reads the same index and origin from either."""
     views = ReleaseViews(

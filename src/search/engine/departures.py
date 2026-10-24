@@ -44,6 +44,7 @@ from search.models import (
     UNIT_REF,
     WHERE_REF,
     BindingProvenance,
+    EntityGroup,
     GraphRef,
     IdentityWindowRange,
     ObservationSeries,
@@ -231,14 +232,18 @@ def spec_departure_facts(
     *,
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    members_in_words: bool = False,
 ) -> list[DepartureFact]:
     """The departures read off `spec` and the `operations` its part carries: operations
     not run, entities the data holds no values for, years outside the served span,
-    modelled values, and groups read as members. On a flow role such a group names the
-    residuals its total counts that the members leave out and the served dataset publishes on
-    that role.
-    A group read as its total departs nothing.
-    With no `spec`, only the operations not run.
+    modelled values, groups read as members, and sides read as their whole population. On a
+    flow role a group read as members names the residuals its total counts that the members
+    leave out and the served dataset publishes on that role. A group read as its total
+    departs nothing. A side read whole (`EntityGroup.whole_of`) departs as
+    `whole_total_read`, which names the population and the way back to its members, in the
+    question's words where the part's door asks for members in them (`members_in_words`). An
+    `aggregate` over that side still departs as not run: it may filter its members, which
+    the total does not answer. With no `spec`, only the operations not run.
 
     A forecast to a target year that a `year_unavailable` fact states departs as that
     fact alone; any other forecast departs as `operation_not_applied`. A group, read as
@@ -266,6 +271,18 @@ def spec_departure_facts(
     if modelled := _modelled_fact(spec):
         facts.append(modelled)
     for role, group in (spec.resolved.entity_groups or {}).items():
+        if group.whole_of:
+            facts.append(
+                _whole_total_fact(
+                    spec,
+                    role,
+                    group,
+                    words=words,
+                    request_words=entity_words is not None,
+                    members_in_words=members_in_words,
+                )
+            )
+            continue
         if group.total is not None:
             continue
         excluded, sum_differs = _members_left_out(spec, role, group.ref)
@@ -282,6 +299,45 @@ def spec_departure_facts(
             )
         )
     return facts
+
+
+def _whole_total_fact(
+    spec: Spec,
+    role: str,
+    group: EntityGroup,
+    *,
+    words: Mapping[str, str],
+    request_words: bool,
+    members_in_words: bool,
+) -> DepartureFact:
+    """`whole_total_read` for `role`, which reads `group`'s whole population. The request's
+    words for it (`words`, keyed by the group's label) are `asked`; with none on a door that
+    holds the request's words (`request_words`), the request named nothing on the side, so
+    the fact is `inferred`. A union of totals (`EntityGroup.total` `None`) names each by its
+    code index label, as the group names a single total. `side_classes` is the group's
+    (`spec_build.with_side_classes`). `members_in_words` is whether the door asks for the
+    side's members in the question's words."""
+    asked = words.get(group.label)
+    parties = get_index().parties
+    axis = role_key_axis(role)
+    totals = [entity.ref for entity in spec.resolved.entities if entity.role == role]
+    return DepartureFact(
+        code="whole_total_read",
+        binding_ref=role_ref(role),
+        asked=asked,
+        over=axis,
+        group=group.label,
+        entities=()
+        if group.total is not None
+        else tuple(
+            row.label if (row := parties.get(dcid)) is not None and row.label else dcid
+            for dcid in totals
+        ),
+        whole_of=tuple(group.whole_of or ()),
+        side_classes=tuple(group.side_classes or ()),
+        inferred=asked is None and request_words,
+        members_in_words=members_in_words,
+    )
 
 
 def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:

@@ -28,7 +28,7 @@ def classify_health_exception(_exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def healthz() -> HealthResponse:
+async def get_health() -> HealthResponse:
     return health_response(capability_version=GRAPH_CAPABILITY_VERSION)
 
 
@@ -51,7 +51,7 @@ def _data_builds(request: Request) -> tuple[DataBuilds, bool]:
 
 
 # `response_model` documents the response body in `/openapi.json`.
-async def capabilities(request: Request) -> Response:
+async def get_capabilities(request: Request) -> Response:
     data_builds, transient_gap = _data_builds(request)
     document = build_capabilities(
         capability_version=GRAPH_CAPABILITY_VERSION,
@@ -66,11 +66,11 @@ async def capabilities(request: Request) -> Response:
 def build_health_door() -> DoorContribution:
     router = APIRouter()
     router.add_api_route(
-        "/api/graph/healthz", healthz, methods=["GET"], response_model=HealthResponse
+        "/api/graph/healthz", get_health, methods=["GET"], response_model=HealthResponse
     )
     router.add_api_route(
         "/api/graph/capabilities",
-        capabilities,
+        get_capabilities,
         methods=["GET"],
         response_model=Capabilities,
     )

@@ -1,4 +1,5 @@
 {
+  "DACAllRecipients": ["all recipients"],
   "DACMultilaterals": [
     "multilaterals",
     "multilateral organisations",
@@ -6,7 +7,11 @@
     "multilateral institutions",
     "multilateral donors"
   ],
-  "DACOfficialDonors": ["official donors"],
+  "DACOfficialDonors": [
+    "official donors",
+    "all donors, total",
+    "all official donors"
+  ],
   "DACOtherMultilateralOrganisations": ["other multilateral organisations"],
   "DACPrivateDonors": ["private donors"],
   "DACRegionalDevelopmentBanks": ["regional development banks"],

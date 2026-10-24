@@ -26,7 +26,7 @@ rather than re-derived, since it is already the exact fact
 `_directional_options_set`'s own coverage lookup filters by.
 
 The caller passes one `CoverageSnapshot` to the cache key and response
-builder. Its stamp ensures a republished coverage artifact cannot reuse
+builder. Its stamp ensures a newer release's coverage view cannot reuse
 results built against earlier donor or recipient membership. The key also holds the
 build id and UN System setting of the origin catalogue the request bound, which decide
 what provenances the options admit and which places the UN front door refuses. A
@@ -152,7 +152,7 @@ def options_response_cache_key(
     """The `OptionsResponseCache` key for `req`/`target`. See the module
     docstring for every ingredient and why each is there. `build_commit`,
     `coverage` and `catalogue` are passed in by the caller (`app.py`'s
-    `options_endpoint`, which takes one `get_coverage_service().snapshot()` read and
+    `list_options`, which takes one `get_coverage_service().snapshot()` read and
     one `current_catalogue()` read per request and threads them here and into
     `compute_options`, rather than this function reading either again on its own)
     rather than read here, keeping this function pure -- no I/O, no config import --

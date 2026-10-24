@@ -228,7 +228,7 @@ class SearchSettings(BaseSettings):
     # inline-display caps. A read of several series shares the cap times its series equally.
     obs_preview_max_rows: int = 20_000
 
-    # Open-axis discovery filters the coverage artifact without a member-count cap.
+    # Open-axis discovery filters the release's coverage view without a member-count cap.
     # scope_min_year floors open-ended windows. Coverage paths also floor at the artifact's
     # epoch_year, the first year represented by its bitmask.
     # scope_max_window_years limits year lists before they become SDMX OR-filters.
@@ -280,11 +280,16 @@ class SearchSettings(BaseSettings):
     seam_default: bool = True
 
     # -- Qualifier coverage -------------------------------------------------
-    # Sets what happens to a word no reader covers beside a recognised code
-    # (`phase_rank_bind._coverage_records`). "refuse" records it, so the part refuses
-    # qualifier_not_bound with the near match. "log" logs the record it would add and
-    # answers as if it were absent.
+    # Sets what happens to a word of the variable no reader covers, beside a recognised
+    # code or rated unread beside none (`phase_rank_bind._coverage_records`). "refuse"
+    # records it, so the part refuses qualifier_not_bound with the near match. "log" logs
+    # the record it would add, with the binder's ratings, and answers as if it were absent.
     qualifier_coverage: Literal["log", "refuse"] = "refuse"
+    # The probability below which a word the coverage readers leave unread beside no code
+    # is unread: the binder rates how likely the elected shape's series states what the
+    # word names (`Binder.rate_words_stated`), and a word rated below it is a record. A
+    # word rated at or above it, or not rated, reads as stated.
+    stated_word_bar: float = Field(default=0.3, ge=0, le=1)
 
     # -- Security / prompt safety ------------------------------------------
     # FastAPI rejects longer queries with 422 before any LLM or graph call.
@@ -306,19 +311,20 @@ class SearchSettings(BaseSettings):
 
     # How long a part waits for the UN leg, its resolve and the derivation of its shapes,
     # from the start of derivation, in seconds. The UN derivation runs beside ours, and only
-    # a part whose own pass ends no_data waits for it, or with un_on_first_menu one whose
-    # best shape is weak. Past it that part keeps our answer and carries
-    # un_system_unavailable. Run
-    # beside ours against the live UN deployment, ten queries' UN legs finished 0.89 to
-    # 1.57 s after derivation began; a 1.0 s wait missed one of the ten. The `un_derive` log
-    # line gives each derivation's time. Must be in (0, un_resolve_timeout_s].
+    # a part whose own pass ends no_data or answers on a pick its binder doubted waits for
+    # it, or with un_on_first_menu one whose best shape is weak. Past it that part keeps our
+    # answer and carries un_system_unavailable. Run beside ours against the live UN
+    # deployment, ten queries' UN legs finished 0.89 to 1.57 s after derivation began; a
+    # 1.0 s wait missed one of the ten. The `un_derive` log line gives each derivation's
+    # time. Must be in (0, un_resolve_timeout_s].
     un_first_pass_wait_s: float = 1.5
 
     # Whether our pass's menu also holds the UN leg's shapes, each meeting the same admission
     # and its own pool's floor (`phase_intake._merge_un_pool`). Only a part whose best shape
     # scores below `phase_intake.UN_MERGE_WEAK_SCORE` takes them, waiting for the UN leg up
     # to un_first_pass_wait_s. The UN shapes take the seats ours leave (`seating.seat_menu`).
-    # A part whose merged pass ends no_data still runs the UN pass.
+    # A part whose merged pass ends no_data still runs the UN pass, and one whose binder
+    # doubted its answer runs it over the UN shapes that took no seat on the menu.
     un_on_first_menu: bool = False
 
     # Timeout in seconds for a definite answer's related-measures reads (`related`), which

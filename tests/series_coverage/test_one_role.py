@@ -4,35 +4,18 @@ An IDS total declares only `financingRecipient`, so its rows carry the
 debtor in `recipient` and an empty `donor`, and its `RoleNames` has no
 donor. A DAC1 aggregate declares only `financingProvider`, so its rows carry
 the donor in `donor` and an empty `recipient`, and its `RoleNames` has no
-recipient. The artifact below holds both beside a two-role by-creditor
+recipient. The index below holds both beside a two-role by-creditor
 variant.
 """
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from series_coverage.index import CoverageIndex, ProvenanceShape
-from series_coverage.io import (
-    write_coverage_table,
-    write_current,
-    write_facet_metadata,
-    write_manifest,
-    write_role_names,
-)
-from series_coverage.loader import CoverageArtifactError, load_coverage
-from series_coverage.schema import (
-    ABSENT_ENTITY,
-    CoverageManifest,
-    CoveragePointer,
-    FacetMetadata,
-    RoleNames,
-)
-from series_coverage.verify import main as verify_main
-from tests.series_coverage.support import build_dir, coverage_table, pointer_path
+from series_coverage.loader import CoverageArtifactError
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
+from tests.series_coverage.support import checked_test_index, coverage_table
 
 TOTAL = "Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_Nominal"
 BY_CREDITOR = (
@@ -67,61 +50,17 @@ FACET_METADATA = {
 }
 
 
-def _write_artifact(
-    base: Path,
-    *,
-    rows=ROWS,
-    role_names: dict[str, RoleNames] = ROLE_NAMES,
-) -> str:
+def _index(*, rows=ROWS, role_names: dict[str, RoleNames] = ROLE_NAMES) -> CoverageIndex:
     table, horizon = coverage_table(rows)
-    prefix = build_dir(base, "b1")
-    prefix.mkdir(parents=True)
-    write_coverage_table(table, prefix / "coverage.parquet", horizon=horizon)
-    write_role_names(role_names, prefix / "role_names.json")
-    write_facet_metadata(FACET_METADATA, prefix / "facets.json")
-    write_manifest(
-        CoverageManifest(
-            stamp="s1",
-            build_id="b1",
-            built_at="2026-09-30T00:00:00Z",
-            source="tests.series_coverage.test_one_role",
-            row_counts={"rows": table.num_rows},
-            files={
-                "coverage": "coverage.parquet",
-                "role_names": "role_names.json",
-                "facets": "facets.json",
-            },
-            horizon=horizon,
-        ),
-        prefix / "manifest.json",
-    )
-    write_current(CoveragePointer(stamp="s1", build_id="b1"), pointer_path(base))
-    return f"file://{base}"
+    return checked_test_index(table, role_names, FACET_METADATA, horizon=horizon)
 
 
 @pytest.fixture
-def index(tmp_path: Path) -> CoverageIndex:
-    return load_coverage(_write_artifact(tmp_path / "coverage")).index
+def index() -> CoverageIndex:
+    return _index()
 
 
-# --- loader and verify -----------------------------------------------------
-
-
-def test_role_names_json_stores_the_lacking_role_as_null_and_loads_it_back(
-    tmp_path: Path,
-) -> None:
-    uri = _write_artifact(tmp_path / "coverage")
-    raw = json.loads((build_dir(tmp_path / "coverage", "b1") / "role_names.json").read_text())
-    assert raw[TOTAL] == {"donor": None, "recipient": "financingRecipient"}
-    assert raw[PROVIDER_TOTAL] == {"donor": "financingProvider", "recipient": None}
-    assert load_coverage(uri).index.role_names == ROLE_NAMES
-
-
-def test_verify_accepts_an_artifact_holding_a_one_role_variable(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert verify_main([_write_artifact(tmp_path / "coverage")]) == 0
-    assert "loaded a compatible coverage artifact" in capsys.readouterr().out
+# --- checks ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -135,12 +74,11 @@ def test_verify_accepts_an_artifact_holding_a_one_role_variable(
         (PROVIDER_TOTAL, RoleNames(donor=None, recipient="financingRecipient")),
     ],
 )
-def test_load_refuses_role_names_that_disagree_with_the_empty_columns(
-    tmp_path: Path, variable: str, names: RoleNames
+def test_checked_index_refuses_role_names_that_disagree_with_the_empty_columns(
+    variable: str, names: RoleNames
 ) -> None:
-    uri = _write_artifact(tmp_path / "coverage", role_names={**ROLE_NAMES, variable: names})
     with pytest.raises(CoverageArtifactError, match=variable):
-        load_coverage(uri)
+        _index(role_names={**ROLE_NAMES, variable: names})
 
 
 @pytest.mark.parametrize(
@@ -150,27 +88,11 @@ def test_load_refuses_role_names_that_disagree_with_the_empty_columns(
         (BY_CREDITOR, FACET, ABSENT_ENTITY, KEN, [2020]),
     ],
 )
-def test_load_refuses_an_empty_entity_on_a_role_the_variable_declares(
-    tmp_path: Path, row: tuple[str, str, str, str, list[int]]
+def test_checked_index_refuses_an_empty_entity_on_a_role_the_variable_declares(
+    row: tuple[str, str, str, str, list[int]],
 ) -> None:
-    uri = _write_artifact(tmp_path / "coverage", rows=[*ROWS, row])
     with pytest.raises(CoverageArtifactError, match=BY_CREDITOR):
-        load_coverage(uri)
-
-
-@pytest.mark.parametrize(
-    "entry", [{"donor": None, "recipient": None}, {"donor": None, "recipient": 5}]
-)
-def test_load_refuses_a_role_names_entry_without_a_string_role(
-    tmp_path: Path, entry: dict[str, object]
-) -> None:
-    uri = _write_artifact(tmp_path / "coverage")
-    path = build_dir(tmp_path / "coverage", "b1") / "role_names.json"
-    payload = json.loads(path.read_text())
-    payload[TOTAL] = entry
-    path.write_text(json.dumps(payload))
-    with pytest.raises(CoverageArtifactError, match=r"role_names\.json"):
-        load_coverage(uri)
+        _index(rows=[*ROWS, row])
 
 
 # --- index lookups -----------------------------------------------------------

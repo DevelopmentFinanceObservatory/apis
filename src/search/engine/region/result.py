@@ -27,12 +27,14 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.retrieve import MemberPopulation
+from search.engine.role_text import every_member_axis, every_member_breakdown
 from search.engine.shape import ShapeDraft
 from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scope import AmbiguousSource, SourceRefusal, SourceScope
 from search.engine.spec_build import RoleAxisFactInput
 from search.heading.departure_fact import DepartureFact
 from search.models import (
+    Assumption,
     EntityRoleKey,
     GraphRef,
     NearestRealSpec,
@@ -51,6 +53,7 @@ from search.models import (
     Unsupported,
     Warning,
 )
+from search.render.no_data import UnlistedPopulation
 
 if TYPE_CHECKING:
     from search.engine.bind import SlotBindingDraft
@@ -75,11 +78,19 @@ class FacetAxisFilter:
 
 @dataclass(frozen=True)
 class AmbiguousEntityCandidate:
-    """One graph node that could match an ambiguous query wording."""
+    """One graph node that could match an ambiguous query wording.
+
+    `group_node` is set when the candidate is a group's own node and the part asks for the
+    wording's members: a pin on a group's node cannot ask for its members, so the
+    candidate's option posts `group_name`, the group's registered name that resolves to it
+    alone. A group node with no such name (`group_name` `None`) has no option.
+    `group_name` is `None` on every other candidate."""
 
     dcid: str
     name: str
     kind: str
+    group_node: bool = False
+    group_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +115,9 @@ class RoleNotAdmittedEntity:
     dcid: str
     # `None` for a set with no node whose members share no stated type.
     graph_type: str | None
+    # A whole population asked member by member that no shape lists exactly
+    # (`phase_intake._prune_shapes_by_listing`): its side and the classes it leaves out.
+    unlisted: UnlistedPopulation | None = None
 
 
 @dataclass(frozen=True)
@@ -142,10 +156,15 @@ class RegionResult:
     elected_stat_vars: list[GraphRef] | None = None
     # Input entity names the answer could not place, in input order: on a refusal of the
     # entity check (`phase_intake._phase_check_entities`), every name that resolved to no
-    # single node, ambiguous ones included, and for `role_not_resolved` those whose flow
-    # direction the query does not tell (`place_roles.untold_direction_names`). Empty
-    # otherwise.
+    # single node, ambiguous ones included, for `role_not_resolved` those whose flow
+    # direction the query does not tell (`place_roles.untold_direction_names`), and for
+    # `role_incompatible` at that check each whole population directed to the other side
+    # (`ResolveState.whole_misdirected`). Empty otherwise.
     unresolved_entity_names: tuple[str, ...] = ()
+    # The same `role_not_resolved` names grouped by the place each names, one tuple per
+    # untold place set in query order (`place_roles.untold_direction_groups`), so the
+    # refusal's sentence counts places. Empty for every other outcome.
+    untold_groups: tuple[tuple[str, ...], ...] = ()
     # Query qualifiers without a final binding, including terms absent from the
     # index vocabulary. Populated only for `qualifier_not_bound`. Full records
     # live on `flagged_match.resolved.trace.query_qualifiers`.
@@ -174,7 +193,7 @@ class RegionResult:
     # its sentence names. `None` for every other outcome.
     source_code_refusal: SourceCodeRefusal | None = None
     # Entity names that resolved to exactly one graph node, with that node's dcid,
-    # populated only for `entity_ambiguous`. The part's `data_query` pins them.
+    # populated only for `entity_ambiguous`. Each of the part's options pins them.
     resolved_entity_dcids: Mapping[str, str] = field(default_factory=dict)
     # Resolved entities without an admitted role in resolution order, populated
     # only for `entity_role_not_admitted`.
@@ -193,17 +212,33 @@ class RegionResult:
     # refusal about the elected reading. A refusal that judged no answer is judged on it
     # (`phase_shared.settle_unjudged_refusal`).
     refused_answer: tuple[ShapeDraft, tuple[SlotBindingDraft, ...]] | None = None
-    # Stripped, case-folded qualifier spans forced into bindings by this region, or
-    # answered by a slot default it warns about. Same-shape merges union the sets.
+    # Stripped, case-folded qualifier spans forced into bindings by this region, answered
+    # by a slot default it warns about, or asking for every member of a flow role its
+    # answer leaves unbound (`every_member_phrases`). Same-shape merges union the sets.
     # The entry door uses them to retain or drop `QUERY_QUALIFIER_DROPPED` warnings
     # across the request.
     admitted_qualifier_phrases: frozenset[str] = frozenset()
+    # The raw-text door's request-wide `QUERY_QUALIFIER_DROPPED` warnings whose phrase this
+    # region leaves unapplied (`raw_text._ExtractionPrep.onto`). The envelope states such a
+    # warning only while no region admits its phrase. The part's departures read these
+    # beside its own and the envelope's warnings, so a phrase a sibling part applied still
+    # departs on this one. No part states them.
+    unapplied_qualifier_warnings: tuple[Warning, ...] = ()
+    # The flow axes those every-member phrases ask for ("all donors" asks the origin),
+    # which the part's assumptions read as asked (`render.assumptions.assumptions_for`).
+    # Outside the identity and its hash. Same-shape merges union the sets.
+    every_member_axes: frozenset[RoleAxis] = frozenset()
     # Why a no_data outcome fired (models.NoData's own `cause`), populated
     # only for no_data_reason=="rate_coverage_gap".
     cause: Cause | None = None
     # Capped currencies a `unit_not_resolved` refusal offers. Empty for every other
     # outcome and for a refusal with no candidates.
     unit_alternatives: tuple[UnitAlternative, ...] = ()
+    # The readings of a `role_not_resolved` refusal's unstated directions, each mapping
+    # every request text of every set whose direction the question leaves untold to one
+    # flow axis (`place_roles.direction_readings`). Empty for every other outcome, past
+    # `place_roles.MAX_DIRECTION_READINGS` readings, and when no reading holds data.
+    role_assignments: tuple[Mapping[str, RoleAxis], ...] = ()
     # The denominator the question named and the one the flagged match divides by, set on a
     # `denominator_not_available` refusal after election. `None` on every other outcome.
     denominator: NoDataDenominator | None = None
@@ -215,6 +250,10 @@ class RegionResult:
     # a place named without one on, the one direction that holds data
     # (`departures.direction_inferred`).
     inferred_facts: tuple[DepartureFact, ...] = ()
+    # The `whole_total_unpublished` facts of each Spec, by `spec_id`: the whole populations
+    # a text names whose side the Spec's dataset reads as unnamed
+    # (`whole_totals.whole_total_unpublished_facts`). No warning discloses them.
+    unpublished_whole_facts: Mapping[str, tuple[DepartureFact, ...]] = field(default_factory=dict)
     # This region's LLM token usage. A same-shape merge keeps the first
     # member's value. Request-wide totals are aggregated separately.
     llm_usage: dict | None = None
@@ -226,6 +265,16 @@ class RegionResult:
     # states. A candidate set the status rule builds is `intent_rank`: the elected reading
     # first, then its rivals in menu order. Assembly keeps the specs' order either way.
     candidate_ordering_override: Ordering | None = None
+    # The assumptions a dataset resubmit identity entry echoed back
+    # (`ResubmitIdentityEntry.assumptions`). Its definite part states those that still hold
+    # (`render.assumptions.assumptions_for`). None when the entry echoes none and on every
+    # other door.
+    assumption_echo: tuple[Assumption, ...] | None = None
+    # The assumptions each reading of a dataset resubmit candidates entry echoed back
+    # (`ResubmitCandidate.assumptions`), keyed by the rebuilt reading's spec_id. Its
+    # candidates part reads each reading with its echo (`render.assumptions.assumptions_for`);
+    # a reading absent here echoed none. Empty on every other door.
+    reading_assumption_echoes: Mapping[str, tuple[Assumption, ...]] = field(default_factory=dict)
     # Unawaited coverage probe for streamed slot options, sent after `response`.
     # It leaves `specs[].slot_options` and the buffered response unchanged.
     # Its events and warnings feed the terminal `done` event.
@@ -277,7 +326,7 @@ class RegionResult:
     # while part assembly reads restatement from each original region.
     restatement: ParsedPart | None = None
     # A resolved leg's inputs as one parsed part, set whether or not `restatement`
-    # echoes them. `NoData.data_query` pins into it. The parsed doors set it to the
+    # echoes them. `NoData.options` are built from it. The parsed doors set it to the
     # posted part. `None` when `ParsedPart` bounds reject the inputs, on soft-deadline
     # placeholders, and on resubmit identity, candidate and placeholder regions.
     parsed_form: ParsedPart | None = None
@@ -292,6 +341,10 @@ class RegionResult:
     # for a candidate set. `with_runnable_operations` reads it to tell which flow axes the
     # answer's data carries. None on every other result.
     answered_roles: tuple[str, ...] | None = None
+    # Every candidate's `answered_roles`, in candidate order, on a candidate set the
+    # pipeline assembles, so `every_member_phrases` judges every answer. None on every
+    # other result.
+    candidate_answered_roles: tuple[tuple[str, ...], ...] | None = None
     # Served measure partition and sibling partitions. Same-shape merges need
     # these to mint new identities after member materialisations are gone.
     measure_partition: MeasurePartition | None = None
@@ -354,6 +407,19 @@ class RegionResult:
     # `None` on a door that holds no words for any entity (a resubmit), whose departures
     # then quote none.
     entity_words: Mapping[str, str] | None = field(default_factory=dict)
+    # Whether the part's door asks for a flow side's members in the question's words ("by
+    # donor"), as the raw-text door does (`raw_text._ExtractionPrep.onto`). The other doors
+    # post `open_roles`. A side read whole states its way back to the members in that form.
+    members_in_words: bool = False
+    # The places the answer binds for each entity text of the part, by that text
+    # (`place_roles.bound_entity_refs`), read once the part's places have settled. A text
+    # absent here binds none: an ambiguous or unresolved one, every text of a part refused
+    # before its places are bound, and every text of a soft-deadline placeholder.
+    entity_refs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # The flow sides a whole population the part asks for member by member opens
+    # (`ResolveState.whole_listed`). The leg warns for each one the answer drops as it
+    # does for its own open roles (`with_dropped_open_roles`).
+    listed_axes: frozenset[RoleAxis] = frozenset()
 
     @property
     def spec(self) -> Spec:
@@ -491,7 +557,8 @@ def with_runnable_operations(region: RegionResult, operations: Sequence[Operatio
 
 def with_dropped_open_roles(region: RegionResult, open_axes: Collection[RoleAxis]) -> RegionResult:
     """Return `region` warning `query_qualifier_dropped` for each of `open_axes`, the part's
-    own open roles, that its answer drops.
+    own open roles and the sides a whole population it asks member by member opens
+    (`RegionResult.listed_axes`), that its answer drops.
 
     A place the part names without `role_text` takes the axis place binding gives it, and a
     bound axis wins over an open one (`place_roles.PlaceRoles.open_axes`), so the answer
@@ -520,6 +587,41 @@ def with_dropped_open_roles(region: RegionResult, open_axes: Collection[RoleAxis
             warnings.append(warning)
             departure_facts[warning_key(warning)] = breakdown_not_applied(axis, asked=None)
     return dataclasses.replace(region, warnings=tuple(warnings), departure_facts=departure_facts)
+
+
+def every_member_phrases(
+    region: RegionResult, phrases: Sequence[str], *, query: str
+) -> dict[str, RoleAxis]:
+    """The `phrases`, stripped and casefolded, that ask for every member of a flow axis
+    (`role_text.every_member_axis`, reading prepositions in `query`) and that `region`'s
+    answer meets, each mapped to that axis.
+
+    A role-bearing answer (`RegionResult.answered_roles`) that binds no entity on the axis
+    holds every member on it: one series per member where it declares a role there, and
+    the total over them where it declares none. An "all" phrase is met by either. An
+    "each" or "every" phrase asks for the breakdown (`role_text.every_member_breakdown`),
+    so only an answer declaring a role on the axis meets it, as for an open role
+    (`with_dropped_open_roles`). A candidate set meets a phrase only when every candidate
+    does (`RegionResult.candidate_answered_roles`). A subject-only answer and a result
+    with no Spec meet none, so their phrases stay dropped.
+    """
+    if not region.specs:
+        return {}
+    answers = region.candidate_answered_roles or (region.answered_roles or (),)
+    declared_by_answer = [
+        {axis_for_role(role) for role in roles if role != "observationAbout"} for roles in answers
+    ]
+    if not all(declared_by_answer):
+        return {}
+    declared_by_all = set.intersection(*declared_by_answer)
+    bound = {key for spec in region.specs for key in spec.definition.identity.entities}
+    return {
+        phrase.strip().casefold(): axis
+        for phrase in phrases
+        if (axis := every_member_axis(phrase, query=query)) is not None
+        and axis not in bound
+        and (axis in declared_by_all or not every_member_breakdown(phrase))
+    }
 
 
 def _bound_open_role_warning(axis: RoleAxis) -> Warning:

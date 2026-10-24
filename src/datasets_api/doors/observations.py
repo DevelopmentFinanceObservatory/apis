@@ -408,7 +408,11 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
 
     locations = stored.servable
     if not servable_listable_locations(
-        locations, now=read_at, rendition=rendition_token(deps.settings.site)
+        locations,
+        now=read_at,
+        rendition=rendition_token(deps.settings.site),
+        # Only asks whether any file is listed, so which digest rendered it does not matter.
+        enrichment_digest=None,
     ):
         raise ArtifactExpired(id=id, content_version=content_version)
     stored = _StoredPreview.from_manifest(

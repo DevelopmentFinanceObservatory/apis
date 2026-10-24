@@ -325,6 +325,21 @@ class ArtifactEntryModel(BaseModel):
         "host. It never expires: each request checks the version and answers 302 to a signed "
         "URL valid for five minutes, or refuses snapshot_revoked once the version is taken down"
     )
+    enrichment_stamp: str | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "the digest of the code index's party kinds, classes and whole-total markers this "
+            "file's party cells ({role}_kind, or {role}_party_kind, {role}_party_class and "
+            "{role}_party_whole) were read under. Present on a file whose frame holds a party "
+            "role and whose layout writes party cells (a long-layout file, or one whose columns "
+            "name a party field), when it was rendered under the serving code "
+            "index. Absent on every other file, including a pinned or older-layout file rendered "
+            "under an earlier index, whose kinds may be out of date. A caller naming a frame by "
+            "this file's rendering adds the stamp to the name, so a change to a party's kind names "
+            "a new frame"
+        ),
+    )
 
 
 class ColumnOptionModel(BaseModel):
@@ -334,7 +349,7 @@ class ColumnOptionModel(BaseModel):
     name: str
     kind: str
     droppable: bool
-    distinct: int | None
+    distinct: int | None = Field(default=None, exclude_if=_is_none)
 
 
 class FormatOptionModel(BaseModel):
@@ -438,14 +453,18 @@ class OutputOptionsModel(BaseModel):
     long_layout_defaults: list[str] = Field(
         description=(
             "the enrichment tokens a long-layout download writes with no columns option, in "
-            "column order: every role's {role}_label, and {role}_party_kind for every role on "
-            "a flow axis. Naming one in columns gives the same column once"
+            "column order: every role's {role}_label, and {role}_kind for every role on a flow "
+            "axis, the party's kind in words: official or private on the provider or creditor "
+            "side, country or organisation on the recipient or debtor side, total, whole total "
+            "(a total that holds every party of its group in that row's dataset and year) or "
+            "unallocated. Naming one in columns gives the same column once"
         )
     )
     long_layout_totals: list[str] = Field(
         description=(
-            "the roles whose total rows ({role}_party_kind is total) a long-layout CSV or "
-            "XLSX download keeps out of its main table. A role is listed when the definition "
+            "the roles whose total rows ({role}_kind is total or whole total) a long-layout CSV "
+            "or XLSX download keeps out of its main table. A private party stays in it. A role "
+            "is listed when the definition "
             "binds it to several entities one of which the code index declares a total, or "
             "leaves it open and the code index lists a total on its axis in a dataset the "
             "definition read (any dataset, when the read selected none). A role bound to "
@@ -467,6 +486,28 @@ class DefinitionModel(BaseModel):
     identity: Mapping[str, object] = Field(
         description="the identity-core document, shaped as search.models.identity.BaseIdentity "
         "and published at GET /api/search/schema"
+    )
+
+
+class RetentionModel(BaseModel):
+    """How long a version can still be fetched, which `datasets_api.retention` computes when a
+    door serves the version. No stored body holds it."""
+
+    model_config = ConfigDict(extra="forbid")
+    pinned: bool = Field(
+        description="whether the frame the version's files render from is in the pinned tier, "
+        "which has no expiry"
+    )
+    held_until: AwareDatetime | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="when the working-tier frame stops being guaranteed, 30 days after it was "
+        "stored. A download of the frame after `held_until`, while its bytes survive, renews it "
+        "for 30 days. After it, a file selector or download link request "
+        "that must render its file again renews the frame for 30 days if the frame's bytes "
+        "survive, and otherwise refuses `artifact_expired`. A rebuild of unchanged data through "
+        "`GET /api/datasets/{id}` or `POST /api/datasets` stores the frame again. Absent when "
+        "pinned. It can be in the past",
     )
 
 
@@ -525,6 +566,13 @@ class Manifest(BaseModel):
             "Not the same coverage as the 'coverage' "
             "field above (materialise.window.Coverage's row/dimension/window report)"
         ),
+    )
+    retention: RetentionModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="how long this version can still be fetched: the retention of the frame "
+        "every file renders from (a derived version's base frame). Each door sets it on its "
+        "response",
     )
 
 

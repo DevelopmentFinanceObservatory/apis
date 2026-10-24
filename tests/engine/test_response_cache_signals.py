@@ -32,21 +32,21 @@ def _count_state_attribute_reads(attr: str) -> int:
 
 
 def test_query_text_and_role_query_reader_counts_are_covered() -> None:
-    """Pin the 7 `query_text` readers and 1 `role_query` reader covered by cache signals,
+    """Pin the 8 `query_text` readers and 2 `role_query` readers covered by cache signals,
     plus the two reads of each that fill `QuantityRequest.query_text` in
     `_read_stated_quantity` and `BindRequest.query_text` in `_phase_bind`. Those two reach
     a model only through a binder that reads the query text, which looks up nothing on
     layer 2 (`CacheScope`), so they need no signal."""
     query_text_reads = _count_state_attribute_reads("query_text")
     role_query_reads = _count_state_attribute_reads("role_query")
-    assert query_text_reads == 9, (
+    assert query_text_reads == 10, (
         f"state.query_text has {query_text_reads} readers in src/search/engine/region/, "
-        "not the 7 compute_layer2_signals computes signals for and the binder requests' 2. "
+        "not the 8 compute_layer2_signals computes signals for and the binder requests' 2. "
         "Update compute_layer2_signals (and this test) to cover the new reader."
     )
-    assert role_query_reads == 3, (
+    assert role_query_reads == 4, (
         f"state.role_query has {role_query_reads} readers in src/search/engine/region/, "
-        "not the 1 compute_layer2_signals computes a signal for and the binder requests' 2. "
+        "not the 2 compute_layer2_signals computes signals for and the binder requests' 2. "
         "Update compute_layer2_signals (and this test) to cover the new reader."
     )
 
@@ -125,6 +125,7 @@ def test_query_text_none_yields_no_qualifier_or_unsupported_signals() -> None:
     assert signals.unsupported_qualifier_phrases == ()
     assert signals.declared_default_trigger_words == ()
     assert signals.declared_default_slots_named == ()
+    assert signals.query_text_value_source is None
 
 
 def test_query_text_qualifier_match_against_the_real_index() -> None:
@@ -261,7 +262,7 @@ def test_negated_stated_words_against_the_real_index(
 
 
 def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
-    """The dataclass has one field for each of the ten cache signals."""
+    """The dataclass has one field for each cache signal."""
     field_names = {f.name for f in fields(Layer2Signals)}
     assert field_names == {
         "role_contradictions",
@@ -274,7 +275,35 @@ def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
         "declared_default_slots_named",
         "written_variable_phrases",
         "query_text_negated_stated_words",
+        "every_member_axes",
+        "query_text_value_source",
     }
+
+
+def test_a_dropped_phrase_of_place_nouns_takes_its_axis_from_the_query() -> None:
+    """Two queries that extract "all countries" alike key apart by the preposition before
+    it, on a request of several variables too."""
+
+    def axes(query: str) -> tuple[str | None, ...]:
+        return compute_layer2_signals(
+            query=query,
+            entity_roles={},
+            query_text=None,
+            dropped_qualifiers=["all countries", "in all sectors"],
+        ).every_member_axes
+
+    assert axes("aid to Ethiopia from all countries in all sectors") == ("origin", None)
+    assert axes("aid from Ethiopia to all countries in all sectors") == ("destination", None)
+
+
+def test_graph_value_grounding_keeps_the_query_outside_indexed_vocabulary() -> None:
+    query = "female population in Kenya"
+    signals = compute_layer2_signals(query=query, entity_roles={}, query_text=query)
+    assert not any(
+        match["matched_text"].casefold() == "female"
+        for match in signals.query_text_qualifier_matches
+    )
+    assert signals.query_text_value_source == query
 
 
 def test_each_variable_carries_the_stretch_of_the_query_that_writes_it() -> None:

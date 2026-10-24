@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from code_index.shared import get_index
 from dataset_store.snapshot import SnapshotRevoked, StoredArtifactLocation
 from datasets_api import current as current_module
 from datasets_api import serve as serve_module
@@ -33,7 +34,7 @@ from datasets_api.operations.worker import (
 )
 from datasets_api.render import artifact_rendering
 from datasets_api.serve import WorkDeadlinePassed
-from datasets_api.version_store import rendering_key
+from datasets_api.version_store import enriched_rendering_key
 from datasets_api.versions import HeadFence, HeadFenceLost, SubjectHead
 from materialise.errors import VariableBreadthUnreadError
 from materialise.facets import read_variable_breadths
@@ -67,15 +68,20 @@ class _StubCoverage:
 _OPTIONS: dict[str, object] = {"format": "csv"}
 
 
-def _location(options: dict[str, object]) -> StoredArtifactLocation:
-    """A working-tier location stored now under the rendering `options` map to."""
+def _location(
+    options: dict[str, object], *, enrichment_digest: str | None = None
+) -> StoredArtifactLocation:
+    """A working-tier location stored now under the rendering `options` map to, rendered under
+    `enrichment_digest`, which defaults to the serving code index's."""
+    if enrichment_digest is None:
+        enrichment_digest = get_index().enrichment_digest
     rendering = artifact_rendering(
         MintOptions.model_validate(options), site=DatasetsBuildSettings().site
     )
     now = datetime.now(UTC)
     return StoredArtifactLocation(
         artifact_digest="sha256:stub",
-        rendering_key=rendering_key(rendering),
+        rendering_key=enriched_rendering_key(rendering, enrichment_digest),
         rendering=rendering,
         media_type="application/zip" if rendering["bundle"] else "application/vnd.apache.parquet",
         size_bytes=1,
@@ -98,10 +104,20 @@ class _LocationsReader:
         return list(self.locations.get((subject_id, content_version), ()))
 
 
-def _linked(subject_id: str, content_version: str, *options: dict[str, object]) -> _LocationsReader:
-    """A snapshot listing one artifact per `options` under `(subject_id, content_version)`."""
+def _linked(
+    subject_id: str,
+    content_version: str,
+    *options: dict[str, object],
+    enrichment_digest: str | None = None,
+) -> _LocationsReader:
+    """A snapshot listing one artifact per `options` under `(subject_id, content_version)`,
+    rendered under `enrichment_digest`."""
     return _LocationsReader(
-        {(subject_id, content_version): tuple(_location(item) for item in options)}
+        {
+            (subject_id, content_version): tuple(
+                _location(item, enrichment_digest=enrichment_digest) for item in options
+            )
+        }
     )
 
 
@@ -122,7 +138,7 @@ def _deps(snapshot_reader: _LocationsReader | None = None) -> DefinitionDeps:
         member_concurrency=4,
         enumerator=None,  # type: ignore[arg-type]
         enrichment=None,  # type: ignore[arg-type]
-        code_index=None,  # type: ignore[arg-type]
+        code_index=get_index(),
         rate_cache=None,  # type: ignore[arg-type]
         coverage=_StubCoverage(),  # type: ignore[arg-type]
         snapshot_reader=snapshot_reader,  # type: ignore[arg-type]
@@ -926,6 +942,20 @@ def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fe
             None,
             None,
             id="other-rendering-only-releases",
+        ),
+        pytest.param(
+            _SUBJECT_ID,
+            _linked(
+                _SUBJECT_ID,
+                "cv_stub",
+                _OPTIONS,
+                enrichment_digest=f"{get_index().enrichment_digest}-before-a-rotation",
+            ),
+            False,
+            "pending",
+            None,
+            None,
+            id="rendered-under-an-older-digest-releases",
         ),
         pytest.param(
             _SUBJECT_ID,

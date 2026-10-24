@@ -7,8 +7,9 @@ import re
 
 import pytest
 
+from search.engine.role_text import breakdown_axis, every_member_breakdown_axis
 from search.heading.departure_fact import DepartureFact, UnservedMembers
-from search.models import DEPARTURE_ORDER, Departure
+from search.models import DEPARTURE_ORDER, Departure, RoleAxis
 from search.render.departures import (
     departure_text,
     departures_from_facts,
@@ -594,6 +595,122 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
     ),
     (
         DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            over="origin",
+            group="official donors (DAC)",
+            whole_of=("official",),
+            side_classes=("official", "private", "residual"),
+            inferred=True,
+        ),
+        "aid",
+        "No donor was named, so this shows official donors (DAC), the source's total for "
+        "every official donor. Private donors are outside it. To list each donor, search again "
+        "with open_roles ['donor'].",
+    ),
+    # DAC2b publishes no private donor, so its official donors' total leaves none out.
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            over="origin",
+            group="official donors (DAC)",
+            whole_of=("official",),
+            side_classes=("official", "residual"),
+            inferred=True,
+        ),
+        "aid",
+        "No donor was named, so this shows official donors (DAC), the source's total for "
+        "every official donor. To list each donor, search again with open_roles ['donor'].",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            asked="all donors including private",
+            over="origin",
+            group="all donors including private",
+            entities=("official donors (DAC)", "private donors (DAC)"),
+            whole_of=("official", "private"),
+        ),
+        "aid",
+        "You asked for all donors including private. This shows official donors (DAC) plus "
+        "private donors (DAC). To list each donor, search again with open_roles ['donor'] in "
+        "place of all donors including private.",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="destination:",
+            over="destination",
+            group="all recipients (DAC)",
+            whole_of=("official", "residual"),
+        ),
+        "aid",
+        "This shows all recipients (DAC), the source's total for every recipient, which "
+        "includes aid not allocated to a country. To list each recipient, search again with "
+        "open_roles ['recipient'].",
+    ),
+    # The raw-text door asks for a side's members in the question's words.
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            over="origin",
+            group="official donors (DAC)",
+            whole_of=("official",),
+            side_classes=("official", "residual"),
+            inferred=True,
+            members_in_words=True,
+        ),
+        "aid",
+        "No donor was named, so this shows official donors (DAC), the source's total for "
+        'every official donor. To list each donor, add "for each donor" to the question.',
+    ),
+    (
+        DepartureFact(
+            code="whole_total_read",
+            binding_ref="destination:",
+            asked="all recipients",
+            over="destination",
+            group="all recipients (DAC)",
+            whole_of=("official", "residual"),
+            members_in_words=True,
+        ),
+        "aid",
+        "You asked for all recipients. This shows all recipients (DAC), the source's total for "
+        "every recipient, which includes aid not allocated to a country. To list each "
+        'recipient, write "each recipient" in place of "all recipients".',
+    ),
+    (
+        DepartureFact(
+            code="whole_total_unpublished",
+            binding_ref="origin:",
+            asked="all donors",
+            shown="OECD Creditor Reporting System (CRS)",
+            over="origin",
+            whole_of=("official", "private"),
+        ),
+        "aid",
+        "You asked for all donors. OECD Creditor Reporting System (CRS) publishes no total of "
+        "every donor, so this covers every donor it holds with data, private donors among them.",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_unpublished",
+            binding_ref="where:",
+            asked="all recipients",
+            shown="OECD Creditor Reporting System (CRS)",
+            over="destination",
+            whole_of=("official", "residual"),
+        ),
+        "aid",
+        "You asked for all recipients. OECD Creditor Reporting System (CRS) publishes no total "
+        "of every recipient, so this covers every recipient it holds with data, which includes "
+        "aid not allocated to a country.",
+    ),
+    (
+        DepartureFact(
             code="direction_discarded", binding_ref="where:", asked="Kenya", over="destination"
         ),
         None,
@@ -761,11 +878,40 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
     ),
     (
         DepartureFact(
+            code="whole_total_read",
+            binding_ref="origin:",
+            over="origin",
+            group="official donors (DAC)",
+            whole_of=("official",),
+            side_classes=("official", "private", "residual"),
+            inferred=True,
+        ),
+        "aid",
+        "No donor was named, so this checked official donors (DAC), the source's total for "
+        "every official donor. Private donors are outside it. To list each donor, search again "
+        "with open_roles ['donor'].",
+    ),
+    (
+        DepartureFact(
+            code="whole_total_unpublished",
+            binding_ref="origin:",
+            asked="all donors",
+            shown="OECD Creditor Reporting System (CRS)",
+            over="origin",
+            whole_of=("official", "private"),
+        ),
+        "aid",
+        "You asked for all donors. OECD Creditor Reporting System (CRS) publishes no total of "
+        "every donor, so the closest match covers every donor it holds with data, private "
+        "donors among them.",
+    ),
+    (
+        DepartureFact(
             code="direction_discarded", binding_ref="where:", asked="Kenya", over="destination"
         ),
         None,
-        "You named Kenya as a recipient. This measure has no recipients, so this checked the "
-        "place itself.",
+        "You named Kenya as a recipient, but this measure has no recipients, so this checked "
+        "Kenya itself.",
     ),
     (
         DepartureFact(
@@ -797,6 +943,47 @@ def test_departure_text(fact, family, shows_data, text):
 @pytest.mark.parametrize("cases", [_CASES, _NO_DATA_CASES])
 def test_cases_cover_every_code(cases):
     assert {fact.code for fact, _, _ in cases} == set(DEPARTURE_ORDER)
+
+
+@pytest.mark.parametrize(
+    ("query", "asked", "over", "advised"),
+    [
+        pytest.param(
+            "ODA from Germany to all recipients",
+            "all recipients",
+            "destination",
+            "ODA from Germany to each recipient",
+            id="named_population",
+        ),
+        pytest.param(
+            "ODA to Ethiopia", None, "origin", "ODA to Ethiopia for each donor", id="unnamed_side"
+        ),
+    ],
+)
+def test_the_raw_text_way_back_writes_a_question_that_lists_the_members(
+    query: str, asked: str | None, over: RoleAxis, advised: str
+):
+    """The raw-text way back from a side read whole quotes a phrase that, put where it says
+    in the question, gives a grammatical question listing the side's members whatever
+    operation carries the phrase: a rank reads it by `breakdown_axis`, any other verb by
+    `every_member_breakdown_axis`."""
+    fact = DepartureFact(
+        code="whole_total_read",
+        binding_ref=f"{over}:",
+        asked=asked,
+        over=over,
+        group="the source's total",
+        whole_of=("official",),
+        members_in_words=True,
+    )
+
+    way_back = departure_text(fact, family=None, shows_data=True).rpartition("To list each ")[2]
+    phrase = re.findall(r'"([^"]+)"', way_back)[0]
+    rewritten = query.replace(asked, phrase) if asked is not None else f"{query} {phrase}"
+
+    assert rewritten == advised
+    assert breakdown_axis(phrase, query=rewritten) == over
+    assert every_member_breakdown_axis(phrase, query=rewritten) == over
 
 
 @pytest.mark.parametrize(("fact", "family", "shows_data", "_text"), _ALL_CASES)

@@ -83,7 +83,7 @@ def declare_regions(
 
 @pytest.fixture
 def unlisted_index(monkeypatch: pytest.MonkeyPatch):
-    """Serve the packaged code index without its listed rows (`CodeIndex.listed_statvars`), so
+    """Serve the fixture code index without its listed rows (`CodeIndex.listed_statvars`), so
     a test's fake graph decides an IDS family through the member walk."""
     packaged = code_index_shared.get_index
     index = copy.copy(packaged())

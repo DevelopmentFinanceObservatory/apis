@@ -11,6 +11,13 @@ the Spec's binding from the result.
 
 A set is one place key (`place_key`): two texts of one request that name one node are one
 set, on every role and in every reading.
+
+A shape also binds a whole total (`whole_totals`) on at most one side. A text of the part
+naming a whole population ("official donors") binds its parties on its side as named parties
+(`_named_wholes`). Where no text names one, binding repair offers the first side the part
+totals (`totalled_axes`), origin first, where every dataset the shape answers from reads the
+total whole (`whole_total_candidates`), and keeps it where the bindings settled under the
+total's role keys hold its series (`holds_whole_total`).
 """
 
 from __future__ import annotations
@@ -39,17 +46,27 @@ from search.engine.function_words import (
 )
 from search.engine.interpret import PinnedResolved
 from search.engine.qualifier_match import CONNECTIVES, read_by_vocabulary
+from search.engine.region.coverage_series import holds_series
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
 from search.engine.region.place_set import PlaceSet
+from search.engine.region.whole_totals import (
+    WholeReading,
+    covers_unpublished,
+    named_whole_label,
+    requested_years,
+    whole_reading,
+)
 from search.engine.retrieval.bound_values import (
     RoleKeys,
     declared_datasets,
     phrases_within,
+    ratio_base_axis,
     shape_family,
     shape_five_tuple,
     shape_part_datasets,
 )
 from search.engine.role_text import contradicts
+from search.engine.series_declarations import declared_side
 from search.engine.shape import (
     ShapeDraft,
     entities_by_role,
@@ -90,6 +107,14 @@ class PlaceAssignment:
     # The texts in `discarded_directions` whose direction the request's words did not state
     # (`DoorRole.stated`), so the extractor inferred it.
     inferred_directions: frozenset[str] = frozenset()
+    # The side the shape reads as its whole population, whose parties' sets fill its role in
+    # `sets` (`whole_total_candidates`), `None` when it reads none.
+    whole: WholeReading | None = None
+    # The sides no place is named on where a whole population a text names reads as left
+    # unnamed (`_named_wholes`) or is listed (`ResolveState.whole_listed`), set where the
+    # places are bound (`bind_place_roles`). No `role_scope_defaulted` warning says the
+    # request named nothing there.
+    unnamed_wholes: frozenset[RoleAxis] = frozenset()
 
     @property
     def role_keys(self) -> RoleKeys:
@@ -145,6 +170,11 @@ class PlaceRoles:
     # member of a set bound on that role is then named as the request named it
     # (`request_named_groups`).
     named_alone: frozenset[tuple[EntityRoleKey, str]] = frozenset()
+    # The side the Spec reads as its whole population (`PlaceAssignment.whole`).
+    whole: WholeReading | None = None
+    # The sides a named whole population reads as left unnamed
+    # (`PlaceAssignment.unnamed_wholes`).
+    unnamed_wholes: frozenset[RoleAxis] = frozenset()
 
 
 def _required_role_axis(shape: ShapeDraft) -> RoleAxis | None:
@@ -167,9 +197,15 @@ def _undirected_place_axis(
     the other axis: "top creditors of external debt of Kenya" reads Kenya as the debtor.
     This holds for the elected shape and every alternate alike. A group can read either way
     ("top recipients of aid in Africa" scopes the ranked recipients, "top creditors of
-    external debt of Africa" names the debtors), so it skips this rule. Otherwise an
-    alternate takes the axis the elected shape (`state.shape_draft`) assigned the place to,
-    when it declares a role on that axis: an alternate reads the variable another way, not
+    external debt of Africa" names the debtors), so it skips this rule. A ratio whose
+    datasets declare the axis whose party's own total it divides by
+    (`bound_values.ratio_base_axis`) reads the place, a group too, as that party: "ODA as a
+    share of GNI for Norway" reads Norway as the provider on DAC1's share of the donor's
+    GNI and as the recipient on DAC2a's share of the recipient's, where Norway holds no
+    data, so the menu shows that reading has none (`availability.series_at_places`) and the
+    answer states the base the question named. This holds for the elected shape and every
+    alternate alike. Otherwise an alternate takes the axis the elected shape
+    (`state.shape_draft`) assigned the place to, when it declares a role on that axis: an alternate reads the variable another way, not
     the place, so a debt total's recipient stays the recipient of a by-creditor alternate,
     and a place the elected shape reads on the one direction with data
     (`phase_place_materialise._settle_direction`) keeps that direction on every alternate
@@ -189,6 +225,9 @@ def _undirected_place_axis(
     if not place_set.members and len(open_axes) == 1 and len(names) == 2:
         (open_axis,) = open_axes
         return "destination" if open_axis == "origin" else "origin"
+    base = ratio_base_axis(shape, get_index())
+    if base is not None and base in names:
+        return base
     if state.shape_draft is None or state.shape_draft is shape:
         return None
     elected = state.elected_place_roles
@@ -255,21 +294,22 @@ def subject_shapes_refused(state: ResolveState) -> bool:
         if name in state.place_sets
         for role in state.entity_roles.get(name) or ()
     }
-    return {"origin", "destination"} <= query_directions
+    return {"origin", "destination"} <= query_directions | named_whole_axes(state)
 
 
 def query_role_axes(state: ResolveState) -> frozenset[RoleAxis]:
     """The flow axes the query needs a role-bearing shape to declare a role on: each axis
-    a resolved place is directed to ("to Kenya" needs the destination) and each flow axis
-    an operation runs across ("top recipients" needs the destination). An axis the query
-    asks every member of (`state.open_axes`) is a preference among the shapes that hold
-    these (`without_open_axis_gaps`)."""
+    a resolved place is directed to ("to Kenya" needs the destination), the side of each
+    whole population a text names ("to all recipients" needs the destination,
+    `named_whole_axes`), and each flow axis an operation runs across ("top recipients" needs
+    the destination). An axis the query asks every member of (`state.open_axes`) is a
+    preference among the shapes that hold these (`without_open_axis_gaps`)."""
     directed = {
         role.axis
         for name in state.entities
         if name in state.place_sets
         for role in state.entity_roles.get(name) or ()
-    }
+    } | named_whole_axes(state)
     over = {
         operation.over
         for operation in state.operations
@@ -296,14 +336,28 @@ def _declares_axes(shape: ShapeDraft, axes: frozenset[RoleAxis]) -> bool:
 
 
 def lacks_query_axis(state: ResolveState, shape: ShapeDraft) -> bool:
-    """Whether role-bearing `shape` declares no role on an axis the query needs
-    (`query_role_axes`, read by `_declares_axes`): a provider-only shape for "aid to
-    Kenya" or "top recipients of US aid". It could not place the query's places, or its
+    """Whether `shape` cannot hold an axis the query needs (`query_role_axes`): a
+    role-bearing shape that declares no role on it (`_declares_axes`), such as a
+    provider-only shape for "aid to Kenya" or "top recipients of US aid", or a one-way
+    subject-only series whose declared side (`series_declarations.declared_side`) is not
+    among the query's axes, such as the series of climate finance provided for "climate
+    finance to Bangladesh". A ratio whose datasets declare the axis whose party's own total
+    it divides by (`bound_values.ratio_base_axis`) lacks the query's axes when that axis is
+    not among them, as DAC2a's ODA as a share of the recipient's GNI does for "ODA as a
+    share of GNI from Norway", which asks for Norway's own. It could not place the query's places, or its
     answer could not run the operation, so admissibility refuses it `role_incompatible`
-    (`admissibility.judge_measure_and_roles`). A subject-only shape lacks no axis: it binds
-    a directed place as its subject."""
+    (`admissibility.judge_measure_and_roles`). Any other subject-only shape lacks no axis:
+    it binds a directed place as its subject."""
     axes = query_role_axes(state)
-    return bool(axes) and is_role_bearing(shape) and not _declares_axes(shape, axes)
+    if not axes:
+        return False
+    if is_role_bearing(shape):
+        if not _declares_axes(shape, axes):
+            return True
+    elif (side := declared_side(shape)) is not None and side not in axes:
+        return True
+    base = ratio_base_axis(shape, get_index())
+    return base is not None and base not in axes
 
 
 def without_unasked_axes(
@@ -715,7 +769,10 @@ def _beside_words_read(variable: str, shape: ShapeDraft, word: str) -> bool:
     not read."""
     index = get_index()
     # `state.shape_vocabulary`, which this module cannot import.
-    vocabulary = frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+    vocabulary = (
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        | shape.omitted_slots
+    )
     (reading,) = read_by_vocabulary(
         [variable], index, get_measure_index(), vocabularies=[vocabulary]
     )
@@ -746,23 +803,206 @@ def bind_place_roles(
     state: ResolveState, shape: ShapeDraft, *, direction: RoleAxis | None = None
 ) -> PlaceAssignment | PlaceRoleRefusal:
     """Assign the query's place sets to `shape`'s roles (`assign_named_places`), or name the
-    refusal, and on each flow axis they leave unnamed the party a word of the part names
-    there (`_held_party_words`) as the axis's one set: "multilateral ODA to Kenya" fills the
+    refusal, with each whole population a text names on its side (`_named_wholes`), and on
+    each flow axis they leave unnamed the party a word of the part names there
+    (`_held_party_words`) as the axis's one set: "multilateral ODA to Kenya" fills the
     provider axis of a DAC2a shape with its multilaterals total. The axes keep the order
     `assign_named_places` gives them, destination first. `direction` is
-    `assign_named_places`'s."""
+    `assign_named_places`'s.
+
+    The assignment binds no total on a side the part leaves unnamed. Binding repair offers
+    one there (`whole_total_candidates`) and keeps it only where the bindings it settles
+    under hold its series (`holds_whole_total`), so every reader before repair, and each
+    alternate before its walk, reads the named places alone."""
     assignment = assign_named_places(state, shape, direction=direction)
     if isinstance(assignment, str):
         return assignment
+    assignment = _named_wholes(state, shape, assignment)
+    # A side a listed population opens was named in the request's words.
+    listed = frozenset(state.whole_listed.values()) - assignment.sets.keys()
+    if listed:
+        assignment = dataclasses.replace(
+            assignment, unnamed_wholes=assignment.unnamed_wholes | listed
+        )
     parties: dict[EntityRoleKey, tuple[PlaceSet, ...]] = {
         named.axis: (state.party_sets[named.party],)
         for named in _held_party_words(state, shape, assignment)
     }
     if not parties:
         return assignment
-    sets = {**assignment.sets, **parties}
+    return _in_axis_order(dataclasses.replace(assignment, sets={**assignment.sets, **parties}))
+
+
+def _in_axis_order(assignment: PlaceAssignment) -> PlaceAssignment:
+    """`assignment` with its sets destination first, the order `assign_named_places` gives."""
+    sets = assignment.sets
     ordered = {axis: sets[axis] for axis in ("destination", "origin") if axis in sets}
     return dataclasses.replace(assignment, sets=ordered)
+
+
+def _named_wholes(
+    state: ResolveState, shape: ShapeDraft, assignment: PlaceAssignment
+) -> PlaceAssignment:
+    """`assignment` with the sets of each whole population a text names
+    (`ResolveState.whole_named`) on its side, after any place named there, on a role-bearing
+    `shape` that declares that side. Such a text names its parties as any named party does:
+    "official donors to Ethiopia" binds "Official Donors, Total", and "France and official
+    donors to Ethiopia" binds France beside it. Where no series holds the total, the answer
+    departs `entity_unavailable` for it or refuses, as for any party. A text the request's
+    words direct to the side other than its population's is refused before any shape binds
+    (`phase_intake._phase_check_entities`).
+
+    A side that holds one population alone reads it whole where every dataset the shape
+    answers from (`bound_values.declared_datasets`) marks it whole over the part's period
+    (`whole_totals.whole_reading`), and the assignment carries that reading
+    (`PlaceAssignment.whole`). It is a label: the side binds the same parties either way. A
+    side no place is named on stays unnamed where, for every population named on it, no
+    dataset the shape answers from publishes its total and every party they hold there is
+    of a class it covers (`whole_totals.covers_unpublished`), as the CRS's recipients do for
+    "all recipients": its sum over the side is every party the population holds. A side
+    where one population covers and another does not ("official donors and all donors" on
+    the CRS) binds both as named parties. The assignment carries the sides left unnamed
+    (`PlaceAssignment.unnamed_wholes`), where each population states itself
+    (`whole_totals.whole_total_unpublished_facts`) in place of a `role_scope_defaulted`
+    warning that the request named nothing there."""
+    if not state.whole_named or not is_role_bearing(shape):
+        return assignment
+    declared = role_names_by_axis(shape)
+    datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
+    parties = get_index().parties
+    covered: dict[RoleAxis, bool] = {}
+    for dcids in state.whole_named.values():
+        axis = parties[dcids[0]].axes[0]
+        if axis in declared and axis not in assignment.sets:
+            covered[axis] = covered.get(axis, True) and covers_unpublished(dcids, datasets=datasets)
+    unnamed = frozenset(axis for axis, covers in covered.items() if covers)
+    sets = dict(assignment.sets)
+    named: dict[RoleAxis, list[tuple[str, ...]]] = {}
+    for dcids in dict.fromkeys(state.whole_named.values()):
+        axis = parties[dcids[0]].axes[0]
+        if axis not in declared or axis in unnamed:
+            continue
+        named.setdefault(axis, []).append(dcids)
+        sets[axis] = (*sets.get(axis, ()), *(state.whole_sets[dcid] for dcid in dcids))
+    if not named:
+        return dataclasses.replace(assignment, unnamed_wholes=unnamed)
+    years = requested_years(state.date_request)
+    whole = next(
+        (
+            reading
+            for axis, populations in named.items()
+            if axis not in assignment.sets and len(populations) == 1
+            if (reading := whole_reading(populations[0], datasets=datasets, years=years))
+            is not None
+        ),
+        None,
+    )
+    return _in_axis_order(
+        dataclasses.replace(
+            assignment,
+            sets=sets,
+            open_axes=assignment.open_axes - named.keys(),
+            whole=whole,
+            unnamed_wholes=unnamed,
+        )
+    )
+
+
+def totalled_axes(state: ResolveState) -> tuple[RoleAxis, ...]:
+    """The flow axes the part totals, origin first, read from the part alone: no name of
+    the part is directed to the axis, no operation runs over it, and the part does not ask
+    every member of it (`ResolveState.open_axes`). An operation over an axis needs every
+    member's value (`Operation.over`): it may filter, rank or count them, so the side's
+    total cannot stand in for them, an `aggregate` included. "ODA to Ethiopia" and a sum
+    over no axis total the donors; "ODA to Ethiopia by donor", "top donors to Ethiopia",
+    a sum over the donors and a share or growth over them list them."""
+    directed = {role.axis for name in state.entities for role in state.entity_roles.get(name) or ()}
+    over = {operation.over for operation in state.operations}
+    return tuple(
+        axis
+        for axis in ("origin", "destination")
+        if axis not in directed and axis not in over and axis not in state.open_axes
+    )
+
+
+def named_whole_axes(state: ResolveState) -> frozenset[RoleAxis]:
+    """The side of each whole population a text of the part names (`ResolveState.whole_named`),
+    the one axis the code index publishes its parties on."""
+    parties = get_index().parties
+    return frozenset(parties[dcids[0]].axes[0] for dcids in state.whole_named.values())
+
+
+def whole_total_candidates(
+    state: ResolveState, shape: ShapeDraft, assignment: PlaceAssignment
+) -> tuple[PlaceAssignment, ...]:
+    """`assignment` with each whole total role-bearing `shape` offers on a side it leaves
+    unnamed, in the order binding repair tries them: its parties' sets fill that side, which
+    leaves `open_axes`, and its reading is `PlaceAssignment.whole`. Empty when the shape
+    offers none. Each side offers at most one total, so there are at most two candidates.
+
+    The candidates read no binding and no coverage, so the role keys each gives are fixed
+    before any binding is settled under them. A side offers a total where every dataset the
+    shape answers from (`bound_values.declared_datasets`) reads its parties whole over the
+    part's period (`whole_totals.whole_reading`), the shape declares a role on that side,
+    and `assignment` leaves it unnamed. Each side the part totals (`totalled_axes`) offers
+    the total of every party there, origin first: both sides unnamed offer the donors'
+    total, then the recipients' total, one at a time, since the source publishes no figure
+    between two whole totals. For the same reason a side a text names a whole population on
+    ("official donors") offers none, and once that population binds there (`_named_wholes`)
+    neither side does. Whether a candidate binds is `holds_whole_total`'s question, asked
+    under the bindings settled for its role keys; the first that holds binds."""
+    named_axes = named_whole_axes(state)
+    if not state.whole_sets or not is_role_bearing(shape) or named_axes & assignment.sets.keys():
+        return ()
+    datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
+    declared = role_names_by_axis(shape)
+    years = requested_years(state.date_request)
+
+    def offered(dcids: Sequence[str]) -> WholeReading | None:
+        reading = whole_reading(dcids, datasets=datasets, years=years)
+        if reading is None or reading.axis not in declared or reading.axis in assignment.sets:
+            return None
+        return reading
+
+    wholes: dict[RoleAxis, WholeReading] = {}
+    for axis in totalled_axes(state):
+        if axis in named_axes:
+            continue
+        for dcid in state.whole_sets:
+            if (whole := offered((dcid,))) is not None and whole.axis == axis:
+                wholes[axis] = whole
+                break
+    return tuple(_with_whole(state, assignment, whole) for whole in wholes.values())
+
+
+def _with_whole(
+    state: ResolveState, assignment: PlaceAssignment, whole: WholeReading
+) -> PlaceAssignment:
+    """`assignment` with the sets of `whole`'s parties on its side, which leaves
+    `open_axes`, and `whole` as its reading."""
+    sets = tuple(state.whole_sets[dcid] for dcid in whole.members)
+    return _in_axis_order(
+        dataclasses.replace(
+            assignment,
+            sets={**assignment.sets, whole.axis: sets},
+            open_axes=assignment.open_axes - {whole.axis},
+            whole=whole,
+        )
+    )
+
+
+def holds_whole_total(
+    state: ResolveState,
+    shape: ShapeDraft,
+    candidate: PlaceAssignment,
+    bindings: Sequence[SlotBindingDraft],
+) -> bool:
+    """Whether the request's coverage snapshot holds a series of `shape`'s family under
+    `bindings` at the whole total `candidate` binds beside its other places
+    (`coverage_series.holds_series`), the bindings settled under `candidate`'s role keys. A
+    total the source publishes no figure of there for the variables the bindings elect, or
+    one the snapshot cannot tell of, leaves its side to its parties."""
+    return bool(holds_series(state, shape, candidate.sets, bindings=bindings))
 
 
 def assign_named_places(
@@ -1056,6 +1296,8 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
             origin_dcids=origin_dcids,
             open_axes=assignment.open_axes,
             named_alone=named_alone,
+            whole=assignment.whole,
+            unnamed_wholes=assignment.unnamed_wholes,
             resolved_entities=entities_by_role(
                 shape=shape, by_axis={"destination": destination_dcids, "origin": origin_dcids}
             ),
@@ -1101,33 +1343,109 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
 
 
 def untold_direction_names(state: ResolveState) -> tuple[str, ...]:
-    """The query names whose flow direction a `role_not_resolved` refusal could not tell,
-    in query order, one per place set: each set no text of which carries a direction,
-    under its name (`part_sets`), and each name that resolved to no set and carries none.
-    Else the names whose stated direction the query's own wording contradicts
-    (`role_text.contradicts`), the first such text of each set. Empty when every name's
-    direction is told, as when materialisation refuses the roles."""
-    named = part_sets(state)
-    directed = {
-        place_key(state.place_sets[name])
-        for name in state.entities
-        if name in state.place_sets and state.entity_roles.get(name)
+    """The request texts whose flow direction a `role_not_resolved` refusal could not tell,
+    in query order: every text of each untold group (`untold_direction_groups`). Empty when
+    every name's direction is told, as when materialisation refuses the roles."""
+    untold = {name for texts in untold_direction_groups(state) for name in texts}
+    return tuple(name for name in dict.fromkeys(state.entities) if name in untold)
+
+
+def untold_direction_groups(state: ResolveState) -> tuple[tuple[str, ...], ...]:
+    """The request texts of each place a `role_not_resolved` refusal could not tell the
+    flow direction of, one tuple per untold group (`_untold_groups`), each in query order,
+    so a refusal names one place set read under several texts as one place."""
+    return tuple(tuple(texts) for texts in _untold_groups(state, _text_groups(state)).values())
+
+
+def _text_groups(state: ResolveState) -> dict[str, list[str]]:
+    """The request texts in groups, by group key, in query order: the texts that name one
+    place set under its place key, and each text that resolved to no set alone under
+    the text."""
+    groups: dict[str, list[str]] = {}
+    for name in dict.fromkeys(state.entities):
+        place_set = state.place_sets.get(name)
+        groups.setdefault(name if place_set is None else place_key(place_set), []).append(name)
+    return groups
+
+
+def _untold_groups(state: ResolveState, groups: dict[str, list[str]]) -> dict[str, list[str]]:
+    """The `groups` whose flow direction the question leaves untold, in their order: those
+    no text of which carries a direction, a text that resolved to no set and names a whole
+    population (`ResolveState.whole_named`, `ResolveState.whole_listed`) aside, else those
+    one of whose texts states a direction the query's own wording contradicts
+    (`role_text.contradicts`)."""
+    undirected = {
+        key: texts
+        for key, texts in groups.items()
+        if not any(state.entity_roles.get(name) for name in texts) and not _whole_text(state, texts)
     }
-    undirected: dict[str, str] = {}
-    for name in state.entities:
-        place_set = state.place_sets.get(name)
-        if place_set is None:
-            if not state.entity_roles.get(name):
-                undirected.setdefault(name, name)
-        elif (key := place_key(place_set)) not in directed:
-            undirected.setdefault(key, named[key].name)
     if undirected:
-        return tuple(undirected.values())
-    contradicted: dict[str, str] = {}
-    for name in _contradicted_names(state, state.entities):
-        place_set = state.place_sets.get(name)
-        contradicted.setdefault(name if place_set is None else place_key(place_set), name)
-    return tuple(contradicted.values())
+        return undirected
+    return {key: texts for key, texts in groups.items() if _contradicted_names(state, texts)}
+
+
+def _whole_text(state: ResolveState, texts: list[str]) -> bool:
+    """Whether `texts` is one text that resolved to no place set and names a whole
+    population, which binds on its own side and carries no direction to tell."""
+    return (
+        len(texts) == 1
+        and texts[0] not in state.place_sets
+        and (texts[0] in state.whole_named or texts[0] in state.whole_listed)
+    )
+
+
+# The most readings of an unstated direction a `role_not_resolved` refusal offers. Two sets
+# on a shape with a role on each axis give 2, three give 6, four 14. Past this the refusal
+# offers none and its message stands.
+MAX_DIRECTION_READINGS = 6
+
+
+def direction_readings(state: ResolveState) -> tuple[dict[str, RoleAxis], ...]:
+    """The readings a `role_not_resolved` refusal offers for the directions the question
+    leaves untold, each mapping every request text of every untold set to one flow axis.
+
+    The untold sets are the place sets among the untold groups (`_untold_groups`): those no
+    text of which carries a direction, else those whose stated direction the query's
+    wording contradicts. Each takes one axis on which the elected shape declares a role and
+    that the part does not ask open (`ResolveState.open_axes`, or an operation's `over`); an
+    open axis counts as named and takes no set. A reading is kept when every such axis then
+    holds a set, a directed one or a whole population a text names (`named_whole_axes`)
+    included. Readings run over the sets in query order, origin first. Empty when the shape
+    declares no role, no set is untold, or more than `MAX_DIRECTION_READINGS` readings are
+    kept. The count stops there, so no reading past it is built."""
+    shape = state.shape_draft
+    if shape is None or not is_role_bearing(shape):
+        return ()
+    groups = _text_groups(state)
+    texts = {key: names for key, names in groups.items() if names[0] in state.place_sets}
+    untold = [key for key in _untold_groups(state, groups) if key in texts]
+    if not untold:
+        return ()
+    directed = {
+        key: {role.axis for name in names for role in state.entity_roles.get(name) or ()}
+        for key, names in texts.items()
+    }
+    over = {operation.over for operation in state.operations}
+    declared = role_names_by_axis(shape)
+    axes: tuple[RoleAxis, ...] = tuple(
+        axis
+        for axis in ("origin", "destination")
+        if axis in declared and axis not in state.open_axes and axis not in over
+    )
+    held = {
+        axis for key, told in directed.items() if key not in untold for axis in told
+    } | named_whole_axes(state)
+    needed = set(axes) - held
+    readings: list[dict[str, RoleAxis]] = []
+    for choice in itertools.product(axes, repeat=len(untold)):
+        if not needed <= set(choice):
+            continue
+        if len(readings) == MAX_DIRECTION_READINGS:
+            return ()
+        readings.append(
+            {text: axis for key, axis in zip(untold, choice, strict=True) for text in texts[key]}
+        )
+    return tuple(readings)
 
 
 def _contradicted_names(state: ResolveState, names: Iterable[str]) -> tuple[str, ...]:
@@ -1145,7 +1463,8 @@ def _contradicted_names(state: ResolveState, names: Iterable[str]) -> tuple[str,
 
 def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedGroup, ...]:
     """The groups the query named, each with the members its name binds: every resolver
-    group, continent and subregion that holds a member.
+    group, continent and subregion that holds a member, then the whole population the
+    binding reads on one side (`PlaceRoles.whole`, `WholeReading.named_group`).
 
     `build_spec` names a role by one of these when the role binds exactly its members or its
     total (`PlaceSet.total`). A group with its own graph node takes that node's type and the
@@ -1168,15 +1487,17 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
         )
         for place_set in part_sets(state).values()
         if place_set.members
-    )
+    ) + (() if roles.whole is None else (roles.whole.named_group(),))
 
 
 def group_request_names(state: ResolveState) -> dict[str, str]:
     """The query's name for each group `request_named_groups` labels otherwise, keyed by that
     label ("EU" for "European Union"), so a departure asks for the group in the request's
     words (`RegionResult.entity_words`). A label the request posts as a text of its own is
-    left out, so no text of the request is read as another of its texts."""
-    return {
+    left out, so no text of the request is read as another of its texts. A whole population
+    the query names ("all donors", `ResolveState.whole_named`) is keyed by the label the side
+    reading it carries (`whole_totals.named_whole_label`)."""
+    groups = {
         place_set.label: place_set.name
         for place_set in part_sets(state).values()
         if place_set.members
@@ -1184,6 +1505,40 @@ def group_request_names(state: ResolveState) -> dict[str, str]:
         and place_set.label != place_set.name
         and place_set.label not in state.entities
     }
+    wholes = {
+        label: text
+        for text, dcids in state.whole_named.items()
+        if (label := named_whole_label(dcids)) is not None
+    }
+    return {**groups, **wholes}
+
+
+def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
+    """The places the part's settled binding (`ResolveState.place`) holds for each entity
+    text, in `place_order` (`RegionResult.entity_refs`).
+
+    A text's set binds one reading (`settle_place_sets`): its node when the binding holds
+    it, else its total (`PlaceSet.total`), else the members the binding holds. A set bound
+    as its members states its own ref first, so a client matches the set it named: its
+    node, else its total, else its registry id (`PlaceSet.group_id`). A text naming a whole
+    population ("all donors", `ResolveState.whole_named`) binds the parties it names that
+    the binding holds. A text with neither, ambiguous or unresolved, is left out, as is
+    every text before the part's places are bound.
+    """
+    bound = {dcid for dcid, _role in state.place.roles.roles}
+    refs: dict[str, tuple[str, ...]] = {}
+    for text, place_set in state.place_sets.items():
+        node = None if place_set.node is None else place_set.node.dcid
+        whole = next((d for d in (node, place_set.total) if d is not None and d in bound), None)
+        if whole is not None:
+            refs[text] = (whole,)
+        elif held := place_order(d for d in place_set.members or () if d in bound):
+            own = next((d for d in (node, place_set.total, place_set.group_id) if d), None)
+            refs[text] = tuple(held) if own is None else (own, *held)
+    for text, dcids in state.whole_named.items():
+        if held := place_order(d for d in dcids if d in bound):
+            refs[text] = tuple(held)
+    return refs
 
 
 def place_order(dcids: Iterable[str]) -> list[str]:

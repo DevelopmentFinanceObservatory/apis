@@ -109,10 +109,10 @@ def _who_catalogue() -> CatalogueSnapshot:
         un_mirror=un_mirror(
             {
                 UN_VARIABLE: un_variable(
-                    _WHO_SERIES, name="Under-five mortality [Q1]", constraints=quintile("Q1")
+                    _WHO_SERIES, name="Literacy rate [Q1]", constraints=quintile("Q1")
                 ),
                 UN_SECOND_VARIABLE: un_variable(
-                    _WHO_SERIES, name="Under-five mortality [Q2]", constraints=quintile("Q2")
+                    _WHO_SERIES, name="Literacy rate [Q2]", constraints=quintile("Q2")
                 ),
             }
         ),

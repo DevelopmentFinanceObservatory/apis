@@ -18,6 +18,7 @@ import dataclasses
 
 import pytest
 
+from code_index.shared import get_index
 from search.engine.bind import ShapeRating, _UniversalBindOutput
 from search.engine.binders import GeminiBinder
 from search.engine.config import settings
@@ -34,13 +35,14 @@ from search.engine.region.status_rule import (
     plan_status,
 )
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import TimeWindow
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
-from tests.engine._binders import nominee_ratings
+from tests.engine._binders import RatingBinder, nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _GDP = "GrossDomesticProduction"
@@ -392,6 +394,8 @@ class _FixedBindLLM:
         self._chosen = chosen
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         return _UniversalBindOutput(
@@ -406,11 +410,21 @@ class _FixedBindLLM:
         ), None
 
 
+# "land use statistic" names what forest area is a kind of, so no word of it names a part
+# of what the series counts: the binder rates each word stated.
+_LAND_USE_WORDS = ("land", "use", "statistic")
+
+
+def _land_use_binder() -> RatingBinder:
+    return RatingBinder(GeminiBinder(), dict.fromkeys(_LAND_USE_WORDS, 1.0))
+
+
 def _run(
     variable: str,
     *,
     scores: list[float],
     also_plausible: list[int] | None = None,
+    binder: RatingBinder | None = None,
 ) -> RegionResult:
     svs = [_SV_FOREST, _SV_POPULATION]
     graph = FakeGraph(
@@ -433,7 +447,7 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(also_plausible),
-            binder=GeminiBinder(),
+            binder=binder or GeminiBinder(),
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -446,9 +460,11 @@ def _run(
 def test_a_thin_retrieval_margin_sets_no_status():
     """Forest area and population scored 0.0046 apart, and nobody nominated population:
     another measure enters the menu only through a nomination."""
-    result = _run("land use statistic", scores=[0.8230, 0.8184])
+    binder = _land_use_binder()
+    result = _run("land use statistic", scores=[0.8230, 0.8184], binder=binder)
     assert result.status == "definite"
     assert [spec.resolved.members[0].ref.ref for spec in result.specs] == [_SV_FOREST]
+    assert [request.words for request in binder.requests] == [_LAND_USE_WORDS]
 
 
 def test_a_nomination_with_data_is_offered_as_nominated():
@@ -479,6 +495,7 @@ def test_the_only_reading_with_data_is_high_confidence_despite_a_weak_score():
         resolve={"Brazil": "country/BRA"},
         obs=graph_obs,
     )
+    binder = _land_use_binder()
     result = asyncio.run(
         resolve_variable(
             "land use statistic",
@@ -490,6 +507,7 @@ def test_the_only_reading_with_data_is_high_confidence_despite_a_weak_score():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
+            binder=binder,
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -499,6 +517,7 @@ def test_the_only_reading_with_data_is_high_confidence_despite_a_weak_score():
     )
     assert result.status == "definite"
     assert result.specs[0].resolved.confidence == "high"
+    assert [request.words for request in binder.requests] == [_LAND_USE_WORDS]
 
 
 # The admission guards honour the status rule's open axes and run before it, and the
@@ -894,6 +913,114 @@ def test_an_alternate_binds_on_the_direction_the_elected_reading_was_served_on(m
         [_PAID],
         [_ADJUSTED_PAID],
     ]
+
+
+# DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the recipient's
+# (`DatasetDeclaration.ratio_base_axis`). Both are code-index rows of the fixture index.
+_DAC1_GNI_SHARE = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_DAC2A_GNI_SHARE = (
+    "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_AsAFractionOf_"
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal"
+)
+_KEN = scenarios._KEN
+# Norway gives to Kenya, and receives nothing.
+_GNI_SHARE_ROWS = (
+    (_DAC1_GNI_SHARE, "f_dac1", _NOR, "", [2020, 2021, 2022]),
+    (_DAC2A_GNI_SHARE, "f_dac2a", _NOR, _KEN, [2020, 2021, 2022]),
+)
+
+
+def _index_row_node(dcid: str) -> dict:
+    """The graph node of the fixture index row `dcid`, with the arcs the row declares."""
+    row = next(r for r in get_index().statvars if r.dcid == dcid)
+    arcs = {
+        "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+        "populationType": {"nodes": [{"dcid": row.population_type}]},
+        "measuredProperty": {"nodes": [{"dcid": row.measured_property}]},
+        "statType": {"nodes": [{"dcid": row.stat_type}]},
+        "measurementQualifier": {"nodes": [{"dcid": row.measurement_qualifier}]},
+        "measurementDenominator": {"nodes": [{"dcid": row.measurement_denominator}]},
+        "constraintProperties": {"nodes": [{"dcid": p} for p in row.constraint_properties]},
+        **{p: {"nodes": [{"dcid": v}]} for p, v in row.constraint_properties.items()},
+        "observationProperties": {"nodes": [{"dcid": r} for r in row.observation_properties]},
+    }
+    return scenarios._sv(dcid, arcs)
+
+
+@pytest.fixture
+def _gni_shares(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        scenarios,
+        "_NODES",
+        {
+            **scenarios._NODES,
+            _DAC1_GNI_SHARE: _index_row_node(_DAC1_GNI_SHARE),
+            _DAC2A_GNI_SHARE: _index_row_node(_DAC2A_GNI_SHARE),
+        },
+    )
+    monkeypatch.setattr(
+        scenarios,
+        "_ROLE_NAMES",
+        {
+            **scenarios._ROLE_NAMES,
+            _DAC1_GNI_SHARE: RoleNames(donor="financingProvider", recipient=None),
+            _DAC2A_GNI_SHARE: RoleNames(donor="financingProvider", recipient="financingRecipient"),
+        },
+    )
+
+
+@pytest.mark.usefixtures("_gni_shares")
+@pytest.mark.parametrize(
+    ("place", "rows", "answer"),
+    [
+        pytest.param(
+            "Norway",
+            _GNI_SHARE_ROWS,
+            [(_DAC1_GNI_SHARE, "origin")],
+            id="norway-reads-the-donor-share",
+        ),
+        pytest.param(
+            "Kenya",
+            _GNI_SHARE_ROWS,
+            [(_DAC2A_GNI_SHARE, "destination")],
+            id="kenya-reads-the-recipient-share",
+        ),
+        pytest.param("Norway", _GNI_SHARE_ROWS[1:], [], id="norway-holds-no-recipient-share"),
+    ],
+)
+def test_a_place_named_without_a_direction_owns_the_base_of_a_ratio(place, rows, answer):
+    """ "ODA as a share of GNI for Norway" names Norway without a direction. A ratio whose
+    dataset declares whose total it divides by reads the place as that party: Norway is the
+    donor on DAC1's share of the donor's GNI, and the recipient on DAC2a's share of the
+    recipient's, where it holds no data, so DAC2a leaves the menu and DAC1 answers. Where
+    DAC1 holds no data for Norway either, the part answers no data, and does not read
+    Norway's aid to others as a share of their GNI. Kenya is DAC2a's recipient, and DAC1
+    holds no recipient."""
+    result = scenarios._resolve(
+        scenarios._Scenario(
+            query="official development assistance",
+            entities=(place,),
+            # Recall ranks DAC2a first, and the binder elects the first menu shape.
+            svs=(_DAC2A_GNI_SHARE, _DAC1_GNI_SHARE),
+            scores=(0.85, 0.84),
+            coverage_rows=rows,
+        )
+    )
+
+    dcid = scenarios._RESOLVE[place]
+    assert [
+        (
+            spec.resolved.members[0].ref.ref,
+            next(
+                role for role, dcids in spec.definition.identity.entities.items() if dcid in dcids
+            ),
+        )
+        for spec in result.specs
+    ] == answer
+    assert result.status == ("definite" if answer else "no_data")
 
 
 @pytest.fixture

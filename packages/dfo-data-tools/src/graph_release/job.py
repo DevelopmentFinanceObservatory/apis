@@ -6,14 +6,10 @@ Each tick:
 2. Reads the DC service's serving revisions and exits unless each was created after the import
    completed, since the mixer reads Spanner as of the last ingestion it saw at start.
 3. Forms the inputs (the success row's execution id, the serving revision, `FORMAT`, the
-   builder code hash and the declarations hash, and with `GRAPH_RELEASE_SHADOW` on the coverage
-   and origin catalogue build ids) and exits when they match the last built inputs while the
-   pointer names the release they built, when they match the last failed inputs, when the
-   pointer is held, or when they ended unavailable less than `UNAVAILABLE_BACKOFF_SECONDS` ago,
+   builder code hash and the declarations hash) and exits when they match the last built inputs
+   while the pointer names the release they built, when they match the last failed inputs, when
+   the pointer is held, or when they ended unavailable less than `UNAVAILABLE_BACKOFF_SECONDS` ago,
    in which case it logs the recorded `graph_release_unavailable` line again with `backoff`.
-   With shadow on, it exits `graph_release_shadow_waiting` while the coverage build or the
-   origin catalogue is behind the import, before building anything, and exits unavailable once
-   that wait passes `SHADOW_WAIT_LIMIT_SECONDS`.
 4. Takes the build lease, or exits. A tick that exits here with inputs that ended unavailable
    logs their recorded `graph_release_unavailable` line again with `backoff`, since the lease
    holder is retrying them.
@@ -41,8 +37,12 @@ killed by the task timeout or out of memory logs no heartbeat and keeps the leas
 that overlap it end `lease_held`, so builds killed on every run raise the alert.
 
 It logs `graph_release_stale` while the newest import of any status has waited more than
-`STALE_SECONDS` for a release, less the time spent waiting for the shadow comparators up to
-`SHADOW_WAIT_LIMIT_SECONDS`, unless the pointer is held.
+`STALE_SECONDS` for a release, unless the pointer is held.
+
+`--wait-for-lease`, which the deploy passes, runs the tick again every `_LEASE_POLL_SECONDS` while
+it ends `lease_held`, for up to `LEASE_WAIT_SECONDS`, and logs `graph_release_waiting` before the
+first wait. Each repeat reads everything afresh, so a run whose holder published its inputs ends
+`inputs_built`. Its task timeout must be `LEASE_WAIT_SECONDS + LEASE_TTL_SECONDS`.
 """
 
 from __future__ import annotations
@@ -59,14 +59,14 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from functools import cache
+from functools import cache, partial
 from importlib import resources
 from pathlib import Path
-from typing import Any, Final, Protocol, Self
+from typing import Any, Final, Protocol
 
 from google.api_core.exceptions import GoogleAPIError
 from google.auth.exceptions import GoogleAuthError
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import SettingsConfigDict
 
 from artifact_publication.jobs import (
@@ -115,7 +115,6 @@ from graph_release.gate import (
     GateResult,
     GateUnavailable,
     SeriesReader,
-    merge,
     refused,
     run_gate,
 )
@@ -123,25 +122,29 @@ from graph_release.platform import PlatformRefusal, build_platform_parts, stage_
 from graph_release.publish import PublishStatus, prune_releases, publish_release
 from graph_release.reads import Snapshot, read_ingested_imports, read_inputs, snapshot_at
 from graph_release.serving_revision import CloudRunAdmin, ServingRevision, ServingRevisionError
-from graph_release.shadow import ComparatorBuild, shadow_builds, shadow_diff
 from statvar_members import SubjectPage
 
 logger = logging.getLogger(__name__)
 
 STATE_FILE: Final[str] = "builder_state.json"
 """At the release root: the last built inputs and the release they built, the last failed and
-last unavailable inputs, and the shadow wait."""
+last unavailable inputs."""
 
 LEASE_TTL_SECONDS: Final[float] = 1800.0
-"""The job's task timeout. The lease has no renewal, so it lasts as long as a run can."""
+"""The job's task timeout. The lease has no renewal, so it lapses when the task timeout, counted
+from the run's start, would end the run, so it lasts as long as the run can."""
+
+_LEASE_POLL_SECONDS: Final[float] = 30.0
+"""How often a run started with `--wait-for-lease` runs the tick again while the lease is held."""
+
+LEASE_WAIT_SECONDS: Final[float] = LEASE_TTL_SECONDS + _LEASE_POLL_SECONDS
+"""How long a run started with `--wait-for-lease` waits for the lease: one lease and one poll, so
+a dead holder's lease lapses within the wait. Such a run's task timeout is this plus
+`LEASE_TTL_SECONDS`, so the build it starts at the end of the wait still has a full lease."""
 
 STALE_SECONDS: Final[float] = 1800.0
 """How long the newest import may wait for a release before `graph_release_stale`. It sits
 above the DC restart that follows each import."""
-
-SHADOW_WAIT_LIMIT_SECONDS: Final[float] = 10800.0
-"""How long a shadow wait is excluded from stale: the origin catalogue job's 2-hour timeout plus
-ticks. Past it the tick is unavailable, naming each comparator that is behind."""
 
 STATE_WRITE_ATTEMPTS: Final[int] = 5
 """How many times a state file change is read and written before `StateConflict`. A conflict
@@ -165,7 +168,6 @@ BUILDER_MODULES: Final[Mapping[str, tuple[str, ...]]] = {
         "publish.py",
         "reads.py",
         "serving_revision.py",
-        "shadow.py",
         "views.py",
     ),
     "code_index": ("export.py", "loader.py", "query.py", "types.py"),
@@ -195,7 +197,7 @@ _BUCKET_ERRORS: Final = (
     ReleaseFormatError,
     StateConflict,
 )
-"""What a read or write under the release root, or of a comparator, raises when it fails."""
+"""What a read or write under the release root raises when it fails."""
 _MIXER_ERRORS: Final = (GraphReadError, GraphCapExceededError, MissingBaseParties)
 """What reading the base parties raises when the mixer cannot answer them."""
 
@@ -229,9 +231,6 @@ class JobSettings(AliasOnlySettings):
     )
     graph_base_url: str = Field(min_length=1, alias="DATASETS_GRAPH_BASE_URL")
     sdmx_base_url: str = Field(min_length=1, alias="DATASETS_SDMX_BASE_URL")
-    shadow: bool = Field(default=False, alias="GRAPH_RELEASE_SHADOW")
-    coverage_uri: str = Field(default="", alias="COVERAGE_ARTIFACT_URI")
-    origin_uri: str = Field(default="", alias="ORIGIN_CATALOGUE_URI")
     search_catalogue_job: str = Field(
         default="",
         pattern=r"^(projects/[^/]+/locations/[^/]+/jobs/[^/]+)?$",
@@ -239,28 +238,16 @@ class JobSettings(AliasOnlySettings):
     )
     max_part_bytes: int = Field(default=MAX_PART_BYTES, gt=0, alias="GRAPH_RELEASE_MAX_PART_BYTES")
 
-    @model_validator(mode="after")
-    def _shadow_needs_comparators(self) -> Self:
-        if self.shadow and not (self.coverage_uri and self.origin_uri):
-            raise ValueError(
-                "GRAPH_RELEASE_SHADOW needs COVERAGE_ARTIFACT_URI and ORIGIN_CATALOGUE_URI"
-            )
-        return self
-
 
 @dataclass(frozen=True)
 class BuildInputs:
-    """What a release is built from. Equal inputs build an equal release, and gate it against
-    equal comparators (with shadow on, the coverage and origin catalogue builds the diff reads),
-    so republishing a faulty comparator lets a shadow finding build again."""
+    """What a release is built from. Equal inputs build an equal release."""
 
     import_execution_id: str
     dc_serving_revision: str
     format: int
     builder_code_hash: str
     declarations_hash: str
-    coverage_build_id: str | None = None
-    origin_build_id: str | None = None
 
     def to_json(self) -> dict[str, object]:
         return asdict(self)
@@ -363,23 +350,37 @@ def run(
     graph: Mixer,
     sdmx: SeriesReader,
     declarations: Declarations = DECLARATIONS,
+    wait_for_lease: bool = False,
     clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """One tick. Every outcome it classifies, a gate finding and an unavailable dependency
     included, returns, so the process exits 0; their log lines raise the alerts. A tick that
     published starts the search catalogue job when `settings.search_catalogue_job` names one.
+    With `wait_for_lease`, a tick that ends `lease_held` runs again every `_LEASE_POLL_SECONDS`
+    for up to `LEASE_WAIT_SECONDS`.
     Logs `graph_release_heartbeat` last, with outcome `error` and the exception type before
     re-raising anything the tick does not classify, which fails the execution."""
+    started = clock()
+    wait_seconds = LEASE_WAIT_SECONDS if wait_for_lease else 0.0
+    tick = partial(
+        _run,
+        settings,
+        database=database,
+        admin=admin,
+        graph=graph,
+        sdmx=sdmx,
+        declarations=declarations,
+        clock=clock,
+        lease_until=started + wait_seconds + LEASE_TTL_SECONDS,
+    )
     try:
-        result = _run(
-            settings,
-            database=database,
-            admin=admin,
-            graph=graph,
-            sdmx=sdmx,
-            declarations=declarations,
-            clock=clock,
-        )
+        result = tick()
+        if result.outcome == "lease_held" and wait_for_lease:
+            emit("graph_release_waiting", wait_seconds=wait_seconds)
+        while result.outcome == "lease_held" and clock() - started < wait_seconds:
+            sleep(_LEASE_POLL_SECONDS)
+            result = tick()
         if result.outcome == "published" and settings.search_catalogue_job:
             _start_search_catalogue(settings.search_catalogue_job, admin)
     except Exception as exc:
@@ -397,6 +398,7 @@ def _run(
     sdmx: SeriesReader,
     declarations: Declarations,
     clock: Callable[[], float],
+    lease_until: float,
 ) -> _Exit:
     key: ImportKey | None = None
     try:
@@ -417,6 +419,7 @@ def _run(
                 sdmx=sdmx,
                 declarations=declarations,
                 clock=clock,
+                lease_until=lease_until,
             )
     except _Unavailable as exc:
         result = _unavailable(exc)
@@ -442,6 +445,7 @@ def _tick(
     sdmx: SeriesReader,
     declarations: Declarations,
     clock: Callable[[], float],
+    lease_until: float,
 ) -> _Exit:
     if key.lock_owner is not None:
         return _skipped("ingestion_lock_held")
@@ -461,21 +465,12 @@ def _tick(
             import_completed_at=completed,
         )
 
-    comparators: tuple[ComparatorBuild, ...] = ()
-    if settings.shadow:
-        found = shadow_builds(coverage_uri=settings.coverage_uri, origin_uri=settings.origin_uri)
-        if isinstance(found, GateUnavailable):
-            raise _Unavailable(found)
-        comparators = found
-    builds = {build.dependency: build.build_id for build in comparators}
     inputs = BuildInputs(
         import_execution_id=success.workflow_execution_id,
         dc_serving_revision=serving.token,
         format=FORMAT,
         builder_code_hash=builder_code_hash(),
         declarations_hash=declarations.declarations_hash(),
-        coverage_build_id=builds.get(Dependency.COVERAGE_BUILD),
-        origin_build_id=builds.get(Dependency.ORIGIN_CATALOGUE),
     )
     root = settings.release_uri
     with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
@@ -501,16 +496,11 @@ def _tick(
         return _Exit("unavailable_backoff")
 
     try:
-        if comparators:
-            behind = [build for build in comparators if build.stamp != key.stamp]
-            with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
-                waited = _note_shadow(root, state, stamp=key.stamp, ready=not behind, now=clock())
-            if behind:
-                return _shadow_waiting(key.stamp, behind, waited=waited)
-
         build_id = new_build_id()
         with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
-            lease = acquire_lease(root, build_id=build_id, ttl_seconds=LEASE_TTL_SECONDS, now=clock)
+            lease = acquire_lease(
+                root, build_id=build_id, ttl_seconds=lease_until - clock(), now=clock
+            )
         if lease is None:
             if retrying:
                 # The lease holder is retrying these inputs, so the outage has not yet cleared.
@@ -567,24 +557,6 @@ def _repeat_unavailable(recorded: Mapping[str, Any]) -> None:
         unavailable=recorded.get("unavailable", []),
         backoff=True,
     )
-
-
-def _shadow_waiting(stamp: str, behind: Sequence[ComparatorBuild], *, waited: float) -> _Exit:
-    """`shadow_waiting`, or unavailable for each comparator behind once the wait passes
-    `SHADOW_WAIT_LIMIT_SECONDS`."""
-    if waited > SHADOW_WAIT_LIMIT_SECONDS:
-        raise _Unavailable(
-            *(
-                GateUnavailable(
-                    build.dependency,
-                    f"build {build.build_id} holds import {build.stamp!r}, behind import "
-                    f"{stamp!r} for {round(waited)} s",
-                )
-                for build in behind
-            )
-        )
-    emit("graph_release_shadow_waiting", stamp=stamp)
-    return _Exit("shadow_waiting")
 
 
 def _prune(root: str, *, now: float) -> None:
@@ -698,8 +670,6 @@ def _build_phases(
             except PlatformRefusal as refusal:
                 gate = refused(refusal)
             else:
-                # The gate reads the staged files; only the shadow diff reads the built parts.
-                shadow_parts = platform if settings.shadow else None
                 del platform
                 with phases("gate"):
                     gate = run_gate(
@@ -713,24 +683,6 @@ def _build_phases(
                         seed=key.stamp,
                         max_part_bytes=settings.max_part_bytes,
                     )
-                if shadow_parts is not None:
-                    # With shadow on the inputs name both comparator builds (step 3).
-                    assert inputs.coverage_build_id is not None
-                    assert inputs.origin_build_id is not None
-                    with phases("shadow"):
-                        gate = merge(
-                            gate,
-                            shadow_diff(
-                                shadow_parts,
-                                import_stamp=key.stamp,
-                                role_axes=declarations.role_axes,
-                                code_index_blocks=dfo.code_index_blocks,
-                                coverage_uri=settings.coverage_uri,
-                                coverage_build_id=inputs.coverage_build_id,
-                                origin_uri=settings.origin_uri,
-                                origin_build_id=inputs.origin_build_id,
-                            ),
-                        )
         except _Unavailable as exc:
             # The read that failed may have failed because the revision moved under it.
             if (moved := _serving_moved(admin, inputs, pending=exc)) is not None:
@@ -929,7 +881,7 @@ def _change_state(
     root: str, change: Callable[[dict[str, Any]], dict[str, Any] | None]
 ) -> dict[str, Any]:
     """Applies `change` to the state file, writing only while the file holds the version
-    `change` read. Ticks write the shadow wait and the unavailable inputs without the lease, so
+    `change` read. Ticks write the unavailable inputs without the lease, so
     another writer can land between the read and the write, and the change is then applied
     again to what that writer left. `change` returns `None` to write nothing. Returns the state
     `change` applied to. Raises `StateConflict` when all `STATE_WRITE_ATTEMPTS` writes find the
@@ -964,37 +916,9 @@ def _note_unavailable(root: str, inputs: BuildInputs, exc: _Unavailable, *, now:
         logger.warning("graph_release: could not record the unavailable inputs", exc_info=True)
 
 
-def _note_shadow(
-    root: str, state: Mapping[str, Any], *, stamp: str, ready: bool, now: float
-) -> float:
-    """Records when the comparators were first seen behind `stamp`, and when they caught up.
-    Returns how long they have been behind, 0 once they caught up."""
-    noted = state.get("shadow") or {}
-    if noted.get("stamp") != stamp:
-        if not ready:
-            _update_state(root, shadow={"stamp": stamp, "waiting_since": now, "ready_at": None})
-        return 0.0
-    if ready:
-        if noted.get("waiting_since") is not None and noted.get("ready_at") is None:
-            _update_state(root, shadow={**noted, "ready_at": now})
-        return 0.0
-    return now - float(noted["waiting_since"])
-
-
-def _shadow_wait(state: Mapping[str, Any], stamp: str, now: float) -> float:
-    """Seconds spent waiting for the shadow comparators at `stamp`, up to
-    `SHADOW_WAIT_LIMIT_SECONDS`."""
-    noted = state.get("shadow") or {}
-    if noted.get("stamp") != stamp or noted.get("waiting_since") is None:
-        return 0.0
-    ended = noted.get("ready_at")
-    waited = (now if ended is None else float(ended)) - float(noted["waiting_since"])
-    return min(waited, SHADOW_WAIT_LIMIT_SECONDS)
-
-
 def _track_stale(root: str, key: ImportKey, *, now: float) -> None:
     """Logs `graph_release_stale` while the newest import, of any status, has completed more
-    than `STALE_SECONDS` ago, less its shadow wait, and the serving release is not built from
+    than `STALE_SECONDS` ago, and the serving release is not built from
     it. A failed import never gets a release, so it raises the line until the next success. A
     held pointer is a deliberate rollback and raises nothing."""
     newest = key.newest
@@ -1008,9 +932,7 @@ def _track_stale(root: str, key: ImportKey, *, now: float) -> None:
             serving = Manifest.from_json(read_uri_bytes(manifest_uri(root, pointer.release_id)))
             if serving.import_execution_id == newest.workflow_execution_id:
                 return
-        state = _read_state(root)
-    completed = datetime.fromisoformat(newest.completed_at).timestamp()
-    waited = now - completed - _shadow_wait(state, key.stamp, now)
+    waited = now - datetime.fromisoformat(newest.completed_at).timestamp()
     if waited > STALE_SECONDS:
         emit(
             "graph_release_stale",
@@ -1046,6 +968,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         type=Path,
         help="publish under this local directory in place of GRAPH_RELEASE_URI",
     )
+    parser.add_argument(
+        "--wait-for-lease",
+        action="store_true",
+        help=f"while another run holds the lease, try again for up to {LEASE_WAIT_SECONDS:.0f}s",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     overrides = {"release_uri": args.local_dir.resolve().as_uri()} if args.local_dir else {}
@@ -1066,7 +993,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     admin = CloudRunAdmin(service=settings.datacommons_service)
     with graph, sdmx, closing(admin):
-        run(settings, database=database, admin=admin, graph=graph, sdmx=sdmx)
+        run(
+            settings,
+            database=database,
+            admin=admin,
+            graph=graph,
+            sdmx=sdmx,
+            wait_for_lease=args.wait_for_lease,
+        )
 
 
 if __name__ == "__main__":
@@ -1076,7 +1010,7 @@ if __name__ == "__main__":
 __all__ = [
     "BUILDER_MODULES",
     "LEASE_TTL_SECONDS",
-    "SHADOW_WAIT_LIMIT_SECONDS",
+    "LEASE_WAIT_SECONDS",
     "STALE_SECONDS",
     "STATE_FILE",
     "STATE_WRITE_ATTEMPTS",

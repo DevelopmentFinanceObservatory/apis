@@ -260,6 +260,8 @@ def _phase_materialise(state: _PromoteState) -> RegionResult | None:
         boundary_roles=state.place.roles.roles,
         label_of=state.opposite_labels,
         warnings=state.warnings,
+        # A resubmit holds no words of the request, so it names no whole population.
+        unnamed_wholes=(),
     )
     # A discovered scope's own bounds refuse the read
     # (retrieval/role_scope.py's discover_role_scope). Terminal here, ahead

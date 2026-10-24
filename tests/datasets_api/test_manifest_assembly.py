@@ -27,6 +27,7 @@ from datasets_api.manifest import (
     healed_citation,
     manifest_facts,
     persisted_manifest,
+    record_collapsed_head_version,
     stored_output_profile,
     stored_series_conversions,
 )
@@ -43,7 +44,7 @@ from datasets_api.manifest_models import (
     TransformationStepModel,
 )
 from datasets_api.render import DerivedVersion
-from datasets_api.versions import VersionRecord
+from datasets_api.versions import ArtifactRecord, NullVersionRecordWriter, VersionRecord
 from description.citation import citation_line
 from dfo_platform.roles import FlowFamily, role_wording
 from materialise import (
@@ -1119,7 +1120,10 @@ def test_definition_version_record_stores_its_facts(
         settings=DatasetsBuildSettings(),
     )
     record = definition_version_record(
-        manifest=manifest, stored=stored, materialisation=result, artifacts=[]
+        manifest=manifest,
+        stored=stored,
+        materialisation=result,
+        artifacts=[],
     )
 
     facts = record.facts
@@ -1178,16 +1182,81 @@ def test_definition_version_record_carries_base_content_version_on_the_record():
         materialisation=result,
         artifacts=[],
         base_content_version="cv_base",
+        frame_summed=False,
     )
 
     assert record.base_content_version == "cv_base"
+    assert record.frame_summed is False
+
+
+class _RecordedVersions(NullVersionRecordWriter):
+    def __init__(self) -> None:
+        self.records: list[VersionRecord] = []
+
+    def record_version(self, record: VersionRecord, *, trace_id: str | None = None) -> bool:
+        self.records.append(record)
+        return True
+
+
+def test_a_version_record_links_its_artifacts_under_the_digest_they_were_rendered_under():
+    """A derived or collapsed version links each file it lists under the digest the file was
+    rendered under, its `enrichment_stamp`, which salts the link key of a rendering with a
+    party-kind column. A record-only artifact keeps the digest it carries."""
+    frame = _statistics_fixture_frame()
+    result = _statistics_fixture_result(frame)
+    stored = _fixture_stored_definition(spec_id="spec_fixture", identity_digest="sha256:fixture")
+    manifest = assemble_manifest(
+        stored=stored,
+        materialisation=result,
+        artifacts=[],
+        provenance_refs=["OECD_DAC2A"],
+        source_citations={},
+        prepared_at=_PREPARED_AT,
+        capability_version="dset_test",
+        materialiser_build="test-build",
+        code_index=get_index(),
+        settings=DatasetsBuildSettings(),
+    )
+    own = ArtifactRecord(
+        artifact_digest="sha256:" + "cd" * 32,
+        rendering={"format": "frame"},
+        media_type="application/vnd.dfo.frame",
+        enrichment_digest="own",
+    )
+    rendered = _ARTIFACT_ENTRY.model_copy(
+        update={"rendering": {"format": "csv", "bundle": False}, "enrichment_stamp": "current"}
+    )
+    written = definition_version_record(
+        manifest=manifest,
+        stored=stored,
+        materialisation=result,
+        artifacts=[rendered],
+        record_only_artifacts=[own],
+    )
+    recorder = _RecordedVersions()
+    record_collapsed_head_version(
+        manifest=manifest.model_copy(update={"artifacts": [rendered]}),
+        subject_id="spec_fixture",
+        schema_version=1,
+        base_content_version="cv_base",
+        output_profile=result.output_profile,
+        frame_sha256=result.frame_sha256,
+        frame_summed=False,
+        record_only_artifacts=[own],
+        version_writer=recorder,
+    )
+
+    (collapsed,) = recorder.records
+    assert collapsed.frame_summed is False
+    for record in (written, collapsed):
+        assert [artifact.enrichment_digest for artifact in record.artifacts] == ["current", "own"]
 
 
 # The caller's injected CodeIndex must also supply the manifest capability stamp.
 
 
 def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
-    """Builds an index with a synthetic axis absent from the packaged index."""
+    """Builds an index with a synthetic axis absent from the fixture index."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="https://fixture.example.org",

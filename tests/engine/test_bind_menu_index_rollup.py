@@ -1,4 +1,4 @@
-"""Index-carried shapes use covering roots from the packaged code index in the bind prompt.
+"""Index-carried shapes use covering roots from the fixture code index in the bind prompt.
 Other shapes keep recall-sourced values unchanged.
 
 The FinancialFlow/amount covering roots are 10 for crsPurpose, 6 for crsTypeOfFinance, 8 for
@@ -49,7 +49,7 @@ _PROP_FLOW = "crsTypeOfFlow"
 
 
 def _sv_arcs_from_real_row(dcid: str, *, meas_prop: str) -> dict:
-    """Build graph arcs from the StatVar's packaged-index row."""
+    """Build graph arcs from the StatVar's fixture-index row."""
     index = get_index()
     row = next(r for r in index.statvars if r.dcid == dcid)
     constraint_props = list(row.constraint_properties)
@@ -81,8 +81,8 @@ def _derive_single_shape(recalled_dcid: str, *, meas_prop: str):
     return shapes[0]
 
 
-def test_fixture_matches_the_real_packaged_index():
-    """Confirm the fixture StatVars and their amount-only flow value exist in the packaged index."""
+def test_fixture_matches_the_real_index():
+    """Confirm the fixture StatVars and their amount-only flow value exist in the fixture index."""
     index = get_index()
     amount_row = next(r for r in index.statvars if r.dcid == _AMOUNT_SV)
     grant_row = next(r for r in index.statvars if r.dcid == _GRANT_EQ_SV)

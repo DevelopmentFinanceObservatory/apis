@@ -19,11 +19,12 @@ import pytest
 from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
+from search.engine.stated_words_read import StatedWordsOutput
 from series_coverage.schema import RoleNames
 from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine.test_candidate_place_roles import _GNI_PPP
 from tests.engine.test_candidate_place_roles import _NODES as _GNI_NODES
 from tests.engine.test_role_class_shapes import (
@@ -73,6 +74,8 @@ class _BindLLM:
         self._bindings = [_GUARANTEED] if bind_guarantee else []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         return (

@@ -1,7 +1,7 @@
 """Elect a shape and bind its slots in one asynchronous LLM call per variable.
 
 Retrieval scores order the menu and stay out of the prompt. A memo can serve identical
-requests. The prompt uses extracted text and graph or packaged-index metadata. ``value`` selects one member, ``set``
+requests. The prompt uses extracted text and graph or code-index metadata. ``value`` selects one member, ``set``
 selects 2+ without an aggregate, and ``unbound`` leaves a slot open. ``absent`` marks an
 inapplicable property and maps to wire ``unbound`` plus ``inapplicable_slots``.
 """
@@ -18,12 +18,14 @@ from pydantic.json_schema import SkipJsonSchema
 from pydantic_core import PydanticCustomError
 
 from code_index.shared import get_index
+from dfo_platform.roles import GENERIC_ROLE_WORDING
 from search.engine.clients.llm import (
     SCHEMA_REFUSAL,
     SupportsLLM,
     for_stage,
     generate_structured_async,
 )
+from search.engine.qualifier_match import _normalize, names_plain_name
 from search.engine.quantity import (
     DenominatorKind,
     denominator_meaning,
@@ -32,11 +34,13 @@ from search.engine.quantity import (
 from search.engine.retrieval.bound_values import (
     applies_value,
     five_tuple_member_facts,
+    ratio_base_axis,
     shape_invariants,
     shape_partly_stated,
 )
 from search.engine.shape import STANDARD_SHAPE_LABEL, _declared_role_names, is_un_shape
-from search.models import Axis
+from search.models import Axis, RoleAxis
+from search.render.labels import _humanize_ref
 
 if TYPE_CHECKING:
     from code_index.types import CodeRow
@@ -465,20 +469,33 @@ _SCHEMA_DENOMINATOR_TEXT: dict[DenominatorKind, str] = {
 UNRESOLVED_DENOMINATOR = "(present, unresolved)"
 
 
-def menu_denominator(denominator: str | None, *, unresolved: bool) -> str | None:
+def menu_denominator(
+    denominator: str | None, *, unresolved: bool, base_axis: RoleAxis | None = None
+) -> str | None:
     """The measurementDenominator text the bind menu shows for a shape, `None` when it
     divides by nothing.
 
     A schema term shows its meaning (`quantity.schema_denominator_kind`) whether or not its
     arc resolves, so `Count_Person` and the ProvisionalNode `PerCapita` show one per-person
     base. Any other unresolved arc shows `UNRESOLVED_DENOMINATOR`, which keeps it distinct
-    from a resolved shape sharing its dcid, and a StatVar denominator shows its dcid."""
+    from a resolved shape sharing its dcid, and a StatVar denominator shows its dcid.
+
+    `base_axis` names the flow end whose party's own total the shape divides by
+    (`bound_values.ratio_base_axis`), and the text names that party after the base: DAC1's
+    ODA as a share of GNI shows "... of the provider", DAC2a's "... of the recipient", so
+    the menu states the two ratios apart."""
     kind = schema_denominator_kind(denominator) if denominator is not None else None
     if kind is not None:
-        return _SCHEMA_DENOMINATOR_TEXT[kind]
-    if unresolved:
-        return UNRESOLVED_DENOMINATOR
-    return denominator or None
+        text = _SCHEMA_DENOMINATOR_TEXT[kind]
+    elif unresolved:
+        text = UNRESOLVED_DENOMINATOR
+    elif denominator:
+        text = denominator
+    else:
+        return None
+    if base_axis is None:
+        return text
+    return f"{text} of the {GENERIC_ROLE_WORDING.noun(base_axis).singular}"
 
 
 class StatedReading(NamedTuple):
@@ -498,8 +515,8 @@ class StatedReading(NamedTuple):
 def stated_reading(shape: ShapeDraft) -> StatedReading:
     """The reading the bind menu states for `shape`: its label, its origin, its family
     (standard, or the roles its series declare), its five-tuple, and its denominator by
-    meaning (`menu_denominator`). The prompt prints these fields and `rank_elected`
-    compares them, so two shapes the menu states alike are equal here. The sample member
+    meaning and the party whose total it is (`menu_denominator`). The prompt prints these
+    fields and `rank_elected` compares them, so two shapes the menu states alike are equal here. The sample member
     dcids a block also prints are examples of its members and state no reading."""
     roles = _declared_role_names(shape)
     return StatedReading(
@@ -510,7 +527,11 @@ def stated_reading(shape: ShapeDraft) -> StatedReading:
         measured_property=shape.meas_prop_dcid,
         stat_type=shape.stat_type_dcid,
         qualifier=shape.meas_qual_dcid,
-        denominator=menu_denominator(shape.meas_denom_dcid, unresolved=shape.meas_denom_unresolved),
+        denominator=menu_denominator(
+            shape.meas_denom_dcid,
+            unresolved=shape.meas_denom_unresolved,
+            base_axis=ratio_base_axis(shape, get_index()),
+        ),
     )
 
 
@@ -781,7 +802,7 @@ def _build_universal_bind_prompt(
     """Build the user prompt for the choose-and-bind call.
 
     User wording comes from the extracted variable and dropped phrases. Shape metadata and
-    admitted qualifier codes and labels come from the graph or packaged index. Admitted
+    admitted qualifier codes and labels come from the graph or the release's code index. Admitted
     matches contribute only their code and label. Dropped phrases request ``unbound`` plus
     ``requested_all`` evidence
     and a verbatim phrase echo. The block appears only when phrases exist.
@@ -1111,6 +1132,81 @@ def ground_bind_output(
         chosen = shapes[output.chosen_shape_index]
         bindings = _without_partly_stated_values(_grounded_in_taxonomy(bindings, chosen), chosen)
     return output.model_copy(update={"bindings": bindings})
+
+
+def slot_label(slot_key_draft: SlotKeyDraft) -> str:
+    """The label a slot carries for people: an indexed code system's declared plain_name,
+    else the draft's graph label with a dcid echo humanised. The draft keeps the graph's
+    label for binding."""
+    prop = slot_key_draft.property_dcid
+    if prop is None:
+        return slot_key_draft.label
+    declaration = get_index().declarations.get(prop)
+    if declaration is not None:
+        return declaration.plain_name
+    return _humanize_ref(prop, slot_key_draft.label)
+
+
+def _slot_name(slot_key_draft: SlotKeyDraft) -> str:
+    """The noun a question names the slot `slot_key_draft` keys by: the plain name the
+    index declares for its property outside the code systems
+    (`CodeIndex.slot_plain_names`), else its label (`slot_label`)."""
+    prop = slot_key_draft.property_dcid
+    declared = get_index().slot_plain_names.get(prop) if prop is not None else None
+    return declared or slot_label(slot_key_draft)
+
+
+def _names_slot(phrase: str, slot_key_draft: SlotKeyDraft) -> bool:
+    """Whether `phrase` names the slot `slot_key_draft` keys by its whole name
+    (`_slot_name`), singular or plural (`names_plain_name`).
+
+    "Across all flows" names the flow slot and "across all types of finance" the DAC type
+    of finance, while "total", "total aid" and "all DAC donors" name no slot, so a declared
+    default still binds and the phrase stays disclosed.
+    """
+    return names_plain_name(phrase, _slot_name(slot_key_draft))
+
+
+def validate_requested_all_bindings(
+    bindings: Sequence[SlotBindingDraft],
+    dropped_qualifier_phrases: Sequence[str],
+    *,
+    slot_keys: Collection[SlotKeyDraft],
+) -> tuple[list[SlotBindingDraft], frozenset[str]]:
+    """Validate a binder's ``requested_all`` claims before any holds check, default or
+    warning suppression uses them.
+
+    A claim must be unbound, name a property among `slot_keys` (the elected shape's),
+    reproduce a dropped phrase exactly, and name that slot (`_names_slot`). A phrase the
+    claim does not name a slot with ("total", "bilateral") says nothing about which values
+    the slot spans. Demote invalid claims to ``mentioned`` and clear their phrase. Return
+    bindings in order plus normalised phrases from valid claims only, so a dropped phrase
+    no answer binds stays disclosed. Validated bindings validate to themselves, so each
+    binder applies this to its pick's drafts and the election again to the elected
+    shape's.
+    """
+    keys = {key.property_dcid: key for key in slot_keys if key.property_dcid is not None}
+    applied: set[str] = set()
+    validated: list[SlotBindingDraft] = []
+    for binding in bindings:
+        if binding.evidence == "requested_all":
+            phrase = binding.requested_all_phrase
+            key = keys.get(binding.property_dcid or "")
+            if (
+                binding.kind == "unbound"
+                and key is not None
+                and phrase is not None
+                and phrase in dropped_qualifier_phrases
+                and _names_slot(phrase, key)
+            ):
+                applied.add(_normalize(phrase))
+                validated.append(binding)
+                continue
+            binding = binding.model_copy(
+                update={"evidence": "mentioned", "requested_all_phrase": None}
+            )
+        validated.append(binding)
+    return validated, frozenset(applied)
 
 
 def _without_partly_stated_values(

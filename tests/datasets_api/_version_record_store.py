@@ -13,6 +13,7 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 
+from datasets_api.version_store import _ROLE_COLUMNS_SQL
 from datasets_api.versions import MaterialisationRecord, Trigger
 
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
@@ -47,6 +48,7 @@ CREATE TABLE datasets.version_record (
     composed_stat_vars TEXT,
     continuations TEXT,
     frame_sha256 TEXT,
+    frame_summed INTEGER,
     PRIMARY KEY (subject_id, content_version)
 );
 CREATE TABLE datasets.version_artifact (
@@ -138,6 +140,20 @@ CREATE TABLE datasets.subject_head (
 """
 
 
+def _role_columns(output_profile: str | None) -> str | None:
+    """SQLite's stand-in for the `jsonb_path_query_array` of `_ROLE_COLUMNS_SQL`: the names of
+    the profile's columns of kind `role`, as a JSON array."""
+    if output_profile is None:
+        return None
+    columns = json.loads(output_profile).get("columns", [])
+    return json.dumps([column["name"] for column in columns if column.get("kind") == "role"])
+
+
+def _to_sqlite(sql: str) -> str:
+    sql = sql.replace(_ROLE_COLUMNS_SQL, "role_columns(output_profile) AS role_columns")
+    return _to_sqlite_paramstyle(sql)
+
+
 def _sqlite_param(value: object) -> object:
     """Encode dicts and datetimes as SQLite text for JSONB and timestamp columns."""
     if isinstance(value, dict):
@@ -157,6 +173,7 @@ _JSON_COLUMNS = frozenset(
         "trace",
         "warnings",
         "output_profile",
+        "role_columns",
         "series_conversions",
         "input_content_versions",
         "composed_stat_vars",
@@ -189,7 +206,7 @@ _TIMESTAMP_COLUMNS = frozenset(
         "submitted_at",
     }
 )
-_BOOL_COLUMNS = frozenset({"retryable", "final_delivery"})
+_BOOL_COLUMNS = frozenset({"retryable", "final_delivery", "frame_summed"})
 
 
 def _decode_row(row: sqlite3.Row) -> dict[str, object]:
@@ -214,7 +231,7 @@ class _VersionRecordFakeTransaction:
         if sql.strip().upper().startswith("SELECT PG_ADVISORY_XACT_LOCK"):
             # The store lock serialises transactions, so SQLite needs no advisory-lock function.
             return
-        self._conn.execute(_to_sqlite_paramstyle(sql), tuple(_sqlite_param(p) for p in params))
+        self._conn.execute(_to_sqlite(sql), tuple(_sqlite_param(p) for p in params))
 
     def fetch_one(self, sql: str, params: Sequence[object] = ()) -> Mapping[str, object] | None:
         rows = self.fetch_all(sql, params)
@@ -225,9 +242,7 @@ class _VersionRecordFakeTransaction:
         return rows[0]
 
     def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
-        cursor = self._conn.execute(
-            _to_sqlite_paramstyle(sql), tuple(_sqlite_param(p) for p in params)
-        )
+        cursor = self._conn.execute(_to_sqlite(sql), tuple(_sqlite_param(p) for p in params))
         return [_decode_row(row) for row in cursor.fetchall()]
 
 
@@ -239,6 +254,7 @@ class FakeVersionRecordDatasetStore:
         self._conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.create_function("lease_end", 2, _lease_end, deterministic=True)
+        self._conn.create_function("role_columns", 1, _role_columns, deterministic=True)
         self._conn.execute("ATTACH DATABASE ':memory:' AS datasets")
         self._conn.executescript(_VERSION_RECORD_SCHEMA)
         self._conn.executescript(_OPERATION_SCHEMA)

@@ -48,7 +48,7 @@ _PROP_NETTING = "nettingBasis"
 _NETTING_ONLY_VALUE = "TestGrossValue"
 _PROP_OBLIGATION_TYPE = "financialObligationType"
 
-# The destination-end role every packaged CRS row declares; "to Kenya" binds
+# The destination-end role every fixture CRS row declares; "to Kenya" binds
 # Kenya under this role.
 _ROLE_RECIPIENT = "financingRecipient"
 _ROLES = ("financingProvider", "financingRecipient")

@@ -3,7 +3,7 @@
 ``LiveSdmxClient`` wraps ``dc_sdmx.SdmxClient`` on the graph deployment's
 SDMX endpoint. ``role_series`` returns real Facets filtered by non-empty
 facet-id sets. Oversized OR-lists are split to fit the client's URL budget.
-``RoleFacetCandidate`` comes from the coverage artifact and carries no
+``RoleFacetCandidate`` comes from the release's coverage view and carries no
 observation count or dates. All methods return the ``Facet`` shape from
 ``clients.graph``.
 
@@ -135,7 +135,7 @@ class RoleFacetCandidate:
     observations.
 
     Provenance, method, unit, scaling factor and observation period are shared by every
-    tuple under a facet id because the coverage artifact keys metadata by that id.
+    tuple under a facet id because the release's coverage view keys metadata by that id.
     """
 
     facet_id: str

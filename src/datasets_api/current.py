@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import cast
@@ -91,9 +91,12 @@ from datasets_api.operations.submit import submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
 from datasets_api.query_options import encode_query_options
+from datasets_api.recorded_rendering import serving_frames
 from datasets_api.render import (
     DerivedVersion,
-    artifact_rendering_key,
+    FrameMode,
+    artifact_rendering_keys,
+    entity_roles,
     is_incomplete_rendering,
     is_statistics_rendering,
     refuse_pivot_over_stored_caps,
@@ -129,6 +132,7 @@ from datasets_api.versions import (
     Trigger,
     VersionLister,
     VersionRecordWriter,
+    link_digest,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.problem import Refusal
@@ -329,7 +333,7 @@ def load_stored(
     content_version: str,
     deps: DefinitionDeps,
     include_artifacts: bool,
-    rendering_key: str | None = None,
+    rendering_keys: tuple[str, ...] | None = None,
     revoked_under: Sequence[str] = (),
 ) -> Manifest:
     """Load a stored version of the served definition through the snapshot loaders.
@@ -340,10 +344,13 @@ def load_stored(
     revocations under it, and a request naming a posted id passes that id, so it honours
     both.
     `include_artifacts=True` uses `read_snapshot_manifest`, which lists servable artifacts under
-    their download links and refuses an expired version. An optional `rendering_key` narrows
+    their download links and refuses an expired version. Optional `rendering_keys` narrow
     artifacts to the requested rendering. `False` uses `read_snapshot_currency`, which returns
     no artifacts. A fresh head relies on this as its only existence check. Both time under
     `snapshot_state`.
+
+    Its artifacts hold the party-kind files linked under the code index's digest only, each
+    carrying it as `enrichment_stamp` (`read_snapshot_manifest`).
     """
     with phase("snapshot_state"):
         if not include_artifacts:
@@ -363,8 +370,9 @@ def load_stored(
             snapshot_reader=deps.snapshot_reader,
             now=deps.now,
             settings=deps.settings,
-            rendering_key=rendering_key,
+            rendering_keys=rendering_keys,
             revoked_under=revoked_under,
+            enrichment_digest=deps.code_index.enrichment_digest,
         )
 
 
@@ -442,6 +450,7 @@ def _record_head_hit_derived(
         base_content_version=base_content_version,
         output_profile=output_profile,
         frame_sha256=derived.frame_sha256,
+        frame_summed=derived.summed,
         record_only_artifacts=[derived_frame_record],
         version_writer=deps.version_writer,
         trace_id=trace_id,
@@ -462,7 +471,11 @@ def _record_head_hit_derived(
         return derived_manifest
     if created:
         return with_linked_artifacts(
-            derived_manifest, subject_id=subject_id, locations=state.locations, now=deps.now()
+            derived_manifest,
+            subject_id=subject_id,
+            locations=state.locations,
+            now=deps.now(),
+            enrichment_digest=deps.code_index.enrichment_digest,
         )
     return persisted_response(
         subject_id=subject_id,
@@ -471,6 +484,7 @@ def _record_head_hit_derived(
         served=derived_manifest,
         call_warnings=call_warnings,
         now=deps.now(),
+        enrichment_digest=deps.code_index.enrichment_digest,
     )
 
 
@@ -485,11 +499,15 @@ class StoredFrame:
 @dataclass(frozen=True)
 class StoredRenderPlan:
     """What `plan_stored_render` read from a stored version before its frame is read: the
-    stored output profile a pivot reads and the recorded frame hash a groupby compares its
-    collapse with (`StoredVersion.frame_sha256`)."""
+    stored output profile a pivot reads, the recorded frame hash a groupby compares its
+    collapse with (`StoredVersion.frame_sha256`), and how a render reads the version's own
+    stored frame (`render.FrameMode`), as the version's serving frames say
+    (`recorded_rendering.serving_frames`). `frame_mode` is `None` when the version's own frame
+    does not serve it, so the version renders from its base version's frame alone."""
 
     output_profile: OutputProfile | None
     frame_sha256: str | None
+    frame_mode: FrameMode | None = FrameMode.RAW
 
 
 def plan_stored_render(
@@ -499,6 +517,7 @@ def plan_stored_render(
     subject_id: str,
     content_version: str,
     read_version: Callable[[], StoredVersion | None],
+    read_locations: Callable[[], Iterable[StoredArtifactLocation]],
     deps: DefinitionDeps,
 ) -> StoredRenderPlan:
     """Decide from the stored version alone whether its stored frame can render `options`, so
@@ -506,8 +525,10 @@ def plan_stored_render(
     materialise permit is taken.
 
     Raise `StoredTraceMissingResolvedStatVars` for a trace without `resolved_stat_vars`,
-    which a render needs for the groupby population. A pivot, a groupby, or a plain long `xlsx`
-    whose identity has an axis to split reads the version record once (`read_version`). With
+    which a render needs for the groupby population. A pivot, a groupby, a party-totals cut, or
+    a plain long `xlsx` whose identity has an axis to split reads the version record once
+    (`read_version`); a groupby or a cut reads whether the version is a derived one, and a
+    derived one reads its links (`read_locations`) for its serving frames. With
     no `groupby`, no `columns` and no party-totals cut, a pivot refuses its caps from the
     stored pivot facts (`refuse_pivot_over_stored_caps`). A plain long `xlsx` (no `groupby`,
     no `pivot`, no `columns`, no party-totals cut) refuses `excel_limit` from the stored row
@@ -520,7 +541,11 @@ def plan_stored_render(
         raise StoredTraceMissingResolvedStatVars(
             subject_id=subject_id, content_version=content_version
         )
-    stored = read_version() if options.pivot is not None or options.groupby is not None else None
+    stored = (
+        read_version()
+        if options.pivot is not None or options.groupby is not None or options.without_party_totals
+        else None
+    )
     output_profile: OutputProfile | None = None
     # A groupby, `columns` or a party-totals cut changes what the stored facts count.
     reshaped = (
@@ -544,9 +569,18 @@ def plan_stored_render(
                 manifest, options=options, read_version=read_version, deps=deps
             ),
         )
+    frame_mode: FrameMode | None = FrameMode.RAW
+    if stored is not None and stored.base_content_version is not None:
+        frames = serving_frames(
+            stored, renderings=[location.rendering for location in read_locations()]
+        )
+        frame_mode = next(
+            (frame.mode for frame in frames if frame.content_version == content_version), None
+        )
     return StoredRenderPlan(
         output_profile=output_profile,
         frame_sha256=stored.frame_sha256 if stored is not None else None,
+        frame_mode=frame_mode,
     )
 
 
@@ -603,13 +637,18 @@ def _render_frame(
     Use the same provenance, definition, resolved-member population, and `ReproducingCall` as
     fresh rendering. The full population keeps `groupby` completeness checks consistent,
     including zero-row members. `plan` is what `plan_stored_render` read from the stored
-    version: a pivot reads its stored output profile, and a groupby compares its collapse
-    with the recorded frame hash.
+    version: a pivot reads its stored output profile, a groupby compares its collapse with the
+    recorded frame hash, and its frame mode says how the render reads `frame`.
 
     Return the derived version's manifest when groupby or a party-totals cut changes the frame
-    (`render.DerivedVersion`). A groupby that leaves the frame unchanged is the base version,
-    whatever frame grammar minted its token (`render_and_store`). Record its artifact, and
-    every other one, under the base version and add it to the manifest. A party-totals cut
+    (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.frame_mode`
+    other than `RAW`) renders under the version itself. A render of it that gives another
+    version records nothing and returns `None`, so the caller falls back to the base frame.
+    That happens when the code index changed since the mint, and recording it would let a
+    version derived from a derived one escape its raw version's revocation. A groupby that leaves the frame
+    unchanged is the base version, whatever frame grammar minted its token
+    (`render_and_store`). Record its artifact, and every other one, under the base version
+    and add it to the manifest. A party-totals cut
     reads a canonical frame, so a version whose stored frame is a frame1 document returns
     `None` and the caller rebuilds. Render errors propagate to the shared classifier.
 
@@ -618,10 +657,17 @@ def _render_frame(
     (`incomplete_artifact`). The response lists the artifact linked under the request's
     rendering key when a concurrent call linked one first (`with_linked_artifacts`).
     """
+    # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
+    assert plan.frame_mode is not None
     table = read_stored_frame(frame.data, media_type=frame.location.media_type)
-    if options.without_party_totals and not isinstance(table, Frame):
+    if (
+        options.without_party_totals
+        and plan.frame_mode is FrameMode.RAW
+        and not isinstance(table, Frame)
+    ):
         return None
-    entity_columns = frame_entity_columns(table.columns)
+    # A collapse's kept code axes render as the decoded codes its mint wrote them as.
+    entity_columns = entity_roles(frame_entity_columns(table.columns))
     facets = cast("list[dict[str, object]]", manifest.trace.get("facets", []))
     provenance_refs = provenance_refs_of(facets)
     # `plan_stored_render` refused a trace without `resolved_stat_vars`.
@@ -671,7 +717,8 @@ def _render_frame(
         # non-unique refusal name the varying columns.
         output_profile=plan.output_profile,
         deadline=deps.deadline,
-        # Only a groupby yields a collapse frame to compare with the stored one.
+        # Only a groupby of a frame it has not collapsed yields a collapse frame to compare
+        # with the stored one.
         base_frame_sha256=(
             stored_frame_sha256(
                 frame.location,
@@ -679,15 +726,26 @@ def _render_frame(
                 recorded=plan.frame_sha256,
                 locations=locations,
             )
-            if options.groupby is not None
+            if options.groupby is not None and plan.frame_mode is not FrameMode.SUMMED
             else None
         ),
+        frame_mode=plan.frame_mode,
     )
     artifact, reshape_warnings, derived = (
         rendered.artifact,
         rendered.warnings,
         rendered.derived,
     )
+    if derived is not None and plan.frame_mode is not FrameMode.RAW:
+        logger.warning(
+            "stored frame render gave another version; falling back to the base frame "
+            "subject_id=%s content_version=%s derived_content_version=%s rendering=%s",
+            subject_id,
+            content_version,
+            derived.content_version,
+            encode_query_options(options),
+        )
+        return None
     rendered_content_version = derived.content_version if derived is not None else content_version
     if not (documentation_complete and rendered.labels_complete):
         artifact = incomplete_artifact(
@@ -717,6 +775,7 @@ def _render_frame(
             artifact_digest=artifact.artifact_digest,
             rendering=artifact.rendering,
             media_type=artifact.media_type,
+            enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
         ),
         trace_id=trace_id,
     )
@@ -732,6 +791,7 @@ def _render_frame(
         subject_id=subject_id,
         locations=deps.snapshot_reader.read_artifact_locations(subject_id, content_version),
         now=deps.now(),
+        enrichment_digest=deps.code_index.enrichment_digest,
     )
     return linked_manifest.model_copy(
         update={"artifacts": [*linked_manifest.artifacts, *manifest.artifacts]}
@@ -810,10 +870,11 @@ def _render_stored_rendering(
     is known only by fetching them, so a refusal the plan makes also answers a version whose
     location row is servable and whose object is gone, which `datasets-maintenance sweep`
     reports as a missing object. A `plan` argument is the one the caller made from this
-    version before it read `frame`.
+    version before it read `frame`. A plan whose version's own frame does not serve it
+    (`StoredRenderPlan.frame_mode` `None`) returns `None` before the permit and the frame read.
     """
 
-    def planned() -> StoredRenderPlan:
+    def planned(read_locations: Callable[[], Iterable[StoredArtifactLocation]]) -> StoredRenderPlan:
         if plan is not None:
             return plan
         return plan_stored_render(
@@ -824,10 +885,18 @@ def _render_stored_rendering(
             read_version=functools.partial(
                 deps.snapshot_reader.read_version, subject_id, content_version
             ),
+            read_locations=read_locations,
             deps=deps,
         )
 
     if frame is not None:
+        decided = planned(
+            functools.partial(
+                deps.snapshot_reader.read_artifact_locations, subject_id, content_version
+            )
+        )
+        if decided.frame_mode is None:
+            return None
         return _render_frame(
             subject_id=subject_id,
             content_version=content_version,
@@ -837,13 +906,15 @@ def _render_stored_rendering(
             trace_id=trace_id,
             coverage_index=coverage_snapshot.index,
             frame=frame,
-            plan=planned(),
+            plan=decided,
         )
     locations = deps.snapshot_reader.read_artifact_locations(subject_id, content_version)
     location = servable_frame_location(locations, now=deps.now())
     if location is None:
         return None
-    decided = planned()
+    decided = planned(lambda: locations)
+    if decided.frame_mode is None:
+        return None
     # The frame loads whole, so the load and the render share the semaphore that bounds a
     # mint's materialisation.
     with bounded_materialise_slot(
@@ -894,13 +965,19 @@ def head_rendering(
     as taken under that permit. A `plan` argument is the `plan_stored_render` decision the
     caller made from this version, so the render does not make it again.
     """
-    key = artifact_rendering_key(options, site=deps.settings.site) if options is not None else None
+    keys = (
+        artifact_rendering_keys(
+            options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
+        )
+        if options is not None
+        else None
+    )
     manifest = load_stored(
         subject_id=subject_id,
         content_version=content_version,
         deps=deps,
         include_artifacts=options is not None,
-        rendering_key=key,
+        rendering_keys=keys,
         revoked_under=revoked_under,
     )
     # The snapshot loader retains `series-statistics/1` even when the requested rendering is

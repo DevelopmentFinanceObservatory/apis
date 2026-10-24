@@ -5,7 +5,7 @@ A reading none of whose members holds the named purpose is not admissible
 `qualifier_not_bound` before bind, naming the purpose and flagging nothing, and beside a
 reading that holds it, that reading answers with the purpose bound. A measure sibling
 answering for a data-less elected shape is judged by its own materialisation. The
-`education` qualifier is the packaged code index's own.
+`education` qualifier is the fixture code index's own.
 """
 
 from __future__ import annotations

@@ -89,7 +89,6 @@ from search.engine.region import option_coverage as option_coverage_module
 from search.engine.region import phase_election as phase_election_module
 from search.engine.region import phase_rank_bind as phase_rank_bind_module
 from search.engine.region import related_read as related_read_module
-from search.engine.region import unrealisable as unrealisable_module
 from search.engine.region.alternate_guard import AlternateJudge, inadmissible_reason, query_pins
 from search.engine.region.candidates import walk_alternate
 from search.engine.region.grounding import _ground_answer
@@ -407,7 +406,7 @@ def _index(
 
 
 def _use_index(monkeypatch: pytest.MonkeyPatch, index: CodeIndex) -> None:
-    """Serve `index` wherever a loaded module reads the packaged index."""
+    """Serve `index` wherever a loaded module reads the fixture index."""
     packaged = shared_module.get_index
     for module in list(sys.modules.values()):
         if vars(module).get("get_index") is packaged:
@@ -1477,7 +1476,7 @@ def test_a_named_part_refuses_a_code_only_another_table_holds_once_bound(
         ]
     else:
         assert vetted is None
-        assert _repair_bindings(state) is None
+        assert asyncio.run(_repair_bindings(state)) is None
         assert [b.value_dcids for b in state.bindings if b.property_dcid == "sector"] == [[sector]]
 
 
@@ -1677,7 +1676,7 @@ def _repair(
         return []
 
     monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", _dispositions)
-    assert _repair_bindings(state) is None
+    assert asyncio.run(_repair_bindings(state)) is None
     (bindings,) = disposed
     assert bindings == state.bindings
     return bindings
@@ -1778,7 +1777,6 @@ def test_unbinding_a_default_and_the_measure_partition_takes_back_what_they_stat
     assert [w.code for w in state.warnings] == ["slot_defaulted"]
     assert state.slot_default_phrases == {"sector"}
     assert state.measure_elected_partition is not None
-    monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
 
     unbind_unrealisable(
         state,
@@ -1806,8 +1804,8 @@ def test_unbinding_a_default_and_the_measure_partition_takes_back_what_they_stat
 def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
     index, monkeypatch, drafted_by, unbound, refused_on
 ):
-    """Flow F1 is bound as a sole option and sector A is named. One member conflicts on
-    the sector alone and another on both. A value the engine wrote under that evidence,
+    """Flow F1 is bound as a sole option and sector A is named by the words. One member
+    conflicts on the sector alone and another on both. A value the engine wrote under that evidence,
     as recall's partition value or a series code's shared value is, claims nothing of
     every member: the minimal set goes, the named sector, which the part then refuses on,
     and the flow stays. The bind reply's own claim is refuted by the member conflicting on
@@ -1827,8 +1825,8 @@ def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
         ),
     ]
     state.text_recognized_properties = frozenset({"sector"})
+    state.variable = "sector A aid"
     state.graph = cast(EngineGraphClient, FakeGraph(nodes={}, obs={}, detect={}, resolve={}))
-    monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
 
     unbind_unrealisable(
         state,
@@ -3501,11 +3499,20 @@ def test_a_part_whose_keys_select_another_family_refuses_naming_its_codes(monkey
 
 def _record_stray_female(state: ResolveState) -> None:
     """Record in `state`'s ledger the requirement bind records for `gender` Female drafted
-    on a slot the elected shape lacks (`_stray_requirements`)."""
+    on a slot the elected shape lacks (`_stray_requirements`), which the word "female"
+    names."""
     stray = SlotBindingDraft(
         axis="how", property_dcid="gender", kind="value", value_dcids=["Female"]
     )
-    labels = SimpleNamespace(capped_shapes=[], label_dcids=lambda values: values)
+    labels = SimpleNamespace(
+        capped_shapes=[],
+        label_dcids=lambda values: values,
+        admitted_qualifiers=(),
+        query_qualifiers=[],
+        variable="female",
+        query_text=None,
+        dropped_qualifier_phrases=(),
+    )
     for requirement in asyncio.run(_stray_requirements(cast(ResolveState, labels), [stray])):
         state.requirements = with_requirement(state.requirements, requirement)
 

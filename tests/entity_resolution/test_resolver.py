@@ -11,6 +11,8 @@ import json
 import threading
 import time
 from collections.abc import Callable, Iterable
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from cachetools import TLRUCache
@@ -28,6 +30,7 @@ from entity_resolution import (
     Resolved,
     pack,
 )
+from entity_resolution.membership import UnknownMembership
 from entity_resolution.regions import identity_to_dcid
 from entity_resolution.resolver import (
     _QUERY_ALIASES,
@@ -38,6 +41,7 @@ from entity_resolution.resolver import (
     _ttu,
     _without_article_and_punctuation,
 )
+from entity_resolution.shared import SharedResolver
 from entity_resolution.types import KindIndex
 from graph_generation import FakeGeneration
 from graph_generation.config import (
@@ -330,7 +334,7 @@ def test_official_donors_resolve_as_a_graph_confirmed_aggregate(shared_resolver)
 
 
 class _IndexWithoutParties:
-    """The packaged index under another content hash, declaring no party kinds."""
+    """The fixture index under another content hash, declaring no party kinds."""
 
     def __init__(self) -> None:
         self._index = get_index()
@@ -455,6 +459,9 @@ def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
         ("multilateral institutions", "DACMultilaterals", "multilaterals (DAC)"),
         ("multilateral donors", "DACMultilaterals", "multilaterals (DAC)"),
         ("private donors", "DACPrivateDonors", "private donors (DAC)"),
+        ("All Donors, Total", "DACOfficialDonors", "official donors (DAC)"),
+        ("all official donors", "DACOfficialDonors", "official donors (DAC)"),
+        ("all recipients", "DACAllRecipients", "all recipients (DAC)"),
         (
             "regional development banks",
             "DACRegionalDevelopmentBanks",
@@ -759,15 +766,69 @@ def test_group_node_dcids_are_the_nodes_a_group_resolves_to(shared_resolver):
 
     async def resolve_and_look_up():
         (union,) = await resolver.resolve(["European Union"])
-        return union, await resolver.group_node_dcids()
+        return union, await resolver.group_node_dcids(), await resolver.group_node_names()
 
-    union, group_nodes = _run(resolve_and_look_up())
+    union, group_nodes, names = _run(resolve_and_look_up())
 
     assert isinstance(union, Group) and union.entity is not None
     assert union.entity.dcid in group_nodes
+    assert set(names) == group_nodes
+    (again,) = _run(resolver.resolve([names[union.entity.dcid]]))
+    assert isinstance(again, Group) and again.entity == union.entity
     assert not group_nodes & {*(member.dcid for member in union.members), "africa"}
     # The one graph read is the resolve's confirmation: the lookup reads the packs alone.
     assert len(graph.node_arcs_many_calls) == 1
+
+
+_GROUP_G = "dfo_graph/GroupG"
+
+
+class _GroupGRegistry:
+    """A registry holding the one group `GroupG`, with no members."""
+
+    def by_entity_id(self, entity_id: str) -> SimpleNamespace:
+        if entity_id != _GROUP_G:
+            raise UnknownMembership(entity_id)
+        return SimpleNamespace(ref="GroupG", label="Group G", members=lambda: (), member_labels={})
+
+
+@pytest.mark.parametrize(
+    ("known_groups", "expected"),
+    [
+        (("Shared name", "Group G"), {"GroupG": "Group G"}),
+        (("Shared name",), {}),
+    ],
+    ids=["a-later-name-resolves-to-the-group-alone", "no-name-resolves-to-the-group-alone"],
+)
+def test_a_group_node_takes_only_a_name_that_resolves_to_the_group_alone(
+    monkeypatch, known_groups, expected
+):
+    """ "Shared name" tops on a group the registry does not hold, beside `GroupG` as an
+    organisation, so `resolve` reads it as an ordinary hit, ambiguous between the two.
+    "Group G" tops on the registry's group, which `resolve` answers alone. `GroupG` stays a
+    group node either way, so a pin on it still cannot ask for its members."""
+    import entity_resolution.resolver as resolver_module
+
+    groups_x = CandidateSummary(entity_id="groups/X", entity_type="geo.organization")
+    group_g_as_org = CandidateSummary(entity_id=_GROUP_G, entity_type="org.organisation")
+    group_g = CandidateSummary(entity_id=_GROUP_G, entity_type="geo.organization")
+    survivors = {"Shared name": (groups_x, group_g_as_org), "Group G": (group_g,)}
+
+    def scripted_survivors(shared, text, context):
+        listed = tuple((candidate, None) for candidate in survivors[text])
+        return listed, survivors[text], "entity"
+
+    monkeypatch.setattr(resolver_module, "_resolve_text_survivors", scripted_survivors)
+    shared = SimpleNamespace(
+        resolver=SimpleNamespace(known_groups=lambda: known_groups),
+        groups=_GroupGRegistry(),
+        policy=SimpleNamespace(holds_region=lambda dcid: False),
+    )
+
+    lookup = resolver_module._group_nodes_job(cast(SharedResolver, shared))
+
+    assert lookup.names == expected
+    assert lookup.dcids == {"groups/X", "GroupG"}
 
 
 @pytest.mark.parametrize(

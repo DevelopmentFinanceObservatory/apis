@@ -3620,6 +3620,7 @@ def test_a_row_the_previous_image_inserts_stores_the_facts_of_its_body(live_stor
             assert stored is not None
             assert stored.facts == facts_from_body(case["body"]), name
             assert stored.frame_sha256 is None, name
+            assert stored.frame_summed is None, name
             stored_columns = _stored_fact_columns(
                 live_store, subjects[name], case["content_version"]
             )

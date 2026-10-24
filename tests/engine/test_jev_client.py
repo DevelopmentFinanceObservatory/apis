@@ -383,10 +383,12 @@ def test_a_call_that_never_took_a_slot_fails_as_slot_wait_and_leaves_the_breaker
     assert len(jev.requests) == 1
 
 
-def test_a_call_admitted_late_and_cut_by_the_ceiling_fails_as_slot_wait(jev: _Jev) -> None:
+def test_a_call_admitted_late_and_cut_by_the_ceiling_leaves_the_breaker_closed(
+    jev: _Jev,
+) -> None:
     """Each call queues for most of its ceiling, then sends a request that stalls: the
-    ceiling cuts the request before its own timer ran out, so the call fails as
-    ``slot_wait`` and the breaker stays shut."""
+    ceiling cuts a request sent after a wait for its slot, so the call fails as
+    ``queued_timeout``, the breaker stays shut and the next call answers."""
     stalls = [BREAKER_FAILURES]
 
     async def stall_then_answer(request: httpx2.Request) -> httpx2.Response:
@@ -410,9 +412,22 @@ def test_a_call_admitted_late_and_cut_by_the_ceiling_fails_as_slot_wait(jev: _Je
         return [*waits, await ask(_STATE, _QUESTIONS, settings=jev.settings)]
 
     *waits, answered = asyncio.run(run())
-    assert [getattr(w, "kind", w) for w in waits] == ["slot_wait"] * BREAKER_FAILURES
+    assert [getattr(w, "kind", w) for w in waits] == ["queued_timeout"] * BREAKER_FAILURES
     assert isinstance(answered, JevResponse)
     assert len(jev.requests) == BREAKER_FAILURES + 1
+
+
+def test_an_answer_in_hand_when_the_ceiling_fires_is_returned(jev: _Jev) -> None:
+    """A loop stalled past the ceiling runs the response in the step before the ceiling's
+    timer, so the request has answered when the ceiling fires and nothing is left to cut."""
+
+    async def stalled(request: httpx2.Request) -> httpx2.Response:
+        time.sleep(0.3)
+        return _answers(request)
+
+    jev.serve(stalled, jev_ceiling_s=0.2)
+    assert jev.ask().nouls == {"control": 0.9}
+    assert len(jev.requests) == 1
 
 
 def test_only_one_probe_runs_while_the_breaker_is_half_open() -> None:
@@ -475,12 +490,42 @@ def test_chunks_share_one_deadline_and_count_against_the_semaphore(jev: _Jev) ->
         return _answers(request)
 
     # Four or more chunks two at a time take at least 0.3 s, past the 0.25 s ceiling. The
-    # ceiling cuts the chunks that queued behind the first two, so the call fails as a wait.
+    # ceiling cuts the chunks that queued behind the first two, which sent after waiting
+    # for their slots, so the call fails as a queued timeout.
     jev.serve(slow, jev_max_concurrency=2, jev_ceiling_s=0.25)
     with pytest.raises(JevError) as raised:
         jev.ask(_large_questions())
-    assert raised.value.kind == "slot_wait"
+    assert raised.value.kind == "queued_timeout"
     assert peak == 2
+
+
+def test_split_answers_in_hand_at_the_ceiling_are_returned_only_when_every_chunk_answered(
+    jev: _Jev,
+) -> None:
+    """After a stall every chunk has answered, so the call returns them all. With one chunk
+    still outstanding, the answered chunks complete nothing and the call fails."""
+    outstanding = [False]
+    answered = 0
+
+    async def stalled(request: httpx2.Request) -> httpx2.Response:
+        nonlocal answered
+        if outstanding[0] and "m|0" in _body(request)["questions"]:
+            await asyncio.sleep(30)
+        await asyncio.sleep(0.05)
+        if not answered:
+            time.sleep(0.3)
+        answered += 1
+        return _answers(request)
+
+    jev.serve(stalled, jev_ceiling_s=0.2)
+    questions = _large_questions()
+    assert jev.ask(questions).nouls == dict.fromkeys(questions, 0.9)
+    assert len(jev.requests) > 2
+
+    outstanding[0] = True
+    with pytest.raises(JevError) as raised:
+        jev.ask(questions)
+    assert raised.value.kind == "timeout"
 
 
 def test_the_zstd_backport_compresses_large_bodies(jev: _Jev) -> None:

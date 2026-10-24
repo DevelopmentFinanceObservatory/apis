@@ -77,6 +77,14 @@ type ReadingCoverage = Mapping[str, ObservedYears]
 it holds nothing is absent."""
 
 
+def holds_in(coverage: ReadingCoverage, window: TimeWindow | None) -> bool:
+    """Whether a reading holds a point at some key of `coverage`, inside `window` when one is
+    given, or may: a span stated without its years counts when it overlaps the window."""
+    return any(
+        window is None or years.requested(window) != frozenset() for years in coverage.values()
+    )
+
+
 def observed_years(facets: Iterable[Facet]) -> ObservedYears | None:
     """What `facets` hold at one place or role tuple, or None when none holds an
     observation. A data-bearing facet without a complete dated read

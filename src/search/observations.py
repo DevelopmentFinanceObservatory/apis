@@ -20,7 +20,7 @@ alone (`materialise.enrichment.read_party_kinds`), with no read.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -40,7 +40,6 @@ from search.models import (
     ObservationPoint,
     ObservationSeries,
     ObservationSeriesConversion,
-    PartyKind,
     PreviewOrder,
     ProvenanceRef,
     SeriesAxisRef,
@@ -519,27 +518,19 @@ def _read_labels(
     return label_source.node_labels_batch(label_dcids) if label_dcids else {}
 
 
-def _read_party_kinds(
-    keys: Iterable[SeriesKey], *, index: CodeIndex
-) -> dict[tuple[str, str], PartyKind]:
-    """The party kind of each `(role, entity)` of `keys` on a flow role, from `index`
-    (`materialise.enrichment.read_party_kinds`)."""
-    return read_party_kinds(
-        (pair for _sv, role_tuple in keys for pair in role_tuple), parties=index.parties
-    )
-
-
 def _series(
     key: SeriesKey,
     read: SeriesRead,
     points: Sequence[tuple[str, float | None]],
     *,
     labels: Mapping[str, str],
-    party_kinds: Mapping[tuple[str, str], PartyKind],
+    index: CodeIndex,
     member_constraints: Mapping[str, Mapping[str, str]],
     target_currency_ref: str | None = None,
 ) -> ObservationSeries:
-    """One wire series for `read`, showing `points`. Its entities carry their `party_kinds`.
+    """One wire series for `read`, showing `points`. Each entity on a flow role carries the
+    party kind `index` lists for it in the series' provenance, or in every dataset for a
+    series whose facet names none (`materialise.enrichment.read_party_kinds`).
     Its axes are its StatVar's `member_constraints`, each value labelled from `labels`, else by
     its humanised dcid (`_humanize_ref`), as the StatVar's row label names it. A converted
     series reports the target currency as its unit when there is one, and no unit otherwise.
@@ -547,6 +538,9 @@ def _series(
     sv, role_tuple = key
     constraints = member_constraints.get(sv, {})
     provenance = read.facets.get("provenance")
+    party_kinds = read_party_kinds(
+        role_tuple, parties=index.parties, datasets=() if provenance is None else (provenance,)
+    )
     facet_map = series_facet_map(read.facets, labels)
     conversion = None
     if read.conversion is not None:
@@ -616,7 +610,7 @@ def assemble_per_series(
     Each read becomes one series, labelled from one `label_source` batch: its StatVar by
     `member_row_label` over `member_constraints[stat_var]`, its role entities, and its facet
     and source refs. Each origin and destination entity carries the party kind `index` lists
-    for it (`_read_party_kinds`). A converted read shows `target_currency_ref` (the `CurrencyUnit` a
+    for it (`_series`). A converted read shows `target_currency_ref` (the `CurrencyUnit` a
     currency request converts to, `currency_unit_ref`) as its unit, or no unit for a role
     currency. Series sort by `series_rank` within groups of one unit (`_ranked`).
 
@@ -632,7 +626,6 @@ def assemble_per_series(
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )
-    party_kinds = _read_party_kinds(reads, index=index)
     settings = observation_settings()
     total_obs = sum(read.total_rows for read in reads.values())
     over_inline = total_obs > settings.obs_inline_max
@@ -646,7 +639,7 @@ def assemble_per_series(
                     read,
                     read.points[-settings.obs_preview_points :] if over_inline else read.points,
                     labels=labels,
-                    party_kinds=party_kinds,
+                    index=index,
                     member_constraints=member_constraints,
                     target_currency_ref=target_currency_ref,
                 ),
@@ -725,7 +718,6 @@ def assemble_role_bulk(
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )
-    party_kinds = _read_party_kinds(shown, index=index)
     truncated = sum(len(read.points) for read in shown.values()) > settings.obs_inline_max
     series = [
         _series(
@@ -733,7 +725,7 @@ def assemble_role_bulk(
             read,
             read.points[-settings.obs_preview_points :] if truncated else read.points,
             labels=labels,
-            party_kinds=party_kinds,
+            index=index,
             member_constraints=member_constraints,
             target_currency_ref=target_currency_ref,
         )
@@ -772,7 +764,6 @@ def assemble_scope_bulk(
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )
-    party_kinds = _read_party_kinds(reads, index=index)
     series = _ranked(
         [
             (
@@ -782,7 +773,7 @@ def assemble_scope_bulk(
                     read,
                     read.points[-1:],
                     labels=labels,
-                    party_kinds=party_kinds,
+                    index=index,
                     member_constraints=member_constraints,
                     target_currency_ref=target_currency_ref,
                 ),

@@ -46,7 +46,7 @@ _NOR = "country/NOR"
 
 _STANDARD_ARCS = {
     "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-    "name": {"nodes": [{"value": "Unit bind role pipeline standard"}]},
+    "name": {"nodes": [{"value": "Unit bind role pipeline query standard"}]},
     "populationType": {"nodes": [{"dcid": "TestUnitBindRoleActivity"}]},
     "measuredProperty": {"nodes": [{"dcid": "testUnitBindRoleAmount"}]},
     "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -159,7 +159,7 @@ def _run_standard(*, unit_text: str, sdmx: EngineSdmxClient | None = None):
     )
 
 
-def _run_role_bearing(*, unit_text: str, llm=None):
+def _run_role_bearing(*, unit_text: str, llm=None, variable: str = "aid"):
     role_query = "aid from Norway to Kenya"
     sdmx = FakeSdmxClient(observations={_ROLE_SV: {(("provider", _NOR), ("recipient", _KEN)): []}})
     graph = FakeGraph(
@@ -174,7 +174,7 @@ def _run_role_bearing(*, unit_text: str, llm=None):
     )
     return asyncio.run(
         resolve_variable(
-            "aid",
+            variable,
             entities=["Norway", "Kenya"],
             date_request=None,
             detect_query=role_query,
@@ -255,11 +255,13 @@ class _StrayBindLLM:
 
 def test_a_missing_facet_beside_a_stray_value_refuses_naming_it() -> None:
     """The donor-currency flow finds no facet to convert (`facet_not_available`), which
-    refuses before any answer is judged. The bind drafted Female on a slot the flow lacks,
-    which the elected answer leaves unmet, and `qualifier_not_bound` ranks first, so the
-    part refuses naming it (`phase_shared.settle_unjudged_refusal`), with the elected flow
+    refuses before any answer is judged. The bind drafted Female, which the words name, on
+    a slot the flow lacks, which the elected answer leaves unmet, and `qualifier_not_bound`
+    ranks first, so the part refuses naming it (`phase_shared.settle_unjudged_refusal`), with the elected flow
     as its flagged match, whose trace records the term. Nothing departs."""
-    result = _run_role_bearing(unit_text="donor currency", llm=_StrayBindLLM())
+    result = _run_role_bearing(
+        unit_text="donor currency", llm=_StrayBindLLM(), variable="female aid"
+    )
 
     assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
     assert [q.text for q in result.unbound_qualifiers] == ["Female"]

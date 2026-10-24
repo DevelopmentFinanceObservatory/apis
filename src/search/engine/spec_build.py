@@ -18,8 +18,9 @@ from code_index.labels import (
 from code_index.shared import get_index, get_measure_index
 from code_index.types import label_for_pairs
 from description.blocks import ranked_values
+from dfo_platform.roles import role_key_axis
 from origin_catalogue import ORIGINS, current_catalogue
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
@@ -83,6 +84,7 @@ from search.models import (
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
+    PartyClass,
     ProvenanceRef,
     QuantityForm,
     RequestedWindow,
@@ -111,7 +113,6 @@ from search.models import (
     TraceDefaultReading,
     served_date_range,
 )
-from search.render.labels import _humanize_ref
 from unit_words.price_basis import price_basis_option_label
 
 if TYPE_CHECKING:
@@ -180,19 +181,6 @@ def with_served_provenance(slots: Sequence[Slot], provenances: Sequence[str]) ->
         *slots,
         Slot(key=SlotKey(axis="source", property=None, label="data source"), binding=binding),
     ]
-
-
-def slot_label(slot_key_draft: SlotKeyDraft) -> str:
-    """The label a slot carries for people: an indexed code system's declared plain_name,
-    else the draft's graph label with a dcid echo humanised. The draft keeps the graph's
-    label for binding."""
-    prop = slot_key_draft.property_dcid
-    if prop is None:
-        return slot_key_draft.label
-    declaration = get_index().declarations.get(prop)
-    if declaration is not None:
-        return declaration.plain_name
-    return _humanize_ref(prop, slot_key_draft.label)
 
 
 def build_slot(
@@ -292,6 +280,8 @@ class NamedGroup:
     dcid. `total` is the party a flow dataset publishes as the group's total
     (`PlaceSet.total`), which a role can bind in place of the members. `group_id` is the
     membership registry's id for a group the graph holds no node for (`EntityGroup.group_id`).
+    `whole_of` is the classes of party a side read as its whole population covers
+    (`region.whole_totals.WholeReading`), empty for any other group.
     """
 
     label: str
@@ -301,6 +291,7 @@ class NamedGroup:
     named_alone: frozenset[tuple[str, str]] = frozenset()
     total: str | None = None
     group_id: str | None = None
+    whole_of: tuple[PartyClass, ...] = ()
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
@@ -332,6 +323,7 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in members),
             total=total(role, group),
             group_id=group.group_id,
+            whole_of=tuple(group.whole_of or ()),
         )
         for role, group, members in spec.resolved.named_sets
     ]
@@ -344,6 +336,7 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in entities[role]),
             total=total(role, group),
             group_id=group.group_id,
+            whole_of=tuple(group.whole_of or ()),
         )
         for role, group in groups_by_role.items()
     )
@@ -386,9 +379,10 @@ def role_entity_groups(
 
     A role takes a group when its bound dcids are exactly the group's members, or exactly
     the group's total (`NamedGroup.total`), which the group then names
-    (`EntityGroup.total`). A role whose entities were capped, widened or edited reads as its
-    members instead. Of groups with the same members, one with a node wins over one without,
-    then the first by dcid, then label, whatever order the request named them in.
+    (`EntityGroup.total`). A group read as a whole population states the classes it covers
+    (`EntityGroup.whole_of`). A role whose entities were capped, widened or edited reads as
+    its members instead. Of groups with the same members, one with a node wins over one
+    without, then the first by dcid, then label, whatever order the request named them in.
     """
     groups = tuple(groups)
     result: dict[str, EntityGroup] = {}
@@ -401,7 +395,27 @@ def role_entity_groups(
                 entity_type=group.entity_type,
                 total=group.total if {group.total} == dcids else None,
                 group_id=group.group_id,
+                whole_of=list(group.whole_of) or None,
             )
+    return result
+
+
+def with_side_classes(
+    groups: Mapping[str, EntityGroup], *, dataset: str | None
+) -> dict[str, EntityGroup]:
+    """`groups` with each group read as a whole population (`EntityGroup.whole_of`) stating
+    the classes of party, totals aside, `dataset` publishes on its role's side
+    (`CodeIndex.side_classes`): "Official Donors, Total" read from DAC2a states
+    `official`, `private` and `residual`, and from DAC2b `official` and `residual`. A group
+    with no whole reading, and every group where no dataset is elected, is unchanged."""
+    by_side = get_index().side_classes
+    result = dict(groups)
+    for role, group in groups.items():
+        axis = role_key_axis(role)
+        if not group.whole_of or axis is None or dataset is None:
+            continue
+        classes = sorted(by_side.get((axis, dataset), ()))
+        result[role] = group.model_copy(update={"side_classes": classes or None})
     return result
 
 
@@ -577,7 +591,7 @@ def build_shape_model(
     def _tuple_ref(dcid: str | None) -> GraphRef | None:
         """Return a tuple ref, or None when the SV leaves the component unasserted.
 
-        Missing graph labels use the packaged measure index for declared axes. Other
+        Missing graph labels use the release's measure index for declared axes. Other
         dcids fall back to their own text. No ref is fabricated for absent arcs.
         """
         if not dcid:
@@ -1190,7 +1204,6 @@ def build_spec(
     # spec_id and identity derive from one projection through build_spec_identity.
     hashed_entities = identity_entities if identity_entities is not None else entities
     named_groups = tuple(named_groups)
-    entity_groups = role_entity_groups(named_groups, hashed_entities)
     spec_id, identity_doc = build_spec_identity(
         identity_shape_from_wire(shape),
         slots,
@@ -1198,6 +1211,9 @@ def build_spec(
         open_roles=open_roles,
         requested_window=requested_window,
         explicit_facets=facet_bindings,
+    )
+    entity_groups = with_side_classes(
+        role_entity_groups(named_groups, hashed_entities), dataset=identity_dataset(identity_doc)
     )
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
     slots = slots_in_identity_order(slots, identity_doc)

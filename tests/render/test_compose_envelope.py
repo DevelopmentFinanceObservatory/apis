@@ -10,6 +10,7 @@ import pytest
 from search.models import (
     METHOD_REF,
     UNIT_REF,
+    Assumption,
     BindingUnbound,
     BindingValue,
     BreadthDim,
@@ -904,7 +905,7 @@ def test_asked_qualifier_does_not_hoist_across_unresolved_sibling():
     )
     gdp = _unresolved("GDP")
     rendered, plan = compose_envelope_sentence([population, gdp])
-    assert rendered == "Brazil's total population. No data."
+    assert rendered == "Answered 1 of 2 parts. Brazil's total population. No data."
     where_tokens = [t for t in plan if t.axis == "where"]
     assert len(where_tokens) == 1
     assert where_tokens[0].part_index == 0
@@ -923,7 +924,7 @@ def test_read_back_qualifier_does_not_hoist_across_unresolved_sibling():
     )
     gdp = _unresolved("GDP")
     rendered, plan = compose_envelope_sentence([population, gdp])
-    assert rendered == "Total population across 3 countries. No data."
+    assert rendered == "Answered 1 of 2 parts. Total population across 3 countries. No data."
     where_tokens = [t for t in plan if t.axis == "where"]
     assert len(where_tokens) == 1
     assert where_tokens[0].part_index == 0
@@ -1368,7 +1369,7 @@ def test_null_variable_text_does_not_produce_stray_connective():
     population = _definite(_spec(slots=[_what_slot("Total population")]))
     unnamed = _unresolved(None)
     rendered, plan = compose_envelope_sentence([population, unnamed])
-    assert rendered == "Total population. No data."
+    assert rendered == "Answered 1 of 2 parts. Total population. No data."
     assert " and " not in rendered
     assert not [t for t in plan if t.part_index == 1 and t.kind == "slot"]
 
@@ -1630,7 +1631,8 @@ def test_mls_037_mixed_parts_keep_each_departure_after_its_own_sentence():
     rendered, plan = compose_envelope_sentence([no_data, definite])
 
     assert rendered == (
-        f"{refusal} {growth} Denmark's gross ODA disbursements to Kenya for health, "
+        f"Answered 1 of 2 parts. {refusal} {growth} Denmark's gross ODA disbursements to "
+        "Kenya for health, "
         f"2015 to 2024.{_CRS_BYLINE} {growth}"
     )
     assert _departure_tokens(plan) == [(growth, 0), (growth, 1)]
@@ -1719,3 +1721,203 @@ def test_leads_with_one_label_for_two_entities_are_each_stated():
     assert rendered == "Georgia's and Georgia's health ODA to Ethiopia."
     leads = [(t.part_index, t.entity_refs) for t in plan if t.role == "origin"]
     assert leads == [(0, ["country/GEO"]), (1, ["geoId/13"])]
+
+
+# ---------------------------------------------------------------------------
+# The assumptions clause and the mixed opener.
+# ---------------------------------------------------------------------------
+
+_ASSUMED_ODA = Assumption(kind="declared_default", binding_ref="how:crsTypeOfFlow", text="ODA")
+_ASSUMED_PROVIDERS = Assumption(kind="open_role", binding_ref="origin:", text="every provider")
+_ASSUMED_COUNTRIES = Assumption(kind="place_scope", binding_ref="where:", text="every country")
+
+
+def _assuming(part: DefinitePart, *assumptions: Assumption) -> DefinitePart:
+    return part.model_copy(update={"assumptions": list(assumptions)})
+
+
+def _clause_tokens(plan: list[SentenceToken]) -> list[tuple[str, int | None]]:
+    return [(t.text, t.part_index) for t in plan if t.segment == "assumption"]
+
+
+def _clause(
+    items: list[tuple[str, int]], *, owner: int | None = None
+) -> list[tuple[str, int | None]]:
+    """The clause tokens stating ``items``, its lead, separators and stop owned by ``owner``."""
+    tokens: list[tuple[str, int | None]] = [(" ", owner), ("Assumed: ", owner)]
+    for position, item in enumerate(items):
+        tokens.extend([("; ", owner), item] if position else [item])
+    return [*tokens, (".", owner)]
+
+
+def test_a_joined_sentence_closes_with_one_clause_naming_each_part_item():
+    """Two parts under one byline write one clause after their departures. An item both
+    carry is named once with no part index, and an item of one part carries its index."""
+    rendered, plan = compose_envelope_sentence(
+        [
+            _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA),
+            _assuming(
+                _crs_part("Germany", "Ghana", (2015, 2020), _SHARE_DEPARTURE),
+                _ASSUMED_ODA,
+                _ASSUMED_PROVIDERS,
+            ),
+        ]
+    )
+    assert rendered.endswith(f"{_SHARE_DEPARTURE.text} Assumed: ODA; every provider.")
+    assert rendered.count("Assumed: ") == 1
+    assert _clause_tokens(plan) == [
+        (" ", None),
+        ("Assumed: ", None),
+        ("ODA", None),
+        ("; ", None),
+        ("every provider", 1),
+        (".", None),
+    ]
+
+
+def test_a_part_by_part_sentence_closes_each_part_with_its_own_clause():
+    """Beside a part that is not definite, the definite part's clause follows its own
+    departures, under its index, before the next part's sentence."""
+    definite = _assuming(
+        _crs_part("Germany", "Kenya", (2015, 2020), _SHARE_DEPARTURE), _ASSUMED_ODA
+    )
+    rendered, plan = compose_envelope_sentence([definite, _unresolved("GDP")])
+    assert f"{_SHARE_DEPARTURE.text} Assumed: ODA. No data." in rendered
+    assert {index for _text, index in _clause_tokens(plan)} == {0}
+
+
+@pytest.mark.parametrize(
+    ("second", "sentences", "owners"),
+    [
+        # The second part's clause differs, so it keeps its own sentence before it.
+        pytest.param(
+            (_ASSUMED_ODA,),
+            ["Assumed: every provider.", "Assumed: ODA."],
+            [0, 1],
+            id="own-clauses",
+        ),
+        # The whole statement repeats, so it is stated once, unowned.
+        pytest.param((_ASSUMED_PROVIDERS,), ["Assumed: every provider."], [None], id="alike"),
+    ],
+)
+def test_a_part_whose_sentence_repeats_keeps_it_when_its_clause_differs(
+    second: tuple[Assumption, ...], sentences: list[str], owners: list[int | None]
+):
+    """Two definite parts that read alike, beside a part that is not definite, each state
+    their sentence and clause unless the whole statement repeats."""
+    heading = "Germany's gross ODA disbursements to Kenya, 2015 to 2020." + _CRS_BYLINE
+    rendered, plan = compose_envelope_sentence(
+        [
+            _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_PROVIDERS),
+            _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), *second),
+            _unresolved("GDP"),
+        ]
+    )
+    statements = " ".join(f"{heading} {clause}" for clause in sentences)
+    assert rendered == f"Answered 2 of 3 parts. {statements} No data."
+    assert rendered == sentence_from_plan(plan)
+    assert [t.part_index for t in plan if t.text == "Assumed: "] == owners
+
+
+@pytest.mark.parametrize(
+    ("folded_assumptions", "clause"),
+    [
+        # Both carry the item, so the clause belongs to both and carries no part index.
+        pytest.param(
+            [_ASSUMED_ODA],
+            [(" ", None), ("Assumed: ", None), ("ODA", None), (".", None)],
+            id="shared",
+        ),
+        # Only the part folded into carries it, so the whole clause is that part's.
+        pytest.param([], [(" ", 0), ("Assumed: ", 0), ("ODA", 0), (".", 0)], id="own"),
+        # The folded part alone carries the providers, so that item is its own.
+        pytest.param(
+            [_ASSUMED_ODA, _ASSUMED_PROVIDERS],
+            [
+                (" ", None),
+                ("Assumed: ", None),
+                ("ODA", None),
+                ("; ", None),
+                ("every provider", 1),
+                (".", None),
+            ],
+            id="folded-own",
+        ),
+    ],
+)
+def test_a_part_others_fold_into_states_its_clause_for_all_of_them(
+    folded_assumptions: list[Assumption], clause: list[tuple[str, int | None]]
+):
+    """A part and the parts folded into it state one clause naming every item any of
+    them carries. An item all carry has no part index, and an item one alone carries has
+    its part's."""
+    representative = _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA)
+    folded = _assuming(representative, *folded_assumptions).model_copy(
+        update={"warnings": [Warning(code="binding_folded", severity="info", message="folded")]}
+    )
+    _rendered, plan = compose_envelope_sentence([representative, folded])
+    assert _clause_tokens(plan) == clause
+
+
+@pytest.mark.parametrize(
+    "after", [pytest.param([], id="joined"), pytest.param([_unresolved("GDP")], id="per-part")]
+)
+@pytest.mark.parametrize(
+    "separate_first", [pytest.param(False, id="separate-last"), pytest.param(True, id="first")]
+)
+def test_a_folded_part_keeps_its_items_beside_a_separate_part_of_the_same_spec(
+    separate_first: bool, after: list[NoDataPart]
+):
+    """A separate part can carry the Spec a part folded into, before or after it. The
+    folded part's own item stays in the clause of the part it folded into, after that
+    part's own item, and the separate part states its own item under its own index."""
+    representative = _assuming(_crs_part("Germany", "Kenya", (2015, 2020)), _ASSUMED_ODA)
+    folded = _assuming(representative, _ASSUMED_PROVIDERS).model_copy(
+        update={"warnings": [Warning(code="binding_folded", severity="info", message="folded")]}
+    )
+    compared = _assuming(representative, _ASSUMED_COUNTRIES).model_copy(update={"separate": True})
+    parts = (
+        [compared, representative, folded] if separate_first else [representative, folded, compared]
+    )
+    _rendered, plan = compose_envelope_sentence([*parts, *after])
+    group = [("ODA", parts.index(representative)), ("every provider", parts.index(folded))]
+    own = [("every country", parts.index(compared))]
+    if after:
+        clauses = [_clause(group), _clause(own, owner=parts.index(compared))]
+        expected = [token for clause in clauses[:: -1 if separate_first else 1] for token in clause]
+    else:
+        expected = _clause(own + group if separate_first else group + own)
+    assert _clause_tokens(plan) == expected
+
+
+@pytest.mark.parametrize(
+    ("folds", "opener"),
+    [
+        pytest.param(0, "Answered 1 of 2 parts.", id="definite-and-no-data"),
+        # A part folded into the definite one is answered with it.
+        pytest.param(1, "Answered 2 of 3 parts.", id="with-a-folded-part"),
+    ],
+)
+def test_a_mixed_answer_opens_with_how_many_parts_it_answered(folds: int, opener: str):
+    """A definite part beside a no-data part gives a plan that opens with two unowned
+    coverage tokens, the opener and a space, and no other token takes that segment. The
+    count of answered parts includes the parts folded into a definite one."""
+    spec = _spec(slots=[_what_slot("Total population")])
+    rendered, plan = compose_envelope_sentence(
+        [_definite(spec), *[_folded(spec)] * folds, _unresolved("GDP")]
+    )
+    assert rendered == f"{opener} Total population. No data."
+    assert [(t.text, t.segment, t.part_index) for t in plan[:2]] == [
+        (opener, "coverage", None),
+        (" ", "coverage", None),
+    ]
+    assert all(t.segment != "coverage" for t in plan[2:])
+
+
+def test_a_mixed_answer_with_no_definite_part_has_no_opener():
+    """Candidates beside no data answer nothing yet, and each part's sentence states its
+    own outcome."""
+    a = _spec(slots=[_what_slot("GDP")])
+    b = _spec(slots=[_what_slot("GDP per capita")])
+    rendered, _plan = compose_envelope_sentence([_candidates("GDP", a, b), _unresolved("debt")])
+    assert not rendered.startswith("Answered")

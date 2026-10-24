@@ -35,8 +35,8 @@ def _is_none(value: object) -> bool:
 class Warning(StrictModel):
     """A run-health signal. Note: this name shadows the Python builtin Warning.
 
-    Only `observations_series_truncated`, `elected_shape_no_data` and `un_system_unavailable`
-    set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+    Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`
+    and `whole_total_available` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
     exactly `{code, severity, message}` plus `spec_id` where one applies.
     """
 
@@ -70,7 +70,10 @@ class Warning(StrictModel):
             "failed, each empty when none, and each variable's graph name, in variables "
             "order, '' where the graph holds none; a warning without params says the UN "
             "search itself was "
-            "unavailable. Omitted for every other code"
+            "unavailable. whole_total_available: {total, total_label, whole_of}, the dcid "
+            "and label of the total the source publishes for the side the answer lists "
+            "member by member, and the classes of party it covers, comma-joined (official, "
+            "private, residual). Omitted for every other code"
         ),
     )
 

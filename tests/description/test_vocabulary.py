@@ -11,16 +11,8 @@ from types import MappingProxyType
 
 import pytest
 
-from code_index import (
-    CodeIndex,
-    CodeRow,
-    CodeSystemDeclaration,
-    IndexStamp,
-    default_index_path,
-    load_index,
-)
+from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.labels import HOW_CONNECTIVES, ROLE_CLASS_PROPERTIES
-from code_index.loader import load_measure_axes
 from code_index.types import MeasureAxis, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
 from description import vocabulary
 from description.vocabulary import (
@@ -34,6 +26,7 @@ from description.vocabulary import (
 )
 from dfo_platform.roles import GENERIC_ROLE_WORDING, ROLE_WORDING
 from origin_catalogue.registry import load_registry
+from tests.code_index.support import INDEX_FIXTURE, load_index, load_measure_axes
 from unit_words.currency_nouns import CURRENCY_NOUNS
 
 _CRS = "provenance/OECDCreditorReportingSystem"
@@ -84,7 +77,7 @@ _INDEX = CodeIndex(
     statvars=(),
 )
 
-# Keyed as the packaged measure index keys its partition labels and nouns: on the shape's
+# Keyed as the fixture measure index keys its partition labels and nouns: on the shape's
 # members beside the constraint axes.
 _MEASURES = MeasureIndex(
     axes=(
@@ -428,7 +421,7 @@ def test_the_packaged_publisher_file_has_no_blank_or_duplicate_key():
 
 
 def test_the_shipped_index_gives_the_worked_examples_words():
-    source = default_index_path()
+    source = INDEX_FIXTURE
     words = build_vocabulary(
         index=load_index(source),
         measure_index=load_measure_axes(source),

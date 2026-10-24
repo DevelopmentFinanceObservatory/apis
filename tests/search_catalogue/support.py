@@ -1,6 +1,5 @@
-"""The origin catalogue sample build, the coverage fixture, resolve
-responses, a fake engine and a sample search catalogue build for the search
-catalogue tests."""
+"""The origin catalogue sample build, resolve responses, a fake engine and a
+sample search catalogue build for the search catalogue tests."""
 
 from __future__ import annotations
 
@@ -34,10 +33,8 @@ from search.models import (
     ResolveResponse,
     StatVar,
 )
-from series_coverage.loader import LoadedCoverage, load_coverage
 from tests.conftest import base_response, minimal_spec
 from tests.origin_catalogue.support import publish_sample
-from tests.series_coverage.support import build_test_artifact
 
 
 def origin_snapshot(base: Path) -> CatalogueSnapshot:
@@ -45,11 +42,6 @@ def origin_snapshot(base: Path) -> CatalogueSnapshot:
     uri = base.as_uri()
     publish_sample(uri)
     return load_catalogue(uri)
-
-
-def coverage_fixture(base: Path) -> LoadedCoverage:
-    """`tests.series_coverage.support`'s coverage build, published under `base`."""
-    return load_coverage(build_test_artifact(base))
 
 
 def definite(
@@ -203,6 +195,7 @@ def sample_catalogue(version: str = "20260930T000000Z-00000001") -> CatalogueArt
     return CatalogueArtifact(
         catalogue_version=version,
         key=build_key(_INPUTS),
+        started_at=datetime(2026, 9, 30, tzinfo=UTC),
         built_at=datetime(2026, 9, 30, tzinfo=UTC),
         inputs=_INPUTS,
         counts=Counts(indicators=9, datasets=5, publishers=4, countries=2, aid=aid),

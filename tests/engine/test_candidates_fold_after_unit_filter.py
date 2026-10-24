@@ -90,7 +90,7 @@ _NODES = {
         "type": "StatisticalVariable",
         "arcs": _sv_arcs_from_real_row(_RECALLED_SV),
     },
-    # Its real packaged-index row declares the flow roles, and the
+    # Its real fixture-index row declares the flow roles, and the
     # declared-role refresh reads its own graph node, so the synthetic
     # node carries the same observationProperties arc.
     _EXTRA_SV: {

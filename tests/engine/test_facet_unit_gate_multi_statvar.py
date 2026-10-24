@@ -112,12 +112,12 @@ _NODES = {
     _SV_A: {
         "label": "Unit gate SourceA",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Unit gate SourceA", _VAL_A),
+        "arcs": _sv_arcs("Unit gate multi statvar test variable, source A", _VAL_A),
     },
     _SV_B: {
         "label": "Unit gate SourceB",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Unit gate SourceB", _VAL_B),
+        "arcs": _sv_arcs("Unit gate multi statvar test variable, source B", _VAL_B),
     },
     _SV_C: {
         "label": "Unit gate alternate",
@@ -470,12 +470,12 @@ _ROLE_NODES = {
     _ROLE_SV_A: {
         "label": "Unit gate role SourceA",
         "type": "StatisticalVariable",
-        "arcs": _role_sv_arcs("Unit gate role SourceA", _VAL_A),
+        "arcs": _role_sv_arcs("Unit gate role aid, source A", _VAL_A),
     },
     _ROLE_SV_B: {
         "label": "Unit gate role SourceB",
         "type": "StatisticalVariable",
-        "arcs": _role_sv_arcs("Unit gate role SourceB", _VAL_B),
+        "arcs": _role_sv_arcs("Unit gate role aid, source B", _VAL_B),
     },
 }
 

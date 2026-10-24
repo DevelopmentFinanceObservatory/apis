@@ -39,7 +39,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-disbursements-kenya
@@ -85,7 +85,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-aid-kenya-fr
@@ -173,7 +173,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2024, end: 2024}
 
 - id: dataset-bilateral-oda-ida
@@ -342,7 +342,7 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 # raw_text cannot require query_qualifier_dropped, so a definite answer that drops the phrase passes.
@@ -396,7 +396,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-oecd-education-aid-kenya
@@ -418,7 +418,7 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-total-oda-reported-to-dac-germany
@@ -492,7 +492,7 @@
     definite:
       measure: {family: dac2a.oda_gross_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-parsed-gdp-kenya-imf

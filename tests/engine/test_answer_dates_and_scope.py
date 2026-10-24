@@ -478,6 +478,41 @@ def _three_recipient_rows() -> list:
 _DISCOVERED = CoverageForm(variables=True, open_axis=("recipients", "recipient"))
 
 
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_an_open_origin_counts_the_parties_its_plan_serves(
+    monkeypatch, search_settings, bulk: bool
+) -> None:
+    """Debt flows to Aland and Bland from an unnamed creditor, 2015 to 2020. The plan serves
+    `f1`, which Creditors A and B hold in those years. Creditor C holds only `f9`, which no
+    election serves, and Creditor D holds `f1` only before 2015, so the answer counts two
+    creditors, as its data holds, on a first answer and on its resubmit."""
+    rows = [
+        (_FLOW, "f1", creditor, place, list(range(2010, 2021)))
+        for creditor in (_CREDITOR, "country/CRB")
+        for place in (_ALAND, _BLAND)
+    ]
+    rows += [
+        (_FLOW, "f9", "country/CRC", _ALAND, list(range(2016, 2019))),
+        (_FLOW, "f1", "country/CRD", _ALAND, list(range(2000, 2006))),
+    ]
+    first, index = _role_answer(
+        monkeypatch,
+        search_settings,
+        discovered=False,
+        bulk=bulk,
+        rows=rows,
+        metadata=_TWO_SOURCES,
+    )
+    assert first.status == "definite", (first.status, first.no_data_reason)
+    again = _resubmit(first.specs[0], index)
+    assert again.status == "definite", (again.status, again.no_data_reason)
+
+    for spec in (first.specs[0], again.specs[0]):
+        facts = [(f.role, f.member_count) for f in spec.resolved.role_axis_facts or ()]
+        assert facts == [("origin", 2)]
+        assert " from 2 providers," in render_sentence(spec), render_sentence(spec)
+
+
 def _stated_scope(result) -> tuple[list[str], int, str]:
     """The scope a discovered answer lists, its coverage recipient count and the warning
     that counts the scope."""

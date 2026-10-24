@@ -38,17 +38,16 @@ eval = [
 # themselves, so the whole repo resolves to one fastapi version.
 api = ["fastapi>=0.138", "starlette", "uvicorn[standard]"]
 # dc_sdmx's and materialise's own dependency (httpx, pyarrow), with none of
-# engine's other dependencies -- code-index-live.yml and sdmx-live.yml sync
-# with this extra and `coverage` (no `api`/`engine`) so that dc_sdmx's and
-# materialise.graph's own imports work without pulling in FastAPI or the
-# Search engine, which tests/dc_sdmx/test_independence.py asserts stays
-# true.
+# engine's other dependencies -- sdmx-live.yml syncs with this extra and
+# `coverage` (no `api`/`engine`) so that dc_sdmx's and materialise.graph's own
+# imports work without pulling in FastAPI or the Search engine, which
+# tests/dc_sdmx/test_independence.py asserts stays true.
 sdmx = ["dfo-data-tools[sdmx]"]
 # series_coverage's own dependencies (numpy, google-cloud-storage,
 # google-cloud-bigquery, and sdmx's), with no FastAPI. tests/conftest.py
-# installs the session coverage service through series_coverage.shared, so
-# every job that runs pytest under tests/ needs numpy; engine and datasets
-# carry it already, and code-index-live.yml and sdmx-live.yml sync this extra.
+# binds the session release through graph_release.service, so every job that
+# runs pytest under tests/ needs numpy; engine and datasets carry it already,
+# and sdmx-live.yml syncs this extra.
 coverage = ["dfo-data-tools[coverage]"]
 engine = [
     "google-genai>=2.6.0",
@@ -62,8 +61,8 @@ engine = [
     # `resolve` pulls in entity_resolution's resolvekit dependency -- the
     # engine builds the shared resolver alongside its other clients.
     # `coverage` is the series_coverage package's own extra (numpy,
-    # google-cloud-storage) that the coverage artifact search_surface()
-    # loads at construction (series_coverage.shared.get_coverage_service)
+    # google-cloud-storage) that the release's coverage view, which
+    # search_surface() reads through series_coverage.shared.get_coverage_service,
     # needs; same fail-at-startup discipline as code_index.shared.get_index().
     # `sdmx` is materialise's and dc_sdmx's own dependency (httpx, pyarrow):
     # search.engine imports both directly (dc_sdmx clients, materialise's
@@ -136,6 +135,8 @@ test = [
     # A bare `just test` selects the tests affected by a change; CI never
     # passes --testmon, so it stays inactive there.
     "pytest-testmon>=2.2.0",
+    # tests/contract/test_client_contract.py reads the recorded client scenarios.
+    "dfo-spec-kit-client-contract",
 ]
 
 [build-system]
@@ -164,7 +165,10 @@ dfo-data-tools = { workspace = true }
 # uv resolves relative to frame-grammar's own pinned commit -- so this
 # project's own `dfo-spec-kit` source MUST resolve to that identical commit,
 # or `uv lock` refuses with "conflicting URLs for package dfo-spec-kit"
-# (confirmed live). All five pins move together as a single rev. This rev's
+# (confirmed live). All six pins move together as a single rev: these four,
+# `dfo-spec-kit`, and `dfo-spec-kit-client-contract`. uv does not force the
+# contract package onto this commit; tests/contract/test_client_contract.py
+# checks that its rev equals `dfo-spec-kit`'s. This rev's
 # registry schema has no `spec_resubmit` door: a code with a raise site in
 # this repo maps to `dataset_resubmit` instead. `entity_set_too_large` is
 # mapped on `search.resolve` for the `raw_text` and `parsed` doors, which serve
@@ -237,12 +241,16 @@ dfo-data-tools = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is a commit of spec-kit's main. It registers
-# slot_default_not_applied and the three source-code refusals, and retires
-# starved_axis_binding_restored.
-# Follow-up: move all five to a real spec-kit tag once one is cut, so a
-# future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3616b64245c2db8af3187552e9e5de99b6d304d4", subdirectory = "python/spec-kit" }
+# The pin is ba976a2 on spec-kit's dev branch. It registers
+# slot_default_not_applied, the three source-code refusals and
+# whole_total_available, retires starved_axis_binding_restored, and holds the
+# client contract `dfo-spec-kit-client-contract` reads, whose ref format admits
+# a `without_party_totals` rendering and whose warning codes include
+# `ref_digest_changed`, and it registers the `timed_out` no_data reason.
+# Follow-up: move all six to a real spec-kit tag once one is cut, so a future
+# force-push or GC on spec-kit's dev can't silently break this lock.
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "ba976a2a74173e1c31b6c03d802cbcf71a022273", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "ba976a2a74173e1c31b6c03d802cbcf71a022273", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -286,8 +294,10 @@ python = ".venv"
 # literally in a docstring about averaging three ratios. "dependant" is
 # FastAPI's own attribute name (`APIRoute.dependant`).
 # heading_words_specs.json holds graph labels verbatim ("Assitance" in a UNICEF series).
+# "chanel" is the CHANEL Foundation, a private donor in the code index, and "ans"
+# is French for "years" in the relative-date phrases time_bind reads.
 skip = "tests/render/heading_words_specs.json"
-ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant"
+ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant,chanel,ans"
 
 [tool.ruff]
 target-version = "py312"

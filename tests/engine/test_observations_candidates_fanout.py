@@ -81,14 +81,14 @@ _UNIT_CAND_NODES = {
         "label": "Candidate unit SV A",
         "type": "StatisticalVariable",
         "arcs": _candidate_unit_std_arcs(
-            "Candidate unit SV A", pop_type="EconomicActivity", meas_prop="amountA"
+            "Candidate unit test variable A", pop_type="EconomicActivity", meas_prop="amountA"
         ),
     },
     _UNIT_CAND_SV_B: {
         "label": "Candidate unit SV B",
         "type": "StatisticalVariable",
         "arcs": _candidate_unit_std_arcs(
-            "Candidate unit SV B", pop_type="EconomicActivity", meas_prop="amountB"
+            "Candidate unit test variable B", pop_type="EconomicActivity", meas_prop="amountB"
         ),
     },
 }
@@ -623,7 +623,7 @@ def _constrained_survivor_graph() -> FakeGraph:
     """SV_A as a constrained member: one constraint property whose value has a label."""
     arcs = {
         **_candidate_unit_std_arcs(
-            "Candidate unit SV A", pop_type="EconomicActivity", meas_prop="amountA"
+            "Candidate unit test variable A", pop_type="EconomicActivity", meas_prop="amountA"
         ),
         "constraintProperties": {"nodes": [{"dcid": "crsPurpose"}]},
         "crsPurpose": {"nodes": [{"dcid": _PURPOSE}]},

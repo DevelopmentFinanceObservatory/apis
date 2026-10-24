@@ -106,7 +106,7 @@ from datasets_api.recorded_rendering import (
     records_plain_file,
 )
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import artifact_rendering_key, servable_frame_location
+from datasets_api.render import artifact_rendering_keys, servable_frame_location
 from datasets_api.timings import door_call, phase
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
@@ -582,7 +582,11 @@ def _refresh_frame(
         if rendering_servable(
             subject_id=spec_id,
             content_version=operation.content_version,
-            rendering_key=artifact_rendering_key(options, site=deps.settings.site),
+            rendering_keys=artifact_rendering_keys(
+                options,
+                site=deps.settings.site,
+                enrichment_digest=deps.code_index.enrichment_digest,
+            ),
             snapshot_reader=deps.snapshot_reader,
             now=deps.now,
             settings=deps.settings,

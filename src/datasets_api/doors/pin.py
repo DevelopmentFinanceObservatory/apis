@@ -17,7 +17,8 @@ recorded under. A quarantined path id, or a quarantined served id bound to it, r
 `identity_quarantined`. The reference
 write checks revocation again in the same transaction, closing the race during
 the copy. Unknown specs and versions, revoked versions, unknown artifacts, and
-expired working-tier artifacts retain their distinct refusals.
+expired working-tier artifacts retain their distinct refusals. A named artifact whose working
+bytes are gone at the copy refuses `ArtifactExpired` as well.
 
 The reference write also holds the version's link lock (`lock_version_links`)
 and refuses `ArtifactNotFound` when the version no longer links the digest. A
@@ -26,13 +27,22 @@ before the pinned location existed. The pin then refuses, because snapshot
 reads cannot list a pin the version does not link. A re-render that runs after a pin completes
 sees the pinned location and keeps the link.
 
-Pinning any artifact of a definition version also retains that version's stored frame
-(`render.servable_frame_location`, which gives its canonical frame, or else its frame1 document).
-The door promotes a working-tier frame to the pinned tier and records the same principal's reference
-to it, with the same revocation recheck, on every pin call, including a repeat pin of an artifact
-that is already pinned, so a retry or a re-pin heals a version whose frame is still working-tier. A
-version with no servable frame (one that aged out unpinned) pins the named artifact alone. The frame
-copy skips the budget check and counts toward later calls.
+Pinning any artifact of a definition version also retains a frame that serves that version.
+The door walks the version's serving frames (`recorded_rendering.serving_frames`) in the order a
+render tries them: a raw version's own frame; a derived version's (`base_content_version` set: a
+groupby collapse or a party-totals cut) own frame, then its base version's, or its base version's
+alone when the record cannot say what its own frame holds. For each it takes the frame retention
+reads (`retention.retained_frame_location`: the servable frame, else the aged one, each its
+canonical frame or else its frame1 document), and stops at the first that ends up pinned. It
+promotes a working-tier frame to the pinned tier and records the same principal's reference to
+it, naming the version the frame is stored under, with the same revocation recheck, on every pin
+call, including a repeat pin of an artifact that is already pinned, so a retry or a re-pin heals
+a version whose frame is still working-tier. A frame whose bytes are gone is skipped and the walk
+moves to the next serving frame. One pinned serving frame keeps the version fetchable in every
+format and reporting `retention.pinned`. A version none of whose serving frames survives pins the
+named artifact alone. A frame copy skips the budget check. It holds a `pin` reference, so it
+counts toward later calls. A pin can add two pinned copies to the count (the named artifact and
+one serving frame), and only the first waits on the budget.
 
 A daily budget bounds the pinned copies this door creates. Before a copy, the
 door counts pinned-tier locations stored in the trailing 24 hours whose digest
@@ -62,7 +72,7 @@ from types import MappingProxyType
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from artifact_store import ArtifactStore, Tier
+from artifact_store import ArtifactNotFoundError, ArtifactStore, Tier
 from dataset_store.clock import Clock
 from dataset_store.snapshot import (
     ArtifactNotFound,
@@ -83,13 +93,14 @@ from datasets_api.deps import DepsCell
 from datasets_api.doors.snapshot import read_under_served_id
 from datasets_api.pin_models import PinnedCoordinates, PinRequest, PinResponse
 from datasets_api.principals import Grant, PinNotPermitted, Principals, granted_route_class
+from datasets_api.recorded_rendering import serving_frames
 from datasets_api.reference_store import (
     ARTIFACT_REFERENCE_WRITE_FAILED_MARKER,
     PIN_REFERENCE_KIND,
     PinReferenceWriter,
 )
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import servable_frame_location
+from datasets_api.retention import retained_frame_location
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
@@ -149,18 +160,21 @@ def pin_artifact(
     daily_max: int,
     now: Clock,
 ) -> datetime:
-    """Pin an artifact and the version's canonical frame, and return the named artifact's
-    reference `created_at` as `pinned_at`.
+    """Pin an artifact and the first serving frame of the version that ends up pinned, and return
+    the named artifact's reference `created_at` as `pinned_at`.
 
     A new pinned copy first needs room in the budget: fewer than `daily_max`
     pinned copies of `pin`-referenced digests stored within `PIN_BUDGET_WINDOW`,
     else `PinBudgetExhausted` before any copy. An artifact that already has a
     pinned copy skips the budget.
 
-    The refusals concern the named artifact alone. The stored frame is retained after the named
-    artifact's reference is recorded, and only when it is servable at the call's read time.
-    A missing or aged-out frame leaves the response unchanged. The transactional revocation
-    and link rechecks propagate unlogged. Other reference-write failures are logged and
+    The refusals concern the named artifact alone. A serving frame is retained after the named
+    artifact's reference is recorded. The serving frames are walked in order, each the frame the
+    version's retention reads at the call's read time (`retention.retained_frame_location`),
+    servable or aged, and the walk stops at the first that is pinned already, is the named
+    artifact, or is copied now. A missing frame, or one whose bytes are gone, moves the walk on
+    and leaves the response unchanged, and a frame whose bytes are gone logs a warning. The
+    transactional revocation and link rechecks propagate unlogged. Other reference-write failures are logged and
     re-raised. Pinned copies persist, so a retry attempts only the reference writes.
     """
     read_at = now()
@@ -191,8 +205,12 @@ def pin_artifact(
         )
         if pinned >= daily_max:
             raise PinBudgetExhausted(pinned=pinned, limit=daily_max)
-        with phase("copy"):
-            artifact_store.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
+        try:
+            with phase("copy"):
+                artifact_store.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
+        except ArtifactNotFoundError as exc:
+            # The working copy aged out between the read and the copy.
+            raise ArtifactExpired(id=id, content_version=content_version) from exc
 
     pinned_at = _record_pin_reference(
         reference_writer,
@@ -205,24 +223,47 @@ def pin_artifact(
         now=read_at,
     )
 
-    frame = servable_frame_location(stored.servable, now=read_at)
-    if frame is not None and frame.artifact_digest != artifact_digest:
+    own_locations = [*stored.servable, *stored.aged_out]
+    renderings = [location.rendering for location in own_locations]
+    for serving in serving_frames(stored.version, renderings=renderings):
+        locations = (
+            own_locations
+            if serving.content_version == content_version
+            else snapshot_reader.read_artifact_locations(subject_id, serving.content_version)
+        )
+        frame = retained_frame_location(locations, now=read_at)
+        if frame is None:
+            continue
+        if frame.artifact_digest == artifact_digest:
+            break
         frame_already_pinned = frame.tier == "pinned"
         if not frame_already_pinned:
-            with phase("copy"):
-                artifact_store.copy(
-                    frame.artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
+            try:
+                with phase("copy"):
+                    artifact_store.copy(
+                        frame.artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
+                    )
+            except ArtifactNotFoundError:
+                # The aged frame's bytes are gone, so the next serving frame is tried.
+                logger.warning(
+                    "pin skipped a frame whose bytes are gone artifact_digest=%s subject_id=%s "
+                    "content_version=%s",
+                    frame.artifact_digest,
+                    subject_id,
+                    serving.content_version,
                 )
+                continue
         _record_pin_reference(
             reference_writer,
             principal=principal,
             artifact_digest=frame.artifact_digest,
             id=subject_id,
-            content_version=content_version,
+            content_version=serving.content_version,
             revoked_under=subject_ids,
             already_pinned=frame_already_pinned,
             now=read_at,
         )
+        break
     return pinned_at
 
 
@@ -288,7 +329,19 @@ def build_pin_door(
 
     router = APIRouter(route_class=granted_route_class(require_pin))
 
-    @router.post("/api/datasets/{id:dfo_spec_id}/{content_version}/pin", response_model=PinResponse)
+    @router.post(
+        "/api/datasets/{id:dfo_spec_id}/{content_version}/pin",
+        response_model=PinResponse,
+        description=(
+            "Pin an artifact of a version, and the first frame its files can render from that "
+            "survives, servable or aged: the version's own frame, else, for a derived version, "
+            "its base version's frame. Every format then stays fetchable and the version "
+            "reports `retention.pinned`. When no such frame's bytes survive, the named artifact "
+            "still pins, and `retention` keeps the frames' `held_until`. Only the named "
+            "artifact's copy waits on the daily pin budget; the frame copy skips it and counts "
+            "toward later calls, so one pin can add up to two copies to the count."
+        ),
+    )
     async def post_pin(
         id: str, content_version: str, body: PinRequest, request: Request
     ) -> JSONResponse:

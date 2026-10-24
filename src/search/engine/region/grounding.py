@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, cast
 
@@ -58,6 +58,7 @@ from search.engine.retrieval.bound_values import (
     elected_role_class_shape,
     entity_role_keys,
     five_tuple_member_facts,
+    identity_query,
     index_carries_shape,
     shape_population_arcs,
     shape_query,
@@ -105,6 +106,7 @@ from search.models import (
     SlotOption,
     SlotOptions,
     SlotValue,
+    Spec,
     TimeWindow,
     Warning,
 )
@@ -352,6 +354,7 @@ def role_scope_defaulted_warnings(
     *,
     boundary_roles: EntityRoles,
     label_of: Callable[[Sequence[str]], Sequence[str]],
+    unnamed_wholes: Collection[EntityRoleKey] = (),
     members: Sequence[str] | None = None,
     state_count: bool = True,
 ) -> list[Warning]:
@@ -362,28 +365,32 @@ def role_scope_defaulted_warnings(
     false every member with data, and any bound opposite-role entities. A second open axis
     adds an unqualified warning. A bound
     destination with an open origin also warns, even when `open_origin_dcids` is empty.
-    Return an empty list when no axis is open. `label_of` runs only for discovered scopes.
+    An axis in `unnamed_wholes` is one a whole population the request names reads as left
+    unnamed or lists (`place_roles.PlaceRoles.unnamed_wholes`), so the request named
+    something there and it warns nothing. Return an empty list when no axis warns. `label_of` runs only for
+    a discovered scope that warns.
     """
     warnings: list[Warning] = []
     discovered = mat.discovered_scope
     if discovered is not None:
-        warnings.append(
-            Warning(
-                code=ROLE_SCOPE_DEFAULTED,
-                severity="warn",
-                message=role_scope_defaulted_message(
-                    discovered,
-                    member_count=len(
-                        members if members is not None else mat.scope_member_dcids or ()
-                    )
-                    if state_count
-                    else None,
-                    bound_dcids=bound_opposite_role_dcids(discovered, boundary_roles),
-                    label_of=label_of,
-                ),
+        if discovered.axis not in unnamed_wholes:
+            warnings.append(
+                Warning(
+                    code=ROLE_SCOPE_DEFAULTED,
+                    severity="warn",
+                    message=role_scope_defaulted_message(
+                        discovered,
+                        member_count=len(
+                            members if members is not None else mat.scope_member_dcids or ()
+                        )
+                        if state_count
+                        else None,
+                        bound_dcids=bound_opposite_role_dcids(discovered, boundary_roles),
+                        label_of=label_of,
+                    ),
+                )
             )
-        )
-        if mat.also_defaulted_axis is not None:
+        if mat.also_defaulted_axis is not None and mat.also_defaulted_axis not in unnamed_wholes:
             # Both flow axes were unbound. The axis above is the one actually
             # discovered, and this companion axis defaulted right alongside it.
             warnings.append(
@@ -394,7 +401,7 @@ def role_scope_defaulted_warnings(
                 )
             )
         return warnings
-    if mat.open_origin_dcids is not None:
+    if mat.open_origin_dcids is not None and "origin" not in unnamed_wholes:
         warnings.append(
             Warning(
                 code=ROLE_SCOPE_DEFAULTED,
@@ -412,6 +419,7 @@ def restate_role_scope_warnings(
     members: Sequence[str] | None,
     boundary_roles: EntityRoles,
     label_of: Callable[[Sequence[str]], Sequence[str]],
+    unnamed_wholes: Collection[EntityRoleKey] = (),
     state_count: bool = True,
 ) -> None:
     """Restate, in place, the discovered-scope warning `interpret_materialised` built for
@@ -424,13 +432,19 @@ def restate_role_scope_warnings(
     lookup that built it (`memoised_labels`), makes no new request.
 
     An empty `members` is an answer that lists no member on the axis: it resolved across
-    none, so the warning is removed."""
-    if mat.discovered_scope is None or members is None:
+    none, so the warning is removed. An axis in `unnamed_wholes` built no warning
+    (`role_scope_defaulted_warnings`), so there is none to restate."""
+    if (
+        mat.discovered_scope is None
+        or members is None
+        or mat.discovered_scope.axis in unnamed_wholes
+    ):
         return
     fresh = role_scope_defaulted_warnings(
         mat,
         boundary_roles=boundary_roles,
         label_of=label_of,
+        unnamed_wholes=unnamed_wholes,
         members=members,
         state_count=state_count,
     )
@@ -482,6 +496,20 @@ def carrier_flag_warnings(
     if membership_unverified:
         warnings.append(membership_unverified_warning())
     return warnings
+
+
+def check_breakdown_settled(shape: ShapeDraft, walked: WalkedMembers | None, spec: Spec) -> None:
+    """Raise when the walk that settled the members of a shape a breakdown decision narrowed
+    (`ShapeDraft.omitted_slots`) settles none for the identity of its Spec: the answer read
+    a family a mint of the definition does not serve. A shape whose family no walk settled
+    answers under the `membership_unverified` warning."""
+    if not shape.omitted_slots or walked is None:
+        return
+    if not walked.settles(identity_query(spec.definition.identity)):
+        raise AssertionError(
+            f"the walk of {shape.shape_id!r} settles no members for the identity of "
+            f"{spec.spec_id!r}, which leaves out the slots {sorted(shape.omitted_slots)!r}"
+        )
 
 
 def membership_unverified_warning() -> Warning:
@@ -545,7 +573,7 @@ def _ground_answer_lookup(
     """Batch every graph-label lookup needed by grounding.
 
     Collect distinct ids across shapes, slots, StatVars, roles, and options for one
-    `node_labels_batch` call. Missing graph labels fall back to packaged code-index labels.
+    `node_labels_batch` call. Missing graph labels fall back to code-index labels.
     Source labels come from the origin catalogue; only provenance ids it does not list
     join the batch.
     Index-sourced taxonomies offer a bound code's children and its parent, or, for a bound
@@ -620,7 +648,7 @@ def _ground_answer_lookup(
     name_dcids.update(answer_facet_dcids(plan, unit_request))
 
     labels = graph.node_labels_batch(list(name_dcids))
-    # Fill graph label misses from the packaged code index.
+    # Fill graph label misses from the release's code index.
     code_index = get_index()
     for dcid in name_dcids:
         if dcid in labels:

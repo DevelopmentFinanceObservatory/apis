@@ -1,4 +1,4 @@
-"""The packaged CRS grant-equivalent family forces
+"""The fixture CRS grant-equivalent family forces
 financialFlowType=Disbursement. These tests pin its `measure_elected`
 provenance on no-seed, edited, and widened resubmits.
 """
@@ -147,7 +147,7 @@ def test_named_family_election_reads_measure_elected_on_resubmit(monkeypatch):
 
 def test_edited_slot_reads_binder_even_on_the_forceable_family(monkeypatch):
     """The other half: a named family's own membership always comes from
-    the packaged index's election now, whether or not a seed is posted, so
+    the fixture index's election now, whether or not a seed is posted, so
     the seeded and unseeded paths agree -- `financialFlowType` reads
     `"measure_elected"` here too, the same axis the election forces on the
     no-seed path above. Narrowing `crsCooperationModality` -- the edit this
@@ -267,7 +267,7 @@ def test_widening_a_base_bound_axis_still_reads_unbound_on_the_no_seed_path(monk
 
 def _resubmit_with_a01_drifted(monkeypatch, modality: Slot):
     """Resubmit the 51010 grant-equivalent identity posting `modality` on
-    `crsCooperationModality`, over a graph that gives every member the packaged index holds
+    `crsCooperationModality`, over a graph that gives every member the fixture index holds
     under A01 the value C01 instead, so no elected member carries A01."""
     member_rows = _member_rows()
     seed_dcids = [row.dcid for row in member_rows]
@@ -323,7 +323,7 @@ def _resubmit_with_a01_drifted(monkeypatch, modality: Slot):
 
 
 def test_a_posted_value_no_elected_member_carries_refuses(monkeypatch):
-    """The measure-family election reads the packaged index, where the A01 members carry
+    """The measure-family election reads the fixture index, where the A01 members carry
     the posted `crsCooperationModality`, but the graph, which the resubmit re-reads, gives
     them C01. No elected member carries A01, so the narrow keeps none and the elected
     members stand. The representative's own C01 is not the value posted, so the resubmit

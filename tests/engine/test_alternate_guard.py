@@ -755,6 +755,10 @@ def test_an_unresolved_denominator_arc_reads_its_schema_term(denominator, expect
 
 
 _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+# The registered twin of `_GDP` (`equivalent_series.json`).
+_GDP_TWIN = (
+    "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal"
+)
 
 
 @pytest.mark.parametrize(
@@ -762,6 +766,19 @@ _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
     [
         (
             _shape("x", "Debt", "amount", "measuredValue", None, _GDP),
+            NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
+            "matches",
+            None,
+        ),
+        # A registered twin of the named denominator matches, in either direction.
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, _GDP),
+            NamedDenominator(ref=GraphRef(ref=_GDP_TWIN, label="GDP"), base_words="GDP"),
+            "matches",
+            None,
+        ),
+        (
+            _shape("x", "Debt", "amount", "measuredValue", None, _GDP_TWIN),
             NamedDenominator(ref=GraphRef(ref=_GDP, label="GDP"), base_words="GDP"),
             "matches",
             None,
@@ -821,6 +838,8 @@ _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
     ],
     ids=[
         "arc-matches",
+        "arc-matches-named-twin",
+        "twin-arc-matches-named",
         "arc-differs",
         "none-of-these-leaves-an-arc-unverified",
         "schema-term-arc-differs",

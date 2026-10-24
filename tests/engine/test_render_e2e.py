@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from search.engine.quantity_read import QuantityOutput
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     CandidatesPart,
     DatasetResubmitInput,
     DefinitePart,
+    EntityRefs,
     NoDataPart,
     ParsedEntity,
     ParsedInput,
@@ -23,7 +25,7 @@ from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph
 from tests.render._helpers import assert_round_trip
 
@@ -154,6 +156,8 @@ class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(0), None
 
@@ -182,8 +186,8 @@ def test_place_other_kind_resolution_reaches_no_observations():
     assert r.no_data.reason == "no_observations"
     # The checked series is stated in claim form. Its open_axis_facts state the
     # age/income constraints it declares but this shape's grammar never modelled as
-    # how-slots: a constant axis speaks instead of staying silent. The packaged code
-    # index carries no label for either dcid (it packages only the four CRS code
+    # how-slots: a constant axis speaks instead of staying silent. The fixture code
+    # index carries no label for either dcid (it holds only the four CRS code
     # systems), so each value renders through _humanize_ref's dcid fallback
     # ("Years15Onwards" -> "years 15 onwards", "WithIncome" -> "with income") rather
     # than the raw dcid or silence: the served members really do agree on both
@@ -292,6 +296,8 @@ def test_no_data_restatement_for_directional_ambiguous_entity():
     assert r.restatement is not None
     assert [e.text for e in r.restatement.entities] == ["Congo"]
     assert r.restatement.entities[0].role_text == "to"
+    # An ambiguous text binds no place.
+    assert r.entity_refs == [EntityRefs(text="Congo", refs=[])]
     restated_texts = {e.text for e in r.restatement.entities}
     assert all(g.text in restated_texts for g in r.no_data.ambiguous_entities)
     assert {c.ref for c in r.no_data.ambiguous_entities[0].candidates} == {

@@ -29,6 +29,7 @@ from datasets_api.doors.recipe import build_recipe_door
 from datasets_api.doors.refresh import build_refresh_door
 from datasets_api.doors.register import build_register_door
 from datasets_api.doors.snapshot import build_snapshot_door
+from datasets_api.doors.versions import build_versions_door
 from datasets_api.operation_store import classify_operation_store_exception
 from datasets_api.store_errors import classify_store_exception
 from dfo_platform.codes import bound_registry_endpoint, registered_status
@@ -45,6 +46,7 @@ _ENDPOINTS = {
     "refresh": ("datasets.refresh",),
     "recipe": ("datasets.recipe",),
     "snapshot": ("datasets.snapshot",),
+    "versions": ("datasets.snapshot",),
     "description": ("datasets.description",),
     "files": ("datasets.files",),
     "observations": ("datasets.observations",),
@@ -68,6 +70,7 @@ def doors() -> dict[str, DoorContribution]:
         "refresh": build_refresh_door(deps=cell, settings=settings),
         "recipe": build_recipe_door(deps=cell, settings=settings),
         "snapshot": build_snapshot_door(deps=cell),
+        "versions": build_versions_door(deps=cell),
         "description": build_description_door(deps=cell),
         "files": build_files_door(deps=cell),
         "observations": build_observations_door(deps=cell),

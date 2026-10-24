@@ -8,15 +8,23 @@ A run:
    release when `current.json` already carries it
    (`search_catalogue_job_noop`) or `refused.json` refused it within
    `REFUSAL_RETRY_SECONDS` (`search_catalogue_job_still_refused`);
-2. loads the origin catalogue build `ORIGIN_CATALOGUE_URI` names, under
+2. takes the create-only lease `lease.json` at the format root, which lapses
+   `LEASE_TTL_SECONDS` after it was taken. While another run holds the lease,
+   it logs `search_catalogue_job_waiting` and tries again every
+   `_LEASE_POLL_SECONDS` for up to `LEASE_WAIT_SECONDS`, which outlasts any
+   lease, then exits (`search_catalogue_job_skipped`, reason
+   `lease_wait_exhausted`);
+3. exits (`search_catalogue_job_skipped`) when the published build is from a
+   run that started later (reason `superseded`), or, after waiting, when the
+   holder published or refused the key the pointers now give (reason
+   `settled_while_waiting`);
+4. loads the origin catalogue build `ORIGIN_CATALOGUE_URI` names, under
    the serving surfaces' `ORIGIN_CATALOGUE_*` settings, binds the served
    graph release, and checks the key again against the catalogue it loaded
    and the release it bound;
-3. takes the create-only lease `lease.json` at the format root and exits
-   while another run holds an unexpired one;
-4. finds each example's places with data (`search.catalogue.presence`) and
+5. finds each example's places with data (`search.catalogue.presence`) and
    counts publishers, countries and aid (`search.catalogue.counts`);
-5. runs each example through the search engine in-process, with the
+6. runs each example through the search engine in-process, with the
    origin catalogue build and the served graph release bound, at its
    default place and at the test
    places where it has data (`search.catalogue.check`), trying a run that
@@ -26,23 +34,35 @@ A run:
    the next scheduled run builds again. A line that fails presence or any
    other run, including one the engine refused as input, drops out and
    logs `search_catalogue_line_dropped` at `WARNING`;
-6. refuses to publish when fewer than `FLOOR` lines pass, logging
+7. refuses to publish when fewer than `FLOOR` lines pass, logging
    `search_catalogue_job_refused` at `ERROR`, recording the key in
    `refused.json` and exiting 1, so the last published build keeps
    serving;
-7. publishes the build with a conditional `current.json` write.
+8. publishes the build, stamped with the run's start, with a conditional
+   `current.json` write, unless less than `_PUBLISH_MARGIN_SECONDS` of its
+   lease is left (`search_catalogue_job_skipped`, reason `lease_lost`).
 
 Every run prunes builds nothing can still be reading. Every run that exits
 0 logs `search_catalogue_job_heartbeat` last, naming the published build
 and its age.
 
+A run started while another builds waits for it and then loads the newest
+inputs, so every run ends with the inputs its pointers name published,
+refused or built by a later run. Runs are ordered by when their process
+started, read from the task's clock. The deploy starts its run after the job
+moves to the new image, so a run of the old image whose process starts before
+the deploy's run never publishes over it. An old-image execution created
+before the job moved but whose container starts after the deploy run's can
+still publish the old commit's build over the new one; the next run on the new
+image replaces it.
+
 The run reads coverage from the bound release's coverage view, and the
 release id fills the build inputs' `coverage_build_id`. The bound release
-never moves, so step 7 publishes a build of the release the run bound. A run
+never moves, so step 8 publishes a build of the release the run bound. A run
 with no release to bind, because `GRAPH_RELEASE_URI` is unset, no release is
 published or the release's views do not build, logs
 `search_catalogue_job_failed` with the `reason` and exits 1. The first two end
-the run before the origin catalogue loads.
+the run before it takes the lease.
 
 Environment: `SEARCH_CATALOGUE_URI` (`gs://` or `file://`),
 `ORIGIN_CATALOGUE_URI` and `GRAPH_RELEASE_URI` are required, with the
@@ -69,6 +89,7 @@ from pydantic_settings import SettingsConfigDict
 
 from artifact_publication.jobs import (
     AliasOnlySettings,
+    Lease,
     acquire_lease,
     emit,
     new_build_id,
@@ -118,8 +139,26 @@ FLOOR: Final[int] = 5
 """The fewest passing lines a build publishes."""
 
 _MAX_RUN_SECONDS: Final[float] = 1800.0
-"""The lease's lifetime and the pruning grace period, well above the 80 to 95
+"""The job's task timeout and the pruning grace period, well above the 80 to 95
 seconds a live build takes for its counts and about 16 engine calls."""
+
+LEASE_TTL_SECONDS: Final[float] = 600.0
+"""How long a lease holds. A run whose lease lapsed before it publishes drops
+its build, so a lease outlives its holder's build or no build publishes; a
+build takes 80 to 95 seconds after loading."""
+
+_LEASE_POLL_SECONDS: Final[float] = 15.0
+"""How often a waiting run tries the lease again."""
+
+_PUBLISH_MARGIN_SECONDS: Final[float] = 30.0
+"""The least lease a run must have left to publish, so its pointer write lands
+before another run can reclaim the lease and read the pointer."""
+
+LEASE_WAIT_SECONDS: Final[float] = LEASE_TTL_SECONDS + _LEASE_POLL_SECONDS
+"""How long a run waits for another run's lease: one lease and one poll, so a
+dead holder's lease lapses within the wait. The job's task timeout is
+`_MAX_RUN_SECONDS`, so a run that waits this long still has 1185 seconds to
+load, build and publish."""
 
 REFUSAL_RETRY_SECONDS: Final[float] = 6 * 3600.0
 """How long a refused key stays refused. A run with that key inside the
@@ -176,12 +215,15 @@ async def run(
     resolve: Resolve,
     place_names: PlaceNames,
     commit: str,
+    version: str,
+    started_at: datetime,
+    lease: Lease,
     clock: Callable[[], float] = time.time,
 ) -> None:
-    """One job run. `resolve` must read `catalogue`, which the caller binds.
+    """One build, as the run that started at `started_at` and holds `lease`. `resolve` must read `catalogue`, which the caller binds.
     Raises `CatalogueFloorError` after logging and recording a refused
     build, and `CatalogueEngineError` after logging a check run the engine
-    failed twice; a no-op, a still-refused key, a skip or a lost publish
+    failed twice; a no-op, a still-refused key, a lost lease or a lost publish
     race returns, and a run that returns logs its heartbeat last."""
     await _build(
         settings,
@@ -191,6 +233,9 @@ async def run(
         resolve=resolve,
         place_names=place_names,
         commit=commit,
+        version=version,
+        started_at=started_at,
+        lease=lease,
         clock=clock,
     )
     _heartbeat(settings, clock=clock)
@@ -227,12 +272,8 @@ def _settled(
             catalogue_version=published.catalogue_version,
         )
     else:
-        refusal = read_refusal(settings.artifact_uri)
-        if (
-            refusal is None
-            or refusal.key != key
-            or clock() - refusal.refused_at.timestamp() >= REFUSAL_RETRY_SECONDS
-        ):
+        refusal = _refusal_of(settings, key, clock=clock)
+        if refusal is None:
             return False
         emit(
             "search_catalogue_job_still_refused",
@@ -245,6 +286,70 @@ def _settled(
     return True
 
 
+def _refusal_of(
+    settings: JobSettings, key: str, *, clock: Callable[[], float]
+) -> CatalogueRefusal | None:
+    """The refusal of `key` recorded within `REFUSAL_RETRY_SECONDS`, if any."""
+    refusal = read_refusal(settings.artifact_uri)
+    if (
+        refusal is None
+        or refusal.key != key
+        or clock() - refusal.refused_at.timestamp() >= REFUSAL_RETRY_SECONDS
+    ):
+        return None
+    return refusal
+
+
+def _take_lease(
+    root: str,
+    *,
+    version: str,
+    key: str | None,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> tuple[Lease | None, bool]:
+    """The lease and whether the run waited for it, or `(None, True)` when
+    another run held it for all of `LEASE_WAIT_SECONDS`."""
+    lease = acquire_lease(root, build_id=version, ttl_seconds=LEASE_TTL_SECONDS, now=clock)
+    if lease is not None:
+        return lease, False
+    emit("search_catalogue_job_waiting", key=key, wait_seconds=LEASE_WAIT_SECONDS)
+    started = clock()
+    while clock() - started < LEASE_WAIT_SECONDS:
+        sleep(_LEASE_POLL_SECONDS)
+        lease = acquire_lease(root, build_id=version, ttl_seconds=LEASE_TTL_SECONDS, now=clock)
+        if lease is not None:
+            return lease, True
+    emit("search_catalogue_job_skipped", severity="WARNING", reason="lease_wait_exhausted", key=key)
+    return None, True
+
+
+def _skip_reason(
+    settings: JobSettings,
+    *,
+    started_at: datetime,
+    waited: bool,
+    examples: ExampleSet,
+    commit: str,
+    clock: Callable[[], float],
+) -> str | None:
+    """Why a run holding the lease has nothing to build, or `None`: a run that
+    started later published (`superseded`), or, after a wait, the holder
+    published or refused the key the pointers now give (`settled_while_waiting`)."""
+    published, _ = read_pointer(settings.artifact_uri)
+    if published is not None and published.started_at > started_at:
+        return "superseded"
+    if not waited:
+        return None
+    pointed = _pointer_inputs(settings, examples=examples, commit=commit)
+    if pointed is None:
+        return None
+    key = build_key(pointed)
+    if (published is not None and published.key == key) or _refusal_of(settings, key, clock=clock):
+        return "settled_while_waiting"
+    return None
+
+
 async def _build(
     settings: JobSettings,
     *,
@@ -254,6 +359,9 @@ async def _build(
     resolve: Resolve,
     place_names: PlaceNames,
     commit: str,
+    version: str,
+    started_at: datetime,
+    lease: Lease,
     clock: Callable[[], float],
 ) -> None:
     """`run` without the heartbeat."""
@@ -269,41 +377,45 @@ async def _build(
     if _settled(settings, key, published=published, clock=clock):
         return
 
-    root = format_root(settings.artifact_uri)
-    version = new_build_id()
-    lease = acquire_lease(root, build_id=version, ttl_seconds=_MAX_RUN_SECONDS, now=clock)
-    if lease is None:
-        emit("search_catalogue_job_skipped", reason="lease_held", key=key)
-        return
     started = time.monotonic()
-    try:
-        artifact = await _assemble(
-            settings,
-            examples=examples,
-            catalogue=catalogue,
-            covered=covered,
-            resolve=resolve,
-            place_names=place_names,
-            version=version,
-            key=key,
-            inputs=inputs,
-            clock=clock,
-        )
-        if not publish(settings.artifact_uri, artifact, expected_generation=generation):
-            emit("search_catalogue_job_lost_publish_race", key=key, catalogue_version=version)
-            return
+    artifact = await _assemble(
+        settings,
+        examples=examples,
+        catalogue=catalogue,
+        covered=covered,
+        resolve=resolve,
+        place_names=place_names,
+        version=version,
+        started_at=started_at,
+        key=key,
+        inputs=inputs,
+        clock=clock,
+    )
+    # The whole span the run held the lease, loading included, which `LEASE_TTL_SECONDS` bounds.
+    leased_seconds = round(clock() - (lease.expires_at - LEASE_TTL_SECONDS), 1)
+    # A run whose lease lapsed may share the format root with the run that reclaimed it.
+    if clock() >= lease.expires_at - _PUBLISH_MARGIN_SECONDS:
         emit(
-            "search_catalogue_job_published",
+            "search_catalogue_job_skipped",
+            severity="WARNING",
+            reason="lease_lost",
             key=key,
-            catalogue_version=version,
-            inputs=inputs.model_dump(),
-            examples=[example.id for example in artifact.examples],
-            counts=artifact.counts.model_dump(),
-            build_seconds=round(time.monotonic() - started, 1),
+            leased_seconds=leased_seconds,
         )
-    finally:
-        if not release_lease(root, lease):
-            logger.warning("search catalogue: lease for %s was reclaimed before release", version)
+        return
+    if not publish(settings.artifact_uri, artifact, expected_generation=generation):
+        emit("search_catalogue_job_lost_publish_race", key=key, catalogue_version=version)
+        return
+    emit(
+        "search_catalogue_job_published",
+        key=key,
+        catalogue_version=version,
+        inputs=inputs.model_dump(),
+        examples=[example.id for example in artifact.examples],
+        counts=artifact.counts.model_dump(),
+        build_seconds=round(time.monotonic() - started, 1),
+        leased_seconds=leased_seconds,
+    )
     _prune(settings, clock)
 
 
@@ -316,6 +428,7 @@ async def _assemble(
     resolve: Resolve,
     place_names: PlaceNames,
     version: str,
+    started_at: datetime,
     key: str,
     inputs: BuildInputs,
     clock: Callable[[], float],
@@ -336,7 +449,9 @@ async def _assemble(
         catalogue=catalogue,
         coverage=covered.index,
         datasets=index.datasets,
-        totals=[dcid for dcid, party in index.parties.items() if party.kind == "total"],
+        # Read over every dataset: a party that is a total in some datasets only, such as the
+        # IMF trust funds, is a donor of its own in the others and counts as one.
+        totals=[dcid for dcid, party in index.parties.items() if party.kind_over() == "total"],
     )
     names = place_names(sorted(counted.places))
 
@@ -401,6 +516,7 @@ async def _assemble(
     return CatalogueArtifact(
         catalogue_version=version,
         key=key,
+        started_at=started_at,
         built_at=datetime.fromtimestamp(clock(), UTC),
         inputs=inputs,
         counts=counted.counts,
@@ -597,35 +713,75 @@ def _live_engine() -> Iterator[tuple[Resolve, PlaceNames]]:
         yield resolve, place_names
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
     argparse.ArgumentParser(prog="python -m search.catalogue.job").parse_args(argv)
+    started_at = datetime.fromtimestamp(clock(), UTC)
+    version = new_build_id()
     logging.basicConfig(level=logging.INFO)
     settings = JobSettings()
     commit = build_commit()
     try:
         examples = load_examples()
         pointed = _pointer_inputs(settings, examples=examples, commit=commit)
-        if pointed is not None and nothing_to_build(settings, inputs=pointed):
+        if pointed is not None and nothing_to_build(settings, inputs=pointed, clock=clock):
             return 0
-        catalogue = _load_origin_catalogue(settings)
-        # The release is bound before the engine is built, since its construction reads the
-        # code index.
-        with (
-            bound_served_release(_release_service()),
-            _live_engine() as (resolve, place_names),
-            bound_catalogue(catalogue),
-        ):
-            asyncio.run(
-                run(
-                    settings,
-                    examples=examples,
-                    catalogue=catalogue,
-                    coverage=get_coverage_service(),
-                    resolve=resolve,
-                    place_names=place_names,
-                    commit=commit,
-                )
+        root = format_root(settings.artifact_uri)
+        lease, waited = _take_lease(
+            root,
+            version=version,
+            key=build_key(pointed) if pointed is not None else None,
+            clock=clock,
+            sleep=sleep,
+        )
+        if lease is None:
+            _heartbeat(settings, clock=clock)
+            return 0
+        try:
+            reason = _skip_reason(
+                settings,
+                started_at=started_at,
+                waited=waited,
+                examples=examples,
+                commit=commit,
+                clock=clock,
             )
+            if reason is not None:
+                emit(
+                    "search_catalogue_job_skipped", reason=reason, started_at=started_at.isoformat()
+                )
+                _heartbeat(settings, clock=clock)
+                return 0
+            catalogue = _load_origin_catalogue(settings)
+            # The release is bound before the engine is built, since its construction reads
+            # the code index.
+            with (
+                bound_served_release(_release_service()),
+                _live_engine() as (resolve, place_names),
+                bound_catalogue(catalogue),
+            ):
+                asyncio.run(
+                    run(
+                        settings,
+                        examples=examples,
+                        catalogue=catalogue,
+                        coverage=get_coverage_service(),
+                        resolve=resolve,
+                        place_names=place_names,
+                        commit=commit,
+                        version=version,
+                        started_at=started_at,
+                        lease=lease,
+                        clock=clock,
+                    )
+                )
+        finally:
+            if not release_lease(root, lease):
+                logger.warning("search catalogue: lease for %s lapsed before release", version)
     except CatalogueFloorError as exc:
         logger.error("search catalogue job refused: %s", exc)
         return 1
@@ -656,6 +812,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "FLOOR",
+    "LEASE_WAIT_SECONDS",
     "REFUSAL_RETRY_SECONDS",
     "CatalogueEngineError",
     "CatalogueFloorError",

@@ -766,7 +766,7 @@ class FakeGraph:
         ]
 
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
-        """Fetch fixture labels, preferring packaged CodeRow labels when available."""
+        """Fetch fixture labels, preferring fixture index CodeRow labels when available."""
         if self._impl is not None:
             return self._impl.node_labels_batch(dcids)
         index = get_index()
