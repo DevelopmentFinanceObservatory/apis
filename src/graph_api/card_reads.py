@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from code_index.query import CodeIndex
+from dc_graph import display_name
 from dfo_platform.executor import submit_with_context
 from dfo_platform.single_flight_cache import SingleFlightCache
 from entity_resolution.membership import MembershipPolicy
@@ -72,7 +73,6 @@ from graph_api.availability import (
 from graph_api.deps import DcpExecutorSaturated, DcpExecutorShutDown
 from graph_api.kinds import Kind, classify
 from graph_api.reader import GraphNodeReader
-from graph_api.refs import first_name
 from graph_generation import GenerationProvider
 from graph_release.context import served_origin_key
 from materialise.errors import UpstreamResponseError
@@ -110,7 +110,7 @@ _READ_FAILURES = (
 
 @dataclass(frozen=True, slots=True)
 class NodeFacts:
-    """A node's first name unequal to its dcid, and its types. A node the graph does not hold
+    """A node's `dc_graph.display_name`, and its types. A node the graph does not hold
     has neither."""
 
     name: str | None
@@ -268,7 +268,7 @@ type _FactsKey = tuple[str, str]
 def _facts(dcid: str, arcs: Mapping[str, tuple[str, ...]] | None) -> NodeFacts:
     if arcs is None:
         return NodeFacts(name=None, types=())
-    return NodeFacts(name=first_name(arcs.get("name", ()), dcid), types=arcs.get("typeOf", ()))
+    return NodeFacts(name=display_name(arcs.get("name", ()), dcid), types=arcs.get("typeOf", ()))
 
 
 @dataclass(frozen=True, slots=True)

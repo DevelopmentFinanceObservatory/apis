@@ -30,6 +30,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Final, NamedTuple
 
+from dc_graph import label_or_self_name
 from origin_catalogue.un_mirror import UnArc, UnMirror, import_added
 
 _PROVISIONAL_TYPES: Final[tuple[str, ...]] = ("ProvisionalNode",)
@@ -123,7 +124,7 @@ def base_without(
     `dropped` variable belongs to, summarised again from its other members in table order,
     or None when it has none. Families no dropped variable belongs to are left out."""
     gone = {dcid for dcid in dropped if variables.get(dcid)}
-    keys = {_VariableFacts.read(variables[dcid]).key for dcid in gone}
+    keys = {_VariableFacts.read(dcid, variables[dcid]).key for dcid in gone}
     resummarised: dict[FamilyKey, FamilySummary | None] = {}
     for key in keys:
         kept = [dcid for dcid in summaries[key].members if dcid not in gone]
@@ -202,7 +203,7 @@ def summarise(
     for dcid, arcs in variables:
         if not arcs:
             continue
-        facts = _VariableFacts.read(arcs)
+        facts = _VariableFacts.read(dcid, arcs)
         builder = builders.get(facts.key)
         if builder is None:
             builder = builders[facts.key] = _Builder()
@@ -222,7 +223,7 @@ class _VariableFacts:
     name: str | None
 
     @staticmethod
-    def read(arcs: tuple[UnArc, ...]) -> _VariableFacts:
+    def read(dcid: str, arcs: tuple[UnArc, ...]) -> _VariableFacts:
         by_property: dict[str, list[UnArc]] = {}
         for arc in arcs:
             by_property.setdefault(arc.property, []).append(arc)
@@ -275,7 +276,7 @@ class _VariableFacts:
             key=key,
             constrained=bool(declared),
             constraints=constraints,
-            name=names[-1] if names else None,
+            name=label_or_self_name(names, dcid),
         )
 
 

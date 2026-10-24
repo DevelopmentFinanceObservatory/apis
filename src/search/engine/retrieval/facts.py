@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
+from dc_graph import label_or_self_name
 from materialise.roles import declared_roles, roles_by_axis
 from search.engine.errors import RoleSignatureError
 
@@ -34,14 +35,11 @@ def _dcids_for(arcs: dict, prop: str) -> list[str]:
     return [n["dcid"] for n in nodes if "dcid" in n]
 
 
-def read_name(arcs: dict) -> str | None:
-    """Return the last truthy `->name` value, matching the graph label policy.
-
-    Reads already-fetched arcs without another graph call.
-    """
-    name_nodes = arcs.get("name", {}).get("nodes", [])
-    values = [n["value"] for n in name_nodes if n.get("value")]
-    return values[-1] if values else None
+def read_name(arcs: dict, dcid: str) -> str | None:
+    """Return the label of node `dcid` from its already-fetched `->name` arcs as the graph
+    client's `node_label` reads it (`label_or_self_name`), without another graph call."""
+    names = [value for n in arcs.get("name", {}).get("nodes", []) if (value := n.get("value"))]
+    return label_or_self_name(names, dcid)
 
 
 def _value_for(arcs: dict, prop: str) -> str | None:
@@ -152,19 +150,6 @@ def read_unresolved_constraints(sv_arcs: dict) -> frozenset[str]:
     """
     constraint_prop_dcids = _dcids_for(sv_arcs, "constraintProperties")
     return frozenset(p for p in constraint_prop_dcids if _is_unresolved(sv_arcs, p))
-
-
-def read_constraint_value_names(sv_arcs: dict) -> dict[str, str]:
-    """Map each constraint value dcid to the graph `name` its arc node carries.
-
-    Values whose node carries no name are omitted.
-    """
-    return {
-        node["dcid"]: node["name"]
-        for prop_dcid in _dcids_for(sv_arcs, "constraintProperties")
-        for node in sv_arcs.get(prop_dcid, {}).get("nodes", [])
-        if node.get("dcid") and node.get("name")
-    }
 
 
 class GroupRoles(NamedTuple):

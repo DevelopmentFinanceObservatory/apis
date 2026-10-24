@@ -23,7 +23,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, replace
 from functools import partial
@@ -738,9 +738,9 @@ class GraphClient:
         return True
 
     def node_label(self, dcid: str) -> str | None:
-        """Return the last `->name` value or `None` for an absent or empty node. It shares the
-        optional cache with `node_labels_batch`. A node the graph answered without a name caches as
-        `None`; an unanswered dcid caches nothing.
+        """Return the node's `label_or_self_name`, or `None` for an absent or unnamed node. It
+        shares the optional cache with `node_labels_batch`. A node the graph answered without a
+        name caches as `None`; an unanswered dcid caches nothing.
         """
         stamp = self._generation.stamp()
         return self._cached_single_arc(
@@ -749,7 +749,7 @@ class GraphClient:
             field="value",
             cache=self._label_cache,
             counters=self._label_counters,
-            pick=_pick_last_truthy,
+            pick=label_or_self_name,
             stamp=stamp,
         )
 
@@ -776,7 +776,7 @@ class GraphClient:
         field: str,
         cache: cachetools.TLRUCache | None,
         counters: _CacheCounters,
-        pick: Callable[[list[str]], str | None],
+        pick: Callable[[list[str], str], str | None],
         stamp: GenerationStamp,
     ) -> str | None:
         cache_key = (stamp.key, dcid)
@@ -794,15 +794,16 @@ class GraphClient:
         if arcs:
             arc_name = arc_property.removeprefix("->")
             values = [n.get(field) for n in arcs.get(arc_name, {}).get("nodes", [])]
-            result = pick(values)
+            result = pick(values, dcid)
         if dcid in data and cache is not None:
             with self._cache_lock:
                 cache[cache_key] = result
         return result
 
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
-        """Fetch labels in chunks of at most `single_arc_batch_chunk_size`. Omit dcids with no
-        `->name` arc. Continuations trigger chunk halving, and results share `node_label`'s cache.
+        """Fetch each node's `label_or_self_name` in chunks of at most
+        `single_arc_batch_chunk_size`. Omit dcids with none. Continuations trigger chunk halving,
+        and results share `node_label`'s cache.
         """
         return self._single_arc_batch(
             dcids,
@@ -811,7 +812,7 @@ class GraphClient:
             field="value",
             cache=self._label_cache,
             counters=self._label_counters,
-            pick=_pick_last_truthy,
+            pick=label_or_self_name,
         )
 
     def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
@@ -837,7 +838,7 @@ class GraphClient:
         field: str,
         cache: cachetools.TLRUCache | None,
         counters: _CacheCounters,
-        pick: Callable[[list[str]], str | None],
+        pick: Callable[[list[str], str], str | None],
     ) -> dict[str, str]:
         """Fetch uncached dcids in chunks and merge hits with results in first-occurrence input
         order. A dcid the graph answered without a value is omitted from the result, and caches as
@@ -885,7 +886,7 @@ class GraphClient:
                 for n in node_data.get("arcs", {}).get(arc_name, {}).get("nodes", [])
                 if n.get(field)
             ]
-            picked = pick(values)
+            picked = pick(values, dcid)
             fetched[dcid] = picked
             # An empty entry from a multi-dcid chunk may depend on the chunk's composition, so
             # only a dcid read alone is trusted empty.
@@ -2308,16 +2309,7 @@ class GraphClient:
             self._blocked_observation_entities = ("", frozenset())
 
 
-def _pick_label(values: list[str]) -> str:
-    return values[-1]
-
-
-def _pick_last_truthy(values: list[str]) -> str | None:
-    truthy = [v for v in values if v]
-    return _pick_label(truthy) if truthy else None
-
-
-def _pick_first(values: list[str]) -> str | None:
+def _pick_first(values: list[str], dcid: str) -> str | None:
     return values[0] if values else None
 
 
@@ -2380,6 +2372,24 @@ def parse_arcs(
         )
         for prop in properties
     }
+
+
+def display_name(names: Iterable[str], dcid: str) -> str | None:
+    """The one display name of node `dcid` among its `name` values: the greatest by code point,
+    `None` where it has none. The graph keys arcs on provenance, so a node can carry several names
+    in an order the read does not fix; taking the greatest gives the same name whatever the order.
+    A name equal to the dcid, which some imports assert, an empty name, and `UNRESOLVED_NODE` are
+    no name."""
+    return max(
+        (name for name in names if name and name not in (dcid, UNRESOLVED_NODE)), default=None
+    )
+
+
+def label_or_self_name(names: Collection[str], dcid: str) -> str | None:
+    """The `display_name` of node `dcid`, or the dcid itself for a node named only by its own
+    dcid. `node_label` answers this, and `exists_batch` reads the self-name as evidence the
+    node exists."""
+    return display_name(names, dcid) or (dcid if dcid in names else None)
 
 
 def _arc_spec(properties: Sequence[str]) -> str:

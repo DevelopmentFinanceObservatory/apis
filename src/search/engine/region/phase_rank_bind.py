@@ -3153,7 +3153,7 @@ def _member_names(shape: ShapeDraft) -> dict[str, frozenset[str]]:
     return {
         dcid: _label_words(name)
         for dcid, arcs in shape_population_arcs(shape).items()
-        if (name := read_name(arcs)) is not None
+        if (name := read_name(arcs, dcid)) is not None
     }
 
 
@@ -3284,7 +3284,7 @@ def served_member_names(state: ResolveState) -> dict[str, str | None]:
     role_keys = assignment.role_keys if isinstance(assignment, PlaceAssignment) else RoleKeys()
     arcs = shape_population_arcs(shape)
     names = {
-        dcid: read_name(arcs.get(dcid, {}))
+        dcid: read_name(arcs.get(dcid, {}), dcid)
         for dcid in members_served(
             shape, bindings, role_keys, member_has_data_where_asked(state, shape)
         )
@@ -3585,8 +3585,8 @@ def judge_value_requirements(
         for value in binding.value_dcids
     }
     selected = _selected_members(shape, bindings)
-    constraints = [read_constraints(arcs) for arcs in selected]
-    names = [_casefolded_words(read_name(arcs) or "") for arcs in selected]
+    constraints = [read_constraints(arcs) for arcs in selected.values()]
+    names = [_casefolded_words(read_name(arcs, dcid) or "") for dcid, arcs in selected.items()]
     stated = _series_words(shape) | _dataset_stated_words(shape, get_index(), state)
     read_broadly = {
         (reading.property_dcid, reading.value_dcid)
@@ -3644,7 +3644,7 @@ def judge_value_requirements(
     )
 
 
-def _selected_members(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> list[dict]:
+def _selected_members(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> dict[str, dict]:
     """The arcs of each member `shape` stands for (`shape_population_arcs`) that
     `bindings` select, as materialisation selects them (`bound_values_from_bindings`): one
     holding a value of each property they bind as a value or set, or a descendant of one, and
@@ -3657,13 +3657,13 @@ def _selected_members(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -
         for binding in bindings
         if binding.property_dcid is not None and binding.kind == "absent"
     }
-    selected: list[dict] = []
-    for arcs in shape_population_arcs(shape).values():
+    selected: dict[str, dict] = {}
+    for dcid, arcs in shape_population_arcs(shape).items():
         member = read_constraints(arcs)
         if all(member.get(prop) in values for prop, values in bound.items()) and not (
             absent & member.keys()
         ):
-            selected.append(arcs)
+            selected[dcid] = arcs
     return selected
 
 
@@ -4225,7 +4225,7 @@ def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:
         (len(arcs.get("observationProperties", {}).get("nodes", [])), name)
         for shape in shapes
         for dcid, arcs in (shape.sv_arc_facts or {}).items()
-        if dcid in code.dcids and (name := read_name(arcs)) is not None
+        if dcid in code.dcids and (name := read_name(arcs, dcid)) is not None
     ]
     return min(named)[1] if named else state.variable
 

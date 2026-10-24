@@ -14,6 +14,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Collection, Iterable, Mapping
 
 from code_index.types import PartyKind, PartyRow
+from dc_graph import label_or_self_name
 from dfo_platform.roles import role_key_axis
 from graph_release.context import served_origin_key
 from materialise.graph import GraphReader
@@ -50,6 +51,7 @@ qualifies a party role only, and a frame carries one only when a token asks for 
 ENRICHMENT_FIELDS: tuple[str, ...] = (*ENRICHMENT_PROPERTIES, PARTY_KIND_FIELD)
 """Every field a lookup can return."""
 
+_NAME_PROPERTY = "name"
 _TYPE_PROPERTY = "typeOf"
 
 _PROPERTIES = tuple(ENRICHMENT_PROPERTIES.values())
@@ -116,7 +118,7 @@ class EnrichmentLookup:
                 deadline=deadline,
             )
             resolved = {
-                ref: {} if (node := fetched.get(ref)) is None else _node_fields(node)
+                ref: {} if (node := fetched.get(ref)) is None else _node_fields(ref, node)
                 for ref in missing
             }
             self._store(resolved)
@@ -167,15 +169,22 @@ def _with_party_kind(
     return {**fields, PARTY_KIND_FIELD: kind}
 
 
-def _node_fields(node: Mapping[str, tuple[str, ...]]) -> dict[str, str]:
-    """Each graph field's first value, except `type`: every `typeOf` value of the place, sorted
-    and comma-joined (`AdministrativeArea1,Country,EurostatNUTS2`), since a place can hold
-    several levels at once."""
+def _node_fields(dcid: str, node: Mapping[str, tuple[str, ...]]) -> dict[str, str]:
+    """Each graph field's first value, except `label` and `type`. `label` is the node's
+    `label_or_self_name`. `type` is every `typeOf` value of the place, sorted and comma-joined
+    (`AdministrativeArea1,Country,EurostatNUTS2`), since a place can hold several levels at
+    once."""
     fields: dict[str, str] = {}
     for property_, field in _FIELDS_BY_PROPERTY.items():
         values = node.get(property_, ())
-        if values:
-            fields[field] = ",".join(sorted(values)) if property_ == _TYPE_PROPERTY else values[0]
+        if property_ == _NAME_PROPERTY:
+            value = label_or_self_name(values, dcid)
+        elif property_ == _TYPE_PROPERTY:
+            value = ",".join(sorted(values))
+        else:
+            value = values[0] if values else None
+        if value:
+            fields[field] = value
     return fields
 
 

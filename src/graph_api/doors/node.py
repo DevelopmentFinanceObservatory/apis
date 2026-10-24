@@ -62,6 +62,7 @@ from pydantic import BaseModel, TypeAdapter
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import MeasureIndex
+from dc_graph import display_name
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from dfo_platform.refusal import TIMEOUT_DEFAULT
@@ -114,7 +115,7 @@ from graph_api.node_models import (
 )
 from graph_api.origin_models import DataCommonsRef
 from graph_api.reader import GraphNodeReader, NodeArcsByDcid
-from graph_api.refs import DOCUMENTATION_PATH, NodeRef, first_name, first_value
+from graph_api.refs import DOCUMENTATION_PATH, NodeRef, first_value
 from materialise.cadence import cadence_label
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from origin_catalogue import current_catalogue
@@ -193,7 +194,7 @@ class DcidTooLong(Exception):
 
 
 def _label(arcs: Arcs, dcid: str) -> str | None:
-    return first_name(arcs.get(_LABEL_PROPERTY, ()), dcid)
+    return display_name(arcs.get(_LABEL_PROPERTY, ()), dcid)
 
 
 @dataclass(frozen=True, slots=True)

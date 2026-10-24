@@ -3,7 +3,7 @@ readers of a node's arcs that every door shares."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 
 from pydantic import ConfigDict
 
@@ -21,12 +21,6 @@ class NodeRef(ResponseModel):
 
     ref: str
     label: str | None
-
-
-def first_name(names: Iterable[str], dcid: str) -> str | None:
-    """The first of a node's `name` values that differs from its `dcid`. Some imports add a
-    self-referential arc, which is no name."""
-    return next((name for name in names if name != dcid), None)
 
 
 def first_value(arcs: Mapping[str, tuple[str, ...]], prop: str) -> str | None:

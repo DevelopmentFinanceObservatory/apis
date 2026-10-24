@@ -805,7 +805,7 @@ def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_n
     graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:
     """The graph's `->*` read names a nameless node by its dcid and a node of several names
-    by its first, and `node_label` gives the first no label and the second its last name.
+    by its first, and `node_label` gives the first no label and the second its `display_name`.
     The release and the tables answer each read as the graph does, with no request."""
     age, alcohol = "Years0", "Alcohol"
     crs = {

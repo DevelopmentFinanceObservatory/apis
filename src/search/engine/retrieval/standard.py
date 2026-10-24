@@ -692,7 +692,7 @@ def bind_named_member_values(
         )
         if not partitions:
             break
-        names = {sv: member_name(member) for sv, member in served.items()}
+        names = {sv: member_name(sv, member) for sv, member in served.items()}
         if any(name is None for name in names.values()):
             break
         named = [sv for sv, name in names.items() if name and normalised_key(name) == asked]
