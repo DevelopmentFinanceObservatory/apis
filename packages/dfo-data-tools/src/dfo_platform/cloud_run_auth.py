@@ -3,22 +3,34 @@
 A Cloud Run service that refuses unauthenticated calls admits a caller holding
 ``roles/run.invoker`` whose ID token names the service's origin as its audience. Cloud Run
 reads the token from ``X-Serverless-Authorization: Bearer <token>``, checks it, and strips the
-header, so the service's container never sees it. ``CloudRunIdTokenAuth`` adds that header to a
-request exactly when the request's host ends in ``.run.app`` (a trailing dot ignored), with
-``https://<host>`` as the audience, and refuses such a request over plain ``http``. Every other
-host (base Data Commons, the UN Data Commons, localhost, a test transport's placeholder) gets no
-header, so the same client reads any of them unchanged.
+header, so the service's container never sees it.
 
-``DCP_ID_TOKEN``, when set, is checked first. GitHub Actions sets it, because its external
-account credentials cannot mint an ID token. A token whose ``aud`` is an ``https://`` origin is
-sent only to that origin. A token whose ``aud`` is not a URL, as from ``gcloud auth
-print-identity-token`` for a user, is sent to every ``.run.app`` host. Any other host's token is
-minted per audience with ``google.oauth2.id_token.fetch_id_token``, which works from the Cloud
-Run metadata server, a service-account key file, or an impersonated-service-account ADC file.
-User ADC cannot mint. A minted token is cached and replaced once less than
-``REFRESH_MARGIN_S`` of its lifetime remains. A failed mint is remembered for
-``FAILED_MINT_RETRY_S``, so concurrent reads fail at once. A ``.run.app`` request that can get
-no token raises ``CloudRunAuthError`` before it is sent.
+``IdTokenMinter`` holds one token per audience. ``id_token_minter()`` is the process's one
+minter, shared by ``CloudRunIdTokenAuth`` here and ``search.eval.apis_auth.ApisAuth``. By
+default it mints from Application Default Credentials, by their kind:
+
+- the metadata server (Cloud Run, Compute Engine) answers from its identity endpoint;
+- a service-account key file signs the token request with its key;
+- impersonated-service-account ADC, as ``gcloud auth application-default login
+  --impersonate-service-account=<service account>`` writes it, asks the IAM Credentials API
+  for a token of the impersonated account;
+- any other ADC that names a service account, such as the external-account file
+  ``google-github-actions/auth`` writes for Workload Identity Federation, asks the IAM
+  Credentials API for a token of that account acting on itself, which needs
+  ``roles/iam.serviceAccountOpenIdTokenCreator`` on itself.
+
+User ADC names no service account and cannot mint. A minted token is cached and replaced once
+less than ``REFRESH_MARGIN_S`` of its lifetime remains. A failed mint is remembered for
+``FAILED_MINT_RETRY_S``, so concurrent reads fail at once, and a held token keeps serving until
+its own ``exp`` while minting fails. Each audience mints under its own lock.
+
+``CloudRunIdTokenAuth`` adds the header to a request exactly when the request's host ends in
+``.run.app`` (a trailing dot ignored), with ``https://<host>`` as the audience, and refuses
+such a request over plain ``http``. Every other host (base Data Commons, the UN Data Commons,
+localhost, a test transport's placeholder) gets no header, so the same client reads any of them
+unchanged. A ``.run.app`` request that can get no token raises ``CloudRunAuthError`` before it
+is sent. The error is an ``httpx.RequestError`` carrying the request, so a client retries it
+and maps it to its read error as it does a failed connection.
 """
 
 from __future__ import annotations
@@ -27,36 +39,50 @@ import base64
 import binascii
 import functools
 import json
-import os
 import threading
 import time
 from collections.abc import Callable, Generator
-from typing import override
+from typing import TYPE_CHECKING, Protocol, override
 
 import httpx
 
-TOKEN_ENV = "DCP_ID_TOKEN"
+if TYPE_CHECKING:
+    from google.auth.transport import Request
+
 TOKEN_HEADER = "X-Serverless-Authorization"
 REFRESH_MARGIN_S = 300.0
 FAILED_MINT_RETRY_S = 60.0
 _CLOUD_RUN_HOST_SUFFIX = ".run.app"
+_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+MINTING_ROUTES = (
+    "ID tokens mint from the metadata server, a service-account key file in "
+    "GOOGLE_APPLICATION_CREDENTIALS, `gcloud auth application-default login "
+    "--impersonate-service-account=<service account>`, or external-account credentials that "
+    "impersonate a service account holding roles/iam.serviceAccountOpenIdTokenCreator on itself"
+)
 
 type TokenFetcher = Callable[[str], str]
-"""Mints a Google-signed ID token for the audience it is given."""
+"""Mints a Google-signed ID token for the audience it is given, or raises
+``CloudRunAuthError``."""
 
 
-class CloudRunAuthError(RuntimeError):
-    """No ID token could be had for a Cloud Run host."""
+class CloudRunAuthError(httpx.RequestError):
+    """No ID token could be had for a Cloud Run audience."""
 
 
-class CloudRunIdTokenAuth(httpx.Auth):
-    """Adds ``X-Serverless-Authorization: Bearer <ID token>`` to every request whose host ends in
-    ``.run.app``, and nothing to any other request.
+class IdTokenCredentials(Protocol):
+    """The part of ``google.auth`` ID token credentials the minter uses."""
+
+    token: str | None
+
+    def refresh(self, request: Request) -> None: ...
+
+
+class IdTokenMinter:
+    """Mints, caches and refreshes one ID token per audience, shared across threads.
 
     ``fetch_token`` mints a token for an audience and defaults to Application Default
     Credentials. ``clock`` returns epoch seconds and is compared with a token's ``exp``.
-    The cache is shared across threads. Minting blocks, so an async client using this auth
-    blocks its event loop for the one mint per audience per hour.
     """
 
     def __init__(
@@ -65,11 +91,66 @@ class CloudRunIdTokenAuth(httpx.Auth):
         fetch_token: TokenFetcher | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self._fetch_token = fetch_token or _fetch_with_google_auth
+        self._fetch_token = fetch_token or mint_from_adc
         self._clock = clock
-        self._cache: dict[str, tuple[str, float]] = {}
-        self._failures: dict[str, tuple[CloudRunAuthError, float]] = {}
-        self._lock = threading.Lock()
+        self._held: dict[str, tuple[str, float]] = {}
+        self._failures: dict[str, tuple[str, float]] = {}
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_lock = threading.Lock()
+
+    def fresh(self, audience: str) -> str | None:
+        """The held token for ``audience`` while it needs no refresh. Never blocks."""
+        held = self._held.get(audience)
+        if held is not None and held[1] - self._clock() > REFRESH_MARGIN_S:
+            return held[0]
+        return None
+
+    def token(self, audience: str, *, request: httpx.Request) -> str:
+        """A token for ``audience``, minted when none is fresh. Raises ``CloudRunAuthError``
+        carrying ``request`` when none can be had."""
+        if (token := self.fresh(audience)) is not None:
+            return token
+        with self._lock_for(audience):
+            if (token := self.fresh(audience)) is not None:
+                return token
+            now = self._clock()
+            failed = self._failures.get(audience)
+            if failed is None or now - failed[1] >= FAILED_MINT_RETRY_S:
+                try:
+                    token = self._fetch_token(audience)
+                    expiry = _expiry(token, audience=audience)
+                except CloudRunAuthError as exc:
+                    failed = self._failures[audience] = (str(exc), now)
+                else:
+                    self._failures.pop(audience, None)
+                    self._held[audience] = (token, expiry)
+                    return token
+            held = self._held.get(audience)
+            if held is not None and held[1] > now:
+                return held[0]
+            raise CloudRunAuthError(failed[0], request=request)
+
+    def _lock_for(self, audience: str) -> threading.Lock:
+        with self._locks_lock:
+            return self._locks.setdefault(audience, threading.Lock())
+
+
+@functools.cache
+def id_token_minter() -> IdTokenMinter:
+    """The process's one ``IdTokenMinter``, so every auth shares its minted tokens."""
+    return IdTokenMinter()
+
+
+class CloudRunIdTokenAuth(httpx.Auth):
+    """Adds ``X-Serverless-Authorization: Bearer <ID token>`` to every request whose host ends in
+    ``.run.app``, and nothing to any other request.
+
+    ``minter`` defaults to the process's one minter. Minting blocks, so an async client using
+    this auth blocks its event loop for the one mint per audience per hour.
+    """
+
+    def __init__(self, *, minter: IdTokenMinter | None = None) -> None:
+        self._minter = minter or id_token_minter()
 
     @override
     def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response]:
@@ -77,93 +158,93 @@ class CloudRunIdTokenAuth(httpx.Auth):
         if host.endswith(_CLOUD_RUN_HOST_SUFFIX):
             if request.url.scheme != "https":
                 raise CloudRunAuthError(
-                    f"refusing to send an ID token for {host} over {request.url.scheme}; use https"
+                    f"refusing to send an ID token for {host} over {request.url.scheme}; use https",
+                    request=request,
                 )
-            request.headers[TOKEN_HEADER] = f"Bearer {self.token_for(host)}"
+            token = self._minter.token(f"https://{host}", request=request)
+            request.headers[TOKEN_HEADER] = f"Bearer {token}"
         yield request
-
-    def token_for(self, host: str) -> str:
-        """The ID token for ``https://<host>``: ``DCP_ID_TOKEN`` when its audience fits, else a
-        cached or newly minted one."""
-        audience = f"https://{host}"
-        supplied = os.environ.get(TOKEN_ENV)
-        if not supplied:
-            return self._minted(audience)
-        supplied_audience = _supplied_audience(supplied)
-        if supplied_audience == audience or not supplied_audience.startswith("https://"):
-            return supplied
-        try:
-            return self._minted(audience)
-        except CloudRunAuthError as exc:
-            raise CloudRunAuthError(
-                f"{TOKEN_ENV} is for {supplied_audience}, not {audience}, and {exc}"
-            ) from exc
-
-    def _minted(self, audience: str) -> str:
-        with self._lock:
-            now = self._clock()
-            cached = self._cache.get(audience)
-            if cached is not None and cached[1] - now > REFRESH_MARGIN_S:
-                return cached[0]
-            failed = self._failures.get(audience)
-            if failed is not None and now - failed[1] < FAILED_MINT_RETRY_S:
-                raise CloudRunAuthError(str(failed[0])) from failed[0]
-            try:
-                token = self._fetch_token(audience)
-                expiry = float(_claims(token, source=f"the ID token minted for {audience}")["exp"])
-            except CloudRunAuthError as exc:
-                self._failures[audience] = (exc, now)
-                raise
-            except (KeyError, TypeError, ValueError) as exc:
-                error = CloudRunAuthError(f"the ID token minted for {audience} has no readable exp")
-                self._failures[audience] = (error, now)
-                raise error from exc
-            self._failures.pop(audience, None)
-            self._cache[audience] = (token, expiry)
-            return token
 
 
 @functools.cache
 def cloud_run_auth() -> CloudRunIdTokenAuth:
-    """The process's one ``CloudRunIdTokenAuth``, so every client shares its minted tokens."""
+    """The process's one ``CloudRunIdTokenAuth``."""
     return CloudRunIdTokenAuth()
 
 
-def _fetch_with_google_auth(audience: str) -> str:
+def mint_from_adc(audience: str) -> str:
+    """An ID token for ``audience`` from Application Default Credentials.
+
+    The impersonation route posts to the IAM Credentials API without wrapping a transport
+    failure, and reads a non-JSON error body as JSON, so a ``requests`` error and a
+    ``ValueError`` raise ``CloudRunAuthError`` as a ``GoogleAuthError`` does."""
     import google.auth.exceptions
     import google.auth.transport.requests
-    import google.oauth2.id_token
+    import requests
 
+    request = google.auth.transport.requests.Request()
     try:
-        return google.oauth2.id_token.fetch_id_token(
-            google.auth.transport.requests.Request(), audience
-        )
-    except google.auth.exceptions.GoogleAuthError as exc:
+        credentials = adc_id_token_credentials(audience, request)
+        credentials.refresh(request)
+    except (
+        google.auth.exceptions.GoogleAuthError,
+        requests.RequestException,
+        ValueError,
+    ) as exc:
         raise CloudRunAuthError(
-            f"cannot mint an ID token for {audience}: {exc}. User credentials cannot mint one. "
-            "Either run `gcloud auth application-default login "
-            "--impersonate-service-account=<service account>`, which mints and refreshes "
-            f'tokens, or set {TOKEN_ENV}="$(gcloud auth print-identity-token)", which expires '
-            "after an hour"
+            f"cannot mint an ID token for {audience}: {exc}. {MINTING_ROUTES}"
         ) from exc
+    if not credentials.token:
+        raise CloudRunAuthError(f"minting an ID token for {audience} returned none")
+    return credentials.token
 
 
-@functools.cache
-def _supplied_audience(token: str) -> str:
-    """The ``aud`` claim of ``DCP_ID_TOKEN``."""
-    try:
-        return str(_claims(token, source=TOKEN_ENV)["aud"])
-    except KeyError as exc:
-        raise CloudRunAuthError(f"{TOKEN_ENV} has no aud claim") from exc
+def adc_id_token_credentials(audience: str, request: Request) -> IdTokenCredentials:
+    """ID token credentials for ``audience`` that suit the kind of Application Default
+    Credentials found. Raises ``CloudRunAuthError`` when those name no service account."""
+    import google.auth
+    from google.auth import compute_engine, impersonated_credentials
+    from google.oauth2 import service_account
+
+    # Unscoped, because impersonation scopes the source itself and a scoped external
+    # account would spend a token on looking up its project here.
+    source, _ = google.auth.default(request=request)
+    if isinstance(source, compute_engine.Credentials):
+        return compute_engine.IDTokenCredentials(
+            request, audience, use_metadata_identity_endpoint=True
+        )
+    if isinstance(source, service_account.Credentials):
+        return service_account.IDTokenCredentials(
+            signer=source.signer,
+            service_account_email=source.service_account_email,
+            # The key file's token endpoint, which the credentials keep only privately.
+            token_uri=source._token_uri,
+            target_audience=audience,
+        )
+    if isinstance(source, impersonated_credentials.Credentials):
+        target = source
+    elif email := getattr(source, "service_account_email", None):
+        target = impersonated_credentials.Credentials(
+            source_credentials=source,
+            target_principal=email,
+            # The constructor requires scopes. No access token is minted for the target.
+            target_scopes=[_CLOUD_PLATFORM_SCOPE],
+        )
+    else:
+        raise CloudRunAuthError(
+            f"cannot mint an ID token for {audience}: the default credentials name no "
+            f"service account. {MINTING_ROUTES}"
+        )
+    return impersonated_credentials.IDTokenCredentials(
+        target_credentials=target, target_audience=audience, include_email=True
+    )
 
 
-def _claims(token: str, *, source: str) -> dict:
-    """The claims of a JWT, read without verifying its signature."""
+def _expiry(token: str, *, audience: str) -> float:
+    """The ``exp`` claim of a JWT, read without verifying its signature."""
     try:
         payload = token.split(".")[1]
         claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-    except (IndexError, ValueError, binascii.Error) as exc:
-        raise CloudRunAuthError(f"{source} is not a readable JWT") from exc
-    if not isinstance(claims, dict):
-        raise CloudRunAuthError(f"{source} is not a readable JWT")
-    return claims
+        return float(claims["exp"])
+    except (IndexError, KeyError, TypeError, ValueError, binascii.Error) as exc:
+        raise CloudRunAuthError(f"the ID token minted for {audience} has no readable exp") from exc

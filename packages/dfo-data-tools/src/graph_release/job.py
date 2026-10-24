@@ -38,6 +38,11 @@ that overlap it end `lease_held`, so builds killed on every run raise the alert.
 
 It logs `graph_release_stale` while the newest import of any status has waited more than
 `STALE_SECONDS` for a release, unless the pointer is held.
+
+`--wait-for-lease`, which the deploy passes, runs the tick again every `_LEASE_POLL_SECONDS` while
+it ends `lease_held`, for up to `LEASE_WAIT_SECONDS`, and logs `graph_release_waiting` before the
+first wait. Each repeat reads everything afresh, so a run whose holder published its inputs ends
+`inputs_built`. Its task timeout must be `LEASE_WAIT_SECONDS + LEASE_TTL_SECONDS`.
 """
 
 from __future__ import annotations
@@ -54,7 +59,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from functools import cache
+from functools import cache, partial
 from importlib import resources
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -126,7 +131,16 @@ STATE_FILE: Final[str] = "builder_state.json"
 last unavailable inputs."""
 
 LEASE_TTL_SECONDS: Final[float] = 1800.0
-"""The job's task timeout. The lease has no renewal, so it lasts as long as a run can."""
+"""The job's task timeout. The lease has no renewal, so it lapses when the task timeout, counted
+from the run's start, would end the run, so it lasts as long as the run can."""
+
+_LEASE_POLL_SECONDS: Final[float] = 30.0
+"""How often a run started with `--wait-for-lease` runs the tick again while the lease is held."""
+
+LEASE_WAIT_SECONDS: Final[float] = LEASE_TTL_SECONDS + _LEASE_POLL_SECONDS
+"""How long a run started with `--wait-for-lease` waits for the lease: one lease and one poll, so
+a dead holder's lease lapses within the wait. Such a run's task timeout is this plus
+`LEASE_TTL_SECONDS`, so the build it starts at the end of the wait still has a full lease."""
 
 STALE_SECONDS: Final[float] = 1800.0
 """How long the newest import may wait for a release before `graph_release_stale`. It sits
@@ -336,23 +350,37 @@ def run(
     graph: Mixer,
     sdmx: SeriesReader,
     declarations: Declarations = DECLARATIONS,
+    wait_for_lease: bool = False,
     clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """One tick. Every outcome it classifies, a gate finding and an unavailable dependency
     included, returns, so the process exits 0; their log lines raise the alerts. A tick that
     published starts the search catalogue job when `settings.search_catalogue_job` names one.
+    With `wait_for_lease`, a tick that ends `lease_held` runs again every `_LEASE_POLL_SECONDS`
+    for up to `LEASE_WAIT_SECONDS`.
     Logs `graph_release_heartbeat` last, with outcome `error` and the exception type before
     re-raising anything the tick does not classify, which fails the execution."""
+    started = clock()
+    wait_seconds = LEASE_WAIT_SECONDS if wait_for_lease else 0.0
+    tick = partial(
+        _run,
+        settings,
+        database=database,
+        admin=admin,
+        graph=graph,
+        sdmx=sdmx,
+        declarations=declarations,
+        clock=clock,
+        lease_until=started + wait_seconds + LEASE_TTL_SECONDS,
+    )
     try:
-        result = _run(
-            settings,
-            database=database,
-            admin=admin,
-            graph=graph,
-            sdmx=sdmx,
-            declarations=declarations,
-            clock=clock,
-        )
+        result = tick()
+        if result.outcome == "lease_held" and wait_for_lease:
+            emit("graph_release_waiting", wait_seconds=wait_seconds)
+        while result.outcome == "lease_held" and clock() - started < wait_seconds:
+            sleep(_LEASE_POLL_SECONDS)
+            result = tick()
         if result.outcome == "published" and settings.search_catalogue_job:
             _start_search_catalogue(settings.search_catalogue_job, admin)
     except Exception as exc:
@@ -370,6 +398,7 @@ def _run(
     sdmx: SeriesReader,
     declarations: Declarations,
     clock: Callable[[], float],
+    lease_until: float,
 ) -> _Exit:
     key: ImportKey | None = None
     try:
@@ -390,6 +419,7 @@ def _run(
                 sdmx=sdmx,
                 declarations=declarations,
                 clock=clock,
+                lease_until=lease_until,
             )
     except _Unavailable as exc:
         result = _unavailable(exc)
@@ -415,6 +445,7 @@ def _tick(
     sdmx: SeriesReader,
     declarations: Declarations,
     clock: Callable[[], float],
+    lease_until: float,
 ) -> _Exit:
     if key.lock_owner is not None:
         return _skipped("ingestion_lock_held")
@@ -467,7 +498,9 @@ def _tick(
     try:
         build_id = new_build_id()
         with _needs(Dependency.BUCKET, *_BUCKET_ERRORS):
-            lease = acquire_lease(root, build_id=build_id, ttl_seconds=LEASE_TTL_SECONDS, now=clock)
+            lease = acquire_lease(
+                root, build_id=build_id, ttl_seconds=lease_until - clock(), now=clock
+            )
         if lease is None:
             if retrying:
                 # The lease holder is retrying these inputs, so the outage has not yet cleared.
@@ -935,6 +968,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         type=Path,
         help="publish under this local directory in place of GRAPH_RELEASE_URI",
     )
+    parser.add_argument(
+        "--wait-for-lease",
+        action="store_true",
+        help=f"while another run holds the lease, try again for up to {LEASE_WAIT_SECONDS:.0f}s",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     overrides = {"release_uri": args.local_dir.resolve().as_uri()} if args.local_dir else {}
@@ -955,7 +993,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     admin = CloudRunAdmin(service=settings.datacommons_service)
     with graph, sdmx, closing(admin):
-        run(settings, database=database, admin=admin, graph=graph, sdmx=sdmx)
+        run(
+            settings,
+            database=database,
+            admin=admin,
+            graph=graph,
+            sdmx=sdmx,
+            wait_for_lease=args.wait_for_lease,
+        )
 
 
 if __name__ == "__main__":
@@ -965,6 +1010,7 @@ if __name__ == "__main__":
 __all__ = [
     "BUILDER_MODULES",
     "LEASE_TTL_SECONDS",
+    "LEASE_WAIT_SECONDS",
     "STALE_SECONDS",
     "STATE_FILE",
     "STATE_WRITE_ATTEMPTS",

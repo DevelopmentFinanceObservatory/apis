@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pyarrow as pa
@@ -293,7 +294,7 @@ class Builder:
             max_part_bytes=self.max_part_bytes,
         )
 
-    def run(self) -> None:
+    def run(self, **options: Any) -> None:
         job.run(
             self.settings(),
             database=self.database,
@@ -301,7 +302,7 @@ class Builder:
             graph=self.mixer,
             sdmx=self.sdmx,
             declarations=SLICE_DECLARATIONS,
-            clock=self.now.timestamp,
+            **{"clock": self.now.timestamp, **options},
         )
 
     def events(self) -> list[dict]:
@@ -528,6 +529,62 @@ def test_a_held_lease_stops_the_tick(builder):
 
     assert _outcome(events) == "lease_held"
     assert _named(events, "graph_release_unavailable") == []
+    assert read_pointer(builder.root) is None
+
+
+def _run_waiting(
+    builder: Builder, sleep: Callable[[float], None], clock: Callable[[], float]
+) -> list[dict]:
+    builder.capsys.readouterr()
+    builder.run(wait_for_lease=True, clock=clock, sleep=sleep)
+    return builder.events()
+
+
+def test_a_waiting_run_builds_once_the_holder_releases_the_lease(builder, monkeypatch):
+    start = builder.now.timestamp()
+    elapsed = [0.0]
+    holder = acquire_lease(builder.root, build_id="other", ttl_seconds=600, now=lambda: start)
+    assert holder is not None
+
+    def sleep(seconds: float) -> None:
+        elapsed[0] += seconds
+        release_lease(builder.root, holder)
+
+    taken = []
+    acquire = job.acquire_lease
+
+    def acquiring(*args, **kwargs):
+        lease = acquire(*args, **kwargs)
+        taken.append(lease)
+        return lease
+
+    monkeypatch.setattr(job, "acquire_lease", acquiring)
+
+    events = _run_waiting(builder, sleep, clock=lambda: start + elapsed[0])
+
+    assert _outcome(events) == "published"
+    assert [e["wait_seconds"] for e in _named(events, "graph_release_waiting")] == [
+        job.LEASE_WAIT_SECONDS
+    ]
+    assert elapsed == [30.0]
+    # The lease lasts until the run's task timeout, the wait plus one build, ends it.
+    assert taken[0] is None
+    assert taken[1].expires_at == start + job.LEASE_WAIT_SECONDS + job.LEASE_TTL_SECONDS
+    assert builder.lease_free()
+
+
+def test_a_waiting_run_gives_up_after_one_lease_and_one_poll(builder):
+    start = builder.now.timestamp()
+    elapsed = [0.0]
+    acquire_lease(builder.root, build_id="other", ttl_seconds=10_000, now=lambda: start)
+
+    def sleep(seconds: float) -> None:
+        elapsed[0] += seconds
+
+    events = _run_waiting(builder, sleep, clock=lambda: start + elapsed[0])
+
+    assert _outcome(events) == "lease_held"
+    assert elapsed == [job.LEASE_WAIT_SECONDS]
     assert read_pointer(builder.root) is None
 
 

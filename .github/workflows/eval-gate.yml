@@ -5,7 +5,7 @@ name: Eval gate
 # merge would land on it. The changes job decides whether the PR touches
 # anything the eval reads. The run job is a matrix of EVAL_SHARDS shards on
 # parallel runners. Each shard builds an environment in each tree, stages the
-# deployed graph release and origin catalogue build
+# deployed graph release, origin catalogue and coverage builds
 # (scripts/stage_eval_data.py, read as the eval reader service account),
 # migrates one Postgres database per tree with that tree's dataset_store
 # migrations, serves both trees with the
@@ -84,6 +84,7 @@ env:
   # The deployed artifact roots, owned by the `apis` stack in `infra`. The eval
   # reader service account reads these buckets and nothing else.
   DEPLOYED_RELEASE_URI: gs://dfo-dev-graph-release-dev-fin-observatory/
+  DEPLOYED_COVERAGE_URI: gs://dfo-dev-coverage-dev-fin-observatory/
   DEPLOYED_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
   HEAD_PORT: "8100"
   BASE_PORT: "8101"
@@ -259,10 +260,16 @@ jobs:
           uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
           (cd "$BASE_DIR" && uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups)
 
-      # The graph service admits only callers holding roles/run.invoker. The ID
-      # token minted here for SEARCH_GRAPH_BASE reaches both apps as
-      # DCP_ID_TOKEN, which dfo_platform.cloud_run_auth sends to every *.run.app
-      # host. It lasts an hour, longer than the job's 45-minute timeout.
+      # The graph service admits only callers holding roles/run.invoker. This
+      # step writes the workload identity credentials that both apps read as
+      # Application Default Credentials. For each *.run.app host,
+      # dfo_platform.cloud_run_auth mints an ID token as the eval reader, which
+      # holds roles/iam.serviceAccountOpenIdTokenCreator on itself, and
+      # refreshes it before it expires. This tree ignores DCP_ID_TOKEN. The ID
+      # token minted here for SEARCH_GRAPH_BASE serves the base tree, whose
+      # cloud_run_auth still reads DCP_ID_TOKEN and cannot mint from these
+      # credentials; it goes with the coverage staging once the base branches
+      # carry the minter. It lasts an hour, longer than the job's timeout.
       - name: Authenticate to Google Cloud as the eval reader
         id: gcp
         uses: google-github-actions/auth@v3
@@ -311,12 +318,17 @@ jobs:
           # WAF bypass for the graph: CI runner IPs are datacenter ranges the
           # graph's bot protection challenges, and this header exempts them.
           SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
+          # For the base tree only; see the authentication step.
           DCP_ID_TOKEN: ${{ steps.gcp.outputs.id_token }}
           HEAD_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-head
           BASE_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-base
-          # The eval profile: every request reaches the engine and the LLM.
+          # The eval profile: every request reaches the engine and the LLM. A
+          # tree that serves coverage from the staged coverage build reads it
+          # without the code index check, since that tree's code index can
+          # differ from the build.
           SEARCH_RESPONSE_CACHE_ENABLED: "false"
           SEARCH_LLM_MEMO_MAX_BYTES: "0"
+          COVERAGE_INDEX_CHECK: "off"
           SEARCH_EXTRACT_STORE: "off"
           SHARD: ${{ matrix.shard.index }}
           # The Datasets surface, for its members door. Each app reads its own
@@ -348,6 +360,7 @@ jobs:
           staged="$(uv run python scripts/stage_eval_data.py \
             --checkout . --checkout "$BASE_DIR" --dest "$RUNNER_TEMP/eval-data" \
             --release-uri "$DEPLOYED_RELEASE_URI" \
+            --coverage-uri "$DEPLOYED_COVERAGE_URI" \
             --catalogue-uri "$DEPLOYED_CATALOGUE_URI")" || rc=$?
           if [ "$rc" -eq 3 ]; then
             echo "::error::A format root one of the trees reads has no deployed build; see the log above."
@@ -356,7 +369,8 @@ jobs:
           elif [ "$rc" -ne 0 ]; then
             exit "$rc"
           fi
-          # GRAPH_RELEASE_URI and ORIGIN_CATALOGUE_URI, for both apps and the driver.
+          # GRAPH_RELEASE_URI, ORIGIN_CATALOGUE_URI and, when a tree reads it,
+          # COVERAGE_ARTIFACT_URI, for both apps and the driver.
           while IFS="=" read -r name uri; do export "$name=$uri"; done <<< "$staged"
 
           # One database per tree, migrated by that tree's own migrations. The

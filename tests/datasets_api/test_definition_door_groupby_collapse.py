@@ -781,13 +781,14 @@ def test_a_head_hit_duplicate_key_pivot_refusal_names_the_varying_column_as_an_a
     ]
 
 
-@pytest.mark.parametrize("stored_frame", ["frame1", "canonical"])
-def test_a_groupby_link_past_retention_re_renders_from_its_base_frame_and_redirects(
+@pytest.mark.parametrize("stored_frame", ["own", "base-frame1", "base-canonical"])
+def test_a_groupby_link_past_retention_re_renders_from_a_stored_frame_and_redirects(
     stored_frame: str,
 ):
-    """A collapse's rendering whose object is gone re-renders from the base version's frame,
-    a canonical frame or a frame1 document alone, as its mint did, never by collapsing the
-    collapsed frame again, and the identical bytes renew the clicked digest, which
+    """A collapse's rendering whose object is gone re-renders from the collapse's own stored
+    frame, never by collapsing the collapsed frame again. With that frame's object gone too,
+    it re-renders from the base version's frame, a canonical frame or a frame1 document alone,
+    as its mint did. Either way the identical bytes renew the clicked digest, which
     redirects."""
     version_store = FakeVersionRecordDatasetStore()
     store = _RenewingArtifactStore(inventory=LiveArtifactInventory(store=version_store))
@@ -809,14 +810,16 @@ def test_a_groupby_link_past_retention_re_renders_from_its_base_frame_and_redire
             "WHERE subject_id = %s AND content_version = %s",
             (spec_id, fresh["content_version"]),
         )
-        base_frame = tx.fetch_one(
-            "SELECT artifact_digest FROM datasets.version_artifact "
-            "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
-            (spec_id, base["base_content_version"], rendering_key(CANONICAL_FRAME_RENDERING)),
+        own_frame, base_frame = (
+            tx.fetch_one(
+                "SELECT artifact_digest FROM datasets.version_artifact "
+                "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
+                (spec_id, content_version, rendering_key(CANONICAL_FRAME_RENDERING)),
+            )["artifact_digest"]
+            for content_version in (fresh["content_version"], base["base_content_version"])
         )
-    base_frame_digest = base_frame["artifact_digest"]
-    if stored_frame == "frame1":
-        base_frame_digest = link_frame1_only(
+    if stored_frame == "base-frame1":
+        base_frame = link_frame1_only(
             version_store,
             store,
             subject_id=spec_id,
@@ -828,12 +831,15 @@ def test_a_groupby_link_past_retention_re_renders_from_its_base_frame_and_redire
             (datetime.now(UTC) - timedelta(days=31),),
         )
     del store._objects[(csv["artifact_digest"], Tier.working.value)]
+    if stored_frame != "own":
+        del store._objects[(own_frame, Tier.working.value)]
 
     resp = client.get(csv["url"], follow_redirects=False)
 
     assert resp.status_code == 302, resp.text
+    rendered_from = own_frame if stored_frame == "own" else base_frame
     assert store.renewals[:2] == [
-        f"{base_frame_digest}#r1",
+        f"{rendered_from}#r1",
         f"{csv['artifact_digest']}#r1",
     ]
     assert resp.headers["location"] == f"fake://artifact/working/{csv['artifact_digest']}#r1"
