@@ -140,8 +140,9 @@ class SlotBindingDraft(BaseModel):
     # refute it (`phase_election._validate_sole_option_bindings`), so the walk of the
     # family reads the slot open and confirms or refutes the claim
     # (`phase_place_materialise._judge_sampled_claims`). False for a claim the whole family
-    # backs and for every draft the validator did not judge. Left out of the schema and of
-    # every dump, as `drafted_by` is.
+    # backs, for one the value an unexported family is told apart by backs
+    # (`bound_values.bind_shared_values`), and for every draft the validator did not judge.
+    # Left out of the schema and of every dump, as `drafted_by` is.
     sampled: SkipJsonSchema[bool] = Field(default=False, exclude=True)
 
     @model_validator(mode="after")
