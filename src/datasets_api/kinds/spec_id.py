@@ -481,7 +481,6 @@ def serve_mint(
         async_max_rows=deps.settings.async_max_rows,
         async_max_requests=deps.settings.async_max_requests,
         members=[request.stat_var for request in requests],
-        rejected_head=served.head,
     )
     return serve_current(
         stored,

@@ -51,12 +51,15 @@ _INVOKER = "worker-invoker@example.iam.gserviceaccount.com"
 _PRINCIPAL = "e2e-test-principal"
 
 
-def _sdmx_transport(requests: list[httpx.Request]):
+def _sdmx_transport(requests: list[httpx.Request], body: Callable[[], str] = lambda: _CSV_BODY):
+    """Answers every SDMX request with `body()`, read per request so a test can change the
+    data between runs."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(
             200,
-            text=_CSV_BODY,
+            text=body(),
             headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
         )
 
@@ -252,6 +255,54 @@ def test_a_resubmit_after_the_head_aged_out_restarts_the_done_operation(
     assert polled.json()["manifest"]["content_version"].startswith("cv_")
     rebuilt = operation_store.get(operation_id)
     assert rebuilt is not None and rebuilt.confirmed_at == clock["t"]
+
+
+def test_a_resubmit_after_another_rendering_moved_the_head_serves_the_new_head(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Rendering A completes at V1. The head ages out, the data changes, and rendering B's
+    operation rebuilds the head to V2, which does not link A. A resubmit of A resets its done
+    operation, so the 202 reads pending and the poll serves V2. Before, the 202 read done and
+    the poll served V1."""
+    clock = {"t": datetime(2026, 10, 24, tzinfo=UTC)}
+    data = {"body": _CSV_BODY}
+    runs: list[Callable[[], None]] = []
+    api_client, _operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(
+            base_url=_BASE_URL, transport=_sdmx_transport([], lambda: data["body"])
+        ),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+        deferred=runs,
+    )
+    monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+    body_a = {**_HAPPY_PATH_BODY, "options": {"bundle": False}}
+    body_b = {**_HAPPY_PATH_BODY, "options": {"bundle": False, "format": "parquet"}}
+
+    first_a = api_client.post("/api/datasets", json=body_a)
+    assert first_a.status_code == 202, first_a.text
+    runs.pop()()
+    op_a = first_a.json()["operation"]["operation_id"]
+    v1 = api_client.get(first_a.headers["location"]).json()["manifest"]["content_version"]
+
+    clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 1)
+    data["body"] = _CSV_BODY.replace(",2016,2000,", ",2016,3000,")
+    first_b = api_client.post("/api/datasets", json=body_b)
+    assert first_b.status_code == 202, first_b.text
+    runs.pop()()
+    v2 = api_client.get(first_b.headers["location"]).json()["manifest"]["content_version"]
+    assert v2 != v1
+
+    again_a = api_client.post("/api/datasets", json=body_a)
+
+    assert again_a.status_code == 202, again_a.text
+    assert again_a.json()["operation"]["status"] == "pending"
+    assert forwarded[-1] == (op_a, 1)
+    runs.pop()()
+    polled = api_client.get(again_a.headers["location"])
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["manifest"]["content_version"] == v2
 
 
 def _rendered(manifest: dict) -> list[tuple[str, str]]:

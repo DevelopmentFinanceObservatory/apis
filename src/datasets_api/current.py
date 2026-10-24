@@ -1419,10 +1419,8 @@ def _admitted_ceiling(
     deps: DefinitionDeps,
     coverage_snapshot: CoverageSnapshot,
     admitted: Estimate | None,
-    rejected_head: SubjectHead | None,
 ) -> int:
-    """Admit a materialisation and return its raw-fetch guard (`serve_current`). `rejected_head`
-    is the head this rebuild replaces, for `submit_over_budget`."""
+    """Admit a materialisation and return its raw-fetch guard (`serve_current`)."""
     if admitted is not None:
         return raw_fetch_guard(admitted, floor=deps.ceiling)
     estimate = sync_estimate(
@@ -1457,7 +1455,6 @@ def _admitted_ceiling(
         async_max_rows=deps.settings.async_max_rows,
         async_max_requests=deps.settings.async_max_requests,
         members=[request.stat_var for request in requests],
-        rejected_head=rejected_head,
     )
     return raw_fetch_guard(estimate, floor=deps.ceiling)
 
@@ -1492,7 +1489,6 @@ def _materialise_and_record(
             deps=deps,
             coverage_snapshot=coverage_snapshot,
             admitted=admitted,
-            rejected_head=expected_head,
         )
         with bound_variable_breadth(deps.variable_breadth, refuse_unread=True):
             return serve_definition(
