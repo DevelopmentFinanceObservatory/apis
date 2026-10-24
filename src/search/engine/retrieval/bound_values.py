@@ -2241,6 +2241,21 @@ class WalkedMembers:
         asked (`asked`)."""
         return walk_key(query) in (self.key, self.asked)
 
+    def binding(self, prop: str, slot: SlotBinding) -> WalkedMembers:
+        """These members keyed with `prop` bound by `slot`, for a walk that read `prop`
+        open and whose every member asserts the value `slot` binds. The walk of the query
+        binding it admits exactly those members, so it settles the same members and
+        family."""
+
+        def bound(key: WalkKey) -> WalkKey:
+            five_tuple, slots, role_keys, open_role_keys = key
+            rebound = {**dict(slots), prop: _walked_binding(slot)}
+            return five_tuple, tuple(sorted(rebound.items())), role_keys, open_role_keys
+
+        return replace(
+            self, key=bound(self.key), asked=None if self.asked is None else bound(self.asked)
+        )
+
 
 def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> StatedMembers | None:
     """What a Datasets mint of `identity`, a described identity, states of its members, when

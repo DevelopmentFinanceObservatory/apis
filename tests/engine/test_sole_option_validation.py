@@ -164,6 +164,7 @@ def test_a_sole_option_claim_on_an_index_family_stands_only_when_every_row_asser
 
     assert (validated == binding) is kept
     assert validated.kind == ("value" if kept else "unbound")
+    assert validated.sampled is False
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +245,7 @@ def test_a_sole_option_claim_on_a_held_family_stands_only_when_every_member_asse
 
     assert (validated == binding) is kept
     assert validated.kind == ("value" if kept else "unbound")
+    assert validated.sampled is False
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +373,8 @@ def test_a_sole_option_claim_on_a_recalled_sample_falls_to_a_total_lacking_the_v
     the total. A sample that splits on what a flow is net of holds no total, and the net
     transfers member stating no concessionality is the reading without one beside the
     member that states it. The shape holds no held family and the index carries none of
-    its rows."""
+    its rows, so a claim the sample does not refute stands marked sampled, for the walk of
+    the family to judge."""
     shape = replace(
         _shape("UnindexedFlow"),
         slot_keys=(
@@ -399,8 +402,9 @@ def test_a_sole_option_claim_on_a_recalled_sample_falls_to_a_total_lacking_the_v
 
     *_, validated = _validate_sole_option_bindings([*stated, binding], shape)
 
-    assert (validated == binding) is kept
-    assert validated.kind == ("value" if kept else "unbound")
+    assert (validated.kind, validated.value_dcids, validated.sampled) == (
+        ("value", ["IDSConcessional"], True) if kept else ("unbound", [], False)
+    )
 
 
 # ---------------------------------------------------------------------------

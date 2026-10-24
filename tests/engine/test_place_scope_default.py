@@ -42,7 +42,11 @@ from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs, member_walk_reader
+from tests.engine._harness import (
+    materialise_double_from_obs,
+    member_walk_reader,
+    with_member_arcs,
+)
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._scope_availability import ScopeAvailability
@@ -78,6 +82,26 @@ class _FixedBindLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(0, also_plausible=None), None
+
+
+class _OpenSlotsBindLLM:
+    """Elects the sole candidate shape and drafts each slot of `properties` unbound, as a
+    reply that names no value of them does."""
+
+    def __init__(self, *properties: str) -> None:
+        self.properties = properties
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
+        assert schema.__name__ == "_UniversalBindOutput"
+        drafts = [
+            SlotBindingDraft(axis="how", property_dcid=prop, kind="unbound")
+            for prop in self.properties
+        ]
+        return elected_reply(0, bindings=drafts, also_plausible=None), None
 
 
 class _CountingFakeGraph(FakeGraph):
@@ -999,10 +1023,18 @@ def test_a_shape_with_a_total_and_its_part_is_scoped_over_the_total_its_mint_ser
     assert _scope_messages(result) == {None: _EVERY_PLACE_MESSAGE}
 
 
-def test_a_recalled_part_answers_as_the_total_its_mint_serves():
+@pytest.mark.parametrize(
+    "llm",
+    [_FixedBindLLM(), _OpenSlotsBindLLM("gender")],
+    ids=["slot-left-out", "slot-drafted-unbound"],
+)
+def test_a_recalled_part_answers_as_the_total_its_mint_serves(llm):
     """Recall holds the female part alone and `gender` stays unbound. The mint resolves the
     emitted identity by its walk to the total and its part, and serves the total, so the
-    answer lists the total and is scoped over the total's own country."""
+    answer lists the total and is scoped over the total's own country. A reply drafting
+    `gender` unbound leaves a slot whose sampled taxonomy holds `Female` alone, so the
+    engine claims it from the sample, and the walk, which reads the family with the claim
+    open, refutes it on the total."""
     graph = FakeGraph(
         nodes=_TOTAL_AND_PART_NODES,
         detect={_DETECT_QUERY: {"svs": [_SV_FEMALE], "cosine_scores": [0.9]}},
@@ -1015,7 +1047,7 @@ def test_a_recalled_part_answers_as_the_total_its_mint_serves():
     )
     member_graph = member_walk_reader(graph)
 
-    result = _run(graph=graph, sdmx=_scope_sdmx(graph), materialise_graph=member_graph)
+    result = _run(graph=graph, llm=llm, sdmx=_scope_sdmx(graph), materialise_graph=member_graph)
 
     assert result.status == "definite", result.no_data_reason
     (spec,) = result.specs
@@ -1068,7 +1100,9 @@ class _ProbeLogGraph(FakeGraph):
         return super().observation_facets_batch(stat_vars, entities, needs_dates=needs_dates)
 
 
-@pytest.mark.parametrize("answer", ["elected", "alternate", "lone_alternate"])
+@pytest.mark.parametrize(
+    "answer", ["elected", "elected_slots_drafted", "alternate", "lone_alternate"]
+)
 def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatch):
     """The shape serves two members neither of which dominates the other: `_U_FEMALE` holds
     data in A1 and `_U_OVER65` in A2. The shape answers as the elected one, as an alternate
@@ -1077,7 +1111,12 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
     leaves both open and serves both, each counted at its own country; an alternate binds
     `_U_FEMALE`'s constraint, so it shows that member, counts its own country alone, and the
     lone alternate previews its series there. The elected answer's two places preview
-    through a scope-wide SDMX read, which this test's SDMX double holds no rows for."""
+    through a scope-wide SDMX read, which this test's SDMX double holds no rows for. A reply
+    drafting `gender` and `age` unbound leaves each a slot whose sampled taxonomy holds one
+    value, so the engine claims both from the sample, and the walk over the members' arcs,
+    which reads the family with both claims open, refutes each on the member that asserts
+    the other."""
+    elected = answer in ("elected", "elected_slots_drafted")
 
     def facet(year: str) -> list[dict]:
         return [
@@ -1092,7 +1131,7 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
 
     obs = {f"{_U_FEMALE}|country/A1": facet("2020"), f"{_U_OVER65}|country/A2": facet("2021")}
     svs, scores = [_U_FEMALE, _U_OVER65], [0.9, 0.89]
-    if answer != "elected":
+    if not elected:
         svs, scores = [_SV_B, *svs], [0.95, *scores]
     if answer == "alternate":
         obs[f"{_SV_B}|country/A3"] = facet("2021")
@@ -1117,10 +1156,15 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
         children=_EARTH_CHILDREN,
     )
     materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
+    if answer == "elected_slots_drafted":
+        materialise_graph = with_member_arcs(materialise_graph, graph)
 
     result = _run(
         graph=graph,
-        llm=_FixedBindLLM() if answer == "elected" else _CandidatesBindLLM(),
+        llm={
+            "elected": _FixedBindLLM(),
+            "elected_slots_drafted": _OpenSlotsBindLLM("gender", "age"),
+        }.get(answer, _CandidatesBindLLM()),
         sdmx=_scope_sdmx(graph),
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
@@ -1133,7 +1177,7 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
     spec = next(spec for spec in result.specs if spec.resolved.members[0].ref.ref == _U_FEMALE)
     members, places = (
         ([_U_FEMALE, _U_OVER65], ["country/A1", "country/A2"])
-        if answer == "elected"
+        if elected
         else ([_U_FEMALE], ["country/A1"])
     )
     assert [sv.ref.ref for sv in spec.resolved.members] == members

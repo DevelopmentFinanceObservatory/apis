@@ -2992,8 +2992,11 @@ def test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go(monkeypat
     declares a creditor where the others declare the debtor alone. Every member conflicts
     on a sole-option draft, so all three go, and the members left under the named value
     declare role sets the election cannot order: the part refuses
-    `role_signature_incompatible`, as the mint refuses the identity, with no draft still
-    bound and no value refused on."""
+    `role_signature_incompatible`, as the mint refuses the identity, and no value is refused
+    on. The recalled sample does not refute the drafts, so each stands as a sampled claim.
+    The walk reads every sampled claim open, meets those role sets at once and refuses
+    with nothing unbound. With no walk the read unbinds all three drafts, leaving no draft
+    bound."""
     nodes = {
         _RELAX_BONDS: _node(
             "External debt stocks, bonds",
@@ -3028,12 +3031,14 @@ def test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go(monkeypat
     assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
     assert result.flagged_match is None
     assert not result.unbound_qualifiers
-    (state,) = states
-    assert {
-        b.property_dcid: b.value_dcids
-        for b in state.bindings
-        if b.kind == "value" and b.property_dcid is not None
-    } == {"positionType": ["AmountOutstanding"]}
+    assert [
+        {
+            b.property_dcid: b.value_dcids
+            for b in state.bindings
+            if b.kind == "value" and b.property_dcid is not None
+        }
+        for state in states
+    ] == ([] if walked else [{"positionType": ["AmountOutstanding"]}])
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walk-point", "read"])
