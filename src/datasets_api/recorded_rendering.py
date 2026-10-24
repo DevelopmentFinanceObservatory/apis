@@ -13,6 +13,9 @@ the options and counts as a requested-format file.
 The frame refresh (`datasets_api.doors.refresh`), the versions list
 (`datasets_api.doors.versions`) and the description backfill (`datasets_api.maintenance`) resolve
 a version's options here.
+
+`serving_frames` is the one rule for which stored frames serve a version and how a render reads
+each, from the version record and the renderings linked under it.
 """
 
 from __future__ import annotations
@@ -22,9 +25,11 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 
+from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.mint_models import GroupbyOptions
 from datasets_api.party_totals import TRACE_KEY
 from datasets_api.render import (
+    FrameMode,
     is_canonical_frame_rendering,
     is_frame1_rendering,
     is_statistics_rendering,
@@ -97,10 +102,63 @@ def derived_version_sums(
     return any(minting.groupby is not None for minting in recorded_mintings(renderings))
 
 
+@dataclass(frozen=True)
+class ServingFrame:
+    """A stored frame that can serve a version: the frame stored under `content_version`,
+    which a render reads as `mode` says."""
+
+    content_version: str
+    mode: FrameMode
+
+
+def serving_frames(
+    version: StoredVersion, *, renderings: Iterable[Mapping[str, object]]
+) -> tuple[ServingFrame, ...]:
+    """The stored frames that can serve `version`, in the order a reader tries them, of the
+    version record and the `renderings` of the files linked under it alone.
+
+    A raw version is served by its own frame (`FrameMode.RAW`). A derived version is served by
+    its own frame when the record says what that frame holds (`own_frame_mode`), then by its
+    base version's frame (`FrameMode.RAW`), from which every derived version renders anew."""
+    base = version.base_content_version
+    if base is None:
+        return (ServingFrame(content_version=version.content_version, mode=FrameMode.RAW),)
+    base_frame = ServingFrame(content_version=base, mode=FrameMode.RAW)
+    own_mode = own_frame_mode(version, renderings=renderings)
+    if own_mode is None:
+        return (base_frame,)
+    return (ServingFrame(content_version=version.content_version, mode=own_mode), base_frame)
+
+
+def own_frame_mode(
+    version: StoredVersion, *, renderings: Iterable[Mapping[str, object]]
+) -> FrameMode | None:
+    """What derived `version`'s own frame holds, or `None` when the record cannot say.
+
+    `StoredVersion.frame_summed` says it when recorded. Without it, a version whose trace names
+    no party totals left out is a collapse alone, so its frame is the collapse. A party-totals
+    cut linking a file minted with no groupby is the cut frame, since that file's render minted
+    the cut frame as this version. A cut whose files all record a groupby, or record no minting
+    options, holds the collapse when the groupby summed and the cut frame when it did not, and
+    the record does not say which."""
+    if version.frame_summed is not None:
+        return FrameMode.SUMMED if version.frame_summed else FrameMode.CUT
+    # Only a dataset version names a base.
+    assert isinstance(version.facts, ManifestFacts)
+    if TRACE_KEY not in version.facts.trace:
+        return FrameMode.SUMMED
+    if any(minting.groupby is None for minting in recorded_mintings(renderings)):
+        return FrameMode.CUT
+    return None
+
+
 __all__ = [
     "MintingOptions",
+    "ServingFrame",
     "derived_version_sums",
+    "own_frame_mode",
     "recorded_minting",
     "recorded_mintings",
     "records_plain_file",
+    "serving_frames",
 ]

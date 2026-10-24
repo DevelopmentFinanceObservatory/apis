@@ -82,6 +82,28 @@ failed transiently and left for the next run. It exits 1 when the store is unrea
 it read no version and at least one failed for a cause a retry clears (`_clears_on_retry`).
 It reads the settings `sweep` reads.
 
+`backfill-frame-summed` runs by hand once the deploy that applies migration 0038 has moved the
+services to the new image, since the previous image records derived rows without `frame_summed`
+until then. A later run is safe and fills any row the previous image wrote after an earlier one.
+It fills `frame_summed` on each derived version row recorded without it whose record cannot say
+what its own frame holds (`recorded_rendering.own_frame_mode`): a party-totals cut minted with a
+groupby, which otherwise renders from its base frame alone. It reads the base version's stored
+frame from any tier holding its bytes, cuts it as the version's trace recorded
+(`party_totals_left_out`) and hashes the cut frame. A frame is the version's own when its hash
+equals the version's `frame_sha256`, or when the version minted from that hash
+(`mint_version_from_digest`) is the row's `content_version`, which a derived version mints from
+its frame hash alone, so a row recorded before versions stored the hash matches too. The cut
+frame being the version's own sets `frame_summed` false. Otherwise it collapses the cut frame by
+each groupby the version's files record, under the served graph release's code index, and the
+collapse being the version's own sets it true. A row whose base frame no tier holds, or which
+neither frame matches, as after a code index change, stays NULL. Rows are read
+`FRAME_SUMMED_PAGE` at a time, and the update holds each row to `frame_summed IS NULL`, so no
+run changes a value already set. It writes one `datasets_frame_summed_backfill_failed` `ERROR`
+line per version that fails and one `datasets_frame_summed_backfilled` line counting each
+`FrameSummedOutcome` and the failures, exits 1 when any version failed, and reads the settings
+`sweep` reads. No deploy runs it, since a row that stays NULL would be read and cut again on
+every deploy.
+
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
 of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
 """
@@ -94,6 +116,7 @@ import sys
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
+from enum import StrEnum
 from functools import partial
 from typing import cast
 
@@ -125,8 +148,10 @@ from dataset_store.snapshot import (
     WORKING_TIER_RETENTION,
     FrameLineage,
     LiveSnapshotReader,
+    ManifestFacts,
     StoredArtifactLocation,
     StoredVersion,
+    VersionState,
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
@@ -138,20 +163,32 @@ from datasets_api.description_store import (
     validated_record,
 )
 from datasets_api.lineage_continuations import derived_continuations, lineage_inputs
+from datasets_api.manifest import provenance_refs_of
+from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.operation_store import (
     Clock,
     delete_terminal_operations,
     fail_abandoned_operations,
     utc_now,
 )
+from datasets_api.party_totals import TRACE_KEY as PARTY_TOTALS_TRACE_KEY
+from datasets_api.party_totals import PartyTotalsCut, cut_frame
 from datasets_api.reconciliation import sweep
-from datasets_api.recorded_rendering import derived_version_sums
+from datasets_api.recorded_rendering import (
+    derived_version_sums,
+    own_frame_mode,
+    recorded_mintings,
+)
 from datasets_api.render import (
     CANONICAL_FRAME_RENDERING,
+    FrameMode,
+    entity_roles,
+    groupby_collapse_sha256,
     is_statistics_rendering,
     render_and_store_canonical_frame,
     stored_frame_location,
 )
+from datasets_api.serve import refs_from_resolved_stat_vars
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
@@ -159,6 +196,7 @@ from description.facts import SCHEMA_VERSION, DescriptionRecord
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
+from materialise.content_version import mint_version_from_digest
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
@@ -169,6 +207,7 @@ from materialise.formats import (
     write_frame1,
 )
 from materialise.frame_build import build_frame, unit_cell_for_rebuild
+from materialise.reshape import RollupNotSummableError
 from materialise.statistics import (
     SERIES_STATISTICS_SCHEMA,
     SeriesFigures,
@@ -768,11 +807,7 @@ def run_backfill_descriptions(
                 recorded_at=recorded_at,
                 backfilled_at=backfilled_at,
                 base=base,
-                summed=isinstance(state.version.facts, FrameLineage)
-                or derived_version_sums(
-                    state.version.facts.trace,
-                    (location.rendering for location in state.locations),
-                ),
+                summed=_version_sums(state),
             )
             with store.transaction() as tx:
                 written = insert_description(tx, record, recorded_at=backfilled_at)
@@ -816,6 +851,21 @@ def run_backfill_descriptions(
     return 0 if read else transient
 
 
+def _version_sums(state: VersionState) -> bool:
+    """Whether the version `state` holds sums its definition's variables, as a backfilled
+    record states it: a published frame always, a derived version as the frames that serve it
+    read its own frame (`recorded_rendering.own_frame_mode`), and one whose record cannot say
+    as the files linked under it read (`recorded_rendering.derived_version_sums`)."""
+    version = state.version
+    if isinstance(version.facts, FrameLineage) or version.base_content_version is None:
+        return True
+    renderings = [location.rendering for location in state.locations]
+    mode = own_frame_mode(version, renderings=renderings)
+    if mode is not None:
+        return mode is FrameMode.SUMMED
+    return derived_version_sums(version.facts.trace, renderings)
+
+
 def _base_record(store: DatasetStore, version: StoredVersion) -> DescriptionRecord | None:
     """The record of the version `version` collapses, `None` when it collapses none or its
     base holds no record."""
@@ -832,6 +882,200 @@ def _backfill_descriptions() -> int:
     with bound_served_release(get_release_service()):
         return _run_over_artifacts(
             "backfill-descriptions", partial(run_backfill_descriptions, code_index=get_index())
+        )
+
+
+class FrameSummedOutcome(StrEnum):
+    """What `run_backfill_frame_summed` found for one derived version holding no
+    `frame_summed`. `SUMMED` and `CUT` are set on the row; every other outcome leaves it NULL."""
+
+    SUMMED = "summed"
+    """The version's frame is its recorded groupby's collapse of the cut (`_is_own_frame`)."""
+    CUT = "cut"
+    """The version's frame is its base frame less its recorded cut (`_is_own_frame`)."""
+    UNMATCHED = "unmatched"
+    """Neither frame is the version's own, as when the code index changed since the mint."""
+    BASE_FRAME_GONE = "base_frame_gone"
+    """No tier holds the bytes of the base version's stored frame."""
+    OWN_FRAME_KNOWN = "own_frame_known"
+    """The record already says what the version's own frame holds
+    (`recorded_rendering.own_frame_mode`), so the row is left alone."""
+
+
+FRAME_SUMMED_PAGE = 100
+"""Derived version rows `run_backfill_frame_summed` reads per query."""
+
+
+def _derived_versions_without_frame_summed(
+    store: DatasetStore, *, after: tuple[str, str]
+) -> list[tuple[str, str]]:
+    """`(subject_id, content_version)` of up to `FRAME_SUMMED_PAGE` derived version rows
+    holding no `frame_summed`, past `after` in key order."""
+    with store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, content_version FROM datasets.version_record "
+            "WHERE base_content_version IS NOT NULL AND frame_summed IS NULL "
+            "AND (subject_id, content_version) > (%s, %s) "
+            "ORDER BY subject_id, content_version LIMIT %s",
+            (*after, FRAME_SUMMED_PAGE),
+        )
+    return [(str(row["subject_id"]), str(row["content_version"])) for row in rows]
+
+
+def _is_own_frame(version: StoredVersion, *, frame_sha256: str) -> bool:
+    """Whether the frame hashing to `frame_sha256` is derived `version`'s own: the hash it
+    records, or the hash its `content_version` was minted from, alone."""
+    if version.frame_sha256 is not None and frame_sha256 == version.frame_sha256:
+        return True
+    return mint_version_from_digest(frame_sha256) == version.content_version
+
+
+def _matched_frame_summed(
+    version: StoredVersion,
+    *,
+    renderings: Sequence[Mapping[str, object]],
+    base_frame: Frame,
+    code_index: CodeIndex,
+) -> FrameSummedOutcome:
+    """Match `version`'s frame (`_is_own_frame`) against `base_frame` less the party cut its
+    trace records (`CUT`), else against a groupby its files record collapsing the cut frame
+    (`SUMMED`), else `UNMATCHED`. The cut replays the trace's entries, so a party classified
+    otherwise since the mint cuts as it did then. The collapse reads `code_index`."""
+    # Only a dataset version names a base.
+    assert isinstance(version.facts, ManifestFacts)
+    trace = version.facts.trace
+    entity_columns = entity_roles(frame_entity_columns(base_frame.columns))
+    cut = cut_frame(
+        lambda: iter((base_frame,)),
+        PartyTotalsCut.of_trace_entries(
+            cast("list[Mapping[str, object]]", trace[PARTY_TOTALS_TRACE_KEY])
+        ),
+        role_columns=entity_columns,
+    )
+    if _is_own_frame(version, frame_sha256=cut.frame_sha256):
+        return FrameSummedOutcome.CUT
+    groupbys: list[GroupbyOptions] = []
+    for minting in recorded_mintings(renderings):
+        if minting.groupby is not None and minting.groupby not in groupbys:
+            groupbys.append(minting.groupby)
+    for groupby in groupbys:
+        try:
+            collapsed = groupby_collapse_sha256(
+                cut.frame_chunks,
+                options=MintOptions(groupby=groupby, without_party_totals=True),
+                code_index=code_index,
+                entity_columns=entity_columns,
+                resolved_stat_var_refs=refs_from_resolved_stat_vars(
+                    cast("list[Mapping[str, object]]", trace.get("resolved_stat_vars", []))
+                ),
+                provenance_refs=provenance_refs_of(
+                    cast("list[Mapping[str, object]]", trace.get("facets", []))
+                ),
+                subject_id=version.subject_id,
+            )
+        except RollupNotSummableError:
+            # Under `code_index` the groupby does not sum this frame.
+            continue
+        if collapsed is not None and _is_own_frame(version, frame_sha256=collapsed):
+            return FrameSummedOutcome.SUMMED
+    return FrameSummedOutcome.UNMATCHED
+
+
+def _backfill_frame_summed_of(
+    subject_id: str,
+    content_version: str,
+    *,
+    store: DatasetStore,
+    reader: LiveSnapshotReader,
+    artifact_store: ArtifactStore,
+    code_index: CodeIndex,
+) -> FrameSummedOutcome | None:
+    """Set `frame_summed` on one derived version row when its frame hash matches
+    (`_matched_frame_summed`), and return the outcome, `None` for a row no longer recorded."""
+    state = reader.read_version_state(subject_id, content_version)
+    if state is None:
+        return None
+    version = state.version
+    renderings = [location.rendering for location in state.locations]
+    if own_frame_mode(version, renderings=renderings) is not None:
+        return FrameSummedOutcome.OWN_FRAME_KNOWN
+    assert version.base_content_version is not None
+    base_frame = _stored_frame(
+        artifact_store,
+        reader.read_artifact_locations(subject_id, version.base_content_version),
+    )
+    if base_frame is None:
+        return FrameSummedOutcome.BASE_FRAME_GONE
+    outcome = _matched_frame_summed(
+        version, renderings=renderings, base_frame=base_frame, code_index=code_index
+    )
+    if outcome in (FrameSummedOutcome.SUMMED, FrameSummedOutcome.CUT):
+        with store.transaction() as tx:
+            tx.execute(
+                "UPDATE datasets.version_record SET frame_summed = %s "
+                "WHERE subject_id = %s AND content_version = %s AND frame_summed IS NULL",
+                (outcome is FrameSummedOutcome.SUMMED, subject_id, content_version),
+            )
+    return outcome
+
+
+def run_backfill_frame_summed(
+    *, store: DatasetStore, artifact_store: ArtifactStore, code_index: CodeIndex
+) -> int:
+    """Set `frame_summed` on every derived version row holding none whose frame hash a re-cut
+    of its base frame, or a collapse of that cut, reproduces, emit the count of each
+    `FrameSummedOutcome`, and return the number of versions that failed.
+
+    Rows are read `FRAME_SUMMED_PAGE` at a time in key order. The update holds the row to
+    `frame_summed IS NULL`, so a second run, or a row the previous image left, changes no value
+    already set. A version that fails is logged with its traceback and left NULL."""
+    reader = LiveSnapshotReader(store=store)
+    counts = dict.fromkeys(FrameSummedOutcome, 0)
+    failed = 0
+    after = ("", "")
+    while True:
+        page = _derived_versions_without_frame_summed(store, after=after)
+        for subject_id, content_version in page:
+            try:
+                outcome = _backfill_frame_summed_of(
+                    subject_id,
+                    content_version,
+                    store=store,
+                    reader=reader,
+                    artifact_store=artifact_store,
+                    code_index=code_index,
+                )
+            except Exception as exc:
+                # A version that fails is skipped and the run carries on with the others.
+                failed += 1
+                emit(
+                    "datasets_frame_summed_backfill_failed",
+                    severity="ERROR",
+                    subject_id=subject_id,
+                    content_version=content_version,
+                    error=f"{type(exc).__name__}: {exc}",
+                    traceback=traceback.format_exc(),
+                )
+                continue
+            if outcome is not None:
+                counts[outcome] += 1
+        if len(page) < FRAME_SUMMED_PAGE:
+            break
+        after = page[-1]
+    emit(
+        "datasets_frame_summed_backfilled",
+        **{outcome.value: count for outcome, count in counts.items()},
+        failed=failed,
+        code_index=code_index.stamp.content_hash,
+    )
+    return failed
+
+
+def _backfill_frame_summed() -> int:
+    # The run reads one code index, the served graph release's.
+    with bound_served_release(get_release_service()):
+        return _run_over_artifacts(
+            "backfill-frame-summed", partial(run_backfill_frame_summed, code_index=get_index())
         )
 
 
@@ -855,6 +1099,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "backfill-descriptions",
         help="write a description record for every version made before records existed",
     ).set_defaults(run=_backfill_descriptions)
+    tasks.add_parser(
+        "backfill-frame-summed",
+        help="record whether each derived version recorded without it stores its collapse",
+    ).set_defaults(run=_backfill_frame_summed)
     args = parser.parse_args(argv)
     return args.run()
 

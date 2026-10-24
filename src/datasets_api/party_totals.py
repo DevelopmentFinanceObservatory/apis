@@ -20,8 +20,9 @@ holds one chunk at a time.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -69,6 +70,19 @@ class PartyTotalsCut:
     the sorted refs of the totals it lost."""
 
     left_out: Mapping[str, tuple[str, ...]]
+
+    @classmethod
+    def of_trace_entries(cls, entries: Iterable[Mapping[str, object]]) -> PartyTotalsCut:
+        """The cut whose `trace_entries` are `entries`, as a version's trace recorded them,
+        whatever the code index now declares of their parties."""
+        return cls(
+            left_out={
+                str(entry["role"]): tuple(
+                    str(ref) for ref in cast("list[object]", entry["entities"])
+                )
+                for entry in entries
+            }
+        )
 
     def chunks(self, frame_chunks: Callable[[], Iterator[Frame]]) -> Callable[[], Iterator[Frame]]:
         """A fresh pass over `frame_chunks` less the rows `left_out` names, on each call. A

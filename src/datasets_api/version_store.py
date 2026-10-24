@@ -234,13 +234,13 @@ def _insert_artifact(
 
 
 _FACT_COLUMN_LIST = ", ".join(VERSION_FACT_COLUMNS)
-_RECORD_PLACEHOLDERS = ", ".join(["%s"] * (10 + len(VERSION_FACT_COLUMNS)))
+_RECORD_PLACEHOLDERS = ", ".join(["%s"] * (11 + len(VERSION_FACT_COLUMNS)))
 
 _INSERT_VERSION_SQL = (
     "INSERT INTO datasets.version_record "
     "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
     "trace_id, recorded_at, base_content_version, frame_grammar_version, frame_sha256, "
-    f"{_FACT_COLUMN_LIST}) "
+    f"frame_summed, {_FACT_COLUMN_LIST}) "
     f"VALUES ({_RECORD_PLACEHOLDERS}) "
     "ON CONFLICT (subject_id, content_version) DO NOTHING "
     "RETURNING subject_id"
@@ -264,6 +264,7 @@ def _insert_version(
             record.base_content_version,
             record.frame_grammar_version,
             record.frame_sha256,
+            record.frame_summed,
             *version_fact_values(record.facts),
         ),
     )

@@ -177,14 +177,15 @@ def test_a_cut_mint_answers_with_its_own_version_naming_the_totals_it_left_out()
     assert (base["coverage"]["rows"], cut["coverage"]["rows"]) == (2, 1)
     assert {d["label"]: d["count"] for d in cut["coverage"]["dimensions"]}["provider"] == 1
 
-    # The cut version is recorded with its base, and a snapshot read of it names the totals.
+    # The cut version is recorded with its base and its cut frame, and a snapshot read of it
+    # names the totals.
     with version_store.transaction() as tx:
         row = tx.fetch_one(
-            "SELECT base_content_version FROM datasets.version_record "
+            "SELECT base_content_version, frame_summed FROM datasets.version_record "
             "WHERE subject_id = %s AND content_version = %s",
             (spec_id, cut["content_version"]),
         )
-    assert row is not None and row["base_content_version"] == base["content_version"]
+    assert row == {"base_content_version": base["content_version"], "frame_summed": False}
     snapshot = client.get(f"/api/datasets/{spec_id}/{cut['content_version']}")
     assert snapshot.status_code == 200, snapshot.text
     assert snapshot.json()["trace"]["party_totals_left_out"] == _LEFT_OUT
@@ -222,6 +223,13 @@ def test_a_cut_read_on_a_head_hit_and_by_query_parameter_serves_the_cut_version(
     assert read.json()["trace"]["party_totals_left_out"] == _LEFT_OUT
     assert read.json()["coverage"]["rows"] == 1
     assert read.json()["trace"]["served_from"] == "head"
+    with version_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT frame_summed FROM datasets.version_record "
+            "WHERE subject_id = %s AND content_version = %s",
+            (spec_id, cut["content_version"]),
+        )
+    assert row == {"frame_summed": False}
     head_record = read_record(
         version_store, subject_id=spec_id, content_version=minted["content_version"]
     )
