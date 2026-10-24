@@ -3219,7 +3219,7 @@ def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_pa
             )
         },
         axis="origin",
-        published_in=frozenset({_TEST_PROVENANCE, _OTHER_PROVENANCE}),
+        published_in=_BOTH_PROVENANCES,
     )
     out = tmp_path / "index.json"
     out.write_text(json.dumps(document))

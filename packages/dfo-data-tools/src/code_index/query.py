@@ -535,8 +535,9 @@ class CodeIndex:
         population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
         for party in self.parties.values():
             for dataset in party.datasets:
-                party_class = party.class_in(dataset)
-                if party.kind_in(dataset) != "total" and party_class is not None:
+                kind = party.kind_in(dataset)
+                party_class = party.class_of(kind)
+                if kind != "total" and party_class is not None:
                     for axis in party.axes:
                         side_classes[axis, dataset].add(party_class)
             if any(POPULATION_CLASS in marker.covers for marker in party.whole):

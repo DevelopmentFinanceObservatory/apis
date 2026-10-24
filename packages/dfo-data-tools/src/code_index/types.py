@@ -525,8 +525,8 @@ class PartyRow:
     kind. IMF Concessional Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS,
     which publishes it and never the IMF, and a `total` in DAC2A, which publishes it beside
     the IMF it equals. A reader serving one dataset reads `kind_in`, and one serving several or
-    none reads `kinds_over` or `kind_over`. `party_class` is the class of `kind`; in a dataset
-    where the party takes another kind it takes that kind's class (`class_in`).
+    none reads `kinds_over` or `kind_over`. `party_class` is the class of `kind`; where the
+    party takes another kind it takes that kind's class (`class_of`).
     """
 
     dcid: str
@@ -564,21 +564,22 @@ class PartyRow:
         kinds = self.kinds_over(datasets)
         return next(iter(kinds)) if len(kinds) == 1 else None
 
-    def class_in(self, dataset: str) -> PartyClass | None:
-        """The party's class in `dataset`: `party_class` where it takes `kind`, and where it
-        takes another kind the class that kind gives a row with no whole marker (`official`
-        for a `party`, `residual` for a residual, none for a total)."""
-        kind = self.kind_in(dataset)
-        return self.party_class if kind == self.kind else _KIND_CLASSES[kind]
+    def class_of(self, kind: PartyKind) -> PartyClass | None:
+        """The party's class where it takes `kind` (`kind_in`, `kind_over`): `party_class` for
+        its own `kind`, and for another kind the class that kind gives a row with no whole
+        marker (`KIND_CLASSES`)."""
+        return self.party_class if kind == self.kind else KIND_CLASSES[kind]
 
 
-_KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {
+KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {
     "party": "official",
     "residual": "residual",
     "total": None,
 }
-"""The class a dataset kind gives a party (`PartyRow.class_in`). A private provider takes no
-dataset kind (`code_index.export.export_parties`), so a `party` there is `official`."""
+"""The class each kind gives a party that is not private and carries no whole marker: the
+export's class for a party (`code_index.export.export_parties`) and the class of a dataset kind
+(`PartyRow.class_of`). A private provider takes no dataset kind, so a `party` there is
+`official`."""
 
 
 def marked_datasets(parties: Iterable[PartyRow]) -> frozenset[str]:

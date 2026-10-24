@@ -1,10 +1,11 @@
 """Writers for CSV, Excel, Parquet, and the canonical frame, plus Table Schema derivation.
 
 CSV, Excel, and Parquet accept structural `Table` chunks. The first chunk sets column names
-and the types of the columns `Rendering.column_types` leaves unset. Later chunks must have the same columns and are trusted to be in canonical row
-order. Writers stream rows to a `Sink` and return metadata whose digest and size cover the
-bytes they write. Parquet buffers at most one 100,000-row group. Excel uses write-only mode,
-but its final archive is held in memory so timestamps can be fixed for stable output.
+and the types of the columns `Rendering.column_types` leaves unset. Later chunks must have the
+same columns and are trusted to be in canonical row order. Writers stream rows to a `Sink` and
+return metadata whose digest and size cover the bytes they write. Parquet buffers at most one
+100,000-row group. Excel uses write-only mode, but its final archive is held in memory so
+timestamps can be fixed for stable output.
 
 Headers are sanitised and unique across all three tabular formats and Table Schema. CSV and
 Excel escape formula-triggering strings. Excel refuses platform row, column, cell-length,

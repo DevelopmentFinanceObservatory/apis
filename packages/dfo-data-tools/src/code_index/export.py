@@ -57,6 +57,7 @@ from code_index.declarations import (
 from code_index.members import key_sets_cover
 from code_index.tokens import Token, TokenLookup, singular, tokenize
 from code_index.types import (
+    KIND_CLASSES,
     BroadReading,
     DatasetDeclaration,
     DeclaredDefault,
@@ -463,13 +464,9 @@ def _check_override_datasets(
 
 
 def _party_class(kind: PartyKind, *, private: bool) -> PartyClass | None:
-    """A row's class before whole markers: `private` or `official` for a `party`, `residual`
-    for a residual, none for a total."""
-    if kind == "residual":
-        return "residual"
-    if kind != "party":
-        return None
-    return "private" if private else "official"
+    """A row's class before whole markers: `private` for a private `party`, else the class its
+    kind gives (`KIND_CLASSES`)."""
+    return "private" if private and kind == "party" else KIND_CLASSES[kind]
 
 
 def strip_system_suffix(name: str) -> str:

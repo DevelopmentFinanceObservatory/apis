@@ -34,7 +34,7 @@ no dataset and the party's kind differs between datasets the kind is unavailable
 the index does not list."""
 
 PARTY_CLASS_FIELD = "party_class"
-"""The party's class (`official`, `private` or `residual`, `PartyRow.class_in`) in the row's
+"""The party's class (`official`, `private` or `residual`, `PartyRow.class_of`) in the row's
 dataset, for a total the one class its whole markers cover, empty otherwise. Unavailable where
 the row names no dataset and the party's kind differs between datasets."""
 
@@ -232,7 +232,7 @@ def party_cell(
 ) -> str | None:
     """The `<role>_<field>` cell of the party `ref`, for `field` one of `PARTY_FIELDS`, on a
     row of `provenance` in `year`: its kind there (`party_kind_of`), its class there
-    (`PartyRow.class_in`, empty when it has none), or whether it is a whole total there
+    (`PartyRow.class_of`, empty when it has none), or whether it is a whole total there
     (`whole_cell`). With no `provenance` the kind and class are those of every dataset. `None`
     for a ref the rows do not list, and for the kind and class of a party that takes no one kind
     for the row (`PartyRow.kind_over`), so a reader counts the cell unavailable."""
@@ -245,7 +245,7 @@ def party_cell(
             return None
         if field == PARTY_KIND_FIELD:
             return kind
-        return (party.class_in(provenance) if provenance is not None else party.party_class) or ""
+        return party.class_of(kind) or ""
     if field == PARTY_WHOLE_FIELD:
         return whole_cell(party, year=year, provenance=provenance)
     raise ValueError(f"{field!r} is not a party field; expected one of {PARTY_FIELDS!r}")

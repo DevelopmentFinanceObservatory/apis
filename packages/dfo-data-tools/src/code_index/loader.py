@@ -371,10 +371,10 @@ def _check_whole_markers(party: PartyRow) -> None:
                 f"party {party.dcid!r} is marked whole in {marker.dataset!r}, which does not "
                 "publish it"
             )
-        if party.kind_in(marker.dataset) != "total":
+        if (kind := party.kind_in(marker.dataset)) != "total":
             raise IndexFormatError(
                 f"party {party.dcid!r} is marked whole in {marker.dataset!r}, where it takes the "
-                f"kind {party.kind_in(marker.dataset)!r}; only a total holds a population"
+                f"kind {kind!r}; only a total holds a population"
             )
         if marker.dataset in marked:
             raise IndexFormatError(

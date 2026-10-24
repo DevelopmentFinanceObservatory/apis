@@ -147,8 +147,7 @@ def _split_by_kind(
 ) -> PartyCounts:
     """`held`'s parties, each mapped to the provenances of the facets holding it, counted once
     under the first kind of `_KIND_PRECEDENCE` it takes there. A party counted as a `party` is
-    private when that is its own kind and class, since a private provider takes no dataset kind
-    (`PartyRow.class_in`)."""
+    private when its class as a `party` is (`PartyRow.class_of`)."""
     kinds: Counter[PartyKind | None] = Counter()
     private = 0
     for dcid, datasets in held.items():
@@ -159,7 +158,7 @@ def _split_by_kind(
         taken = row.kinds_over(datasets)
         kind = next(kind for kind in _KIND_PRECEDENCE if kind in taken)
         kinds[kind] += 1
-        if kind == row.kind == "party" and row.party_class == "private":
+        if kind == "party" and row.class_of(kind) == "private":
             private += 1
     return PartyCounts(
         parties=kinds["party"],

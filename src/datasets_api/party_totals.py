@@ -13,9 +13,10 @@ For each open party role, in column-name order, the rows whose party the code in
 are left out, each role reading the rows the roles before it kept. A party can be a total in one
 dataset and a party in another (`code_index.types.PartyRow.dataset_kinds`), so the cut keys on
 the party and the dataset together. A row with no provenance reads the kind of every dataset,
-and keeps a party whose kind differs between datasets. Parties of kind `party` or `residual`, and parties the index declares no
-kind for, stay. A role on which every row holds a total keeps its rows, since the totals are
-then the only parties there are. A bound role is left alone whatever its parties' kinds.
+and keeps a party whose kind differs between datasets. Parties of kind `party` or `residual`,
+and parties the index declares no kind for, stay. A role on which every row holds a total keeps
+its rows, since the totals are then the only parties there are. A bound role is left alone
+whatever its parties' kinds.
 
 The cut reads the frame before any reshape, so a `groupby` over it sums members alone. Each pass
 holds one chunk at a time.
@@ -23,6 +24,7 @@ holds one chunk at a time.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -33,12 +35,10 @@ from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame, stream_frame_sha256
 
 from code_index.types import PartyRow
 from dfo_platform.roles import role_key_axis
+from materialise.bundle_columns import PROVENANCE_COLUMN
 from materialise.enrichment import is_party_role, party_kind_of
 
 _TOTAL_KIND = "total"
-
-PROVENANCE_COLUMN = "provenance"
-"""The frame column naming each row's dataset."""
 
 YEARS_DIMENSION = "years"
 """The coverage dimension counting a frame's distinct leading years
@@ -162,7 +162,7 @@ def cut_party_totals(
     pass after the cuts of the roles before it."""
     left_out: dict[str, dict[str | None, tuple[str, ...]]] = {}
     for role in roles:
-        totals: dict[str | None, set[str]] = {}
+        totals: defaultdict[str | None, set[str]] = defaultdict(set)
         others = False
         for chunk in frame_chunks():
             if role not in chunk.columns:
@@ -174,7 +174,7 @@ def cut_party_totals(
                     isinstance(ref, str)
                     and party_kind_of(ref, parties=parties, datasets=datasets) == _TOTAL_KIND
                 ):
-                    totals.setdefault(dataset, set()).add(ref)
+                    totals[dataset].add(ref)
                 else:
                     others = True
         if totals and others:
@@ -217,11 +217,10 @@ def _without(chunk: Frame, left_out: Mapping[str, Mapping[str | None, tuple[str,
             column = table.column(role)
             match = pc.is_in(column, value_set=pa.array(refs, type=column.type))
             if PROVENANCE_COLUMN in table.column_names:
+                # A `None` dataset matches the null cells, and a named one no null cell.
                 provenance = table.column(PROVENANCE_COLUMN)
-                in_dataset = (
-                    pc.is_null(provenance)
-                    if dataset is None
-                    else pc.equal(pc.fill_null(provenance, pa.scalar("")), pa.scalar(dataset))
+                in_dataset = pc.is_in(
+                    provenance, value_set=pa.array([dataset], type=provenance.type)
                 )
                 match = pc.and_(match, in_dataset)
             elif dataset is not None:

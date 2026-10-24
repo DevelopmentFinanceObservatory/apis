@@ -127,7 +127,7 @@ def long_kind_cell(
     `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
     The kind and class are the party's in the row's dataset (`PartyRow.kind_in`,
-    `PartyRow.class_in`). A row with no `provenance` reads the kind of every dataset. `None` for
+    `PartyRow.class_of`). A row with no `provenance` reads the kind of every dataset. `None` for
     a ref the code index does not list, one that is not text, and a party that takes no one kind
     for the row (`PartyRow.kind_over`), a party whose kind differs between datasets on a row
     with no `provenance`."""
@@ -143,7 +143,7 @@ def long_kind_cell(
         return WHOLE_TOTAL_CELL if whole else TOTAL_CELL
     if kind == "residual":
         return RESIDUAL_CELL
-    party_class = party.party_class if dataset is None else party.class_in(dataset)
+    party_class = party.class_of(kind)
     if party_class == "private" or role_key_axis(role) == "origin":
         return party_class
     return RECIPIENT_PARTY_CELL
