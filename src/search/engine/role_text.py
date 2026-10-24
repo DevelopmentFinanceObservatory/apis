@@ -543,9 +543,9 @@ def breakdown_axis(phrase: str, *, query: str) -> RoleAxis | None:
     """
     tokens = _tokenize(phrase)
     if (
-        tokens[:1]
+        tokens
         and tokens[0] in _BREAKDOWN_CONNECTIVES
-        and not set(tokens[1:2]) & _BREAKDOWN_WORDS
+        and not _BREAKDOWN_WORDS.intersection(tokens[1:2])
     ):
         named = _nouns_axes(tokens[1:])
         return next(iter(named)) if named is not None and len(named) == 1 else None
@@ -558,7 +558,7 @@ def every_member_breakdown_axis(phrase: str, *, query: str) -> RoleAxis | None:
     every recipient``), which asks for the breakdown whatever operation carries it. ``by``
     or ``across`` and role nouns alone (``by donor``) give None."""
     tokens = _tokenize(phrase)
-    if tokens[:1] and (tokens[0] in _BREAKDOWN_CONNECTIVES or tokens[0] == "for"):
+    if tokens and (tokens[0] in _BREAKDOWN_CONNECTIVES or tokens[0] == "for"):
         tokens = tokens[1:]
     rest = " ".join(tokens)
     return every_member_axis(rest, query=query) if every_member_breakdown(rest) else None

@@ -82,6 +82,7 @@ from search.engine.qualifier_match import (
     CodedQualifier,
     _all_normalized_text_ranges,
     _normalize,
+    _ranges_overlap,
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
@@ -177,6 +178,17 @@ def _balanced_parenthetical_extensions(query: str, span: str) -> list[str]:
     return extensions
 
 
+def _whole_word_ranges(words: str, text: str) -> list[tuple[int, int]]:
+    """The character ranges of `text` where `words` occur, casefolded, as whole words
+    (`_all_normalized_text_ranges`), so "DAC2a" holds no "DAC"."""
+    return [
+        (start, end)
+        for start, end in _all_normalized_text_ranges(words, text)
+        if not (start > 0 and text[start - 1].isalnum())
+        and not (end < len(text) and text[end].isalnum())
+    ]
+
+
 def _folded_words(text: str) -> list[str]:
     return [token.text.casefold() for token in word_tokens(text)]
 
@@ -213,7 +225,10 @@ def _query_words_of(
     resolves by its name. A name in other words ("Germany" for "German", "United Kingdom"
     for "UK") shares no word with the query and has none."""
     tokens = word_tokens(query)
-    free = [not any(lo < token.end and token.start < hi for lo, hi in owned) for token in tokens]
+    free = [
+        not any(_ranges_overlap((token.start, token.end), span) for span in owned)
+        for token in tokens
+    ]
     folded = [token.text.casefold() for token in tokens]
     name_words = _folded_words(name)
     runs: dict[tuple[str, ...], tuple[int, int]] = {}
@@ -263,12 +278,7 @@ def _mention_ranges(others: Sequence[ExtractedEntity], *, query: str) -> list[tu
     for other in others:
         span = (other.span or "").strip()
         words = span if span and _grounded(span, query) else other.text.strip()
-        ranges.extend(
-            (start, end)
-            for start, end in _all_normalized_text_ranges(words, query)
-            if not (start > 0 and query[start - 1].isalnum())
-            and not (end < len(query) and query[end].isalnum())
-        )
+        ranges.extend(_whole_word_ranges(words, query))
     return ranges
 
 
@@ -361,26 +371,17 @@ def _without_absorbed(entities: list[ExtractedEntity], *, query: str) -> list[Ex
     names no DAC.
     """
     normalized = _normalize(query)
-
-    def mentions(span: str) -> list[tuple[int, int]]:
-        return [
-            (start, end)
-            for start, end in _all_normalized_text_ranges(span, normalized)
-            if not (start > 0 and normalized[start - 1].isalnum())
-            and not (end < len(normalized) and normalized[end].isalnum())
-        ]
-
     qualified = [
         qualified_range
         for entity in entities
         if entity.span and "(" in entity.span
-        for qualified_range in mentions(entity.span)
+        for qualified_range in _whole_word_ranges(entity.span, normalized)
     ]
 
     def absorbed(entity: ExtractedEntity) -> bool:
         if not entity.span or "(" in entity.span:
             return False
-        ranges = mentions(entity.span)
+        ranges = _whole_word_ranges(entity.span, normalized)
         return bool(ranges) and all(
             any(lo <= start and end <= hi for lo, hi in qualified) for start, end in ranges
         )
@@ -936,18 +937,6 @@ def _prepare_extraction(
 
     # Qualifier sidecars use stripped `unique` keys. Missing entries default to ().
     per_variable_qualifiers = [extract_result.qualifiers.get(v, ()) for v in unique]
-    # An operation whose phrase only asks for one value per member of a flow role is a
-    # breakdown (`_breakdown_under`): it opens that role, as `open_roles` does on the parsed
-    # door, and runs no operation.
-    per_variable_operations: list[tuple[Operation, ...]] = []
-    per_variable_open_axes: list[frozenset[RoleAxis]] = []
-    for v in unique:
-        read = [
-            (op, _breakdown_under(op.phrase, verbs=(op.verb,), query=query))
-            for op in extract_result.operations.get(v, ())
-        ]
-        per_variable_operations.append(tuple(op for op, axis in read if axis is None))
-        per_variable_open_axes.append(frozenset(axis for _, axis in read if axis is not None))
     per_variable_date_requests = [
         dates_to_request(extract_result.dates_by_variable[v])
         if v in extract_result.dates_by_variable
@@ -979,30 +968,34 @@ def _prepare_extraction(
     unit_text, dropped_qualifier_phrases = _split_unit_phrases(
         [phrase for phrase in dropped if phrase not in naming_sources]
     )
-    # A dropped phrase asking for one value per member of a flow role opens that role on
-    # each part whose operations read it so, by the rule an extracted operation's phrase
-    # follows (`_breakdown_under`). Beside a sum it opens no part, and the total meets it
-    # (`role_text.breakdown_axis`), so it raises no warning either way.
-    per_variable_breakdowns = [
-        {
-            phrase: _breakdown_under(
-                phrase,
-                verbs={op.verb for op in extract_result.operations.get(v, ())},
-                query=query,
-            )
+    # An operation whose phrase only asks for one value per member of a flow role is a
+    # breakdown (`_breakdown_under`): it opens that role, as `open_roles` does on the parsed
+    # door, and runs no operation. A dropped phrase asking for it opens that role on each
+    # part whose operations read it so, by the same rule. Beside a sum it opens no part, and
+    # the total meets it (`role_text.breakdown_axis`), so it raises no warning either way.
+    entity_requested_axes = frozenset(axis for _, axis in entity_axes if axis is not None)
+    per_variable_operations: list[tuple[Operation, ...]] = []
+    per_variable_open_axes: list[frozenset[RoleAxis]] = []
+    for v in unique:
+        operations = extract_result.operations.get(v, ())
+        verbs = {op.verb for op in operations}
+        read = [
+            (op, _breakdown_under(op.phrase, verbs=(op.verb,), query=query)) for op in operations
+        ]
+        dropped_axes = (
+            _breakdown_under(phrase, verbs=verbs, query=query)
             for phrase in dropped_qualifier_phrases
-        }
-        for v in unique
-    ]
+        )
+        per_variable_operations.append(tuple(op for op, axis in read if axis is None))
+        per_variable_open_axes.append(
+            entity_requested_axes
+            | {axis for _, axis in read if axis is not None}
+            | {axis for axis in dropped_axes if axis is not None}
+        )
     dropped_qualifier_phrases = [
         phrase
         for phrase in dropped_qualifier_phrases
         if breakdown_axis(phrase, query=query) is None
-    ]
-    entity_requested_axes = frozenset(axis for _, axis in entity_axes if axis is not None)
-    per_variable_open_axes = [
-        axes | entity_requested_axes | {axis for axis in breakdowns.values() if axis is not None}
-        for axes, breakdowns in zip(per_variable_open_axes, per_variable_breakdowns, strict=True)
     ]
     qualifier_warnings = [
         Warning(

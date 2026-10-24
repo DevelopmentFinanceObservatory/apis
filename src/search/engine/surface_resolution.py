@@ -70,9 +70,8 @@ def _settle(name: str, surface: str | None, by_text: Mapping[str, Resolution]) -
         return through_surface
     own = by_text[name]
     expands = _adds_words(name, surface)
-    lead, other = (
-        (through_surface, own) if expands or _adds_words(surface, name) else (own, through_surface)
-    )
+    surface_leads = expands or _adds_words(surface, name)
+    lead, other = (through_surface, own) if surface_leads else (own, through_surface)
     if isinstance(lead, NotFound):
         return other
     if isinstance(lead, NotHeld):
