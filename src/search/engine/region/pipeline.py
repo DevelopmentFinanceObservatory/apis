@@ -43,7 +43,7 @@ from search.engine.region.candidate_admission import alternates_unevaluated_warn
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
-from search.engine.region.phase_election import _phase_settle, log_would_refuse
+from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
 from search.engine.region.phase_intake import (
     _phase_check_entities,
     _phase_derive_shapes,
@@ -813,7 +813,9 @@ async def _run_phases(state: ResolveState) -> RegionResult:
     `phase_<name>` (`_book_unbooked_time`). A refusal of the whole request
     (`_REQUEST_REFUSALS`) a phase raises once the bindings are final, on an elected answer
     leaving terms unmet, gives way to the part's `qualifier_not_bound` refusal
-    (`refuse_unread_answer`)."""
+    (`refuse_unread_answer`). Stated-word coverage is judged once
+    (`phase_election.judge_coverage`): when materialisation has read the answer, or
+    before a refusal returned once the bindings are final is first judged."""
     scoped = False
     settled = False
     unbooked: dict[str, int] = {}
@@ -831,7 +833,10 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     # answers on. Once the bindings are final, an elected answer leaving
                     # terms unmet answers nothing, so the part refuses on them instead
                     # (`refuse_unread_answer`).
-                    if not settled or not refusal_terms(state, state.shape_draft, state.bindings):
+                    if not settled:
+                        raise
+                    await judge_coverage(state)
+                    if not refusal_terms(state, state.shape_draft, state.bindings):
                         raise
                     result = await refuse_unread_answer(state)
                 # A refusal once the bindings are final that judged no answer is judged
@@ -843,7 +848,12 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     and state.judgement is None
                     and result.status in ("no_data", "unsupported")
                 ):
+                    await judge_coverage(state)
                     result = await settle_unjudged_refusal(state, result)
+                # The read has served the answer's members, so stated-word coverage is
+                # judged on them before the outcome judges the answer.
+                if result is None and phase is _phase_materialise:
+                    await judge_coverage(state)
                 _book_unbooked_time(
                     state,
                     unbooked,

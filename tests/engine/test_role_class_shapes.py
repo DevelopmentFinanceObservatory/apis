@@ -2949,8 +2949,13 @@ def test_a_standard_part_is_not_relaxed_where_its_walk_finds_no_member(walked):
             [(("female",), {"age": ("X",)})],
             ("no_data", "qualifier_not_bound", ["Pop_B"], {"age": "X"}, []),
         ),
+        (
+            "refugee aged X in Kenya",
+            [(("refugee",), {"age": ("X",)})],
+            ("definite", None, ["Pop_B"], {"age": "X"}, []),
+        ),
     ],
-    ids=["unnamed", "named"],
+    ids=["unnamed", "named", "unread-before-and-after"],
 )
 def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(
     monkeypatch, query, rated, outcome
@@ -2962,7 +2967,9 @@ def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(
     first here, so it is held off to reach the read. A query naming "female" leaves the
     word on no bound code once Female is unbound, so the binder rates it on B under the
     bindings left, and the part refuses on its rating, as it would had the bind never
-    drafted Female."""
+    drafted Female. A word no member's name states is rated once, on the bindings the
+    unbinding leaves and the member the read then serves, though the bind left it unread
+    too."""
     nodes = {
         "Pop_A": _node("Females aged Y", [], positionType="Stock", gender="Female", age="Y"),
         "Pop_B": _node("Males aged X", [], positionType="Stock", gender="Male", age="X"),
@@ -2983,7 +2990,7 @@ def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(
 
     assert [(request.words, restricting(request.bindings)) for request in binder.requests] == rated
     assert _relax_outcome(result) == outcome
-    assert bool(result.unbound_qualifiers) == bool(rated)
+    assert bool(result.unbound_qualifiers) == (outcome[1] == "qualifier_not_bound")
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])

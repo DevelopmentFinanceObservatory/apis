@@ -28,6 +28,7 @@ from search.engine.region.grounding import (
     requested_window_from_date_request,
     role_bindings,
 )
+from search.engine.region.phase_election import judge_coverage
 from search.engine.region.place_roles import (
     direction_readings,
     request_named_groups,
@@ -315,9 +316,14 @@ async def _elected_flagged_match(
     (`requirements.settle_flagged`): the trace records the query terms it leaves unmet,
     which the refusal does not name, and each of them departs.
 
+    The judgement reads stated-word coverage, judged first where the pass has not judged
+    it (`phase_election.judge_coverage`), on the members the read served or, on a refusal
+    before the read, on the shape's own names.
+
     Preserve an established entity mapping on materialise-stage refusals so the where slot,
     entities, trace, and identity agree. Early refusals have no mapping to retain."""
     await read_held_families((state.shape_draft,))
+    await judge_coverage(state)
     sv_dcids = list(members) if members else list(state.shape_draft.sv_arc_facts or ())
     (
         five_tuple_refs,

@@ -80,9 +80,9 @@ from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.phase_election import (
     _settle_served_dataset,
     narrowed_to_breakdown,
-    record_coverage,
 )
 from search.engine.region.phase_intake import not_admitted_entity
+from search.engine.region.phase_rank_bind import _query_records
 from search.engine.region.phase_shared import (
     _elected_flagged_match,
     _role_incompatible_no_data,
@@ -115,7 +115,7 @@ from search.engine.region.place_roles import (
     undirected_place_name,
     whole_total_candidates,
 )
-from search.engine.region.requirements import settle_answer, stray_values
+from search.engine.region.requirements import record_reading, settle_answer, stray_values
 from search.engine.region.result import FacetAxisFilter, RegionResult
 from search.engine.region.state import (
     AlternateUnevaluatedReason,
@@ -1570,14 +1570,14 @@ async def _unbind(
     then serves. The dataset is named from the bindings wherever the index decides the
     part's membership (`bound_values.part_source`), and a query the index did not decide
     can be one it decides once a value on a property no index row declares is unbound.
-    On a part a table serves, the words the coverage rule then leaves unrated are rated on
-    the shape and bindings so settled, and the qualifier records read again over them
-    (`phase_election.record_coverage`), as binding repair reads them: "female" in "female
-    aged X" reads no bound code once Sex=Female is unbound."""
+    On a part a table serves, the query records no rating reads are read again over the
+    bindings so settled (`phase_rank_bind._query_records`), as binding repair keeps them:
+    "female" in "female aged X" reads no bound code once Sex=Female is unbound. Coverage is
+    judged once, on what the read then serves (`phase_election.judge_coverage`)."""
     unbind_unrealisable(state, unrealisable)
     if (refused := _settle_served_dataset(state, role_keys)) is not None:
         return refused
-    await record_coverage(state)
+    record_reading(state, _query_records(state))
     return None
 
 

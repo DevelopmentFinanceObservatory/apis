@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Protocol
 
 from materialise.place_scope import DefaultPresence
@@ -205,44 +205,6 @@ def _subject_has_data(
     if window is None or coverage is None or _in_window(coverage, window):
         return True
     return False if covered else None
-
-
-def member_has_data_where_asked(
-    state: ResolveState, shape: ShapeDraft
-) -> Callable[[str], bool | None]:
-    """D for each member of a subject-only `shape`, by the reads D reads for the shape: at
-    the places the part names, whether the member holds data at a place the read covered,
-    inside the requested years when the read states them (`_subject_has_data`), and on a
-    part naming no place, whether its default scope holds a place, known only with no
-    years requested (`_default_scope_has_data`). A member no read covered, and a read that
-    found nothing without covering every place the part names, leave D unknown."""
-    window = requested_window(state.date_request)
-    if not names_a_place(state):
-        presence = state.default_presence
-
-        def in_scope(sv: str) -> bool | None:
-            if presence is None or sv not in presence.scopes:
-                return None
-            if not presence.scopes[sv].places:
-                return False
-            return True if window is None else None
-
-        return in_scope
-    coverage = (
-        shape.named_place_coverage
-        if shape.named_place_coverage is not None
-        else shape.member_coverage
-    )
-    covered = shape.availability_places.issuperset(asked_places(state.place_sets))
-
-    def at_places(sv: str) -> bool | None:
-        if coverage is None or sv not in coverage:
-            return None
-        if holds_in(coverage[sv], window):
-            return True
-        return False if covered else None
-
-    return at_places
 
 
 def _default_scope_has_data(shape: ShapeDraft, presence: DefaultPresence | None) -> bool | None:

@@ -71,7 +71,7 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     a term naming no code, becomes a requirement of its own (`_value_requirements`), so binding one
     does not meet another. A value with no name departs under its slot's name
     (`_unnamed_departure`), so no dcid reaches prose. The caller reads the qualifier
-    records again over the remaining bindings (`phase_election.record_coverage`), where a
+    records again over the remaining bindings (`requirements.record_reading`), where a
     record of a phrase that unbinding makes a requirement adds nothing.
     """
     engine_chosen = state.measure_elected_properties | state.defaulted_properties

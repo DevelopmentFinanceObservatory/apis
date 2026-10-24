@@ -384,43 +384,6 @@ def default_scope_members(
     )
 
 
-def members_served(
-    shape: ShapeDraft,
-    bindings: Sequence[SlotBindingDraft],
-    role_keys: RoleKeys,
-    holds: Callable[[str], bool | None],
-) -> list[str]:
-    """The members an answer over `shape` under `bindings`, with its places bound under
-    `role_keys`, can serve, by the rule `standard_resolve` serves by, given whether each
-    member holds a point where and when the part asks (`holds`, None when no read settled
-    it). A set binding collects every kept member holding one, and so does a family with no
-    total (`_serving`), so nominal GDP alone answers "GDP" in Brazil among the gross value
-    added series no read finds there. Any other family answers by its first kept member
-    holding one, so the members are those in election order up to the first that does,
-    skipping each that holds none. With no member that may hold one, the answer names one
-    of the kept members, and they are all returned. A role-bearing shape serves the members
-    a role-bearing answer lists (`_served_under`). Empty when the bindings admit no
-    family."""
-    if is_role_bearing(shape):
-        return list(_served_under(shape, list(bindings), role_keys))
-    admitted = _admit_standard_members(shape, list(bindings), role_keys.bound)
-    if not isinstance(admitted, _AdmittedStandardMembers):
-        return []
-    answer = _answering(admitted, list(bindings))
-    if answer.multi_collect:
-        kept, every = list(answer.family.order), True
-    else:
-        kept, every = _serving(answer.family, admitted.member_facts)
-    served: list[str] = []
-    for sv in kept:
-        held = holds(sv)
-        if held is not False:
-            served.append(sv)
-        if held and not every:
-            break
-    return served or kept
-
-
 @dataclass(frozen=True)
 class _AdmittedStandardMembers:
     """The bound-value-filtered member population a standard-path resolve
