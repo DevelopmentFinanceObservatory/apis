@@ -1036,10 +1036,11 @@ async def _rate_unread_words(state: ResolveState) -> None:
     (`note_degraded_read`), so the response cache stores no answer read without it. A read
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
-    for the word or answering it both ways. The request names the members the read served
-    when it served more than one name (`served_member_names`), a member with no name by its
-    dcid, so a word one of them states and another does not reads as narrower than the
-    answer."""
+    for the word or answering it both ways. The request names every member the read served
+    (`served_member_names`), a member with no name by its dcid, and the binder rates the
+    words on them wherever they differ from the shape's label
+    (`stated_words_read.serves_beyond_label`), so a word one of them does not state reads
+    as narrower than the answer."""
     words = _unrated_words(state)
     if not words:
         return
@@ -1059,7 +1060,7 @@ async def _rate_unread_words(state: ResolveState) -> None:
         words=words,
         bindings=tuple(state.bindings),
         decision=state.bind_decision,
-        served=served if len(served) > 1 else (),
+        served=served,
         part=state.variable_index,
         pool=state.pool,
     )

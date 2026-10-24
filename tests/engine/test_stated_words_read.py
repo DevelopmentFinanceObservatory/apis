@@ -12,6 +12,7 @@ from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import BindResult, GeminiBinder, JevBinder, StatedWordsRequest
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import LLMInfraError
+from search.engine.region.state import ResolveState
 from search.engine.shape import SlotKeyDraft
 from search.engine.stated_words_read import (
     STATED_WORDS_SYSTEM_PROMPT,
@@ -23,7 +24,7 @@ from search.engine.stated_words_read import (
 from tests.engine._binders import FakeAsk
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine.test_bind import _shape
-from tests.engine.test_qualifier_guard import _READER_PERSONS, _run, _state
+from tests.engine.test_qualifier_guard import _READER_PERSONS, _run, _served, _state
 from tests.fixtures import FakeLLM
 
 _PERSONS = replace(
@@ -151,6 +152,34 @@ def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, re
         "WORDS (words of the variable phrase):\n"
         "  0: stateless\n"
         "  1: refugee\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("served", "line"),
+    [
+        ((), ""),
+        (("Total population",), ""),
+        (("Refugee population",), "  the answer serves the series 'Refugee population'\n"),
+        (
+            ("Total population", "Refugee population"),
+            "  the answer serves each of these series: 'Total population'; 'Refugee population'\n",
+        ),
+    ],
+    ids=["none", "the-label", "one-other", "several"],
+)
+def test_the_prompt_names_the_served_series_that_differ_from_the_label(served, line):
+    """The bind elected the series by its label, so the prompt names the series the answer
+    serves wherever they differ from it, one as several, and is unchanged where the answer
+    serves the label's series alone."""
+    unserved = build_stated_words_prompt("refugee population", _PERSONS, ("refugee",), bindings=())
+    head, words = unserved.split("\n\nWORDS")
+
+    assert (
+        build_stated_words_prompt(
+            "refugee population", _PERSONS, ("refugee",), bindings=(), served=served
+        )
+        == f"{head}\n{line}\nWORDS{words}"
     )
 
 
@@ -304,6 +333,65 @@ def test_binding_repair_reads_jev_s_rating(search_settings, rated, menu, records
     assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
     assert state.stated_word_ratings == (rated if menu else {})
     assert lost.reads == degraded
+
+
+# The bind elects "Refugee population", and the read serves the total population alone.
+_REFUGEES_SERVING_PERSONS = replace(
+    _READER_PERSONS,
+    label="Refugee population",
+    sv_arc_facts={
+        "refugees": {"name": {"nodes": [{"value": "Refugee population"}]}},
+        "persons": {"name": {"nodes": [{"value": "Total population"}]}},
+    },
+)
+
+
+def _serving_persons(binder: GeminiBinder | JevBinder) -> ResolveState:
+    """The part "refugee population" electing `_REFUGEES_SERVING_PERSONS`, whose read
+    served the total population alone, rated by `binder`."""
+    state = _state(
+        variable="refugee population",
+        shape_draft=_REFUGEES_SERVING_PERSONS,
+        bindings=[],
+        unplaced=[],
+    )
+    state.capped_shapes = [_REFUGEES_SERVING_PERSONS]
+    state.binder = binder
+    state.mat_result = _served("persons")
+    return state
+
+
+def test_gemini_rates_the_words_on_the_one_series_the_read_served(search_settings):
+    """The read serves "Total population" behind the label "Refugee population", so the
+    prompt names it, and the rating of "refugee" on it decides the record."""
+    search_settings(qualifier_coverage="refuse")
+    state = _serving_persons(GeminiBinder())
+    state.llm = llm = _StatedLLM([(0, False)])
+
+    qualifiers = _run(state)
+
+    ((prompt, _system, _schema),) = llm.calls
+    assert "  the answer serves the series 'Total population'\n" in prompt
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == ["refugee"]
+
+
+def test_jev_rates_its_words_again_on_the_one_series_the_read_served(search_settings):
+    """Jev's bind rated "refugee" stated on the label "Refugee population". The read serves
+    "Total population" alone, so Jev asks again on that series, and its answer decides."""
+    search_settings(qualifier_coverage="refuse")
+    state = _serving_persons(JevBinder(ask=(ask := FakeAsk({}, stated={"refugee": 0.1}))))
+    state.bind_decision = BindResult(
+        output=_UniversalBindOutput(chosen_shape_index=0),
+        binder="jev",
+        stated_words={(0, "refugee"): 0.9},
+    )
+
+    qualifiers = _run(state)
+
+    ((_request_state, questions),) = ask.requests
+    assert "served as the series 'Total population'" in questions["unread|0|0"]["instructions"]
+    assert state.stated_word_ratings == {"refugee": 0.1}
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == ["refugee"]
 
 
 class _RatedOutLLM(FakeLLM):

@@ -7,8 +7,8 @@ when its answers call for one (`jev_assemble.span_round`), a second request aski
 words name each contending value, and assembles both rounds' answers with
 `jev_assemble.bind_result`, which runs the request's house-policy step once on an answer
 that elects a shape. The words the bind rated as unread on the elected shape are asked
-again in a request of their own when the final bindings restrict the shape to a value
-(`JevBinder.restated`). Every failure of a Jev request, in either round, leaves as one
+again in a request of their own when the final bindings restrict the shape to a value or
+the answer serves series other than its label (`JevBinder.restated`). Every failure of a Jev request, in either round, leaves as one
 `JevFailure`, raised before any answer is assembled, and so does a span rule that passes
 its search budget, raised before the house policies run, so a binder that falls back on it
 runs the house policies at most once per call.
@@ -59,7 +59,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.facts import read_constraints
 from search.engine.shape import ShapeDraft
-from search.engine.stated_words_read import implied_values, restricting
+from search.engine.stated_words_read import implied_values, restricting, serves_beyond_label
 
 if TYPE_CHECKING:
     from search.engine.clients.llm import SupportsLLM
@@ -214,8 +214,9 @@ class JevBinder:
         request covers the words rated below `SearchSettings.stated_word_bar` when the final
         bindings restrict the shape to a value (`stated_words_read.restricting`), and every
         rated word when they override a value the measure's definition fixes
-        (`stated_words_read.implied_values`) or the answer serves several series
-        (`StatedWordsRequest.served`), which the bind quoted as the shape's label alone.
+        (`stated_words_read.implied_values`) or the answer serves series other than the
+        shape's label (`stated_words_read.serves_beyond_label`), which the bind quoted
+        alone.
 
         The bind asked before any value was bound, so it quoted the shape as parts
         selectable by its slots, and its answer is evidence only about the series as a
@@ -224,16 +225,18 @@ class JevBinder:
         bindings replace: "birth" on life expectancy at Age=years 0, with age bound to 60.
         The request's answer replaces the bind's, and a word the request leaves unanswered
         is unrated. Any other word keeps the bind's rating, and a shape whose bindings
-        override and restrict nothing sends no request.
+        override and restrict nothing, on an answer serving its label alone, sends no
+        request.
 
         Raises:
             JevFailure: The request gave no answer.
         """
         ratings = self.stated_words(request)
         bar = settings().stated_word_bar
-        if request.served or implied_values(request.shape, request.bindings) != implied_values(
+        overrides = implied_values(request.shape, request.bindings) != implied_values(
             request.shape, ()
-        ):
+        )
+        if overrides or serves_beyond_label(request.shape, request.served):
             again = tuple(word for word in request.words if word in ratings)
         elif restricting(request.bindings):
             again = tuple(word for word in request.words if ratings.get(word, bar) < bar)
