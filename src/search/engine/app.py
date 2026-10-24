@@ -915,10 +915,11 @@ async def _open_search_deps(
         logger.info("SharedSkillsIndex started")
 
     if llm is None:
-        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo,
-        # and `SEARCH_EXTRACT_STORE=off` the extraction store.
+        # Prove `GEMINI_API_KEY` against Gemini before building the LLM, so a missing or
+        # rejected key fails startup. A zero memo limit disables the memo, and
+        # `SEARCH_EXTRACT_STORE=off` the extraction store.
         try:
-            _llm_mod.warm()
+            await _llm_mod.warm()
         except LLMInfraError:
             logger.critical("LLM warm-up failed; check GEMINI_API_KEY", exc_info=True)
             raise

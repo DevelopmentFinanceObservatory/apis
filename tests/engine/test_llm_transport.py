@@ -16,6 +16,7 @@ import httpx
 import pytest
 from google import genai
 from google.genai import _api_client
+from google.genai import errors as genai_errors
 from google.genai.types import HttpOptions
 from pydantic import BaseModel
 
@@ -27,6 +28,8 @@ from search.engine.errors import LLMInfraError, LLMOutputRefused
 # Captured at import, before the autouse `_guard_outbound_http` fixture swaps
 # the class attribute for its refusal.
 _REAL_ASYNC_HANDLE = httpx.AsyncHTTPTransport.handle_async_request
+# Captured at import, before `_guard_live_client_construction` swaps it for its refusal.
+_REAL_WARM = llm_module.warm
 
 
 class _Value(BaseModel):
@@ -567,3 +570,91 @@ def test_an_api_key_override_llm_reuses_one_client(
     asyncio.run(scenario())
 
     assert len(peers) == 1
+
+
+class _ScriptedModels:
+    """`client.aio.models` whose `get` raises or answers each scripted outcome in turn."""
+
+    def __init__(self, outcomes: list[Exception | None]) -> None:
+        self._outcomes = outcomes
+        self.models: list[str] = []
+
+    async def get(self, *, model: str, config: object = None) -> object:
+        self.models.append(model)
+        outcome = self._outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+        return object()
+
+
+def _install_models(monkeypatch: pytest.MonkeyPatch, outcomes: list[Exception | None]):
+    models = _ScriptedModels(outcomes)
+    client = type("Client", (), {"aio": type("Aio", (), {"models": models})()})()
+    monkeypatch.setattr(llm_module, "_get_client", lambda: client)
+    monkeypatch.setattr(llm_module, "_WARM_RETRY_DELAYS_S", (0.0, 0.0))
+    return models
+
+
+def _client_error(code: int, status: str, message: str) -> genai_errors.ClientError:
+    return genai_errors.ClientError(
+        code, {"error": {"code": code, "status": status, "message": message}}
+    )
+
+
+_INVALID_KEY = _client_error(400, "INVALID_ARGUMENT", "API key not valid.")
+_RATE_LIMITED = _client_error(429, "RESOURCE_EXHAUSTED", "Quota exceeded.")
+_UNAVAILABLE = genai_errors.ServerError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}})
+
+
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        _INVALID_KEY,
+        _client_error(401, "UNAUTHENTICATED", "Request had invalid credentials."),
+        _client_error(403, "PERMISSION_DENIED", "Generative Language API has not been used."),
+    ],
+)
+@pytest.mark.usefixtures("live_client_env")
+def test_warm_fails_at_once_on_a_rejected_key(
+    monkeypatch: pytest.MonkeyPatch, rejection: genai_errors.ClientError
+):
+    models = _install_models(monkeypatch, [rejection, None])
+
+    with pytest.raises(LLMInfraError) as caught:
+        asyncio.run(_REAL_WARM())
+
+    assert caught.value.__cause__ is rejection
+    assert models.models == ["gemini-3.5-flash-lite"]
+
+
+@pytest.mark.parametrize(
+    "transient", [_RATE_LIMITED, _UNAVAILABLE, httpx.ConnectTimeout("connect timed out")]
+)
+@pytest.mark.usefixtures("live_client_env")
+def test_warm_retries_a_transient_failure(monkeypatch: pytest.MonkeyPatch, transient: Exception):
+    models = _install_models(monkeypatch, [transient, transient, None])
+
+    asyncio.run(_REAL_WARM())
+
+    assert len(models.models) == 3
+
+
+@pytest.mark.usefixtures("live_client_env")
+def test_warm_fails_once_transient_failures_exhaust_its_retries(monkeypatch: pytest.MonkeyPatch):
+    models = _install_models(monkeypatch, [_UNAVAILABLE, _RATE_LIMITED, _UNAVAILABLE, None])
+
+    with pytest.raises(LLMInfraError) as caught:
+        asyncio.run(_REAL_WARM())
+
+    assert caught.value.__cause__ is _UNAVAILABLE
+    assert len(models.models) == 3
+
+
+@pytest.mark.usefixtures("live_client_env")
+def test_warm_without_a_key_fails_before_any_request(search_settings):
+    search_settings(gemini_api_key="")
+
+    with pytest.raises(LLMInfraError, match="GEMINI_API_KEY"):
+        asyncio.run(_REAL_WARM())
+
+    assert llm_module._CLIENT is None
