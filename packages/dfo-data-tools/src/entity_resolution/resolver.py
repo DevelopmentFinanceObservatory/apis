@@ -502,11 +502,19 @@ class EntityResolver:
         This is deliberately a narrow read-only registry check for callers that recover a
         source span. It does not parse or resolve a partial surface.
         """
+        return bool(self.registered_owners(text))
+
+    def registered_owners(self, text: str) -> frozenset[str]:
+        """The entity ids of every entity `text` is an exact registered name of
+        (`is_exact_registered_name`): "World Bank" names both the IBRD and the IDA. Empty
+        when the registry holds no such name."""
         normalized = _normalize_key(text)
         memberships = (*self.membership, *self._shared.groups)
-        if any(_normalize_key(membership.label) == normalized for membership in memberships):
-            return True
-        return bool(self._shared.alias_index.owners_of(text))
+        return frozenset(
+            membership.entity_id
+            for membership in memberships
+            if _normalize_key(membership.label) == normalized
+        ) | {owner.entity_id for owner in self._shared.alias_index.owners_of(text)}
 
     def stats(self) -> Mapping[str, int]:
         with self._cache_lock:

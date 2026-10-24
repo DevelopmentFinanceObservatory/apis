@@ -2218,7 +2218,8 @@ def test_a_dropped_by_or_across_phrase_beside_a_sum_opens_no_side(
 ):
     """A "by" or "across" phrase extraction dropped beside a sum follows the rule of an
     operation's own phrase: only a rank reads it as a breakdown, so "total ... across
-    donors" keeps the donor total and opens no side."""
+    donors" keeps the donor total and opens no side. The total meets the phrase, so
+    neither a warning nor a departure reports it unapplied."""
     _coverage(monkeypatch)
 
     answer = _raw(
@@ -2229,6 +2230,8 @@ def test_a_dropped_by_or_across_phrase_beside_a_sum_opens_no_side(
 
     assert answer.spec.definition.identity.open_roles is None
     assert _origin(answer.spec) == ["DACOfficialDonors"]
+    assert [w.code for w in answer.warnings if w.code == "query_qualifier_dropped"] == []
+    assert [d.asked for d in answer.departures if d.code == "measure_not_applied"] == []
 
 
 def test_a_raw_text_side_read_whole_names_the_words_that_list_its_members(

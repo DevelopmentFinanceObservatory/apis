@@ -177,40 +177,57 @@ def _balanced_parenthetical_extensions(query: str, span: str) -> list[str]:
     return extensions
 
 
+def _folded_words(text: str) -> list[str]:
+    return [token.text.casefold() for token in word_tokens(text)]
+
+
+def _holds_run(words: Sequence[str], run: Sequence[str]) -> bool:
+    """Whether `words` hold `run` as consecutive whole words."""
+    return any(
+        tuple(words[i : i + len(run)]) == tuple(run) for i in range(len(words) - len(run) + 1)
+    )
+
+
 def _query_words_of(
-    name: str, query: str, *, owned: Sequence[tuple[int, int]], resolver: EntityResolver
+    name: str,
+    query: str,
+    *,
+    owned: Sequence[tuple[int, int]],
+    rivals: Collection[str],
+    resolver: EntityResolver,
 ) -> str | None:
     """The query's own words for a `name` the query does not write, as written in `query`.
 
     They are the longest run of whole query words that `name` holds as consecutive whole
     words, holding a word other than a function word: "Congo" in "aid to Congo" for the name
     "Democratic Republic of the Congo". The run grows to the longest stretch of query words
-    around it that the registry holds as a name, so the user's mention keeps the words that
-    choose its place: "DR Congo" and "South Korea" rather than "Congo" and "Korea". Two
-    such stretches of one length leave the run as it is. Neither takes a word inside
-    `owned`, the character ranges of `query` another entity's mention holds. `None` when
-    no run holds one, or when two runs of different words tie for longest. A name in other
-    words ("Germany" for "German", "United Kingdom" for "UK") shares no word with the query
-    and has none."""
+    around it that the registry holds as a name of the entity `name` names
+    (`EntityResolver.registered_owners`), so the user's mention keeps the words that
+    choose its place: "DR Congo" and "South Korea" rather than "Congo" and "Korea". A
+    stretch naming another place ("South Korea" for "Democratic People's Republic of
+    Korea") is no such name, and two of one length leave the run as it is. Neither takes a
+    word inside `owned`, the character ranges of `query` another entity's mention holds.
+    `None` when no run holds one, when two runs of different words tie for longest, or
+    when a run left as it is is contested: one of the `rivals`, the other entities' names,
+    holds it too, so "Congo" in "ODA from DRC to Congo" chooses neither Congo and each
+    resolves by its name. A name in other words ("Germany" for "German", "United Kingdom"
+    for "UK") shares no word with the query and has none."""
     tokens = word_tokens(query)
     free = [not any(lo < token.end and token.start < hi for lo, hi in owned) for token in tokens]
     folded = [token.text.casefold() for token in tokens]
-    name_words = [token.text.casefold() for token in word_tokens(name)]
+    name_words = _folded_words(name)
     runs: dict[tuple[str, ...], tuple[int, int]] = {}
     for start in range(len(folded)):
         for end in range(start + 1, len(folded) + 1):
             run = tuple(folded[start:end])
-            if not free[end - 1] or not any(
-                tuple(name_words[i : i + len(run)]) == run
-                for i in range(len(name_words) - len(run) + 1)
-            ):
+            if not free[end - 1] or not _holds_run(name_words, run):
                 break
             if any(word not in FUNCTION_WORDS for word in run):
                 runs.setdefault(run, (start, end))
     if not runs:
         return None
     longest = max(len(run) for run in runs)
-    ((start, end), *others) = [bounds for run, bounds in runs.items() if len(run) == longest]
+    ((run, (start, end)), *others) = [item for item in runs.items() if len(item[0]) == longest]
     if others:
         return None
 
@@ -222,26 +239,28 @@ def _query_words_of(
         lo -= 1
     while hi < len(tokens) and free[hi]:
         hi += 1
+    # A name the registry does not hold names no stretch, so it costs no lookups.
+    owners = resolver.registered_owners(name)
     named = [
         (i, j)
         for i in range(lo, start + 1)
         for j in range(end, hi + 1)
-        if (i, j) != (start, end) and resolver.is_exact_registered_name(text(i, j))
+        if owners and (i, j) != (start, end) and owners & resolver.registered_owners(text(i, j))
     ]
     width = max((j - i for i, j in named), default=0)
     widest = [(i, j) for i, j in named if j - i == width]
-    return text(*widest[0]) if len(widest) == 1 else text(start, end)
+    if len(widest) == 1:
+        return text(*widest[0])
+    if any(_holds_run(_folded_words(rival), run) for rival in rivals):
+        return None
+    return text(start, end)
 
 
-def _mention_ranges(
-    entity: ExtractedEntity, *, entities: list[ExtractedEntity], query: str
-) -> list[tuple[int, int]]:
-    """The character ranges of `query` the `entities` other than `entity` name in whole
-    words: each one's grounded span, else its name where the query writes it."""
+def _mention_ranges(others: Sequence[ExtractedEntity], *, query: str) -> list[tuple[int, int]]:
+    """The character ranges of `query` the `others` name in whole words: each one's grounded
+    span, else its name where the query writes it."""
     ranges: list[tuple[int, int]] = []
-    for other in entities:
-        if other is entity:
-            continue
+    for other in others:
         span = (other.span or "").strip()
         words = span if span and _grounded(span, query) else other.text.strip()
         ranges.extend(
@@ -256,22 +275,32 @@ def _mention_ranges(
 def _with_query_span(
     entity: ExtractedEntity,
     *,
-    entities: list[ExtractedEntity],
+    others: Sequence[ExtractedEntity],
     query: str,
     resolver: EntityResolver,
 ) -> ExtractedEntity:
     """`entity` whose span is the query's own words for it (`_query_words_of`), where the
     query writes neither its name nor its span: entity resolution then reads those words,
     and an extraction that rewrote "Congo" as "Democratic Republic of the Congo" leaves the
-    query's ambiguity in place (`surface_resolution`). Words another of `entities` names
-    are that entity's, so "Republic of the Congo" in "ODA from DRC to Republic of the
-    Congo" is no span of the Democratic Republic of the Congo; with no words of its own,
-    the entity resolves by its name."""
+    query's ambiguity in place (`surface_resolution`). Words one of the `others` names are
+    that entity's, so "Republic of the Congo" in "ODA from DRC to Republic of the Congo" is
+    no span of the Democratic Republic of the Congo, and words another's name holds as well
+    are contested (`_query_words_of`). With no words of its own, the entity resolves by its
+    name."""
     span = (entity.span or "").strip()
     if (span and _grounded(span, query)) or _grounded(entity.text.strip(), query):
         return entity
-    owned = _mention_ranges(entity, entities=entities, query=query)
-    own = _query_words_of(entity.text, query, owned=owned, resolver=resolver)
+    own = _query_words_of(
+        entity.text,
+        query,
+        owned=_mention_ranges(others, query=query),
+        rivals={
+            other.text.strip()
+            for other in others
+            if _normalize(other.text) != _normalize(entity.text)
+        },
+        resolver=resolver,
+    )
     return entity if own is None else entity.model_copy(update={"span": own})
 
 
@@ -283,11 +312,14 @@ def _recover_entity_surfaces(
     (`_with_query_span`), and a source-qualified surface. Only a span that occurs in
     `query` (`_grounded`) is read for the qualifier.
     """
+    # Each entity reads the spans the ones before it recovered, so two never take one word.
+    spanned = list(entities)
+    for i, entity in enumerate(entities):
+        spanned[i] = _with_query_span(
+            entity, others=[*spanned[:i], *spanned[i + 1 :]], query=query, resolver=resolver
+        )
     recovered: list[ExtractedEntity] = []
-    for entity in (
-        _with_query_span(entity, entities=entities, query=query, resolver=resolver)
-        for entity in entities
-    ):
+    for entity in spanned:
         span = (entity.span or "").strip()
         if not span or not _grounded(span, query):
             recovered.append(entity)
@@ -949,8 +981,8 @@ def _prepare_extraction(
     )
     # A dropped phrase asking for one value per member of a flow role opens that role on
     # each part whose operations read it so, by the rule an extracted operation's phrase
-    # follows (`_breakdown_under`), and raises no warning of its own. One that opens no
-    # part is dropped.
+    # follows (`_breakdown_under`). Beside a sum it opens no part, and the total meets it
+    # (`role_text.breakdown_axis`), so it raises no warning either way.
     per_variable_breakdowns = [
         {
             phrase: _breakdown_under(
@@ -965,7 +997,7 @@ def _prepare_extraction(
     dropped_qualifier_phrases = [
         phrase
         for phrase in dropped_qualifier_phrases
-        if all(breakdowns[phrase] is None for breakdowns in per_variable_breakdowns)
+        if breakdown_axis(phrase, query=query) is None
     ]
     entity_requested_axes = frozenset(axis for _, axis in entity_axes if axis is not None)
     per_variable_open_axes = [
