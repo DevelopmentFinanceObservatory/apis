@@ -10,7 +10,7 @@ import pytest
 from assembler.bind import BoundSeries, bind_all
 from assembler.errors import BindingInvalid, SchemaInvalid
 from assembler.limits import LABEL_MAX
-from assembler.mint import default_window, mint_component, stamp_envelope
+from assembler.mint import default_window, mint_component, stamp_envelope, warned_member_refs
 from assembler.mint.provenance import _WARNING_KIND_BY_CODE, DESCRIPTION_PROVENANCE_MEMBERS
 from assembler.ports import FrameRef
 from assembler.resolve import ResolvedSeries, resolve_selectors
@@ -1723,12 +1723,12 @@ def test_freshness_data_through_is_null_when_the_manifest_records_no_window(rele
 # -- provenance warnings -------------------------------------------------
 
 
-def _resolved_frame_with_warnings(warnings):
+def _resolved_frame_with_warnings(warnings, *, labels=()):
     return build_resolved_frame(
         frame_ref=malaria_ethiopia_frame_ref(),
         role_keys=("recipient",),
         rows=malaria_ethiopia_rows(),
-        labels={"country/ETH": "Ethiopia"},
+        labels={"country/ETH": "Ethiopia", **dict(labels)},
         manifest={"schema_version": 1, "warnings": list(warnings)},
     )
 
@@ -1799,6 +1799,67 @@ def test_provenance_warnings_translate_independently_and_preserve_order(release)
     assert provenance["warnings"] == [
         {"kind": "provisional", "detail": "no live revision"},
         {"kind": "coverage_gap", "detail": "short of scope"},
+    ]
+
+
+def _long_label(index: int) -> str:
+    return f"{index}".ljust(LABEL_MAX, "x")
+
+
+_LONG = {f"dcid:Long{i}": _long_label(i) for i in range(10)}
+
+
+@pytest.mark.parametrize(
+    ("members", "expected"),
+    [
+        pytest.param(
+            {"off_cadence_members": {"count": 2, "refs": ["dcid:Health", "dcid:Water"]}},
+            "Short of scope. At a different frequency: Basic health, Water.",
+            id="other-frequency",
+        ),
+        # A member the labels hold no name for reads as its bare dcid, and the members the
+        # field counts past its refs as a count.
+        pytest.param(
+            {"out_of_window_members": {"count": 7, "refs": ["dcid:Health", "dcid:Roads"]}},
+            "Short of scope. No observations in the requested years: "
+            "Basic health, Roads and 5 more.",
+            id="out-of-window",
+        ),
+        # Long names share the room the message leaves: each field names the whole labels
+        # that fit and counts the rest, and a field fitting none states its count alone.
+        pytest.param(
+            {
+                "off_cadence_members": {"count": 6, "refs": [f"dcid:Long{i}" for i in range(5)]},
+                "out_of_window_members": {
+                    "count": 6,
+                    "refs": [f"dcid:Long{i}" for i in range(5, 10)],
+                },
+            },
+            f"Short of scope. At a different frequency: {_long_label(0)} and 5 more. "
+            "No observations in the requested years: 6 series.",
+            id="both-long",
+        ),
+    ],
+)
+def test_a_coverage_warning_names_its_members_by_label(release, members, expected):
+    resolved_frame = _resolved_frame_with_warnings(
+        [
+            {
+                "code": "coverage_below_scope",
+                "severity": "warn",
+                "message": "Short of scope.",
+                "member_count": 9,
+                **members,
+            }
+        ],
+        labels={"dcid:Health": "Basic health", "dcid:Water": "Water", **_LONG},
+    )
+
+    provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
+
+    assert provenance["warnings"] == [{"kind": "coverage_gap", "detail": expected}]
+    assert warned_member_refs(manifest=resolved_frame.manifest) == [
+        ref for field in members.values() for ref in field["refs"]
     ]
 
 

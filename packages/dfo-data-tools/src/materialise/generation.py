@@ -72,6 +72,7 @@ from materialise.facets import (
     fetch_role_bindings,
     joint_dispatch_facet_ids,
     joint_matches,
+    overlaps_window,
     probe_collection_candidates,
     probe_facets,
     probe_from_candidates,
@@ -422,8 +423,8 @@ class _GroupOutcome:
     `None` when no arithmetic ran; recipe IDs are `None` for ref/unbound or
     native-satisfied units. `default_scope` is the group's default place
     scope, for members that bind no entity. `series_conversions` holds every
-    member's converted series' records (`_convert_by_series`). `off_cadence_members` is
-    `_GroupPlan.off_cadence_members`. `probe_empty` is true when no member's probe returned a
+    member's converted series' records (`_convert_by_series`). `off_cadence_members` and
+    `out_of_window_members` are `_GroupPlan`'s. `probe_empty` is true when no member's probe returned a
     candidate, and the outcome then holds no row and no selection. `provenance_refresh` is
     `_MemberOutcome.provenance_refresh` for the group's shared selection. `method_periods`
     maps each `measurementMethod` the rows name to the earliest and latest period its rows
@@ -446,6 +447,7 @@ class _GroupOutcome:
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
     off_cadence_members: tuple[str, ...] = ()
+    out_of_window_members: tuple[str, ...] = ()
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
     method_periods: Mapping[str, tuple[str, str]] = field(default_factory=dict)
@@ -2151,14 +2153,18 @@ def _probe_group_members(
 @dataclass(frozen=True)
 class _GroupPlan:
     """Shared group selections and per-member fetch plans in request order.
-    `off_cadence_members` names, in request order, each member whose probe jointly matches
-    the selections and whom the election did not count (`FacetElection.members`): it holds no
-    facet at the group's cadence, or under a range window none with a point in it, so it
-    serves nothing."""
+    Each member whose probe jointly matches the selections and whom the election did not
+    count (`FacetElection.members`) serves nothing, and is named, in request order, in one of
+    two tuples. `off_cadence_members` holds those with a jointly matching facet holding a point
+    in the requested window (`facets.overlaps_window`, every facet under a window that is not
+    a range): their observations in those years are at another observation period than the
+    group's, so the frame leaves them out. `out_of_window_members` holds those with no such
+    facet: they hold observations only outside the requested years."""
 
     selections: dict[str, FacetSelection]
     plans: list[_MemberFetchPlan]
     off_cadence_members: tuple[str, ...] = ()
+    out_of_window_members: tuple[str, ...] = ()
 
 
 def _plan_group_members(
@@ -2179,8 +2185,8 @@ def _plan_group_members(
 
     Each member dispatches only its facets at the group's one cadence
     (`FacetElection.cadence`, the one serving the most members). A member the election did
-    not count serves nothing and is named in `off_cadence_members`, for
-    `finish._build_warnings` to report.
+    not count serves nothing and is named in `off_cadence_members` or
+    `out_of_window_members` (`_GroupPlan`), for `finish._build_warnings` to report.
     """
     graph = _planning_graph(requests, graph=graph)
     election = select_group_facets(
@@ -2212,12 +2218,20 @@ def _plan_group_members(
         )
         for index in range(len(requests))
     ]
-    off_cadence_members = tuple(
-        request.stat_var
+    window = requests[0].window
+    # Each uncounted member's dcid, and whether a facet it matches holds a point in the window.
+    uncounted = [
+        (request.stat_var, any(overlaps_window(facet, window=window) for facet in matches))
         for index, (request, probe) in enumerate(zip(requests, probes, strict=True))
-        if index not in election.members and joint_matches(probe.candidates, selections)
+        if index not in election.members
+        and (matches := joint_matches(probe.candidates, selections))
+    ]
+    return _GroupPlan(
+        selections=selections,
+        plans=plans,
+        off_cadence_members=tuple(ref for ref, in_window in uncounted if in_window),
+        out_of_window_members=tuple(ref for ref, in_window in uncounted if not in_window),
     )
-    return _GroupPlan(selections=selections, plans=plans, off_cadence_members=off_cadence_members)
 
 
 def _empty_group_plan(probes: Sequence[MemberProbe]) -> _GroupPlan:
@@ -2582,6 +2596,7 @@ def _assemble_group_outcome(
     ceiling: int,
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE,
     off_cadence_members: tuple[str, ...] = (),
+    out_of_window_members: tuple[str, ...] = (),
     probe_empty: bool = False,
 ) -> _GroupOutcome:
     """Drives `streamer`'s streaming fetch to completion, then assembles
@@ -2651,6 +2666,7 @@ def _assemble_group_outcome(
         default_scope=default_scope,
         series_conversions=streamer.series_conversions,
         off_cadence_members=off_cadence_members,
+        out_of_window_members=out_of_window_members,
         probe_empty=probe_empty,
         method_periods=streamer.method_periods,
         latest_years=streamer.latest_years,
@@ -2758,6 +2774,7 @@ def _generate_group(
         ceiling=ceiling,
         default_scope=default_scope_of(probed),
         off_cadence_members=group_plan.off_cadence_members,
+        out_of_window_members=group_plan.out_of_window_members,
         probe_empty=probe_empty,
     )
     return replace(outcome, provenance_refresh=provenance_refresh)
