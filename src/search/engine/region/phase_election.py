@@ -752,18 +752,21 @@ def narrowed_to_breakdown(shape: ShapeDraft, properties: frozenset[str]) -> Shap
     )
 
 
-def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:
+async def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:
     """Settle the dataset the part is served from under its final bindings
     (`ResolveState.bindings`), or return the refusal of a part no table serves.
 
     An unbinding at materialise can leave bindings that select another table than the one
     binding repair named, so the rule runs again there (`_served`), on the bindings every
     identity of the part is minted from. A part none of whose tables holds a row for the
-    bindings together refuses (`_unserved_refusal`).
+    bindings together refuses (`_unserved_refusal`), with stated-word coverage judged first
+    (`judge_coverage`): no read has served a member, so the judgement reads the shape's
+    named members, and each term the judgement records is named or departs.
     """
     try:
         shape, state.bindings = _served(state, state.shape_draft, state.bindings, role_keys)
     except PartNotServed:
+        await judge_coverage(state)
         return _unserved_refusal(state)
     _install_served_shape(state, shape)
     return None
@@ -1037,15 +1040,18 @@ async def _rate_unread_words(state: ResolveState) -> None:
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
     for the word or answering it both ways. The request names every member the read served
-    (`served_member_names`), a member with no name by its dcid, and the binder rates the
-    words on them wherever they differ from the shape's label
-    (`stated_words_read.serves_beyond_label`), so a word one of them does not state reads
-    as narrower than the answer."""
+    (`served_member_names`), and the binder rates the words on them wherever they differ
+    from the shape's label (`stated_words_read.serves_beyond_label`), so a word one of them
+    does not state reads as narrower than the answer. Where a served member has no name,
+    the request names none and the bind's rating on the label stands, as the coverage rule
+    then reads the named members' words (`phase_rank_bind._member_measure_words`)."""
     words = _unrated_words(state)
     if not words:
         return
     shape = state.shape_draft
-    served = tuple(dict.fromkeys(name or dcid for dcid, name in served_member_names(state).items()))
+    names = list(served_member_names(state).values())
+    named = [name for name in names if name is not None]
+    served = tuple(dict.fromkeys(named)) if len(named) == len(names) else ()
     request = StatedWordsRequest(
         variable=state.variable,
         shape=shape,

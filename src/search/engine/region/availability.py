@@ -10,14 +10,20 @@ presence read (`place.read_default_presence`): data anywhere in that scope. A ro
 reading with no place leaves D unknown, and its own read decides.
 
 Derive reads the named countries for every recalled StatVar (`ShapeDraft.place_available`),
-so a part naming only countries makes no further read. A part naming a set makes one more
-at every place the part names (`read_menu_availability`), over the menu's subject-only
+so a part naming only countries makes no further read for D. A part naming a set makes one
+more at every place the part names (`read_menu_availability`), over the menu's subject-only
 StatVars. That read covers every member of every set: a sample can show data present but
 never absent. The request deadline and a response byte cap bound it.
 Each read stamps the places it covered on the shape (`ShapeDraft.availability_places`), and
 a read that found no data settles D as absent only when it covered every place the part
 names (`asked_places`). A failed read, a slow or oversized one among them, leaves D unknown,
 which is no evidence either way, and so does a read of fewer places than the part names.
+
+One more read settles no D. Where `max_candidates` cuts the breakdowns of a family with no
+total, the family's members recall did not return are read at the shape's
+`availability_places`, countries alone included, so the cut ranks each breakdown by its
+data in the years asked for (`phase_place_materialise._breakdown_coverage`). That read
+stamps nothing on the shape, and a part naming no place makes none.
 """
 
 from __future__ import annotations

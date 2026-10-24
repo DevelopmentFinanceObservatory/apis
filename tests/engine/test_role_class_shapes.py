@@ -59,6 +59,7 @@ from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
     MembershipAuthority,
     MembershipResolution,
+    PartNotServed,
     RoleClassWalks,
     RoleKeys,
     bind_shared_values,
@@ -2993,6 +2994,51 @@ def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(
     assert bool(result.unbound_qualifiers) == (outcome[1] == "qualifier_not_bound")
 
 
+def test_a_part_no_table_serves_after_an_unbinding_names_the_word_it_leaves_unread(
+    monkeypatch,
+):
+    """The unbinding of the sole-option Female leaves "female" on no bound code, and no
+    table serves the part under the bindings left (`phase_election._served`). Coverage is
+    judged before that refusal, on the shape's named members since no read served one, so
+    the binder rates "female" and the refusal names it."""
+    nodes = {
+        "Pop_A": _node("Females aged Y", [], positionType="Stock", gender="Female", age="Y"),
+        "Pop_B": _node("Males aged X", [], positionType="Stock", gender="Male", age="X"),
+    }
+    monkeypatch.setattr(
+        phase_election, "_validate_sole_option_bindings", lambda bindings, shape: bindings
+    )
+    unbound = []
+
+    def unbind(state, unrealisable):
+        unbind_unrealisable(state, unrealisable)
+        unbound.append(state)
+
+    served = phase_election._served
+
+    def not_served(state, shape, bindings, role_keys):
+        if unbound:
+            raise PartNotServed
+        return served(state, shape, bindings, role_keys)
+
+    monkeypatch.setattr(phase_place_materialise, "unbind_unrealisable", unbind)
+    monkeypatch.setattr(phase_election, "_served", not_served)
+    binder = RatingBinder(GeminiBinder(), {"female": 0.0})
+
+    result = _run(
+        entities=["Kenya"],
+        obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
+        query="female aged X in Kenya",
+        nodes=nodes,
+        llm=_relax_llm(gender=("Female", "sole_option"), age=("X", "mentioned")),
+        binder=binder,
+    )
+
+    assert [request.words for request in binder.requests] == [("female",)]
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert "female" in [record.text for record in result.unbound_qualifiers]
+
+
 @pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])
 def test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go(monkeypatch, walked):
     """The family holds no member asserting the named value alone, and its bonds member
@@ -3052,7 +3098,7 @@ def test_the_served_dataset_is_settled_again_under_the_bindings_an_unbinding_lea
     answers with that refusal."""
     settled = []
 
-    def settle(state, role_keys):
+    async def settle(state, role_keys):
         settled.append(
             {b.property_dcid for b in state.bindings if b.kind == "value" and b.property_dcid}
         )

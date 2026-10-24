@@ -346,9 +346,9 @@ _REFUGEES_SERVING_PERSONS = replace(
 )
 
 
-def _serving_persons(binder: GeminiBinder | JevBinder) -> ResolveState:
+def _serving_persons(binder: GeminiBinder | JevBinder, served: str = "persons") -> ResolveState:
     """The part "refugee population" electing `_REFUGEES_SERVING_PERSONS`, whose read
-    served the total population alone, rated by `binder`."""
+    served `served` alone, the total population unless named, rated by `binder`."""
     state = _state(
         variable="refugee population",
         shape_draft=_REFUGEES_SERVING_PERSONS,
@@ -357,7 +357,7 @@ def _serving_persons(binder: GeminiBinder | JevBinder) -> ResolveState:
     )
     state.capped_shapes = [_REFUGEES_SERVING_PERSONS]
     state.binder = binder
-    state.mat_result = _served("persons")
+    state.mat_result = _served(served)
     return state
 
 
@@ -375,11 +375,20 @@ def test_gemini_rates_the_words_on_the_one_series_the_read_served(search_setting
     assert [q.text for q in qualifiers if q.evidence == "uncovered"] == ["refugee"]
 
 
-def test_jev_rates_its_words_again_on_the_one_series_the_read_served(search_settings):
+@pytest.mark.parametrize(
+    ("served", "quoted", "rating"),
+    [("persons", "the series 'Total population'", 0.1), ("sdg/XYZ", None, 0.9)],
+    ids=["named", "unnamed"],
+)
+def test_jev_rates_its_words_again_on_the_one_series_the_read_served(
+    search_settings, served, quoted, rating
+):
     """Jev's bind rated "refugee" stated on the label "Refugee population". The read serves
-    "Total population" alone, so Jev asks again on that series, and its answer decides."""
+    "Total population" alone, so Jev asks again on that series, and its answer decides. A
+    served member with no name sends no served series, so the bind's rating stands."""
     search_settings(qualifier_coverage="refuse")
-    state = _serving_persons(JevBinder(ask=(ask := FakeAsk({}, stated={"refugee": 0.1}))))
+    ask = FakeAsk({}, stated={"refugee": 0.1})
+    state = _serving_persons(JevBinder(ask=ask), served)
     state.bind_decision = BindResult(
         output=_UniversalBindOutput(chosen_shape_index=0),
         binder="jev",
@@ -388,10 +397,14 @@ def test_jev_rates_its_words_again_on_the_one_series_the_read_served(search_sett
 
     qualifiers = _run(state)
 
-    ((_request_state, questions),) = ask.requests
-    assert "served as the series 'Total population'" in questions["unread|0|0"]["instructions"]
-    assert state.stated_word_ratings == {"refugee": 0.1}
-    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == ["refugee"]
+    assert [
+        f"served as {quoted}" in questions["unread|0|0"]["instructions"]
+        for _request_state, questions in ask.requests
+    ] == ([True] if quoted else [])
+    assert state.stated_word_ratings == {"refugee": rating}
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == (
+        ["refugee"] if quoted else []
+    )
 
 
 class _RatedOutLLM(FakeLLM):

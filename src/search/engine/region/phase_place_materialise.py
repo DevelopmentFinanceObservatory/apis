@@ -494,7 +494,9 @@ async def _breakdown_coverage(
     recall did not return, which the catalogue's tables or the code index hold in the
     family, are read at the same places (`ShapeDraft.availability_places`) in one batched
     facet read (`availability.read_coverage`), so a breakdown holding data only in them is
-    ranked as one recalled would be. A failed read leaves them without data."""
+    ranked as one recalled would be. A failed read leaves them without data. A part naming
+    no place has no coverage at places and makes no read, so its cut ranks on the members
+    recall returned."""
     shape = state.shape_draft
     coverage = shape.named_place_coverage or shape.member_coverage
     if coverage is None:
@@ -1604,9 +1606,10 @@ async def _unbind(
     On a part a table serves, the query records no rating reads are read again over the
     bindings so settled (`phase_rank_bind._query_records`), as binding repair keeps them:
     "female" in "female aged X" reads no bound code once Sex=Female is unbound. Coverage is
-    judged once, on what the read then serves (`phase_election.judge_coverage`)."""
+    judged once, on what the read then serves (`phase_election.judge_coverage`), or before
+    the refusal of a part no table serves."""
     unbind_unrealisable(state, unrealisable)
-    if (refused := _settle_served_dataset(state, role_keys)) is not None:
+    if (refused := await _settle_served_dataset(state, role_keys)) is not None:
         return refused
     record_reading(state, _query_records(state))
     return None

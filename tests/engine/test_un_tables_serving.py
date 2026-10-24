@@ -18,8 +18,10 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import DetectedSV, DetectLegs, admit_legs
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.config import settings
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region import availability, phase_place_materialise
 from search.engine.region.codes import PLACE_SCOPE_DEFAULTED
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
@@ -415,18 +417,12 @@ def test_a_cap_below_the_breakdown_count_truncates_the_candidates(
     assert result.candidate_budget_truncated is truncated
 
 
-@pytest.mark.parametrize("urban_recalled", [True, False], ids=["recalled", "held_only"])
-@pytest.mark.parametrize("max_candidates", [2, 3, 6, 7])
-def test_the_cap_keeps_the_breakdown_holding_data_in_the_years_asked_for(
-    bind_catalogue, monkeypatch: pytest.MonkeyPatch, max_candidates: int, urban_recalled: bool
-) -> None:
-    """The series breaks down three ways, or seven with four more one-member breakdowns,
-    and only the urban member holds data in Kenya in 2020. With `max_candidates` below the
-    breakdown count, the cut keeps the residence-area breakdown, the one holding data in the
-    year the question asks for, whatever the cap, and whether recall returned the urban
-    member or the catalogue's tables alone hold it in the family."""
-    monkeypatch.setattr(settings(), "max_candidates", max_candidates)
-    extra = {
+def _resolve_urban_in_2020(bind_catalogue, *, extra: bool, urban_recalled: bool):
+    """Resolve "under-five mortality" in Kenya for 2020 over a series breaking down three
+    ways, or seven with four more one-member breakdowns where `extra`, whose urban member
+    alone holds data in 2020, recalled where `urban_recalled` and else held only in the
+    family by the catalogue's tables."""
+    extras = {
         f"undata/who/MORT_U5_RATE.EXTRA--{i}": (
             f"Under-five mortality rate [Extra{i}=Group]",
             f"undataExtra{i}",
@@ -436,7 +432,7 @@ def test_the_cap_keeps_the_breakdown_holding_data_in_the_years_asked_for(
     }
     members = {
         **_TWO_BREAKDOWNS,
-        **(extra if max_candidates >= 6 else {}),
+        **(extras if extra else {}),
         _URBAN_MEMBER: ("Under-five mortality rate [Residence area=Urban]", _RESIDENCE, "U"),
     }
     query = "under-five mortality"
@@ -449,15 +445,81 @@ def test_the_cap_keeps_the_breakdown_holding_data_in_the_years_asked_for(
         "svs": recalled,
         "cosine_scores": [0.9 - 0.01 * i for i in range(len(recalled))],
     }
-
-    result = _resolve_two_breakdowns(
+    return _resolve_two_breakdowns(
         graph,
         query=query,
         date_request=DateRequest(window=TimeWindow(start_year=2020, end_year=2020), latest=False),
     )
 
+
+@pytest.mark.parametrize("urban_recalled", [True, False], ids=["recalled", "held_only"])
+@pytest.mark.parametrize("max_candidates", [2, 3, 6, 7])
+def test_the_cap_keeps_the_breakdown_holding_data_in_the_years_asked_for(
+    bind_catalogue, monkeypatch: pytest.MonkeyPatch, max_candidates: int, urban_recalled: bool
+) -> None:
+    """The series breaks down three ways, or seven with four more one-member breakdowns,
+    and only the urban member holds data in Kenya in 2020. With `max_candidates` below the
+    breakdown count, the cut keeps the residence-area breakdown, the one holding data in the
+    year the question asks for, whatever the cap, and whether recall returned the urban
+    member or the catalogue's tables alone hold it in the family."""
+    monkeypatch.setattr(settings(), "max_candidates", max_candidates)
+
+    result = _resolve_urban_in_2020(
+        bind_catalogue, extra=max_candidates >= 6, urban_recalled=urban_recalled
+    )
+
     assert result.status != "no_data"
     assert _URBAN_MEMBER in {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
+
+
+class _FailingFacets:
+    """A graph whose facet read fails."""
+
+    def observation_facets_batch(self, *args, **kwargs):
+        raise TimeoutError("the read timed out")
+
+
+@pytest.mark.parametrize(
+    ("max_candidates", "fails", "read", "urban_kept"),
+    [
+        (7, False, [], True),
+        (2, False, [[_URBAN_MEMBER]], True),
+        (2, True, [[_URBAN_MEMBER]], False),
+    ],
+    ids=["the_cap_cuts_nothing", "the_cap_cuts", "the_read_fails"],
+)
+def test_the_breakdown_read_runs_only_where_the_cap_cuts_and_fails_open(
+    bind_catalogue,
+    monkeypatch: pytest.MonkeyPatch,
+    max_candidates: int,
+    fails: bool,
+    read: list[list[str]],
+    urban_kept: bool,
+) -> None:
+    """The urban member, held only in the family, is read only when `max_candidates` cuts
+    a breakdown. A failed read is noted as lost and the cut ranks on what recall returned,
+    so the urban breakdown, holding no recalled member, is cut."""
+    monkeypatch.setattr(settings(), "max_candidates", max_candidates)
+    reads: list[list[str]] = []
+
+    def read_coverage(stat_vars, *, graph, **kwargs):
+        reads.append(list(stat_vars))
+        return availability.read_coverage(
+            stat_vars, graph=_FailingFacets() if fails else graph, **kwargs
+        )
+
+    monkeypatch.setattr(phase_place_materialise, "read_coverage", read_coverage)
+
+    with recording_degraded_reads() as lost:
+        result = _resolve_urban_in_2020(
+            bind_catalogue, extra=max_candidates >= 6, urban_recalled=False
+        )
+
+    assert reads == read
+    assert ("breakdown availability" in lost.reads) is fails
+    assert (
+        _URBAN_MEMBER in {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
+    ) is urban_kept
 
 
 def test_one_breakdown_left_with_data_answers_by_it_with_a_departure(bind_catalogue) -> None:
