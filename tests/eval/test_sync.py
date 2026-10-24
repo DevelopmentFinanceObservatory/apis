@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,13 +13,17 @@ import httpx
 import pytest
 from langfuse.api import DatasetStatus
 
+import graph_release.service as release_service
 import search.eval.sync as m
+from dfo_platform.singleton import RefCountedSingleton
+from graph_release.context import URI_ENV_VAR, bound_release_or_none, current_release
 from search.engine.errors import GraphReadFailure
 from search.eval.cases import load_case_files
 from search.eval.checks import ScoreContext, WireSchema
 from search.eval.runner import CaseRun, Sample, build_request
 from search.models import RESOLVE_RESPONSE_ADAPTER
 from tests.conftest import _build_worked_example_response
+from tests.origin_catalogue.fake_catalogue import fake_catalogue_service
 
 ETHIOPIA = """
 - id: eth
@@ -283,17 +288,67 @@ def test_a_known_task_failure_excuses_only_a_failed_run(tmp_path, monkeypatch, r
     assert m.nightly_exit_code(states) == code
 
 
+@pytest.fixture
+def fresh_release_service(monkeypatch) -> None:
+    """A release service singleton of the test's own, so `main` opens the release
+    `GRAPH_RELEASE_URI` names rather than reading the session's service."""
+    monkeypatch.setattr(
+        release_service,
+        "_singleton",
+        RefCountedSingleton(build=release_service._build, label="graph release service"),
+    )
+
+
+def _set_release_uri(monkeypatch, tmp_path: Path, uri: str) -> None:
+    """``session`` keeps the session release's URI, ``unset`` drops it and ``empty`` names a
+    root with no release published."""
+    if uri == "unset":
+        monkeypatch.delenv(URI_ENV_VAR)
+    elif uri == "empty":
+        monkeypatch.setenv(URI_ENV_VAR, (tmp_path / "no-release").as_uri())
+
+
 @pytest.mark.unbound_release
-def test_main_binds_the_served_release_before_it_builds_a_request(tmp_path, monkeypatch):
-    """A `dataset_resubmit` request reads the bound release's code index, so `main` binds one
-    before `sync` builds the dataset items."""
+@pytest.mark.parametrize(
+    ("corpus_text", "uri", "code"),
+    [
+        (RESUBMIT, "session", 0),
+        (RESUBMIT, "unset", 2),
+        (RESUBMIT, "empty", 3),
+        (ETHIOPIA, "unset", 0),
+    ],
+    ids=["resubmit", "resubmit, unset URI", "resubmit, no release", "raw_text, unset URI"],
+)
+def test_main_opens_the_release_only_for_a_request_that_reads_it(
+    tmp_path, monkeypatch, fresh_release_service, _fixture_index_release, corpus_text, uri, code
+):
+    """A `dataset_resubmit` request reads the bound release's code index, so `main` opens the
+    release `GRAPH_RELEASE_URI` names before `sync` builds it, and a corpus without one opens
+    none."""
     corpus = tmp_path / "corpus"
-    _write(corpus, {"resubmit": RESUBMIT})
+    by_file = _write(corpus, {"main": corpus_text})
     fake = FakeLangfuse()
     monkeypatch.setattr(m, "_client", lambda: fake)
+    _set_release_uri(monkeypatch, tmp_path, uri)
+    bound = []
 
-    assert m.main([f"--corpus-dir={corpus}"]) == 0
-    assert _active(fake, "search-resubmit") == {"search-resubmit:search-case-resubmit"}
+    def spy_build_request(case):
+        bound.append(bound_release_or_none())
+        return build_request(case)
+
+    monkeypatch.setattr(m, "build_request", spy_build_request)
+
+    assert m.main([f"--corpus-dir={corpus}"]) == code
+    if code != 0:
+        return
+    assert _active(fake, "search-main") == {f"search-main:search-case-{by_file['main'][0].id}"}
+    (release,) = bound
+    if corpus_text == RESUBMIT:
+        assert release is not None
+        assert release.service is release_service.get_release_service()
+        assert release.service is not _fixture_index_release.service
+    else:
+        assert release is None
 
 
 def _no_langfuse():
@@ -328,12 +383,60 @@ def _refused(url: str, **_: object) -> httpx.Response:
     ids=["connection refused", "503"],
 )
 def test_a_schema_that_does_not_load_exits_3(tmp_path, monkeypatch, get):
+    """The schema loads before the release opens, so an app outage exits 3 whatever the
+    release does."""
+    corpus = tmp_path / "corpus"
+    _write(corpus, {"main": RESUBMIT})
+    monkeypatch.setattr(m, "_client", FakeLangfuse)
+    monkeypatch.setattr(m.httpx, "get", get)
+    monkeypatch.setattr(m, "get_release_service", _no_release_service)
+
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 3
+
+
+def _no_release_service():
+    raise AssertionError("the release opened before the schema loaded")
+
+
+@contextmanager
+def _fake_score_clients():
+    yield SimpleNamespace(graph=AllExist(), sdmx=None, coverage=None)
+
+
+@pytest.mark.unbound_release
+@pytest.mark.parametrize(("uri", "code"), [("session", 0), ("unset", 2), ("empty", 3)])
+def test_the_nightly_runs_under_the_release_main_opened(
+    tmp_path, monkeypatch, fresh_release_service, uri, code
+):
+    """`_run_nightly` binds the release `main` opened from `GRAPH_RELEASE_URI` around the
+    experiment, and a release that does not open exits as in a sync."""
     corpus = tmp_path / "corpus"
     _write(corpus, {"main": ETHIOPIA})
     monkeypatch.setattr(m, "_client", FakeLangfuse)
-    monkeypatch.setattr(m.httpx, "get", get)
+    response = RESOLVE_RESPONSE_ADAPTER.json_schema(mode="serialization")
+    schema = {"schema_version": 1, "request": {}, "response": response}
+    monkeypatch.setattr(
+        m.httpx,
+        "get",
+        lambda url, **_: httpx.Response(200, json=schema, request=httpx.Request("GET", url)),
+    )
+    monkeypatch.setattr(
+        "origin_catalogue.service.get_catalogue_service",
+        fake_catalogue_service,
+    )
+    monkeypatch.setattr("search.eval.live_clients.score_clients", _fake_score_clients)
+    _set_release_uri(monkeypatch, tmp_path, uri)
+    bound = []
 
-    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == 3
+    def spy_nightly(by_file, **_):
+        bound.append(current_release())
+        return [], {}
+
+    monkeypatch.setattr(m, "nightly", spy_nightly)
+
+    assert m.main([f"--corpus-dir={corpus}", "--nightly=http://app"]) == code
+    if code == 0:
+        assert [release.service for release in bound] == [release_service.get_release_service()]
 
 
 class BuggyGraph:
@@ -366,7 +469,7 @@ def test_a_task_or_check_that_raises_exits_2(tmp_path, monkeypatch, corpus_text,
     monkeypatch.setattr(
         m,
         "_run_nightly",
-        lambda by_file, url, schema, langfuse: m.nightly(
+        lambda by_file, url, schema, langfuse, release: m.nightly(
             by_file, url=url, ctx=score_context(graph), langfuse=langfuse
         ),
     )
