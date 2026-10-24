@@ -276,6 +276,28 @@ _COG = Entity(
 )
 _KOR = Entity(dcid="country/KOR", name="South Korea", kind="country", graph_type="Country")
 _PRK = Entity(dcid="country/PRK", name="North Korea", kind="country", graph_type="Country")
+_TTO = Entity(dcid="country/TTO", name="Trinidad and Tobago", kind="country", graph_type="Country")
+_ATG = Entity(dcid="country/ATG", name="Antigua and Barbuda", kind="country", graph_type="Country")
+_VCT = Entity(
+    dcid="country/VCT",
+    name="Saint Vincent and the Grenadines",
+    kind="country",
+    graph_type="Country",
+)
+_FSM = Entity(
+    dcid="country/FSM", name="Federated States of Micronesia", kind="country", graph_type="Country"
+)
+_MICRONESIA = Entity(dcid="Micronesia", name="Micronesia", kind="subregion", graph_type="Place")
+# Towns sharing the first word of a country's name, as the graph's text search finds them.
+_TRINIDAD_TOWN = Entity(
+    dcid="wikidataId/Q1001", name="Trinidad", kind="place_other", graph_type="City"
+)
+_ANTIGUA_TOWN = Entity(
+    dcid="wikidataId/Q1002", name="Antigua Guatemala", kind="place_other", graph_type="City"
+)
+_SAINT_VINCENT_TOWN = Entity(
+    dcid="wikidataId/Q1003", name="Saint-Vincent", kind="place_other", graph_type="City"
+)
 _CAN = Entity(dcid="country/CAN", name="Canada", kind="country", graph_type="Country")
 _DEU = Entity(dcid="country/DEU", name="Germany", kind="country", graph_type="Country")
 _GBR = Entity(dcid="country/GBR", name="United Kingdom", kind="country", graph_type="Country")
@@ -330,6 +352,46 @@ _CANADIAN_TX = Entity(dcid="geoId/4812412", name="Canadian", kind="place_other",
             id="korea",
         ),
         pytest.param(
+            "aid to Trinidad",
+            ExtractedEntity(text="Trinidad and Tobago", span="Trinidad"),
+            {
+                "Trinidad": Ambiguous(candidates=(_TTO, _TRINIDAD_TOWN)),
+                "Trinidad and Tobago": Resolved(entity=_TTO),
+            },
+            Resolved(entity=_TTO),
+            id="trinidad",
+        ),
+        pytest.param(
+            "aid to Antigua",
+            ExtractedEntity(text="Antigua and Barbuda", span="Antigua"),
+            {
+                "Antigua": Ambiguous(candidates=(_ATG, _ANTIGUA_TOWN)),
+                "Antigua and Barbuda": Resolved(entity=_ATG),
+            },
+            Resolved(entity=_ATG),
+            id="antigua",
+        ),
+        pytest.param(
+            "aid to Saint Vincent",
+            ExtractedEntity(text="Saint Vincent and the Grenadines", span="Saint Vincent"),
+            {
+                "Saint Vincent": Ambiguous(candidates=(_VCT, _SAINT_VINCENT_TOWN)),
+                "Saint Vincent and the Grenadines": Resolved(entity=_VCT),
+            },
+            Resolved(entity=_VCT),
+            id="saint_vincent",
+        ),
+        pytest.param(
+            "aid to Micronesia",
+            ExtractedEntity(text="Federated States of Micronesia", span="Micronesia"),
+            {
+                "Micronesia": Ambiguous(candidates=(_FSM, _MICRONESIA)),
+                "Federated States of Micronesia": Resolved(entity=_FSM),
+            },
+            Resolved(entity=_FSM),
+            id="micronesia",
+        ),
+        pytest.param(
             "German aid to Kenya",
             ExtractedEntity(text="Germany", span="German"),
             {"German": NotFound(), "Germany": Resolved(entity=_DEU)},
@@ -368,9 +430,10 @@ _CANADIAN_TX = Entity(dcid="geoId/4812412", name="Canadian", kind="place_other",
 def test_a_surface_and_its_name_settle_on_one_resolution(
     query: str, entity: ExtractedEntity, answers: dict[str, object], expected: Resolution
 ) -> None:
-    """The query's words decide: a name that only adds words to its surface ("Democratic
-    Republic of the Congo" for "Congo") settles none of its readings, and a name in other
-    words answers where the surface finds nothing."""
+    """The query's words decide: a name that only adds words to its surface settles its
+    readings only as their one place of its kind ("Trinidad and Tobago" for "Trinidad",
+    beside a town), never between two of a kind ("Democratic Republic of the Congo" for
+    "Congo"), and a name in other words answers where the surface finds nothing."""
     resolver = _Resolver(answers)
 
     found = _lookup([entity], query=query, resolver=resolver)
@@ -392,6 +455,25 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             },
             Ambiguous(candidates=(_COD, _COG)),
             id="expanded_name",
+        ),
+        pytest.param(
+            "aid to DR Congo",
+            "Democratic Republic of the Congo",
+            "DR Congo",
+            {
+                "DR Congo": Resolved(entity=_COD),
+                "Democratic Republic of the Congo": Resolved(entity=_COD),
+            },
+            Resolved(entity=_COD),
+            id="registered_mention_keeps_its_choosing_word",
+        ),
+        pytest.param(
+            "aid to South Korea",
+            "Republic of Korea",
+            "South Korea",
+            {"South Korea": Resolved(entity=_KOR), "Republic of Korea": Resolved(entity=_KOR)},
+            Resolved(entity=_KOR),
+            id="registered_mention_names_one_korea",
         ),
         pytest.param(
             "German aid to Kenya",
@@ -419,9 +501,10 @@ def test_a_name_the_query_does_not_write_resolves_through_the_query_words(
     expected: Resolution,
 ) -> None:
     """An extraction that names a place in words the query does not write, and cites no
-    span, gets the query's own words for it as its span, which resolution reads. A name in
-    other words shares none with the query and resolves as itself."""
-    resolver = _Resolver(answers)
+    span, gets the query's own words for it as its span, which resolution reads: the words
+    it shares with the query, grown to the registered name around them ("DR Congo", "South
+    Korea"). A name in other words shares none with the query and resolves as itself."""
+    resolver = _Resolver(answers, names=("DR Congo", "South Korea"))
 
     recovered = _recover_entity_surfaces(
         [ExtractedEntity(text=name)], query=query, resolver=cast(EntityResolver, resolver)
@@ -430,6 +513,33 @@ def test_a_name_the_query_does_not_write_resolves_through_the_query_words(
 
     assert recovered == [ExtractedEntity(text=name, span=span)]
     assert found == {name: expected}
+
+
+def test_a_recovered_span_takes_no_words_another_entity_names() -> None:
+    """Words another entity's span holds are that entity's mention, so a name that shares
+    them recovers no span from them and resolves as itself: both Congos, each once."""
+    query = "ODA from DRC to Republic of the Congo"
+    entities = [
+        ExtractedEntity(text="Democratic Republic of the Congo"),
+        ExtractedEntity(text="Republic of the Congo", span="Republic of the Congo"),
+    ]
+    resolver = _Resolver(
+        {
+            "Democratic Republic of the Congo": Resolved(entity=_COD),
+            "Republic of the Congo": Resolved(entity=_COG),
+        }
+    )
+
+    recovered = _recover_entity_surfaces(
+        entities, query=query, resolver=cast(EntityResolver, resolver)
+    )
+    found = _lookup(recovered, query=query, resolver=resolver)
+
+    assert recovered == entities
+    assert found == {
+        "Democratic Republic of the Congo": Resolved(entity=_COD),
+        "Republic of the Congo": Resolved(entity=_COG),
+    }
 
 
 @pytest.mark.parametrize(

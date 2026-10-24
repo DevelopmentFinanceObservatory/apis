@@ -7,8 +7,9 @@ import re
 
 import pytest
 
+from search.engine.role_text import breakdown_axis, every_member_breakdown_axis
 from search.heading.departure_fact import DepartureFact, UnservedMembers
-from search.models import DEPARTURE_ORDER, Departure
+from search.models import DEPARTURE_ORDER, Departure, RoleAxis
 from search.render.departures import (
     departure_text,
     departures_from_facts,
@@ -664,7 +665,7 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         ),
         "aid",
         "No donor was named, so this shows official donors (DAC), the source's total for "
-        'every official donor. To list each donor, add "by donor" to the question.',
+        'every official donor. To list each donor, add "for each donor" to the question.',
     ),
     (
         DepartureFact(
@@ -679,7 +680,7 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "You asked for all recipients. This shows all recipients (DAC), the source's total for "
         "every recipient, which includes aid not allocated to a country. To list each "
-        'recipient, write "by recipient" in place of all recipients.',
+        'recipient, write "each recipient" in place of "all recipients".',
     ),
     (
         DepartureFact(
@@ -942,6 +943,47 @@ def test_departure_text(fact, family, shows_data, text):
 @pytest.mark.parametrize("cases", [_CASES, _NO_DATA_CASES])
 def test_cases_cover_every_code(cases):
     assert {fact.code for fact, _, _ in cases} == set(DEPARTURE_ORDER)
+
+
+@pytest.mark.parametrize(
+    ("query", "asked", "over", "advised"),
+    [
+        pytest.param(
+            "ODA from Germany to all recipients",
+            "all recipients",
+            "destination",
+            "ODA from Germany to each recipient",
+            id="named_population",
+        ),
+        pytest.param(
+            "ODA to Ethiopia", None, "origin", "ODA to Ethiopia for each donor", id="unnamed_side"
+        ),
+    ],
+)
+def test_the_raw_text_way_back_writes_a_question_that_lists_the_members(
+    query: str, asked: str | None, over: RoleAxis, advised: str
+):
+    """The raw-text way back from a side read whole quotes a phrase that, put where it says
+    in the question, gives a grammatical question listing the side's members whatever
+    operation carries the phrase: a rank reads it by `breakdown_axis`, any other verb by
+    `every_member_breakdown_axis`."""
+    fact = DepartureFact(
+        code="whole_total_read",
+        binding_ref=f"{over}:",
+        asked=asked,
+        over=over,
+        group="the source's total",
+        whole_of=("official",),
+        members_in_words=True,
+    )
+
+    way_back = departure_text(fact, family=None, shows_data=True).rpartition("To list each ")[2]
+    phrase = re.findall(r'"([^"]+)"', way_back)[0]
+    rewritten = query.replace(asked, phrase) if asked is not None else f"{query} {phrase}"
+
+    assert rewritten == advised
+    assert breakdown_axis(phrase, query=rewritten) == over
+    assert every_member_breakdown_axis(phrase, query=rewritten) == over
 
 
 @pytest.mark.parametrize(("fact", "family", "shows_data", "_text"), _ALL_CASES)

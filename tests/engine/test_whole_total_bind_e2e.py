@@ -2213,6 +2213,24 @@ def test_a_raw_text_sum_tagged_with_breakdown_words_keeps_its_operation(
     ] == [phrase]
 
 
+def test_a_dropped_by_or_across_phrase_beside_a_sum_opens_no_side(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A "by" or "across" phrase extraction dropped beside a sum follows the rule of an
+    operation's own phrase: only a rank reads it as a breakdown, so "total ... across
+    donors" keeps the donor total and opens no side."""
+    _coverage(monkeypatch)
+
+    answer = _raw(
+        "total official development assistance to Ethiopia across donors",
+        dropped=("across donors",),
+        operations=(ExtractedOperation(verb="aggregate", variable=0, phrase="total"),),
+    )
+
+    assert answer.spec.definition.identity.open_roles is None
+    assert _origin(answer.spec) == ["DACOfficialDonors"]
+
+
 def test_a_raw_text_side_read_whole_names_the_words_that_list_its_members(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -2223,7 +2241,7 @@ def test_a_raw_text_side_read_whole_names_the_words_that_list_its_members(
     answer = _raw("official development assistance to Ethiopia")
 
     (departure,) = [d for d in answer.departures if d.code == "whole_total_read"]
-    assert departure.text.endswith('To list each donor, add "by donor" to the question.')
+    assert departure.text.endswith('To list each donor, add "for each donor" to the question.')
 
 
 # DAC2b's net other official flows member, a family DAC2a and the CRS do not publish, with

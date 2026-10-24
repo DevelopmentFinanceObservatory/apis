@@ -16,9 +16,11 @@ and settles between the surface's answer and the name's own:
   the name is the extractor's reading of it; "Canadian" alone matches two US towns. The
   leading answer stands, except that a `NotFound` lead takes the other answer, a `NotHeld`
   lead takes it unless that is `NotFound`, and an `Ambiguous` lead takes it when it is one
-  of the lead's candidates. A name that only adds words to its surface never settles the
-  surface's ambiguity: "Congo" names both Congos, and the query does not choose between
-  them.
+  of the lead's candidates. A name that only adds words to its surface settles the
+  surface's ambiguity only when it is the one candidate of its kind: "Trinidad and Tobago"
+  settles "Trinidad" against a town of that name, and "Federated States of Micronesia"
+  settles "Micronesia" against the region, while "Congo" names two countries and the
+  query does not choose between them.
 """
 
 from __future__ import annotations
@@ -26,7 +28,15 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
-from entity_resolution import Ambiguous, EntityResolver, NotFound, NotHeld, Resolution, Resolved
+from entity_resolution import (
+    Ambiguous,
+    Entity,
+    EntityResolver,
+    NotFound,
+    NotHeld,
+    Resolution,
+    Resolved,
+)
 
 
 def _is_qualified(surface: str, name: str) -> bool:
@@ -68,13 +78,18 @@ def _settle(name: str, surface: str | None, by_text: Mapping[str, Resolution]) -
     if isinstance(lead, NotHeld):
         return lead if isinstance(other, NotFound) else other
     if (
-        not expands
-        and isinstance(lead, Ambiguous)
+        isinstance(lead, Ambiguous)
         and isinstance(other, Resolved)
         and other.entity.dcid in {candidate.dcid for candidate in lead.candidates}
+        and (not expands or _sole_of_its_kind(other.entity, lead.candidates))
     ):
         return other
     return lead
+
+
+def _sole_of_its_kind(entity: Entity, candidates: Sequence[Entity]) -> bool:
+    """Whether `entity` is the only one of `candidates` of its kind."""
+    return all(c.kind != entity.kind for c in candidates if c.dcid != entity.dcid)
 
 
 async def resolve_names(

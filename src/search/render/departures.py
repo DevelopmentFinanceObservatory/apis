@@ -462,15 +462,17 @@ def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_dat
 
 
 def _members_way_back(fact: DepartureFact, noun: str) -> str:
-    """How the request lists each member of a side read whole, in its door's form: the
-    question's words "by donor" on a door that asks in them (`members_in_words`), which
-    the raw-text door reads as the breakdown (`role_text.breakdown_axis`), else
-    `open_roles`. Either replaces the request's words for the population, where it gave
-    some."""
+    """How the request lists each member of a side read whole, in its door's form: on a
+    door that asks in the question's words (`members_in_words`), an each phrase, which the
+    raw-text door reads as the breakdown under any verb
+    (`role_text.every_member_breakdown_axis`), else `open_roles`. The each phrase takes the
+    place of the request's words for the population, where it gave some, so "ODA from
+    Germany to all recipients" becomes "ODA from Germany to each recipient"; otherwise
+    "for each recipient" joins the question. `open_roles` replaces those words likewise."""
     if fact.members_in_words:
         if fact.asked is not None:
-            return f'write "by {noun}" in place of {_asked(fact)}'
-        return f'add "by {noun}" to the question'
+            return f'write "each {noun}" in place of "{_asked(fact)}"'
+        return f'add "for each {noun}" to the question'
     instead = f" in place of {_asked(fact)}" if fact.asked is not None else ""
     return f"search again with open_roles ['{noun}']{instead}"
 

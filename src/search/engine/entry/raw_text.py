@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Collection, Sequence
 from contextlib import aclosing
 
 from code_index.shared import get_index
@@ -177,43 +177,101 @@ def _balanced_parenthetical_extensions(query: str, span: str) -> list[str]:
     return extensions
 
 
-def _query_words_of(name: str, query: str) -> str | None:
-    """The query's own words for a `name` the query does not write: the longest run of
-    whole query words that `name` holds as consecutive whole words, holding a word other
-    than a function word, as written in `query`. "Congo" in "aid to Congo" for the name
-    "Democratic Republic of the Congo". `None` when no run holds one, or when two runs of
-    different words tie for longest. A name in other words ("Germany" for "German", "United
-    Kingdom" for "UK") shares no word with the query and has none."""
+def _query_words_of(
+    name: str, query: str, *, owned: Sequence[tuple[int, int]], resolver: EntityResolver
+) -> str | None:
+    """The query's own words for a `name` the query does not write, as written in `query`.
+
+    They are the longest run of whole query words that `name` holds as consecutive whole
+    words, holding a word other than a function word: "Congo" in "aid to Congo" for the name
+    "Democratic Republic of the Congo". The run grows to the longest stretch of query words
+    around it that the registry holds as a name, so the user's mention keeps the words that
+    choose its place: "DR Congo" and "South Korea" rather than "Congo" and "Korea". Two
+    such stretches of one length leave the run as it is. Neither takes a word inside
+    `owned`, the character ranges of `query` another entity's mention holds. `None` when
+    no run holds one, or when two runs of different words tie for longest. A name in other
+    words ("Germany" for "German", "United Kingdom" for "UK") shares no word with the query
+    and has none."""
     tokens = word_tokens(query)
+    free = [not any(lo < token.end and token.start < hi for lo, hi in owned) for token in tokens]
     folded = [token.text.casefold() for token in tokens]
     name_words = [token.text.casefold() for token in word_tokens(name)]
     runs: dict[tuple[str, ...], tuple[int, int]] = {}
     for start in range(len(folded)):
         for end in range(start + 1, len(folded) + 1):
             run = tuple(folded[start:end])
-            if not any(
+            if not free[end - 1] or not any(
                 tuple(name_words[i : i + len(run)]) == run
                 for i in range(len(name_words) - len(run) + 1)
             ):
                 break
             if any(word not in FUNCTION_WORDS for word in run):
-                runs.setdefault(run, (tokens[start].start, tokens[end - 1].end))
+                runs.setdefault(run, (start, end))
     if not runs:
         return None
     longest = max(len(run) for run in runs)
-    (bounds, *others) = [bounds for run, bounds in runs.items() if len(run) == longest]
-    return None if others else query[bounds[0] : bounds[1]]
+    ((start, end), *others) = [bounds for run, bounds in runs.items() if len(run) == longest]
+    if others:
+        return None
+
+    def text(lo: int, hi: int) -> str:
+        return query[tokens[lo].start : tokens[hi - 1].end]
+
+    lo, hi = start, end
+    while lo > 0 and free[lo - 1]:
+        lo -= 1
+    while hi < len(tokens) and free[hi]:
+        hi += 1
+    named = [
+        (i, j)
+        for i in range(lo, start + 1)
+        for j in range(end, hi + 1)
+        if (i, j) != (start, end) and resolver.is_exact_registered_name(text(i, j))
+    ]
+    width = max((j - i for i, j in named), default=0)
+    widest = [(i, j) for i, j in named if j - i == width]
+    return text(*widest[0]) if len(widest) == 1 else text(start, end)
 
 
-def _with_query_span(entity: ExtractedEntity, *, query: str) -> ExtractedEntity:
+def _mention_ranges(
+    entity: ExtractedEntity, *, entities: list[ExtractedEntity], query: str
+) -> list[tuple[int, int]]:
+    """The character ranges of `query` the `entities` other than `entity` name in whole
+    words: each one's grounded span, else its name where the query writes it."""
+    ranges: list[tuple[int, int]] = []
+    for other in entities:
+        if other is entity:
+            continue
+        span = (other.span or "").strip()
+        words = span if span and _grounded(span, query) else other.text.strip()
+        ranges.extend(
+            (start, end)
+            for start, end in _all_normalized_text_ranges(words, query)
+            if not (start > 0 and query[start - 1].isalnum())
+            and not (end < len(query) and query[end].isalnum())
+        )
+    return ranges
+
+
+def _with_query_span(
+    entity: ExtractedEntity,
+    *,
+    entities: list[ExtractedEntity],
+    query: str,
+    resolver: EntityResolver,
+) -> ExtractedEntity:
     """`entity` whose span is the query's own words for it (`_query_words_of`), where the
     query writes neither its name nor its span: entity resolution then reads those words,
     and an extraction that rewrote "Congo" as "Democratic Republic of the Congo" leaves the
-    query's ambiguity in place (`surface_resolution`)."""
+    query's ambiguity in place (`surface_resolution`). Words another of `entities` names
+    are that entity's, so "Republic of the Congo" in "ODA from DRC to Republic of the
+    Congo" is no span of the Democratic Republic of the Congo; with no words of its own,
+    the entity resolves by its name."""
     span = (entity.span or "").strip()
     if (span and _grounded(span, query)) or _grounded(entity.text.strip(), query):
         return entity
-    own = _query_words_of(entity.text, query)
+    owned = _mention_ranges(entity, entities=entities, query=query)
+    own = _query_words_of(entity.text, query, owned=owned, resolver=resolver)
     return entity if own is None else entity.model_copy(update={"span": own})
 
 
@@ -226,7 +284,10 @@ def _recover_entity_surfaces(
     `query` (`_grounded`) is read for the qualifier.
     """
     recovered: list[ExtractedEntity] = []
-    for entity in (_with_query_span(entity, query=query) for entity in entities):
+    for entity in (
+        _with_query_span(entity, entities=entities, query=query, resolver=resolver)
+        for entity in entities
+    ):
         span = (entity.span or "").strip()
         if not span or not _grounded(span, query):
             recovered.append(entity)
@@ -770,6 +831,17 @@ def _dropped_phrase_fact(phrase: str) -> DepartureFact | None:
     return measure_not_applied(asked=phrase, property_dcid=None) if names_request(phrase) else None
 
 
+def _breakdown_under(phrase: str, *, verbs: Collection[str], query: str) -> RoleAxis | None:
+    """The flow axis `phrase` asks one value per member of, under a part's operation
+    `verbs`. An each or every phrase ("for each donor") asks it under any verb
+    (`role_text.every_member_breakdown_axis`). "By" or "across" a role ("by donor") asks it
+    only where no verb but a rank claims the phrase (`role_text.breakdown_axis`), since
+    "across donors" on a sum asks for the total."""
+    if all(verb == "rank" for verb in verbs):
+        return breakdown_axis(phrase, query=query)
+    return every_member_breakdown_axis(phrase, query=query)
+
+
 def _prepare_extraction(
     extraction: Extraction, extract_result: ExtractionResult, *, query: str
 ) -> _ExtractionPrep:
@@ -833,20 +905,13 @@ def _prepare_extraction(
     # Qualifier sidecars use stripped `unique` keys. Missing entries default to ().
     per_variable_qualifiers = [extract_result.qualifiers.get(v, ()) for v in unique]
     # An operation whose phrase only asks for one value per member of a flow role is a
-    # breakdown: it opens that role, as `open_roles` does on the parsed door, and runs no
-    # operation. An each or every phrase ("for each donor") is one under any verb, and "by"
-    # or "across" a role ("by donor") only under a rank, since "across donors" on a sum
-    # asks for the total.
+    # breakdown (`_breakdown_under`): it opens that role, as `open_roles` does on the parsed
+    # door, and runs no operation.
     per_variable_operations: list[tuple[Operation, ...]] = []
     per_variable_open_axes: list[frozenset[RoleAxis]] = []
     for v in unique:
         read = [
-            (
-                op,
-                breakdown_axis(op.phrase, query=query)
-                if op.verb == "rank"
-                else every_member_breakdown_axis(op.phrase, query=query),
-            )
+            (op, _breakdown_under(op.phrase, verbs=(op.verb,), query=query))
             for op in extract_result.operations.get(v, ())
         ]
         per_variable_operations.append(tuple(op for op, axis in read if axis is None))
@@ -883,17 +948,30 @@ def _prepare_extraction(
         [phrase for phrase in dropped if phrase not in naming_sources]
     )
     # A dropped phrase asking for one value per member of a flow role opens that role on
-    # every part, and raises no warning of its own (`role_text.breakdown_axis`).
-    breakdowns = {
-        phrase: breakdown_axis(phrase, query=query) for phrase in dropped_qualifier_phrases
-    }
-    dropped_qualifier_phrases = [p for p, axis in breakdowns.items() if axis is None]
-    requested_axes = frozenset(
-        axis
-        for axis in (*breakdowns.values(), *(axis for _, axis in entity_axes))
-        if axis is not None
-    )
-    per_variable_open_axes = [axes | requested_axes for axes in per_variable_open_axes]
+    # each part whose operations read it so, by the rule an extracted operation's phrase
+    # follows (`_breakdown_under`), and raises no warning of its own. One that opens no
+    # part is dropped.
+    per_variable_breakdowns = [
+        {
+            phrase: _breakdown_under(
+                phrase,
+                verbs={op.verb for op in extract_result.operations.get(v, ())},
+                query=query,
+            )
+            for phrase in dropped_qualifier_phrases
+        }
+        for v in unique
+    ]
+    dropped_qualifier_phrases = [
+        phrase
+        for phrase in dropped_qualifier_phrases
+        if all(breakdowns[phrase] is None for breakdowns in per_variable_breakdowns)
+    ]
+    entity_requested_axes = frozenset(axis for _, axis in entity_axes if axis is not None)
+    per_variable_open_axes = [
+        axes | entity_requested_axes | {axis for axis in breakdowns.values() if axis is not None}
+        for axes, breakdowns in zip(per_variable_open_axes, per_variable_breakdowns, strict=True)
+    ]
     qualifier_warnings = [
         Warning(
             code=QUERY_QUALIFIER_DROPPED,
