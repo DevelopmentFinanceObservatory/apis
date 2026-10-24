@@ -108,6 +108,7 @@ from search.engine.source_scope import (
     source_dictionary,
 )
 from search.engine.source_spans import read_sources, unclaimed_words
+from search.engine.surface_resolution import ambiguous_surface_names
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -346,7 +347,10 @@ async def _recover_entity_surfaces(
     """Recover each entity's surface before scans or cache keys read it: the query's own
     words for a name the query writes neither as the name nor as its span
     (`_with_query_span`), and a source-qualified surface. Only a span that occurs in
-    `query` (`_grounded`) is read for the qualifier.
+    `query` (`_grounded`) is read for the qualifier. A name that settles on its surface's
+    ambiguity takes the surface as its text (`surface_resolution.ambiguous_surface_names`),
+    so "Congo" in "ODA to Congo", which the extraction names "Democratic Republic of the
+    Congo", asks its choice in the query's words.
     """
     # Each entity reads the spans the ones before it recovered, so two never take one word.
     spanned = list(entities)
@@ -390,7 +394,17 @@ async def _recover_entity_surfaces(
             recovered.append(entity.model_copy(update={"span": surface}))
         else:
             recovered.append(entity)
-    return _without_absorbed(recovered, query=query)
+    kept = _without_absorbed(recovered, query=query)
+    surfaces = _entity_surfaces(kept, query=query)
+    as_written = await _await_bounded(
+        ambiguous_surface_names(surfaces, resolver=resolver), deadline=deadline
+    )
+    return [
+        entity.model_copy(update={"text": surfaces[key], "span": surfaces[key]})
+        if (key := _entity_key(entity)) in as_written
+        else entity
+        for entity in kept
+    ]
 
 
 def _without_absorbed(entities: list[ExtractedEntity], *, query: str) -> list[ExtractedEntity]:

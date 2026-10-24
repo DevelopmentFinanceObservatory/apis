@@ -44,15 +44,20 @@ whether or not anyone polls it. `fail_abandoned_operations` applies the same upd
 abandoned row, for the `datasets-maintenance age-operations` job.
 
 `create_or_get` returns an existing row unchanged unless it is resettable: a retryable failure,
-a `running` row whose lease has ended, whichever delivery claimed it, or a `pending` row past
-the operation deadline. A reset of a row a later delivery is still due for moves it to a new
+a `running` row whose lease has ended, whichever delivery claimed it, a `pending` row past
+the operation deadline, or a `done` row the submitting rebuild rejected. A submit reaches the
+store only after `serve_current` has rejected the subject's head, so `rejected_version` names
+that head's content version, or is `None` when the subject has no head. A `done` row at that
+version, or any `done` row when there is no head, holds the result the rebuild rejected, so it
+resets and the 202 reads `pending`. A `done` row at another version completed after the caller read the head and
+stays. A reset of a row a later delivery is still due for moves it to a new
 submission, and that delivery answers `superseded`. That preserves the original options and
 estimate. A
 reset returns the row to `pending`, clears the lease, `final_delivery`, `refusal_code`,
 `refusal`, `retryable` and `dispatched_at`, sets `rows_written` to 0, and updates `submitted_at` while incrementing
 `submission_count`, so its task gets a new name. Identity, options, admission coverage, and
 catalogue build keep their admitted values. The attempt token carries on, so a superseded
-attempt's late writes stay fenced. Deterministic failures and completed rows stay unchanged.
+attempt's late writes stay fenced. Deterministic failures stay unchanged.
 
 A new row or a reset takes `pg_advisory_xact_lock`, re-reads the id under the lock, and counts
 live rows other than its own: every `pending` or `running` row that is not abandoned, which
@@ -147,10 +152,17 @@ _ABANDONED = (
 # such row past the deadline is abandoned.
 _CLAIMABLE = f"((state = 'pending' OR {_LEASE_ENDED}) AND {_QUEUED_SINCE} >= %s)"
 
-# Rows `create_or_get` resets, at the parameters now, the untracked-lease cutoff and the deadline
-# cutoff: a retryable failure, a running row whose lease ended, or a pending row past the
-# deadline.
-_RESETTABLE = f"((state = 'failed' AND retryable) OR {_LEASE_ENDED} OR {_PENDING_PAST_DEADLINE})"
+# A done row at the parameter, the rejected head's content version, or any done row when it is
+# NULL.
+_DONE_REJECTED = "(state = 'done' AND content_version = COALESCE(%s, content_version))"
+
+# Rows `create_or_get` resets, at the parameters now, the untracked-lease cutoff, the deadline
+# cutoff and the rejected head's content version: a retryable failure, a running row whose lease
+# ended, a pending row past the deadline, or a done row the submitting rebuild rejected.
+_RESETTABLE = (
+    f"((state = 'failed' AND retryable) OR {_LEASE_ENDED} OR {_PENDING_PAST_DEADLINE} "
+    f"OR {_DONE_REJECTED})"
+)
 
 # Rows the backlog counts, at `_ABANDONED`'s parameters: everything in flight except an
 # abandoned row. `IS NOT TRUE` counts a row whose lease columns are NULL.
@@ -306,12 +318,15 @@ class OperationStore(Protocol):
         coverage_stamp: str,
         origin_catalogue_build_id: str,
         estimate: Estimate,
+        rejected_version: str | None,
     ) -> Operation:
         """Creates or reuses the operation keyed by identity, catalogue build, and rendering.
 
         A new row commits `pending` with no dispatch. Existing rows remain unchanged unless
-        resettable. Raises `OperationBacklogFull` when a new row would exceed the configured
-        backlog limit.
+        resettable. `rejected_version` is the content version of the head the submitting
+        rebuild rejected, or `None` when the subject has no head; a `done` row at that version,
+        or any `done` row without a head, resets. Raises `OperationBacklogFull` when a new row
+        would exceed the configured backlog limit.
         """
         ...
 
@@ -400,6 +415,7 @@ class NullOperationStore:
         coverage_stamp: str,
         origin_catalogue_build_id: str,
         estimate: Estimate,
+        rejected_version: str | None,
     ) -> Operation:
         raise NotImplementedError(
             "NullOperationStore cannot create an operation it could never find again"
@@ -529,13 +545,23 @@ def _guarded[T](failure_prefix: str, run: Callable[[], T]) -> T:
     raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
 
 
-def _resettable(row: Mapping[str, object], now: datetime, *, deadline: timedelta) -> bool:
+def _resettable(
+    row: Mapping[str, object],
+    now: datetime,
+    *,
+    deadline: timedelta,
+    rejected_version: str | None,
+) -> bool:
     """`_RESETTABLE` on a row already read."""
     operation = _operation_from_row(row)
     return (
         (operation.state == "failed" and bool(operation.retryable))
         or operation.lease_ended(now)
         or operation.abandoned(now, deadline=deadline)
+        or (
+            operation.state == "done"
+            and (rejected_version is None or operation.content_version == rejected_version)
+        )
     )
 
 
@@ -587,6 +613,7 @@ class LiveOperationStore:
         coverage_stamp: str,
         origin_catalogue_build_id: str,
         estimate: Estimate,
+        rejected_version: str | None,
     ) -> Operation:
         id = compute_operation_id(
             request_identity=request_identity,
@@ -601,7 +628,9 @@ class LiveOperationStore:
                 existing = tx.fetch_one(
                     f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,)
                 )
-                if existing is not None and not _resettable(existing, now, deadline=self._deadline):
+                if existing is not None and not _resettable(
+                    existing, now, deadline=self._deadline, rejected_version=rejected_version
+                ):
                     return existing
                 # Lock before counting or inserting a new row or resetting one.
                 tx.execute("SELECT pg_advisory_xact_lock(%s)", (_BACKLOG_LOCK_KEY,))
@@ -609,7 +638,9 @@ class LiveOperationStore:
                 existing = tx.fetch_one(
                     f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,)
                 )
-                if existing is not None and not _resettable(existing, now, deadline=self._deadline):
+                if existing is not None and not _resettable(
+                    existing, now, deadline=self._deadline, rejected_version=rejected_version
+                ):
                     return existing
                 # The row being reset keeps its own place, so only the others count.
                 backlog_row = tx.fetch_one(
@@ -649,7 +680,15 @@ class LiveOperationStore:
                         "submission_count = submission_count + 1, dispatched_at = NULL, "
                         "submitted_at = %s, updated_at = %s "
                         f"WHERE id = %s AND {_RESETTABLE}",
-                        (now, now, id, now, now - _UNTRACKED_LEASE, now - self._deadline),
+                        (
+                            now,
+                            now,
+                            id,
+                            now,
+                            now - _UNTRACKED_LEASE,
+                            now - self._deadline,
+                            rejected_version,
+                        ),
                     )
                 return tx.fetch_one(
                     f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,)

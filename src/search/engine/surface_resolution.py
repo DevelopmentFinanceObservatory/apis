@@ -21,6 +21,9 @@ and settles between the surface's answer and the name's own:
   settles "Trinidad" against a town of that name, and "Federated States of Micronesia"
   settles "Micronesia" against the region, while "Congo" names two countries and the
   query does not choose between them.
+
+A name settled on its surface's ambiguity reads as its surface (`ambiguous_surface_names`),
+so the choice the query leaves open is offered in the user's words.
 """
 
 from __future__ import annotations
@@ -104,3 +107,22 @@ async def resolve_names(
     texts = list(dict.fromkeys(text for name in names for text in _texts(name, surfaces.get(name))))
     by_text = dict(zip(texts, await resolver.resolve(texts), strict=True))
     return [_settle(name, surfaces.get(name), by_text) for name in names]
+
+
+async def ambiguous_surface_names(
+    surfaces: Mapping[str, str], *, resolver: EntityResolver
+) -> frozenset[str]:
+    """The names in `surfaces` that settle on their surface's ambiguity, read in one
+    resolver call: "Democratic Republic of the Congo" for the surface "Congo", which names
+    two countries. A name its surface's answer settles otherwise is not among them."""
+    if not surfaces:
+        return frozenset()
+    texts = list(dict.fromkeys(t for name, s in surfaces.items() for t in _texts(name, s)))
+    by_text = dict(zip(texts, await resolver.resolve(texts), strict=True))
+    return frozenset(
+        name
+        for name, surface in surfaces.items()
+        if isinstance(settled := _settle(name, surface, by_text), Ambiguous)
+        and settled == by_text[surface]
+        and settled != by_text.get(name)
+    )

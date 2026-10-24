@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from artifact_store import LiveArtifactInventory
 from code_index.shared import get_index
+from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import kinds
 from datasets_api.admission import MaterialisePermits
@@ -69,16 +70,20 @@ def api_and_worker(
     coverage: Callable[[], FakeCoverageService],
     worker_permits: MaterialisePermits | None = None,
     worker_release: ReleaseService | None = None,
+    now: Clock = utc_now,
+    deferred: list[Callable[[], None]] | None = None,
 ) -> tuple[TestClient, LiveOperationStore, list[tuple[str, int]]]:
     """The API app and a worker app sharing stores, head store and graph, as the two services
     do in deployment. The fake queue runs each enqueued operation on the worker inline and
     records it in the returned list. `worker_permits` replaces the worker's one permit.
-    `worker_release` is the graph release service each run binds from."""
+    `worker_release` is the graph release service each run binds from. Both apps and the
+    the head and operation stores read `now`. With `deferred` the queue appends each run there for the test
+    to call, so the 202 answers before the worker runs."""
     store = FakeDatasetStore()
     version_store = FakeVersionRecordDatasetStore()
-    head_store = LiveHeadStore(store=version_store)
+    head_store = LiveHeadStore(store=version_store, now=now)
     # One database holds operations and heads, so the worker's fenced head advance reads the row.
-    operation_store = LiveOperationStore(store=version_store)
+    operation_store = LiveOperationStore(store=version_store, now=now)
     artifact_store = _InventoryRecordingArtifactStore(
         inventory=LiveArtifactInventory(store=version_store)
     )
@@ -107,6 +112,7 @@ def api_and_worker(
         ),
         head_recheck_interval=timedelta(seconds=DatasetsBuildSettings().head_recheck_seconds),
         head_max_age=timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds),
+        now=now,
     )
     worker_client = TestClient(
         build_worker_app(
@@ -116,19 +122,26 @@ def api_and_worker(
             worker_url=_WORKER_URL,
             worker_invoker_service_account=_INVOKER,
             release=worker_release,
+            now=now,
         )
     )
 
     forwarded: list[tuple[str, int]] = []
 
-    def _forward_to_worker(operation_id: str, submission_count: int) -> None:
-        forwarded.append((operation_id, submission_count))
+    def _run(operation_id: str, submission_count: int) -> None:
         resp = worker_client.post(
             f"/internal/datasets/operations/{operation_id}/run",
             json={"operation_id": operation_id, "submission_count": submission_count},
             headers={"Authorization": "Bearer t"},
         )
         assert resp.status_code == 200, resp.text
+
+    def _forward_to_worker(operation_id: str, submission_count: int) -> None:
+        forwarded.append((operation_id, submission_count))
+        if deferred is None:
+            _run(operation_id, submission_count)
+        else:
+            deferred.append(lambda: _run(operation_id, submission_count))
 
     api_client = make_client(
         registry=LiveSpecRegistry(store=store),
@@ -144,6 +157,7 @@ def api_and_worker(
         task_client=FakeTaskClient(on_enqueue=_forward_to_worker),
         pin_allowed_principals=frozenset({_PRINCIPAL}),
         coverage=coverage(),
+        now=now,
     )
     return api_client, operation_store, forwarded
 
@@ -194,6 +208,50 @@ def test_local_end_to_end_over_budget_mint_completes_through_the_worker(
         headers={"x-dfo-principal": _PRINCIPAL},
     )
     assert pin_resp.status_code == 200, pin_resp.text
+
+
+def test_a_resubmit_after_the_head_aged_out_restarts_the_done_operation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A done operation whose head then passes `head_max_age` answers the next submit with a
+    fresh 202 that reads pending, and its poll reaches done with a manifest. Before, the submit
+    returned the done row unchanged, so the 202 read done with nothing behind it."""
+    clock = {"t": datetime(2026, 10, 24, tzinfo=UTC)}
+    runs: list[Callable[[], None]] = []
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+        deferred=runs,
+    )
+    monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+
+    first = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+    assert first.status_code == 202, first.text
+    runs.pop()()
+    operation_id = first.json()["operation"]["operation_id"]
+    done = operation_store.get(operation_id)
+    assert done is not None and done.state == "done"
+
+    clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 1)
+    resubmitted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+
+    assert resubmitted.status_code == 202, resubmitted.text
+    assert resubmitted.json()["operation"] == {
+        "operation_id": operation_id,
+        "status": "pending",
+        "poll": f"/api/datasets/operations/{operation_id}",
+        "retry_after_ms": 1_500,
+    }
+    assert forwarded == [(operation_id, 0), (operation_id, 1)]
+    runs.pop()()
+    polled = api_client.get(resubmitted.headers["location"])
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["operation"]["status"] == "done"
+    assert polled.json()["manifest"]["content_version"].startswith("cv_")
+    rebuilt = operation_store.get(operation_id)
+    assert rebuilt is not None and rebuilt.confirmed_at == clock["t"]
 
 
 def _rendered(manifest: dict) -> list[tuple[str, str]]:
