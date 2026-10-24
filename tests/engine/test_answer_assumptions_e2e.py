@@ -257,13 +257,14 @@ def test_an_unchanged_repost_of_a_merged_part_keeps_its_default(reposted: int):
 @pytest.mark.parametrize(
     ("over", "expected"),
     [
-        pytest.param(None, _ASSUMED_ROLES, id="no-operation"),
+        # The reply leaves the flow open, so the CRS binds ODA by its declared default.
+        pytest.param(None, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="no-operation"),
         # "top 5 donors" ranks over the providers, so the request asked every one of them.
-        pytest.param("origin", [], id="rank-over-origin"),
+        pytest.param("origin", [_ASSUMED_ODA], id="rank-over-origin"),
         # Kenya names the recipient, so a rank over it leaves the providers open.
-        pytest.param("destination", _ASSUMED_ROLES, id="rank-over-destination"),
+        pytest.param("destination", [_ASSUMED_ODA, *_ASSUMED_ROLES], id="rank-over-destination"),
         # An operation over places asks no flow role (`asked_open_axes`).
-        pytest.param("place", _ASSUMED_ROLES, id="rank-over-place"),
+        pytest.param("place", [_ASSUMED_ODA, *_ASSUMED_ROLES], id="rank-over-place"),
     ],
 )
 def test_a_role_an_operation_runs_over_is_asked(over: str | None, expected: list[Assumption]):
@@ -364,14 +365,13 @@ def _provenance(part: DefinitePart) -> dict[str, str]:
 
 def test_a_resubmit_with_no_echo_states_the_roles_alone():
     """The posted identity binds the flow, so with no echo the engine records it as posted
-    and assumes only what the identity leaves open. Every posted slot reads `binder` but
-    the flow type, which the identity's measure family election forces."""
+    and assumes only what the identity leaves open. The first answer bound the flow type,
+    whose family holds one value, as its sole option, so the identity posts it and every
+    posted slot reads `binder`."""
     first = _first_answer()
     part = _resubmit(first.spec.definition.identity, echo=None)
     assert part.assumptions == _ASSUMED_ROLES
-    assert {ref: p for ref, p in _provenance(part).items() if p != "binder"} == {
-        "how:financialFlowType": "measure_elected"
-    }
+    assert {ref: p for ref, p in _provenance(part).items() if p != "binder"} == {}
 
 
 def test_an_edit_that_changes_the_defaulted_slot_drops_its_assumption():

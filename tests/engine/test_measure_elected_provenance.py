@@ -1,6 +1,8 @@
 """Checks whether elected constraint values reach `ResolvedFilter.provenance` as `measure_elected`.
 
-The real CRS grant-equivalent fixture forces `financialFlowType` unless the query binds it first.
+The real CRS grant-equivalent family holds one `financialFlowType`, so the slot is bound as the
+reply's sole option before the measure election runs, whether the reply drafts it or leaves it
+out, and the election forces nothing.
 """
 
 from __future__ import annotations
@@ -43,14 +45,17 @@ def _filter_for(spec, prop: str):
     )
 
 
-def test_the_axis_the_election_forced_reads_measure_elected(monkeypatch):
-    """The election binds `financialFlowType`; query-bound `crsPurpose` keeps `binder` provenance."""
+def test_a_single_value_slot_the_reply_leaves_out_reads_binder(monkeypatch):
+    """The reply drafts `crsPurpose` alone. `financialFlowType`, whose family holds one value,
+    binds as the reply's sole option, as it does where the reply drafts it, so no filter
+    reads `measure_elected`."""
     result = _run_purpose_only(monkeypatch)
     assert result.status == "definite"
     spec = result.specs[0]
 
+    assert all(f.provenance != "measure_elected" for f in spec.resolved.trace.slot_filters)
     flow_type_filter = _filter_for(spec, _PROP_FLOW_TYPE)
-    assert flow_type_filter.provenance == "measure_elected"
+    assert flow_type_filter.provenance == "binder"
     assert flow_type_filter.refs and flow_type_filter.refs[0].ref == _FORCED_FLOW_TYPE_VALUE
 
     purpose_filter = _filter_for(spec, _PROP_PURPOSE)

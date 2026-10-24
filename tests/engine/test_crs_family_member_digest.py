@@ -1,5 +1,6 @@
 """Checks Search's CRS member digest against `enumerate_members` for two real index members.
-Four shared axes are bound; `crsTypeOfFlow` distinguishes the two-member family.
+Four shared axes are bound; `crsTypeOfFlow`, bound to both members' flows, distinguishes the
+two-member family.
 """
 
 from __future__ import annotations
@@ -52,8 +53,9 @@ _PROP_FLOW = "crsTypeOfFlow"
 
 # The four axes both real rows share (real values, read off the fixture
 # index below rather than hand-typed, so a corpus refresh that moves them
-# fails this fixture loudly instead of silently). crsTypeOfFlow stays
-# unbound: it's the one axis the two dcids differ on.
+# fails this fixture loudly instead of silently). crsTypeOfFlow binds the set
+# of both members' flows: it's the one axis the two dcids differ on, and an
+# open flow slot binds the CRS default, ODA, which one member holds.
 _BOUND_PROPS = (_PROP_MODALITY, _PROP_PURPOSE, _PROP_FINANCE, _PROP_OBLIGATION_TYPE)
 
 _ROLE_RECIPIENT = "financingRecipient"
@@ -151,8 +153,14 @@ _DETECT = {_QUERY: {"svs": [_RECALLED_SV], "cosine_scores": [0.9]}}
 _OBS = {_EXTRA_SV: {((_ROLE_RECIPIENT, _KEN_DCID),): [_facet()]}}
 
 
+def _both_flows() -> list[str]:
+    return sorted(
+        _real_row(dcid).constraint_properties[_PROP_FLOW] for dcid in (_RECALLED_SV, _EXTRA_SV)
+    )
+
+
 class _BindAllFourSharedAxesLLM:
-    """Binds the four shared axes and leaves `crsTypeOfFlow` unbound."""
+    """Binds the four shared axes and `crsTypeOfFlow` to the set of both members' flows."""
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
@@ -169,6 +177,11 @@ class _BindAllFourSharedAxesLLM:
                     value_dcids=[recalled_row.constraint_properties[prop]],
                 )
                 for prop in _BOUND_PROPS
+            ]
+            + [
+                SlotBindingDraft(
+                    axis="how", property_dcid=_PROP_FLOW, kind="set", value_dcids=_both_flows()
+                )
             ],
             also_plausible=[],
         ), None
@@ -207,8 +220,8 @@ def _independent_digest_via_enumerate_members() -> str:
     statvar_members.enumerate_members rather than search's own resolve
     machinery: a FakeMemberArcReader fed the two real dcids' own real arcs
     (read off the fixture index, mirroring _sv_arcs_from_real_row above),
-    queried with the identical FiveTuple and the identical four "value"
-    slot bindings, crsTypeOfFlow left ("unbound",)."""
+    queried with the identical FiveTuple, the identical four "value"
+    slot bindings and the set of both flows on crsTypeOfFlow."""
     recalled_row = _real_row(_RECALLED_SV)
     extra_row = _real_row(_EXTRA_SV)
     arcs = {
@@ -233,7 +246,7 @@ def _independent_digest_via_enumerate_members() -> str:
         measurement_qualifier=_MEAS_QUAL,
     )
     slots = {prop: ("value", recalled_row.constraint_properties[prop]) for prop in _BOUND_PROPS}
-    slots[_PROP_FLOW] = ("unbound",)
+    slots[_PROP_FLOW] = ("set", tuple(_both_flows()))
 
     group = enumerate_members(five_tuple=five_tuple, slots=slots, graph=reader)
 

@@ -90,7 +90,7 @@ from search.engine.retrieval.bound_values import (
     bind_shared_values,
     canonical_pin_bindings,
     elect_measure_family,
-    five_tuple_member_facts,
+    identity_member_facts,
     named_scope,
     part_source,
     read_held_families,
@@ -286,7 +286,9 @@ def _settle_bindings(
     reading the shape keeps of each two-reading span
     (`reading_for_shape`), which admission read.
 
-    The source drafts leave and invalid ``requested_all`` claims are demoted
+    Each constraint slot of the shape the reply drafts nothing for gets an ``unbound``
+    draft (`_with_every_slot_drafted`), so every later pass reads one draft per slot. The
+    source drafts leave and invalid ``requested_all`` claims are demoted
     (`bind.validate_requested_all_bindings`). The binder applies it to its pick's drafts,
     and this pass keeps a claim only on a slot of the elected shape. Each slot
     whose taxonomy holds one value and that the reply left unbound is claimed as that
@@ -306,7 +308,9 @@ def _settle_bindings(
     shape admits, with the codes the model chose from a phrase's candidate menu, are
     forced into the bindings (`_force_qualifier_bindings`).
     """
-    bindings = without_dataset_drafts(state.bind_result.bindings)
+    bindings = _with_every_slot_drafted(
+        without_dataset_drafts(state.bind_result.bindings), shape_draft
+    )
     bindings, state.applied_dropped_qualifier_phrases = validate_requested_all_bindings(
         bindings,
         state.dropped_qualifier_phrases,
@@ -405,6 +409,27 @@ def _settle_bindings(
     state.bind_result.bindings = with_sampled_claims(bindings, claims)
 
     return unresolved, readings
+
+
+def _with_every_slot_drafted(
+    bindings: list[SlotBindingDraft], shape_draft: ShapeDraft
+) -> list[SlotBindingDraft]:
+    """`bindings` with an ``unbound`` engine draft for each constraint slot of
+    `shape_draft` they hold no draft for, in slot order after the reply's own.
+
+    The bind prompt asks the reply for one binding per constraint slot, and a reply can
+    leave one out. Every pass after it reads the slot through its draft: a single-member
+    slot is claimed as its sole option (`_claim_single_member_slots`), and a declared
+    default fires on an open slot's draft (`bind_repair.apply_declared_defaults`). A slot
+    left out is open, so it reads as one drafted ``unbound``: "German aid to Kenya" binds
+    DAC2a's ODA aid type by its default whether or not the reply lists the slot."""
+    drafted = {draft.property_dcid for draft in bindings}
+    missing = [
+        SlotBindingDraft(axis=slot.axis, property_dcid=slot.property_dcid, kind="unbound")
+        for slot in shape_draft.slot_keys
+        if slot.property_dcid is not None and slot.property_dcid not in drafted
+    ]
+    return [*bindings, *missing] if missing else bindings
 
 
 def _settle_sole_options(
@@ -513,10 +538,12 @@ def _validate_sole_option_bindings(
     """Validate model ``sole_option`` claims against the shape's population.
 
     A ``sole_option`` claim says the slot forces one value and the phrase says nothing
-    about it. The population is the members the shape's slot taxonomy describes
-    (`five_tuple_member_facts`): the rows of the family the index carries for the shape,
-    else the members of the family the catalogue holds for it beside its recalled ones,
-    else its recalled members alone. The phrase did not name the value and a slot that
+    about it. The population is the family the shape's identity denotes
+    (`identity_member_facts`): the rows the index carries for the dataset the part names,
+    or for every dataset of the family when it names none, else the members of the family
+    the catalogue holds for it beside its recalled ones, else its recalled members alone.
+    A part excluding a dataset names none, so it mints the identity of the whole family,
+    and a row of the excluded dataset holding another value keeps the slot open. The phrase did not name the value and a slot that
     the population leaves a reading without it does not force it, so no binding rule
     produced the draft and the slot is left unbound.
 
@@ -545,7 +572,7 @@ def _validate_sole_option_bindings(
     (`without_sampled_claims`), settles it (`phase_place_materialise._judge_sampled_claims`).
     A shape with no members passes every claim through.
     """
-    population, index_sourced = five_tuple_member_facts(shape_draft)
+    population, index_sourced = identity_member_facts(shape_draft)
     if not population:
         return bindings
     complete = index_sourced or shape_draft.held_family is not None
@@ -584,8 +611,8 @@ def _unbind_implied_values(
     binding is released where the family has totals under the other bindings
     (`family_totals`) and none of them asserts the property, so the total answers. A
     family with no total keeps the value, as does one whose totals assert the property or
-    have unknown constraints: there the value may separate readings the family holds. The population is the one
-    `_validate_sole_option_bindings` reads (`five_tuple_member_facts`).
+    have unknown constraints: there the value may separate readings the family holds. The
+    population is the one `_validate_sole_option_bindings` reads (`identity_member_facts`).
 
     The draft's evidence does not matter: the recorded bind reply to "life expectancy"
     drafts ``age=Years0`` as the slot's ``sole_option``, and a reply naming the age as
@@ -594,7 +621,7 @@ def _unbind_implied_values(
     implied = get_index().implied_values_of(shape_draft.pop_type_dcid, shape_draft.meas_prop_dcid)
     if not implied:
         return bindings
-    population, _ = five_tuple_member_facts(shape_draft)
+    population, _ = identity_member_facts(shape_draft)
     settled = list(bindings)
     for i, binding in enumerate(settled):
         prop = binding.property_dcid
@@ -644,7 +671,7 @@ def _keep_the_noun_pinned_property(
             and len(b.value_dcids) == 1
         ):
             properties_by_value.setdefault(b.value_dcids[0], []).append(b.property_dcid)
-    population, _ = five_tuple_member_facts(shape_draft)
+    population, _ = identity_member_facts(shape_draft)
     stated = _collapse_bindings(bindings)
     released: set[str] = set()
     for value, drafted in properties_by_value.items():
@@ -705,18 +732,65 @@ def _sample_forces(
     stated_values: Mapping[str, list[str]],
 ) -> bool:
     """Whether a recalled sample leaves `prop` no reading but `value`: no member asserts
-    another value on it (`constraints` are the members' `read_constraints`), every total
-    of the sample under the part's other bindings (`family_totals`), the member a slot
-    left open serves, asserts `value`, and the sample holds no broader reading of the part
-    without it (`holds_broader_reading`). A sample that splits on another open slot holds
-    no total, and the broader reading is the member an open `prop` serves there."""
+    another value on it (`constraints` are the members' `read_constraints`), no member of
+    the part asserting none is a reading without it, and every total of the sample under
+    the part's other bindings (`family_totals`), the member a slot left open serves,
+    asserts `value`.
+
+    A member of the part asserting nothing on `prop` is one of three readings beside the
+    members asserting `value`. Its constraints can be a subset of an asserting member's,
+    so it is the broader reading an open `prop` serves (`holds_broader_reading`): in a
+    sample that splits on another open slot, which holds no total, it is the broadest
+    member of its side. It can differ from an asserting member on a property both state,
+    so the two are siblings across a split and it is the reading of the part without
+    `value` (`_splits_without_value`): gross domestic product beside the gross value added
+    of agriculture. Or it can narrow on properties every asserting member leaves unstated,
+    which forces nothing against the claim. The first two refute it; the third does not.
+
+    The rule governs only answers the walk of the family cannot judge: where the walk
+    reads the slot open, it confirms or refutes the claim on the whole family
+    (`phase_place_materialise._judge_sampled_claims`)."""
     if any(member.get(prop) not in (None, value) for member in constraints):
         return False
     if holds_broader_reading(population, stated_values, prop, value):
         return False
+    if _splits_without_value(constraints, prop, value, stated_values):
+        return False
     return all(
         population[sv].read_constraints().get(prop) == value
         for sv in family_totals(population, stated_values)
+    )
+
+
+def _splits_without_value(
+    constraints: Sequence[Mapping[str, str]],
+    prop: str,
+    value: str,
+    stated_values: Mapping[str, list[str]],
+) -> bool:
+    """Whether a member of the part (the members stating one of the `stated_values` on
+    each bound property) asserting nothing on `prop` asserts, on another property, a value
+    other than the one a member asserting `value` there asserts. The two are the sides of
+    a slot the part leaves open, and the side without `value` is a reading of the part
+    without it: "GDP" recalls gross domestic product, which states no economic sector,
+    beside the gross value added of agriculture, so the sector is not forced.
+    `holds_broader_reading` misses such a pair, since neither member's constraints are a
+    subset of the other's. A member asserting none that narrows on a property the members
+    asserting `value` leave unstated splits nowhere with them: the age group
+    classification members beside the age of zero of "infant mortality rate"."""
+    part = [
+        member
+        for member in constraints
+        if all(member.get(bound) in values for bound, values in stated_values.items())
+    ]
+    asserting = [member for member in part if member.get(prop) == value]
+    return any(
+        other.get(other_prop) not in (None, other_value)
+        for other in part
+        if prop not in other
+        for member in asserting
+        for other_prop, other_value in member.items()
+        if other_prop != prop
     )
 
 

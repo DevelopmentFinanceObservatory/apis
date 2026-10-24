@@ -613,10 +613,14 @@ def test_an_operation_over_the_category_its_phrase_names_opens_that_slot_with_no
 
 def test_an_operation_over_another_category_leaves_the_flow_default_in_place():
     """'top 5 sectors' names the sector slot, so standard grants still default the
-    flow slot to ODA."""
+    flow slot to ODA. The reply leaves the cooperation modality out, so it reads open and
+    the family serves the member stating none, which the fixture holds no data for at
+    Kenya: the part flags that read."""
     part = _rank_over_category("top 5 sectors", _UnclaimedOpenBindLLM).parts[0]
 
-    flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.flagged_match is not None
+    flow_filter = _filter_for(part.no_data.flagged_match, "crsTypeOfFlow")
     assert flow_filter.binding_kind == "value"
     assert flow_filter.provenance == "declared_default"
 

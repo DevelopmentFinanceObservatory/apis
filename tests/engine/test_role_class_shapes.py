@@ -2772,12 +2772,13 @@ def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_discl
         llm=_relax_llm(instrument=("Bond", "mentioned"), guarantee=("Public", "mentioned")),
     )
 
-    assert _relax_outcome(drafted) == ("definite", None, [_RELAX_BONDS], {"instrument": "Bond"}, [])
+    bonds = {"instrument": "Bond", "positionType": "AmountOutstanding"}
+    assert _relax_outcome(drafted) == ("definite", None, [_RELAX_BONDS], bonds, [])
     assert _relax_outcome(named) == (
         "definite",
         None,
         [_RELAX_BONDS],
-        {"instrument": "Bond"},
+        bonds,
         ["measure_not_applied"],
     )
     assert [fact.binding_ref for fact in named.departure_facts.values()] == ["how:guarantee"]
@@ -2999,18 +3000,34 @@ def test_a_standard_part_is_not_relaxed_where_its_walk_finds_no_member(walked):
         llm=_relax_llm(gender=("Female", "mentioned")),
     )
 
-    assert _relax_outcome(result) == ("no_data", "no_observations", ["Pop_Total"], {}, [])
+    assert _relax_outcome(result) == (
+        "no_data",
+        "no_observations",
+        ["Pop_Total"],
+        {"positionType": "Stock"},
+        [],
+    )
     assert not result.unbound_qualifiers
 
 
 @pytest.mark.parametrize(
     ("query", "rated", "outcome"),
     [
-        ("aged X in Kenya", [], ("definite", None, ["Pop_B"], {"age": "X"}, [])),
+        (
+            "aged X in Kenya",
+            [],
+            ("definite", None, ["Pop_B"], {"age": "X", "positionType": "Stock"}, []),
+        ),
         (
             "female aged X in Kenya",
-            [(("female",), {"age": ("X",)})],
-            ("no_data", "qualifier_not_bound", ["Pop_B"], {"age": "X"}, []),
+            [(("female",), {"age": ("X",), "positionType": ("Stock",)})],
+            (
+                "no_data",
+                "qualifier_not_bound",
+                ["Pop_B"],
+                {"age": "X", "positionType": "Stock"},
+                [],
+            ),
         ),
     ],
     ids=["unnamed", "named"],

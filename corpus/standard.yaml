@@ -2010,8 +2010,6 @@
   query: German aid to Kenya
   why: The demonym "German" names Germany as the donor, which extraction reads as the place the resolver holds.
   tags: {theme: aid, entity: two_roles, direction: both, time: none, operation: none, door: raw_text}
-  # Known failure: the binder's reply leaves dac2aAidType out, and a slot left out is not read as open, so the total ODA default does not bind.
-  known_failure: {issue: 99, checks: [measure]}
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}

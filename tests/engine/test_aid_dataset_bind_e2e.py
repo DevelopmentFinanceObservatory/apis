@@ -60,6 +60,7 @@ from search.models import (
     Operation,
     ParsedInput,
     ParsedPart,
+    RawTextInput,
     ResolveRequest,
     ResolveResponse,
     SourceMention,
@@ -124,8 +125,9 @@ _IMPUTED_LABEL = "ONE Imputed Multilateral Sectors"
 # Every CRS member of the aid five-tuple under official development assistance, gross
 # disbursements, with the purpose open.
 _PLAIN_AID_MEMBER_COUNT = 3687
-# The CRS education members under every flow, which a part with no bound flow resolves.
-_PLAIN_CRS_EDUCATION_MEMBERS = 434
+# The CRS education members under official development assistance, the flow the CRS
+# declares as its default.
+_ODA_CRS_EDUCATION_MEMBERS = 257
 
 
 def _arcs(dcid: str) -> dict:
@@ -933,13 +935,21 @@ _CONTRIBUTION_WORDS = ("contributions", "multilateral", "organisations")
 
 
 @pytest.mark.parametrize(
-    ("variable", "entities"),
+    ("variable", "entities", "drafted"),
     [
         pytest.param(
             "contributions to multilateral organisations",
             (
                 ExtractedEntity(
                     text="Germany", span="Germany", flow_role="origin", role_span="from"
+                ),
+            ),
+            (
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="dac1AidType",
+                    kind="value",
+                    value_dcids=["DAC1AidType2100"],
                 ),
             ),
             id="the-phrase-in-the-variable",
@@ -957,20 +967,23 @@ _CONTRIBUTION_WORDS = ("contributions", "multilateral", "organisations")
                     text="Germany", span="Germany", flow_role="origin", role_span="from"
                 ),
             ),
+            (),
             id="the-phrase-as-a-recipient",
         ),
     ],
 )
 def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
-    monkeypatch: pytest.MonkeyPatch, variable, entities
+    monkeypatch: pytest.MonkeyPatch, variable, entities, drafted
 ):
     """ "Contributions to multilateral organisations from Germany" states no party word:
     "multilateral" follows a preposition. Kept in the variable, the phrase reads DAC1's
-    multilateral contributions from Germany; lifted as a recipient, the alias names the
-    multilaterals total as the recipient. Either reply equals the one read without party
-    words, so the party reading leaves the question alone. Kept in the variable, each word
-    of the phrase is one no reader reads on DAC1's multilateral contributions and the
-    binder rates that series stating."""
+    multilateral contributions from Germany, and the reply drafts the aid type the phrase
+    names, as a live binder does; a reply leaving the slot open binds DAC1's declared
+    default aid type, which the member does not hold. Lifted as a recipient, the alias
+    names the multilaterals total as the recipient. Either reply equals the one read
+    without party words, so the party reading leaves the question alone. Kept in the
+    variable, the bound aid type's label reads "contributions" and "multilateral", and the
+    binder rates "organisations", the one word no reader reads, stating on that series."""
     patch_coverage(
         monkeypatch,
         [(_DAC1_CONTRIBUTIONS, "dac1", _DEU, ABSENT_ENTITY, [2019, 2020, 2021])],
@@ -994,7 +1007,7 @@ def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
             resolve={"Germany": _DEU},
             obs={},
         )
-        llm = _ScriptedLLM(variable, entities=entities)
+        llm = _ScriptedLLM(variable, entities=entities, drafted=drafted)
         return _resolve_scripted(
             "contributions to multilateral organisations from Germany",
             llm,
@@ -1011,7 +1024,7 @@ def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
         (spec,) = _specs(response)
         assert _sources(spec) == [_DAC1]
         assert spec.definition.identity.entities == {"origin": [_DEU]}
-        assert {request.words for request in binder.requests} == {tuple(_CONTRIBUTION_WORDS)}
+        assert {request.words for request in binder.requests} == {("organisations",)}
 
 
 @pytest.mark.parametrize(
@@ -2090,13 +2103,18 @@ def test_a_no_data_part_without_a_flagged_match_restates_the_table_its_run_settl
 
 
 @pytest.mark.parametrize(
-    ("provenance", "member_count"),
-    [(CRS_PROVENANCE, _PLAIN_CRS_EDUCATION_MEMBERS), (IMPUTED_PROVENANCE, IMPUTED_MEMBER_COUNT)],
+    ("provenance", "member_count", "flow_provenance"),
+    [
+        (CRS_PROVENANCE, _ODA_CRS_EDUCATION_MEMBERS, "declared_default"),
+        (IMPUTED_PROVENANCE, IMPUTED_MEMBER_COUNT, "binder"),
+    ],
     ids=["crs", "imputed"],
 )
 def test_a_named_dataset_binds_the_source_and_resolves_the_mints_family(
-    monkeypatch: pytest.MonkeyPatch, provenance: str, member_count: int
+    monkeypatch: pytest.MonkeyPatch, provenance: str, member_count: int, flow_provenance: str
 ):
+    """The CRS declares official development assistance as its flow default, so a reply
+    leaving the flow out binds it by that default and the family is the ODA members."""
     _name_dataset(monkeypatch, provenance)
 
     response = _resolve_scripted(f"{_E} to Kenya", _ScriptedLLM(_E), _E)
@@ -2108,6 +2126,12 @@ def test_a_named_dataset_binds_the_source_and_resolves_the_mints_family(
     assert identity.facets is not None
     assert identity.facets["provenance"].ref == provenance
     assert identity_dataset(identity) == provenance
+    (flow,) = [
+        (slot.binding_kind, [ref.ref for ref in slot.refs], slot.provenance)
+        for slot in spec.resolved.trace.slot_filters
+        if slot.key.property is not None and slot.key.property.ref == "crsTypeOfFlow"
+    ]
+    assert flow == ("value", ["CRSTypeOfFlow10"], flow_provenance)
     _assert_search_family_is_the_mints(spec, member_count=member_count)
 
 
@@ -2547,3 +2571,89 @@ def test_of_tables_reading_a_question_alike_one_without_series_at_its_places_lea
     )
 
     assert menus == [menu]
+
+
+_DEU = "country/DEU"
+
+
+def _dac2a_aid_type_siblings() -> list[str]:
+    """DAC2a's gross disbursement members that differ from `_DAC2A_MEMBER` (ODA,
+    `DAC2aAidType206`) in their aid type alone, so the elected shape offers that slot."""
+    index = get_index()
+    base = next(row for row in index.statvars if row.dcid == _DAC2A_MEMBER)
+
+    def rest(row: Any) -> dict[str, str]:
+        return {k: v for k, v in row.constraint_properties.items() if k != "dac2aAidType"}
+
+    return [
+        row.dcid
+        for row in index.statvars
+        if row.provenances == (_DAC2A,)
+        and row_five_tuple(row) == row_five_tuple(base)
+        and rest(row) == rest(base)
+    ]
+
+
+@pytest.mark.parametrize(
+    "drafted",
+    [
+        pytest.param((), id="reply-leaves-the-slot-out"),
+        pytest.param(
+            (SlotBindingDraft(axis="how", property_dcid="dac2aAidType", kind="unbound"),),
+            id="reply-leaves-the-slot-open",
+        ),
+    ],
+)
+def test_the_aid_type_default_binds_a_slot_the_reply_leaves_out(
+    monkeypatch: pytest.MonkeyPatch, drafted: tuple[SlotBindingDraft, ...]
+):
+    """DAC2a's aid type defaults to ODA on every open slot. A bind reply that lists no
+    binding for the slot leaves it as open as one that drafts it unbound, so "German aid to
+    Kenya" binds ODA by the default and warns `slot_defaulted` either way."""
+    members = _dac2a_aid_type_siblings()
+    assert _DAC2A_MEMBER in members and len(members) > 1
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [(member, "dac2a", _DEU, _KEN, [2021]) for member in members],
+        role_names=dict.fromkeys(members, names),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    graph = FakeGraph(
+        nodes={
+            _DEU: {"label": "Germany", "type": "Country"},
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _DAC2A: {"label": "OECD DAC2a"},
+            **{m: {"label": m, "type": "StatisticalVariable", "arcs": _arcs(m)} for m in members},
+        },
+        detect={
+            "aid": {
+                "svs": members,
+                "cosine_scores": [0.9 - 0.01 * rank for rank in range(len(members))],
+            }
+        },
+        resolve={"Germany": _DEU, "Kenya": _KEN},
+        obs={},
+    )
+    germany = ExtractedEntity(text="Germany", span="German", flow_role="origin", role_span="German")
+
+    response = offline_resolve(
+        ResolveRequest(input=RawTextInput(query="German aid to Kenya")),
+        graph=graph,
+        llm=_ScriptedLLM("aid", entities=(germany, _TO_KENYA), drafted=drafted),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    (aid_type,) = [
+        slot
+        for slot in part.spec.resolved.trace.slot_filters
+        if slot.key.property is not None and slot.key.property.ref == "dac2aAidType"
+    ]
+    assert (aid_type.binding_kind, [ref.ref for ref in aid_type.refs], aid_type.provenance) == (
+        "value",
+        ["DAC2aAidType206"],
+        "declared_default",
+    )
+    assert "slot_defaulted" in [warning.code for warning in part.warnings]
