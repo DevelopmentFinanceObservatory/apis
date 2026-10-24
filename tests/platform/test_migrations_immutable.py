@@ -95,6 +95,9 @@ _DATASET_STORE = {
     "0038_version_record_frame_summed.sql": (
         "7236772faed0ec1328386a75b87a8ca85a18374b0e6affabf93d590478129664"
     ),
+    "0039_warning_counted_refs.sql": (
+        "36ca2cde2a32e9943b1cf2b128db117eda251872671292329f277594352b5fae"
+    ),
 }
 
 _PRESENTATION_STORE = {
