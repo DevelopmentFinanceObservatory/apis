@@ -430,11 +430,11 @@ def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     """The whole population the side shows (`DepartureFact.group`), what it holds, and the
     way back to the side's members. A request that named nothing on the side reads "No donor
     was named, so this shows ..."; one that named it ("all donors") is asked in its words,
-    and its way back replaces those words with `open_roles`. A union of totals names each
+    and its way back replaces those words. A union of totals names each
     (`DepartureFact.entities`). A donor total that holds no private donor says they are
     outside it where the answer's dataset holds private donors on the side
     (`DepartureFact.side_classes`), and a total holding residuals says it holds aid allocated
-    to no country."""
+    to no country. The way back takes the door's form (`_members_way_back`)."""
     if fact.over is None or fact.group is None:
         raise ValueError("whole_total_read needs the side and the population it shows")
     noun = WHOLE_MEMBER_NOUNS.get(fact.over, "member")
@@ -454,14 +454,27 @@ def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_dat
         shown += "."
     if fact.asked is not None:
         lead = f"You asked for {_asked(fact)}. This {verb}"
-        instead = f" in place of {_asked(fact)}"
     elif fact.inferred:
         lead = f"No {noun} was named, so this {verb}"
-        instead = ""
     else:
         lead = f"This {verb}"
-        instead = ""
-    return f"{lead} {shown} To list each {noun}, search again with open_roles ['{noun}']{instead}."
+    return f"{lead} {shown} To list each {noun}, {_members_way_back(fact, noun)}."
+
+
+def _members_way_back(fact: DepartureFact, noun: str) -> str:
+    """How the request lists each member of a side read whole, in its door's form: on a
+    door that asks in the question's words (`members_in_words`), an each phrase, which the
+    raw-text door reads as the breakdown under any verb
+    (`role_text.every_member_breakdown_axis`), else `open_roles`. The each phrase takes the
+    place of the request's words for the population, where it gave some, so "ODA from
+    Germany to all recipients" becomes "ODA from Germany to each recipient"; otherwise
+    "for each recipient" joins the question. `open_roles` replaces those words likewise."""
+    if fact.members_in_words:
+        if fact.asked is not None:
+            return f'write "each {noun}" in place of "{_asked(fact)}"'
+        return f'add "for each {noun}" to the question'
+    instead = f" in place of {_asked(fact)}" if fact.asked is not None else ""
+    return f"search again with open_roles ['{noun}']{instead}"
 
 
 def _whole_total_unpublished(

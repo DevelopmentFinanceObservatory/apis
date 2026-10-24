@@ -7,10 +7,12 @@ import pytest
 from materialise.roles import KNOWN_ROLE_NAMES, axis_for_role
 from search.engine.entry.parsed import _role_query_for_part
 from search.engine.role_text import (
+    breakdown_axis,
     contradicts,
     debt_axes,
     every_member_axis,
     every_member_breakdown,
+    every_member_breakdown_axis,
     receipt_axes,
     role_axis_for_text,
 )
@@ -61,6 +63,38 @@ def test_every_member_axis_reads_the_role_a_phrase_asks_every_member_of(
 ) -> None:
     assert every_member_axis(phrase, query=query) == axis
     assert every_member_breakdown(phrase) is breakdown
+
+
+@pytest.mark.parametrize(
+    ("phrase", "axis", "every_member"),
+    [
+        ("by donor", "origin", None),
+        ("by donors", "origin", None),
+        ("across the recipients", "destination", None),
+        ("by creditor", "origin", None),
+        ("each donor", "origin", "origin"),
+        ("from each donor", "origin", "origin"),
+        ("for each donor", "origin", "origin"),
+        ("to every recipient", "destination", "destination"),
+        ("by each donor", "origin", "origin"),
+        ("all donors", None, None),
+        ("from all donors", None, None),
+        ("by country", None, None),
+        ("by sector", None, None),
+        ("by donor and recipient", None, None),
+        ("top donors", None, None),
+        ("by", None, None),
+        ("for", None, None),
+    ],
+)
+def test_breakdown_axis_reads_the_role_a_phrase_lists_member_by_member(
+    phrase: str, axis: RoleAxis | None, every_member: RoleAxis | None
+) -> None:
+    """`every_member_breakdown_axis` reads only the each and every phrases, which ask for
+    the breakdown under any operation."""
+    query = f"aid to Kenya {phrase}"
+    assert breakdown_axis(phrase, query=query) == axis
+    assert every_member_breakdown_axis(phrase, query=query) == every_member
 
 
 class TestUnrecognised:

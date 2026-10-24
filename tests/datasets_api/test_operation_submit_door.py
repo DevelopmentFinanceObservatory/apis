@@ -301,6 +301,7 @@ def _submit(
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=_MEMBERS,
+            rejected_head=None,
         )
     return excinfo.value
 
@@ -388,6 +389,7 @@ def test_resubmit_of_a_never_dispatched_pending_row_enqueues_it() -> None:
         coverage_stamp=stamp,
         origin_catalogue_build_id="fake-catalogue",
         estimate=estimate,
+        rejected_version=None,
     )
     assert operation.state == "pending"
 
@@ -438,6 +440,7 @@ def test_resubmit_of_a_deterministically_failed_operation_stays_failed() -> None
         coverage_stamp=stamp,
         origin_catalogue_build_id="fake-catalogue",
         estimate=estimate,
+        rejected_version=None,
     )
     operation_store.claim(operation.id, submission_count=0, lease_seconds=60, final_delivery=False)
     operation_store.fail(operation.id, attempt=1, refusal_code="excel_limit", retryable=False)
@@ -455,6 +458,7 @@ def test_resubmit_of_a_deterministically_failed_operation_stays_failed() -> None
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=_MEMBERS,
+            rejected_head=None,
         )
 
     assert excinfo.value.operation.state == "failed"
@@ -477,6 +481,7 @@ def _submit_members(operation_store, *, members: list[str]):
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=members,
+            rejected_head=None,
         )
     return excinfo.value.operation
 
@@ -534,6 +539,7 @@ def test_over_row_ceiling_refuses_before_any_operation_or_enqueue() -> None:
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=_MEMBERS,
+            rejected_head=None,
         )
 
     assert excinfo.value.code == "over_ceiling"
@@ -566,6 +572,7 @@ def test_row_ceiling_at_the_cap_is_admitted() -> None:
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=_MEMBERS,
+            rejected_head=None,
         )
 
     operation = excinfo.value.operation
@@ -593,6 +600,7 @@ def test_over_request_ceiling_refuses_before_any_operation_or_enqueue() -> None:
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=_MEMBERS,
+            rejected_head=None,
         )
 
     assert excinfo.value.ceiling_kind == "operation_requests"
@@ -623,6 +631,7 @@ def test_request_ceiling_at_the_cap_is_admitted() -> None:
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=_MEMBERS,
+            rejected_head=None,
         )
 
     operation = excinfo.value.operation
@@ -647,5 +656,6 @@ def test_over_row_ceiling_takes_priority_over_request_ceiling_reporting() -> Non
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=_MEMBERS,
+            rejected_head=None,
         )
     assert excinfo.value.ceiling_kind == "operation_rows"

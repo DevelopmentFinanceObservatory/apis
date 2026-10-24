@@ -126,21 +126,26 @@ def long_kind_cell(
     (`materialise.enrichment.is_whole_total`) and `total` otherwise, and a residual reads
     `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
-    `None` for a ref the code index does not list, or one that is not text."""
+    The kind and class are the party's in the row's dataset (`PartyRow.kind_in`,
+    `PartyRow.class_of`). A row with no `provenance` reads the kind of every dataset. `None` for
+    a ref the code index does not list, one that is not text, and a party that takes no one kind
+    for the row (`PartyRow.kind_over`), a party whose kind differs between datasets on a row
+    with no `provenance`."""
     party = parties.get(ref) if isinstance(ref, str) else None
     if party is None:
         return None
-    if party.kind == "total":
-        whole = is_whole_total(
-            party,
-            year=period_year(period),
-            provenance=provenance if isinstance(provenance, str) else None,
-        )
+    dataset = provenance if isinstance(provenance, str) else None
+    kind = party.kind_over(() if dataset is None else (dataset,))
+    if kind is None:
+        return None
+    if kind == "total":
+        whole = is_whole_total(party, year=period_year(period), provenance=dataset)
         return WHOLE_TOTAL_CELL if whole else TOTAL_CELL
-    if party.kind == "residual":
+    if kind == "residual":
         return RESIDUAL_CELL
-    if party.party_class == "private" or role_key_axis(role) == "origin":
-        return party.party_class
+    party_class = party.class_of(kind)
+    if party_class == "private" or role_key_axis(role) == "origin":
+        return party_class
     return RECIPIENT_PARTY_CELL
 
 
@@ -436,11 +441,11 @@ def plan_long_projection(
                 provenance=None if provenance_at is None else row[provenance_at],
             )
 
-        add(
-            f"{entity}{KIND_SUFFIX}",
-            kind,
-            lambda row, reads: _name_missing(row[at], reads.parties),
-        )
+        def missing(row: Row, reads: NodeReads) -> bool:
+            cell = row[at]
+            return isinstance(cell, str) and cell != "" and kind(row, reads) is None
+
+        add(f"{entity}{KIND_SUFFIX}", kind, missing)
 
     def take_method() -> None:
         take(_METHOD_COLUMN)

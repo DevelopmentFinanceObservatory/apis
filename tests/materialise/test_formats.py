@@ -321,6 +321,18 @@ def test_table_schema_for_infers_types_from_cells_not_headers():
     }
 
 
+@pytest.mark.parametrize("rows", [(), ((1, "x"),)], ids=["empty", "integer-cells"])
+def test_a_declared_column_type_holds_whatever_the_cells(rows):
+    table = _Table(columns=("value", "label"), rows=rows)
+    rendering = Rendering(column_types={"value": "number"})
+
+    schema = table_schema_for(table, rendering=rendering)
+    parquet = pq.read_schema(io.BytesIO(write_parquet((table,), rendering=rendering).data))
+
+    assert schema["fields"][0]["type"] == "number"
+    assert str(parquet.field("value").type) == "double"
+
+
 # All four writers use sanitised, unique headers.
 
 

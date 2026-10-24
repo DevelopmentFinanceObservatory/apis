@@ -252,17 +252,20 @@ def _dataset_pins(
 
 
 def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
-    """The hex SHA-256 of `parties`' `(dcid, kind, party_class, whole markers)` rows, sorted by
-    dcid, each marker as `(dataset, covers, years)`. Neither row order nor a label, group or
-    dataset-list change moves it. The markers are in it, windows included, because a whole
-    total's frame cell depends on the row's dataset and on whether its year falls inside the
-    window."""
+    """The hex SHA-256 of `parties`' `(dcid, kind, party_class, whole markers, dataset kinds)`
+    rows, sorted by dcid, each marker as `(dataset, covers, years)` and each dataset kind as
+    `(dataset, kind)`. Neither row order nor a label, group or dataset-list change moves it.
+    The markers are in it, windows included, because a whole total's frame cell depends on the
+    row's dataset and on whether its year falls inside the window, and the dataset kinds
+    because a party's kind and class cells depend on the row's dataset. A row without dataset
+    kinds hashes as it did before they existed."""
     rows = sorted(
         (
             party.dcid,
             party.kind,
             party.party_class,
             [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
+            *([list(party.dataset_kinds)] if party.dataset_kinds else []),
         )
         for party in parties
     )
@@ -531,11 +534,13 @@ class CodeIndex:
         side_classes: dict[tuple[RoleAxis, str], set[PartyClass]] = defaultdict(set)
         population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
         for party in self.parties.values():
-            if party.kind != "total" and party.party_class is not None:
-                for axis in party.axes:
-                    for dataset in party.datasets:
-                        side_classes[axis, dataset].add(party.party_class)
-            elif any(POPULATION_CLASS in marker.covers for marker in party.whole):
+            for dataset in party.datasets:
+                kind = party.kind_in(dataset)
+                party_class = party.class_of(kind)
+                if kind != "total" and party_class is not None:
+                    for axis in party.axes:
+                        side_classes[axis, dataset].add(party_class)
+            if any(POPULATION_CLASS in marker.covers for marker in party.whole):
                 population_totals_by_axis[party.axes[0]].append(party.dcid)
         self.side_classes: dict[tuple[RoleAxis, str], frozenset[PartyClass]] = {
             side: frozenset(classes) for side, classes in side_classes.items()
@@ -738,10 +743,13 @@ class CodeIndex:
         return any(d.enum_dcid == dcid for d in self.declarations.values())
 
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> PartyKind | None:
-        """The kind of the party `dcid` whose graph types are `types`: its row's kind when
-        `parties` lists it, else the kind its types give (`code_index.types.party_kind`)."""
+        """The kind of the party `dcid` whose graph types are `types`, read for no dataset: its
+        row's kind in every dataset that publishes it when `parties` lists it
+        (`PartyRow.kind_over`), `None` when that kind differs between datasets, else the kind
+        its types give (`code_index.types.party_kind`). A reader with a dataset in hand reads
+        `PartyRow.kind_in` instead."""
         party = self.parties.get(dcid)
-        return party.kind if party is not None else party_kind(types, self.party_types)
+        return party.kind_over() if party is not None else party_kind(types, self.party_types)
 
     def whole_set(self, phrase: str) -> WholeTotalSet | None:
         """The whole total set a `phrase` names, compared under `fold_text`, or `None`."""
@@ -751,6 +759,16 @@ class CodeIndex:
         """The StatVar row for `dcid`, from `statvars` or `listed_statvars`, or `None` if
         this index holds no such row."""
         return self._statvars_by_dcid.get(dcid)
+
+    def statvar_provenances(self, dcids: Iterable[str]) -> frozenset[str]:
+        """The provenances that publish the StatVars `dcids` (`StatVarRow.provenances`), the
+        datasets a reader of them serves. A StatVar this index does not list adds none."""
+        return frozenset(
+            provenance
+            for dcid in dcids
+            if (row := self.statvar_by_dcid(dcid)) is not None
+            for provenance in row.provenances
+        )
 
     def code_by_code(self, code_system: str, code: str) -> CodeRow | None:
         """Returns the row for `code` in `code_system`. Code strings may recur across systems,

@@ -7,14 +7,23 @@ and settles between the surface's answer and the name's own:
 
 - a qualified surface ("Asia (DAC)" for the name "Asia") is the only text resolved, so a
   named aggregate never widens to the bare place;
-- otherwise the surface and the name are resolved in one batch, and the more specific
-  text leads. A surface that adds words to the name ("Nairobi county" for "Nairobi") leads,
-  since the extractor dropped words the user wrote. A surface the name rewrites ("Canadian"
-  for "Canada", "Congo" for "Democratic Republic of the Congo") follows, since the name is
-  the extractor's reading of it; "Canadian" alone matches two US towns. The leading answer
-  stands, except that a `NotFound` lead takes the other answer, a `NotHeld` lead takes it
-  unless that is `NotFound`, and an `Ambiguous` lead takes it when it is one of the lead's
-  candidates.
+- otherwise the surface and the name are resolved in one batch, and one leads. A surface
+  that adds words to the name ("Nairobi county" for "Nairobi") leads, since the extractor
+  dropped words the user wrote. So does a surface the name adds words to ("Congo" for
+  "Democratic Republic of the Congo", "Korea" for "South Korea"), since the added words are
+  the extractor's and no word of the query. A surface the name rewrites in other words
+  ("Canadian" for "Canada", "UK" for "United Kingdom", "Kenia" for "Kenya") follows, since
+  the name is the extractor's reading of it; "Canadian" alone matches two US towns. The
+  leading answer stands, except that a `NotFound` lead takes the other answer, a `NotHeld`
+  lead takes it unless that is `NotFound`, and an `Ambiguous` lead takes it when it is one
+  of the lead's candidates. A name that only adds words to its surface settles the
+  surface's ambiguity only when it is the one candidate of its kind: "Trinidad and Tobago"
+  settles "Trinidad" against a town of that name, and "Federated States of Micronesia"
+  settles "Micronesia" against the region, while "Congo" names two countries and the
+  query does not choose between them.
+
+A name settled on its surface's ambiguity reads as its surface (`ambiguous_surface_names`),
+so the choice the query leaves open is offered in the user's words.
 """
 
 from __future__ import annotations
@@ -22,7 +31,15 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
-from entity_resolution import Ambiguous, EntityResolver, NotFound, NotHeld, Resolution, Resolved
+from entity_resolution import (
+    Ambiguous,
+    Entity,
+    EntityResolver,
+    NotFound,
+    NotHeld,
+    Resolution,
+    Resolved,
+)
 
 
 def _is_qualified(surface: str, name: str) -> bool:
@@ -55,7 +72,9 @@ def _settle(name: str, surface: str | None, by_text: Mapping[str, Resolution]) -
     if _is_qualified(surface, name):
         return through_surface
     own = by_text[name]
-    lead, other = (through_surface, own) if _adds_words(surface, name) else (own, through_surface)
+    expands = _adds_words(name, surface)
+    surface_leads = expands or _adds_words(surface, name)
+    lead, other = (through_surface, own) if surface_leads else (own, through_surface)
     if isinstance(lead, NotFound):
         return other
     if isinstance(lead, NotHeld):
@@ -64,9 +83,15 @@ def _settle(name: str, surface: str | None, by_text: Mapping[str, Resolution]) -
         isinstance(lead, Ambiguous)
         and isinstance(other, Resolved)
         and other.entity.dcid in {candidate.dcid for candidate in lead.candidates}
+        and (not expands or _sole_of_its_kind(other.entity, lead.candidates))
     ):
         return other
     return lead
+
+
+def _sole_of_its_kind(entity: Entity, candidates: Sequence[Entity]) -> bool:
+    """Whether `entity` is the only one of `candidates` of its kind."""
+    return all(c.kind != entity.kind for c in candidates if c.dcid != entity.dcid)
 
 
 async def resolve_names(
@@ -82,3 +107,22 @@ async def resolve_names(
     texts = list(dict.fromkeys(text for name in names for text in _texts(name, surfaces.get(name))))
     by_text = dict(zip(texts, await resolver.resolve(texts), strict=True))
     return [_settle(name, surfaces.get(name), by_text) for name in names]
+
+
+async def ambiguous_surface_names(
+    surfaces: Mapping[str, str], *, resolver: EntityResolver
+) -> frozenset[str]:
+    """The names in `surfaces` that settle on their surface's ambiguity, read in one
+    resolver call: "Democratic Republic of the Congo" for the surface "Congo", which names
+    two countries. A name its surface's answer settles otherwise is not among them."""
+    if not surfaces:
+        return frozenset()
+    texts = list(dict.fromkeys(t for name, s in surfaces.items() for t in _texts(name, s)))
+    by_text = dict(zip(texts, await resolver.resolve(texts), strict=True))
+    return frozenset(
+        name
+        for name, surface in surfaces.items()
+        if isinstance(settled := _settle(name, surface, by_text), Ambiguous)
+        and settled == by_text[surface]
+        and settled != by_text.get(name)
+    )

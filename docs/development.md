@@ -72,6 +72,16 @@ the same dfo-apis PR as the change: `dfo-spec-kit` and `dfo-spec-kit-client-cont
 the shape and alters behaviour passes this test, and the sdk's scheduled end-to-end run catches
 it after merge.
 
+### Reading the dev graph locally
+
+`just dev`, `just sdmx-live`, and the scripts read the dev Data Commons service on Cloud Run (`SEARCH_GRAPH_BASE`), which admits only callers holding `roles/run.invoker`. `dfo_platform.cloud_run_auth` sends an ID token to every `*.run.app` host and raises `CloudRunAuthError` when it has none. Your own user credentials cannot mint one, so sign in as a service account you may impersonate, which mints and refreshes tokens:
+
+```bash
+gcloud auth application-default login --impersonate-service-account=<service account>
+```
+
+You need `roles/iam.serviceAccountTokenCreator` on the service account, and the account needs `roles/run.invoker` on the service.
+
 ### SDMX live tests
 
 `tests/dc_sdmx/` runs offline against recorded wire fixtures. `test_live.py` calls a real Data Commons deployment and is skipped unless `DFO_SDMX_LIVE_BASE` is set.
@@ -81,9 +91,9 @@ export SEARCH_GRAPH_TOKEN=<the x-graph-token shared secret>
 just sdmx-live
 ```
 
-The recipe points at the same graph as `just dev` (`SEARCH_GRAPH_BASE`) and appends the Data Commons service's `/core/api` prefix, because `SdmxClient` appends its own `/sdmx/v3/...` paths to the API root. It sets `DFO_SDMX_LIVE_REQUIRED=1`, so a missing base fails the run instead of skipping it. Two tests pass when the deployment serves the SDMX routes and returns observations for `Count_Person` in `country/USA`. A failure on an empty result means the deployment authenticated but served an empty graph. An `SdmxUnexpectedResponseShapeError` means the request was challenged before it reached the mixer, so the token is missing or wrong.
+The service needs an ID token, as in [Reading the dev graph locally](#reading-the-dev-graph-locally). The recipe points at the same graph as `just dev` (`SEARCH_GRAPH_BASE`) and appends the Data Commons service's `/core/api` prefix, because `SdmxClient` appends its own `/sdmx/v3/...` paths to the API root. It sets `DFO_SDMX_LIVE_REQUIRED=1`, so a missing base fails the run instead of skipping it. Two tests pass when the deployment serves the SDMX routes and returns observations for `Count_Person` in `country/USA`. A failure on an empty result means the deployment authenticated but served an empty graph. An `SdmxUnexpectedResponseShapeError` means the request was challenged before it reached the mixer, so the token is missing or wrong.
 
-`.github/workflows/sdmx-live.yml` runs the same suite on pull requests touching `packages/dfo-data-tools/src/dc_sdmx/` or `tests/dc_sdmx/` once they are out of draft, and on a weekday schedule.
+`.github/workflows/sdmx-live.yml` runs the same suite on pull requests touching `packages/dfo-data-tools/src/dc_sdmx/`, `packages/dfo-data-tools/src/dfo_platform/cloud_run_auth.py`, or `tests/dc_sdmx/` once they are out of draft, and on a weekday schedule.
 
 ### Database migrations
 

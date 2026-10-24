@@ -9,10 +9,14 @@ bound when the served identity's `entities` name an entity on its axis
 (`datasets_api.surgery.apply_scope_surgery`); every other party role of the frame is open.
 
 For each open party role, in column-name order, the rows whose party the code index declares a
-`total` (`materialise.enrichment.party_kind_of`) are left out, each role reading the rows the
-roles before it kept. Parties of kind `party` or `residual`, and parties the index declares no
-kind for, stay. A role on which every row holds a total keeps its rows, since the totals are
-then the only parties there are. A bound role is left alone whatever its parties' kinds.
+`total` in the row's dataset (`materialise.enrichment.party_kind_of` for the row's `provenance`)
+are left out, each role reading the rows the roles before it kept. A party can be a total in one
+dataset and a party in another (`code_index.types.PartyRow.dataset_kinds`), so the cut keys on
+the party and the dataset together. A row with no provenance reads the kind of every dataset,
+and keeps a party whose kind differs between datasets. Parties of kind `party` or `residual`,
+and parties the index declares no kind for, stay. A role on which every row holds a total keeps
+its rows, since the totals are then the only parties there are. A bound role is left alone
+whatever its parties' kinds.
 
 The cut reads the frame before any reshape, so a `groupby` over it sums members alone. Each pass
 holds one chunk at a time.
@@ -20,8 +24,11 @@ holds one chunk at a time.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -29,6 +36,7 @@ from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame, stream_frame_sha256
 
 from code_index.types import PartyRow
 from dfo_platform.roles import role_key_axis
+from materialise.bundle_columns import PROVENANCE_COLUMN
 from materialise.enrichment import is_party_role, party_kind_of
 
 _TOTAL_KIND = "total"
@@ -63,12 +71,43 @@ def open_party_roles(identity: object, entity_columns: Sequence[str]) -> tuple[s
     )
 
 
+class _EveryProvenance(Enum):
+    """The provenance key of refs left out of the rows of every provenance, which a trace entry
+    recorded without a `provenance` names (`PartyTotalsCut.of_trace_entries`)."""
+
+    EVERY = "every"
+
+
+EVERY_PROVENANCE = _EveryProvenance.EVERY
+
+type _Provenance = str | None | _EveryProvenance
+
+
 @dataclass(frozen=True)
 class PartyTotalsCut:
     """The totals a cut leaves out of a frame: each open party role that lost rows, mapped to
-    the sorted refs of the totals it lost."""
+    each provenance it lost rows in and the sorted refs of the totals it lost there. The
+    provenance is `None` for the rows of a frame without a `provenance` column and the rows
+    whose cell is null, and `EVERY_PROVENANCE` for the rows of any provenance, which only a cut
+    rebuilt from a trace entry without a `provenance` holds."""
 
-    left_out: Mapping[str, tuple[str, ...]]
+    left_out: Mapping[str, Mapping[_Provenance, tuple[str, ...]]]
+
+    @classmethod
+    def of_trace_entries(cls, entries: Iterable[Mapping[str, object]]) -> PartyTotalsCut:
+        """The cut whose `trace_entries` are `entries`, as a version's trace recorded them,
+        whatever the code index now declares of their parties. An entry without a `provenance`,
+        as versions recorded before the cut keyed totals on the dataset, leaves its refs out of
+        the rows of every provenance, as the cut that minted them did."""
+        left_out: dict[str, dict[_Provenance, tuple[str, ...]]] = {}
+        for entry in entries:
+            recorded = entry.get("provenance", EVERY_PROVENANCE)
+            provenance = (
+                recorded if recorded is None or recorded is EVERY_PROVENANCE else str(recorded)
+            )
+            refs = tuple(str(ref) for ref in cast("list[object]", entry["entities"]))
+            left_out.setdefault(str(entry["role"]), {})[provenance] = refs
+        return cls(left_out=left_out)
 
     def chunks(self, frame_chunks: Callable[[], Iterator[Frame]]) -> Callable[[], Iterator[Frame]]:
         """A fresh pass over `frame_chunks` less the rows `left_out` names, on each call. A
@@ -83,10 +122,18 @@ class PartyTotalsCut:
         return cut
 
     def trace_entries(self) -> list[dict[str, object]]:
-        """The trace's `party_totals_left_out` entries: one `{role, entities}` per role that lost
-        rows, in role order, its entities in ref order."""
+        """The trace's `party_totals_left_out` entries: one `{role, provenance, entities}` per
+        role and provenance it lost rows in, in role order and then provenance order (`None`
+        first), its entities in ref order. A party left out of one dataset's rows is named for
+        that dataset alone, so a frame that keeps its rows from another dataset says so. Refs
+        left out of every provenance keep the `{role, entities}` entry they were rebuilt from,
+        after the role's other entries."""
         return [
-            {"role": role, "entities": list(refs)} for role, refs in sorted(self.left_out.items())
+            {"role": role, "entities": list(refs)}
+            if dataset is EVERY_PROVENANCE
+            else {"role": role, "provenance": dataset, "entities": list(refs)}
+            for role, by_dataset in sorted(self.left_out.items())
+            for dataset, refs in sorted(by_dataset.items(), key=lambda item: _order(item[0]))
         ]
 
 
@@ -145,24 +192,46 @@ def cut_party_totals(
     parties: Mapping[str, PartyRow],
 ) -> PartyTotalsCut:
     """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds
-    from the code index's `parties`. Reads the frame once per role, each pass after the cuts of
-    the roles before it."""
-    left_out: dict[str, tuple[str, ...]] = {}
+    from the code index's `parties` for each row's dataset. Reads the frame once per role, each
+    pass after the cuts of the roles before it."""
+    left_out: dict[str, dict[_Provenance, tuple[str, ...]]] = {}
     for role in roles:
-        totals: set[str] = set()
+        totals: defaultdict[str | None, set[str]] = defaultdict(set)
         others = False
         for chunk in frame_chunks():
             if role not in chunk.columns:
                 break
             kept = _without(chunk, left_out)
-            for ref in pc.unique(kept.table.column(role)).to_pylist():
-                if isinstance(ref, str) and party_kind_of(ref, parties=parties) == _TOTAL_KIND:
-                    totals.add(ref)
+            for ref, dataset in _parties_by_dataset(kept, role):
+                datasets = () if dataset is None else (dataset,)
+                if (
+                    isinstance(ref, str)
+                    and party_kind_of(ref, parties=parties, datasets=datasets) == _TOTAL_KIND
+                ):
+                    totals[dataset].add(ref)
                 else:
                     others = True
         if totals and others:
-            left_out[role] = tuple(sorted(totals))
+            left_out[role] = {dataset: tuple(sorted(refs)) for dataset, refs in totals.items()}
     return PartyTotalsCut(left_out=left_out)
+
+
+def _parties_by_dataset(chunk: Frame, role: str) -> list[tuple[object, str | None]]:
+    """The distinct `(ref, provenance)` pairs of `chunk`'s `role` column, the provenance `None`
+    for a frame without a `provenance` column and for a null cell."""
+    table = chunk.table
+    if PROVENANCE_COLUMN not in table.column_names:
+        return [(ref, None) for ref in pc.unique(table.column(role)).to_pylist()]
+    pairs = (
+        table.select([role, PROVENANCE_COLUMN]).group_by([role, PROVENANCE_COLUMN]).aggregate([])
+    )
+    return list(
+        zip(
+            pairs.column(role).to_pylist(),
+            pairs.column(PROVENANCE_COLUMN).to_pylist(),
+            strict=True,
+        )
+    )
 
 
 def _distinct(values: pa.Array | pa.ChunkedArray) -> list[object]:
@@ -170,21 +239,44 @@ def _distinct(values: pa.Array | pa.ChunkedArray) -> list[object]:
     return pc.unique(values).drop_null().to_pylist()
 
 
-def _without(chunk: Frame, left_out: Mapping[str, tuple[str, ...]]) -> Frame:
+def _order(provenance: _Provenance) -> tuple[int, str]:
+    """The order of `provenance` among a role's trace entries: `None`, the named provenances,
+    then `EVERY_PROVENANCE`."""
+    if provenance is None:
+        return 0, ""
+    if provenance is EVERY_PROVENANCE:
+        return 2, ""
+    return 1, provenance
+
+
+def _without(chunk: Frame, left_out: Mapping[str, Mapping[_Provenance, tuple[str, ...]]]) -> Frame:
     """`chunk` less each row whose party on a role of `left_out` is one of that role's refs. A
-    null cell matches no ref."""
+    null cell matches no ref. A ref left out in a provenance leaves out its rows of that
+    provenance alone, one left out for `None` its rows with no provenance, and one left out for
+    `EVERY_PROVENANCE` its rows of any provenance."""
     if not left_out:
         return chunk
     table = chunk.table
-    for role, refs in left_out.items():
-        column = table.column(role)
-        table = table.filter(
-            pc.invert(pc.is_in(column, value_set=pa.array(refs, type=column.type)))
-        )
+    for role, by_dataset in left_out.items():
+        for dataset, refs in by_dataset.items():
+            column = table.column(role)
+            match = pc.is_in(column, value_set=pa.array(refs, type=column.type))
+            if dataset is not EVERY_PROVENANCE and PROVENANCE_COLUMN in table.column_names:
+                # A `None` dataset matches the null cells, and a named one no null cell.
+                provenance = table.column(PROVENANCE_COLUMN)
+                in_dataset = pc.is_in(
+                    provenance, value_set=pa.array([dataset], type=provenance.type)
+                )
+                match = pc.and_(match, in_dataset)
+            elif dataset is not None and dataset is not EVERY_PROVENANCE:
+                continue
+            # Two column operands give a column; the stubs widen it to a scalar too.
+            table = table.filter(cast("pa.ChunkedArray", pc.invert(match)))
     return Frame(columns=chunk.columns, table=table)
 
 
 __all__ = [
+    "EVERY_PROVENANCE",
     "TRACE_KEY",
     "YEARS_DIMENSION",
     "CutFrame",

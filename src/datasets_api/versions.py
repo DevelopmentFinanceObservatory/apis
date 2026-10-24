@@ -132,9 +132,20 @@ class VersionRecord:
     # The hash of the version's frame (`dfo_frame_grammar.frame_sha256`), which every writer
     # holds when it records the version.
     frame_sha256: str | None = None
+    # Whether a derived version's frame holds its summed rows (`render.DerivedVersion.summed`):
+    # set exactly when `base_content_version` is.
+    frame_summed: bool | None = None
     # Builds and settles the version's description record in the transaction that writes the
     # version row. `None` writes no record.
     describer: VersionDescriber | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        if (self.base_content_version is None) != (self.frame_summed is None):
+            raise ValueError(
+                "frame_summed is set exactly when base_content_version is: "
+                f"base_content_version={self.base_content_version!r} "
+                f"frame_summed={self.frame_summed!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -304,6 +315,7 @@ def unlinked_state(record: VersionRecord) -> VersionState:
             facts=record.facts,
             base_content_version=record.base_content_version,
             frame_sha256=record.frame_sha256,
+            frame_summed=record.frame_summed,
         ),
         revocation=None,
         locations=[],
@@ -355,8 +367,9 @@ class VersionLister(Protocol):
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
     ) -> list[ListedVersion]:
         """Return at most `limit` versions recorded under any of `subject_ids`, newest first,
-        starting after `after`, leaving out each version revoked, or whose base version is
-        revoked, under any of them. A version recorded under several of them lists once."""
+        starting after `after`. A version lists once, from its record under the earliest of
+        `subject_ids` that records it, and is left out when that record's version or base
+        version is revoked under any of them."""
         ...
 
 

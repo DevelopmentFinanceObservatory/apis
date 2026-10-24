@@ -9,14 +9,15 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Collection, Sequence
 from contextlib import aclosing
 
 from code_index.shared import get_index
+from code_index.tokens import word_tokens
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
-from entity_resolution import Admission, EntityResolver, Resolved
+from entity_resolution import Admission, Ambiguous, EntityResolver, Resolution, Resolved
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import current_catalogue
@@ -75,11 +76,13 @@ from search.engine.fanout import (
     _run_variables_streaming,
     leg_runs,
 )
+from search.engine.function_words import FUNCTION_WORDS
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.qualifier_match import (
     CodedQualifier,
     _all_normalized_text_ranges,
     _normalize,
+    _ranges_overlap,
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
@@ -89,7 +92,13 @@ from search.engine.region.result import RegionResult, with_departure_facts, with
 from search.engine.region.sentence_events import answer_events
 from search.engine.region.state import qualifier_dropped_warning
 from search.engine.response_cache_flow import CacheScope
-from search.engine.role_text import DoorRole, debt_axes, receipt_axes
+from search.engine.role_text import (
+    DoorRole,
+    breakdown_axis,
+    debt_axes,
+    every_member_breakdown_axis,
+    receipt_axes,
+)
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import scan_sources, source_phrases
 from search.engine.source_scope import (
@@ -99,6 +108,7 @@ from search.engine.source_scope import (
     source_dictionary,
 )
 from search.engine.source_spans import read_sources, unclaimed_words
+from search.engine.surface_resolution import ambiguous_surface_names
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -169,16 +179,191 @@ def _balanced_parenthetical_extensions(query: str, span: str) -> list[str]:
     return extensions
 
 
-def _recover_entity_surfaces(
-    entities: list[ExtractedEntity], *, query: str, resolver: EntityResolver
-) -> list[ExtractedEntity]:
-    """Recover a source-qualified entity surface before scans or cache keys read it.
+def _whole_word_ranges(words: str, text: str) -> list[tuple[int, int]]:
+    """The character ranges of `text` where `words` occur, casefolded, as whole words
+    (`_all_normalized_text_ranges`), so "DAC2a" holds no "DAC"."""
+    return [
+        (start, end)
+        for start, end in _all_normalized_text_ranges(words, text)
+        if not (start > 0 and text[start - 1].isalnum())
+        and not (end < len(text) and text[end].isalnum())
+    ]
 
-    Only a span that occurs in `query` (`_grounded`) is read; an ungrounded span leaves the
-    entity unchanged.
+
+def _folded_words(text: str) -> list[str]:
+    return [token.text.casefold() for token in word_tokens(text)]
+
+
+def _holds_run(words: Sequence[str], run: Sequence[str]) -> bool:
+    """Whether `words` hold `run` as consecutive whole words."""
+    return any(
+        tuple(words[i : i + len(run)]) == tuple(run) for i in range(len(words) - len(run) + 1)
+    )
+
+
+def _named_dcids(resolution: Resolution) -> frozenset[str]:
+    """The dcids `resolution` names: its entity, or each candidate of an ambiguity."""
+    if isinstance(resolution, Resolved):
+        return frozenset({resolution.entity.dcid})
+    if isinstance(resolution, Ambiguous):
+        return frozenset(candidate.dcid for candidate in resolution.candidates)
+    return frozenset()
+
+
+async def _query_words_of(
+    name: str,
+    query: str,
+    *,
+    owned: Sequence[tuple[int, int]],
+    rivals: Collection[str],
+    resolver: EntityResolver,
+    deadline: float,
+) -> str | None:
+    """The query's own words for a `name` the query does not write, as written in `query`.
+
+    They are the longest run of whole query words that `name` holds as consecutive whole
+    words, holding a word other than a function word: "Congo" in "aid to Congo" for the name
+    "Democratic Republic of the Congo". The run grows to the widest stretch of query words
+    around it that resolves to the one entity `name` resolves to, so the user's mention
+    keeps the words that choose its place: "DR Congo" and "South Korea" rather than "Congo"
+    and "Korea". A stretch opens and closes on a word other than a function word, beyond the
+    run's own, and the run and every stretch resolve with `name` in one resolver call. A
+    stretch naming another place ("South Korea" for "Democratic People's Republic of
+    Korea") is no such stretch, and two of one width leave the run as it is. Neither takes a
+    word inside `owned`, the character ranges of `query` another entity's mention holds.
+    `None` when no run holds one, when two runs of different words tie for longest, or
+    when a run left as it is is contested: one of the `rivals`, the other entities' names,
+    holds it too, so "Congo" in "ODA from DRC to Congo" chooses neither Congo and each
+    resolves by its name, or it names entities none of which is the one `name` resolves to,
+    so "Korea" for "Democratic People's Republic of Korea" resolves by the name. A name in
+    other words ("Germany" for "German", "United Kingdom" for "UK") shares no word with the
+    query and has none."""
+    tokens = word_tokens(query)
+    free = [
+        not any(_ranges_overlap((token.start, token.end), span) for span in owned)
+        for token in tokens
+    ]
+    folded = [token.text.casefold() for token in tokens]
+    name_words = _folded_words(name)
+    runs: dict[tuple[str, ...], tuple[int, int]] = {}
+    for start in range(len(folded)):
+        for end in range(start + 1, len(folded) + 1):
+            run = tuple(folded[start:end])
+            if not free[end - 1] or not _holds_run(name_words, run):
+                break
+            if any(word not in FUNCTION_WORDS for word in run):
+                runs.setdefault(run, (start, end))
+    if not runs:
+        return None
+    longest = max(len(run) for run in runs)
+    ((run, (start, end)), *others) = [item for item in runs.items() if len(item[0]) == longest]
+    if others:
+        return None
+
+    def text(lo: int, hi: int) -> str:
+        return query[tokens[lo].start : tokens[hi - 1].end]
+
+    lo, hi = start, end
+    while lo > 0 and free[lo - 1]:
+        lo -= 1
+    while hi < len(tokens) and free[hi]:
+        hi += 1
+    stretches = [
+        (i, j)
+        for i in range(lo, start + 1)
+        for j in range(end, hi + 1)
+        if (i, j) != (start, end)
+        and (i == start or folded[i] not in FUNCTION_WORDS)
+        and (j == end or folded[j - 1] not in FUNCTION_WORDS)
+    ]
+    texts = list(dict.fromkeys([name, text(start, end), *(text(i, j) for i, j in stretches)]))
+    answers = dict(
+        zip(texts, await _await_bounded(resolver.resolve(texts), deadline=deadline), strict=True)
+    )
+    named = answers[name]
+    if isinstance(named, Resolved):
+        dcid = named.entity.dcid
+        choosing = [(i, j) for i, j in stretches if _named_dcids(answers[text(i, j)]) == {dcid}]
+        width = max((j - i for i, j in choosing), default=0)
+        widest = [(i, j) for i, j in choosing if j - i == width]
+        if len(widest) == 1:
+            return text(*widest[0])
+    if any(_holds_run(_folded_words(rival), run) for rival in rivals):
+        return None
+    run_names = _named_dcids(answers[text(start, end)])
+    if run_names and not run_names & _named_dcids(named):
+        return None
+    return text(start, end)
+
+
+def _mention_ranges(others: Sequence[ExtractedEntity], *, query: str) -> list[tuple[int, int]]:
+    """The character ranges of `query` the `others` name in whole words: each one's grounded
+    span, else its name where the query writes it."""
+    ranges: list[tuple[int, int]] = []
+    for other in others:
+        span = (other.span or "").strip()
+        words = span if span and _grounded(span, query) else other.text.strip()
+        ranges.extend(_whole_word_ranges(words, query))
+    return ranges
+
+
+async def _with_query_span(
+    entity: ExtractedEntity,
+    *,
+    others: Sequence[ExtractedEntity],
+    query: str,
+    resolver: EntityResolver,
+    deadline: float,
+) -> ExtractedEntity:
+    """`entity` whose span is the query's own words for it (`_query_words_of`), where the
+    query writes neither its name nor its span: entity resolution then reads those words,
+    and an extraction that rewrote "Congo" as "Democratic Republic of the Congo" leaves the
+    query's ambiguity in place (`surface_resolution`). Words one of the `others` names are
+    that entity's, so "Republic of the Congo" in "ODA from DRC to Republic of the Congo" is
+    no span of the Democratic Republic of the Congo, and words another's name holds as well
+    are contested (`_query_words_of`). With no words of its own, the entity resolves by its
+    name."""
+    span = (entity.span or "").strip()
+    if (span and _grounded(span, query)) or _grounded(entity.text.strip(), query):
+        return entity
+    own = await _query_words_of(
+        entity.text,
+        query,
+        owned=_mention_ranges(others, query=query),
+        rivals={
+            other.text.strip()
+            for other in others
+            if _normalize(other.text) != _normalize(entity.text)
+        },
+        resolver=resolver,
+        deadline=deadline,
+    )
+    return entity if own is None else entity.model_copy(update={"span": own})
+
+
+async def _recover_entity_surfaces(
+    entities: list[ExtractedEntity], *, query: str, resolver: EntityResolver, deadline: float
+) -> list[ExtractedEntity]:
+    """Recover each entity's surface before scans or cache keys read it: the query's own
+    words for a name the query writes neither as the name nor as its span
+    (`_with_query_span`), and a source-qualified surface. Only a span that occurs in
+    `query` (`_grounded`) is read for the qualifier. A name that settles on its surface's
+    ambiguity takes the surface as its text (`surface_resolution.ambiguous_surface_names`),
+    so "Congo" in "ODA to Congo", which the extraction names "Democratic Republic of the
+    Congo", asks its choice in the query's words.
     """
+    # Each entity reads the spans the ones before it recovered, so two never take one word.
+    spanned = list(entities)
+    for i, entity in enumerate(entities):
+        spanned[i] = await _with_query_span(
+            entity,
+            others=[*spanned[:i], *spanned[i + 1 :]],
+            query=query,
+            resolver=resolver,
+            deadline=deadline,
+        )
     recovered: list[ExtractedEntity] = []
-    for entity in entities:
+    for entity in spanned:
         span = (entity.span or "").strip()
         if not span or not _grounded(span, query):
             recovered.append(entity)
@@ -209,7 +394,17 @@ def _recover_entity_surfaces(
             recovered.append(entity.model_copy(update={"span": surface}))
         else:
             recovered.append(entity)
-    return _without_absorbed(recovered, query=query)
+    kept = _without_absorbed(recovered, query=query)
+    surfaces = _entity_surfaces(kept, query=query)
+    as_written = await _await_bounded(
+        ambiguous_surface_names(surfaces, resolver=resolver), deadline=deadline
+    )
+    return [
+        entity.model_copy(update={"text": surfaces[key], "span": surfaces[key]})
+        if (key := _entity_key(entity)) in as_written
+        else entity
+        for entity in kept
+    ]
 
 
 def _without_absorbed(entities: list[ExtractedEntity], *, query: str) -> list[ExtractedEntity]:
@@ -220,26 +415,17 @@ def _without_absorbed(entities: list[ExtractedEntity], *, query: str) -> list[Ex
     names no DAC.
     """
     normalized = _normalize(query)
-
-    def mentions(span: str) -> list[tuple[int, int]]:
-        return [
-            (start, end)
-            for start, end in _all_normalized_text_ranges(span, normalized)
-            if not (start > 0 and normalized[start - 1].isalnum())
-            and not (end < len(normalized) and normalized[end].isalnum())
-        ]
-
     qualified = [
         qualified_range
         for entity in entities
         if entity.span and "(" in entity.span
-        for qualified_range in mentions(entity.span)
+        for qualified_range in _whole_word_ranges(entity.span, normalized)
     ]
 
     def absorbed(entity: ExtractedEntity) -> bool:
         if not entity.span or "(" in entity.span:
             return False
-        ranges = mentions(entity.span)
+        ranges = _whole_word_ranges(entity.span, normalized)
         return bool(ranges) and all(
             any(lo <= start and end <= hi for lo, hi in qualified) for start, end in ranges
         )
@@ -525,6 +711,11 @@ class _ExtractionPrep:
     `per_variable_operations` runs parallel to `unique`: each variable's operations
     ride on its part, and their phrases reach only that variable's bind, beside
     `dropped_qualifier_phrases`. They raise no warning.
+    `per_variable_open_axes` runs parallel to `unique` too: the flow roles each part asks
+    one value per member of (`role_text.breakdown_axis`), read off its own operations'
+    phrases (`every_member_breakdown_axis` for a verb other than `rank`) and the request's
+    dropped phrases and entities that are such a breakdown, which leave
+    those lists.
     `per_variable_date_requests` runs parallel to `unique` too: `date_request`, or a
     forecasting variable's own window without its target years.
     `unit_text` is the dropped phrases that bind as one unit request
@@ -563,6 +754,7 @@ class _ExtractionPrep:
     member_entities: frozenset[str]
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]]
     per_variable_operations: list[tuple[Operation, ...]]
+    per_variable_open_axes: list[frozenset[RoleAxis]]
     per_variable_date_requests: list[DateRequest | None]
     interpretation_variables: list[str]
     dropped_qualifier_phrases: list[str]
@@ -591,8 +783,9 @@ class _ExtractionPrep:
         the departures raised beside the request-wide qualifier warnings, a
         `query_qualifier_dropped` warning and its departure for each word narrowing its own
         measure that its answer leaves unapplied, the request-wide qualifier warnings whose
-        phrase the region leaves unapplied (`RegionResult.unapplied_qualifier_warnings`), and
-        the query's words for each entity.
+        phrase the region leaves unapplied (`RegionResult.unapplied_qualifier_warnings`), the
+        query's words for each entity, and that its door asks for members in the question's
+        words (`RegionResult.members_in_words`).
 
         The answer applies a narrowing word when the region admitted it as a qualifier
         phrase, or when every Spec it answers with binds a value or a party named by it
@@ -628,6 +821,7 @@ class _ExtractionPrep:
             dataclasses.replace(
                 with_departure_facts(region, facts),
                 unapplied_qualifier_warnings=tuple(request_unapplied),
+                members_in_words=True,
             ),
             self.entity_words,
         )
@@ -714,6 +908,17 @@ def _dropped_phrase_fact(phrase: str) -> DepartureFact | None:
     return measure_not_applied(asked=phrase, property_dcid=None) if names_request(phrase) else None
 
 
+def _breakdown_under(phrase: str, *, verbs: Collection[str], query: str) -> RoleAxis | None:
+    """The flow axis `phrase` asks one value per member of, under a part's operation
+    `verbs`. An each or every phrase ("for each donor") asks it under any verb
+    (`role_text.every_member_breakdown_axis`). "By" or "across" a role ("by donor") asks it
+    only where no verb but a rank claims the phrase (`role_text.breakdown_axis`), since
+    "across donors" on a sum asks for the total."""
+    if all(verb == "rank" for verb in verbs):
+        return breakdown_axis(phrase, query=query)
+    return every_member_breakdown_axis(phrase, query=query)
+
+
 def _prepare_extraction(
     extraction: Extraction, extract_result: ExtractionResult, *, query: str
 ) -> _ExtractionPrep:
@@ -734,11 +939,19 @@ def _prepare_extraction(
     per_variable_sources = scan.per_measure
     # The extraction names no series code. A token of the query that writes a held one does.
     per_variable_source_codes = scan_source_codes(query, measures=unique, index=get_index())
-    extracted_entities = [
-        entity
-        for entity in extraction.entities
-        if (entity.span or entity.text) not in scan.source_entities
-    ]
+    # An entity that only asks for one value per member of a flow role ("every donor",
+    # "across donors") names no place (`role_text.breakdown_axis`): it is a breakdown
+    # phrase, which opens that role as a dropped one does (`_breakdown_under`).
+    entity_breakdowns: list[str] = []
+    extracted_entities: list[ExtractedEntity] = []
+    for entity in extraction.entities:
+        words = entity.span or entity.text
+        if words in scan.source_entities:
+            continue
+        if breakdown_axis(words, query=query) is None:
+            extracted_entities.append(entity)
+        else:
+            entity_breakdowns.append(words)
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
     entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
 
@@ -772,7 +985,6 @@ def _prepare_extraction(
 
     # Qualifier sidecars use stripped `unique` keys. Missing entries default to ().
     per_variable_qualifiers = [extract_result.qualifiers.get(v, ()) for v in unique]
-    per_variable_operations = [extract_result.operations.get(v, ()) for v in unique]
     per_variable_date_requests = [
         dates_to_request(extract_result.dates_by_variable[v])
         if v in extract_result.dates_by_variable
@@ -804,6 +1016,34 @@ def _prepare_extraction(
     unit_text, dropped_qualifier_phrases = _split_unit_phrases(
         [phrase for phrase in dropped if phrase not in naming_sources]
     )
+    # An operation whose phrase only asks for one value per member of a flow role is a
+    # breakdown (`_breakdown_under`): it opens that role, as `open_roles` does on the parsed
+    # door, and runs no operation. A dropped phrase or an entity asking for it opens that
+    # role on each part whose operations read it so, by the same rule. Beside a sum it opens
+    # no part, and the total meets it (`role_text.breakdown_axis`), so it raises no warning
+    # either way.
+    breakdown_phrases = [*entity_breakdowns, *dropped_qualifier_phrases]
+    per_variable_operations: list[tuple[Operation, ...]] = []
+    per_variable_open_axes: list[frozenset[RoleAxis]] = []
+    for v in unique:
+        operations = extract_result.operations.get(v, ())
+        verbs = {op.verb for op in operations}
+        read = [
+            (op, _breakdown_under(op.phrase, verbs=(op.verb,), query=query)) for op in operations
+        ]
+        phrase_axes = (
+            _breakdown_under(phrase, verbs=verbs, query=query) for phrase in breakdown_phrases
+        )
+        per_variable_operations.append(tuple(op for op, axis in read if axis is None))
+        per_variable_open_axes.append(
+            frozenset(axis for _, axis in read if axis is not None)
+            | {axis for axis in phrase_axes if axis is not None}
+        )
+    dropped_qualifier_phrases = [
+        phrase
+        for phrase in dropped_qualifier_phrases
+        if breakdown_axis(phrase, query=query) is None
+    ]
     qualifier_warnings = [
         Warning(
             code=QUERY_QUALIFIER_DROPPED,
@@ -861,6 +1101,7 @@ def _prepare_extraction(
         member_entities=frozenset(_entity_key(e) for e in extracted_entities if e.members),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
+        per_variable_open_axes=per_variable_open_axes,
         per_variable_date_requests=per_variable_date_requests,
         interpretation_variables=interpretation_variables,
         dropped_qualifier_phrases=dropped_qualifier_phrases,
@@ -965,6 +1206,7 @@ async def _handle_single_variable(
         query_text=query,
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
+        per_variable_open_axes=prep.per_variable_open_axes,
         per_variable_date_requests=prep.per_variable_date_requests,
         per_variable_unit_texts=prep.per_variable_unit_texts,
         per_variable_source_scopes=prep.per_variable_source_scopes,
@@ -1100,6 +1342,7 @@ async def _handle_multi_variable(
         ],
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
+        per_variable_open_axes=prep.per_variable_open_axes,
         per_variable_date_requests=prep.per_variable_date_requests,
         per_variable_unit_texts=prep.per_variable_unit_texts,
         per_variable_source_scopes=prep.per_variable_source_scopes,
@@ -1207,10 +1450,11 @@ async def handle(
 
     extraction = extraction.model_copy(
         update={
-            "entities": _recover_entity_surfaces(
+            "entities": await _recover_entity_surfaces(
                 extraction.entities,
                 query=query,
                 resolver=resolver,
+                deadline=params.deadline,
             )
         }
     )
@@ -1247,6 +1491,7 @@ async def handle(
             separate=prep.separate,
             extraction_warnings=prep.clamp_warnings,
             measure_qualifiers=prep.per_variable_measure_qualifiers,
+            open_axes=prep.per_variable_open_axes,
             llm_usage=extract_usage,
         )
     _log_unclaimed_words(prep, extraction, query=query)

@@ -866,10 +866,12 @@ def definition_version_record(
     artifacts: Sequence[ArtifactEntryModel],
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     base_content_version: str | None = None,
+    frame_summed: bool | None = None,
 ) -> VersionRecord:
     """The version record of a definition materialisation, linking `artifacts` and
-    `record_only_artifacts`. A groupby collapse stores the raw version it was rendered from as
-    `base_content_version`.
+    `record_only_artifacts`. A derived version stores the raw version it was rendered from as
+    `base_content_version`, and whether its frame holds its summed rows as `frame_summed`
+    (`render.DerivedVersion.summed`). A raw version passes neither.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
     salts (`versions.link_digest`). `record_only_artifacts` carry their own salt."""
@@ -897,6 +899,7 @@ def definition_version_record(
         base_content_version=base_content_version,
         frame_grammar_version=materialisation.trace.frame_grammar_version,
         frame_sha256=materialisation.frame_sha256,
+        frame_summed=frame_summed,
     )
 
 
@@ -960,6 +963,7 @@ def record_collapsed_head_version(
     base_content_version: str,
     output_profile: OutputProfile,
     frame_sha256: str,
+    frame_summed: bool,
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
     trace_id: str | None = None,
@@ -969,7 +973,8 @@ def record_collapsed_head_version(
     the record already existed.
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
-    `output_profile` and `frame_sha256` are the collapsed frame's. The artifacts in `manifest`
+    `output_profile`, `frame_sha256` and `frame_summed` (`render.DerivedVersion.summed`) are the
+    collapsed frame's. The artifacts in `manifest`
     are linked as `definition_version_record` links its `artifacts`. `ON CONFLICT DO NOTHING`
     makes repeated writes idempotent. `describer_for` gives the describer that writes the
     version's description record in the same transaction, from the record this call stores;
@@ -994,6 +999,7 @@ def record_collapsed_head_version(
         base_content_version=base_content_version,
         frame_grammar_version=FRAME_GRAMMAR_VERSION,
         frame_sha256=frame_sha256,
+        frame_summed=frame_summed,
     )
     if describer_for is not None:
         record = replace(record, describer=describer_for(record))

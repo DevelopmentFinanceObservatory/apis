@@ -92,6 +92,9 @@ _DATASET_STORE = {
     "0037_version_record_recency.sql": (
         "6c9fe2aeeacc2ddc0be5972b4ae6ecab59bf2db0a36c0478f5d68000344ff7e8"
     ),
+    "0038_version_record_frame_summed.sql": (
+        "7236772faed0ec1328386a75b87a8ca85a18374b0e6affabf93d590478129664"
+    ),
 }
 
 _PRESENTATION_STORE = {

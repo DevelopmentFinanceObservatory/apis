@@ -704,7 +704,9 @@ def _finish_candidate(
     )
     # Reuse materialised role facts without extra SDMX reads. Labelled entity options are
     # built only for a surviving definite answer.
-    cand_role_axis_facts = role_axis_facts_for_materialised(cand_mat, shape=cand_shape)
+    cand_role_axis_facts = role_axis_facts_for_materialised(
+        cand_mat, shape=cand_shape, plan=groundwork.plan
+    )
     cand_facet_bindings = (
         # A bound outcome guarantees a unit request. The type checker cannot carry that
         # attribute invariant through this access.

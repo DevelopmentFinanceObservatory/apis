@@ -170,6 +170,7 @@ def _claimed_operation(
         coverage_stamp="cov_1",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=200_000, requests=5),
+        rejected_version=None,
     )
     claimed = operation_store.claim(
         operation.id, submission_count=0, lease_seconds=lease_seconds, final_delivery=False
@@ -519,6 +520,7 @@ def _claimed_operation_with_malformed_options(operation_store: LiveOperationStor
         coverage_stamp="cov_1",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=200_000, requests=5),
+        rejected_version=None,
     )
     claimed = operation_store.claim(
         operation.id, submission_count=0, lease_seconds=30, final_delivery=False

@@ -29,6 +29,23 @@ from .vocab import (
 )
 
 
+class EntityRefs(StrictModel):
+    """The graph nodes one entity text of a part's restatement binds in the answer."""
+
+    text: str = Field(description="the entity text, equal to some restatement.entities[i].text")
+    refs: list[str] = Field(
+        description=(
+            "the refs the part's answer binds for `text`: a place gives its node; a "
+            "group, continent or subregion bound as itself gives its own node, or the "
+            "total its dataset publishes for it (G7 bound as GroupOfSeven); one bound as "
+            "its members gives the set's own ref first (its node, else that total, else "
+            "its registry id) and then the members, sorted. [] for an ambiguous text, one that "
+            "resolved to no node or a node the answer does not bind, and every text of a "
+            "part refused before its places were bound"
+        )
+    )
+
+
 class _PartBase(StrictModel):
     """Fields every part variant carries, whatever its status."""
 
@@ -127,6 +144,17 @@ class _PartBase(StrictModel):
             "reversed. Also null when one of this leg's own inputs does not fit "
             "ParsedPart's own field caps, since a truncated echo would misrepresent "
             "what was actually resolved."
+        ),
+    )
+    entity_refs: list[EntityRefs] = Field(
+        default_factory=list,
+        description=(
+            "the binding of each entity text of `restatement`, once per text in "
+            "restatement order, so a client can tell which node a text such as 'G7' "
+            "bound. A response field kept off `restatement`, which posts back "
+            "unchanged. The binding is the one the answer reads: for a candidates part, "
+            "the elected reading's; for a part folded into an earlier part's spec, its "
+            "own. [] when `restatement` is null or names no entity"
         ),
     )
     operations: list[Operation] = Field(default_factory=list, description=_OPERATIONS_DESCRIPTION)

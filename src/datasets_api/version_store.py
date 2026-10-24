@@ -27,8 +27,9 @@ holds the body they were rendered from, and the served version read back.
 each with the renderings of the files linked under it. The second statement selects and orders
 those files as `LiveSnapshotReader.read_artifact_locations` does, so a rendering read from the
 list is the one a read of that version's locations gives. `list_servable_versions` reads one
-page of the versions recorded under a set of subject ids in the same order, leaving out the
-versions revoked under any of them, as the snapshot door's read does.
+page of the versions recorded under a set of subject ids in the same order, reading each from
+the record the snapshot door's read chooses and leaving out the versions that record shows
+revoked under any of them, as that read does.
 
 An artifact link keeps its digest while that digest is servable, and a new rendering under
 the same key replaces it once it is not (`_insert_artifact`). Every link write and every pin
@@ -233,13 +234,13 @@ def _insert_artifact(
 
 
 _FACT_COLUMN_LIST = ", ".join(VERSION_FACT_COLUMNS)
-_RECORD_PLACEHOLDERS = ", ".join(["%s"] * (10 + len(VERSION_FACT_COLUMNS)))
+_RECORD_PLACEHOLDERS = ", ".join(["%s"] * (11 + len(VERSION_FACT_COLUMNS)))
 
 _INSERT_VERSION_SQL = (
     "INSERT INTO datasets.version_record "
     "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
     "trace_id, recorded_at, base_content_version, frame_grammar_version, frame_sha256, "
-    f"{_FACT_COLUMN_LIST}) "
+    f"frame_summed, {_FACT_COLUMN_LIST}) "
     f"VALUES ({_RECORD_PLACEHOLDERS}) "
     "ON CONFLICT (subject_id, content_version) DO NOTHING "
     "RETURNING subject_id"
@@ -263,6 +264,7 @@ def _insert_version(
             record.base_content_version,
             record.frame_grammar_version,
             record.frame_sha256,
+            record.frame_summed,
             *version_fact_values(record.facts),
         ),
     )
@@ -664,50 +666,57 @@ def _listed_holds_party_role(
     return False if party_free_link else None
 
 
+def _unrevoked(record: str, in_subjects: str) -> str:
+    """The predicate that the version record aliased `record` is revoked under none of the
+    subjects `in_subjects` binds, neither its content version nor its base version."""
+    return (
+        "NOT EXISTS (SELECT 1 FROM datasets.version_revocation r "
+        f"WHERE r.subject_id IN ({in_subjects}) "
+        f"AND (r.content_version = {record}.content_version "
+        f"OR r.content_version = {record}.base_content_version))"
+    )
+
+
 def _servable_page_query(
     subjects: Sequence[str], *, after: VersionsPageKey | None, limit: int
 ) -> tuple[str, tuple[object, ...]]:
     """The statement and parameters reading the page of `subjects`' unrevoked versions after
     `after`, newest first, with `content_version` ordering versions recorded at one instant.
+    Each row names the subject whose record it reads.
 
     One subject reads its rows through `version_record_recency` (migration 0037): the primary
-    key makes `content_version` unique within a subject, so no grouping is needed, and the row
+    key makes `content_version` unique within a subject, so no choice is needed, and the row
     comparison bounds the index scan at the cursor and ends it at `limit`. Several subjects
-    group their rows by `content_version` first, so a version recorded under two of them lists
-    once, at its latest `recorded_at`."""
+    choose one record per `content_version` first, the one recorded under the earliest of
+    `subjects`, as `doors.snapshot.read_under_served_id` reads the first subject in served
+    order that records the version. Revocation is then checked against the chosen record, and
+    the version lists at its `recorded_at`."""
     in_subjects = _placeholders(len(subjects))
-    revocation = (
-        "NOT EXISTS (SELECT 1 FROM datasets.version_revocation r "
-        f"WHERE r.subject_id IN ({in_subjects}) "
-        "AND (r.content_version = vr.content_version "
-        "OR r.content_version = vr.base_content_version))"
-    )
     keyset_params = () if after is None else (after.recorded_at, after.content_version)
     if len(subjects) == 1:
         keyset = "" if after is None else "AND (vr.recorded_at, vr.content_version) < (%s, %s) "
         return (
-            "SELECT vr.content_version, vr.base_content_version, vr.recorded_at "
+            "SELECT vr.subject_id, vr.content_version, vr.base_content_version, vr.recorded_at "
             "FROM datasets.version_record vr "
-            f"WHERE vr.subject_id = %s AND {revocation} "
+            f"WHERE vr.subject_id = %s AND {_unrevoked('vr', in_subjects)} "
             f"{keyset}"
             "ORDER BY vr.recorded_at DESC, vr.content_version DESC LIMIT %s",
             (*subjects, *subjects, *keyset_params, limit),
         )
-    keyset = (
-        "" if after is None else "WHERE (listed.recorded_at, listed.content_version) < (%s, %s) "
-    )
+    served_rank = " ".join(f"WHEN %s THEN {rank}" for rank in range(len(subjects)))
+    keyset = "" if after is None else "AND (chosen.recorded_at, chosen.content_version) < (%s, %s) "
     return (
-        "SELECT listed.content_version, listed.base_content_version, "
-        "listed.recorded_at FROM ("
-        "SELECT vr.content_version AS content_version, "
-        "MAX(vr.base_content_version) AS base_content_version, "
-        "MAX(vr.recorded_at) AS recorded_at "
+        "SELECT chosen.subject_id, chosen.content_version, chosen.base_content_version, "
+        "chosen.recorded_at FROM ("
+        "SELECT vr.subject_id, vr.content_version, vr.base_content_version, vr.recorded_at, "
+        "ROW_NUMBER() OVER (PARTITION BY vr.content_version "
+        f"ORDER BY CASE vr.subject_id {served_rank} END) AS served_rank "
         "FROM datasets.version_record vr "
-        f"WHERE vr.subject_id IN ({in_subjects}) AND {revocation} "
-        "GROUP BY vr.content_version) listed "
+        f"WHERE vr.subject_id IN ({in_subjects})) chosen "
+        f"WHERE chosen.served_rank = 1 AND {_unrevoked('chosen', in_subjects)} "
         f"{keyset}"
-        "ORDER BY listed.recorded_at DESC, listed.content_version DESC LIMIT %s",
-        (*subjects, *subjects, *keyset_params, limit),
+        "ORDER BY chosen.recorded_at DESC, chosen.content_version DESC LIMIT %s",
+        (*subjects, *subjects, *subjects, *keyset_params, limit),
     )
 
 
@@ -744,13 +753,15 @@ class LiveVersionLister:
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
     ) -> list[ListedVersion]:
         """The page of `subject_ids`' versions after `after`, as `VersionLister` states, read in
-        one transaction. It reads the page's rows, then the renderings linked under its versions.
+        one transaction. It reads the page's rows, then the renderings linked under, and the
+        output profiles stored by, the record each row reads.
 
-        A version recorded under several of the ids lists once, at its latest `recorded_at`.
-        The revocation filter reads `datasets.version_revocation` in the statement that reads
-        the rows, so a revocation that statement sees removes the version from the page."""
+        A version recorded under several of the ids lists once, from the record under the
+        earliest of them, as the snapshot door reads it (`_servable_page_query`), at that
+        record's `recorded_at`. The revocation filter reads `datasets.version_revocation` in
+        the statement that reads the rows, so a revocation that statement sees removes the
+        version from the page."""
         subjects = list(dict.fromkeys(subject_ids))
-        in_subjects = _placeholders(len(subjects))
         failure: str | None = None
         sqlstate: str | None = None
         rows: list[Mapping[str, object]] = []
@@ -759,24 +770,22 @@ class LiveVersionLister:
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(*_servable_page_query(subjects, after=after, limit=limit))
-                page = [cast(str, row["content_version"]) for row in rows]
-                if page:
+                chosen = [(row["subject_id"], row["content_version"]) for row in rows]
+                if chosen:
+                    in_chosen = ", ".join(["(%s, %s)"] * len(chosen))
+                    chosen_params = tuple(value for pair in chosen for value in pair)
                     linked = tx.fetch_all(
                         _LINKED_RENDERINGS_SQL.format(
-                            where=(
-                                f"va.subject_id IN ({in_subjects}) "
-                                f"AND va.content_version IN ({_placeholders(len(page))})"
-                            )
+                            where=f"(va.subject_id, va.content_version) IN ({in_chosen})"
                         ),
-                        (*subjects, *page),
+                        chosen_params,
                     )
                     profiles = tx.fetch_all(
                         f"SELECT content_version, {_ROLE_COLUMNS_SQL} "
                         "FROM datasets.version_record "
-                        f"WHERE subject_id IN ({in_subjects}) "
-                        f"AND content_version IN ({_placeholders(len(page))}) "
+                        f"WHERE (subject_id, content_version) IN ({in_chosen}) "
                         "AND output_profile IS NOT NULL",
-                        (*subjects, *page),
+                        chosen_params,
                     )
         except Exception as exc:
             failure = f"listing versions subject_ids {subjects!r} failed: {safe_diagnostics(exc)}"
@@ -787,8 +796,8 @@ class LiveVersionLister:
 
 
 def _stored_role_columns(rows: Sequence[Mapping[str, object]]) -> dict[str, Sequence[str]]:
-    """The role columns of the output profile each of `rows` stored, by content version. A
-    version recorded under several subject ids stores one frame, so one profile."""
+    """The role columns of the output profile each of `rows` stored, by content version. `rows`
+    hold one record per content version."""
     return {
         cast(str, row["content_version"]): cast("Sequence[str]", row["role_columns"])
         for row in rows

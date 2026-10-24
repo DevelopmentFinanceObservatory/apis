@@ -99,6 +99,7 @@ def test_a_recovered_create_answered_already_exists_is_recorded() -> None:
         coverage_stamp="cov_1",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=200_000, requests=5),
+        rejected_version=None,
     )
     cloud_tasks = _LandsThenTimesOut()
     client = _client(cloud_tasks)

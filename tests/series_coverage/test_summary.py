@@ -118,6 +118,47 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
     assert summary.party_counts(parties=parties, facet_ids=set()) == {}
 
 
+def test_a_party_with_a_kind_per_dataset_counts_once_under_its_own_figures() -> None:
+    """The IMF trust funds are a party in the CRS and a total in DAC2A. Across both datasets, and
+    in a facet with no provenance, they count once, as a party; in DAC2A alone, as a total."""
+    crs, dac2a = "provenance/OECDCreditorReportingSystem", "provenance/OECDDAC2A"
+    trust_funds = "IMFConcessionalTrustFunds"
+    table, horizon = coverage_table(
+        [
+            ("V-a", "f-crs", trust_funds, KEN, [2020]),
+            ("V-a", "f-dac2a", trust_funds, KEN, [2020]),
+            ("V-a", "f-none", trust_funds, KEN, [2020]),
+        ]
+    )
+    index = CoverageIndex(
+        table,
+        {"V-a": _FLOW_ROLES},
+        horizon=horizon,
+        facet_metadata={
+            "f-crs": FacetMetadata(provenance_id=crs),
+            "f-dac2a": FacetMetadata(provenance_id=dac2a),
+        },
+    )
+    parties = {
+        trust_funds: PartyRow(
+            dcid=trust_funds,
+            kind="party",
+            party_class="official",
+            datasets=(crs, dac2a),
+            axes=("origin",),
+            dataset_kinds=((dac2a, "total"),),
+        )
+    }
+
+    summary = index.facet_summary.variable("V-a")
+
+    assert summary is not None
+    assert [
+        summary.party_counts(parties=parties, facet_ids=facet_ids)["donor"]
+        for facet_ids in ({"f-crs", "f-dac2a"}, {"f-none"}, {"f-dac2a"})
+    ] == [PartyCounts(parties=1), PartyCounts(parties=1), PartyCounts(totals=1)]
+
+
 def test_a_one_role_variable_has_no_parties_in_the_role_it_lacks() -> None:
     table, horizon = coverage_table(
         [

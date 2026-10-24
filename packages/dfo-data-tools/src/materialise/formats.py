@@ -1,10 +1,11 @@
 """Writers for CSV, Excel, Parquet, and the canonical frame, plus Table Schema derivation.
 
 CSV, Excel, and Parquet accept structural `Table` chunks. The first chunk sets column names
-and types. Later chunks must have the same columns and are trusted to be in canonical row
-order. Writers stream rows to a `Sink` and return metadata whose digest and size cover the
-bytes they write. Parquet buffers at most one 100,000-row group. Excel uses write-only mode,
-but its final archive is held in memory so timestamps can be fixed for stable output.
+and the types of the columns `Rendering.column_types` leaves unset. Later chunks must have the
+same columns and are trusted to be in canonical row order. Writers stream rows to a `Sink` and
+return metadata whose digest and size cover the bytes they write. Parquet buffers at most one
+100,000-row group. Excel uses write-only mode, but its final archive is held in memory so
+timestamps can be fixed for stable output.
 
 Headers are sanitised and unique across all three tabular formats and Table Schema. CSV and
 Excel escape formula-triggering strings. Excel refuses platform row, column, cell-length,
@@ -104,9 +105,15 @@ def iter_rows(table: Table) -> Iterator[tuple[object, ...]]:
 class Rendering:
     """Per-format options. `None` preserves column names. `friendly_headers` replaces mapped
     names and leaves others unchanged. The mapping applies to CSV, Excel, Parquet, and Table
-    Schema, so artifact headers match their schema."""
+    Schema, so artifact headers match their schema.
+
+    `column_types` maps a column name to the Table Schema type (`integer`, `number`, `boolean`
+    or `string`) the caller fixes for it. CSV, Parquet and Table Schema give that column its
+    type whatever its cells hold, so a table with no rows types it as a table with rows does.
+    Every other column is typed from the first chunk's cells."""
 
     friendly_headers: Mapping[str, str] | None = None
+    column_types: Mapping[str, str] | None = None
 
 
 class Sink(Protocol):
@@ -325,7 +332,7 @@ def write_csv(chunks: Iterable[Table], *, rendering: Rendering, sink: Sink) -> W
     across platforms for the same chunks and rendering."""
     first, stream = _prepare_stream(chunks)
     headers = _headers_for(first, rendering=rendering)
-    field_types = _infer_field_types(first)
+    field_types = _field_types(first, rendering=rendering)
 
     # `TextIOWrapper` streams UTF-8 without holding both text and bytes copies in memory.
     # `newline=""` preserves the CSV writer's CRLF terminators without platform translation.
@@ -599,21 +606,27 @@ def _infer_column_type(values: Sequence[object]) -> str:
     return kind or "any"
 
 
-def _infer_field_types(table: Table) -> tuple[str, ...]:
+def _field_types(table: Table, *, rendering: Rendering) -> tuple[str, ...]:
+    """Each column's type: the one `rendering.column_types` fixes, else `_infer_column_type`
+    of its cells."""
+    declared = rendering.column_types or {}
     # Read rows once because each `Frame.rows` access rebuilds the full row tuple.
     columns_values: list[list[object]] = [[] for _ in table.columns]
     for row in iter_rows(table):
         for column_values, cell in zip(columns_values, row, strict=True):
             column_values.append(cell)
-    return tuple(_infer_column_type(values) for values in columns_values)
+    return tuple(
+        declared.get(column) or _infer_column_type(values)
+        for column, values in zip(table.columns, columns_values, strict=True)
+    )
 
 
 def table_schema_for(table: Table, *, rendering: Rendering) -> dict:
     """Returns Table Schema for this table and rendering. Field names match writer headers.
-    Types come from cell values.
+    Types are those `rendering.column_types` fixes, else come from cell values.
     """
     headers = _headers_for(table, rendering=rendering)
-    field_types = _infer_field_types(table)
+    field_types = _field_types(table, rendering=rendering)
     return {
         "fields": [
             {"name": name, "type": field_type}
@@ -727,7 +740,7 @@ def write_parquet(
     for the same input and PyArrow version because Parquet embeds no wall-clock timestamp."""
     first, stream = _prepare_stream(chunks)
     headers = _headers_for(first, rendering=rendering)
-    field_types = _infer_field_types(first)
+    field_types = _field_types(first, rendering=rendering)
     schema = _arrow_schema(headers, field_types)
     hashing = _HashingWriteWrapper(sink)
     _write_parquet_stream(

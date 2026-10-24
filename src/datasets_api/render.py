@@ -70,6 +70,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import IO, cast
 from urllib.parse import urlencode
 
@@ -240,6 +241,11 @@ _STAT_VAR_REF_PREFIX = "dcid:"
 family ref a collapse to a frame mints when more than one member contributed
 rows."""
 
+_COLUMN_TYPES: Mapping[str, str] = {"value": "number"}
+"""The column types every rendering fixes (`Rendering.column_types`). The grammar types `value`
+as float64 in every frame (`canonical_frame_schema`), so a file with no rows types it as a file
+with rows does."""
+
 _STATUS_COLUMN = "status"
 """`Frame.build` reserves `status`. `_full_collapse_frame` strips it before rebuilding. The local
 constant avoids importing the grammar package for one name."""
@@ -262,6 +268,18 @@ class GroupbyCollapseRendering:
     content_version: str
     stat_var_ref: str
     contributing_member_count: int
+
+
+_KEPT_AXIS_PREFIX = f"{_STAT_VAR_COLUMN}_"
+"""The prefix of the role column a collapse keeps a code axis in (`stat_var_<code_system>`)."""
+
+
+def entity_roles(role_columns: Sequence[str]) -> tuple[str, ...]:
+    """The entity roles among a frame's `role_columns`: every role but the kept code axis
+    columns a collapse adds (`GroupbyCollapseRendering.role_columns`). The render that wrote a
+    collapse read those columns as decoded codes beside the roles of the frame it collapsed, so
+    a render of the stored collapse reads them the same way."""
+    return tuple(role for role in role_columns if not role.startswith(_KEPT_AXIS_PREFIX))
 
 
 @dataclass(frozen=True)
@@ -295,6 +313,23 @@ class DerivedVersion:
     content_version: str
     summed: bool
     party_totals_left_out: tuple[dict[str, object], ...]
+
+
+class FrameMode(StrEnum):
+    """What a stored frame holds of the version it serves, which says how a render of that
+    version reads it (`recorded_rendering.serving_frames`).
+
+    `RAW`: the version's rows before any minting option, the frame of a raw version or the base
+    frame of a derived one. The render cuts party totals, applies the groupby and decodes as the
+    version's options ask. `SUMMED`: a derived version's groupby collapse
+    (`DerivedVersion.summed`). The render skips the cut and the groupby, and the frame is
+    decoded. `CUT`: a derived version's party-totals cut frame. The render skips the cut and
+    applies the version's groupby and decode, which sum the rows when the collapse is not a
+    grammar frame of its own (`_reshape_groupby_collapse`)."""
+
+    RAW = "raw"
+    SUMMED = "summed"
+    CUT = "cut"
 
 
 def check_options_supported(options: MintOptions, *, code_index: CodeIndex | None) -> None:
@@ -630,7 +665,7 @@ def _reshape_groupby_collapse(
         }
         for row in current.rows
     ]
-    role_columns = (*entity_columns, *(f"{_STAT_VAR_COLUMN}_{axis}" for axis in kept))
+    role_columns = (*entity_columns, *(f"{_KEPT_AXIS_PREFIX}{axis}" for axis in kept))
     collapsed_frame = build_frame(role_keys=role_columns, rows=rows_as_dicts)
     current = cast(Table, collapsed_frame)
     collapsed_frame_sha256 = frame_sha256(collapsed_frame)
@@ -914,12 +949,13 @@ def _reshape(
     provenance_refs: Sequence[str],
     subject_id: str | None = None,
     frame_chunks: Iterable[Table] | None = None,
+    decoded: bool = False,
 ) -> ReshapeResult:
     """Applies decode, groupby, selection, enrichment, and pivot before rendering. Inert transforms
     leave the input table unchanged.
 
     A supplied `code_index` enables decode-plan construction even when no decode option is set.
-    `None` skips decoding.
+    `None` skips decoding, as does `decoded`, set for a frame a collapse already decoded.
     `resolved_stat_var_refs` supplies zero-row members to groupby population checks, and
     `provenance_refs` govern its source-wide missing-as-zero rule. `subject_id` is used only for
     the collapse frame's `stat_var`. `frame_chunks` streams the first
@@ -931,7 +967,7 @@ def _reshape(
     """
     decode_plan = (
         build_decode_plan(table, index=code_index, extra_refs=resolved_stat_var_refs)
-        if code_index is not None
+        if code_index is not None and not decoded
         else None
     )
     groupby_outcome = _reshape_groupby(
@@ -1356,15 +1392,15 @@ def _codes(
 
 
 def _family(
-    collapse: GroupbyCollapseRendering | None, *, subject_id: str, subject_label: str | None
+    stat_var_ref: str | None, *, subject_id: str, subject_label: str | None
 ) -> tuple[str, str] | None:
-    """The `(ref, label)` of the family ref a summed collapse writes in `stat_var`, `None`
-    without one or without a label."""
-    if collapse is None or subject_label is None:
+    """The `(ref, label)` of `stat_var_ref`, the ref a collapse writes in `stat_var`, when it is
+    the summed family's ref, `None` when it is absent or a member's ref, or without a label."""
+    if stat_var_ref is None or subject_label is None:
         return None
-    if collapse.stat_var_ref != f"{_STAT_VAR_REF_PREFIX}{subject_id}":
+    if stat_var_ref != f"{_STAT_VAR_REF_PREFIX}{subject_id}":
         return None
-    return collapse.stat_var_ref, subject_label
+    return stat_var_ref, subject_label
 
 
 def _rebuild_request(spec: Mapping[str, object], options: MintOptions) -> dict[str, object]:
@@ -2011,9 +2047,11 @@ def _stream_bare_pivot(
     provenance_refs: Sequence[str],
     subject_id: str,
     output_profile: OutputProfile | None = None,
+    decoded: bool = False,
 ) -> ReshapeResult:
     """Folds pivot output from chunked rows in one pass. Decode and selection run per chunk, and
-    the output stays within `column_cap` and `cell_cap`.
+    the output stays within `column_cap` and `cell_cap`. A frame a collapse already decoded
+    (`decoded`) is not decoded again.
 
     A groupby that collapses nothing still validates `by`. When `stat_var` is omitted, multiple
     contributors require a decoded summable axis. This refusal runs before pivot, as in whole-table
@@ -2040,7 +2078,7 @@ def _stream_bare_pivot(
 
     decode_plan = (
         build_decode_plan(first_chunk, index=code_index, extra_refs=resolved_stat_var_refs)
-        if code_index is not None
+        if code_index is not None and not decoded
         else None
     )
     decoded_column_names = (
@@ -2242,10 +2280,11 @@ def _reshape_stream_plain(
     name_reads: _RenderReads,
     grain: str | None,
     totals: _TotalRows | None,
+    decoded: bool = False,
 ) -> _StreamedRender:
     """Streams row-wise decode, selection, and enrichment by reshaping each chunk and putting it
     in the long layout before passing it to the writer. `_merge_enrichment_warnings` combines
-    per-chunk counts."""
+    per-chunk counts. A frame a collapse already decoded (`decoded`) is not decoded again."""
     layout = _LongLayout.for_render(
         options=options,
         entity_columns=entity_columns,
@@ -2271,6 +2310,7 @@ def _reshape_stream_plain(
                 code_index=code_index,
                 resolved_stat_var_refs=resolved_stat_var_refs,
                 provenance_refs=provenance_refs,
+                decoded=decoded,
             )
             collected_warnings.extend(chunk_result.warnings)
             if not first_warning_order:
@@ -2302,6 +2342,76 @@ def _reshape_stream_plain(
     )
 
 
+def _probe_groupby_collapse(
+    first_chunk: Table,
+    *,
+    options: MintOptions,
+    code_index: CodeIndex | None,
+    resolved_stat_var_refs: Sequence[str],
+) -> tuple[bool, DecodePlan | None]:
+    """Whether `options.groupby` sums the `stat_var` of the frame whose first chunk is
+    `first_chunk`, so a render folds it across chunks (`sums_stat_vars`), and the chunk's
+    decode plan, `None` with no groupby or no `code_index`."""
+    if options.groupby is None or code_index is None:
+        return False, None
+    decode_plan = build_decode_plan(
+        first_chunk, index=code_index, extra_refs=resolved_stat_var_refs
+    )
+    sums = sums_stat_vars(
+        by=options.groupby.by,
+        levels=options.groupby.levels,
+        decoded_code_systems=_decoded_code_systems(decode_plan),
+        declarations=code_index.declarations,
+    )
+    return sums, decode_plan
+
+
+def _decoded_code_systems(decode_plan: DecodePlan | None) -> tuple[str, ...]:
+    """The code systems `decode_plan` decodes."""
+    if decode_plan is None:
+        return ()
+    return tuple(code_system for _entity_column, code_system in decode_plan.requests)
+
+
+def groupby_collapse_sha256(
+    frame_chunks: Callable[[], Iterator[Table]],
+    *,
+    options: MintOptions,
+    code_index: CodeIndex,
+    entity_columns: Sequence[str],
+    resolved_stat_var_refs: Sequence[str],
+    provenance_refs: Sequence[str],
+    subject_id: str,
+) -> str | None:
+    """The hash of the frame `options.groupby` collapses the frame `frame_chunks` passes over
+    to, folded as `render_and_store` folds it, or `None` when the groupby sums no `stat_var` or
+    its sum is no grammar frame. Reads no graph name and stores nothing. Raises
+    `RollupNotSummableError` as a render's groupby does."""
+    chunks = _reslice_chunks(frame_chunks())
+    first_chunk = next(chunks, None)
+    if first_chunk is None:
+        return None
+    sums, decode_plan = _probe_groupby_collapse(
+        first_chunk,
+        options=options,
+        code_index=code_index,
+        resolved_stat_var_refs=resolved_stat_var_refs,
+    )
+    if not sums:
+        return None
+    outcome = _reshape_groupby(
+        first_chunk,
+        decode_plan=decode_plan,
+        options=options,
+        code_index=code_index,
+        entity_columns=entity_columns,
+        provenance_refs=provenance_refs,
+        subject_id=subject_id,
+        frame_chunks=itertools.chain((first_chunk,), chunks),
+    )
+    return outcome.collapse.frame_sha256 if outcome.collapse is not None else None
+
+
 def _reshape_stream(
     frame_chunks: Iterable[Table],
     *,
@@ -2317,6 +2427,7 @@ def _reshape_stream(
     grain: str | None,
     totals: _TotalRows | None,
     output_profile: OutputProfile | None = None,
+    decoded: bool = False,
 ) -> _StreamedRender:
     """Reslices chunks, then dispatches the frame through one of four paths:
 
@@ -2325,7 +2436,9 @@ def _reshape_stream(
     - A bare pivot folds output within its width and cell caps.
     - A no-op groupby streams per chunk and checks its refusal after the writer drains.
 
-    Groupby and pivot folds bound output size. Other paths retain chunk-sized row data.
+    Groupby and pivot folds bound output size. Other paths retain chunk-sized row data. A frame
+    a collapse already decoded (`decoded`, with no `groupby`) takes the plain or the bare pivot
+    path with no decode.
     """
     frame_chunks_iter = iter(_reslice_chunks(frame_chunks))
     first_chunk = next(frame_chunks_iter, None)
@@ -2346,25 +2459,20 @@ def _reshape_stream(
             name_reads=name_reads,
             grain=grain,
             totals=totals,
+            decoded=decoded,
         )
 
-    will_stream_groupby_collapse = False
-    probe_decoded_code_systems: tuple[str, ...] = ()
-    if first_chunk is not None and options.groupby is not None and code_index is not None:
-        probe_decode_plan = build_decode_plan(
-            first_chunk, index=code_index, extra_refs=resolved_stat_var_refs
+    will_stream_groupby_collapse, probe_decode_plan = (
+        _probe_groupby_collapse(
+            first_chunk,
+            options=options,
+            code_index=code_index,
+            resolved_stat_var_refs=resolved_stat_var_refs,
         )
-        probe_decoded_code_systems = (
-            tuple(code_system for _entity_column, code_system in probe_decode_plan.requests)
-            if probe_decode_plan is not None
-            else ()
-        )
-        will_stream_groupby_collapse = sums_stat_vars(
-            by=options.groupby.by,
-            levels=options.groupby.levels,
-            decoded_code_systems=probe_decoded_code_systems,
-            declarations=code_index.declarations,
-        )
+        if first_chunk is not None
+        else (False, None)
+    )
+    probe_decoded_code_systems = _decoded_code_systems(probe_decode_plan)
 
     if will_stream_groupby_collapse and first_chunk is not None:
         # `_reshape` recomputes this decision from the same inputs. A chained pivot runs on the
@@ -2421,6 +2529,7 @@ def _reshape_stream(
             provenance_refs=provenance_refs,
             subject_id=subject_id,
             output_profile=output_profile,
+            decoded=decoded,
         )
         return _StreamedRender(
             chunks_for_writer=(result.table,),
@@ -2550,6 +2659,7 @@ def render_and_store(
     output_profile: OutputProfile | None = None,
     deadline: float | None = None,
     base_frame_sha256: str | None = None,
+    frame_mode: FrameMode = FrameMode.RAW,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings.
     `frame_chunks` returns a fresh pass over the materialised frame's chunks in order. Long
@@ -2593,6 +2703,12 @@ def render_and_store(
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is. Every chunk `frame_chunks` yields is then a `Frame`.
+
+    `frame_mode` says what `frame_chunks` holds of the version (`FrameMode`). A derived
+    version's own stored frame is not cut again, and a summed one is not collapsed again either
+    and mints no version. `options` keep the version's minting options, so they still name the
+    rendering, the reproducing call and the bundle's description, and a collapse's family ref
+    keeps its label.
     """
     check_options_supported(options, code_index=code_index)
     subject_id = str(spec.get("spec_id"))
@@ -2605,7 +2721,7 @@ def render_and_store(
             roles=open_party_roles(identity, entity_columns),
             parties=enrichment.parties,
         )
-        if options.without_party_totals
+        if options.without_party_totals and frame_mode is FrameMode.RAW
         else None
     )
     cut = (
@@ -2642,12 +2758,16 @@ def render_and_store(
         datasets=provenance_refs,
     )
     with phase("render"):
-        rendering = Rendering()
+        rendering = Rendering(column_types=_COLUMN_TYPES)
         long_output = options.pivot is None and options.layout is None
         grain = _frame_period_grain(frame_chunks) if long_output else None
         streamed = _reshape_stream(
             frame_chunks(),
-            options=options,
+            options=(
+                options.model_copy(update={"groupby": None})
+                if frame_mode is FrameMode.SUMMED
+                else options
+            ),
             entity_columns=entity_columns,
             pivot_max_output_cells=pivot_max_output_cells,
             code_index=code_index,
@@ -2663,6 +2783,8 @@ def render_and_store(
             grain=grain,
             totals=totals,
             output_profile=output_profile,
+            # A summed frame's collapse decoded its codes.
+            decoded=frame_mode is FrameMode.SUMMED and options.groupby is not None,
         )
         chunks_for_writer = streamed.chunks_for_writer
         collapse = streamed.collapse
@@ -2674,6 +2796,13 @@ def render_and_store(
         effective_content_version = (
             derived.content_version if derived is not None else content_version
         )
+        if collapse is not None:
+            summed_ref: str | None = collapse.stat_var_ref
+        elif frame_mode is FrameMode.SUMMED and options.groupby is not None:
+            # The family ref a summed frame's collapse wrote. A ref no file holds is not listed.
+            summed_ref = f"{_STAT_VAR_REF_PREFIX}{subject_id}"
+        else:
+            summed_ref = None
 
     sources = _sources(provenance_refs, citations)
     with phase("store_rendering"):
@@ -2733,7 +2862,7 @@ def render_and_store(
                             scans,
                             citations=citations,
                             family=_family(
-                                collapse, subject_id=subject_id, subject_label=subject_label
+                                summed_ref, subject_id=subject_id, subject_label=subject_label
                             ),
                             code_index=code_index,
                             reads=name_reads,
