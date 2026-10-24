@@ -9,9 +9,11 @@ active item whose case is gone, including the items of a deleted case file.
 the app at URL as one Langfuse experiment per case file, scoring each answer with the gate's
 checks and the derived ``answer`` check as the gate scores them. It lists every check
 that did not pass and is outside its case's ``known_failure``, and exits 0 when there is
-none, 1 when there is one, and 3 when the app's schema does not load, or when a post or a
-check's read failed on infrastructure and nothing else failed. A post that failed on infrastructure is a known failure on a case
-whose ``known_failure.checks`` holds ``task_outcome``, as in the gate. Any crash exits 2.
+none, 1 when there is one, and 3 when the app's schema does not load, when the served graph
+release does not open, or when a post or a check's read failed on infrastructure and nothing
+else failed. A post that failed on infrastructure is a known failure on a case whose
+``known_failure.checks`` holds ``task_outcome``, as in the gate. Any crash exits 2, an unset
+``GRAPH_RELEASE_URI`` among them.
 
 Each check writes a Langfuse score of 1 on a pass and 0 on a failure, and no score when it
 is unverifiable, n/a or unreached, since none of those says whether the answer was right.
@@ -19,9 +21,11 @@ is unverifiable, n/a or unreached, since none of those says whether the answer w
 ``disposition`` is a known failure, an answer in a status the case does not accept writes
 no ``answer`` score.
 
-Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``. The nightly also reads the
-graph settings, ``GRAPH_RELEASE_URI`` and ``ORIGIN_CATALOGUE_URI`` the checks score
-against.
+Requires ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY``. A ``dataset_resubmit`` case's
+request reads the code index of the served graph release, so a corpus holding one, and the
+nightly, also read ``GRAPH_RELEASE_URI`` and open that release once, with Google credentials
+for a ``gs://`` URI. A sync whose corpus holds none opens no release. The nightly also reads
+the graph settings and ``ORIGIN_CATALOGUE_URI`` the checks score against.
 """
 
 from __future__ import annotations
@@ -32,14 +36,19 @@ import os
 import sys
 import traceback
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from google.api_core.exceptions import GoogleAPIError
+from google.auth.exceptions import GoogleAuthError
 from langfuse import Evaluation
 from langfuse.api import DatasetStatus
 
+from graph_release.context import bound_release, release_uri
+from graph_release.service import Release, get_release_service
 from search.eval.apis_auth import apis_auth
 from search.eval.cases import (
     CHECK_NAMES,
@@ -76,6 +85,10 @@ DATASET_PREFIX = "search-"
 _SOURCE_KEY = "source"
 _NIGHTLY_CONCURRENCY = 8
 _SCHEMA_TIMEOUT_S = 30.0
+
+# What opening the served release raises when no release is published, or when its bucket or
+# the credentials it needs cannot answer. `ReleaseUriMissingError` is a setup error and exits 2.
+_RELEASE_INFRA_ERRORS = (OSError, GoogleAPIError, GoogleAuthError)
 
 
 def dataset_name(stem: str) -> str:
@@ -329,23 +342,67 @@ def _client() -> Langfuse:
     return get_client()
 
 
+class _InfraError(Exception):
+    """A read the run needs before any case failed on infrastructure; ``main`` exits 3."""
+
+
+def _schema(url: str) -> Any:
+    """The search schema the app at ``url`` serves."""
+    try:
+        response = httpx.get(
+            f"{url.rstrip('/')}{SCHEMA_PATH}",
+            timeout=_SCHEMA_TIMEOUT_S,
+            headers=EVAL_HEADERS,
+            auth=apis_auth(),
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise _InfraError(f"{type(exc).__name__}: {exc}") from exc
+    return response.json()
+
+
+def _reads_release(by_file: Mapping[str, Sequence[Case]]) -> bool:
+    """Whether building a case's request reads the bound release: a ``dataset_resubmit``
+    identity reads its code index (``search.eval.runner.build_request``)."""
+    return any(case.door == "dataset_resubmit" for cases in by_file.values() for case in cases)
+
+
+def _open_release() -> Release:
+    """The release the process-wide release service serves, opened from ``GRAPH_RELEASE_URI``
+    on the first call."""
+    try:
+        return get_release_service().snapshot()
+    except _RELEASE_INFRA_ERRORS as exc:
+        raise _InfraError(
+            f"the graph release at {release_uri()} did not open: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _sync(
+    by_file: Mapping[str, Sequence[Case]], langfuse: Langfuse, release: Release | None
+) -> None:
+    """``sync`` under ``release``, printing the items it archived."""
+    with nullcontext() if release is None else bound_release(release):
+        archived = sync(by_file, langfuse=langfuse)
+    for name, ids in archived.items():
+        print(f"{name}: archived {len(ids)}" + (f" ({', '.join(ids)})" if ids else ""))
+
+
 def _run_nightly(
-    by_file: Mapping[str, Sequence[Case]], url: str, schema: Mapping[str, Any], langfuse: Langfuse
+    by_file: Mapping[str, Sequence[Case]],
+    url: str,
+    schema: Mapping[str, Any],
+    langfuse: Langfuse,
+    release: Release,
 ) -> tuple[list[NightlyCase], dict[str, str | None]]:
-    from graph_release.context import bound_served_release
-    from graph_release.service import get_release_service
     from origin_catalogue import bound_catalogue
     from origin_catalogue.service import get_catalogue_service
     from search.eval.live_clients import score_clients
 
-    # The graph client reads under a bound origin catalogue and the served graph release. The
-    # experiment's tasks and the scoring threads inherit both bindings.
+    # The graph client reads under a bound origin catalogue and graph release. The experiment's
+    # tasks and the scoring threads inherit both bindings.
     catalogue = get_catalogue_service().snapshot()
-    with (
-        score_clients() as clients,
-        bound_catalogue(catalogue),
-        bound_served_release(get_release_service()),
-    ):
+    with score_clients() as clients, bound_catalogue(catalogue), bound_release(release):
         ctx = ScoreContext(
             schema=WireSchema.from_document(schema),
             graph=clients.graph,
@@ -375,22 +432,18 @@ def _main(args: argparse.Namespace) -> int:
     by_file = load_case_files(args.corpus_dir)
     langfuse = _client()
     try:
-        for name, ids in sync(by_file, langfuse=langfuse).items():
-            print(f"{name}: archived {len(ids)}" + (f" ({', '.join(ids)})" if ids else ""))
         if not args.nightly:
+            _sync(by_file, langfuse, _open_release() if _reads_release(by_file) else None)
             return 0
-        try:
-            response = httpx.get(
-                f"{args.nightly.rstrip('/')}{SCHEMA_PATH}",
-                timeout=_SCHEMA_TIMEOUT_S,
-                headers=EVAL_HEADERS,
-                auth=apis_auth(),
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            print(f"eval infrastructure error: {type(exc).__name__}: {exc}", file=sys.stderr)
-            return 3
-        states, run_urls = _run_nightly(by_file, args.nightly, response.json(), langfuse)
+        # The app's schema loads first, so an outage of the app reads as one. The sync and the
+        # run share one release.
+        schema = _schema(args.nightly)
+        release = _open_release()
+        _sync(by_file, langfuse, release)
+        states, run_urls = _run_nightly(by_file, args.nightly, schema, langfuse, release)
+    except _InfraError as exc:
+        print(f"eval infrastructure error: {exc}", file=sys.stderr)
+        return 3
     finally:
         langfuse.flush()
     markdown = nightly_markdown(states, run_urls)

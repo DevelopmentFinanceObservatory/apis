@@ -60,6 +60,7 @@ def _submit(operation_store: OperationStore, *, subject_id: str = _SUBJECT_ID) -
         coverage_stamp="cov_1",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=200_000, requests=5),
+        rejected_version=None,
     )
     return operation.id
 

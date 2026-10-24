@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 import origin_catalogue.service as catalogue_service_module
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
+from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from series_coverage.schema import RoleNames
 from tests.engine._binders import elected_reply
@@ -45,6 +46,20 @@ class _ShapeZeroLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(0), None
+
+
+class _CongoExtractionLLM(_ShapeZeroLLM):
+    """Reads every query as the fertility rate of the Democratic Republic of the Congo,
+    named in the query by `span`, and elects shape 0 with no bindings."""
+
+    def __init__(self, span: str) -> None:
+        self.span = span
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is Extraction:
+            entity = ExtractedEntity(text="Democratic Republic of the Congo", span=self.span)
+            return Extraction(kind="resolution", variables=[_FERTILITY], entities=[entity]), None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
 
 
 def _fertility_client(llm: FakeLLM | _ShapeZeroLLM | None = None) -> TestClient:
@@ -153,6 +168,46 @@ def test_an_ambiguous_entity_offers_each_candidate_and_each_option_resolves_it()
         [{"text": "Congo", "dcid": candidate["ref"]}] for candidate in group["candidates"]
     ]
     _assert_options_settle(client, no_data)
+
+
+def _raw_part(client: TestClient, query: str) -> dict:
+    """The one part the raw-text door answers for `query`."""
+    response = client.post(
+        "/api/search/resolve", json={"input": {"kind": "raw_text", "query": query}}
+    )
+    assert response.status_code == 200, response.text
+    (answered,) = response.json()["parts"]
+    return answered
+
+
+def test_a_name_the_query_words_leave_open_asks_its_choice_in_those_words():
+    """The extraction names "Congo" the Democratic Republic of the Congo, but "Congo" names
+    two countries, so the choice quotes the user's word, and an option chosen by it
+    settles the part."""
+    client = _fertility_client(_CongoExtractionLLM("Congo"))
+
+    part = _raw_part(client, "fertility rate in Congo")
+
+    no_data = part["no_data"]
+    assert no_data["reason"] == "entity_ambiguous"
+    assert no_data["entity_terms"] == ["Congo"]
+    (group,) = no_data["ambiguous_entities"]
+    assert group["text"] == "Congo"
+    assert {c["ref"] for c in group["candidates"]} == {_COD, "country/COG"}
+    assert [o["mentions"] for o in no_data["options"]] == [["Congo"], ["Congo"]]
+    assert [e["text"] for e in part["restatement"]["entities"]] == ["Congo"]
+    _assert_options_settle(client, no_data)
+
+
+def test_a_name_the_query_words_settle_keeps_its_name():
+    """ "DR Congo" names one country, so the part answers under the extraction's name."""
+    client = _fertility_client(_CongoExtractionLLM("DR Congo"))
+
+    part = _raw_part(client, "fertility rate in DR Congo")
+
+    assert part["status"] == "definite"
+    assert part["restatement"]["entities"] == [{"text": "Democratic Republic of the Congo"}]
+    assert part["entity_refs"] == [{"text": "Democratic Republic of the Congo", "refs": [_COD]}]
 
 
 def test_an_ambiguous_source_offers_each_candidate_and_each_option_resolves_it(

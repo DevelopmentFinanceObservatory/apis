@@ -726,6 +726,15 @@ async def _open_search_deps(
     reverse registration order. Exit generation registrations first so refresh callbacks cannot
     reach closed caches. Injected instances are neither registered nor released.
     """
+    # The Gemini key check runs beside the rest of startup and is awaited before the app
+    # serves. A startup step that fails first cancels it; the done callback reads its outcome
+    # so that a failed check left unawaited logs nothing.
+    key_check: asyncio.Task[None] | None = None
+    if llm is None:
+        key_check = asyncio.create_task(_llm_mod.warm())
+        key_check.add_done_callback(lambda task: task.cancelled() or task.exception())
+        owned.callback(key_check.cancel)
+
     # Acquire the provider before its caches. The source read can block.
     if generation is None:
         generation = await asyncio.to_thread(
@@ -914,26 +923,6 @@ async def _open_search_deps(
         owned.push_async_callback(_release_skills_index, skills_index)
         logger.info("SharedSkillsIndex started")
 
-    if llm is None:
-        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo,
-        # and `SEARCH_EXTRACT_STORE=off` the extraction store.
-        try:
-            _llm_mod.warm()
-        except LLMInfraError:
-            logger.critical("LLM warm-up failed; check GEMINI_API_KEY", exc_info=True)
-            raise
-        llm = LLM(
-            memo=build_memo(),
-            extraction_store=build_extraction_store(settings().extract_store),
-        )
-        logger.info(
-            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f), extraction store %s",
-            settings().llm_memo_max_bytes,
-            settings().llm_memo_max_entry_bytes,
-            settings().llm_memo_ttl_s,
-            settings().extract_store,
-        )
-
     variable_breadth: VariableBreadthReader | None = None
     if live_graph is not None and materialise_graph is None:
         # An answer naming one place breaks a facet tie on each facet's places across the
@@ -959,6 +948,30 @@ async def _open_search_deps(
             profiles,
         )
         variable_breadth = profiles.breadth(get_coverage_service().snapshot)
+
+    if llm is None:
+        assert key_check is not None
+        # A missing key, or one Gemini rejects, fails startup, so Cloud Run keeps serving the
+        # previous revision. Any other failure of the check logs a WARNING and the app serves,
+        # its searches answering 503 until Gemini answers (`llm.warm`).
+        try:
+            await key_check
+        except LLMInfraError:
+            logger.critical("LLM warm-up failed; check GEMINI_API_KEY", exc_info=True)
+            raise
+        # A zero memo limit disables the memo, and `SEARCH_EXTRACT_STORE=off` the extraction
+        # store.
+        llm = LLM(
+            memo=build_memo(),
+            extraction_store=build_extraction_store(settings().extract_store),
+        )
+        logger.info(
+            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f), extraction store %s",
+            settings().llm_memo_max_bytes,
+            settings().llm_memo_max_entry_bytes,
+            settings().llm_memo_ttl_s,
+            settings().extract_store,
+        )
 
     if conversion_loading is not None:
         await _wait_for_conversion_catalogue(conversion_loading)
