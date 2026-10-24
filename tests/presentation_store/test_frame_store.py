@@ -808,15 +808,16 @@ def test_load_labels_a_node_of_several_names_as_the_node_door_does(bind_catalogu
     assert resolved.labels["country/ETH"] == "Federal Democratic Republic of Ethiopia"
 
 
-def test_load_labels_the_group_members_a_coverage_warning_names():
-    """A member that served nothing holds no row, so the refs a `coverage_below_scope`
-    warning names join the frame's one label batch."""
+def test_load_labels_the_entities_and_members_a_coverage_warning_counts():
+    """An entity or member that served nothing holds no row, so the refs a
+    `coverage_below_scope` warning carries join the frame's one label batch."""
     snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
     version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
     warning = {
         "code": "coverage_below_scope",
         "severity": "warn",
         "message": "Short of scope.",
+        "unserved_entities": {"count": 1, "refs": ["dcid:country/SEN"]},
         "member_count": 3,
         "off_cadence_members": {"count": 1, "refs": ["dcid:YouthRate"]},
         "out_of_window_members": {"count": 1, "refs": ["dcid:AdultRate"]},
@@ -829,18 +830,20 @@ def test_load_labels_the_group_members_a_coverage_warning_names():
             "MalariaGrantDisbursements": "Malaria Grant Disbursements",
             "YouthRate": "Youth rate",
             "AdultRate": "Adult rate",
+            "country/SEN": "Senegal",
         }
     )
     store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
 
     resolved = store.load(frame_ref=frame_ref)
 
-    assert (resolved.labels["dcid:YouthRate"], resolved.labels["dcid:AdultRate"]) == (
-        "Youth rate",
-        "Adult rate",
-    )
+    assert (
+        resolved.labels["dcid:country/SEN"],
+        resolved.labels["dcid:YouthRate"],
+        resolved.labels["dcid:AdultRate"],
+    ) == ("Senegal", "Youth rate", "Adult rate")
     assert graph.calls == 1
-    assert {"YouthRate", "AdultRate"} <= set(graph.node_arcs_many_calls[0])
+    assert {"country/SEN", "YouthRate", "AdultRate"} <= set(graph.node_arcs_many_calls[0])
 
 
 _WDI_GDP = "worldBank/NY_GDP_MKTP_CD"

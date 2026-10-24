@@ -31,6 +31,7 @@ from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import plan_window_gap, serves_nothing
 from search.engine.retrieval.retrieve import Materialised
+from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     IdentityFacetValueRequest,
     IdentityUnitRequest,
@@ -121,7 +122,9 @@ def _bound_unit_refusal(
         )
     coverage = state.unit_coverage
     if coverage.refusal is None:
-        if (omitted := coverage.omitted_warning()) is not None:
+        if (
+            omitted := coverage.omitted_warning(catalogue=current_conversion_catalogue())
+        ) is not None:
             state.warnings.append(omitted)
         return None
     exc = coverage.refusal[1]

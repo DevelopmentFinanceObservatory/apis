@@ -15,7 +15,12 @@ from dc_sdmx import ContainedIn, EntityFilter
 # `pipeline` imports this module during initialisation. `MaterialisationResult` resolves when
 # `_finish_member` runs, after `pipeline` has loaded.
 from materialise import pipeline
-from materialise.codes import MATERIALISE_CODE_CATALOGUE, MaterialisationWarning, UnservedMembers
+from materialise.codes import (
+    MATERIALISE_CODE_CATALOGUE,
+    CountedEntityYears,
+    CountedRefs,
+    MaterialisationWarning,
+)
 from materialise.content_version import mint_version_from_digest
 from materialise.convert import ConversionRecord
 from materialise.dependencies import Dependencies
@@ -385,18 +390,18 @@ def _build_warnings(
 ) -> tuple[MaterialisationWarning, ...]:
     """Adds `empty_result` for zero rows, which suppresses `coverage_below_scope`. Its message
     says the request's places hold no observations when the facet probe returned no candidate
-    (`_empty_result_warning`). `coverage_below_scope` covers window clamps and unserved bound
-    entities, naming up to five entities, a request binding no place that was served the
-    countries with data in place of every place, and, when the group served rows, its members
-    that served nothing, which it counts in its message and names by ref in its structured
-    fields: those at another observation period in the requested years
+    (`_empty_result_warning`). `coverage_below_scope` covers window clamps, unserved bound
+    entities, a request binding no place that was served the countries with data in place of
+    every place, and, when the group served rows, its members that served nothing. It counts
+    the entities and members in its message and names them by ref in its structured fields.
+    The members are those at another observation period in the requested years
     (`_GroupOutcome.off_cadence_members`), and those holding observations only outside them
     (`_GroupOutcome.out_of_window_members`). The second are left out with `absent_reads_zero`,
     when the served dataset reads an absent member as zero, since such a member adds nothing
     to the requested years. One `coverage_below_scope` states every cause that applies.
     `currency_unmapped_omitted` applies when any conversion record omitted an entity's rows;
     an omitted entity the request bound counts as reported there, so `coverage_below_scope`
-    does not name it. `deflator_missing_omitted` applies when any record left out rows for a
+    does not count it. `deflator_missing_omitted` applies when any record left out rows for a
     missing deflator. Values priced from a projected rate or deflator raise no warning: the
     trace's `conversion[].projected` counts them, and a description states them as an
     `estimated` caveat.
@@ -502,8 +507,13 @@ def _empty_result_warning(
     return {**warning, "message": f"{warning['message']} {where}"}
 
 
-# Maximum unserved dcids included in a warning.
-_MAX_UNSERVED_NAMED = 5
+# Maximum refs a warning's counted field carries. A conversion's left-out entities keep the
+# ten the warnings named in their message, `_MAX_TRACE_EXAMPLES`.
+_MAX_COUNTED_REFS = 5
+
+# Entities are bare dcids; a warning's counted field carries them as `dcid:` refs, as it
+# carries a group's members.
+_DCID_REF_PREFIX = "dcid:"
 
 
 def _coverage_below_scope_warning(
@@ -514,21 +524,24 @@ def _coverage_below_scope_warning(
     out_of_window: Sequence[str],
     member_count: int,
 ) -> MaterialisationWarning:
-    """Adds up to five unserved entity dcids to the catalogue detail. Then, of the group's
+    """Counts the `unserved` entity dcids after the catalogue detail. Then, of the group's
     `member_count` series, it counts those in `off_cadence`, which report the requested years
     at another frequency than the group serves and are left out, and those in
     `out_of_window`, which hold no observation in the requested years. The message names no
-    member, so a stored version holds no name that can go stale. The warning's
-    `off_cadence_members` and `out_of_window_members` carry each count and the first five
-    refs (`UnservedMembers`), beside `member_count`, for a reader to name them. Then, with
-    `countries_fallback`, it says a request binding no place was served the countries with
-    data because the full list of places with data was too large or unavailable
-    (`place_scope.DefaultPlaceScope`). Without any the detail stands for a pure window
-    clamp."""
+    entity or member, so a stored version holds no name that can go stale. The warning's
+    `unserved_entities`, `off_cadence_members` and `out_of_window_members` carry each count
+    and the first five refs (`CountedRefs`), beside `member_count` for the members, for a
+    reader to name them. Then, with `countries_fallback`, it says a request binding no place
+    was served the countries with data because the full list of places with data was too
+    large or unavailable (`place_scope.DefaultPlaceScope`). Without any the detail stands for a
+    pure window clamp."""
     _title, detail = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"]
     message = detail
     if unserved:
-        message = f"{message} No observations were served for {_capped_names(unserved)}."
+        message = (
+            f"{message} No observations were served for {len(unserved)} requested "
+            f"{_entities(len(unserved))}."
+        )
     if off_cadence:
         message = (
             f"{message} {len(off_cadence)} of {member_count} series report at a different "
@@ -549,24 +562,57 @@ def _coverage_below_scope_warning(
         "severity": "warn",
         "message": message,
     }
+    if unserved:
+        warning["unserved_entities"] = _counted_entities(unserved)
     if off_cadence or out_of_window:
         warning["member_count"] = member_count
     if off_cadence:
-        warning["off_cadence_members"] = _unserved(off_cadence)
+        warning["off_cadence_members"] = _counted(off_cadence)
     if out_of_window:
-        warning["out_of_window_members"] = _unserved(out_of_window)
+        warning["out_of_window_members"] = _counted(out_of_window)
     return warning
 
 
-def _unserved(refs: Sequence[str]) -> UnservedMembers:
-    return {"count": len(refs), "refs": list(refs[:_MAX_UNSERVED_NAMED])}
+def _counted(refs: Sequence[str], *, limit: int = _MAX_COUNTED_REFS) -> CountedRefs:
+    return {"count": len(refs), "refs": list(refs[:limit])}
 
 
-def _capped_names(names: Sequence[str]) -> str:
-    """The first five of `names`, comma-joined, with a count of the rest."""
-    named = ", ".join(names[:_MAX_UNSERVED_NAMED])
-    remaining = len(names) - _MAX_UNSERVED_NAMED
-    return f"{named} and {remaining} more" if remaining > 0 else named
+def _counted_entities(entities: Iterable[str], *, limit: int = _MAX_COUNTED_REFS) -> CountedRefs:
+    """The distinct bare `entities`, sorted, as `dcid:` refs, the first `limit` of them
+    carried (`_counted`)."""
+    return _counted(
+        [f"{_DCID_REF_PREFIX}{entity}" for entity in sorted(set(entities))], limit=limit
+    )
+
+
+def _counted_entity_years(omitted: Iterable[tuple[str, int]]) -> CountedEntityYears:
+    """The distinct bare entities of `omitted`, counted, and the first `_MAX_TRACE_EXAMPLES`,
+    sorted, as `dcid:` refs each with its years (`_year_spans`)."""
+    by_entity: dict[str, set[int]] = {}
+    for entity, year in omitted:
+        by_entity.setdefault(entity, set()).add(year)
+    return {
+        "count": len(by_entity),
+        "entities": [
+            {"ref": f"{_DCID_REF_PREFIX}{entity}", "years": _year_spans(by_entity[entity])}
+            for entity in sorted(by_entity)[:_MAX_TRACE_EXAMPLES]
+        ],
+    }
+
+
+def _year_spans(years: Iterable[int]) -> list[str]:
+    """`years` as runs of consecutive years, `["1990-2001", "2004"]`."""
+    runs: list[list[int]] = []
+    for year in sorted(set(years)):
+        if runs and year == runs[-1][1] + 1:
+            runs[-1][1] = year
+        else:
+            runs.append([year, year])
+    return [str(first) if first == last else f"{first}-{last}" for first, last in runs]
+
+
+def _entities(count: int) -> str:
+    return "entity" if count == 1 else "entities"
 
 
 class _ProjectedConversion(Protocol):
@@ -595,42 +641,32 @@ def deflator_projected_warning(
 
 
 def currency_unmapped_omitted_warning(entities: Iterable[str]) -> MaterialisationWarning:
-    """Reports how many distinct entities a conversion into each entity's own currency left
-    out, naming them sorted and capped as `deflator_projected_warning` caps its examples."""
+    """Counts the distinct entities a conversion into each entity's own currency left out.
+    `omitted_entities` carries the first `_MAX_TRACE_EXAMPLES`, sorted (`_counted_entities`)."""
     _title, detail = MATERIALISE_CODE_CATALOGUE["currency_unmapped_omitted"]
-    distinct = set(entities)
-    named, truncated = _capped_distinct_examples(distinct)
-    truncated_note = " (truncated)" if truncated else ""
-    message = f"{detail} {len(distinct)} entities: {', '.join(named)}{truncated_note}"
-    return {"code": "currency_unmapped_omitted", "severity": "warn", "message": message}
+    counted = _counted_entities(entities, limit=_MAX_TRACE_EXAMPLES)
+    return {
+        "code": "currency_unmapped_omitted",
+        "severity": "warn",
+        "message": f"{detail} It left out {counted['count']} {_entities(counted['count'])}.",
+        "omitted_entities": counted,
+    }
 
 
 def deflator_missing_omitted_warning(omitted: Iterable[tuple[str, int]]) -> MaterialisationWarning:
-    """Reports how many distinct entities a constant-price conversion left rows out of for a
-    missing deflator, naming each as `entity` with its omitted years as spans
-    (`entity (1990-2001, 2004)`), sorted and capped as `deflator_projected_warning` caps its
-    examples."""
+    """Counts the distinct entities a constant-price conversion left rows out of for a
+    missing deflator. `omitted_entity_years` carries the first `_MAX_TRACE_EXAMPLES`, sorted,
+    each with the years of those rows (`_counted_entity_years`)."""
     _title, detail = MATERIALISE_CODE_CATALOGUE["deflator_missing_omitted"]
-    by_entity: dict[str, set[int]] = {}
-    for entity, year in omitted:
-        by_entity.setdefault(entity, set()).add(year)
-    named, truncated = _capped_distinct_examples(
-        f"{entity} ({_year_spans(years)})" for entity, years in by_entity.items()
-    )
-    truncated_note = " (truncated)" if truncated else ""
-    message = f"{detail} {len(by_entity)} entities: {', '.join(named)}{truncated_note}"
-    return {"code": "deflator_missing_omitted", "severity": "warn", "message": message}
-
-
-def _year_spans(years: Iterable[int]) -> str:
-    """`years` as runs of consecutive years, `1990-2001, 2004`."""
-    runs: list[list[int]] = []
-    for year in sorted(set(years)):
-        if runs and year == runs[-1][1] + 1:
-            runs[-1][1] = year
-        else:
-            runs.append([year, year])
-    return ", ".join(str(first) if first == last else f"{first}-{last}" for first, last in runs)
+    counted = _counted_entity_years(omitted)
+    return {
+        "code": "deflator_missing_omitted",
+        "severity": "warn",
+        "message": (
+            f"{detail} It left out rows of {counted['count']} {_entities(counted['count'])}."
+        ),
+        "omitted_entity_years": counted,
+    }
 
 
 def _plain_role_bindings(role_bindings: Mapping[str, EntityFilter]) -> dict[str, Sequence[str]]:
