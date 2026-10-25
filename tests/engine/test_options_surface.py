@@ -608,6 +608,7 @@ def _unit_bound_request(
     include_coverage: bool = False,
     shape: dict = _LIFE_EXPECTANCY_SHAPE,
     slots: list[IdentitySlot] | None = None,
+    requested_window=None,
 ) -> OptionsRequest:
     return _place_request(
         shape=shape,
@@ -615,6 +616,7 @@ def _unit_bound_request(
         entities={},
         facets={"unit": IdentityBindingValue(ref="USD")},
         include_coverage=include_coverage,
+        requested_window=requested_window,
     )
 
 
@@ -665,6 +667,37 @@ class TestObservationAboutFacetBoundMembership:
         _target, resp = _options_response(req, graph=_place_graph(obs=_UNIT_BOUND_OBS))
         dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM"}
+
+    @pytest.mark.parametrize(
+        ("include_coverage", "requested_window", "dated"),
+        [
+            pytest.param(
+                False,
+                IdentityWindowRange(start_year=2015, end_year=2019),
+                False,
+                id="membership-under-a-range",
+            ),
+            pytest.param(
+                True,
+                IdentityWindowRange(start_year=2015, end_year=2019),
+                True,
+                id="coverage-under-a-range",
+            ),
+            pytest.param(True, None, False, id="coverage-under-every-date"),
+        ],
+    )
+    def test_a_facet_bound_read_carries_dates_only_for_coverage_under_a_range(
+        self, include_coverage, requested_window, dated
+    ):
+        """Membership judges a facet by its axes, so a read for membership alone reads no
+        dates; a read that also states coverage under a range reads them."""
+        graph = _place_graph(obs=_UNIT_BOUND_OBS)
+        materialise_graph = _materialise_graph_for(graph, arcs=_LIFE_EXPECTANCY_ARCS)
+        req = _unit_bound_request(
+            include_coverage=include_coverage, requested_window=requested_window
+        )
+        _options_response(req, graph=graph, materialise_graph=materialise_graph)
+        assert materialise_graph.facet_reads == [("observation_facets_batch_many", dated)]
 
     def test_a_unit_request_on_a_cold_cache_answers_with_the_converted_options(self):
         """The route hands `compute_options` the materialise SDMX client, so a request-form

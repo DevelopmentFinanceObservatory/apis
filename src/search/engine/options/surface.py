@@ -387,7 +387,8 @@ def _fetch_facets_batch(
     deadline: float | None,
 ) -> tuple[dict | None, Warning | None]:
     """Fetch every present candidate's own observation facets, with their dates under
-    `needs_dates`, when a facet binding or include_coverage needs them; neither fetch carries a
+    `needs_dates`, when a facet binding or include_coverage needs them. Only coverage reads
+    dates; membership judges facets by their axes alone. Neither fetch carries a
     StatVar-count precheck of its own (observation_facets_via_materialise is
     already chunked and process-wide concurrency-limited, and deadline
     bounds it against the door's own remaining request budget).
@@ -605,10 +606,11 @@ def _observation_about_options_set(
         deadline=deadline,
     )
 
-    # Under a range the facet read carries each facet's dates (`reads_dates`), so a
+    # Under a range the coverage read carries each facet's dates (`reads_dates`), so a
     # facet with no point in the window leaves the plan, as it does in the answer, and
     # the option's coverage counts the points in the window. Under `latest` or every
-    # date it reads none, since no election there judges a facet by its dates.
+    # date it reads none, since no election there judges a facet by its dates. A read for
+    # membership alone reads none either: `facets_satisfy_bindings` reads no dates.
     date_request = _date_request_from_window(target.requested_window)
     facets_batch, warning = _fetch_facets_batch(
         facet_bindings,
@@ -616,7 +618,7 @@ def _observation_about_options_set(
         sv_dcids=sv_dcids,
         present=present,
         materialise_graph=materialise_graph,
-        needs_dates=reads_dates(date_request),
+        needs_dates=include_coverage and reads_dates(date_request),
         deadline=deadline,
     )
     if facets_batch is not None:
