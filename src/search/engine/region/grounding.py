@@ -60,6 +60,7 @@ from search.engine.retrieval.bound_values import (
     five_tuple_member_facts,
     identity_query,
     index_carries_shape,
+    served_open_axes,
     shape_population_arcs,
     shape_query,
     slot_expansions,
@@ -1342,6 +1343,14 @@ def _relaxed_binding_suggestion(
             entities=entities_list,
             coverage=mat.coverage,
             plan=mat.read_plan,
+            # The relaxed query's own answer states this headline and these axes.
+            headline=mat.headline,
+            open_axis_facts=served_open_axes(
+                relaxed,
+                mat.sv_dcids,
+                mat.member_facts or {},
+                value_labels=shape.value_labels or {},
+            ),
             coverage_index=ctx.coverage.index,
             pin_served_provenance=ctx.pin_served_provenance,
             resolved_sources=source_refs,

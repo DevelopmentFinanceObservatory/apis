@@ -1110,6 +1110,24 @@ def open_constraint_axes(
     return tuple(facts)
 
 
+def served_open_axes(
+    bindings: Sequence[SlotBindingDraft],
+    served: Sequence[str],
+    member_facts: Mapping[str, MemberFacts],
+    *,
+    value_labels: Mapping[str, str],
+) -> tuple[OpenAxisFact, ...]:
+    """The open constraint axes an answer states (`open_constraint_axes`): the axes
+    `bindings` leave unbound, over the members its read serves, `served`, in that order,
+    each read from `member_facts`. A first answer, its resubmit and a nearest-real
+    suggestion state the same facts because each reads them here."""
+    return open_constraint_axes(
+        bound_values_from_bindings(bindings),
+        {dcid: member_facts[dcid] for dcid in served},
+        value_labels=value_labels,
+    )
+
+
 def elect_measure_family(
     shape: ShapeDraft,
     index: CodeIndex,
