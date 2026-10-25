@@ -1194,10 +1194,28 @@ def test_json_route_answers_the_partial_200_when_a_leg_runs_past_the_soft_deadli
 
 def test_sse_route_ends_at_the_hard_cap_with_the_timeout_error_event(monkeypatch, search_settings):
     """A pipeline that never finishes ends at soft deadline plus grace with the 504 `timeout`
-    error event, and a worker thread inside the stream sees the hard cap as its deadline."""
+    error event, and a worker thread inside the stream sees the hard cap as its deadline. The
+    stream arms its own timer at the hard cap too, not at the soft deadline."""
     search_settings(request_timeout_s=0.1, finalise_grace_s=1.0)
     deadlines_seen: list[float | None] = []
     budgets: list[RequestBudget] = []
+    armed: list[float] = []
+
+    class _RecordingAsyncio:
+        """`search.engine.app.asyncio` with `timeout` recording when each timer fires, on the
+        loop clock, which is `time.monotonic()`."""
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(asyncio, name)
+
+        def timeout(self, delay: float | None) -> asyncio.Timeout:
+            timer = asyncio.timeout(delay)
+            when = timer.when()
+            assert when is not None
+            armed.append(when)
+            return timer
+
+    monkeypatch.setattr("search.engine.app.asyncio", _RecordingAsyncio())
 
     async def _hanging_events(*_args: object, budget: RequestBudget, **_kwargs: object):
         budgets.append(budget)
@@ -1222,3 +1240,5 @@ def test_sse_route_ends_at_the_hard_cap_with_the_timeout_error_event(monkeypatch
     [budget] = budgets
     assert budget.hard - budget.soft == pytest.approx(1.0)
     assert deadlines_seen == [budget.hard]
+    # The timer is armed at the budget's hard deadline, less the time since the route read it.
+    assert armed == [pytest.approx(budget.hard, abs=0.1)]
