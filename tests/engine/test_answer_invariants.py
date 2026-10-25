@@ -62,8 +62,8 @@ from search.engine.departures import spec_departure_facts
 from search.engine.region.result import RegionResult
 from search.models import IdentityBindingValue, Spec
 from tests._covering_array import Grid, uncovered
+from tests.engine import _answer_invariants_record, _grid_cells
 from tests.engine import _answer_invariants_world as fixture_world
-from tests.engine import _grid_cells
 from tests.engine._answer_invariants_world import (
     ALAND,
     ALT,
@@ -1321,10 +1321,12 @@ def _measurements(path: Path) -> dict[str, Any]:
 
 
 def _measurement(path: Path, cell: Cell, door: str, index: int) -> dict[str, Any] | None:
-    """The measurement `path` holds for one door of `cell`, None when it holds none."""
+    """The measurement `path` holds for one door of `cell`, None when it holds none. A
+    door's list holds None at each position the file does not hold."""
     held = _measurements(path)
     indices = held["doors"].get(str(cell), {}).get(_DOOR_KEYS[door], ())
-    return held["records"][indices[index]] if index < len(indices) else None
+    record = indices[index] if index < len(indices) else None
+    return held["records"][record] if record is not None else None
 
 
 def _same_answer(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -1409,6 +1411,13 @@ def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> d
         max(0, limit["requests"].get(_BULK_READ, 0) - now["requests"].get(_BULK_READ, 0)),
     )
     return {_PAIR_READ: count} if count else {}
+
+
+def _held_grants(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
+    """The reads a door may make beyond a recorded door with its answer: batched reads in
+    place of per-node reads (`_batched_type_read`) and pair reads in place of bulk reads
+    (`_pair_read_in_place_of_bulk`)."""
+    return _batched_type_read(now, limit) | _pair_read_in_place_of_bulk(now, limit)
 
 
 def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
@@ -1497,9 +1506,11 @@ def i9_latency(run: Doors) -> list[str]:
       measured there.
     - For a door c669cc874 answered differently or not at all, the measurement recorded for
       it on this branch in `answer_invariants_requests_uncompared.json`, under the same
-      condition. That file holds the preview-off doors with no comparable door at c669cc874.
-      A re-recording may lower an entry and never raise one. `_answer_invariants_record`
-      regenerates both files and refuses a list that grows.
+      condition. That file holds the covering array's doors with no comparable door at
+      c669cc874 and either no preview-off door with their outcome or a record held from
+      before one matched. A re-recording keeps an entry while its door passes it, drops one
+      c669cc874 now bounds, and replaces one only with `--grow`.
+      `_answer_invariants_record` regenerates both files and refuses a list that grows.
 
     A preview-on door is also held to its own preview-off door plus the reads its preview
     may make (`_preview_reads`), which is the whole bound of one neither file answers for.
@@ -1551,8 +1562,7 @@ def i9_latency(run: Doors) -> list[str]:
         for path, source in ((_BASE_PATH, "at c669cc874"), (_BRANCH_PATH, "as recorded")):
             limit = _measurement(path, cell, door, index)
             if limit is not None and _same_answer(limit, now):
-                granted = _batched_type_read(now, limit)
-                granted |= _pair_read_in_place_of_bulk(now, limit)
+                granted = _held_grants(now, limit)
                 if path == _BASE_PATH:
                     granted |= _rate_table_reads(now)
                 found += [
@@ -1911,6 +1921,111 @@ def test_i9_checks_exactly_the_committed_cells() -> None:
     for cell in every:
         expected = set(CHECKS) - (set() if str(cell) in committed else {"I9"})
         assert set(checks_for(cell)) == expected, cell
+    assert set(_measurements(_BRANCH_PATH)["doors"]) <= committed
+
+
+_HELD = {
+    "outcome": ["definite", None, None, None],
+    "served": [[1, 3, None]],
+    "requests": {_LABEL_READ: 3},
+    "depth": 2,
+}
+
+
+@pytest.mark.parametrize(
+    ("old", "now", "bound_by", "written", "grows"),
+    [
+        pytest.param(None, _HELD, None, "now", True, id="added"),
+        pytest.param(
+            _HELD,
+            {**_HELD, "outcome": ["no_data", None, None, None]},
+            None,
+            "now",
+            True,
+            id="answer",
+        ),
+        pytest.param(
+            _HELD, {**_HELD, "requests": {_LABEL_READ: 4}}, None, "now", True, id="requests"
+        ),
+        pytest.param(_HELD, {**_HELD, "depth": 3}, None, "now", True, id="depth"),
+        pytest.param(
+            _HELD,
+            {
+                **_HELD,
+                "requests": {_LABEL_READ: 4},
+                "facet_options": {"requests": {_LABEL_READ: 1}, "depth": 1},
+            },
+            None,
+            "old",
+            False,
+            id="facet_read_within_bound",
+        ),
+        pytest.param(
+            _HELD,
+            {**_HELD, "requests": {_LABEL_READ: 2}, "depth": 1},
+            None,
+            "old",
+            False,
+            id="fewer",
+        ),
+        pytest.param(_HELD, _HELD, None, "old", False, id="identical"),
+        pytest.param(_HELD, _HELD, "off", "old", False, id="preview_off_now_matches"),
+        pytest.param(
+            _HELD,
+            {**_HELD, "requests": {_LABEL_READ: 4}},
+            "off",
+            "now",
+            True,
+            id="preview_off_now_matches_and_exceeds",
+        ),
+        pytest.param(_HELD, _HELD, "base", None, False, id="base_now_bounds"),
+        pytest.param(_HELD, None, None, None, True, id="not_measured"),
+    ],
+)
+def test_a_rerecord_keeps_a_held_record_its_door_passes(
+    old: dict[str, Any] | None,
+    now: dict[str, Any] | None,
+    bound_by: str | None,
+    written: str | None,
+    grows: bool,
+) -> None:
+    """`_answer_invariants_record.rerecord` keeps a door's held record while the door passes
+    I9 against it, so a re-record never loosens the bound: a facet-option read the old
+    record lacks leaves the old record, which still refuses a fourth label read outside a
+    facet build, and a held door its preview-off door now bounds stays held. A door the
+    base record now bounds drops. A door added, not measured, answering differently or
+    exceeding its record grows the list."""
+    cell = "route/preview_on/pin_none"
+    key = (cell, "resubmit", 0)
+    held = {} if old is None else {key: old}
+    branch = {} if now is None else {key: now}
+    base = {key: now} if bound_by == "base" else {}
+    if bound_by == "off":
+        branch[cell.replace("/preview_on/", "/preview_off/"), "resubmit", 0] = now
+    doors, grown = _answer_invariants_record.rerecord(held, base, branch, cells=frozenset({cell}))
+    assert doors == ({} if written is None else {key: old if written == "old" else now})
+    assert bool(grown) == grows
+
+
+def test_the_recorder_lists_only_committed_doors_at_their_positions(tmp_path: Path) -> None:
+    """`_answer_invariants_record` lists the doors of the committed cells alone, and a door
+    whose earlier position is bounded keeps its own position in the written list."""
+    committed, other = sorted(_grid_cells.ANSWER_INVARIANTS)[:2]
+    same = {"outcome": ["definite", None, None, None], "served": [], "requests": {}, "depth": 1}
+    changed = {**same, "served": [[1, 3, None]]}
+    base = {(committed, "resubmit", 0): same, (committed, "resubmit", 1): same}
+    branch = {
+        (committed, "resubmit", 0): same,
+        (committed, "resubmit", 1): changed,
+        (other, "resubmit", 0): changed,
+    }
+    listed = _answer_invariants_record.uncompared(base, branch, cells=frozenset({committed}))
+    assert listed == {(committed, "resubmit", 1): changed}
+    path = tmp_path / "uncompared.json"
+    path.write_text(_answer_invariants_record._dump(listed))
+    cell = next(cell for _row, cell in GRID.cells() if str(cell) == committed)
+    assert _measurement(path, cell, RESUBMIT, 0) is None
+    assert _measurement(path, cell, RESUBMIT, 1) == changed
 
 
 def test_the_committed_cells_cover_every_four_values_a_request_can_form() -> None:
