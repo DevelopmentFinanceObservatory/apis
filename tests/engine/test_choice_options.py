@@ -211,8 +211,9 @@ class _TwoCongosExtractionLLM(_ShapeZeroLLM):
     the destination `destination`, each named in the query "Congo", and elects shape 0
     with no bindings."""
 
-    def __init__(self, origin: str, destination: str) -> None:
+    def __init__(self, origin: str, destination: str, *undirected: str) -> None:
         self.texts = (origin, destination)
+        self.undirected = undirected
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is Extraction:
@@ -222,6 +223,7 @@ class _TwoCongosExtractionLLM(_ShapeZeroLLM):
                 ExtractedEntity(
                     text=destination, span="Congo", flow_role="destination", role_span="to"
                 ),
+                *(ExtractedEntity(text=text, span="Congo") for text in self.undirected),
             ]
             return Extraction(kind="resolution", variables=["aid"], entities=entities), None
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
@@ -240,13 +242,15 @@ def _rows(option: dict) -> list[tuple[str, str | None, str | None]]:
     [
         pytest.param(("Republic of the Congo", "Democratic Republic of the Congo"), id="two_names"),
         pytest.param(("Congo", "Congo"), id="one_text"),
+        pytest.param(("Congo", "Congo", "Congo"), id="one_text_and_an_undirected_mention"),
     ],
 )
 def test_one_text_on_both_ends_asks_each_end_its_own_choice(texts):
     """One (text, axis) names one place in a part. "Congo" from and "Congo" to are two
     places, whether the extraction names the ends apart or alike, so each end asks its
     own choice, each option pins one end and leaves the other open, and two choices reach
-    a flow from one Congo to the other."""
+    a flow from one Congo to the other. An undirected "Congo" beside them names neither
+    end, so the restatement and the options post no row for it."""
     client = _flow_client(_TwoCongosExtractionLLM(*texts))
 
     part = _raw_part(client, "aid from Congo to Congo")

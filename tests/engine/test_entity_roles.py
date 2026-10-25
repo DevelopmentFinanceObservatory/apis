@@ -622,7 +622,7 @@ class TestDatasetEntriesDoorCarriesEveryOccurrence:
             [part], pointer_prefixes=["/input/entries/0/part"]
         )
         (roles,) = interpretation.entity_roles
-        ((origin,), (destination,)) = (
+        origin, destination = (
             part_names(part.entities).of("Kenya", axis) for axis in ("origin", "destination")
         )
         assert roles == {

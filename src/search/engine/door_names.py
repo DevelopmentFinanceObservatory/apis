@@ -7,15 +7,16 @@ door invents those names as opaque keys of the engine's state, so everything the
 reads or shows of such a place goes through its text (`DoorNames.texts`), and no invented
 name reaches the resolver, a sentence or the wire.
 
-An undirected mention of a text names every place the text names in the part. Both doors
-name their places by this one rule, and option building reads a part's parsed form back
-through it (`part_names`), so a name a door gave a mention is the name its echoed row
-reads back as.
+An undirected mention of a text the part mentions on both axes names no one place, so no
+row reaches the engine as one: the parsed door refuses it, and the raw-text door's rows
+leave it out. Both doors name their places by this one rule, and option building reads a
+part's parsed form back through it (`part_names`), so a name a door gave a mention is the
+name its echoed row reads back as.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from search.engine.role_text import DoorRole, role_axis_for_text
@@ -39,15 +40,20 @@ class DoorNames:
     texts: Mapping[str, str]
     split: Mapping[str, Mapping[RoleAxis, str]]
 
-    def of(self, text: str, axis: RoleAxis | None) -> tuple[str, ...]:
-        """The names a mention of `text` on `axis` names: its axis's name for a text on
-        both axes, every name of that text for an undirected mention, else the text."""
+    def of(self, text: str, axis: RoleAxis | None) -> str:
+        """The name a mention of `text` on `axis` names: its axis's name for a text on
+        both axes, else the text. An undirected mention of a text on both axes names no
+        one place and raises `ValueError`; the doors keep such rows out (`door_names`)."""
         by_axis = self.split.get(text)
         if by_axis is None:
-            return (text,)
+            return text
         if axis is None:
-            return tuple(by_axis.values())
-        return (by_axis[axis],)
+            raise ValueError(f"an undirected mention of {text!r} names neither of its ends")
+        return by_axis[axis]
+
+    def of_texts(self, texts: Collection[str]) -> frozenset[str]:
+        """Every name of the places `texts` name, on whichever axes."""
+        return frozenset(name for name in self.names if self.texts[name] in texts)
 
     def text_of(self, name: str) -> str:
         """The text `name` names a place of. A name that is not one of `names` raises

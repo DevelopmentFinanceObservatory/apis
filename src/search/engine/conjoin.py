@@ -337,7 +337,7 @@ def _option(mentions: Sequence[str], label: str, part: ParsedPart) -> NoDataOpti
 def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
     """One option per ambiguous place and candidate: the part with every place that
     resolved to one node pinned, and every row naming the ambiguous place pinned to the
-    candidate. A row names the places `door_names.part_names` reads it as, so of a text
+    candidate. A row names the place `door_names.part_names` reads it as, so of a text
     posted on both ends each end is its own place, and an option pins one end. A row asked
     for its members takes a group's own node by the group's registered name, with no dcid,
     since a pin cannot ask for a group's members; a group node with no registered name that
@@ -351,13 +351,13 @@ def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
         for entity in part.entities or ()
     ]
 
-    def pinned(entity: ParsedEntity, row_names: tuple[str, ...]) -> ParsedEntity:
-        dcids = {region.resolved_entity_dcids.get(name) for name in row_names}
-        if len(dcids) != 1 or None in dcids:
+    def pinned(entity: ParsedEntity, row_name: str) -> ParsedEntity:
+        dcid = region.resolved_entity_dcids.get(row_name)
+        if dcid is None:
             return entity
-        return entity.model_copy(update={"dcid": dcids.pop()})
+        return entity.model_copy(update={"dcid": dcid})
 
-    base = [(pinned(entity, row_names), row_names) for entity, row_names in rows]
+    base = [(pinned(entity, row_name), row_name) for entity, row_name in rows]
 
     def chosen(entity: ParsedEntity, candidate: EngineCandidate) -> ParsedEntity | None:
         if entity.members and candidate.group_node:
@@ -374,8 +374,8 @@ def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
         )
         for candidate in group.candidates:
             entities = [
-                chosen(entity, candidate) if group.text in row_names else entity
-                for entity, row_names in base
+                chosen(entity, candidate) if group.text == row_name else entity
+                for entity, row_name in base
             ]
             if None in entities:
                 continue

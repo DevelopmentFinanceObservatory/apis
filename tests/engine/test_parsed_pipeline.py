@@ -1329,14 +1329,15 @@ class TestPinnedDcidC2:
 
     @pytest.mark.parametrize(
         "role_texts",
-        [("from", "donor"), (None, None), ("from", None)],
-        ids=["one-end", "no-end", "an-end-and-no-end"],
+        [("from", "donor"), (None, None), ("from", None), ("from", "to")],
+        ids=["one-end", "no-end", "an-end-and-no-end", "two-ends"],
     )
-    def test_one_part_posting_one_place_with_both_members_values_refuses_request_invalid(
+    def test_one_part_posting_one_text_with_both_members_values_refuses_request_invalid(
         self, role_texts
     ):
-        """One place asked for as its members and as a whole in one part refuses
-        `request_invalid`; rows on two ends name two places, each with its own reading."""
+        """One text asked for as its members and as a whole in one part refuses
+        `request_invalid`, on two ends too: place sets merge by place, so the ends cannot
+        keep two readings of one region."""
         part = ParsedPart(
             variable_text="aid from Africa",
             entities=[
@@ -1349,22 +1350,33 @@ class TestPinnedDcidC2:
         assert exc_info.value.code == "request_invalid"
         assert exc_info.value.pointer == "/input/parts/0/entities"
 
-    def test_one_text_on_two_ends_asks_members_of_one_end_alone(self):
-        """Africa from as its members and Africa to whole are two places, and only the
-        origin's is asked for its members."""
+    def test_one_text_on_two_ends_asks_members_of_both_ends(self):
+        """Africa from and Africa to, both as their members, are two places, each asked
+        for its members."""
         part = ParsedPart(
             variable_text="aid from Africa to Africa",
             entities=[
-                ParsedEntity(text="Africa", role_text="from", members=True),
-                ParsedEntity(text="Africa", role_text="to"),
+                ParsedEntity(text="Africa", role_text=role_text, members=True)
+                for role_text in ("from", "to")
             ],
         )
         interpretation = interpret_parts([part], pointer_prefixes=["/input/parts/0"])
         names = part_names(part.entities)
-        assert interpretation.member_entities == [frozenset(names.of("Africa", "origin"))]
-        assert interpretation.entities == [
-            [*names.of("Africa", "origin"), *names.of("Africa", "destination")]
-        ]
+        both = [names.of("Africa", "origin"), names.of("Africa", "destination")]
+        assert interpretation.member_entities == [frozenset(both)]
+        assert interpretation.entities == [both]
+
+    @pytest.mark.parametrize("undirected", [0, 2])
+    def test_an_undirected_row_of_a_text_on_both_ends_refuses_request_invalid(self, undirected):
+        """Congo from, Congo to and an undirected Congo: the undirected row names neither
+        end, so it refuses `request_invalid` at the row."""
+        rows = [ParsedEntity(text="Congo", role_text=word) for word in ("from", "to")]
+        rows.insert(undirected, ParsedEntity(text="Congo"))
+        part = ParsedPart(variable_text="aid from Congo to Congo", entities=rows)
+        with pytest.raises(EngineInputError) as exc_info:
+            _resolve_parsed([part])
+        assert exc_info.value.code == "request_invalid"
+        assert exc_info.value.pointer == f"/input/parts/0/entities/{undirected}"
 
     def test_parts_differing_only_in_members_stay_distinct(self):
         """Two parts alike but for one entity's `members` are two asks, and each leg is

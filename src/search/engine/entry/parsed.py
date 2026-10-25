@@ -146,31 +146,50 @@ def _open_axes_for_part(part: ParsedPart, *, pointer_prefix: str) -> frozenset[R
     return frozenset(axes)
 
 
+def _names_for_part(part: ParsedPart, *, pointer_prefix: str) -> DoorNames:
+    """The names of the part's places (`door_names.part_names`).
+
+    An undirected row of a text the part also posts from and to names neither end, so it
+    raises `request_invalid` at the row.
+    """
+    names = part_names(part.entities)
+    for j, entity in enumerate(part.entities or ()):
+        if entity.text in names.split and role_axis_for_text(entity.role_text) is None:
+            detail = (
+                f"part posts entity {entity.text!r} with no role beside rows of it on both "
+                "ends; give the row the role_text of its end, or leave it out"
+            )
+            raise EngineInputError(
+                detail,
+                code="request_invalid",
+                pointer=f"{pointer_prefix}/entities/{j}",
+            )
+    return names
+
+
 def _member_entities_for_part(
     part: ParsedPart, names: DoorNames, *, pointer_prefix: str
 ) -> frozenset[str]:
-    """The names of the places the part asks for as their members (`ParsedEntity.members`),
-    each row asking it of the places `names` reads the row as.
+    """The names of the places the part asks for as their members (`ParsedEntity.members`):
+    every name of each text a row asks it of.
 
-    One part names a set once on each end, so a place posted with both values raises
-    `request_invalid` at the part's entities.
+    One text holds one reading in a part, on both its ends, so a text posted with both
+    values raises `request_invalid` at the part's entities.
     """
     asked: dict[str, bool] = {}
     for entity in part.entities or ():
         members = bool(entity.members)
-        for name in names.of(entity.text, role_axis_for_text(entity.role_text)):
-            if asked.setdefault(name, members) != members:
-                detail = (
-                    f"part posts entity {entity.text!r} with members both true and false; one "
-                    "text names one set on each end of a single part, as its members or as a "
-                    "whole"
-                )
-                raise EngineInputError(
-                    detail,
-                    code="request_invalid",
-                    pointer=f"{pointer_prefix}/entities",
-                )
-    return frozenset(name for name, members in asked.items() if members)
+        if asked.setdefault(entity.text, members) != members:
+            detail = (
+                f"part posts entity {entity.text!r} with members both true and false; one "
+                "text names one set within a single part, as its members or as a whole"
+            )
+            raise EngineInputError(
+                detail,
+                code="request_invalid",
+                pointer=f"{pointer_prefix}/entities",
+            )
+    return names.of_texts({text for text, members in asked.items() if members})
 
 
 def _entity_text_warning(part: ParsedPart) -> Warning | None:
@@ -271,9 +290,10 @@ def interpret_parts(
 
     Only absent time text gets `time_window_defaulted`; unrecognised text gets the
     parser's own warning. Each part's places are named by `door_names.part_names`: one
-    name per text, and one per axis for a text the part posts on both. An open role word
-    `_open_axes_for_part` refuses, an entity text `_member_entities_for_part` refuses, and
-    a source mention `compile_part_sources` refuses, point into its part's entry of
+    name per text, and one per axis for a text the part posts on both. An entity row
+    `_names_for_part` refuses, an open role word `_open_axes_for_part` refuses, an entity
+    text `_member_entities_for_part` refuses, and a source mention `compile_part_sources`
+    refuses, point into its part's entry of
     `pointer_prefixes`. Each part's
     `source_scopes` entry is its compiled sources against the request's catalogue:
     `None` when it names none, a `SourceRefusal` when its words resolve to no source or
@@ -293,7 +313,10 @@ def interpret_parts(
         _open_axes_for_part(p, pointer_prefix=prefix)
         for p, prefix in zip(parts, pointer_prefixes, strict=True)
     ]
-    names = [part_names(p.entities) for p in parts]
+    names = [
+        _names_for_part(p, pointer_prefix=prefix)
+        for p, prefix in zip(parts, pointer_prefixes, strict=True)
+    ]
     member_entities = [
         _member_entities_for_part(p, n, pointer_prefix=prefix)
         for p, n, prefix in zip(parts, names, pointer_prefixes, strict=True)
@@ -406,8 +429,9 @@ async def confirm_part_pins(
 
     The same text may pin differently across parts. A pin keys the name of the place its
     row names (`door_names.part_names`), so a text posted on both axes may pin each end
-    to its own dcid, and an undirected row pins every place its text names. Two pins of
-    one place that differ raise `request_invalid`, and an unconfirmed dcid raises
+    to its own dcid. An undirected row of such a text raises `request_invalid` at the row
+    (`_names_for_part`). Two pins of one place that differ raise `request_invalid`, and an
+    unconfirmed dcid raises
     `invalid_role_ref` (422). A pin that asks for the members of a group's own node
     (`EntityResolver.group_node_dcids`) raises `request_invalid` at the entity: a group's
     members come from resolving its name, which a pin skips. Refusals point to the posted
@@ -419,25 +443,25 @@ async def confirm_part_pins(
     """
     pins_by_part: list[dict[str, str]] = []
     for prefix, part in zip(pointer_prefixes, parts, strict=True):
-        names = part_names(part.entities)
+        names = _names_for_part(part, pointer_prefix=prefix)
         part_pins: dict[str, str] = {}
         for entity in part.entities or ():
             if entity.dcid is None:
                 continue
-            for name in names.of(entity.text, role_axis_for_text(entity.role_text)):
-                existing = part_pins.get(name)
-                if existing is not None and existing != entity.dcid:
-                    detail = (
-                        f"part pins entity {entity.text!r} to two different dcids "
-                        f"({cut(existing)!r} and {cut(entity.dcid)!r}); one text names one "
-                        "place on each end of a single part"
-                    )
-                    raise EngineInputError(
-                        detail,
-                        code="request_invalid",
-                        pointer=f"{prefix}/entities",
-                    )
-                part_pins[name] = entity.dcid
+            name = names.of(entity.text, role_axis_for_text(entity.role_text))
+            existing = part_pins.get(name)
+            if existing is not None and existing != entity.dcid:
+                detail = (
+                    f"part pins entity {entity.text!r} to two different dcids "
+                    f"({cut(existing)!r} and {cut(entity.dcid)!r}); one text names one "
+                    "place on each end of a single part"
+                )
+                raise EngineInputError(
+                    detail,
+                    code="request_invalid",
+                    pointer=f"{prefix}/entities",
+                )
+            part_pins[name] = entity.dcid
         pins_by_part.append(part_pins)
 
     members_of_pins = [

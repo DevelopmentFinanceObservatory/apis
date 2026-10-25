@@ -1120,10 +1120,9 @@ def _prepare_extraction(
         unique=unique,
         entities=list(names.names),
         entity_roles=dict(names.roles),
-        # One text holds one reading: a mention that asks for the members decides it.
-        member_entities=frozenset(
-            name for e in extracted_entities if e.members for name in names.of(_entity_key(e), None)
-        ),
+        # One text holds one reading on both its ends: a mention that asks for the members
+        # decides it.
+        member_entities=names.of_texts({_entity_key(e) for e in extracted_entities if e.members}),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
         per_variable_open_axes=per_variable_open_axes,
