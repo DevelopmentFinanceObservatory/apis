@@ -526,10 +526,13 @@ _WINDOWS_READ_DATED = [
 ]
 
 
+@pytest.mark.parametrize("bound", [("country/KEN",), ()], ids=["bound", "default_scope"])
 @pytest.mark.parametrize(("window", "dated"), _WINDOWS_READ_DATED)
 def test_probe_facets_forwards_deadline_and_reads_dates_under_a_range_only(
-    window: RequestedWindow | None, dated: bool
+    window: RequestedWindow | None, dated: bool, bound: tuple[str, ...]
 ):
+    """The probe of a request binding a place, and of one binding none at its default place
+    scope, reads dates under a range alone."""
     graph = FakeGraphReader(facets={(_STAT_VAR, "country/KEN"): [_FACET_KEN]})
     deadlines: list[float | None] = []
     original = graph.variable_facets_batch
@@ -542,9 +545,9 @@ def test_probe_facets_forwards_deadline_and_reads_dates_under_a_range_only(
     deadline = time.monotonic() + 30
 
     probe_facets(
-        availability=NO_SCOPE_READ,
+        availability=NO_SCOPE_READ if bound else graph.scope_availability(),
         stat_var=_STAT_VAR,
-        bound_entities=["country/KEN"],
+        bound_entities=bound,
         settle=True,
         graph=graph,
         window=window,

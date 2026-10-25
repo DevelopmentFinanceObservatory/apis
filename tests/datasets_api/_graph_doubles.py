@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import Facet, FacetDefaultPolicy
 from statvar_members import CANDIDATE_CAP
+from tests.materialise.conftest import as_read
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,10 @@ class FakeMintGraphReader:
         deadline: float | None = None,
     ) -> dict[str, list[Facet]]:
         self._count("variable_facets_batch")
-        return {entity: self._facets.get((stat_var, entity), []) for entity in entities}
+        return {
+            entity: as_read(self._facets.get((stat_var, entity), []), needs_dates=needs_dates)
+            for entity in entities
+        }
 
     def observation_facets_batch_many(
         self,
@@ -118,7 +122,10 @@ class FakeMintGraphReader:
     ) -> dict[str, dict[str, list[Facet]]]:
         self._count("observation_facets_batch_many")
         return {
-            stat_var: {entity: self._facets.get((stat_var, entity), []) for entity in entities}
+            stat_var: {
+                entity: as_read(self._facets.get((stat_var, entity), []), needs_dates=needs_dates)
+                for entity in entities
+            }
             for stat_var in stat_vars
         }
 

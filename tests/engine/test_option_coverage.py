@@ -33,7 +33,6 @@ from search.models import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     PINNED_DATE,
-    PointsGraphReader,
     materialise_double_from_obs,
     offline_resolve,
     with_member_arcs,
@@ -252,7 +251,7 @@ class TestStandardOptionCoverage:
             dates=("2018", "2019", "2020", "2021"),
             dates_complete=True,
         )
-        materialise_graph = PointsGraphReader(facets={(_MALE_SV, _RECIPIENT): [eur, usd]})
+        materialise_graph = FakeGraphReader(facets={(_MALE_SV, _RECIPIENT): [eur, usd]})
 
         with bound_variable_breadth(
             lambda stat_vars, *, deadline: dict.fromkeys(stat_vars, breadth), refuse_unread=False
@@ -289,7 +288,7 @@ class TestStandardOptionCoverage:
             provenance_id="dc/base/WindowElectionRecent",
             dates=("2021", "2022"),
         )
-        materialise_graph = PointsGraphReader(facets={(_MALE_SV, _RECIPIENT): [gap, recent]})
+        materialise_graph = FakeGraphReader(facets={(_MALE_SV, _RECIPIENT): [gap, recent]})
 
         result = standard_option_coverage(
             shape=_gender_shape(),

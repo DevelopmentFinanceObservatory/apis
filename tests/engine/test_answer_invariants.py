@@ -1794,8 +1794,8 @@ def test_every_cell_holds_every_invariant(
     check reads them. The cells of one block share their first doors. A
     failure lists one line per disagreement: the cell, the invariant and the two statements
     that disagree. The grid expects one difference, passed over by a predicate tied to its
-    issue: #1060, a Spec with more than one variable (`i3_one_election`). I9 runs on the covering array's cells only
-    (`checks_for`)."""
+    issue: #1060, a Spec with more than one variable (`i3_one_election`). I9 runs on the
+    covering array's cells only (`checks_for`)."""
     recorded_engine(route)
     failures: list[str] = []
     for cell in CELLS_RUN[route, row_set, kind, unit, date]:

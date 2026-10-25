@@ -715,7 +715,9 @@ def test_a_group_refuses_only_a_cadence_its_unread_breadth_would_decide(
 ):
     """Two facets of one import, held by both members at France, tie on every key before
     breadth and state no period. A member reads a facet as annual unless its dates show a
-    month (`cadences_by_member`)."""
+    month (`cadences_by_member`). The request asks for the facets' whole span as a range, the
+    one window under which the probe reads their dates."""
+    window = RequestedWindow(kind="range", start_year=1980, end_year=2025)
     other = f"{_GDP}_PerCapita"
     annual = replace(_weo("fAnnual", "CurrencyUSD"), dates=("1980", "2025"), dates_complete=True)
     monthly_copy = replace(annual, facet_id="fMonthly", dates=("1980", "2000-06", "2025"))
@@ -732,7 +734,7 @@ def test_a_group_refuses_only_a_cadence_its_unread_breadth_would_decide(
             role_bindings={"observationAbout": [_FRANCE]},
             declared_roles=("observationAbout",),
             facet_bindings={},
-            window=_ALL,
+            window=window,
         )
         for variable in (_GDP, other)
     ]
@@ -746,7 +748,7 @@ def test_a_group_refuses_only_a_cadence_its_unread_breadth_would_decide(
                 requests,
                 [probe.candidates for probe in probes],
                 graph=graph,
-                breadth=group_breadth(probes, window=_ALL),
+                breadth=group_breadth(probes, window=window),
                 variable_breadth=group_variable_breadth(probes),
             )
 

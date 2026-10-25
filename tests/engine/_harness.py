@@ -457,20 +457,6 @@ class ObsFacetFixture:
     observation_period: str | None = None
 
 
-class PointsGraphReader(FakeGraphReader):
-    """`FakeGraphReader` over facets holding their fixtures' points (`_facet_from_fixture`),
-    whose reads return each facet's dates and values only under `needs_dates`, as the graph's
-    do."""
-
-    def _facets_at(
-        self, stat_var: str, entity: str, *, needs_dates: bool
-    ) -> list[MaterialiseFacet]:
-        facets = super()._facets_at(stat_var, entity, needs_dates=needs_dates)
-        if needs_dates:
-            return facets
-        return [replace(facet, dates=(), values=(), dates_complete=True) for facet in facets]
-
-
 def _facet_from_fixture(fixture: ObsFacetFixture) -> MaterialiseFacet:
     """The facet a dated graph read returns for `fixture`: its points' dates and values, short
     of its count (`dates_complete`) when `obs_count` names more points than it holds."""
@@ -597,7 +583,7 @@ def build_materialise_double(
         return httpx.Response(200, text=body, headers={"content-type": _SDMX_CSV_CONTENT_TYPE})
 
     sdmx = MaterialiseSdmxClient(base_url=base_url, transport=httpx.MockTransport(handler))
-    return PointsGraphReader(facets=facets_map), sdmx, requests
+    return FakeGraphReader(facets=facets_map), sdmx, requests
 
 
 def _open_role_body(
@@ -654,7 +640,7 @@ def build_materialise_double_union_candidates(
         # its candidate list once per dcid, never once per role occurrence.
         for dcid in {dcid for _role, dcid in role_tuple}:
             candidates_by_dcid.setdefault((stat_var, dcid), []).extend(facets)
-    return PointsGraphReader(facets=candidates_by_dcid), materialise_sdmx, requests
+    return FakeGraphReader(facets=candidates_by_dcid), materialise_sdmx, requests
 
 
 def _candidate_facets_by_dcid(
@@ -669,7 +655,7 @@ def _candidate_facets_by_dcid(
     return facets_map
 
 
-class _ProbeFailingGraphReader(PointsGraphReader):
+class _ProbeFailingGraphReader(FakeGraphReader):
     """Fail batched facet-coverage reads while per-pair materialise reads succeed.
 
     This isolates option-coverage failures from preview dispatch; `message` names the error.

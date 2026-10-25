@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import threading
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,14 @@ _FAKE_GENERATIONS = itertools.count()
 _PLACE_NODE: Mapping[str, tuple[str, ...]] = {"typeOf": ("Place",)}
 
 
+def as_read(facets: Sequence[Facet], *, needs_dates: bool) -> list[Facet]:
+    """`facets` as a graph facet read returns them: with their dates and values only under
+    `needs_dates`, and without them complete, as the undated parse leaves a facet."""
+    if needs_dates:
+        return list(facets)
+    return [replace(facet, dates=(), values=(), dates_complete=True) for facet in facets]
+
+
 class FakeGraphReader:
     """Graph test double with per-entity facets and recorded read calls.
 
@@ -55,8 +64,8 @@ class FakeGraphReader:
     generation token (`generation_stamp`). Other missing nodes return `None`.
     `node_subjects` returns the `subjects` page for `(dcid, property)` when one is
     given, and otherwise scans `arcs` in reverse, in insertion order.
-    Facet reads return the facets as given, dates included whatever `needs_dates` says, and
-    `facet_reads` records each read's `(method, needs_dates)`.
+    Facet reads return each facet's dates and values only under `needs_dates`, as the
+    graph's do (`as_read`), and `facet_reads` records each read's `(method, needs_dates)`.
     Name reads combine `name` then `alternateName`, deduplicated. Calls are
     lock-protected for concurrent collection tests. Probe budgets and each
     `(dcids, properties)` read are recorded for assertions.
@@ -125,7 +134,7 @@ class FakeGraphReader:
         return {dcid: self._labels[dcid] for dcid in dict.fromkeys(dcids) if dcid in self._labels}
 
     def _facets_at(self, stat_var: str, entity: str, *, needs_dates: bool) -> list[Facet]:
-        return self._facets.get((stat_var, entity), [])
+        return as_read(self._facets.get((stat_var, entity), []), needs_dates=needs_dates)
 
     def variable_facets_batch(
         self,

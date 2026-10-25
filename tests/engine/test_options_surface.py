@@ -47,7 +47,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import PointsGraphReader, sdmx_double
+from tests.engine._harness import sdmx_double
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 from tests.materialise.conftest import FakeGraphReader
@@ -180,7 +180,7 @@ def _place_request(
 def _materialise_graph_for(graph: FakeGraph, *, arcs: dict) -> FakeGraphReader:
     """Builds materialise facets from `graph._obs` so presence and facet reads share fixture
     data. A facet holds the fixture's dates, which a read returns only when it asks for them
-    (`PointsGraphReader`), short of its count when the fixture lists fewer than `obsCount`."""
+    (`FakeGraphReader`), short of its count when the fixture lists fewer than `obsCount`."""
     facets: dict[tuple[str, str], list[MaterialiseFacet]] = {}
     for key, raw_list in graph._obs.items():
         if "|" not in key:
@@ -203,7 +203,7 @@ def _materialise_graph_for(graph: FakeGraph, *, arcs: dict) -> FakeGraphReader:
             )
             for i, raw in enumerate(raw_list)
         ]
-    return PointsGraphReader(arcs=arcs, subjects=_subjects_from_arcs(arcs), facets=facets)
+    return FakeGraphReader(arcs=arcs, subjects=_subjects_from_arcs(arcs), facets=facets)
 
 
 def _options_response(
@@ -1570,7 +1570,10 @@ class TestFacetReadNoLongerBoundedByScopeMaxMembers:
             ):
                 self.deadlines.append(deadline)
                 return super().observation_facets_batch_many(
-                    stat_vars=stat_vars, entities=entities, deadline=deadline
+                    stat_vars=stat_vars,
+                    entities=entities,
+                    needs_dates=needs_dates,
+                    deadline=deadline,
                 )
 
         req = _unit_bound_request()

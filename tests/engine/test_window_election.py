@@ -34,7 +34,7 @@ from search.models import IdentityUnitRequest, Spec, TimeWindow
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import PointsGraphReader, materialise_double_from_obs
+from tests.engine._harness import materialise_double_from_obs
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import CONVERTIBLE_STAT_VAR_ARCS, conversion_arcs
@@ -320,7 +320,7 @@ def test_at_two_places_every_election_names_the_answers_one_group(
     (source,) = sources
     group_ids = frozenset().union(*groups)
 
-    materialise_graph = PointsGraphReader(
+    materialise_graph = FakeGraphReader(
         facets={(_AMOUNT, place): facets(place) for place in held},
         arcs=_UNIT_ARCS,
     )

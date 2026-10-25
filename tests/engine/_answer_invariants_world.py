@@ -71,7 +71,6 @@ from tests.engine._harness import (
     _SDMX_CSV_CONTENT_TYPE,
     MATERIALISE_BASE_URL,
     ObsFacetFixture,
-    PointsGraphReader,
     _csv_header,
     _csv_row,
     door_roles_for_test_query,
@@ -322,7 +321,7 @@ class _Sdmx(_Recording, FakeSdmxClient):
     _client = "sdmx"
 
 
-class _MaterialiseGraph(_Recording, PointsGraphReader):
+class _MaterialiseGraph(_Recording, FakeGraphReader):
     """A materialise graph whose facet reads return dates only when asked, and whose reverse
     query keeps the subjects its filters match, as the graph's do."""
 
@@ -956,10 +955,10 @@ class World:
     @cached_property
     def materialise_graph(self) -> FakeGraphReader:
         """What materialise reads: a standard pair's facets, which a facet read returns with
-        their dates only when it asks for them (`PointsGraphReader`), each variable's arcs and the variables of each
-        measured property, which the mint's member walk reads, and the arcs that decide a
-        unit request (each source declaring the conversion recipe, each currency naming the
-        entity its rates sit at)."""
+        their dates only when it asks for them (`FakeGraphReader`), each variable's arcs and
+        the variables of each measured property, which the mint's member walk reads, and the
+        arcs that decide a unit request (each source declaring the conversion recipe, each
+        currency naming the entity its rates sit at)."""
         facets: dict[tuple[str, str], list[MaterialiseFacet]] = {}
         for row in self.rows if not self.role else ():
             provenance, unit = FACETS[row.facet_id]
