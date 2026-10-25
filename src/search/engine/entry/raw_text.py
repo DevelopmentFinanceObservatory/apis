@@ -9,7 +9,6 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
-from collections import Counter
 from collections.abc import AsyncGenerator, Collection, Sequence
 from contextlib import aclosing
 
@@ -109,7 +108,7 @@ from search.engine.source_scope import (
     source_dictionary,
 )
 from search.engine.source_spans import read_sources, unclaimed_words
-from search.engine.surface_resolution import ambiguous_surface_names
+from search.engine.surface_resolution import is_surface
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -348,14 +347,7 @@ async def _recover_entity_surfaces(
     """Recover each entity's surface before scans or cache keys read it: the query's own
     words for a name the query writes neither as the name nor as its span
     (`_with_query_span`), and a source-qualified surface. Only a span that occurs in
-    `query` (`_grounded`) is read for the qualifier. A name that settles on its surface's
-    ambiguity takes the surface as its text (`surface_resolution.ambiguous_surface_names`),
-    so "Congo" in "ODA to Congo", which the extraction names "Democratic Republic of the
-    Congo", asks its choice in the query's words. It does so only when no other name in
-    the query would carry the same text: the parsed door reads one text as one place per
-    part, so "aid from Congo to Congo", which the extraction names "Republic of the Congo"
-    and "Democratic Republic of the Congo", keeps both names and asks each end's choice on
-    its own.
+    `query` (`_grounded`) is read for the qualifier.
     """
     # Each entity reads the spans the ones before it recovered, so two never take one word.
     spanned = list(entities)
@@ -399,23 +391,7 @@ async def _recover_entity_surfaces(
             recovered.append(entity.model_copy(update={"span": surface}))
         else:
             recovered.append(entity)
-    kept = _without_absorbed(recovered, query=query)
-    surfaces = _entity_surfaces(kept, query=query)
-    ambiguous = await _await_bounded(
-        ambiguous_surface_names(surfaces, resolver=resolver), deadline=deadline
-    )
-    # The text each name would carry on the wire: its surface when renamed, else itself.
-    claims = Counter(
-        _normalize(surfaces[key] if key in ambiguous else key)
-        for key in dict.fromkeys(_entity_key(entity) for entity in kept)
-    )
-    as_written = {key for key in ambiguous if claims[_normalize(surfaces[key])] == 1}
-    return [
-        entity.model_copy(update={"text": surfaces[key], "span": surfaces[key]})
-        if (key := _entity_key(entity)) in as_written
-        else entity
-        for entity in kept
-    ]
+    return _without_absorbed(recovered, query=query)
 
 
 def _without_absorbed(entities: list[ExtractedEntity], *, query: str) -> list[ExtractedEntity]:
@@ -459,7 +435,7 @@ def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str
             continue
         seen.add(key)
         span = (entity.span or "").strip()
-        if span and _normalize(span) != _normalize(key) and _grounded(span, query):
+        if span and is_surface(span, key) and _grounded(span, query):
             surfaces[key] = span
     return surfaces
 
@@ -795,8 +771,9 @@ class _ExtractionPrep:
         `query_qualifier_dropped` warning and its departure for each word narrowing its own
         measure that its answer leaves unapplied, the request-wide qualifier warnings whose
         phrase the region leaves unapplied (`RegionResult.unapplied_qualifier_warnings`), the
-        query's words for each entity, and that its door asks for members in the question's
-        words (`RegionResult.members_in_words`).
+        query's words for each entity and those its resolution read
+        (`RegionResult.entity_surfaces`), and that its door asks for members in the
+        question's words (`RegionResult.members_in_words`).
 
         The answer applies a narrowing word when the region admitted it as a qualifier
         phrase, or when every Spec it answers with binds a value or a party named by it
@@ -835,6 +812,7 @@ class _ExtractionPrep:
                 members_in_words=True,
             ),
             self.entity_words,
+            surfaces=self.entity_surfaces,
         )
 
 
@@ -1207,6 +1185,7 @@ async def _handle_single_variable(
         base_timing={"extract": timing_extract},
         pre_resolved=None,
         entity_surfaces=prep.entity_surfaces,
+        entity_words=prep.entity_words,
         deadline=params.deadline,
         degrade_on_error=False,
         use_semaphore=False,
@@ -1344,6 +1323,7 @@ async def _handle_multi_variable(
         place_options_pool=place_options_pool,
         base_timing={"extract": timing_extract},
         pre_resolved=pre_resolved,
+        entity_words=prep.entity_words,
         deadline=params.deadline,
         degrade_on_error=True,
         use_semaphore=True,

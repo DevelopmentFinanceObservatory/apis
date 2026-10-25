@@ -780,7 +780,7 @@ def _value_state(shape: ShapeDraft) -> ResolveState:
             shape_draft=shape,
             variable_spans_by_vocabulary={},
             variable_spans_in_every_system=[],
-            entities=[],
+            entity_texts=(),
             entity_roles={},
         ),
     )

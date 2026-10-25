@@ -694,6 +694,9 @@ class ResolveState:
     # The query words naming an entity, which recall resolves it through
     # (`surface_resolution.resolve_names`). The raw-text door alone supplies them.
     entity_surfaces: dict[str, str] = field(default_factory=dict)
+    # The request's own words for each entity name (`RegionResult.entity_words`), which own
+    # their tokens in the variable phrase as the name does (`entity_texts`).
+    entity_words: dict[str, str] = field(default_factory=dict)
     variable_index: int
     emit: EventSink | None
     include_option_coverage: bool
@@ -1253,6 +1256,18 @@ class ResolveState:
         dropped = {id(warning) for default in stale for warning in default.warnings}
         self.warnings[:] = [warning for warning in self.warnings if id(warning) not in dropped]
 
+    def words_of(self, name: str) -> str:
+        """The request's own words for the entity `name` (`entity_words`), else `name`: what
+        a warning or departure quotes for it."""
+        return self.entity_words.get(name, name)
+
+    @property
+    def entity_texts(self) -> tuple[str, ...]:
+        """The texts that name the part's entities in its variable phrase: each name, and
+        the request's own words for it (`entity_words`). Readers mask their tokens, so a
+        place named inside the phrase is read as the place."""
+        return (*self.entities, *self.entity_words.values())
+
     @property
     def standard_place_dcids(self) -> list[str]:
         """Every place the shape in play binds, on any role, distinct and sorted by dcid
@@ -1446,6 +1461,7 @@ class ResolveState:
         llm_usage: dict | None = None,
         unresolved_entity_names: tuple[str, ...] = (),
         untold_groups: tuple[tuple[str, ...], ...] = (),
+        untold_labels: tuple[str | None, ...] = (),
         ambiguous_entities: tuple[AmbiguousEntity, ...] = (),
         resolved_entity_dcids: Mapping[str, str] | None = None,
         role_not_admitted_entities: tuple[RoleNotAdmittedEntity, ...] = (),
@@ -1515,6 +1531,7 @@ class ResolveState:
             llm_usage=llm_usage,
             unresolved_entity_names=unresolved_entity_names,
             untold_groups=untold_groups,
+            untold_labels=untold_labels,
             ambiguous_entities=ambiguous_entities,
             resolved_entity_dcids=dict(resolved_entity_dcids or {}),
             role_not_admitted_entities=role_not_admitted_entities,

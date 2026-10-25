@@ -34,7 +34,7 @@ from code_index.members import family_declares_roles
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, tokenize, word_tokens
 from code_index.types import PartyWord
-from entity_resolution.types import Kind, Resolved, entity_kind
+from entity_resolution.types import Group, Kind, Resolved, entity_kind
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.bind_repair import stated_words_negated, word_stated
@@ -107,6 +107,9 @@ class PlaceAssignment:
     # The texts in `discarded_directions` whose direction the request's words did not state
     # (`DoorRole.stated`), so the extractor inferred it.
     inferred_directions: frozenset[str] = frozenset()
+    # The request's words for each text in `discarded_directions` they differ from
+    # (`ResolveState.words_of`), which its warning and departure quote.
+    direction_words: Mapping[str, str] = field(default_factory=dict)
     # The side the shape reads as its whole population, whose parties' sets fill its role in
     # `sets` (`whole_total_candidates`), `None` when it reads none.
     whole: WholeReading | None = None
@@ -160,6 +163,9 @@ class PlaceRoles:
     # The names in `discarded_directions` whose direction the request's words did not state
     # (`DoorRole.stated`), so the extractor inferred it.
     inferred_directions: frozenset[str] = frozenset()
+    # The request's words for each name in `discarded_directions` they differ from
+    # (`PlaceAssignment.direction_words`), which its warning and departure quote.
+    direction_words: Mapping[str, str] = field(default_factory=dict)
     # The flow axes the request asks every member of that no place binds, until the
     # members are elected, and then those of them the elected members declare
     # (`PlaceContext.settled`). The role keys read them (`bound_values.entity_role_keys`),
@@ -265,8 +271,8 @@ def direction_assignments(
 
 
 def undirected_place_name(state: ResolveState) -> str | None:
-    """The request's text for the one place set it names without a direction, `None` when
-    it names none or several."""
+    """The request's words for the one place set it names without a direction
+    (`ResolveState.words_of`), `None` when it names none or several."""
     named = part_sets(state)
     directed = {
         place_key(state.place_sets[name])
@@ -274,7 +280,7 @@ def undirected_place_name(state: ResolveState) -> str | None:
         if name in state.place_sets and state.entity_roles.get(name)
     }
     undirected = [key for key in named if key not in directed]
-    return named[undirected[0]].name if len(undirected) == 1 else None
+    return state.words_of(named[undirected[0]].name) if len(undirected) == 1 else None
 
 
 def subject_shapes_refused(state: ResolveState) -> bool:
@@ -503,8 +509,8 @@ def part_sets(state: ResolveState) -> dict[str, PlaceSet]:
     place, in whatever order they come. It expands when any text's set does: it takes that
     set's kind, members and graph label, so a group's node pinned by dcid beside the
     group's name is the group. Its reading is the members when any text asked for them. Its
-    name is the first text that is not a pinned dcid's key, else the graph's label for the
-    node, else the first text: a pin's key names the node for the caller and no more.
+    name is the identity of its first text that is no pin, else of its first text, so a
+    refusal quotes it in the request's words (`ResolveState.words_of`).
     """
     texts: dict[str, list[PlaceSet]] = {}
     for name in state.entities:
@@ -516,13 +522,9 @@ def part_sets(state: ResolveState) -> dict[str, PlaceSet]:
         # The first text's set that expands, else the first text's.
         whole = next((place_set for place_set in named if place_set.expands), named[0])
         asked = any(place_set.reading == "members" for place_set in named)
-        first = named[0].name
         sets[key] = dataclasses.replace(
             whole,
-            name=next(
-                (s.name for s in named if _pin_label(state, s.name) is None),
-                whole.label or _pin_label(state, first) or first,
-            ),
+            name=next((s.name for s in named if _pin_label(state, s.name) is None), named[0].name),
             reading="members" if asked else whole.reading,
         )
     return sets
@@ -1098,6 +1100,11 @@ def assign_named_places(
         members_asked=_members_asked(state, sets, named),
         discarded_directions=tuple(discarded),
         inferred_directions=frozenset(inferred),
+        direction_words={
+            name: words
+            for name, _axis, _key in discarded
+            if (words := state.words_of(name)) != name
+        },
     )
 
 
@@ -1338,6 +1345,7 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
             for name, axis, key in sorted(assignment.discarded_directions, key=place_order_of)
         ),
         inferred_directions=assignment.inferred_directions,
+        direction_words=assignment.direction_words,
         named_alone=named_alone,
     )
 
@@ -1355,6 +1363,30 @@ def untold_direction_groups(state: ResolveState) -> tuple[tuple[str, ...], ...]:
     flow direction of, one tuple per untold group (`_untold_groups`), each in query order,
     so a refusal names one place set read under several texts as one place."""
     return tuple(tuple(texts) for texts in _untold_groups(state, _text_groups(state)).values())
+
+
+def untold_direction_labels(state: ResolveState) -> tuple[str | None, ...]:
+    """The graph's label for each place `untold_direction_groups` names, parallel to it:
+    the set's own label (`PlaceSet.label`), else the resolver's name for its entity, else
+    the registry's label for its group. ``None`` for a text that resolved to no set. A
+    refusal names a place by it where two places are written alike."""
+    return tuple(
+        _place_label(state, texts[0])
+        for texts in _untold_groups(state, _text_groups(state)).values()
+    )
+
+
+def _place_label(state: ResolveState, name: str) -> str | None:
+    """The graph's label for the place set `name` resolved to (`untold_direction_labels`)."""
+    place_set = state.place_sets.get(name)
+    if place_set is None:
+        return None
+    if place_set.label:
+        return place_set.label
+    resolution = None if state.rcl is None else state.rcl.resolutions.get(name)
+    if isinstance(resolution, Resolved):
+        return resolution.entity.name
+    return resolution.label if isinstance(resolution, Group) else None
 
 
 def _text_groups(state: ResolveState) -> dict[str, list[str]]:
@@ -1475,7 +1507,7 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
     """
     return tuple(
         NamedGroup(
-            label=place_set.name if place_set.label is None else place_set.label,
+            label=place_set.label or _pin_label(state, place_set.name) or place_set.name,
             dcid=None if place_set.node is None else place_set.node.dcid,
             entity_type=None if place_set.node is None else place_set.node.graph_type,
             member_dcids=frozenset(place_set.members),

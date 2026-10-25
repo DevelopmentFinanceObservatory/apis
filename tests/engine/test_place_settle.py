@@ -626,8 +626,9 @@ def test_a_set_takes_the_members_reading_any_of_its_texts_asks_for(members_first
 @pytest.mark.parametrize("pin_first", [True, False], ids=["pin-first", "name-first"])
 def test_a_set_expands_when_any_of_its_texts_does(pin_first) -> None:
     """The European Union's node pinned as one place under a text of the caller's, beside
-    the union's name. The part's one set is the group, under the union's name, and a
-    pin's text is only its key. The pin alone is one place under the graph's label."""
+    the union's name. The part's one set is the group, under the union's name. The pin
+    alone is one place under its own identity, which a refusal quotes in the request's
+    words (`ResolveState.words_of`)."""
     pin = PlaceSet(name="the union", kind="place", node=_EU.node)
     texts = [pin, _EU] if pin_first else [_EU, pin]
     pins = {pin.name: "European Union (graph)"}
@@ -635,9 +636,7 @@ def test_a_set_expands_when_any_of_its_texts_does(pin_first) -> None:
     (merged,) = part_sets(_state(texts, pins=pins)).values()
 
     assert merged == _EU
-    assert part_sets(_state([pin], pins=pins)) == {
-        place_key(pin): dataclasses.replace(pin, name="European Union (graph)")
-    }
+    assert part_sets(_state([pin], pins=pins)) == {place_key(pin): pin}
 
 
 @pytest.mark.parametrize("other_text", [None, "Africa"], ids=["alone", "beside-a-text-equal-to-it"])

@@ -360,14 +360,15 @@ async def _read_stated_quantity(
 
 def _entity_spans(state: ResolveState, tokens: Sequence[Token]) -> list[tuple[int, int]]:
     """The character ranges of the variable phrase, read as `tokens`, that the part's
-    entities name, by their names and by the spans their door roles carry
+    entities name, by their names and the request's words for them
+    (`ResolveState.entity_texts`), and by the spans their door roles carry
     (`role_text.DoorRole.span`, the query's own wording of the place): other readers own
     them ("German" in "German aid" is the origin Germany). A role's cue word ("to" in "aid
     to Kenya") stays in the phrase."""
     return [
         occurrence
         for text in (
-            *state.entities,
+            *state.entity_texts,
             *(role.span for roles in state.entity_roles.values() for role in roles),
         )
         for occurrence in _token_occurrences(tokens, text)
@@ -2635,7 +2636,7 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     code_spans = [span for span in spans if any(isinstance(row, CodeRow) for row in span.rows)]
     read = [(span.start, span.end) for span in spans]
     read += [
-        occurrence for text in state.entities for occurrence in _token_occurrences(tokens, text)
+        occurrence for text in state.entity_texts for occurrence in _token_occurrences(tokens, text)
     ]
     others = [other for other in state.shapes_found if other.shape_id != shape.shape_id]
 
@@ -3226,7 +3227,7 @@ def _free_readers(
             _occurrences(
                 tokens,
                 [
-                    *state.entities,
+                    *state.entity_texts,
                     *(role.span for roles in state.entity_roles.values() for role in roles),
                 ],
             ),

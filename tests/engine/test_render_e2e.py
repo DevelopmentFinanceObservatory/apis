@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from search.engine.quantity_read import QuantityOutput
 from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
@@ -199,18 +201,20 @@ def test_place_other_kind_resolution_reaches_no_observations():
     )
 
 
-def test_no_data_sentence_names_role_not_admitted_entity():
-    """A subject-only population shape refuses an Organization as its place."""
+@pytest.mark.parametrize(
+    ("entity", "term"),
+    [
+        (ParsedEntity(text="African Development Bank"), "African Development Bank"),
+        (ParsedEntity(text="AfDB", dcid="AfricanDevelopmentBank"), "AfDB"),
+    ],
+    ids=["named", "pinned"],
+)
+def test_no_data_sentence_names_role_not_admitted_entity(entity, term):
+    """A subject-only population shape refuses an Organization as its place, quoted in the
+    request's words, a pinned row's included."""
     graph = FakeGraph()
     request = ResolveRequest(
-        input=ParsedInput(
-            parts=[
-                ParsedPart(
-                    variable_text="population",
-                    entities=[ParsedEntity(text="African Development Bank")],
-                ),
-            ]
-        ),
+        input=ParsedInput(parts=[ParsedPart(variable_text="population", entities=[entity])]),
         response_options=ResolveOptions(),
     )
     r = offline_resolve(
@@ -221,10 +225,8 @@ def test_no_data_sentence_names_role_not_admitted_entity():
     ).parts[0]
     assert isinstance(r, NoDataPart)
     assert r.no_data.reason == "entity_role_not_admitted"
-    assert r.no_data.entity_terms == ["African Development Bank"]
-    assert r.rendered_sentence == (
-        '"population" data is not reported for "African Development Bank".'
-    )
+    assert r.no_data.entity_terms == [term]
+    assert r.rendered_sentence == f'"population" data is not reported for "{term}".'
 
 
 def test_no_data_sentence_names_ambiguous_entity_candidates():

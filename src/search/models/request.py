@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import (
     Field,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -179,7 +180,28 @@ class ParsedEntity(StrictModel):
     text: str = Field(
         min_length=1,
         max_length=_PARSED_MAX_ENTITY_TEXT_CHARS,
-        description="the entity's text as the caller identified it",
+        description=(
+            "the entity's text as the caller identified it: the request's own words for "
+            "it, which name resolution reads and a rendered sentence quotes"
+        ),
+    )
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=_PARSED_MAX_ENTITY_TEXT_CHARS,
+        description=(
+            "the entity's name, when its words (`text`) could name more than one entity "
+            "and no `dcid` pins it: the row's identity, which keys its role and members "
+            "within the part. Name resolution reads `text` with `name` beside it, as the "
+            "raw-text door reads a query's words beside the name extraction gave them, so "
+            "two rows whose words are alike stay two entities. Words that differ from `name` "
+            "only in case read as `name`, and one `name` posted with two texts that differ "
+            "beyond case in a part refuses `request_invalid`. Without it, `text` is the "
+            "identity; a `name` equal to `text` is the field left out, and a `name` beside a "
+            "`dcid` is invalid. A row no dcid pins whose identity, its `name` or else its "
+            "`text`, is a dcid another row of the part pins refuses `request_invalid` at the "
+            "row"
+        ),
     )
     role_text: str | None = Field(
         default=None,
@@ -207,7 +229,10 @@ class ParsedEntity(StrictModel):
             "still confirmed against the graph. An unconfirmable dcid (absent from "
             "the graph, or present but type-less) refuses invalid_role_ref (422). "
             "`text` stays required and is not re-derived from the dcid; it is still "
-            "what a rendered sentence and any further restatement echo back."
+            "what a rendered sentence and any further restatement echo back. The dcid is "
+            "the row's identity, so rows pinning one dcid under different texts are one "
+            "entity, whose words are the first row's. A row no dcid pins whose `name`, or "
+            "else `text`, is this dcid refuses request_invalid at that row."
         ),
     )
     members: bool | None = Field(
@@ -220,7 +245,7 @@ class ParsedEntity(StrictModel):
             "is honoured for a continent or subregion that the membership policy holds or "
             "omits, whatever the node's graph type, and refuses request_invalid "
             "for a group's own node, whose members a pin cannot supply. One part names a "
-            "set once: the same `text` posted with both values refuses request_invalid"
+            "set once: the same entity posted with both values refuses request_invalid"
         ),
     )
 
@@ -229,6 +254,25 @@ class ParsedEntity(StrictModel):
     def _false_is_unset(cls, members: bool | None) -> bool | None:
         """An entity asks for members or does not: a posted false is the field left out."""
         return members or None
+
+    @field_validator("name")
+    @classmethod
+    def _text_is_unnamed(cls, name: str | None, info: ValidationInfo) -> str | None:
+        """A name equal to the entity's text is the field left out."""
+        return None if name == info.data.get("text") else name
+
+    @model_validator(mode="after")
+    def _pinned_is_unnamed(self) -> ParsedEntity:
+        """A pinned row's identity is its dcid, so a name beside it is a second one."""
+        if self.dcid is not None and self.name is not None:
+            raise ValueError("an entity with a dcid takes no name; the dcid is its identity")
+        return self
+
+    @property
+    def identity(self) -> str:
+        """The entity's identity within its part: its `dcid`, else its `name`, else its
+        `text`."""
+        return self.dcid or self.name or self.text
 
 
 def _is_false(value: bool) -> bool:

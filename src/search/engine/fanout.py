@@ -435,6 +435,7 @@ async def _stream_one_variable(
     sem: asyncio.Semaphore | None,
     degrade_on_error: bool,
     entity_surfaces: dict[str, str] | None = None,
+    entity_words: dict[str, str] | None = None,
     include_option_coverage: bool = False,
     stream_slot_options: bool = False,
     include_observations: bool = False,
@@ -475,6 +476,8 @@ async def _stream_one_variable(
     series code: its StatVars are the leg's recall, its words leave `v` too, and a refusal
     answers the leg no_data after the source refusals (`source_code_refusal_result`).
     `entity_surfaces` maps an entity name to the query words its recall resolves it through.
+    `entity_words` maps an entity name to the request's own words for it, which bind masks
+    in the variable phrase (`ResolveState.entity_texts`).
     `member_entities` are the entities asked for as their members
     (`ResolveState.member_entities`), which the restatement states.
     `entity_roles` also supplies the axes written into the leg's restatement, which carries
@@ -536,6 +539,7 @@ async def _stream_one_variable(
             base_timing=base_timing,
             pre_resolved=pre_resolved,
             entity_surfaces=entity_surfaces,
+            entity_words=entity_words,
             variable_index=i,
             emit=emit,
             coverage=coverage,
@@ -657,6 +661,7 @@ class _LegOverrides:
     query: str
     pre_resolved: dict[str, Resolution] | None
     entity_surfaces: dict[str, str] | None
+    entity_words: dict[str, str] | None
     entity_roles: dict[str, list[DoorRole]] | None
     member_entities: frozenset[str]
     per_variable_entities: list[list[str]] | None
@@ -664,6 +669,8 @@ class _LegOverrides:
     per_variable_role_queries: list[str] | None
     per_variable_entity_roles: list[dict[str, list[DoorRole]]] | None
     per_variable_member_entities: list[frozenset[str]] | None
+    per_variable_entity_surfaces: list[dict[str, str]] | None
+    per_variable_entity_words: list[dict[str, str]] | None
     per_variable_unit_texts: list[str | None] | None
     unit_text_best_effort: bool
     per_variable_source_scopes: list[SourceScope | SourceRefusal | None] | None
@@ -810,6 +817,18 @@ def _leg_entity_roles(overrides: _LegOverrides, i: int) -> dict[str, list[DoorRo
     return overrides.entity_roles
 
 
+def _leg_entity_surfaces(overrides: _LegOverrides, i: int) -> dict[str, str] | None:
+    if overrides.per_variable_entity_surfaces is not None:
+        return overrides.per_variable_entity_surfaces[i]
+    return overrides.entity_surfaces
+
+
+def _leg_entity_words(overrides: _LegOverrides, i: int) -> dict[str, str] | None:
+    if overrides.per_variable_entity_words is not None:
+        return overrides.per_variable_entity_words[i]
+    return overrides.entity_words
+
+
 def _leg_member_entities(overrides: _LegOverrides, i: int) -> frozenset[str]:
     if overrides.per_variable_member_entities is not None:
         return overrides.per_variable_member_entities[i]
@@ -876,7 +895,8 @@ def _launch_variable_tasks(
                 deadline=deadline,
                 base_timing=base_timing,
                 pre_resolved=_leg_pre_resolved(overrides, i),
-                entity_surfaces=overrides.entity_surfaces,
+                entity_surfaces=_leg_entity_surfaces(overrides, i),
+                entity_words=_leg_entity_words(overrides, i),
                 queue=queue,
                 landed=landed,
                 sem=sem,
@@ -978,6 +998,7 @@ async def _run_variables_streaming(
     include_observations: bool = False,
     stream_observations: bool = False,
     entity_surfaces: dict[str, str] | None = None,
+    entity_words: dict[str, str] | None = None,
     entity_roles: dict[str, list[DoorRole]] | None = None,
     member_entities: frozenset[str] = frozenset(),
     per_variable_entities: list[list[str]] | None = None,
@@ -985,6 +1006,8 @@ async def _run_variables_streaming(
     per_variable_role_queries: list[str] | None = None,
     per_variable_entity_roles: list[dict[str, list[DoorRole]]] | None = None,
     per_variable_member_entities: list[frozenset[str]] | None = None,
+    per_variable_entity_surfaces: list[dict[str, str]] | None = None,
+    per_variable_entity_words: list[dict[str, str]] | None = None,
     per_variable_unit_texts: list[str | None] | None = None,
     unit_text_best_effort: bool = False,
     per_variable_source_scopes: list[SourceScope | SourceRefusal | None] | None = None,
@@ -1017,7 +1040,9 @@ async def _run_variables_streaming(
     pre-resolution values override their broadcast counterparts by index.
     `None` broadcasts the shared value. `per_variable_pre_resolved` replaces
     the shared map; parsed-door callers merge pins before passing it. `entity_surfaces`
-    maps an entity name to the query words every leg's recall resolves it through.
+    maps an entity name to the query words every leg's recall resolves it through, and
+    `entity_words` to the request's own words for it, which every leg's bind masks in its
+    variable phrase.
     Request-level dependencies are broadcast unchanged.
     `per_variable_operations` gives each leg its own operations, which ride on its
     region and restatement and join its bind's dropped phrases; `None` gives every
@@ -1029,7 +1054,8 @@ async def _run_variables_streaming(
     `per_variable_dropped_qualifier_phrases` gives each leg its own dropped phrases in place
     of the broadcast `dropped_qualifier_phrases`; `None` broadcasts them. `member_entities`
     are the entities every leg is asked the members of, and `per_variable_member_entities`
-    gives each leg its own.
+    gives each leg its own. `per_variable_entity_surfaces` and `per_variable_entity_words`
+    give each leg its own `entity_surfaces` and `entity_words`.
     `query_text` is supplied only for a single-variable request.
     `unit_text_best_effort` marks every leg's unit text as the raw-text door's typed phrase.
     `door` is the door every leg was posted on (`resolve_variable`).
@@ -1041,6 +1067,7 @@ async def _run_variables_streaming(
         query=query,
         pre_resolved=pre_resolved,
         entity_surfaces=entity_surfaces,
+        entity_words=entity_words,
         entity_roles=entity_roles,
         member_entities=member_entities,
         per_variable_entities=per_variable_entities,
@@ -1048,6 +1075,8 @@ async def _run_variables_streaming(
         per_variable_role_queries=per_variable_role_queries,
         per_variable_entity_roles=per_variable_entity_roles,
         per_variable_member_entities=per_variable_member_entities,
+        per_variable_entity_surfaces=per_variable_entity_surfaces,
+        per_variable_entity_words=per_variable_entity_words,
         per_variable_unit_texts=per_variable_unit_texts,
         unit_text_best_effort=unit_text_best_effort,
         per_variable_source_scopes=per_variable_source_scopes,

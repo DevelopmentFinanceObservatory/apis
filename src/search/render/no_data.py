@@ -262,6 +262,7 @@ def no_data_phrase(
     entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     ambiguous_candidates: list[str] | None = None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
     source_terms: list[str] | None = None,
@@ -283,7 +284,9 @@ def no_data_phrase(
     the phrase counts and names places from it, one place named by several texts as one
     (`_untold_places`); without it each term is a place.
     ``ambiguous_candidates`` adds graph matches to
-    entity_ambiguous. For entity_role_not_admitted, ``variable_term`` names
+    entity_ambiguous, and a wording the terms repeat is told apart by its axis in
+    ``ambiguous_roles``, parallel to ``entity_terms``, or by its order
+    (`_ambiguous_wordings`). For entity_role_not_admitted, ``variable_term`` names
     the indicator whose data is unavailable for the entity; where every term is a
     population asked member by member that no source lists exactly beside the others
     (``unlisted``), the phrase says why (`_unlisted_phrase`).
@@ -345,6 +348,14 @@ def no_data_phrase(
         return _scope_verdict(scope)
     if variable_term and reason in _VARIABLE_TERM_PHRASES:
         return _VARIABLE_TERM_PHRASES[reason].format(t=variable_term)
+    if reason == "entity_ambiguous" and (termed := _termed(entity_terms, ambiguous_roles)):
+        quoted = [
+            f'{before}"{term}"{after}'
+            for (_, term, _), (before, after) in zip(
+                termed, _ambiguous_wordings(termed), strict=True
+            )
+        ]
+        return _join_labels(quoted) + _ambiguous_tail(termed, ambiguous_candidates)
     if entity_terms:
         terms = [t.strip() for t in entity_terms if t and t.strip()]
         if terms:
@@ -355,15 +366,6 @@ def no_data_phrase(
                 return (
                     f"Could not use {joined} as {noun} for this query. Try a different place name."
                 )
-            if reason == "entity_ambiguous":
-                verb = "match" if plural else "matches"
-                candidates = [c.strip() for c in ambiguous_candidates or () if c and c.strip()]
-                if candidates:
-                    candidate_list = _join_labels([f'"{c}"' for c in candidates])
-                    return (
-                        f"{joined} {verb} more than one entity: {candidate_list}. Be more specific."
-                    )
-                return f"{joined} {verb} more than one entity in the graph. Be more specific."
             if reason == "role_not_resolved":
                 places = _untold_places(entity_groups or [[t] for t in terms])
                 place_list = _join_labels(places)
@@ -404,6 +406,77 @@ def untold_place_name(texts: Sequence[str], *, quote_first: bool) -> str | None:
     first = f'"{stripped[0]}"' if quote_first else stripped[0]
     others = ", ".join(f'"{t}"' for t in stripped[1:])
     return f"{first} ({others})" if others else first
+
+
+# The words a repeated entity_ambiguous wording's axis reads as, the role text the parsed
+# door posts for it ("from", "to").
+_AXIS_WORDS: dict[RoleAxis, str] = {"origin": "from", "destination": "to"}
+
+_ORDINALS = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth")
+
+
+def _ordinal(n: int) -> str:
+    """`n` as an ordinal: a word up to eight, then digits ("9th", "12th")."""
+    if n <= len(_ORDINALS):
+        return _ORDINALS[n - 1]
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _termed(
+    entity_terms: Sequence[str] | None, roles: Sequence[RoleAxis | None] | None
+) -> list[tuple[int, str, RoleAxis | None]]:
+    """Each entity_ambiguous wording left after stripping, with its position in
+    `entity_terms` and its axis in `roles`, parallel to it (none when `roles` is)."""
+    terms = entity_terms or ()
+    return [
+        (i, term.strip(), role)
+        for i, (term, role) in enumerate(zip(terms, roles or [None] * len(terms), strict=True))
+        if term and term.strip()
+    ]
+
+
+def _ambiguous_wordings(
+    termed: Sequence[tuple[int, str, RoleAxis | None]],
+) -> list[tuple[str, str]]:
+    """The words before and after each quoted entity_ambiguous wording of `termed`. A
+    wording written once has none. Each repeat of a wording written more than once reads
+    its axis in parentheses where every repeat has its own (`"Congo" (from)`), else its
+    order (`the second "Congo"`), capitalised when it opens the phrase."""
+    at: dict[str, list[int]] = {}
+    for position, (_, term, _) in enumerate(termed):
+        at.setdefault(term, []).append(position)
+    wordings = [("", "")] * len(termed)
+    for positions in at.values():
+        if len(positions) == 1:
+            continue
+        axes = [axis for position in positions if (axis := termed[position][2]) is not None]
+        if len(set(axes)) == len(positions):
+            for position, axis in zip(positions, axes, strict=True):
+                wordings[position] = ("", f" ({_AXIS_WORDS[axis]})")
+        else:
+            for n, position in enumerate(positions, start=1):
+                wordings[position] = (f"the {_ordinal(n)} ", "")
+    if wordings and wordings[0][0]:
+        wordings[0] = (wordings[0][0].capitalize(), wordings[0][1])
+    return wordings
+
+
+def _ambiguous_tail(
+    termed: Sequence[tuple[int, str, RoleAxis | None]], candidates: list[str] | None
+) -> str:
+    """The entity_ambiguous phrase after its wordings: "each match" where a wording is
+    written more than once, then the graph's candidates when there are any."""
+    terms = [term for _, term, _ in termed]
+    if len(set(terms)) != len(terms):
+        verb = "each match"
+    else:
+        verb = "match" if len(terms) != 1 else "matches"
+    named = [c.strip() for c in candidates or () if c and c.strip()]
+    if named:
+        candidate_list = _join_labels([f'"{c}"' for c in named])
+        return f" {verb} more than one entity: {candidate_list}. Be more specific."
+    return f" {verb} more than one entity in the graph. Be more specific."
 
 
 def _source_phrase(
@@ -541,6 +614,7 @@ def no_data_message(
     entity_groups: Sequence[Sequence[str]] | None = None,
     role_axis: EntityRoleKey | None = None,
     ambiguous_candidates: list[str] | None = None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None = None,
     elected_stat_vars: list[GraphRef] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
     source_terms: list[str] | None = None,
@@ -562,6 +636,7 @@ def no_data_message(
         entity_groups=entity_groups,
         role_axis=role_axis,
         ambiguous_candidates=ambiguous_candidates,
+        ambiguous_roles=ambiguous_roles,
         elected_stat_vars=elected_stat_vars,
         qualifier_terms=qualifier_terms,
         source_terms=source_terms,
@@ -647,34 +722,38 @@ def _ambiguous_entity_plan(
     entity_terms: list[str] | None,
     *,
     ambiguous_candidates: list[str] | None,
-    ambiguous_roles: Mapping[str, RoleAxis] | None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None,
 ) -> list[SentenceToken] | None:
     """Return the bare entity_ambiguous phrase with each ambiguous wording as a slot token.
 
-    The tokens join to `no_data_phrase`'s text. Each wording's token carries the flow
-    axis the door gave it as `role`, and the place axis unless that role is origin, as
-    an entity read-back does; it has no `entity_refs`, since the wording names no node.
-    Return `None` when no wording is left after stripping.
+    The tokens join to `no_data_phrase`'s text, a repeated wording told apart by its axis
+    or its order outside its token (`_ambiguous_wordings`). Each wording's token carries the flow
+    axis the door gave it as `role` (`ambiguous_roles`, parallel to `entity_terms`, so two
+    wordings written alike keep their own), and the place axis unless that role is origin,
+    as an entity read-back does; it has no `entity_refs`, since the wording names no node.
+    Its `entity_choice` is the wording's position in `entity_terms`, which is its group's
+    in `NoData.ambiguous_entities`. Return `None` when no wording is left after stripping.
     """
-    terms = [t.strip() for t in entity_terms or () if t and t.strip()]
-    if not terms:
+    termed = _termed(entity_terms, ambiguous_roles)
+    if not termed:
         return None
-    phrase = no_data_phrase(
-        "entity_ambiguous", entity_terms=terms, ambiguous_candidates=ambiguous_candidates
-    )
-    roles = ambiguous_roles or {}
-    tokens = [_text('"')]
-    for term, separator in zip(terms, [*_join_separators(len(terms)), None], strict=True):
-        role = roles.get(term)
+    tokens: list[SentenceToken] = []
+    lead = ""
+    for (i, term, role), (before, after), separator in zip(
+        termed, _ambiguous_wordings(termed), [*_join_separators(len(termed)), ""], strict=True
+    ):
+        tokens.append(_text(f'{lead}{before}"'))
         tokens.append(
             SentenceToken(
-                kind="slot", text=term, axis=None if role == "origin" else "where", role=role
+                kind="slot",
+                text=term,
+                axis=None if role == "origin" else "where",
+                role=role,
+                entity_choice=i,
             )
         )
-        if separator is not None:
-            tokens.append(_text(f'"{separator}"'))
-    joined = _join_labels([f'"{t}"' for t in terms])
-    tokens.append(_text(f'"{phrase.removeprefix(joined)}'))
+        lead = f'"{after}{separator}'
+    tokens.append(_text(lead + _ambiguous_tail(termed, ambiguous_candidates)))
     return tokens
 
 
@@ -802,7 +881,7 @@ def no_data_sentence_plan(
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
-    ambiguous_roles: Mapping[str, RoleAxis] | None = None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
     source_terms: list[str] | None = None,
     scope: ScopeSources | None = None,
@@ -850,7 +929,8 @@ def no_data_sentence_plan(
     ``entity_terms`` are omitted for the place-availability gate to avoid
     naming the place twice. ``bound_role_dcids`` checks alternate roles.
     ``ambiguous_candidates`` and ``ambiguous_roles`` apply only to the bare
-    entity-ambiguity form; ``ambiguous_roles`` maps a wording to its flow axis.
+    entity-ambiguity form; ``ambiguous_roles`` holds each wording's flow axis, parallel to
+    ``entity_terms``.
     ``unlisted`` words the bare entity_role_not_admitted verdict for populations no source
     lists exactly (`no_data_phrase`).
     ``elected_stat_vars`` are added when the verdict would not repeat a
@@ -918,7 +998,7 @@ def _no_data_verdict_plan(
     role_axis: EntityRoleKey | None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None,
     ambiguous_candidates: list[str] | None,
-    ambiguous_roles: Mapping[str, RoleAxis] | None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None,
     qualifier_terms: list[ResolvedQualifier] | None,
     source_terms: list[str] | None,
     scope: ScopeSources | None,
@@ -1021,6 +1101,7 @@ def _no_data_verdict_plan(
                 entity_groups=entity_groups,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
+                ambiguous_roles=ambiguous_roles,
                 elected_stat_vars=elected_stat_vars,
                 qualifier_terms=qualifier_terms,
                 source_terms=source_terms,
