@@ -428,7 +428,10 @@ class RoleAxisFact(StrictModel):
     role: RoleAxis = Field(description="which flow axis this fact is about")
     member_count: int | None = Field(
         description=(
-            "how many entities this axis' open scope resolves to. None when the "
+            "how many entities this axis' open scope resolves to, less the group "
+            "totals the code index declares among them (party_kind total), so it counts "
+            "the parties a frame minted without_party_totals holds; entity_options and "
+            "the options door still list the totals. None when the "
             "count could not be established without a read this response chose not "
             "to make (e.g. a discovered opposite axis whose own role index was "
             "omitted after a cap trip); the fact still publishes in that case, "
@@ -438,9 +441,10 @@ class RoleAxisFact(StrictModel):
     )
     members_available: bool = Field(
         description=(
-            "whether the member list this count summarises is itself known and "
-            "could be enumerated (e.g. through entity_options or the options door), "
-            "not just counted. False exactly when member_count is None"
+            "whether the axis' member list is itself known and could be enumerated "
+            "(e.g. through entity_options or the options door, which list its group "
+            "totals that member_count leaves out), not just counted. False exactly "
+            "when member_count is None"
         )
     )
 

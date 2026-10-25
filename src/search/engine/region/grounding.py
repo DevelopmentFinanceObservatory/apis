@@ -65,7 +65,7 @@ from search.engine.retrieval.bound_values import (
     shape_query,
     slot_expansions,
 )
-from search.engine.retrieval.coverage import citable_source_ids
+from search.engine.retrieval.coverage import citable_source_ids, party_count
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.facts import read_slot_taxonomy
 from search.engine.retrieval.member_facts import ArcsMemberFacts, MemberFacts
@@ -293,8 +293,8 @@ def role_scope_defaulted_message(
 ) -> str:
     """Build the defaulted-scope warning with member count and any bound opposite-role entities.
 
-    `member_count` is how many members of the open axis the materialised read plan serves
-    (`Materialised.scope_member_dcids`), or None for a response whose answers serve different
+    `member_count` is how many parties of the open axis the materialised read plan serves
+    (`Materialised.scope_member_dcids` less its group totals), or None for a response whose answers serve different
     members, which the warning then counts as every member with data. Use `from` when
     destination is discovered, otherwise `to`. Spell out up to three labels; for four or
     more, report the count and opposite-axis noun without label lookup. `label_of` returns
@@ -361,8 +361,9 @@ def role_scope_defaulted_warnings(
 ) -> list[Warning]:
     """Build warnings for each open role axis in `mat`.
 
-    A discovered scope reports how many members the answer serves (`members`, by default
-    `mat.scope_member_dcids`, those of the materialised read plan), or with `state_count`
+    A discovered scope reports how many parties the answer serves (`coverage.party_count` of
+    `members`, by default `mat.scope_member_dcids`, those of the materialised read plan),
+    the count its heading and coverage state, or with `state_count`
     false every member with data, and any bound opposite-role entities. A second open axis
     adds an unqualified warning. A bound
     destination with an open origin also warns, even when `open_origin_dcids` is empty.
@@ -381,8 +382,9 @@ def role_scope_defaulted_warnings(
                     severity="warn",
                     message=role_scope_defaulted_message(
                         discovered,
-                        member_count=len(
-                            members if members is not None else mat.scope_member_dcids or ()
+                        member_count=party_count(
+                            members if members is not None else mat.scope_member_dcids or (),
+                            sv_dcids=mat.sv_dcids,
                         )
                         if state_count
                         else None,

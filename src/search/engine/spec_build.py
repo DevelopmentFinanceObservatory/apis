@@ -34,6 +34,7 @@ from search.engine.retrieval.bound_values import (
     price_basis_sibling,
     stated_members,
 )
+from search.engine.retrieval.coverage import party_count
 from search.engine.retrieval.derive import upstream_source
 from search.engine.retrieval.download import download_facts
 from search.engine.retrieval.member_facts import ArcsMemberFacts, asserted_constraint_properties
@@ -924,18 +925,25 @@ class RoleAxisFactInput:
 
 def _role_axis_facts(
     facts: Sequence[RoleAxisFactInput],
+    *,
+    sv_dcids: Iterable[str],
 ) -> list[RoleAxisFact] | None:
     """Project open role axes, returning None when no facts were supplied.
 
-    A missing member population yields ``member_count=None`` and
-    ``members_available=False``.
+    ``member_count`` counts a population's parties in the datasets that publish
+    ``sv_dcids`` (`coverage.party_count`). A missing member population yields
+    ``member_count=None`` and ``members_available=False``.
     """
     if not facts:
         return None
     return [
         RoleAxisFact(
             role=fact.role,
-            member_count=len(fact.member_dcids) if fact.member_dcids is not None else None,
+            member_count=(
+                party_count(fact.member_dcids, sv_dcids=sv_dcids)
+                if fact.member_dcids is not None
+                else None
+            ),
             members_available=fact.member_dcids is not None,
         )
         for fact in facts
@@ -1231,7 +1239,9 @@ def build_spec(
         else []
     )
     resolved_open_axis_facts = _open_axis_facts(open_axis_facts)
-    resolved_role_axis_facts = _role_axis_facts(role_axis_facts)
+    resolved_role_axis_facts = _role_axis_facts(
+        role_axis_facts, sv_dcids=[sv.ref.ref for sv in stat_vars]
+    )
 
     # Identity is minted before the display label is composed. See _wire_shape_label.
     wire_shape = _wire_shape_label(

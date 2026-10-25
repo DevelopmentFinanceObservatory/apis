@@ -26,10 +26,12 @@ performs no I/O beyond the coverage index lookups the headline and bulk counts m
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from code_index.shared import get_index
+from materialise.enrichment import parties_less_totals
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -114,9 +116,10 @@ def scope_members(plan: ReadPlan, form: CoverageForm) -> list[str]:
     For a discovered role scope (`form.open_axis`) they are the open role's dcids, sorted:
     those of the served series, or in bulk those the elected facet holds data for inside
     each member's years (`BulkPlan.member_pairs`). Otherwise they are the places of the
-    served series, in series order. Coverage counts its breadth dimension from this list, and an answer lists it as
-    its scope (`ResolvedSpec.scope`) and counts it in its `role_scope_defaulted` warning, so
-    the three agree."""
+    served series, in series order. An answer lists it as its scope (`ResolvedSpec.scope`),
+    totals included. Coverage's breadth dimension, the `role_scope_defaulted` warning and the
+    role's `RoleAxisFact.member_count` count its parties (`party_count`), so the three
+    agree."""
     if isinstance(plan, BulkPlan):
         members: set[str] = set()
         for _sv, c, (first, last) in plan.member_pairs():
@@ -129,6 +132,15 @@ def scope_members(plan: ReadPlan, form: CoverageForm) -> list[str]:
             {member for s in plan.served if s.rows is not None and (member := s.rows[index])}
         )
     return list(dict.fromkeys(s.role_tuple[0][1] for s in plan.served))
+
+
+def party_count(members: Collection[str], *, sv_dcids: Iterable[str]) -> int:
+    """How many of an open party role's `members` are parties: the members less the group
+    totals the code index declares in the datasets that publish `sv_dcids`
+    (`parties_less_totals`), the parties a frame minted `without_party_totals` holds."""
+    index = get_index()
+    datasets = index.statvar_provenances(sv_dcids)
+    return len(parties_less_totals(members, parties=index.parties, datasets=datasets))
 
 
 def _variables_dim(count: int) -> BreadthDim:
@@ -167,7 +179,8 @@ def _pair_coverage(
             else len(citable_source_ids(facets))
         ),
     )
-    variables = [_variables_dim(len({s.stat_var for s in served}))] if form.variables else []
+    served_svs = {s.stat_var for s in served}
+    variables = [_variables_dim(len(served_svs))] if form.variables else []
 
     if window is not None and dated_without_complete_dates(facets):
         return CoverageBreadth(
@@ -196,7 +209,9 @@ def _pair_coverage(
             has_data=bool(served),
             window=window,
             dimensions=[
-                BreadthDim(label=label, count=len(scope_members(plan, form))),
+                BreadthDim(
+                    label=label, count=party_count(scope_members(plan, form), sv_dcids=served_svs)
+                ),
                 facet_dim,
                 *variables,
             ],
@@ -228,7 +243,9 @@ def _bulk_coverage(plan: BulkPlan, form: CoverageForm) -> CoverageExact | Covera
             has_data=plan.population > 0,
             window=window,
             dimensions=[
-                BreadthDim(label=label, count=len(scope_members(plan, form))),
+                BreadthDim(
+                    label=label, count=party_count(scope_members(plan, form), sv_dcids=served_svs)
+                ),
                 facet_dim,
                 *variables,
             ],

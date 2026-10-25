@@ -335,3 +335,16 @@ def read_party_kinds(
         if kind is not None:
             kinds[role, ref] = kind
     return kinds
+
+
+def parties_less_totals(
+    refs: Collection[str], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
+) -> frozenset[str]:
+    """`refs`, the entities of one open party role, less those the code index declares a
+    `total` in `datasets` (`party_kind_of`): the parties that role keeps in a frame minted
+    `without_party_totals` (`datasets_api.party_totals`). When every ref is a total all stay,
+    as the cut keeps such a role whole."""
+    kept = frozenset(
+        ref for ref in refs if party_kind_of(ref, parties=parties, datasets=datasets) != "total"
+    )
+    return kept or frozenset(refs)

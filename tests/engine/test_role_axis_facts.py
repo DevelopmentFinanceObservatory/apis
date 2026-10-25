@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from search.engine.retrieval.retrieve import Materialised, materialise
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.retrieval.role_scope import open_role_axis_members
@@ -90,7 +92,8 @@ def test_bound_destination_open_origin_publishes_a_role_axis_fact(monkeypatch):
     result = _bound_destination_open_origin_result(monkeypatch)
 
     facts = _role_axis_facts(
-        [RoleAxisFactInput(role="origin", member_dcids=result.open_origin_dcids)]
+        [RoleAxisFactInput(role="origin", member_dcids=result.open_origin_dcids)],
+        sv_dcids=result.sv_dcids,
     )
 
     assert facts == [
@@ -179,7 +182,9 @@ def test_both_axes_open_derives_the_same_fact_from_role_index_by_sv(monkeypatch)
     )
     assert members == frozenset({"country/FRA", "country/USA"})
 
-    facts = _role_axis_facts([RoleAxisFactInput(role="origin", member_dcids=members)])
+    facts = _role_axis_facts(
+        [RoleAxisFactInput(role="origin", member_dcids=members)], sv_dcids=result.sv_dcids
+    )
     assert facts == [RoleAxisFact(role="origin", member_count=2, members_available=True)]
 
 
@@ -187,7 +192,7 @@ def test_both_axes_open_derives_the_same_fact_from_role_index_by_sv(monkeypatch)
 
 
 def test_role_axis_facts_none_when_empty():
-    assert _role_axis_facts([]) is None
+    assert _role_axis_facts([], sv_dcids=()) is None
 
 
 def test_role_axis_facts_reports_both_roles_when_both_open():
@@ -195,9 +200,33 @@ def test_role_axis_facts_reports_both_roles_when_both_open():
         [
             RoleAxisFactInput(role="destination", member_dcids=frozenset({"country/KEN"})),
             RoleAxisFactInput(role="origin", member_dcids=frozenset()),
-        ]
+        ],
+        sv_dcids=(),
     )
     assert facts == [
         RoleAxisFact(role="destination", member_count=1, members_available=True),
         RoleAxisFact(role="origin", member_count=0, members_available=True),
     ]
+
+
+_DAC2A_MEMBER = "Amount_FinancialFlow_Disbursement_DAC2aAidType210_Nominal"
+
+
+@pytest.mark.parametrize(
+    ("members", "expected"),
+    [
+        # DAC Africa is a group total, so the count holds the IMF alone.
+        (frozenset({"DACAfrica", "InternationalMonetaryFund"}), 1),
+        # The IMF trust funds are a total in DAC2A, the dataset of the Spec's member.
+        (frozenset({"IMFConcessionalTrustFunds", "InternationalMonetaryFund"}), 1),
+        # A population of totals alone counts them all, as the cut keeps such a role whole.
+        (frozenset({"DACAfrica", "IMFConcessionalTrustFunds"}), 2),
+    ],
+)
+def test_role_axis_count_leaves_out_group_totals(members, expected):
+    """An open party role counts the parties a frame minted `without_party_totals` holds."""
+    facts = _role_axis_facts(
+        [RoleAxisFactInput(role="origin", member_dcids=members)], sv_dcids=(_DAC2A_MEMBER,)
+    )
+
+    assert facts == [RoleAxisFact(role="origin", member_count=expected, members_available=True)]
