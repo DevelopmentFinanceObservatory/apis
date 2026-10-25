@@ -5,7 +5,9 @@
 # and pinned-resubmit read-plan grids. The standard read-plan grid has four
 # factors, so its covering array is its full product and it always runs whole.
 # DFO_FULL_GRIDS=1 runs every cell, which catches a fault that needs five or
-# more factor values together.
+# more factor values together. It checks every invariant on every cell except
+# I9, the recorded request bound, which runs on the covering array alone, so
+# the nightly needs no fixture of its own.
 #
 # The nightly schedule runs the full products against dev, which covers every
 # merge from the day before, so a push runs nothing. workflow_dispatch runs
@@ -13,10 +15,6 @@
 #
 # A failed nightly opens one issue, or comments on it when it is already open,
 # with the run link and pytest's summary line. A dispatched run alerts no one.
-# An I9 failure saying a door "has no door to be held to" means the door's
-# answer differs from the one its request bound records. When the new answer
-# is intended, re-record the bound as tests/engine/_answer_invariants_record.py
-# describes.
 #
 # Checkout, install and test environment copy ci.yml's test-shard job.
 name: Full grids

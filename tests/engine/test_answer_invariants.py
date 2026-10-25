@@ -33,7 +33,9 @@ the world holds, and returns one message per disagreement naming both sides:
   the walked family, and no resubmit warns `slot_defaulted`.
 
 The grid test runs a strength-4 covering array of the cells (`GRID`,
-`_grid_cells.ANSWER_INVARIANTS`), and every cell under `DFO_FULL_GRIDS=1`.
+`_grid_cells.ANSWER_INVARIANTS`), and every cell under `DFO_FULL_GRIDS=1`. `i9_latency`
+holds a door to a recorded bound, so it runs on the covering array's cells only
+(`checks_for`), and every other invariant runs on every cell the test runs.
 """
 
 from __future__ import annotations
@@ -1812,6 +1814,19 @@ def _cells_run() -> dict[tuple[str, ...], list[Cell]]:
 
 CELLS_RUN = _cells_run()
 
+# The cells `i9_latency` checks: the covering array its recorded bound holds.
+_I9_CELLS = frozenset(_grid_cells.ANSWER_INVARIANTS)
+
+
+def checks_for(cell: Cell) -> dict[str, Callable[[Doors], list[str]]]:
+    """The checks the grid test runs on `cell`: every check in `CHECKS`, less I9 on a cell
+    outside the covering array."""
+    return {
+        invariant: check
+        for invariant, check in CHECKS.items()
+        if invariant != "I9" or str(cell) in _I9_CELLS
+    }
+
 
 @pytest.fixture(scope="module")
 def door_loop() -> Iterator[None]:
@@ -1848,12 +1863,13 @@ def test_every_cell_holds_every_invariant(
     phrase and the headline year (`i2_door_equality`,
     `i6_nearest_real_is_the_relaxed_answer`); #1055, a native unit request over the
     `unsourced` rows answering `facet_not_available` (`i4_dates`); and #1060, a Spec with
-    more than one variable (`i3_one_election`)."""
+    more than one variable (`i3_one_election`). I9 runs on the covering array's cells only
+    (`checks_for`)."""
     recorded_engine(route)
     failures: list[str] = []
     for cell in CELLS_RUN[route, row_set, kind, unit, date]:
         run = doors(cell)
-        for invariant, check in CHECKS.items():
+        for invariant, check in checks_for(cell).items():
             failures += [f"{cell} | {invariant} | {message}" for message in check(run)]
     assert not failures, "\n".join(failures)
 
@@ -1922,6 +1938,17 @@ def test_the_grid_skips_only_combinations_no_request_can_form() -> None:
         for cell, _reason in skipped
     )
     assert len(BLOCKS) * len(PREVIEWS) * len(PINS) * len(ORDERS) - len(skipped) == 21_504
+
+
+def test_i9_checks_exactly_the_committed_cells() -> None:
+    """Every committed cell runs I9 beside every other check, and every other cell runs
+    every check but I9."""
+    committed = frozenset(_grid_cells.ANSWER_INVARIANTS)
+    every = [cell for _row, cell in GRID.cells()]
+    assert committed <= {str(cell) for cell in every}
+    for cell in every:
+        expected = set(CHECKS) - (set() if str(cell) in committed else {"I9"})
+        assert set(checks_for(cell)) == expected, cell
 
 
 def test_the_committed_cells_cover_every_four_values_a_request_can_form() -> None:

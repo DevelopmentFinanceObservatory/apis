@@ -1,6 +1,9 @@
 """Regenerate the two fixtures `test_answer_invariants.i9_latency` reads.
 
-`tests/fixtures/answer_invariants_requests_c669cc874.json` is a fixed record: what every door
+`i9_latency` runs on the grid's covering array (`_grid_cells.ANSWER_INVARIANTS`) only, under
+`DFO_FULL_GRIDS=1` too, so it reads both fixtures for the covering array's cells alone.
+
+`tests/fixtures/answer_invariants_requests_c669cc874.json` is a fixed record: what the doors
 of the grid measured at commit c669cc874 (`test_answer_invariants.measured`). It is
 regenerated only from a copy of that tree, and only when the grid or the recorder changes.
 
@@ -8,8 +11,8 @@ regenerated only from a copy of that tree, and only when the grid or the recorde
 tree: the doors that no door at c669cc874 with the same answer bounds and that have no
 preview-off door with the same outcome to bound them. It may only shrink. `write` refuses a
 list that adds a door, changes a door's answer or raises a door's requests or depth, unless
-`--grow` names the reason. A pull request runs the grid's covering array only, so a change of
-answer on a cell outside it first fails I9 in the nightly `.github/workflows/full-grids.yml`.
+`--grow` names the reason. A pull request that changes a door's answer on purpose fails I9
+and re-records the list in that pull request.
 
 Each command runs from the root of the tree it measures, with `DFO_SPEC_KIT_DIR` set.
 
@@ -27,7 +30,7 @@ and copy `tests/_covering_array.py` into its `tests/`:
     uv run python -m tests.engine._answer_invariants_record write \\
         --base /tmp/base.jsonl --branch /tmp/branch.jsonl
 
-`measure` runs the grid's full product (`DFO_FULL_GRIDS=1`) under pytest with this module as
+`measure` runs the grid's covering array (`DFO_FULL_GRIDS=0`) under pytest with this module as
 a plugin, which replaces the grid's checks with one that writes each door's measurement.
 """
 
@@ -99,7 +102,7 @@ def measure(out: Path, *, workers: int) -> None:
         stale.unlink()
     env = {k: v for k, v in os.environ.items() if not k.startswith("SEARCH_GRAPH_")}
     env[_OUT_ENV] = str(out)
-    env[FULL_GRIDS_ENV] = "1"
+    env[FULL_GRIDS_ENV] = "0"
     command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     command += ["-p", "tests.engine._answer_invariants_record", "-n", str(workers)]
     command += [_GRID, "-k", _GRID_TEST]
