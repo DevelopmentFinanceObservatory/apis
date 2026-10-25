@@ -361,6 +361,8 @@ def decide_part_unit(
                 facet_bindings=facet_bindings,
                 window=requested_window,
                 dataset=datasets.get(sv),
+                # The decision selects as the answer's reads do (`observations.fetch`).
+                requires_provenance=False,
             )
             try:
                 selections = decide_member_unit(
