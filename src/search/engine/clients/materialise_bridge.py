@@ -101,9 +101,11 @@ def observation_facets_via_materialise(
     stat_vars: Sequence[str],
     entities: Sequence[str],
     materialise_graph: GraphReader,
+    needs_dates: bool = False,
     deadline: float | None = None,
 ) -> dict[str, dict[str, list[Facet]]]:
-    """Read facet summaries as ``{stat_var: {entity: [Facet]}}``.
+    """Read facet summaries as ``{stat_var: {entity: [Facet]}}``, with each facet's dates
+    and values under ``needs_dates``.
 
     Empty axes return ``{}``. The reader has no pair cap, so StatVars are
     chunked by ``max(1, _FACET_PROBE_MAX_PAIRS_PER_POST // len(entities))``.
@@ -147,7 +149,7 @@ def observation_facets_via_materialise(
             )
         try:
             return materialise_graph.observation_facets_batch_many(
-                stat_vars=chunk, entities=entities_list, deadline=deadline
+                stat_vars=chunk, entities=entities_list, needs_dates=needs_dates, deadline=deadline
             )
         finally:
             _FACET_PROBE_SEMAPHORE.release()

@@ -61,7 +61,7 @@ from search.engine.region.resubmit_request import (
 from search.engine.region.un_system import NO_LABELS, un_unavailable_warning
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
 from search.engine.retrieval.elected_dataset import published
-from search.engine.retrieval.read_plan import plan_standard, plan_years
+from search.engine.retrieval.read_plan import plan_standard, plan_years, reads_dates
 from search.models import (
     GraphRef,
     IdentityFacetBinding,
@@ -383,10 +383,11 @@ def _fetch_facets_batch(
     sv_dcids: list[str],
     present: list[str],
     materialise_graph: GraphReader | None,
+    needs_dates: bool,
     deadline: float | None,
 ) -> tuple[dict | None, Warning | None]:
-    """Fetch every present candidate's own observation facets, when a facet
-    binding or include_coverage needs them; neither fetch carries a
+    """Fetch every present candidate's own observation facets, with their dates under
+    `needs_dates`, when a facet binding or include_coverage needs them; neither fetch carries a
     StatVar-count precheck of its own (observation_facets_via_materialise is
     already chunked and process-wide concurrency-limited, and deadline
     bounds it against the door's own remaining request budget).
@@ -412,6 +413,7 @@ def _fetch_facets_batch(
             stat_vars=sv_dcids,
             entities=present,
             materialise_graph=materialise_graph,
+            needs_dates=needs_dates,
             deadline=deadline,
         )
         return facets_batch, None
@@ -422,6 +424,7 @@ def _fetch_facets_batch(
                 stat_vars=sv_dcids,
                 entities=present,
                 materialise_graph=materialise_graph,
+                needs_dates=needs_dates,
                 deadline=deadline,
             )
         except GraphInfraError:
@@ -602,15 +605,10 @@ def _observation_about_options_set(
         deadline=deadline,
     )
 
-    # This door's own date_request has no effect on which fetch runs:
-    # materialise's own GraphReader.observation_facets_batch (via
-    # observation_facets_via_materialise) carries no per-observation dates
-    # at all, so a windowed request always falls through
-    # answer_coverage's incomplete-dates guard to
-    # CoverageBreadth (an approximate "has data" signal, no exact count)
-    # regardless of this door's own date_request. date_request is still
-    # computed here, since _build_observation_about_options needs it to
-    # resolve that same guard.
+    # Under a range the facet read carries each facet's dates (`reads_dates`), so a
+    # facet with no point in the window leaves the plan, as it does in the answer, and
+    # the option's coverage counts the points in the window. Under `latest` or every
+    # date it reads none, since no election there judges a facet by its dates.
     date_request = _date_request_from_window(target.requested_window)
     facets_batch, warning = _fetch_facets_batch(
         facet_bindings,
@@ -618,6 +616,7 @@ def _observation_about_options_set(
         sv_dcids=sv_dcids,
         present=present,
         materialise_graph=materialise_graph,
+        needs_dates=reads_dates(date_request),
         deadline=deadline,
     )
     if facets_batch is not None:

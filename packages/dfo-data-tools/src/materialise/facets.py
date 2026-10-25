@@ -1682,8 +1682,9 @@ def rank_candidates(
     request, and lifetime count breaks a tie. `None`, `all` and `latest` windows rank by
     count. The top candidate is the top of `narrow_to_window`'s pool.
 
-    Every probe that elects under a range reads its candidates' dates (Search's dated read,
-    a mint's `probe_facets` and `probe_collection_candidates`, coverage's years), so a facet
+    Every probe that elects under a range reads its candidates' dates (Search's answer and
+    option-coverage reads, a mint's `probe_facets` and `probe_collection_candidates`,
+    coverage's years), so a facet
     with a gap across the whole window leaves the pool on every side. A candidate whose dates
     are incomplete (`Facet.dates_complete`) is judged by its span."""
     groups = _ranking_groups(

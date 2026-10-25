@@ -14,6 +14,7 @@ points). Inside 2020 to 2022 the short series covers three years and the long on
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 
 import pytest
 
@@ -33,7 +34,7 @@ from search.models import IdentityUnitRequest, Spec, TimeWindow
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs
+from tests.engine._harness import PointsGraphReader, materialise_double_from_obs
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import CONVERTIBLE_STAT_VAR_ARCS, conversion_arcs
@@ -257,14 +258,18 @@ def test_a_converting_unit_decision_dispatches_the_facet_the_plan_cites(from_ans
 
 
 _GHA = "country/GHA"
-# What one place holds: each facet's id, source and years. Every range is unbroken, so an
-# undated probe and a dated read see the same points; a gap across the window is below.
-_HELD: list[tuple[tuple[str, str, range], ...]] = [
+# What one place holds: each facet's id, source and years. The fifth row's long series
+# holds nothing from 2011 to 2021, a gap across the 2015 to 2020 window its span covers.
+_HELD: list[tuple[tuple[str, str, Sequence[int]], ...]] = [
     (("f-long", _LONG, range(2005, 2023)), ("f-short", _SHORT, range(2019, 2022))),
     (("f-short", _SHORT, range(2000, 2024)), ("f-long", _LONG, range(2018, 2021))),
     (("f-long", _LONG, range(2010, 2021)), ("f-short", _SHORT, range(2015, 2025))),
     (("f-long", _LONG, range(2010, 2021)),),
     (("f-short", _SHORT, range(2015, 2025)),),
+    (
+        ("f-long", _LONG, (*range(2005, 2011), *range(2022, 2025))),
+        ("f-short", _SHORT, range(2015, 2019)),
+    ),
     (),
 ]
 _TWO_PLACE_WINDOWS: dict[str, tuple[TimeWindow | str | None, dict]] = {
@@ -293,19 +298,19 @@ def test_at_two_places_every_election_names_the_answers_one_group(
 ) -> None:
     """Whatever Kenya and Ghana hold and whatever the window, the answer's plan elects one
     group for the variable across both places, and a mint of its unpinned identity, a
-    datasets read of that identity and the unit decision, over an undated probe and over
-    the plan's own probes, all select that group."""
+    datasets read of that identity and the unit decision, over their own probe, which reads
+    dates under a range alone, and over the plan's own probes, all select that group."""
     years, requested_window = _TWO_PLACE_WINDOWS[window]
     held = {_KEN: _HELD[kenya], _GHA: _HELD[ghana]}
 
-    def facets(place: str, *, dated: bool) -> list[Facet]:
+    def facets(place: str) -> list[Facet]:
         return [
-            _dollar_facet(facet_id, provenance, [str(y) for y in span], dated=dated)
+            _dollar_facet(facet_id, provenance, [str(y) for y in span], dated=True)
             for facet_id, provenance, span in held[place]
         ]
 
     plan = plan_standard(
-        {(_AMOUNT, place): facets(place, dated=True) for place in held if held[place]},
+        {(_AMOUNT, place): facets(place) for place in held if held[place]},
         members=[_AMOUNT],
         years=years,
     )
@@ -315,8 +320,8 @@ def test_at_two_places_every_election_names_the_answers_one_group(
     (source,) = sources
     group_ids = frozenset().union(*groups)
 
-    materialise_graph = FakeGraphReader(
-        facets={(_AMOUNT, place): facets(place, dated=False) for place in held},
+    materialise_graph = PointsGraphReader(
+        facets={(_AMOUNT, place): facets(place) for place in held},
         arcs=_UNIT_ARCS,
     )
     _unused_graph, materialise_sdmx = materialise_double_from_obs({})
