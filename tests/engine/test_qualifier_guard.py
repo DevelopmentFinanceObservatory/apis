@@ -51,6 +51,7 @@ from search.engine.region.requirements import (
     Judgement,
     Outcome,
     answer_terms,
+    record_coverage,
     record_reading,
     refusal_terms,
     settle_answer,
@@ -2807,6 +2808,40 @@ def test_a_candidate_set_departs_an_unmet_value_once(search_settings, unbound):
     assert list(refusal_terms(state, _VALUE_LITERACY, state.bindings)) == [
         q for q in trace if q.disposition != "bound"
     ]
+
+
+def _oda_record(code: str, label: str) -> ResolvedQualifier:
+    """A coverage record of "ODA" in "maternal ODA" naming `code` (`_uncovered_record`)."""
+    return ResolvedQualifier(
+        text="ODA",
+        named=[GraphRef(ref=code, label=label)],
+        slot=None,
+        disposition="unbound",
+        start=9,
+        end=12,
+        evidence="uncovered",
+    )
+
+
+def test_each_candidate_names_a_phrase_it_leaves_unread_by_its_own_record(search_settings):
+    """ "maternal ODA" offered as a CRS candidate and a DAC1 candidate, each of which leaves
+    "ODA" unread on its own read: the CRS one records it naming the CRS flow type, the DAC1
+    one naming the DAC1 aid type. The ledger holds one requirement for the phrase, the first
+    candidate's record, and each candidate's trace names "ODA" by its own record."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="maternal ODA", shape_draft=_shape(), bindings=[], unplaced=[], entities=()
+    )
+    crs = (_oda_record("CRSTypeOfFlow10", "ODA"),)
+    dac1 = (_oda_record("DAC1AidType1010", "Official development assistance"),)
+    record_coverage(state, crs)
+    record_coverage(state, dac1)
+
+    assert [r.term.named for r in state.requirements] == [crs[0].named]
+    assert [
+        [ref.ref for q in answer_terms(state, _shape(), [], uncovered=own) for ref in q.named]
+        for own in (crs, dac1, ())
+    ] == [["CRSTypeOfFlow10"], ["DAC1AidType1010"], []]
 
 
 _VALUE_LITERACY_BY_GENDER = _value_shape(

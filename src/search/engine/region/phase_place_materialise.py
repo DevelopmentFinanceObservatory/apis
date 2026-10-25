@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import itertools
 import logging
 import threading
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
@@ -514,16 +515,23 @@ async def _breakdown_coverage(
     shape's at the places the part names (`ShapeDraft.named_place_coverage`, else
     `ShapeDraft.member_coverage`). When `max_candidates` cuts a signature, the members
     recall did not return, which the catalogue's tables or the code index hold in the
-    family, are read at the same places (`ShapeDraft.availability_places`) in one batched
-    facet read (`availability.read_coverage`), so a breakdown holding data only in them is
-    ranked as one recalled would be. A failed read leaves them without data. A part naming
-    no place has no coverage at places and makes no read, so its cut ranks on the members
-    recall returned."""
+    family, are read at the same places (`ShapeDraft.availability_places`) in batched facet
+    reads (`availability.read_coverage`), so a breakdown holding data only in them is
+    ranked as one recalled would be. The read takes at most `region_max_members` of them,
+    the bound the facet prewarm holds, one from each breakdown in turn, so a family of
+    thousands reads a sample of each breakdown. A failed read leaves them without data. A
+    part naming no place has no coverage at places and makes no read, so its cut ranks on
+    the members recall returned."""
     shape = state.shape_draft
     coverage = shape.named_place_coverage or shape.member_coverage
     if coverage is None:
         return {}
-    unread = [sv for members in decision.members.values() for sv in members if sv not in coverage]
+    by_breakdown = [
+        [sv for sv in members if sv not in coverage] for members in decision.members.values()
+    ]
+    unread = [sv for turn in itertools.zip_longest(*by_breakdown) for sv in turn if sv is not None][
+        : settings().region_max_members
+    ]
     if (
         len(decision.members) <= settings().max_candidates
         or not unread

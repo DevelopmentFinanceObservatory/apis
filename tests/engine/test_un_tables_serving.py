@@ -8,6 +8,8 @@ import asyncio
 import dataclasses
 from collections.abc import Mapping
 from concurrent.futures import wait
+from types import SimpleNamespace
+from typing import cast
 
 import httpx
 import pytest
@@ -17,6 +19,7 @@ from origin_catalogue import BASE, DFO, UN_SYSTEM
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import DetectedSV, DetectLegs, admit_legs
 from search.engine.clients.graph_client import LiveGraphClient
+from search.engine.clients.materialise_bridge import _FACET_PROBE_MAX_PAIRS_PER_POST
 from search.engine.config import settings
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.extract import DateRequest
@@ -24,10 +27,15 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import availability, phase_place_materialise
 from search.engine.region.codes import PLACE_SCOPE_DEFAULTED
 from search.engine.region.pipeline import resolve_variable
-from search.engine.region.state import EngineOptions
+from search.engine.region.state import EngineOptions, ResolveState
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.facts import read_constraints, read_five_tuple
-from search.engine.retrieval.standard import _admit_standard_members, _AdmittedStandardMembers
+from search.engine.retrieval.standard import (
+    Candidates,
+    _admit_standard_members,
+    _AdmittedStandardMembers,
+)
+from search.engine.shape import ShapeDraft
 from search.engine.stated_words_read import StatedWordsOutput
 from search.models import TimeWindow
 from statvar_members import member_digest
@@ -520,6 +528,53 @@ def test_the_breakdown_read_runs_only_where_the_cap_cuts_and_fails_open(
     assert (
         _URBAN_MEMBER in {sv.ref.ref for spec in result.specs for sv in spec.resolved.members}
     ) is urban_kept
+
+
+class _RecordingFacets:
+    """A graph recording the StatVars and places each facet read asks for, holding no
+    data."""
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[list[str], list[str]]] = []
+
+    def observation_facets_batch(self, stat_vars, entities, needs_dates, **kwargs):
+        self.requests.append((list(stat_vars), list(entities)))
+        return {}
+
+
+def test_the_breakdown_read_is_chunked_and_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A family of 3,200 members recall did not return, across eight breakdowns, at 300
+    named places, 960,000 pairs, cut to two breakdowns. The read asks for at most
+    `region_max_members` members, taking from every breakdown, in requests of at most
+    `_FACET_PROBE_MAX_PAIRS_PER_POST` pairs each."""
+    monkeypatch.setattr(settings(), "max_candidates", 2)
+    members = {frozenset({f"prop{b}"}): tuple(f"sv{b}_{i}" for i in range(400)) for b in range(8)}
+    places = frozenset(f"country/P{i}" for i in range(300))
+    shape = ShapeDraft(
+        shape_id="family",
+        label="family",
+        pop_type_dcid="Person",
+        meas_prop_dcid="count",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+        named_place_coverage={"recalled": {}},
+        availability_places=places,
+    )
+    graph = _RecordingFacets()
+    state = cast(ResolveState, SimpleNamespace(shape_draft=shape, graph=graph, deadline=None))
+
+    asyncio.run(phase_place_materialise._breakdown_coverage(state, Candidates(members=members)))
+
+    asked = [sv for stat_vars, _places in graph.requests for sv in stat_vars]
+    assert len(graph.requests) > 1
+    assert all(
+        len(stat_vars) * len(at) <= _FACET_PROBE_MAX_PAIRS_PER_POST
+        for stat_vars, at in graph.requests
+    )
+    assert len(asked) == len(set(asked)) == settings().region_max_members
+    assert {sv.split("_")[0] for sv in asked} == {f"sv{b}" for b in range(8)}
 
 
 def test_one_breakdown_left_with_data_answers_by_it_with_a_departure(bind_catalogue) -> None:

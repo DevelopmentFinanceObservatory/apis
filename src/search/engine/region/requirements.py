@@ -248,15 +248,15 @@ def judge(
     *,
     state: ResolveState | None = None,
     served: Sequence[PriceBasis | None] = (),
-    uncovered: Sequence[frozenset[str] | None] = (),
+    uncovered: Sequence[tuple[ResolvedQualifier, ...] | None] = (),
 ) -> Judgement:
     """Judge each of `answers` on its own shape and bindings against every requirement.
     `served[i]` is the price basis of the unit request answer `i` is served under, None
     when it is served under none. An empty `served` serves every answer under none.
-    `uncovered[i]` holds the phrases answer `i` leaves unread, its coverage records read on
-    the members its own read served (`phase_election.judge_answer_coverage`), None for the
-    elected answer's, which are those of `state`'s query records. An empty `uncovered` reads
-    every answer on the elected answer's.
+    `uncovered[i]` holds the records of the words answer `i` leaves unread, its coverage
+    records read on the members its own read served (`phase_election.judge_answer_coverage`),
+    None for the elected answer's, which are those of `state`'s query records. An empty
+    `uncovered` reads every answer on the elected answer's.
 
     A `CodeRule` is met when the answer's bindings bind one of its codes or a descendant on
     its property, unmet when the answer's shape holds the property and binds none of them,
@@ -271,7 +271,8 @@ def judge(
     it, or the answer leaves its set unmet, and is outside an answer that meets the set by
     membership without it, so it departs and refuses nothing. A query record of the elected
     reading no binding covers ("unbound") is unmet on every answer, but for a coverage
-    record (`_unbound_outcome`), and a term no answer is judged on (`None`) is outside
+    record, which an answer names by its own record of the phrase (`_unbound_outcome`), and
+    a term no answer is judged on (`None`) is outside
     every answer. A requirement that does not refuse (`Requirement.refuses`) is outside an
     answer that leaves it unmet, so it departs and refuses nothing."""
     requirements = tuple(requirements)
@@ -279,7 +280,7 @@ def judge(
     served = tuple(served) or (None,) * len(answers)
     uncovered = tuple(uncovered) or (None,) * len(answers)
     elected_uncovered = (
-        frozenset(_normalize(q.text) for q in state.query_qualifiers if q.evidence == "uncovered")
+        tuple(q for q in state.query_qualifiers if q.evidence == "uncovered")
         if state is not None
         else None
     )
@@ -288,6 +289,7 @@ def judge(
     slot_terms: list[dict[int, ResolvedQualifier]] = []
     for (shape, bindings), prices, own in zip(answers, served, uncovered, strict=True):
         records = elected_uncovered if own is None else own
+        by_phrase = None if records is None else {_normalize(r.text): r for r in records}
         held = shape_vocabulary(shape)
         bound: dict[str, set[str]] = {}
         for binding in bindings:
@@ -329,7 +331,10 @@ def judge(
                 else:
                     answer.append("met")
             elif rule == "unbound":
-                answer.append(_unbound_outcome(requirement, records))
+                outcome, record = _unbound_outcome(requirement, by_phrase)
+                answer.append(outcome)
+                if record is not None:
+                    named[j] = record
             else:
                 answer.append("outside")
             if not requirement.refuses and answer[-1] == "unmet":
@@ -343,14 +348,19 @@ def judge(
     )
 
 
-def _unbound_outcome(requirement: Requirement, records: frozenset[str] | None) -> Outcome:
-    """How an answer stands on a query record of the elected reading no binding covers:
-    unmet, but for a coverage record (evidence ``"uncovered"``), which an answer meets
-    unless the coverage rule records its phrase on the answer's own read, `records`. With
-    no read judged (`records` None) it is unmet."""
+def _unbound_outcome(
+    requirement: Requirement, records: Mapping[str, ResolvedQualifier] | None
+) -> tuple[Outcome, ResolvedQualifier | None]:
+    """How an answer stands on a query record of the elected reading no binding covers,
+    and the answer's own record it names the phrase by, if any: unmet, but for a coverage
+    record (evidence ``"uncovered"``), which an answer meets unless the coverage rule
+    records its phrase on the answer's own read, `records` by phrase, and names by that
+    record, so each answer names the codes of its own vocabulary. With no read judged
+    (`records` None) it is unmet and named by the ledger's term."""
     if requirement.term.evidence != "uncovered" or records is None:
-        return "unmet"
-    return "unmet" if requirement.phrase in records else "met"
+        return "unmet", None
+    record = records.get(requirement.phrase)
+    return ("met", None) if record is None else ("unmet", record)
 
 
 def _value_term(
@@ -429,7 +439,7 @@ def answer_terms(
     bindings: Sequence[SlotBindingDraft],
     *,
     served: PriceBasis | None = None,
-    uncovered: frozenset[str] | None = None,
+    uncovered: tuple[ResolvedQualifier, ...] | None = None,
 ) -> list[ResolvedQualifier]:
     """The query terms the trace of an answer of `shape` read under `bindings`, served
     under a unit request at `served` prices (None for none) and whose coverage records hold
@@ -464,7 +474,7 @@ def settle_answer(
     bindings: Sequence[SlotBindingDraft],
     *,
     served: PriceBasis | None = None,
-    uncovered: frozenset[str] | None = None,
+    uncovered: tuple[ResolvedQualifier, ...] | None = None,
 ) -> tuple[ResolvedQualifier, ...]:
     """Judge the part's one final answer, of `shape` read under `bindings`, served under
     a unit request at `served` prices (None for none, as a refusal serving no Spec) and
@@ -489,7 +499,7 @@ def settle_flagged(
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
     *,
-    uncovered: frozenset[str] | None = None,
+    uncovered: tuple[ResolvedQualifier, ...] | None = None,
 ) -> list[ResolvedQualifier]:
     """Judge the flagged or alternate match a refusal other than `qualifier_not_bound`
     carries, of `shape` read under `bindings` and whose coverage records hold `uncovered`
@@ -532,7 +542,7 @@ def settle_candidate_set(
     answers: Sequence[Answer],
     *,
     served: Sequence[PriceBasis | None] = (),
-    uncovered: Sequence[frozenset[str] | None] = (),
+    uncovered: Sequence[tuple[ResolvedQualifier, ...] | None] = (),
 ) -> None:
     """Judge a candidate set, each surviving answer on its own shape and bindings, served
     under a unit request at its `served` prices and on its own coverage records, `uncovered`

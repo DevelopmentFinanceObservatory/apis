@@ -1190,7 +1190,7 @@ async def judge_coverage(state: ResolveState) -> None:
 async def judge_answer_coverage(
     state: ResolveState,
     answers: Sequence[tuple[ShapeDraft, Sequence[SlotBindingDraft], Materialised]],
-) -> tuple[frozenset[str], ...]:
+) -> tuple[tuple[ResolvedQualifier, ...], ...]:
     """Judge stated-word coverage on each of `answers`, a candidate the part offers beside
     or in place of the elected answer: its shape, the bindings it is read under and its
     read. The rule is the elected answer's (`judge_coverage`), read on the members the
@@ -1200,24 +1200,25 @@ async def judge_answer_coverage(
     candidate, one call per candidate that leaves any, all at once (`_rated_words`).
 
     Each record no requirement of the part's ledger holds a phrase of is recorded as the
-    elected reading's records are (`requirements.record_coverage`). Return the phrases of
-    each answer's records, in the order of `answers`, which the judgement reads it on
+    elected reading's records are (`requirements.record_coverage`). Return each answer's
+    records, in the order of `answers`, which the judgement reads it on and its trace names
+    its phrases by, as two answers can name different codes for one phrase
     (`requirements.judge`). In log mode no record is a requirement, so no binder is asked
-    and every answer reads no phrase."""
+    and every answer holds no record."""
     if settings().qualifier_coverage != "refuse":
-        return tuple(frozenset() for _answer in answers)
+        return tuple(() for _answer in answers)
     views = [answer_view(state, shape, bindings, read) for shape, bindings, read in answers]
     ratings = await asyncio.gather(*(_rated_words(state, view) for view in views))
-    uncovered: list[frozenset[str]] = []
+    uncovered: list[tuple[ResolvedQualifier, ...]] = []
     for view, rated in zip(views, ratings, strict=True):
         view.stated_word_ratings = rated
-        records = [
+        records = tuple(
             record
             for record in _coverage_records(view, _query_records(view))
             if record.evidence == "uncovered"
-        ]
+        )
         record_coverage(state, records)
-        uncovered.append(frozenset(_normalize(record.text) for record in records))
+        uncovered.append(records)
     return tuple(uncovered)
 
 

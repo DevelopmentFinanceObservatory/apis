@@ -34,7 +34,7 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import Protocol
 
 from materialise.place_scope import DefaultPresence
-from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.extract import DateRequest
@@ -44,6 +44,7 @@ from search.engine.region.place_roles import PlaceAssignment, bind_place_roles, 
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import index_carries_shape
+from search.engine.retrieval.standard import _facet_reads
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.models import TimeWindow
 
@@ -138,18 +139,23 @@ def read_coverage(
     read: str,
 ) -> dict[str, ReadingCoverage] | None:
     """The places among `places` at which each of `stat_vars` has observations, each with
-    the years its facets there hold (`reading_coverage.observed_years`), from one batched
-    facet read bounded by `deadline` and the response byte cap (`sdmx_max_bytes`). `None`
-    when the read fails, a slow or oversized one among them, noted as the lost `read`
+    the years its facets there hold (`reading_coverage.observed_years`), from batched facet
+    reads in the chunks standard retrieval reads (`standard._facet_reads`), each bounded by
+    `deadline` and the response byte cap (`sdmx_max_bytes`). `None` when a read fails, a
+    slow or oversized one among them, noted as the lost `read`
     (`degraded_reads.note_degraded_read`)."""
+    probe: dict[str, dict[str, list[Facet]]] = {}
     try:
-        probe = graph.observation_facets_batch(
-            list(stat_vars),
-            list(places),
-            False,
-            max_bytes=settings().sdmx_max_bytes,
-            deadline=deadline,
-        )
+        for chunk in _facet_reads(stat_vars, places):
+            probe.update(
+                graph.observation_facets_batch(
+                    chunk,
+                    list(places),
+                    False,
+                    max_bytes=settings().sdmx_max_bytes,
+                    deadline=deadline,
+                )
+            )
     except Exception:
         logger.warning(
             "%s read failed for %d StatVar(s) at %d place(s); their availability stays unknown",
