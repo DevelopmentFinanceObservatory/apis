@@ -428,7 +428,10 @@ class RoleAxisFact(StrictModel):
     role: RoleAxis = Field(description="which flow axis this fact is about")
     member_count: int | None = Field(
         description=(
-            "how many entities this axis' open scope resolves to. None when the "
+            "how many entities this axis' open scope resolves to, leaving out the "
+            "group totals the code index declares beside their members (party_kind "
+            "total), as the default download leaves them out; a scope of totals alone "
+            "counts them all. None when the "
             "count could not be established without a read this response chose not "
             "to make (e.g. a discovered opposite axis whose own role index was "
             "omitted after a cap trip); the fact still publishes in that case, "

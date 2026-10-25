@@ -7,13 +7,14 @@ import types
 import typing
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, LiteralString
 
 from pydantic import BaseModel, Discriminator, Tag
 from pydantic.fields import FieldInfo
+from pydantic_core import PydanticCustomError
 
 from dfo_platform.named import MAX_VALUE_CHARS, cut
-from dfo_platform.problem import ProblemSpec
+from dfo_platform.problem import Alternative, ProblemIssue, ProblemSpec
 
 if TYPE_CHECKING:
     from fastapi.exceptions import RequestValidationError
@@ -354,22 +355,62 @@ def _error_detail(error: dict[str, Any]) -> str | None:
     return message.replace(tag, cut(tag), 1)
 
 
+_ALTERNATIVES_CTX = "alternatives"
+_AXIS_CTX = "axis"
+_DETAIL_CTX = "detail"
+
+
+def refusal_with_alternatives(
+    error_type: LiteralString, detail: str, *, alternatives: list[str], axis: str | None = None
+) -> PydanticCustomError:
+    """A validator error that `validation_problem` maps to one issue listing `alternatives`.
+
+    Raise it from a validator where the valid values are known. The issue carries the error's
+    pointer, `axis` when given, and `alternatives` in the order given, each as its own ref and
+    label."""
+    context: dict[str, object] = {_ALTERNATIVES_CTX: alternatives}
+    if axis is not None:
+        context[_AXIS_CTX] = axis
+    # Pydantic substitutes each context key into the template in insertion order, so the
+    # detail goes last: a `{...}` the caller posted inside it is never substituted again.
+    context[_DETAIL_CTX] = detail
+    return PydanticCustomError(error_type, "{detail}", context)
+
+
+def _alternatives_issue(error: dict[str, Any], pointer: str | None) -> ProblemIssue | None:
+    """The issue a `refusal_with_alternatives` error stands for, or `None` for any other."""
+    ctx = error.get("ctx") or {}
+    alternatives = ctx.get(_ALTERNATIVES_CTX)
+    if not isinstance(alternatives, list):
+        return None
+    return ProblemIssue(
+        pointer=pointer,
+        axis=ctx.get(_AXIS_CTX),
+        alternatives=[Alternative(ref=ref, label=ref) for ref in alternatives],
+        truncated=False,
+    )
+
+
 def validation_problem(
     exc: RequestValidationError, *, model: type[BaseModel] | Any | None = None
 ) -> ProblemSpec:
     """Map validation errors to `request_invalid` (400) using the first error's pointer and detail.
 
-    A top-level `schema_version` error maps to `unsupported_schema_version` (422) with the
-    catalogue's default detail. With no errors, detail is `None`. `model` overrides the
+    A first error raised as `refusal_with_alternatives` adds one issue listing its
+    alternatives. A top-level `schema_version` error maps to `unsupported_schema_version` (422)
+    with the catalogue's default detail. With no errors, detail is `None`. `model` overrides the
     annotation bound in `request_body_model`."""
     errors = exc.errors()
     pointer: str | None = None
     code = "request_invalid"
     status = 400
     detail: str | None = None
+    issues: list[ProblemIssue] | None = None
     if errors:
         pointer = pointer_for_error(exc, errors[0], model=model)
         detail = _error_detail(errors[0])
+        issue = _alternatives_issue(errors[0], pointer)
+        issues = [issue] if issue is not None else None
 
     version_error = next(
         (e for e in errors if error_field_loc(e) == ["schema_version"]),
@@ -380,5 +421,13 @@ def validation_problem(
         status = 422
         pointer = pointer_for_error(exc, version_error, model=model)
         detail = None
+        issues = None
 
-    return ProblemSpec(status=status, code=code, detail=detail, pointer=pointer, retryable=False)
+    return ProblemSpec(
+        status=status,
+        code=code,
+        detail=detail,
+        pointer=pointer,
+        issues=issues,
+        retryable=False,
+    )

@@ -81,6 +81,17 @@ def _bilateral_arcs() -> dict:
     }
 
 
+def _debt_service_arcs() -> dict:
+    """`_bilateral_arcs` as World Bank IDS debt service, a `FinancialFlow` whose
+    `financialFlowType` is `ServicingPayment` (`code_index.flow_family`)."""
+    return {
+        **_bilateral_arcs(),
+        "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
+        "constraintProperties": {"nodes": [{"dcid": "financialFlowType"}]},
+        "financialFlowType": {"nodes": [{"dcid": "ServicingPayment"}]},
+    }
+
+
 def _recipient_only_arcs() -> dict:
     """A debtor-only flow shape: no origin-facing role name exists on this
     shape at all, so a posted origin list has nowhere to bind."""
@@ -171,9 +182,11 @@ def _resubmit(
     recipient_dcids: list[str] | None = None,
     include_option_coverage: bool = False,
     coverage: CoverageSnapshot | None = None,
+    extra_nodes: dict | None = None,
 ):
     graph = FakeGraph(
-        nodes=_nodes(resolve=resolve, label_dcids=["source/A"], sv_dcid=sv_dcid, sv_arcs=sv_arcs),
+        nodes=_nodes(resolve=resolve, label_dcids=["source/A"], sv_dcid=sv_dcid, sv_arcs=sv_arcs)
+        | (extra_nodes or {}),
         detect={},
         resolve={},
         obs={},
@@ -777,6 +790,70 @@ def test_missing_origin_refs_refuse_at_the_role_confirmation_boundary(monkeypatc
         assert exc_info.value.pointer == "/input/identity/entities/origin"
 
 
+@pytest.mark.parametrize(
+    ("dcid", "node", "kind"),
+    [
+        pytest.param(
+            "Count_Person",
+            {"label": "Total population", "type": "StatisticalVariable"},
+            "a statistical variable",
+            id="variable",
+        ),
+        pytest.param(
+            "geoId/06",
+            {"label": "California", "type": "State"},
+            "a place other than a country or region",
+            id="state",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("sv_arcs", "noun"),
+    [
+        pytest.param(_bilateral_arcs(), "provider", id="no-family"),
+        pytest.param(_debt_service_arcs(), "creditor", id="debt-service"),
+    ],
+)
+def test_an_origin_of_a_kind_the_role_does_not_take_refuses_naming_its_kind(
+    monkeypatch, dcid: str, node: dict, kind: str, sv_arcs: dict, noun: str
+):
+    """A graph node bound as the origin refuses when its kind is none the code index's
+    providers take (`search.role_kinds`), naming the node's kind and the role in the
+    series' flow-family wording: a creditor for debt service, the generic provider for a
+    series in no family."""
+    resolve = {"France": _FRA, "Kenya": _KEN}
+    observations = {_SV_DCID: {(("creditor", _FRA), ("debtor", _KEN)): [_facet()]}}
+    coverage_index = patch_coverage(
+        monkeypatch,
+        _coverage_rows_for([_KEN], [_SV_DCID]),
+        role_names={_SV_DCID: _FLOW_ROLE_NAMES},
+    )
+    fresh = _fresh_discover(
+        sv_dcid=_SV_DCID,
+        sv_arcs=sv_arcs,
+        resolve=resolve,
+        sdmx=FakeSdmxClient(observations=observations, availability={}),
+        coverage=FakeCoverageService(coverage_index).snapshot(),
+    )
+    assert fresh.status == "definite", fresh
+
+    with pytest.raises(EngineInputError) as exc_info:
+        _resubmit(
+            fresh_spec=fresh.specs[0],
+            resolve=resolve,
+            sv_dcid=_SV_DCID,
+            sv_arcs=sv_arcs,
+            sdmx=FakeSdmxClient(observations=observations, availability={}),
+            origin_dcids=[_FRA, dcid],
+            recipient_dcid=_KEN,
+            extra_nodes={dcid: node},
+        )
+    assert exc_info.value.code == "invalid_role_ref"
+    assert exc_info.value.status == 422
+    assert exc_info.value.pointer == "/input/identity/entities/origin"
+    assert str(exc_info.value).startswith(f"{dcid} is {kind}; a {noun} is a country")
+
+
 def test_origin_role_is_carried_by_the_nested_identity_entities_map():
     inp = ResubmitIdentityPayload(identity=make_base(GDP_SHAPE, entities=[origin_entity(_FRA)])[1])
     assert inp.identity.entities == {"origin": [_FRA]}
@@ -961,7 +1038,7 @@ def test_bound_recipient_open_donor_resubmit_warns_about_the_open_origin_axis(mo
     assert region.status == "definite", region.no_data_reason
     defaulted = [w for w in region.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in defaulted] == [
-        "no provider was named; the answer was resolved across every provider with data."
+        "No provider was named, so the answer covers every provider with data."
     ]
     facts = region.specs[0].resolved.role_axis_facts
     assert facts is not None

@@ -571,6 +571,7 @@ def _build_part(
             ),
             entity_words=region.entity_words,
             assumption_echo=region.assumption_echo,
+            name_corrections=region.name_corrections,
             asked_axes=region.every_member_axes,
             own_spec=None if representative is region else region.spec,
             members_in_words=region.members_in_words,
@@ -608,6 +609,7 @@ def _build_part(
             ),
             reading_facts=region.unpublished_whole_facts,
             request_words=region.entity_words is not None,
+            name_corrections=region.name_corrections,
             asked_axes=region.every_member_axes,
             assumption_echoes=region.reading_assumption_echoes,
         )

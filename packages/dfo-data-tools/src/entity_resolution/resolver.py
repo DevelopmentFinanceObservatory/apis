@@ -11,8 +11,12 @@ add group results after a miss, and one retry strips a leading article and trail
 A top survivor the group registry holds resolves as a `Group`: the registry confirms it and
 its members, so no graph read does. Other survivors map to dcids. Misses use the
 description-arc ladder, which accepts only nodes listing the normalized query and keeps all
-matches. The `code` kind adds the codes whose label or synonym lists the text under the cache
-key's fold. One graph read confirms every hit, group node and code. A group or region the
+matches. On request (`near_matches=True`) a hit's text also reads the ladder's last rung,
+beside the miss ladder, for the other nodes listing it, which resolvekit's packs leave out
+(US states, towns); a `Resolved` carries up to three confirmed ones of the requested kinds as
+`near_matches`, and when the kinds filter removes every hit all of them answer in its place. The `code`
+kind adds the codes whose label or synonym lists the text under the cache key's fold. One
+graph read confirms every hit, shared name, group node and code. A group or region the
 membership policy holds counts as held with or without a graph node, as on the Graph API's
 node and members routes. Every candidate takes its kind by the rule the node route classes
 by (`kinds.classify`), over the code index the resolver was built with and the membership
@@ -37,7 +41,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import Executor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from cachetools import TLRUCache
 from resolvekit import ResolutionContext, ResolutionStatus, Resolver
@@ -48,7 +52,7 @@ from dc_graph.errors import GraphDeadlineExceededError
 from dfo_platform.executor import run_in_executor_with_context
 from entity_resolution import pack
 from entity_resolution.gate import filter_listed_candidates
-from entity_resolution.graph import normalize_or_none, resolve_fallback
+from entity_resolution.graph import normalize_or_none, resolve_fallback, resolve_sharing
 from entity_resolution.kinds import classify
 from entity_resolution.membership import MembershipPolicy, NotRecorded, UnknownMembership
 from entity_resolution.regions import identity_to_dcid
@@ -91,9 +95,9 @@ _MEMBER_GRAPH_TYPE = "Country"
 _GROUP_TYPES: frozenset[str] = frozenset({"geo.organization", "geo.continental_union"})
 
 # The generation stamp captured for the whole call, the content hash of the code index the call
-# read (`None` without one), the normalized text, the requested kinds (`None` for no filter) and
-# the code system.
-_CacheKey = tuple[str, str | None, str, frozenset[EntityKind] | None, str | None]
+# read (`None` without one), the normalized text, the requested kinds (`None` for no filter),
+# the code system, and whether the call asked for a hit's near matches.
+_CacheKey = tuple[str, str | None, str, frozenset[EntityKind] | None, str | None, bool]
 
 # Derive cache expiry from the generation stamp key. `Admission` uses the same rule.
 _ttu = ttu_from_stamp_key
@@ -450,6 +454,26 @@ def _choose(
     return Ambiguous(candidates=tuple(entity for entity, _ in admitted))
 
 
+def _with_shared_names(result: Resolution, shared: Sequence[_Candidate]) -> Resolution:
+    """A hit's result with the confirmed nodes `shared` that share its text, of the requested
+    kinds. A `Resolved` carries the first `_MAX_NEAR_MATCHES` of them as `near_matches`. When
+    the kinds filter removed every hit (`NotFound`), one node resolves and several are
+    ambiguous, every one of them, sorted by dcid as fallback candidates are; either keeps the
+    removed hits as `near_matches`."""
+    if not shared:
+        return result
+    if isinstance(result, Resolved):
+        others = tuple(entity for entity, _ in shared if entity.dcid != result.entity.dcid)
+        return replace(result, near_matches=others[:_MAX_NEAR_MATCHES])
+    if not isinstance(result, NotFound):
+        return result
+    if len(shared) == 1:
+        ((entity, matched),) = shared
+        return Resolved(entity=entity, matched=matched, near_matches=result.removed)
+    candidates = tuple(sorted((entity for entity, _ in shared), key=lambda e: e.dcid))
+    return Ambiguous(candidates=candidates, near_matches=result.removed)
+
+
 class EntityResolver:
     """One shared resolver's own pipeline. `graph` and `shared` are both
     required: the pipeline reads through both on every non-empty,
@@ -543,11 +567,15 @@ class EntityResolver:
         *,
         kinds: Collection[EntityKind] | None = None,
         code_system: str | None = None,
+        near_matches: bool = False,
         deadline: float | None = None,
     ) -> list[Resolution]:
         """Resolve each text, keeping only candidates of `kinds` (every kind when `None`).
 
-        `code_system` narrows the `code` kind to one system's graph id. Pass an absolute
+        `code_system` narrows the `code` kind to one system's graph id. `near_matches` fills
+        `Resolved.near_matches` for a resolvekit hit, at one more graph read per call that has
+        a hit (`graph.resolve_sharing`), and a second when the graph names another node for
+        any hit's text; the confirmation read covers those nodes. Pass an absolute
         `time.monotonic()` deadline: the resolvekit job does not start once it has passed, and
         every graph read receives it. Propagate `GraphDeadlineExceededError` unchanged. `None`
         leaves the request unbounded. Capture one generation stamp before lookup so all texts in
@@ -575,7 +603,14 @@ class EntityResolver:
             if not stripped:
                 results[index] = NotFound()
                 continue
-            key = (stamp.key, index_key, _normalize_key(stripped), kind_filter, code_system)
+            key = (
+                stamp.key,
+                index_key,
+                _normalize_key(stripped),
+                kind_filter,
+                code_system,
+                near_matches,
+            )
             with self._cache_lock:
                 cached = self._cache.get(key)
             if cached is not None:
@@ -594,6 +629,7 @@ class EntityResolver:
                 code_index=code_index,
                 kinds=kind_filter,
                 code_system=code_system,
+                near_matches=near_matches,
                 deadline=deadline,
             )
 
@@ -607,7 +643,7 @@ class EntityResolver:
         sharing a key share one answer."""
         if self._codes is None or kinds is None or _CODE_KIND not in kinds:
             return []
-        _, _, folded, _, _ = key
+        _, _, folded, _, _, _ = key
         return [
             (hit.entity, Matched(text=hit.text, matched_as=hit.matched_as))
             for hit in self._codes.codes_by_text(folded, code_system=code_system)
@@ -622,6 +658,7 @@ class EntityResolver:
         code_index: KindIndex | None,
         kinds: frozenset[EntityKind] | None,
         code_system: str | None,
+        near_matches: bool,
         deadline: float | None,
     ) -> None:
         code_hits = {
@@ -663,21 +700,31 @@ class EntityResolver:
             else:
                 miss_texts[index] = pending_texts[index]
 
-        fallback_dcids: dict[int, tuple[str, ...]] = {}
-        if miss_texts:
-            fallback = functools.partial(
-                resolve_fallback,
-                self._graph,
-                normalize=self._normalize,
-                deadline=deadline,
-            )
-            fallback_dcids = await run_in_executor_with_context(
-                self._graph_executor, fallback, miss_texts
-            )
+        group_admitted = kinds is None or _GROUP_KIND in kinds
+        # A hit answered as a registry group carries no near matches, so reads none.
+        sharing_texts = {
+            index: pending_texts[index]
+            for index in hits
+            if near_matches and (outcomes[index].group is None or not group_admitted)
+        }
+        fallback = functools.partial(
+            resolve_fallback, self._graph, normalize=self._normalize, deadline=deadline
+        )
+        sharing = functools.partial(
+            resolve_sharing,
+            self._graph,
+            known={index: {dcid for _, dcid in hits[index]} for index in sharing_texts},
+            normalize=self._normalize,
+            deadline=deadline,
+        )
+        fallback_dcids, sharing_dcids = await asyncio.gather(
+            self._on_graph(fallback, miss_texts), self._on_graph(sharing, sharing_texts)
+        )
 
         all_dcids = sorted(
             {dcid for candidate_hits in hits.values() for _, dcid in candidate_hits}
             | {dcid for dcids in fallback_dcids.values() for dcid in dcids}
+            | {dcid for dcids in sharing_dcids.values() for dcid in dcids}
             | {entity.dcid for candidates in code_hits.values() for entity, _ in candidates}
         )
         confirmed: dict[str, dict[str, tuple[str, ...]] | None] = {}
@@ -691,7 +738,6 @@ class EntityResolver:
             # A code counts only once the graph confirms it, like any other candidate.
             codes = [pair for pair in code_hits[index] if confirmed.get(pair[0].dcid) is not None]
             outcome = outcomes.get(index)
-            group_admitted = kinds is None or _GROUP_KIND in kinds
             if outcome is None:
                 result = _choose(codes, kinds=kinds, near_matches=(), reading="entity")
             elif outcome.group is not None and index in hits and group_admitted:
@@ -702,6 +748,14 @@ class EntityResolver:
                 result = self._assemble_hit(
                     hits[index], outcome, confirmed, kinds, codes, code_index=code_index
                 )
+                shared = self._sharing_matches(
+                    sharing_dcids.get(index, ()),
+                    pending_texts[index],
+                    confirmed,
+                    kinds,
+                    code_index=code_index,
+                )
+                result = _with_shared_names(result, shared)
             elif index in fallback_dcids:
                 result = self._assemble_fallback(
                     fallback_dcids[index],
@@ -720,6 +774,17 @@ class EntityResolver:
                     reading="entity",
                 )
             self._store(results, keys, index, result)
+
+    async def _on_graph(
+        self,
+        lookup: Callable[[Mapping[int, str]], dict[int, tuple[str, ...]]],
+        texts: Mapping[int, str],
+    ) -> dict[int, tuple[str, ...]]:
+        """Run a description-arc `lookup` over `texts` on the graph executor. No texts read
+        nothing."""
+        if not texts:
+            return {}
+        return await run_in_executor_with_context(self._graph_executor, lookup, texts)
 
     def _store(
         self,
@@ -864,6 +929,50 @@ class EntityResolver:
             reading=outcome.reading,
         )
 
+    def _sharing_matches(
+        self,
+        dcids: tuple[str, ...],
+        text: str,
+        confirmed: dict[str, dict[str, tuple[str, ...]] | None],
+        kinds: frozenset[EntityKind] | None,
+        *,
+        code_index: KindIndex | None,
+    ) -> list[_Candidate]:
+        """The confirmed nodes sharing a hit's text, of the requested kinds, in the graph's
+        order."""
+        matches: list[_Candidate] = []
+        for dcid in dcids:
+            arcs = confirmed.get(dcid)
+            if arcs is None:
+                continue
+            candidate = self._listed_candidate(dcid, arcs, text, code_index=code_index)
+            if _admits(kinds, candidate[0]):
+                matches.append(candidate)
+        return matches
+
+    def _listed_candidate(
+        self,
+        dcid: str,
+        arcs: dict[str, tuple[str, ...]],
+        text: str,
+        *,
+        code_index: KindIndex | None,
+    ) -> _Candidate:
+        """The confirmed graph node `dcid` listing `text`, as its `name` or else as an
+        alternate name (`alias`)."""
+        normalized_text = normalize_or_none(self._normalize, text)
+        names = {normalize_or_none(self._normalize, name) for name in arcs.get("name", ())}
+        matched_as: MatchedAs = (
+            "name" if normalized_text is not None and normalized_text in names else "alias"
+        )
+        entity = self._confirmed(
+            dcid=dcid,
+            arcs=arcs,
+            name=_fallback_name(dcid=dcid, arcs=arcs, text=text),
+            code_index=code_index,
+        )
+        return entity, Matched(text=text, matched_as=matched_as)
+
     def _assemble_fallback(
         self,
         dcids: tuple[str, ...],
@@ -878,23 +987,11 @@ class EntityResolver:
         """Choose among the confirmed fallback candidates and codes by `kinds`.
 
         Sort fallback candidates by dcid. Each is a graph node listing the input text, as its
-        `name` or else as an alternate name (`alias`)."""
-        normalized_text = normalize_or_none(self._normalize, text)
-        candidates: list[_Candidate] = []
-        for dcid in sorted(dcids):
-            arcs = confirmed.get(dcid)
-            if arcs is None:
-                continue
-            names = {normalize_or_none(self._normalize, name) for name in arcs.get("name", ())}
-            matched_as: MatchedAs = (
-                "name" if normalized_text is not None and normalized_text in names else "alias"
-            )
-            entity = self._confirmed(
-                dcid=dcid,
-                arcs=arcs,
-                name=_fallback_name(dcid=dcid, arcs=arcs, text=text),
-                code_index=code_index,
-            )
-            candidates.append((entity, Matched(text=text, matched_as=matched_as)))
+        `name` or else as an alternate name (`alias`) (`_listed_candidate`)."""
+        candidates = [
+            self._listed_candidate(dcid, arcs, text, code_index=code_index)
+            for dcid in sorted(dcids)
+            if (arcs := confirmed.get(dcid)) is not None
+        ]
         candidates.extend(codes)
         return _choose(candidates, kinds=kinds, near_matches=near_matches, reading="entity")

@@ -23,6 +23,7 @@ from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.spec_build import (
     NamedGroup,
+    RoleAxisFactInput,
     build_shape_model,
     build_spec,
     build_stat_vars,
@@ -40,6 +41,7 @@ from search.models import (
     EntityRoleDirectional,
     GraphRef,
     MembersNotStated,
+    RoleAxisFact,
     Slot,
     SlotKey,
     SlotValue,
@@ -220,6 +222,21 @@ class TestBuildSpecStatVars:
         wire = self._build(stat_vars).model_dump(mode="json")["resolved"]["stat_vars"]
 
         assert wire.get("source_codes") == codes
+
+    def test_an_open_role_counts_the_parties_beside_the_totals_of_the_code_index(self):
+        parties = get_index().parties
+        totals = [dcid for dcid, row in parties.items() if row.kind_over() == "total"][:2]
+        members = [dcid for dcid, row in parties.items() if row.kind_over() == "party"][:3]
+        population = frozenset((*totals, *members))
+
+        spec = self._build(
+            _stat_vars(1),
+            role_axis_facts=[RoleAxisFactInput(role="origin", member_dcids=population)],
+        )
+
+        assert spec.resolved.role_axis_facts == [
+            RoleAxisFact(role="origin", member_count=3, members_available=True)
+        ]
 
     def test_a_walk_of_the_identitys_own_query_states_the_served_count_and_digest(self):
         unwalked = self._build(_stat_vars(3))

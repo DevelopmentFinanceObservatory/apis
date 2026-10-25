@@ -16,7 +16,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
+from code_index.shared import get_index
 from dfo_platform.named import named_capped
+from dfo_platform.roles import FlowFamily
 from origin_catalogue import current_catalogue
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.errors import EngineInputError
@@ -28,6 +30,7 @@ from search.models import (
     ProvenanceRef,
 )
 from search.observations import provenance_refs, unlisted_provenances
+from search.role_kinds import RoleKindRefused, TypesRead, check_role_kinds
 
 
 def _ref_or_miss(dcid: str, labels: dict[str, str]) -> GraphRef:
@@ -121,3 +124,25 @@ def confirm_dcids_present(
                 pointer=pointer_for(group, absent),
             )
     return confirmed
+
+
+def refuse_wrong_kind(
+    entities: Mapping[str, Sequence[str]],
+    *,
+    read_types: TypesRead,
+    family: FlowFamily | None,
+    pointer_prefix: str,
+) -> None:
+    """Refuse an entity in `entities`, by role key, whose kind its flow role does not take
+    (`search.role_kinds.check_role_kinds`, the rule the Datasets mint refuses by) as
+    `invalid_role_ref` (422) at `{pointer_prefix}/entities/{role}`, naming the role in the
+    wording of the series' flow `family`."""
+    try:
+        check_role_kinds(entities, read_types=read_types, code_index=get_index(), family=family)
+    except RoleKindRefused as refused:
+        raise EngineInputError(
+            str(refused),
+            code="invalid_role_ref",
+            status=422,
+            pointer=f"{pointer_prefix}/entities/{refused.role}",
+        ) from refused

@@ -55,7 +55,7 @@ from search.models import (
     UnsupportedPart,
     Warning,
 )
-from search.render.assumptions import assumptions_for, common_assumptions
+from search.render.assumptions import NameCorrection, assumptions_for, common_assumptions
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.departures import departures_from_facts
 from search.render.heading import (
@@ -417,6 +417,7 @@ def build_definite_part(
     departure_facts: Sequence[DepartureFact] = (),
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
     assumption_echo: Sequence[Assumption] | None = None,
+    name_corrections: Sequence[NameCorrection] = (),
     asked_axes: frozenset[RoleAxis] = frozenset(),
     own_spec: Spec | None = None,
     members_in_words: bool = False,
@@ -431,8 +432,10 @@ def build_definite_part(
     entity name (`RegionResult.entity_words`), in which a group read as members is asked.
     ``assumption_echo`` is the list a dataset resubmit entry echoed
     (`RegionResult.assumption_echo`), of which the part states those that still hold
-    (`render.assumptions.assumptions_for`), None when it echoed none. ``asked_axes`` are
-    the flow axes the request's words asked every member of
+    (`render.assumptions.assumptions_for`), None when it echoed none.
+    ``name_corrections`` are the entity names the request's door read in place of its
+    typed words (`RegionResult.name_corrections`), of which the part states those ``spec``
+    binds. ``asked_axes`` are the flow axes the request's words asked every member of
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
     open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
     ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
@@ -466,6 +469,7 @@ def build_definite_part(
         assumptions=assumptions_for(
             spec,
             echo=assumption_echo,
+            corrections=name_corrections,
             asked_axes=asked_axes,
             operations=operations,
             own_spec=own_spec,
@@ -807,6 +811,7 @@ def build_candidates_part(
     departure_facts: Sequence[DepartureFact] = (),
     reading_facts: Mapping[str, Sequence[DepartureFact]] = NO_READING_FACTS,
     request_words: bool = True,
+    name_corrections: Sequence[NameCorrection] = (),
     asked_axes: frozenset[RoleAxis] = frozenset(),
     assumption_echoes: Mapping[str, Sequence[Assumption]] = MappingProxyType({}),
 ) -> CandidatesPart:
@@ -831,6 +836,8 @@ def build_candidates_part(
     `elected_shape_no_data` states one `closest_match` departure
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
+    ``name_corrections`` are the entity names the request's door read in place of its
+    typed words (`RegionResult.name_corrections`); each reading states those it binds.
     ``asked_axes`` are the flow axes the request's words asked every member of
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
     open role. `CandidatesPart.reading_assumptions` holds each shown reading's own list, as
@@ -880,6 +887,7 @@ def build_candidates_part(
         assumptions_for(
             spec,
             echo=assumption_echoes.get(spec.spec_id),
+            corrections=name_corrections,
             asked_axes=asked_axes,
             operations=operations,
         )

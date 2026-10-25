@@ -311,13 +311,8 @@ def test_no_entity_named_discovers_the_recipient_scope(monkeypatch):
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert len(role_scope_warnings) == 2
     messages = {w.message for w in role_scope_warnings}
-    assert (
-        "no recipient was named; the answer was resolved across the 2 recipients with data."
-        in messages
-    )
-    assert "no provider was named; the answer was resolved across every provider with data." in (
-        messages
-    )
+    assert "No recipient was named, so the answer covers both recipients with data." in messages
+    assert "No provider was named, so the answer covers every provider with data." in (messages)
     # The plan serves each pair's 2020 point, so the StatVar is dated 2020 to 2020.
     assert spec.resolved.members[0].data_date_range == DateRange(start="2020", end="2020")
 
@@ -362,7 +357,7 @@ def test_origin_bound_and_recipient_open_discovers_the_recipient_scope(monkeypat
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert len(role_scope_warnings) == 1
     assert (
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         "from France." in role_scope_warnings[0].message
     )
 
@@ -525,7 +520,7 @@ def test_several_bound_origins_are_all_named_in_the_role_scope_warning(
     assert [e.ref for e in result.specs[0].resolved.entities] == sorted(dcid for _, dcid in origins)
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in role_scope_warnings] == [
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         f"from {expected_named}."
     ]
 
@@ -589,7 +584,7 @@ def test_resubmit_names_every_bound_origin_in_the_role_scope_warning(
     assert region.status == "definite", region
     role_scope_warnings = [w for w in region.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in role_scope_warnings] == [
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         f"from {expected_named}."
     ]
 

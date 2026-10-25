@@ -14,7 +14,10 @@ Every mint resolves through `_resolve_members` before a registry write, so a ref
 row. Scope surgery replaces supplied members, preserves the rest, and rehashes the document.
 `scope.facets` can bind the provenance that names a family's dataset, so members resolve under
 the facets the scope installs. Invalid roles refuse as `InvalidRoleRef` or `RoleIncompatible`
-before a write. The mint then serves the
+before a write. A role-bearing window longer than a role read lists refuses `WindowOverCap`
+(`check_served_window`, the rule Search's role routes read by) before any registry write,
+here and wherever a sidecar is admitted, as does a flow-role entity whose kind its role does
+not take (`check_entity_kinds`, the rule Search's role routes refuse by). The mint then serves the
 identity in canonical form (`code_index.members.canonical_identity`): each slot an invariant
 of the dataset the identity names fixes binds the invariant's value, so definitions naming one
 dataset that differ only in whether they bind an invariant or leave it unbound serve and
@@ -33,6 +36,7 @@ from typing import Protocol, cast
 
 from dfo_spec_kit.identity import IdentityError
 
+from code_index.flow_family import flow_family
 from code_index.members import canonical_identity
 from code_index.query import CodeIndex
 from datasets_api.adapter import (
@@ -43,6 +47,7 @@ from datasets_api.adapter import (
     resolve_definition_members,
     to_materialisation_request,
     verify_sidecar_definition,
+    window_to_identity,
 )
 from datasets_api.admission import (
     elected_provenances,
@@ -71,8 +76,14 @@ from datasets_api.render import linked_under
 from datasets_api.shape import StatVarShape
 from datasets_api.surgery import apply_scope_surgery, open_roles_left_open
 from datasets_api.timings import phase
+from dfo_platform.problem import Refusal
 from materialise import MaterialisationRequest
 from materialise.graph import GraphReader
+from search.models import TimeWindow
+from search.role_kinds import RoleKindRefused, check_role_kinds, graph_types
+from search.scope_window import WindowTooLong, role_read_years
+from series_coverage.schema import YearHorizon
+from series_coverage.shared import ServedCoverage
 from spec_registry import RecomputedIdentity, SpecIdMismatch, SpecRegistry, recompute_identity
 from spec_registry.reader import SpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
@@ -82,8 +93,9 @@ _STAT_VAR_PREFIX = "dcid:"
 
 
 class MemberResolutionDeps(Protocol):
-    """The graph reads sidecar admission makes, the settings that bound its member walk, and
-    the request's deadline. `MintDeps` and the definition door's `DefinitionDeps` both carry
+    """The graph reads sidecar admission makes, the settings that bound its member walk, the
+    request's deadline, and the coverage whose horizon bounds a role-bearing window
+    (`check_served_window`). `MintDeps` and the definition door's `DefinitionDeps` both carry
     them."""
 
     graph: GraphReader
@@ -91,6 +103,7 @@ class MemberResolutionDeps(Protocol):
     code_index: CodeIndex
     settings: DatasetsBuildSettings
     deadline: float | None
+    coverage: ServedCoverage
 
 
 class SidecarRegistrationDeps(MemberResolutionDeps, Protocol):
@@ -207,12 +220,151 @@ def _check_own_roles(
     check_reproducible(identity, spec_id=spec_id, shape=own.shapes[0])
 
 
+class WindowOverCap(Refusal):
+    """A role-bearing mint's window lists more years than a role read carries
+    (`search.scope_window.role_read_years`), which Search's resubmit of the minted identity
+    would refuse as `scope_too_broad`. Wire mapping: `request_invalid`, 400, `pointer` naming
+    the window's body path. The message states the cap and the years the window reads, and
+    names the years asked beside them where the floor or the coverage horizon moved a bound,
+    as in "1900 to 2060 reads 1960 to 2060, which is 101 years"."""
+
+    code = "request_invalid"
+
+    def __init__(
+        self, *, pointer: str, start_year: int | None, end_year: int | None, too_long: WindowTooLong
+    ) -> None:
+        self.pointer = pointer
+        read = too_long.read
+        assert read.start_year is not None and read.end_year is not None  # a listed read
+        if start_year is not None and end_year is not None:
+            asked = f"{start_year} to {end_year}"
+        elif start_year is not None:
+            asked = f"from {start_year}"
+        else:
+            asked = f"up to {end_year}"
+        limit = f"A window reads at most {too_long.cap} years of data"
+        if (start_year, end_year) == (read.start_year, read.end_year):
+            super().__init__(f"{limit}; {asked} is {too_long.years} years.")
+            return
+        read_years = f"{read.start_year} to {read.end_year}"
+        super().__init__(f"{limit}; {asked} reads {read_years}, which is {too_long.years} years.")
+
+
+def check_window_span(
+    window: Mapping[str, object],
+    *,
+    shapes: Sequence[StatVarShape],
+    horizon: YearHorizon,
+    pointer: str,
+) -> None:
+    """Refuse a range `window` a role read of `shapes` could not list.
+
+    A shape declaring a role besides the subject (`observationAbout`) reads its years as
+    Search's role routes do (`search.scope_window.role_read_years`, over the coverage
+    `horizon`), so a window admitted here resolves when Search resubmits the minted identity.
+    A subject-only shape reads every year the window names. Raises `WindowOverCap`."""
+    if window.get("kind") != "range":
+        return
+    if all(shape.declared_roles == ("observationAbout",) for shape in shapes):
+        return
+    start_year = cast("int | None", window.get("start_year"))
+    end_year = cast("int | None", window.get("end_year"))
+    try:
+        role_read_years(
+            TimeWindow(start_year=start_year, end_year=end_year),
+            horizon=horizon,
+            clock_year=None,
+        )
+    except WindowTooLong as too_long:
+        raise WindowOverCap(
+            pointer=pointer, start_year=start_year, end_year=end_year, too_long=too_long
+        ) from too_long
+
+
+def check_served_window(
+    identity: Mapping[str, object],
+    *,
+    scope: Scope | None,
+    shapes: Sequence[StatVarShape],
+    coverage: ServedCoverage,
+    identity_pointer: str,
+) -> None:
+    """`check_window_span` on the window a mint of `identity` under `scope` serves, over the
+    coverage horizon, before any write: `scope.window` when given, which replaces the
+    identity's whole and is refused at `/input/scope/window`, otherwise the identity's own
+    `requested_window`, refused at `identity_pointer`."""
+    if scope is not None and scope.window is not None:
+        window, pointer = window_to_identity(scope.window), "/input/scope/window"
+    else:
+        window = cast("Mapping[str, object]", identity.get("requested_window", {"kind": "all"}))
+        pointer = identity_pointer
+    check_window_span(
+        window, shapes=shapes, horizon=coverage.snapshot().index.horizon, pointer=pointer
+    )
+
+
+class EntityKindRefused(Refusal):
+    """A role-bearing mint binds an entity under a flow role whose kind the role does not take
+    (`search.role_kinds.check_role_kinds`), which Search's role routes refuse by the same rule.
+    Wire mapping: `invalid_role_ref`, 422, `pointer` naming the role's entities in the body.
+    The message names the entity's kind and the kinds the role takes."""
+
+    code = "invalid_role_ref"
+
+    def __init__(self, *, pointer: str, refused: RoleKindRefused) -> None:
+        self.pointer = pointer
+        super().__init__(str(refused))
+
+
+def check_entity_kinds(
+    identity: Mapping[str, object],
+    *,
+    scope: Scope | None,
+    shapes: Sequence[StatVarShape],
+    deps: MemberResolutionDeps,
+    entities_pointer: str | None,
+) -> None:
+    """Refuse an entity a mint of `identity` under `scope` binds under a flow role of a
+    role-bearing shape when its kind the role does not take (`check_role_kinds`), before any
+    write: `scope.entities` when given, which replaces the identity's whole and is refused at
+    `/input/scope/entities/<role>`, otherwise the identity's own `entities`, refused at
+    `entities_pointer`'s `<role>`, or at `/input/spec_id` for a registered identity
+    (`entities_pointer` `None`). The refusal names the role in the wording of the shapes' flow
+    family (`code_index.flow_family.flow_family`). Raises `EntityKindRefused`."""
+    if all(shape.declared_roles == ("observationAbout",) for shape in shapes):
+        return
+    if scope is not None and scope.entities is not None:
+        entities, prefix = scope.entities, "/input/scope/entities"
+    else:
+        entities = cast("Mapping[str, Sequence[str]]", identity.get("entities", {}))
+        prefix = entities_pointer
+    try:
+        check_role_kinds(
+            entities,
+            read_types=graph_types(deps.graph),
+            code_index=deps.code_index,
+            family=flow_family(
+                index=deps.code_index,
+                population_type=shapes[0].population_type,
+                stat_vars=[shape.stat_var.removeprefix(_STAT_VAR_PREFIX) for shape in shapes],
+                members=[
+                    {prop: value for prop, value in shape.slots if value is not None}
+                    for shape in shapes
+                ],
+            ),
+        )
+    except RoleKindRefused as refused:
+        pointer = _POINTER if prefix is None else f"{prefix}/{refused.role}"
+        raise EntityKindRefused(pointer=pointer, refused=refused) from refused
+
+
 def admit_sidecar(
     definition: CanonicalDefinition,
     *,
     spec_id: str,
     scope: Scope | None,
     deps: MemberResolutionDeps,
+    definition_pointer: str = "/input/definition",
 ) -> tuple[RecomputedIdentity, tuple[StatVarShape, ...]]:
     """Checks an unregistered sidecar and returns its recomputed identity (the canonical
     document, its bytes and digest) and resolved shapes.
@@ -225,7 +377,10 @@ def admit_sidecar(
 
     Raises `MalformedSidecarIdentity` for an identity the identity core refuses, each member
     resolution refusal, `InvalidRoleRef` or `RoleIncompatible` for a scope role, `SpecIdMismatch`
-    when the identity does not hash to `spec_id`, and `DefinitionNotReproducible`, in that order.
+    when the identity does not hash to `spec_id`, `DefinitionNotReproducible`,
+    and `WindowOverCap` for a role-bearing window a role read cannot list
+    (`check_served_window`, at `definition_pointer`'s `/identity/requested_window` when the
+    sidecar's own window is at fault), in that order.
     """
     bounds = _walk_bounds(deps)
     try:
@@ -250,6 +405,13 @@ def admit_sidecar(
     _check_own_roles(
         identity, spec_id=spec_id, scope=scope, shapes=shapes, deps=deps, bounds=bounds
     )
+    check_served_window(
+        identity,
+        scope=scope,
+        shapes=shapes,
+        coverage=deps.coverage,
+        identity_pointer=f"{definition_pointer}/identity/requested_window",
+    )
     return recomputed, shapes
 
 
@@ -260,14 +422,30 @@ def register_sidecar(
     scope: Scope | None,
     deps: SidecarRegistrationDeps,
     trace_id: str | None,
+    definition_pointer: str = "/input/definition",
 ) -> tuple[StoredDefinition, tuple[StatVarShape, ...]]:
     """Admit the sidecar `definition` for the unregistered `spec_id` (`admit_sidecar`), register
     it, and read it back. Returns the stored definition and the shapes admission resolved.
 
-    Admission runs before the registry write, so its refusals leave no registry row. The
+    Admission and the kind check of its flow-role entities (`check_entity_kinds`) run before
+    the registry write, so their refusals leave no registry row; `definition_pointer` is the
+    body path of the posted definition their refusals name. The
     registry write is read back before the caller serves anything.
     """
-    _recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=scope, deps=deps)
+    recomputed, shapes = admit_sidecar(
+        definition,
+        spec_id=spec_id,
+        scope=scope,
+        deps=deps,
+        definition_pointer=definition_pointer,
+    )
+    check_entity_kinds(
+        recomputed.identity,
+        scope=scope,
+        shapes=shapes,
+        deps=deps,
+        entities_pointer=f"{definition_pointer}/identity/entities",
+    )
     deps.registry.register_definition(
         identity_definition=definition.identity,
         schema_version=definition.schema_version,
@@ -343,7 +521,9 @@ def mint_spec_id(
     served definition (`resolve_served_definition`) keys every state write, and `serve_mint`
     serves it. With no `scope` the served id is the canonical form of `spec_id`, and the mint
     names `spec_id`: a head honours revocations under both ids, and the links name `spec_id`.
-    With a `scope` the links name the served id.
+    With a `scope` the links name the served id. The served window is checked against the
+    resolved shapes (`check_served_window`), and the kind of every flow-role entity
+    (`check_entity_kinds`), inside `register_sidecar` for a sidecar, before any registry write.
     """
     with phase("resolve"):
         stored = deps.spec_reader.read_definition(spec_id)
@@ -381,6 +561,16 @@ def mint_spec_id(
             if scope is not None and scope.entities is not None:
                 for shape in shapes:
                     build_identity_document(shape, scope=scope, graph=deps.graph)
+            check_served_window(
+                stored.identity,
+                scope=scope,
+                shapes=shapes,
+                coverage=deps.coverage,
+                identity_pointer=_POINTER,
+            )
+            check_entity_kinds(
+                stored.identity, scope=scope, shapes=shapes, deps=deps, entities_pointer=None
+            )
 
         stored = resolve_served_definition(
             stored,

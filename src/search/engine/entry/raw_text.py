@@ -18,7 +18,7 @@ from code_index.tokens import word_tokens
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
-from entity_resolution import Admission, Ambiguous, EntityResolver, Resolution, Resolved
+from entity_resolution import Admission, EntityResolver, Resolved
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import current_catalogue
@@ -109,7 +109,11 @@ from search.engine.source_scope import (
     source_dictionary,
 )
 from search.engine.source_spans import read_sources, unclaimed_words
-from search.engine.surface_resolution import ambiguous_surface_names
+from search.engine.surface_resolution import (
+    ambiguous_surface_names,
+    corrected_surfaces,
+    named_dcids,
+)
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -124,6 +128,7 @@ from search.models import (
     Spec,
     Warning,
 )
+from search.render.assumptions import NameCorrection
 
 logger = logging.getLogger(__name__)
 
@@ -202,15 +207,6 @@ def _holds_run(words: Sequence[str], run: Sequence[str]) -> bool:
     )
 
 
-def _named_dcids(resolution: Resolution) -> frozenset[str]:
-    """The dcids `resolution` names: its entity, or each candidate of an ambiguity."""
-    if isinstance(resolution, Resolved):
-        return frozenset({resolution.entity.dcid})
-    if isinstance(resolution, Ambiguous):
-        return frozenset(candidate.dcid for candidate in resolution.candidates)
-    return frozenset()
-
-
 async def _query_words_of(
     name: str,
     query: str,
@@ -284,15 +280,15 @@ async def _query_words_of(
     named = answers[name]
     if isinstance(named, Resolved):
         dcid = named.entity.dcid
-        choosing = [(i, j) for i, j in stretches if _named_dcids(answers[text(i, j)]) == {dcid}]
+        choosing = [(i, j) for i, j in stretches if named_dcids(answers[text(i, j)]) == {dcid}]
         width = max((j - i for i, j in choosing), default=0)
         widest = [(i, j) for i, j in choosing if j - i == width]
         if len(widest) == 1:
             return text(*widest[0])
     if any(_holds_run(_folded_words(rival), run) for rival in rivals):
         return None
-    run_names = _named_dcids(answers[text(start, end)])
-    if run_names and not run_names & _named_dcids(named):
+    run_names = named_dcids(answers[text(start, end)])
+    if run_names and not run_names & named_dcids(named):
         return None
     return text(start, end)
 
@@ -416,6 +412,35 @@ async def _recover_entity_surfaces(
         else entity
         for entity in kept
     ]
+
+
+async def _name_corrections(
+    entities: list[ExtractedEntity], *, query: str, resolver: EntityResolver, deadline: float
+) -> tuple[NameCorrection, ...]:
+    """The names `entities` read in place of the query's own words for them, in first-seen
+    order: each name whose surface (`_entity_surfaces`) lists no name or alias of the entity
+    the name settles on (`surface_resolution.corrected_surfaces`), as "Germany" for
+    "Germny". A translated name the query writes no words of has no surface, and so no
+    correction, as "Germany" for "Deutschland" with a null span. A national adjective,
+    whose cue is its own span ("French" in "French aid"), names its country by its
+    adjective and corrects nothing. Run on the recovered entities
+    (`_recover_entity_surfaces`), whose surfaces that call resolved already."""
+    adjectives = {
+        _entity_key(entity)
+        for entity in entities
+        if entity.span
+        and entity.role_span
+        and _normalize(entity.role_span) == _normalize(entity.span)
+    }
+    surfaces = {
+        name: surface
+        for name, surface in _entity_surfaces(entities, query=query).items()
+        if name not in adjectives
+    }
+    corrected = await _await_bounded(
+        corrected_surfaces(surfaces, resolver=resolver), deadline=deadline
+    )
+    return tuple(NameCorrection(asked=surfaces[name], ref=ref) for name, ref in corrected.items())
 
 
 def _without_absorbed(entities: list[ExtractedEntity], *, query: str) -> list[ExtractedEntity]:
@@ -784,6 +809,7 @@ class _ExtractionPrep:
     per_variable_source_scopes: list[SourceScope | SourceRefusal | None]
     per_variable_source_codes: list[str | None]
     per_variable_compiled_codes: list[PartCode | None]
+    name_corrections: tuple[NameCorrection, ...] = ()
 
     def dropped_phrases_of(self, i: int) -> list[str]:
         """The dropped phrases the part of `unique[i]` reads: the request's, then its own."""
@@ -795,8 +821,9 @@ class _ExtractionPrep:
         `query_qualifier_dropped` warning and its departure for each word narrowing its own
         measure that its answer leaves unapplied, the request-wide qualifier warnings whose
         phrase the region leaves unapplied (`RegionResult.unapplied_qualifier_warnings`), the
-        query's words for each entity, and that its door asks for members in the question's
-        words (`RegionResult.members_in_words`).
+        query's words for each entity, the names read in place of the query's words
+        (`RegionResult.name_corrections`), and that its door asks for members in the
+        question's words (`RegionResult.members_in_words`).
 
         The answer applies a narrowing word when the region admitted it as a qualifier
         phrase, or when every Spec it answers with binds a value or a party named by it
@@ -832,6 +859,7 @@ class _ExtractionPrep:
             dataclasses.replace(
                 with_departure_facts(region, facts),
                 unapplied_qualifier_warnings=tuple(request_unapplied),
+                name_corrections=self.name_corrections,
                 members_in_words=True,
             ),
             self.entity_words,
@@ -931,9 +959,15 @@ def _breakdown_under(phrase: str, *, verbs: Collection[str], query: str) -> Role
 
 
 def _prepare_extraction(
-    extraction: Extraction, extract_result: ExtractionResult, *, query: str
+    extraction: Extraction,
+    extract_result: ExtractionResult,
+    *,
+    query: str,
+    name_corrections: tuple[NameCorrection, ...] = (),
 ) -> _ExtractionPrep:
-    """Prepare deduped extraction fields, qualifiers, and warnings for `handle`."""
+    """Prepare deduped extraction fields, qualifiers, and warnings for `handle`.
+    ``name_corrections`` are the names the extraction read in place of the query's words
+    (`_name_corrections`), which every part receives (`_ExtractionPrep.onto`)."""
     date_request = dates_to_request(extraction.dates)
     unique: list[str] = _dedupe_stripped(extraction.variables)
 
@@ -1133,6 +1167,7 @@ def _prepare_extraction(
         per_variable_source_scopes=per_variable_source_scopes,
         per_variable_source_codes=per_variable_source_codes,
         per_variable_compiled_codes=per_variable_compiled_codes,
+        name_corrections=name_corrections,
     )
 
 
@@ -1469,7 +1504,14 @@ async def handle(
             )
         }
     )
-    prep = _prepare_extraction(extraction, extract_result, query=query)
+    prep = _prepare_extraction(
+        extraction,
+        extract_result,
+        query=query,
+        name_corrections=await _name_corrections(
+            extraction.entities, query=query, resolver=resolver, deadline=params.deadline
+        ),
+    )
 
     yield InterpretationEvent(
         variables=prep.interpretation_variables,

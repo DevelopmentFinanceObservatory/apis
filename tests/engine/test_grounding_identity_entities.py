@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 import pytest
 
+from code_index.shared import get_index
 from search.engine.errors import EngineInputError
 from search.engine.extract import DateRequest
 from search.engine.region.candidate_grounding import scopes_on_axis
@@ -121,18 +122,12 @@ def _unqualified(discovered: DiscoveredScope) -> str:
 
 def test_role_scope_defaulted_message_names_the_singular_member_count():
     message = _unqualified(_discovered_scope("destination", 1))
-    assert (
-        message
-        == "no recipient was named; the answer was resolved across the 1 recipient with data."
-    )
+    assert message == "No recipient was named, so the answer covers the one recipient with data."
 
 
 def test_role_scope_defaulted_message_names_the_plural_member_count():
     message = _unqualified(_discovered_scope("destination", 3))
-    assert (
-        message
-        == "no recipient was named; the answer was resolved across the 3 recipients with data."
-    )
+    assert message == "No recipient was named, so the answer covers all 3 recipients with data."
 
 
 def test_role_scope_defaulted_message_distinguishes_small_and_large_scopes():
@@ -146,16 +141,11 @@ def test_role_scope_defaulted_message_distinguishes_small_and_large_scopes():
 
 def test_role_scope_defaulted_message_uses_the_origin_axis_noun_and_count():
     message = _unqualified(_discovered_scope("origin", 2))
-    assert (
-        message
-        == "no provider was named; the answer was resolved across the 2 providers with data."
-    )
+    assert message == "No provider was named, so the answer covers both providers with data."
 
 
-_DESTINATION_BASE = (
-    "no recipient was named; the answer was resolved across the 2 recipients with data"
-)
-_ORIGIN_BASE = "no provider was named; the answer was resolved across the 2 providers with data"
+_DESTINATION_BASE = "No recipient was named, so the answer covers both recipients with data"
+_ORIGIN_BASE = "No provider was named, so the answer covers both providers with data"
 
 
 @pytest.mark.parametrize(
@@ -209,8 +199,7 @@ def test_role_scope_defaulted_message_keeps_the_single_label_text():
         label_of=_RecordingLabels(["France"]),
     )
     assert message == (
-        "no recipient was named; the answer was resolved across the 2 recipients "
-        "with data from France."
+        "No recipient was named, so the answer covers both recipients with data from France."
     )
 
 
@@ -334,7 +323,7 @@ def test_role_scope_defaulted_warnings_names_the_discovered_axis_and_its_bound_o
     assert [(w.code, w.severity) for w in warnings] == [("role_scope_defaulted", "warn")]
     assert (
         warnings[0].message
-        == "no recipient was named; the answer was resolved across the 2 recipients with data "
+        == "No recipient was named, so the answer covers both recipients with data "
         "from country/FRA."
     )
 
@@ -353,8 +342,8 @@ def test_role_scope_defaulted_warnings_adds_the_companion_axis_when_both_are_ope
 
     assert [w.code for w in warnings] == ["role_scope_defaulted", "role_scope_defaulted"]
     assert [w.message for w in warnings] == [
-        "no recipient was named; the answer was resolved across the 2 recipients with data.",
-        "no provider was named; the answer was resolved across every provider with data.",
+        "No recipient was named, so the answer covers both recipients with data.",
+        "No provider was named, so the answer covers every provider with data.",
     ]
 
 
@@ -385,8 +374,7 @@ def test_a_filtered_answer_restates_the_scope_warning_in_place_without_a_label_r
 
     assert [w.message for w in warnings] == [
         "first",
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
-        "from France.",
+        "No recipient was named, so the answer covers the one recipient with data from France.",
         "last",
     ]
     assert recording.calls == [["country/FRA"]]
@@ -401,12 +389,12 @@ def test_a_scope_warning_naming_every_member_is_restated_to_count_the_answers_sc
     warnings = role_scope_defaulted_warnings(
         mat, boundary_roles=[], label_of=_EchoLabels(), state_count=False
     )
-    every = "no recipient was named; the answer was resolved across every recipient with data."
+    every = "No recipient was named, so the answer covers every recipient with data."
     assert [w.message for w in warnings] == [every]
 
     for members, state_count, restated in (
-        (discovered.member_dcids[:1], True, every.replace("every recipient", "the 1 recipient")),
-        (discovered.member_dcids, True, every.replace("every recipient", "the 3 recipients")),
+        (discovered.member_dcids[:1], True, every.replace("every recipient", "the one recipient")),
+        (discovered.member_dcids, True, every.replace("every recipient", "all 3 recipients")),
         (discovered.member_dcids, False, every),
     ):
         restate_role_scope_warnings(
@@ -437,8 +425,8 @@ def test_a_scope_warning_is_removed_when_the_answer_lists_no_member():
     ]
     assert [w.message for w in warnings] == [
         "first",
-        "no recipient was named; the answer was resolved across the 3 recipients with data.",
-        "no provider was named; the answer was resolved across every provider with data.",
+        "No recipient was named, so the answer covers all 3 recipients with data.",
+        "No provider was named, so the answer covers every provider with data.",
     ]
 
     restate_role_scope_warnings(
@@ -447,7 +435,7 @@ def test_a_scope_warning_is_removed_when_the_answer_lists_no_member():
 
     assert [w.message for w in warnings] == [
         "first",
-        "no provider was named; the answer was resolved across every provider with data.",
+        "No provider was named, so the answer covers every provider with data.",
     ]
 
 
@@ -462,7 +450,30 @@ def test_role_scope_defaulted_warnings_counts_the_members_the_plan_serves():
     )
 
     assert [w.message for w in warnings] == [
-        "no recipient was named; the answer was resolved across the 2 recipients with data."
+        "No recipient was named, so the answer covers both recipients with data."
+    ]
+
+
+@pytest.mark.parametrize(("totals", "parties", "count"), [(2, 3, "all 3"), (2, 0, "both")])
+def test_role_scope_defaulted_warnings_counts_parties_beside_their_totals(totals, parties, count):
+    """A scope holding group totals beside their members counts the members, as the
+    sentence and the default download do; a scope of totals alone counts them all."""
+    index = get_index().parties
+    members = [
+        *[dcid for dcid, row in index.items() if row.kind_over() == "total"][:totals],
+        *[dcid for dcid, row in index.items() if row.kind_over() == "party"][:parties],
+    ]
+    discovered = DiscoveredScope(
+        axis="destination", role_name="debtor", member_dcids=members, filters={}
+    )
+    warnings = role_scope_defaulted_warnings(
+        _materialised(discovered_scope=discovered, scope_member_dcids=members),
+        boundary_roles=[],
+        label_of=_EchoLabels(),
+    )
+
+    assert [w.message for w in warnings] == [
+        f"No recipient was named, so the answer covers {count} recipients with data."
     ]
 
 
@@ -479,7 +490,7 @@ def test_role_scope_defaulted_warnings_names_the_open_origin_on_the_bound_destin
     assert [w.code for w in warnings] == ["role_scope_defaulted"]
     assert (
         warnings[0].message
-        == "no provider was named; the answer was resolved across every provider with data."
+        == "No provider was named, so the answer covers every provider with data."
     )
 
 
@@ -493,7 +504,7 @@ def test_role_scope_defaulted_warnings_still_warns_on_an_empty_open_origin():
 
     assert len(warnings) == 1
     assert warnings[0].code == "role_scope_defaulted"
-    assert "no provider was named" in warnings[0].message
+    assert "No provider was named" in warnings[0].message
 
 
 def test_role_scope_defaulted_warnings_is_empty_with_every_axis_bound():

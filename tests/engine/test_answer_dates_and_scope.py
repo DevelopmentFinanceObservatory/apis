@@ -190,6 +190,9 @@ _NAMED_FIRST = [
 _NAMED_RESUBMIT = [
     "node_arcs_batch",
     "node_labels_batch",
+    # The posted places are no party of the fixture index, so the role kind check types them
+    # (`search.role_kinds.check_role_kinds`).
+    "node_arcs_many",
     *["default_facet_policy"] * 3,
     "node_labels_batch",
     "node_types_batch",
@@ -522,7 +525,7 @@ def _stated_scope(result) -> tuple[list[str], int, str]:
     (warning,) = [
         w.message
         for w in result.warnings
-        if w.code == "role_scope_defaulted" and "no recipient was named" in w.message
+        if w.code == "role_scope_defaulted" and "No recipient was named" in w.message
     ]
     return [m.ref for m in resolved.scope.members], dims["recipients"], warning
 
@@ -553,7 +556,7 @@ def test_a_discovered_scope_lists_the_members_its_plan_serves(
     members, count, warning = _stated_scope(first)
     assert members == expected
     assert count == len(expected)
-    assert f"resolved across the {len(expected)} recipients with data" in warning
+    assert "covers both recipients with data" in warning
 
     resubmit_plans = _spy_plans(monkeypatch, promote_ground)
     again = _resubmit(first.specs[0], index)
@@ -598,11 +601,11 @@ def test_a_source_pin_lists_the_scope_members_the_pinned_source_serves(
     assert [(w.code, w.message) for w in pinned.warnings if w.code == "role_scope_defaulted"] == [
         (
             "role_scope_defaulted",
-            "no recipient was named; the answer was resolved across the 1 recipient with data.",
+            "No recipient was named, so the answer covers the one recipient with data.",
         ),
         (
             "role_scope_defaulted",
-            "no provider was named; the answer was resolved across every provider with data.",
+            "No provider was named, so the answer covers every provider with data.",
         ),
     ]
     assert requests == _DISCOVERED_PINNED_RESUBMIT
@@ -667,7 +670,7 @@ def test_candidates_serving_different_scopes_share_a_warning_without_a_count(
     assert scopes == {_FLOW: [_ALAND], cited_sources._ALT_FLOW: [_ALAND, _BLAND]}
     warnings = [w.message for w in result.warnings if w.code == "role_scope_defaulted"]
     assert warnings[0] == (
-        "no recipient was named; the answer was resolved across every recipient with data."
+        "No recipient was named, so the answer covers every recipient with data."
     )
 
 
@@ -724,8 +727,8 @@ def test_a_unit_request_dates_every_answer_from_its_narrowed_plan(
             assert {d.label: d.count for d in spec.resolved.coverage.dimensions}["recipients"] == 1
         warnings = [w.message for w in result.warnings if w.code == "role_scope_defaulted"]
         assert warnings == [
-            "no recipient was named; the answer was resolved across the 1 recipient with data.",
-            "no provider was named; the answer was resolved across every provider with data.",
+            "No recipient was named, so the answer covers the one recipient with data.",
+            "No provider was named, so the answer covers every provider with data.",
         ]
 
 

@@ -130,7 +130,7 @@ departure code is a `Warning.code` or a refusal code, so the platform
 code registry does not list them."""
 DEPARTURE_ORDER: tuple[DepartureCode, ...] = get_args(DepartureCode)
 """`DepartureCode` in precedence order. `_PartBase.departures` follows it."""
-AssumptionKind = Literal["declared_default", "open_role", "place_scope"]
+AssumptionKind = Literal["name_corrected", "declared_default", "open_role", "place_scope"]
 """Every kind of value an answer fills that its request did not ask for (see
 `models.assumption.Assumption`), in the order a part's `assumptions` lists them. A closed
 vocabulary of its own, like `DepartureCode`, outside the platform code registry."""

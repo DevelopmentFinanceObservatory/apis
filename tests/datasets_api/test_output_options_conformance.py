@@ -96,7 +96,10 @@ def _crs_graph() -> FakeMintGraphReader:
             },
             # No ISO arcs leave `recipient_iso3` and `recipient_iso2` partial.
             "country/UGA": {"name": ("Uganda",)},
-            # Provider nodes have no arcs, so their enrichments are omitted.
+            # Provider nodes carry only their type, which the role kind check reads, so their
+            # enrichments are omitted.
+            "org/DAC1": {"typeOf": ("Organization",)},
+            "org/DAC2": {"typeOf": ("Organization",)},
         },
         facets={
             (_CRS_STAT_VAR, "country/KEN"): [_FACET],

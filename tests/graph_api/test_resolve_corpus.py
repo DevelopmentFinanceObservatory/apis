@@ -19,7 +19,7 @@ from .conftest import FakeGraphNodeReader, make_client, make_resolver
 _CORPUS = Path(__file__).parents[1] / "entity_resolution" / "corpus" / "resolve_cases.yaml"
 _LAST_RUNG_ARC = "<-description->dcid"
 _EXPECTATION_KEYS = frozenset(
-    {"status", "ref", "candidates", "kind", "matched_as", "reading", "member_count"}
+    {"status", "ref", "candidates", "kind", "matched_as", "reading", "member_count", "near_matches"}
 )
 _STATUSES = frozenset({"resolved", "ambiguous", "not_found", "not_held"})
 
@@ -98,3 +98,5 @@ def test_a_case_resolves_as_the_corpus_expects(shared_resolver, case: dict[str, 
         assert result["reading"] == expect["reading"]
     if expect.get("member_count") is not None:
         assert result["member_count"] == expect["member_count"]
+    if expect.get("near_matches") is not None:
+        assert [m["ref"] for m in result["near_matches"] or []] == expect["near_matches"]
