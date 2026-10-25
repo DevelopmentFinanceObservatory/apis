@@ -333,7 +333,11 @@ async def resolve_parsed_entries(
     )
     interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
     per_variable_pre_resolved = await per_part_pre_resolved(
-        parts, pins, resolver=resolver, deadline=deadline
+        parts,
+        pins,
+        surfaces=interpretation.entity_surfaces,
+        resolver=resolver,
+        deadline=deadline,
     )
 
     out = _FanOutResult()
@@ -369,6 +373,8 @@ async def resolve_parsed_entries(
         per_variable_role_queries=interpretation.role_queries,
         per_variable_entity_roles=interpretation.entity_roles,
         per_variable_member_entities=interpretation.member_entities,
+        per_variable_entity_surfaces=interpretation.entity_surfaces,
+        per_variable_entity_words=interpretation.entity_words,
         per_variable_unit_texts=interpretation.unit_texts,
         per_variable_source_scopes=interpretation.source_scopes,
         per_variable_source_codes=interpretation.source_codes,

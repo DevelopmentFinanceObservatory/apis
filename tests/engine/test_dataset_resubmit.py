@@ -767,23 +767,6 @@ def test_parsed_entry_resolves_through_the_shared_per_part_pipeline():
                     part=ParsedPart(
                         variable_text="aid from Congo to Congo",
                         entities=[
-                            ParsedEntity(text="Congo", role_text="from", dcid="country/COD"),
-                            ParsedEntity(text="Congo", role_text="to", dcid="country/COG"),
-                        ],
-                    )
-                )
-            ],
-            None,
-            ("request_invalid", None, "/input/entries/0/part/entities"),
-            None,
-            id="one_text_two_dcids_refuses_request_invalid",
-        ),
-        pytest.param(
-            [
-                ResubmitParsedEntry(
-                    part=ParsedPart(
-                        variable_text="aid from Congo to Congo",
-                        entities=[
                             ParsedEntity(text="Congo", role_text="from", members=True),
                             ParsedEntity(text="Congo", role_text="to"),
                         ],

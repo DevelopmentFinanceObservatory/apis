@@ -529,7 +529,7 @@ def build_no_data_part(
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
     ambiguous_entities: list[AmbiguousEntityGroup] | None = None,
-    ambiguous_roles: Mapping[str, RoleAxis] | None = None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None = None,
     options: list[NoDataOption] | None = None,
     source_terms: list[str] | None = None,
     ambiguous_sources: list[AmbiguousSourceGroup] | None = None,
@@ -565,8 +565,8 @@ def build_no_data_part(
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
-    the sentence marks as a slot. ``options`` are the ready requests of a refusal that
-    asks for a choice (`conjoin._options`).
+    the sentence marks as a slot, parallel to ``entity_terms``. ``options`` are the ready
+    requests of a refusal that asks for a choice (`conjoin._options`).
     ``source_terms`` are the source wordings a ``source_not_resolved`` or
     ``source_ambiguous`` outcome rests on, or the series code a ``source_code_*`` outcome
     rests on, and ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
@@ -710,6 +710,7 @@ def build_no_data_part(
                 entity_groups=entity_groups,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
+                ambiguous_roles=ambiguous_roles,
                 elected_stat_vars=elected_stat_vars,
                 qualifier_terms=qualifier_terms,
                 source_terms=source_terms,
