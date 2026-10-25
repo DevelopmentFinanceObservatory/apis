@@ -7,7 +7,7 @@ and every consumer reads that plan rather than derive its own:
   tuple)` with its candidate facets and the group the preview dispatches for it. Each
   member gets one group across every place and role tuple the answer names, elected over
   the member's probe as a mint elects it (`PairPlan.probes`,
-  `materialise.facets.served_facets`). A series the group does not cover serves nothing. A
+  `materialise.group_facets.group_served`). A series the group does not cover serves nothing. A
   scope-defaulted read serves the one facet elected across every place
   (`facet_election.rank_scope_candidates`).
 - A `BulkPlan` reads a role-bearing population whose bound pairs or series pass
@@ -45,9 +45,9 @@ from materialise.facets import (
     MemberProbe,
     overlaps_window,
     read_variable_breadths,
-    served_facets,
     subject_probe,
 )
+from materialise.group_facets import group_served
 from materialise.window import RequestedWindow, election_window, latest_period, latest_periods
 from search.engine import extract as _extract
 from search.engine.clients.graph import Facet
@@ -474,22 +474,13 @@ def _member_groups(
     probes: Mapping[str, MemberProbe], *, years: PlanYears
 ) -> dict[str, tuple[Facet, ...]]:
     """The facets of the one group each member's preview dispatches at every series, in
-    serving order: `served_facets` over the member's probe under `years`, led by the series
+    serving order: `group_served` over the member's probe alone under `years`, led by the series
     each facet holds a point at (`MemberProbe.breadth_in`), with a tie at one place broken on
     the facet's places across the whole variable (`MemberProbe.variable_breadth`). The
     elected facets come first and the facets continuing them past their last year after
     (`materialise.facets.continuation`), which a mint of the answer's Spec dispatches too."""
     window = plan_window(years)
-    return {
-        sv: served_facets(
-            probe.candidates,
-            stat_vars=[sv],
-            window=window,
-            breadth=probe.breadth_in(window),
-            variable_breadth=probe.variable_breadth,
-        )
-        for sv, probe in probes.items()
-    }
+    return {sv: group_served({sv: probe}, window=window)[sv] for sv, probe in probes.items()}
 
 
 def _elect_groups(
@@ -515,7 +506,7 @@ def _elect_groups(
         sv: tuple(f.facet_id for f in group if f.facet_id is not None)
         for sv, group in groups.items()
     }
-    # `served_facets` puts the selection, which shares one method, before the estimates
+    # `group_served` puts the selection, which shares one method, before the estimates
     # continuing it.
     selections = {
         sv: frozenset(

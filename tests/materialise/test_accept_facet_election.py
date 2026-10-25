@@ -35,7 +35,6 @@ from materialise.facets import (
     Cadence,
     bound_variable_breadth,
     probe_collection_candidates,
-    served_facets,
 )
 from materialise.graph import Facet
 from materialise.group_facets import group_breadth, group_variable_breadth, select_group_facets
@@ -58,6 +57,7 @@ from tests.engine._fake_coverage import FakeCoverageService, build_coverage_inde
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 from tests.origin_catalogue.support import CRS, WDI, sample_tables
 
+from ._group_support import served_alone
 from .conftest import FakeGraphReader
 
 _POPULATION = "Count_Person"
@@ -180,9 +180,9 @@ def _preview(
     ],
 )
 def test_dfo_leads_only_when_it_covers_at_least_as_many_places(dfo_breadth, base_breadth, elected):
-    served = served_facets(
+    served = served_alone(
         [_DFO_FACET, _BASE_FACET],
-        stat_vars=[_POPULATION],
+        stat_var=_POPULATION,
         window=None,
         breadth={"fD": dfo_breadth, "fB": base_breadth},
     )
@@ -193,7 +193,7 @@ def test_dfo_leads_only_when_it_covers_at_least_as_many_places(dfo_breadth, base
 @pytest.mark.usefixtures("overlap")
 def test_a_single_series_keeps_dfo_precedence():
     """With no breadth (one series) the ranking is today's: DFO's facet first."""
-    served = served_facets([_DFO_FACET, _BASE_FACET], stat_vars=[_POPULATION], window=None)
+    served = served_alone([_DFO_FACET, _BASE_FACET], stat_var=_POPULATION, window=None)
 
     assert [facet.facet_id for facet in served] == ["fD"]
 
@@ -410,10 +410,10 @@ def _failing_profile(eur: Facet, usd: Facet) -> tuple[dict[str, list[Facet]], Fa
 def _defective_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     """Makes every profile's election raise a defect, an error that is no failed read."""
 
-    def served_facets(*args, **kwargs):
+    def group_served(*args, **kwargs):
         raise ValueError("profile election bug")
 
-    monkeypatch.setattr(facet_profile, "served_facets", served_facets)
+    monkeypatch.setattr(facet_profile, "group_served", group_served)
 
 
 @pytest.mark.parametrize(
@@ -549,7 +549,7 @@ def test_a_group_at_one_place_breaks_its_tie_on_its_members_whole_breadth():
         graph=graph,
         breadth=group_breadth(probes, window=_ALL),
         variable_breadth=group_variable_breadth(probes),
-    )
+    ).election
 
     assert reads == [(_GDP, other)]
     assert election.selections["unit"].ref == "CurrencyUSD"
@@ -745,7 +745,7 @@ def test_a_group_refuses_only_a_cadence_its_unread_breadth_would_decide(
                 graph=graph,
                 breadth=group_breadth(probes, window=_ALL),
                 variable_breadth=group_variable_breadth(probes),
-            )
+            ).election
 
     if refused:
         with pytest.raises(VariableBreadthUnreadError) as refusal:

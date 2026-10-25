@@ -1744,8 +1744,8 @@ def _ranking_groups(
     would dispatch together: those sharing provenance, method, unit and cadence
     (`_selection_key`). Its continuation is the one a dispatch serves (`continuation` over
     the whole selection, with `breadth` choosing the method), so it continues each series
-    the selection holds past that series' own end, as `served_facets` and
-    `continued_election` continue a served set. Each of the selection's facets that holds a point in `window` then ranks
+    the selection holds past that series' own end, as `continued_election`
+    continues a served set. Each of the selection's facets that holds a point in `window` then ranks
     as one candidate with those estimated facets, by the years, count and latest date of
     both, and such an estimated facet never ranks on its own. One that continues several
     selections joins each of them, since each selection's dispatch would serve it, so the
@@ -1987,59 +1987,6 @@ def rank_pool(
     )
     return RankedPool(
         pool=pool, precedence=precedence, ranked=_ranked_facets(ranked), groups=tuple(groups)
-    )
-
-
-def served_facets(
-    candidates: Sequence[Facet],
-    *,
-    stat_vars: Iterable[str],
-    window: RequestedWindow | None,
-    breadth: Mapping[str, int] | None = None,
-    variable_breadth: VariableBreadth = None,
-) -> tuple[Facet, ...]:
-    """The facets a preview for `stat_vars` under `window` serves from `candidates` when no
-    axis is bound and the graph declares no default: the top of `rank_pool` over the
-    dispatchable candidates, and every dispatchable candidate carrying the top's provenance,
-    measurement method and unit at the cadence `dispatch_cadence` decides
-    (`FacetElection.serves`), since dispatch fetches each of them and a `latest` read keeps
-    the latest period across them, then the facets that continue them past their last year
-    in `window` (`continuation`). Empty when no candidate carries a `facet_id`, since only
-    those dispatch.
-
-    A top carrying no provenance serves under a request that does not require one
-    (`pipeline.MaterialisationRequest.requires_provenance`)."""
-    dispatchable = [c for c in candidates if c.facet_id is not None]
-    if not dispatchable:
-        return ()
-    stat_vars = tuple(stat_vars)
-    top = rank_pool(
-        dispatchable,
-        stat_vars=stat_vars,
-        window=window,
-        breadth=breadth,
-        variable_breadth=variable_breadth,
-    ).ranked[0]
-    refs = {axis: facet_axis_value(top, axis) for axis in FACET_AXES}
-    matching = [c for c in dispatchable if _matches_refs(c, refs)]
-    (cadence_of,) = cadences_by_member([dispatchable])
-    decided = dispatch_cadence(
-        matching,
-        member_matches=[matching],
-        cadence_of=[cadence_of],
-        stat_vars=stat_vars,
-        window=window,
-        breadth=breadth,
-        variable_breadth=variable_breadth,
-    )
-    cadence = decided[1] if decided is not None else None
-
-    def serves(facet_id: str) -> bool:
-        return at_cadence(facet_id, cadence=cadence, cadence_of=cadence_of)
-
-    served = tuple(c for c in matching if c.facet_id is not None and serves(c.facet_id))
-    return served + continuation(
-        served, dispatchable, window=window, serves=serves, breadth=breadth
     )
 
 
@@ -2707,6 +2654,24 @@ def joint_dispatch_facet_ids(
                 if c.facet_id is not None and election.serves(c.facet_id, member=member)
             }
         )
+    )
+
+
+def continuing_facet_ids(
+    candidates: Sequence[Facet], election: FacetElection, *, member: int
+) -> tuple[str, ...]:
+    """The dispatch IDs (`joint_dispatch_facet_ids`) of the method that continues the
+    selected series past its last year (`FacetSelection.continued_by`), none when nothing
+    continues it. A range window alone continues a series, and its rows serve only the
+    years after that series' last one (`columnar.continuation_mask`)."""
+    method = election.selections.get("measurementMethod")
+    if method is None or method.continued_by is None:
+        return ()
+    by_id = {c.facet_id: c for c in candidates}
+    return tuple(
+        facet_id
+        for facet_id in joint_dispatch_facet_ids(candidates, election, member=member)
+        if by_id[facet_id].measurement_method == method.continued_by
     )
 
 

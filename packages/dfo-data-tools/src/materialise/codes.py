@@ -42,8 +42,9 @@ class MaterialisationWarning(TypedDict):
 
     A group's `coverage_below_scope` also carries `member_count`, the series the group
     requested, with `off_cadence_members`, those reporting the requested years at another
-    frequency than the group serves, and `out_of_window_members`, those holding no observation
-    in the requested years, each present only when it names a member. `coverage_below_scope`
+    frequency than the group serves, `out_of_window_members`, those holding no observation
+    in the requested years, and `unserved_members`, those holding no observation under the
+    source, unit and method the group serves, each present only when it names a member. `coverage_below_scope`
     carries `unserved_entities`, the bound entities that served no observation,
     `currency_unmapped_omitted` `omitted_entities`, the entities whose rows the conversion
     left out, and `deflator_missing_omitted` `omitted_entity_years`, those entities with the
@@ -60,6 +61,7 @@ class MaterialisationWarning(TypedDict):
     member_count: NotRequired[int]
     off_cadence_members: NotRequired[CountedRefs]
     out_of_window_members: NotRequired[CountedRefs]
+    unserved_members: NotRequired[CountedRefs]
     unserved_entities: NotRequired[CountedRefs]
     omitted_entities: NotRequired[CountedRefs]
     omitted_entity_years: NotRequired[CountedEntityYears]

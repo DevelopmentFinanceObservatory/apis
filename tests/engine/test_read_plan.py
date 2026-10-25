@@ -10,7 +10,8 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import search.engine.retrieval.read_plan as read_plan
-from materialise.facets import bound_variable_breadth, coverage_probe, served_facets
+from materialise.facets import bound_variable_breadth, coverage_probe
+from materialise.group_facets import group_served
 from materialise.series_conversion import series_key
 from search.engine.app import _note_breadth_fallback
 from search.engine.clients.graph import Facet
@@ -961,9 +962,7 @@ def test_a_bulk_election_ranks_the_span_and_count_a_mint_ranks(search_settings) 
     )
     probe = coverage_probe(stat_var=_FLOW, bound=bound, coverage=index)
     window = plan_window(years.years)
-    (minted,) = served_facets(
-        probe.candidates, stat_vars=[_FLOW], window=window, breadth=probe.breadth_in(window)
-    )
+    (minted,) = group_served({_FLOW: probe}, window=window)[_FLOW]
 
     assert isinstance(plan, BulkPlan)
     assert {

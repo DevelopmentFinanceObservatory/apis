@@ -84,6 +84,7 @@ def new_coverage(
             countries_fallback=countries_fallback,
             off_cadence=members,
             out_of_window=(),
+            unserved_members=(),
             member_count=member_count,
         )
     )
