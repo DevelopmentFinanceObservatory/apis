@@ -375,6 +375,36 @@ def test_gemini_rates_the_words_on_the_one_series_the_read_served(search_setting
     assert [q.text for q in qualifiers if q.evidence == "uncovered"] == ["refugee"]
 
 
+# The shape holds one series, labelled by the family read and named otherwise in the graph.
+_LONE_SERIES = replace(
+    _READER_PERSONS,
+    label="Refugee population (female)",
+    sv_arc_facts={"women": {"name": {"nodes": [{"value": "Women"}]}}},
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "served", "named"),
+    [(_LONE_SERIES, "women", False), (_REFUGEES_SERVING_PERSONS, "persons", True)],
+    ids=["the-labelled-series", "another-series"],
+)
+def test_a_read_serving_the_labelled_series_names_no_series(search_settings, shape, served, named):
+    """The read serves the one series the shape holds, so the label names it, and the
+    prompt rates the words on the label alone though the series' own name differs. A shape
+    that also holds the series the label names serves another, which the prompt names."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(variable="refugee population", shape_draft=shape, bindings=[], unplaced=[])
+    state.capped_shapes = [shape]
+    state.binder = GeminiBinder()
+    state.mat_result = _served(served)
+    state.llm = llm = _StatedLLM([(0, True), (1, True)])
+
+    _run(state)
+
+    ((prompt, _system, _schema),) = llm.calls
+    assert ("the answer serves" in prompt) == named
+
+
 @pytest.mark.parametrize(
     ("served", "quoted", "rating"),
     [("persons", "the series 'Total population'", 0.1), ("sdg/XYZ", None, 0.9)],

@@ -52,6 +52,7 @@ from search.engine.region.phase_rank_bind import (
     _open_operation_slots,
     _query_records,
     _resolve_query_qualifiers,
+    _selected_members,
     _shape_qualifiers,
     _unchosen_matches,
     _unheld_bound_codes,
@@ -1258,14 +1259,21 @@ async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, f
     from the shape's label (`stated_words_read.serves_beyond_label`), so a word one of them
     does not state reads as narrower than the answer. Where a served member has no name,
     the request names none and the bind's rating on the label stands, as the coverage rule
-    then reads the named members' words (`phase_rank_bind._member_measure_words`)."""
+    then reads the named members' words (`phase_rank_bind._member_measure_words`). A read
+    serving the one series the shape holds under the bindings serves the series the label
+    names (`_serves_the_labelled_series`), so the request names none."""
     words = _unrated_words(answer)
     if not words:
         return {}
     shape = answer.shape_draft
-    names = list(served_member_names(answer).values())
+    served_names = served_member_names(answer)
+    names = list(served_names.values())
     named = [name for name in names if name is not None]
-    served = tuple(dict.fromkeys(named)) if len(named) == len(names) else ()
+    served = (
+        tuple(dict.fromkeys(named))
+        if len(named) == len(names) and not _serves_the_labelled_series(answer, served_names)
+        else ()
+    )
     request = StatedWordsRequest(
         variable=state.variable,
         shape=shape,
@@ -1295,6 +1303,22 @@ async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, f
     if len(rated) < len(words):
         note_degraded_read("stated words unrated")
     return rated
+
+
+def _serves_the_labelled_series(answer: ResolveState, served: Mapping[str, str | None]) -> bool:
+    """Whether the read of `answer`'s elected answer served, as `served`
+    (`served_member_names`), the one member the elected shape holds under the final
+    bindings (`phase_rank_bind._selected_members`). The label names that series however
+    its own name reads: "net disbursements (interest received on OOF and export credits,
+    non-grant (DAC type of finance))" is the series named "Interest received on OOF and
+    export credits (net disbursements)", and naming it again drops what the label states.
+    A shape holding another member under the bindings, as "Refugee population" beside the
+    total population does, labels the series the bind elected, which the read may not
+    serve."""
+    return (
+        len(served) == 1
+        and served.keys() == _selected_members(answer.shape_draft, answer.bindings).keys()
+    )
 
 
 def log_would_refuse(state: ResolveState, result: RegionResult) -> None:
