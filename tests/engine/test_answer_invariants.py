@@ -1508,8 +1508,9 @@ def i9_latency(run: Doors) -> list[str]:
       it on this branch in `answer_invariants_requests_uncompared.json`, under the same
       condition. That file holds the covering array's doors with neither a comparable door
       at c669cc874 nor a preview-off door with their outcome.
-      A re-recording may lower an entry and never raise one. `_answer_invariants_record`
-      regenerates both files and refuses a list that grows.
+      A re-recording keeps an entry while its door passes it and replaces one only with
+      `--grow`. `_answer_invariants_record` regenerates both files and refuses a list that
+      grows.
 
     A preview-on door is also held to its own preview-off door plus the reads its preview
     may make (`_preview_reads`), which is the whole bound of one neither file answers for.
@@ -1921,6 +1922,50 @@ def test_i9_checks_exactly_the_committed_cells() -> None:
         expected = set(CHECKS) - (set() if str(cell) in committed else {"I9"})
         assert set(checks_for(cell)) == expected, cell
     assert set(_measurements(_BRANCH_PATH)["doors"]) <= committed
+
+
+_HELD = {
+    "outcome": ["definite", None, None, None],
+    "served": [[1, 3, None]],
+    "requests": {_LABEL_READ: 3},
+    "depth": 2,
+}
+
+
+@pytest.mark.parametrize(
+    ("old", "now", "grows"),
+    [
+        pytest.param(None, _HELD, True, id="added"),
+        pytest.param(_HELD, {**_HELD, "outcome": ["no_data", None, None, None]}, True, id="answer"),
+        pytest.param(_HELD, {**_HELD, "requests": {_LABEL_READ: 4}}, True, id="requests"),
+        pytest.param(_HELD, {**_HELD, "depth": 3}, True, id="depth"),
+        pytest.param(
+            _HELD,
+            {
+                **_HELD,
+                "requests": {_LABEL_READ: 4},
+                "facet_options": {"requests": {_LABEL_READ: 1}, "depth": 1},
+            },
+            False,
+            id="facet_read_within_bound",
+        ),
+        pytest.param(_HELD, {**_HELD, "requests": {_LABEL_READ: 2}, "depth": 1}, False, id="fewer"),
+        pytest.param(_HELD, _HELD, False, id="identical"),
+    ],
+)
+def test_a_rerecord_keeps_a_held_record_its_door_passes(
+    old: dict[str, Any] | None, now: dict[str, Any], grows: bool
+) -> None:
+    """`_answer_invariants_record.rerecord` keeps a door's held record while the door passes
+    I9 against it, so a re-record never loosens the bound: a facet-option read the old
+    record lacks leaves the old record, which still refuses a fourth label read outside a
+    facet build. A door added, answering differently or exceeding its record takes its
+    measurement and grows the list."""
+    key = ("cell", "resubmit", 0)
+    held = {} if old is None else {key: old}
+    doors, grown = _answer_invariants_record.rerecord(held, {key: now})
+    assert doors == {key: now if grows else old}
+    assert bool(grown) == grows
 
 
 def test_the_recorder_lists_only_committed_doors_at_their_positions(tmp_path: Path) -> None:

@@ -65,7 +65,7 @@ uv run python -m tests.engine._answer_invariants_record measure <file>.jsonl
 uv run python -m tests.engine._answer_invariants_record write --branch <file>.jsonl --grow "<the answer that changed>"
 ```
 
-`measure` runs the covering array, and the preview-off cells I9 runs to bound its preview-on cells. `write` rebuilds `answer_invariants_requests_uncompared.json` and refuses to add a door, change a door's answer, or let a door request more or run deeper than I9 allows its held record, unless `--grow` gives the reason. On an unchanged tree `write` needs no `--grow` and leaves the file as it is.
+`measure` runs the covering array, and the preview-off cells I9 runs to bound its preview-on cells. `write` rebuilds `answer_invariants_requests_uncompared.json`. It keeps each held record its door still passes under I9, drops the doors the base record or a preview-off door now bounds, and refuses to add a door, change a door's answer, or let a door request more or run deeper than its held record allows, unless `--grow` gives the reason. On an unchanged tree `write` needs no `--grow` and rewrites no record.
 
 ### Changing what the clients read
 

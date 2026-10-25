@@ -10,9 +10,11 @@ regenerated only from a copy of that tree, and only when the grid or the recorde
 `tests/fixtures/answer_invariants_requests_uncompared.json` is recorded from the current
 tree: the covering array's doors that no door at c669cc874 with the same answer bounds and
 that have no preview-off door with the same outcome to bound them. A door's list holds null
-at a position the file does not hold. The list may only shrink: `write` refuses a list that
-adds a door, changes a door's answer or lets a door request more or run deeper than
-`i9_latency` allows its held record, unless `--grow` names the reason. A pull request that
+at a position the file does not hold. The list may only shrink. `write` keeps a door's held
+record while the door passes `i9_latency` against it, drops a door the base fixture or its
+preview-off door now bounds, and refuses a list that adds a door, changes a door's answer
+or lets a door request more or run deeper than its held record allows, unless `--grow`
+names the reason. A pull request that
 changes a door's answer on purpose fails I9 and re-records the list in that pull request.
 
 Each command runs from the root of the tree it measures, with `DFO_SPEC_KIT_DIR` set.
@@ -198,24 +200,32 @@ def uncompared(base: Doors, branch: Doors, *, cells: frozenset[str]) -> Doors:
     return doors
 
 
-def growth(held: Doors, now: Doors) -> list[str]:
-    """Each way `now` grows on the list `held`: a door added, a door answering differently,
-    or a door requesting more or running deeper than `i9_latency` allows its held record
-    (`_beyond` with `_held_grants`)."""
+def rerecord(held: Doors, listed: Doors) -> tuple[Doors, list[str]]:
+    """The list to write for the doors `listed`, and each way it grows on the list `held`.
+
+    A listed door keeps its held record when `i9_latency` passes it against that record:
+    the same answer, and no request or serial step beyond it (`_beyond` with
+    `_held_grants`). The record then bounds every door it bounded before. Any other listed
+    door takes its measurement and grows the list: a door added, a door answering
+    differently, or a door requesting more or running deeper than its held record allows."""
     from tests.engine.test_answer_invariants import _beyond, _held_grants, _same_answer
 
+    doors: Doors = {}
     grown: list[str] = []
-    for key, record in sorted(now.items()):
+    for key, now in sorted(listed.items()):
         name = f"{key[0]} {key[1]} {key[2]}"
         old = held.get(key)
         if old is None:
             grown.append(f"{name}: added")
-        elif not _same_answer(old, record):
-            grown.append(f"{name}: answers {record['outcome']} against {old['outcome']}")
+        elif not _same_answer(old, now):
+            grown.append(f"{name}: answers {now['outcome']} against {old['outcome']}")
+        elif over := list(_beyond(now, old, "held", granted=_held_grants(now, old))):
+            grown += [f"{name}: {line}" for line in over]
         else:
-            granted = _held_grants(record, old)
-            grown += [f"{name}: {line}" for line in _beyond(record, old, "held", granted=granted)]
-    return grown
+            doors[key] = old
+            continue
+        doors[key] = now
+    return doors, grown
 
 
 def write(*, base: Path | None, branch: Path, grow: str | None) -> None:
@@ -228,7 +238,9 @@ def write(*, base: Path | None, branch: Path, grow: str | None) -> None:
     if not base_doors:
         raise SystemExit(f"write: {_BASE_PATH.name} is missing; pass --base")
     listed = uncompared(base_doors, _measured(branch), cells=_I9_CELLS)
-    grown = growth(_held(_UNCOMPARED_PATH), listed) if _UNCOMPARED_PATH.exists() else []
+    grown: list[str] = []
+    if _UNCOMPARED_PATH.exists():
+        listed, grown = rerecord(_held(_UNCOMPARED_PATH), listed)
     if grown and grow is None:
         shown = "\n  ".join(grown[:20])
         raise SystemExit(
