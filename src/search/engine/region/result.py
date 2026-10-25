@@ -207,11 +207,14 @@ class RegionResult:
     # Computed from resolved entities after shape construction. `{}` for
     # subject-only shapes or earlier no-data outcomes. This read makes no graph call.
     no_data_bound_role_dcids: Mapping[EntityRoleKey, tuple[str, ...]] = field(default_factory=dict)
-    # The answer a refusal raised on behalf of a candidate is about, as its shape and
-    # bindings: the candidates door answers with that candidate's refusal. `None` for a
-    # refusal about the elected reading. A refusal that judged no answer is judged on it
+    # The answer a refusal raised on behalf of a candidate is about, as its shape, its
+    # bindings and the records of the words it leaves unread (`_Candidate.uncovered`): the
+    # candidates door answers with that candidate's refusal. `None` for a refusal about the
+    # elected reading. A refusal that judged no answer is judged on it
     # (`phase_shared.settle_unjudged_refusal`).
-    refused_answer: tuple[ShapeDraft, tuple[SlotBindingDraft, ...]] | None = None
+    refused_answer: (
+        tuple[ShapeDraft, tuple[SlotBindingDraft, ...], tuple[ResolvedQualifier, ...] | None] | None
+    ) = None
     # Stripped, case-folded qualifier spans forced into bindings by this region, answered
     # by a slot default it warns about, or asking for every member of a flow role its
     # answer leaves unbound (`every_member_phrases`). Same-shape merges union the sets.

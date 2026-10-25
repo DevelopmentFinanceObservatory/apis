@@ -55,6 +55,7 @@ from search.engine.spec_id import (
     build_identity_projection,
     build_spec_identity,
 )
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     BindingUnbound,
     GraphRef,
@@ -74,7 +75,7 @@ from tests.engine import test_pool_election as pools
 from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine.test_admissibility_table import _FACETS, _GDP_SOLE_OPTION, _node, _SoleOptionLLM
 from tests.engine.test_ids_index_sourcing import _crs_arcs, _derive_one, _ids_shape
 from tests.engine.test_parsed_pipeline import _fertility_kenya_part
@@ -856,6 +857,8 @@ class _NominatingLLM(pools._ElectLLM):
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         output, usage = await super().generate_structured(
             prompt=prompt, system=system, schema=schema
         )
@@ -1007,6 +1010,8 @@ class _MenuLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         self.prompts.append(prompt)
         return schema(
             chosen_shape_index=0,
@@ -1171,6 +1176,8 @@ class _AskLLM(_MenuLLM):
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         self.prompts.append(prompt)
         return schema(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask="Which flow?"

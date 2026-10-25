@@ -118,7 +118,7 @@ def restated_request(
     """The stated-word questions asked again once the bind has bound values: the variable
     phrase in the state, and one ``unread|index|k`` noul per word k of `words`, quoting menu
     shape `index` as the values `bindings` restrict it to, those its measure's definition
-    fixes, and the `served` series an answer serving several serves (`describe`)."""
+    fixes, and the `served` series when they differ from its label (`describe`)."""
     desc = describe(shape, bindings=bindings, definition=True, served=served)
     questions: dict[str, JevQuestion] = {
         unread_id(index, k): NoulModel(
