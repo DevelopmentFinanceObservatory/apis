@@ -56,6 +56,17 @@ just check       # lint, type check, and the full suite, as CI runs them
 
 `just check` and CI run the normative identity vector tests (`tests/engine/test_identity_vectors.py`) from the `spec-kit` repository. `just check` and `just test` find a clone at `../dfo-spec-kit`, or at the path in `DFO_SPEC_KIT_DIR`. A git worktree needs `DFO_SPEC_KIT_DIR` set explicitly, because the sibling fallback resolves relative to the worktree's own directory, not the main checkout's. `just check` fails when no clone resolves.
 
+### Invariant grids
+
+`tests/engine/test_answer_invariants.py` and `tests/engine/test_read_plan_grid.py` check the invariants of an answer and of its read plan on every cell of a grid of factors. `just check` and CI run a strength-4 covering array of the cells (`tests/engine/_grid_cells.py`). `.github/workflows/full-grids.yml` runs every cell (`DFO_FULL_GRIDS=1`, about 8,700 tests) against `dev` each night, and a failed nightly opens the issue "Nightly full grids: failing", or comments on it when it is open. Invariant I9 holds each door to the requests it made in a recorded bound, `tests/fixtures/answer_invariants_requests_c669cc874.json` and `tests/fixtures/answer_invariants_requests_uncompared.json`. A change that alters a door's answer on purpose can pass the covering array and fail I9 in the nightly, with "has no door to be held to", on cells the array leaves out. Before merging such a change, run `DFO_FULL_GRIDS=1 uv run pytest -n 4` on the two grid files, and re-record the bound in the same pull request:
+
+```bash
+uv run python -m tests.engine._answer_invariants_record measure <file>.jsonl
+uv run python -m tests.engine._answer_invariants_record write --branch <file>.jsonl --grow "<the answer that changed>"
+```
+
+`measure` runs the full product. `write` refuses a bound that grows unless `--grow` gives the reason.
+
 ### Changing what the clients read
 
 `tests/contract/test_client_contract.py` checks the app against the client contract spec-kit
@@ -144,6 +155,7 @@ A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset 
 GitHub Actions validate pull requests and pushes to `dev`. A draft pull request runs nothing until it is marked ready for review. A push to `main` runs no CI, since `main` only moves to a commit `dev` has already tested. The jobs that need repository secrets skip on pull requests from forks.
 
 - `.github/workflows/ci.yml` runs `ruff check`, `ruff format --check`, `ty check`, `pytest` with identity vectors, and verifies container builds.
+- `.github/workflows/full-grids.yml` runs the invariant grids over every cell each night and opens an issue when they fail. See [Invariant grids](#invariant-grids).
 - `.github/workflows/eval-gate.yml` scores the eval cases on the head and base builds of a pull request, split by case id across parallel shard jobs, and blocks on a regression, a failing new case, or a structural failure in any shard.
 - `.github/workflows/sdmx-live.yml` validates `dc_sdmx` client operations against active Data Commons Cloud Run endpoints.
 - `.github/workflows/migrations.yml` runs database migrations and live tests against PostgreSQL service containers.

@@ -8,7 +8,8 @@ regenerated only from a copy of that tree, and only when the grid or the recorde
 tree: the doors that no door at c669cc874 with the same answer bounds and that have no
 preview-off door with the same outcome to bound them. It may only shrink. `write` refuses a
 list that adds a door, changes a door's answer or raises a door's requests or depth, unless
-`--grow` names the reason.
+`--grow` names the reason. A pull request runs the grid's covering array only, so a change of
+answer on a cell outside it first fails I9 in the nightly `.github/workflows/full-grids.yml`.
 
 Each command runs from the root of the tree it measures, with `DFO_SPEC_KIT_DIR` set.
 

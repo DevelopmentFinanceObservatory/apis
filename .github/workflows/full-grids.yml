@@ -11,6 +11,13 @@
 # merge from the day before, so a push runs nothing. workflow_dispatch runs
 # them on any branch.
 #
+# A failed nightly opens one issue, or comments on it when it is already open,
+# with the run link and pytest's summary line. A dispatched run alerts no one.
+# An I9 failure saying a door "has no door to be held to" means the door's
+# answer differs from the one its request bound records. When the new answer
+# is intended, re-record the bound as tests/engine/_answer_invariants_record.py
+# describes.
+#
 # Checkout, install and test environment copy ci.yml's test-shard job.
 name: Full grids
 
@@ -34,10 +41,14 @@ env:
   # The same extras and sync behaviour as ci.yml.
   UV_SYNC_ARGS: --frozen --extra engine --extra eval --extra datasets --extra graph
   UV_NO_SYNC: "1"
+  ISSUE_TITLE: "Nightly full grids: failing"
 
 jobs:
   full-grids:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v7
 
@@ -78,7 +89,35 @@ jobs:
           DFO_SPEC_KIT_DIR: ${{ github.workspace }}/.spec-kit
           DFO_SPEC_KIT_REQUIRED: "1"
           DFO_FULL_GRIDS: "1"
+        # bash with pipefail, so the step fails when pytest does.
+        shell: bash
         run: >-
           uv run pytest -q -n auto
           tests/engine/test_answer_invariants.py
           tests/engine/test_read_plan_grid.py
+          | tee "$RUNNER_TEMP/pytest.log"
+
+      - name: Open or update the failure issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/issue.md"
+          {
+            echo "The nightly full grids failed on \`${GITHUB_SHA:0:9}\`."
+            echo
+            if [ -f "$RUNNER_TEMP/pytest.log" ]; then
+              echo "Summary: \`$(grep -E '[0-9]+ (passed|failed)' "$RUNNER_TEMP/pytest.log" | tail -1)\`"
+              echo
+            fi
+            echo "Run: $RUN_URL"
+          } > "$body"
+          number="$(gh issue list --state open --search "\"$ISSUE_TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$ISSUE_TITLE\"))[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file "$body"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body-file "$body"
+          fi
