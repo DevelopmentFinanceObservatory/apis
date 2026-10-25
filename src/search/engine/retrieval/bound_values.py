@@ -2454,6 +2454,30 @@ def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], 
     return {sv: ArcsMemberFacts(arcs=a) for sv, a in shape_population_arcs(shape).items()}, False
 
 
+def identity_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], bool]:
+    """The members of the family `shape`'s identity denotes, in the form
+    `five_tuple_member_facts` returns. A part naming a dataset (`ShapeDraft.named_dataset`)
+    denotes that dataset's rows (`part_member_rows`). A part naming none carries no source
+    in its identity, so it denotes every row of its family whatever dataset publishes it
+    (`index_member_rows`): a source exclusion acts on election, not on the identity. A
+    shape the index does not carry reads the members it stands for
+    (`shape_population_arcs`).
+
+    A claim that a slot forces one value is a claim about this family, so the readers that
+    judge one read it. The menu the binder sees stays narrowed to the part's datasets
+    (`shape_for_part`), so a slot the menu offers one code for stays open when a row of an
+    excluded dataset holds another."""
+    index = get_index()
+    rows = (
+        part_member_rows(shape, index)
+        if shape.named_dataset is not None
+        else index_member_rows(shape, index)
+    )
+    if rows:
+        return {row.dcid: IndexMemberFacts(row=row) for row in rows}, True
+    return {sv: ArcsMemberFacts(arcs=a) for sv, a in shape_population_arcs(shape).items()}, False
+
+
 def _exact_member_facts(shape: ShapeDraft, query: FamilyQuery) -> dict[str, MemberFacts]:
     """An exact member set as it stands, each member that is a row of the family the index
     elects for `query` carrying the elected dataset (`materialise.facets.ElectedDataset`, as

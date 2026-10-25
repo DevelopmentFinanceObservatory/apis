@@ -163,6 +163,25 @@ class SlotBindingDraft(BaseModel):
         return self
 
 
+def sole_option_properties(bindings: Iterable[SlotBindingDraft]) -> frozenset[str]:
+    """The properties the bind reply bound to a value only because the slot offered no
+    other (`SlotBindingDraft.evidence` ``sole_option``, `drafted_by` the reply): the
+    request's words name none of them, and each claims that every member asserts its
+    value, which a member conflicting on it refutes. A ``sole_option`` value the engine
+    wrote makes no such claim: a partition value (`standard.bind_partition_values`) sits
+    on a slot the members differ on, and a series code's shared values
+    (`bound_values.bind_member_values`) are shared by that code's StatVars alone. Those
+    give way as values the request named."""
+    return frozenset(
+        b.property_dcid
+        for b in bindings
+        if b.kind == "value"
+        and b.evidence == "sole_option"
+        and b.drafted_by == "reply"
+        and b.property_dcid is not None
+    )
+
+
 class ShapeRating(BaseModel):
     """A candidate shape the bind reply says measures the variable phrase, with its rating."""
 

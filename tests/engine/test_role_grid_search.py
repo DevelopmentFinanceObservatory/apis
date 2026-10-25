@@ -695,7 +695,10 @@ _DAC1 = "provenance/OECDDAC1"
 _DAC1_NET_TOTAL = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal"
 # One of the two DAC1 rows that hold a recipient beside the donor.
 _DAC1_NET_FLOW = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType8863_Nominal"
-_DAC1_NET_DONOR_ONLY = 128
+# DAC1's donor-only ODA rows: the gross and net totals the open netting basis serves,
+# in a family of four.
+_DAC1_ODA_DONOR_TOTALS = 2
+_DAC1_ODA_DONOR_FAMILY = 4
 
 
 class _ElectFirst:
@@ -733,9 +736,9 @@ def test_a_donor_only_dac1_question_answers_the_donor_totals_the_mint_serves(
 ):
     """Recall holds one of DAC1's two net flows to a named recipient. A question naming
     the donor alone, and one naming no place that asks for every recipient, both read the
-    donor-only net disbursements of every aid type: the identity carries no open role,
-    and the served count and family count Search states are the mint's for that
-    identity."""
+    donor-only disbursements of ODA, the aid type DAC1 declares as its default, under every
+    netting basis: the identity carries no open role, and the served count and family count
+    Search states are the mint's for that identity."""
     graph = FakeGraph(
         nodes={
             "country/FRA": {"label": "France", "type": "Country"},
@@ -795,8 +798,8 @@ def test_a_donor_only_dac1_question_answers_the_donor_totals_the_mint_serves(
     family = minted.shapes[0].family
     assert family is not None
     assert {shape.declared_roles for shape in minted.shapes} == {("financingProvider",)}
-    assert spec.resolved.stat_vars.served_count == len(minted.shapes) == _DAC1_NET_DONOR_ONLY
-    assert spec.resolved.shape.member_count == family.count == _DAC1_NET_DONOR_ONLY
+    assert spec.resolved.stat_vars.served_count == len(minted.shapes) == _DAC1_ODA_DONOR_TOTALS
+    assert spec.resolved.shape.member_count == family.count == _DAC1_ODA_DONOR_FAMILY
 
 
 def test_a_question_opening_both_axes_over_two_datasets_mints_what_the_mint_serves():

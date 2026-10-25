@@ -1181,34 +1181,41 @@ def test_a_held_family_past_the_cold_read_cap_answers_unsettled_then_settles(
 
 
 @pytest.mark.parametrize(
-    ("urban_sex", "aged_sex", "slots", "message"),
+    ("urban_sex", "aged_sex", "slots", "notice"),
     [
-        (
-            True,
-            False,
-            [_RESIDENCE, _SEX, _WEALTH],
-            "This indicator has no overall figure, so the answer shows it by residence area.",
-        ),
+        # Every member asserts the urban residence area, so it binds as the slot's sole
+        # value and no breakdown is left to disclose.
+        (True, False, [_RESIDENCE, _SEX, _WEALTH], ([], [])),
         # Only the by-sex members recall did not find assert the age.
         (
             False,
             True,
             [_AGE, _RESIDENCE, _SEX, _WEALTH],
-            "This indicator has no overall figure, so the answer shows it by residence area "
-            "and age.",
+            (
+                [
+                    "This indicator has no overall figure, so the answer shows it by residence"
+                    " area and age."
+                ],
+                ["closest_match"],
+            ),
         ),
     ],
     ids=["shared_residence", "age_outside_the_sample"],
 )
 def test_breakdowns_no_member_holds_together_answer_by_every_member_with_a_departure(
-    bind_catalogue, urban_sex: bool, aged_sex: bool, slots: list[str], message: str
+    bind_catalogue,
+    urban_sex: bool,
+    aged_sex: bool,
+    slots: list[str],
+    notice: tuple[list[str], list[str]],
 ) -> None:
     """Every quintile member of the series also asserts the urban residence area, and none
     asserts both a sex and a wealth quintile, so "by sex and by wealth quintile" opens two
     slots no breakdown holds together. The family keeps every slot and serves all seven
     members, and the answer discloses each breakdown the question did not name that a
     served member asserts, read over the whole family though recall found one quintile
-    alone, with the `closest_match` departure."""
+    alone, with the `closest_match` departure. Where every member asserts the urban
+    residence area, the slot binds that sole value and the answer discloses nothing."""
     query = "under-five mortality by sex and by wealth quintile"
     graph = _hold_wealth_series(
         bind_catalogue,
@@ -1225,4 +1232,4 @@ def test_breakdowns_no_member_holds_together_answer_by_every_member_with_a_depar
     (answer,) = result.specs
     assert [slot.property for slot in answer.definition.identity.slots] == slots
     assert {sv.ref.ref for sv in answer.resolved.members} == {*_QUINTILES, _FEMALE, _MALE}
-    assert _breakdown_notice(result) == ([message], ["closest_match"])
+    assert _breakdown_notice(result) == notice

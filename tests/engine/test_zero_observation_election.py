@@ -2010,7 +2010,8 @@ def test_a_drafted_set_beside_an_elected_reading_with_no_data(others, outcome):
 def test_a_part_with_no_stray_value_keeps_its_answer_and_identities():
     """Nothing drafted on a missing slot changes nothing: "literacy rate in Bangladesh" over
     the unsexed reading, nominating the two by-sex totals, offers the three readings with
-    the identities the engine minted before stray values were judged."""
+    the identities the engine minted before stray values were judged. The elected reading
+    binds the literacy status every member of its sample asserts as the slot's sole value."""
     result = _resolve_by_sex(
         [*_ADULT_BY_SEX, _ADULT_TOTAL_BY_SEX, *_YOUTH_BY_SEX, _YOUTH_TOTAL_BY_SEX],
         [],
@@ -2019,7 +2020,7 @@ def test_a_part_with_no_stray_value_keeps_its_answer_and_identities():
 
     assert result.status == "candidates"
     assert [spec.spec_id for spec in result.specs] == [
-        "spec_ded5cf8cef9e46e3f14e992cff36bd68",
+        "spec_d0b1081b996808e0d3be7af90df63194",
         "spec_9e7c933a8ebea23245636e6c69f73dc5",
         "spec_ac60a40b1496bf76499ce6503248c19e",
     ]

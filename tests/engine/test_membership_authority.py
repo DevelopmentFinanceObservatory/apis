@@ -377,8 +377,13 @@ def test_a_resubmit_whose_walk_fails_fails_retryably(walk, failure):
 
 def test_a_resubmit_whose_family_is_past_the_ceiling_answers_scope_too_broad():
     """A filtered set the full read cannot finish under the subject ceiling is a family the
-    mint refuses as too broad; the part says so, pointing at the identity."""
+    mint refuses as too broad; the part says so, pointing at the identity. The first answer
+    binds the position type every debt member asserts, and the total, whose one constraint
+    is that slot, then proves a truncated page complete, so the resubmit leaves the slot
+    open."""
     identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+    assert [slot.property for slot in identity.slots] == ["positionType"]
+    identity = identity.model_copy(update={"slots": []})
 
     result = _resubmit(identity, member_graph=_TruncatedWalkReader())
 

@@ -20,7 +20,7 @@ from dc_graph import GraphReadError
 from dfo_platform.executor import submit_with_context
 from materialise import GraphReader
 from materialise.roles import axis_noun
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
@@ -1444,6 +1444,9 @@ def _suggest_nearest_real(
     warns it. Each probe uses `deadline`, and any error yields no suggestion.
     Option-coverage failures add warnings. Callers fetch observations separately, from each
     suggestion's plan and places.
+    A value bound as its slot's sole option (`bind.sole_option_properties`) is not relaxed:
+    the request did not name it, and every member of the family asserts it, so the
+    relaxed query reads the same members as the answer that had no data.
     `text_recognized_properties`, `measure_elected_properties`, and `defaulted_properties`
     preserve the original query's slot provenance after relaxation, and `named_groups` the
     groups the request named, which a suggestion states for the roles that still bind
@@ -1484,8 +1487,11 @@ def _suggest_nearest_real(
     relaxations: list[tuple[list[SlotBindingDraft], Relaxation]] = (
         [] if level is None else [(list(bindings), level[1])]
     )
+    unnamed = sole_option_properties(bindings)
     for i, binding in enumerate(bindings if level is None else ()):
         if binding.kind not in ("value", "set") or binding.axis in ("where", "when", "source"):
+            continue
+        if binding.property_dcid in unnamed:
             continue
         relaxed = list(bindings)
         relaxed[i] = SlotBindingDraft(
