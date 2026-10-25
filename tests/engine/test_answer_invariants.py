@@ -760,16 +760,23 @@ def _window_gap_fact_agrees(cell: Cell, world: World, door: str, answer: Answer)
 
 def _scope_warning_agrees(answer: Answer) -> Iterator[str]:
     """A scope count in a response's warning against the scope each of its Specs lists. No
-    warning counts an empty scope: a response that lists no member resolved across none."""
+    warning counts an empty scope: a response that lists no member resolved across none. A
+    response that states no Spec serves no member, so its warning counts none."""
     if answer.result is None:
         return
-    scopes = {len(spec.scope) for spec in statements(answer) if spec.scope}
+    specs = statements(answer)
+    scopes = {len(spec.scope) for spec in specs if spec.scope}
     for warning in answer.result.warnings:
         match = _SCOPE_COUNT.search(warning.message)
         if warning.code != "role_scope_defaulted" or match is None:
             continue
         if int(match.group(1)) == 0:
             yield f"the warning states a scope of no member: {warning.message!r}"
+        elif not specs:
+            yield (
+                f"the warning counts {match.group(1)} with data and the {_status(answer)} "
+                f"response states no Spec: {warning.message!r}"
+            )
         elif scopes and scopes != {int(match.group(1))}:
             yield (
                 f"the warning counts {match.group(1)} with data and the Specs' scopes list "
