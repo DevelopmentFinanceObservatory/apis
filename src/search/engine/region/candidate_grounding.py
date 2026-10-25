@@ -88,10 +88,9 @@ from search.engine.retrieval.bound_values import (
     OpenAxisFact,
     apply_declaration_version,
     apply_slot_expansions,
-    bound_values_from_bindings,
     entity_role_keys,
     observed_measure_family,
-    open_constraint_axes,
+    served_open_axes,
     shape_query,
     slot_expansions,
 )
@@ -679,7 +678,6 @@ def _finish_candidate(
     )
     # Served member facts determine each candidate's measure partition. A missing StatVar
     # entry violates the materialisation contract. Share the partition cache across candidates.
-    cand_measure_bound_values = bound_values_from_bindings(cand_bindings)
     cand_served_member_facts = cand_mat.member_facts or {}
     cand_served_members = [cand_served_member_facts[dcid] for dcid in cand_mat.sv_dcids]
     cand_role_keys = entity_role_keys(
@@ -698,9 +696,10 @@ def _finish_candidate(
         cand_served_members,
         cache=measure_family_cache,
     )
-    cand_open_axis_facts = open_constraint_axes(
-        cand_measure_bound_values,
-        dict(zip(cand_mat.sv_dcids, cand_served_members, strict=True)),
+    cand_open_axis_facts = served_open_axes(
+        cand_bindings,
+        cand_mat.sv_dcids,
+        cand_served_member_facts,
         value_labels=cand_shape.value_labels or {},
     )
     # Reuse materialised role facts without extra SDMX reads. Labelled entity options are

@@ -91,10 +91,9 @@ from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
-    bound_values_from_bindings,
     entity_role_keys,
     observed_measure_family,
-    open_constraint_axes,
+    served_open_axes,
     shape_query,
     slot_expansions,
 )
@@ -493,12 +492,14 @@ def _ground_and_build_spec(
         )
     slots = state.slots = apply_slot_expansions(slots, slot_expansions(state.bindings))
     # Grounding starts with the measure family (`_start_related_read`).
-    _measure_bound_values = bound_values_from_bindings(state.bindings)
     _served_members = _served_member_facts(state)
-    # Open constraint axes come from the same final survivor facts.
-    _open_axis_facts = open_constraint_axes(
-        _measure_bound_values,
-        dict(zip(state.resolved_stat_var_dcids, _served_members, strict=True)),
+    _survivor_facts = dict(zip(state.resolved_stat_var_dcids, _served_members, strict=True))
+    # Open constraint axes are stated over the survivors the read serves, as the first
+    # answer states them.
+    _open_axis_facts = served_open_axes(
+        state.bindings,
+        mat_result.sv_dcids,
+        _survivor_facts,
         value_labels=state.shape_draft.value_labels or {},
     )
     state.open_axis_facts = _open_axis_facts
@@ -523,7 +524,7 @@ def _ground_and_build_spec(
         shape=state.shape_draft,
         bindings=state.bindings,
         plan=state.narrowed_plan,
-        member_facts=dict(zip(state.resolved_stat_var_dcids, _served_members, strict=True)),
+        member_facts=_survivor_facts,
         served_filter=_served_filter,
         facets_pinned=pins_facets(state.inp.identity.facets),
         conversion=_conversion,

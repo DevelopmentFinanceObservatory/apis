@@ -124,8 +124,7 @@ from search.engine.retrieval.bound_values import (
     OptionServedFact,
     apply_declaration_version,
     apply_slot_expansions,
-    bound_values_from_bindings,
-    open_constraint_axes,
+    served_open_axes,
     slot_expansions,
 )
 from search.engine.retrieval.elected_dataset import elected_datasets
@@ -954,15 +953,15 @@ def _build_definite_spec(
 
     # Assemble the Spec
     slots = apply_slot_expansions(slots, slot_expansions(state.bindings))
-    measure_bound_values = bound_values_from_bindings(state.bindings)
     # Grounding reads the family before assembly starts.
     measure_partition, measure_siblings = cast(MeasureFamily, state.measure_family)
     served_member_facts = mat_result.member_facts or {}
     served_members = [served_member_facts[dcid] for dcid in mat_result.sv_dcids]
     # Record served values for every open constraint axis.
-    open_axis_facts = open_constraint_axes(
-        measure_bound_values,
-        dict(zip(mat_result.sv_dcids, served_members, strict=True)),
+    open_axis_facts = served_open_axes(
+        state.bindings,
+        mat_result.sv_dcids,
+        served_member_facts,
         value_labels=state.shape_draft.value_labels or {},
     )
     spec = build_spec(
