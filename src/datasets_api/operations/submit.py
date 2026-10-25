@@ -40,7 +40,8 @@ OPERATION_POLL_MAX_MS = 8_000
 
 class OperationSubmitted(Exception):
     """Signals a successful 202 submission after recording the operation and creating its task
-    when the submission records no dispatch.
+    when the submission records no dispatch. `operation` is the row as recorded, before the
+    task create.
 
     Mint and definition doors render the envelope outside RFC 9457 error handling.
     """
@@ -67,7 +68,10 @@ def submit_over_budget(
 
     `members` are the StatVar refs a door resolved, `dcid:`-prefixed or bare. The operation
     stores them as `member_dcids`. A done operation restarts (`OperationStore.create_or_get`),
-    so the 202 reads pending or running, or failed for a deterministic failure.
+    so the row the submission records reads pending or running, or failed for a deterministic
+    failure. `OperationSubmitted` carries that row. The task create can run the operation to
+    completion before it returns, so the row `dispatch_if_due` returns may read done, and the
+    202 never reads it.
 
     Otherwise, async row or request limits raise `OverCeilingError` before a row or task exists.
     `OperationBacklogFull` also propagates. The function records or reuses the operation,
@@ -84,7 +88,7 @@ def submit_over_budget(
         estimate, async_max_rows=async_max_rows, async_max_requests=async_max_requests
     )
     with phase("operation"):
-        operation = operation_store.create_or_get(
+        accepted = operation_store.create_or_get(
             request_identity=_request_identity(subject_id, members),
             options=options.model_dump(mode="json"),
             coverage_stamp=coverage_stamp,
@@ -92,10 +96,8 @@ def submit_over_budget(
             estimate=estimate,
         )
     with phase("dispatch"):
-        operation = dispatch_if_due(
-            operation, operation_store=operation_store, task_client=task_client
-        )
-    raise OperationSubmitted(operation=operation)
+        dispatch_if_due(accepted, operation_store=operation_store, task_client=task_client)
+    raise OperationSubmitted(operation=accepted)
 
 
 _STAT_VAR_REF_PREFIX = "dcid:"
@@ -154,8 +156,9 @@ def retry_after_headers(envelope: OperationEnvelope) -> dict[str, str]:
 def operation_submitted_resource(
     submitted: OperationSubmitted, *, now: datetime
 ) -> OperationResource:
-    """Builds the 202 resource from the returned operation state, which may already be running or
-    failed. Progress stays unset in the submit response and appears on polls.
+    """Builds the 202 resource from the operation state the submission recorded, which may be a
+    running or failed row it joined. Progress stays unset in the submit response and appears on
+    polls.
     """
     operation = submitted.operation
     return OperationResource(

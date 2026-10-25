@@ -96,7 +96,7 @@ from typing import Literal, Protocol, cast
 
 from pydantic import ValidationError
 
-from dataset_store import DatasetStore
+from dataset_store import DatasetStore, Transaction
 from datasets_api.backpressure import Backpressure
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.operations.lease import LEASE_SECONDS
@@ -173,6 +173,11 @@ _UNTRACKED_LEASE = timedelta(seconds=LEASE_SECONDS)
 
 # Serialises the backlog count and insert across transactions.
 _BACKLOG_LOCK_KEY = 0x4446_4F5F_4F50_424C  # "DFO_OPBL" packed into an int
+
+# Passes `create_or_get` makes under the backlog lock. A pass whose insert or reset writes no row
+# saw a concurrent commit change the row after its read, so the next pass decides again on the
+# row as it now stands. Each extra pass needs another such commit inside the same transaction.
+_CREATE_PASSES = 3
 
 
 def utc_now() -> datetime:
@@ -606,7 +611,6 @@ class LiveOperationStore:
             options=options,
         )
         now = self._now()
-        backlog_max = self._backlog_max
 
         def _run() -> Mapping[str, object] | None:
             with self._store.transaction() as tx:
@@ -617,69 +621,90 @@ class LiveOperationStore:
                     return existing
                 # Lock before counting or inserting a new row or resetting one.
                 tx.execute("SELECT pg_advisory_xact_lock(%s)", (_BACKLOG_LOCK_KEY,))
-                # Re-read under the lock. This statement's fresh snapshot controls the mutation.
-                existing = tx.fetch_one(
-                    f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,)
-                )
-                if existing is not None and not _resettable(existing, now, deadline=self._deadline):
-                    return existing
-                # The row being reset keeps its own place, so only the others count.
-                backlog_row = tx.fetch_one(
-                    f"SELECT count(*) AS n FROM datasets.operation WHERE id <> %s AND {_LIVE}",
-                    (id, *_abandoned_params(now, deadline=self._deadline)),
-                )
-                in_flight = cast(int, backlog_row["n"]) if backlog_row is not None else 0
-                if in_flight >= backlog_max:
-                    raise OperationBacklogFull(in_flight=in_flight, limit=backlog_max)
-                if existing is None:
-                    tx.execute(
-                        "INSERT INTO datasets.operation "
-                        "(id, request_identity, options, coverage_stamp, state, estimate_rows, "
-                        "estimate_requests, rows_written, attempt_count, created_at, updated_at, "
-                        "submitted_at, origin_catalogue_build_id) "
-                        "VALUES (%s, %s, %s, %s, 'pending', %s, %s, 0, 0, %s, %s, %s, %s) "
-                        "ON CONFLICT (id) DO NOTHING",
-                        (
-                            id,
-                            dict(request_identity),
-                            dict(options),
-                            coverage_stamp,
-                            estimate.rows,
-                            estimate.requests,
-                            now,
-                            now,
-                            now,
-                            origin_catalogue_build_id,
-                        ),
+                for _ in range(_CREATE_PASSES):
+                    row = self._create_or_reset_locked(
+                        tx,
+                        id=id,
+                        request_identity=request_identity,
+                        options=options,
+                        coverage_stamp=coverage_stamp,
+                        origin_catalogue_build_id=origin_catalogue_build_id,
+                        estimate=estimate,
+                        now=now,
                     )
-                else:
-                    # Reset only the resettable row seen under the backlog lock.
-                    tx.execute(
-                        "UPDATE datasets.operation SET state = 'pending', "
-                        "claimed_at = NULL, lease_seconds = NULL, final_delivery = NULL, "
-                        "refusal_code = NULL, refusal = NULL, retryable = NULL, rows_written = 0, "
-                        "submission_count = submission_count + 1, dispatched_at = NULL, "
-                        "submitted_at = %s, updated_at = %s "
-                        f"WHERE id = %s AND {_RESETTABLE}",
-                        (
-                            now,
-                            now,
-                            id,
-                            now,
-                            now - _UNTRACKED_LEASE,
-                            now - self._deadline,
-                        ),
-                    )
-                return tx.fetch_one(
-                    f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,)
-                )
+                    if row is not None:
+                        return row
+                return None
 
         row = self._wrap("creating", id, _run)
         if row is None:
             raise DatasetsStoreUnavailable(
-                f"creating operation {id!r} failed: insert-then-select returned no row"
+                f"creating operation {id!r} failed: the row changed under each of "
+                f"{_CREATE_PASSES} attempts to insert or reset it"
             )
         return _operation_from_row(row)
+
+    def _create_or_reset_locked(
+        self,
+        tx: Transaction,
+        *,
+        id: str,
+        request_identity: Mapping[str, object],
+        options: Mapping[str, object],
+        coverage_stamp: str,
+        origin_catalogue_build_id: str,
+        estimate: Estimate,
+        now: datetime,
+    ) -> Mapping[str, object] | None:
+        """One pass of `create_or_get` under the backlog lock.
+
+        Returns the row as read when it is not resettable, else the row the insert or reset
+        wrote. Returns `None` when a commit since the read left the insert or reset nothing to
+        write, which leaves the decision to the next pass.
+        """
+        # Each statement takes a fresh snapshot, so re-read under the lock.
+        existing = tx.fetch_one(f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,))
+        if existing is not None and not _resettable(existing, now, deadline=self._deadline):
+            return existing
+        # The row being reset keeps its own place, so only the others count.
+        backlog_row = tx.fetch_one(
+            f"SELECT count(*) AS n FROM datasets.operation WHERE id <> %s AND {_LIVE}",
+            (id, *_abandoned_params(now, deadline=self._deadline)),
+        )
+        in_flight = cast(int, backlog_row["n"]) if backlog_row is not None else 0
+        if in_flight >= self._backlog_max:
+            raise OperationBacklogFull(in_flight=in_flight, limit=self._backlog_max)
+        if existing is None:
+            return tx.fetch_one(
+                "INSERT INTO datasets.operation "
+                "(id, request_identity, options, coverage_stamp, state, estimate_rows, "
+                "estimate_requests, rows_written, attempt_count, created_at, updated_at, "
+                "submitted_at, origin_catalogue_build_id) "
+                "VALUES (%s, %s, %s, %s, 'pending', %s, %s, 0, 0, %s, %s, %s, %s) "
+                f"ON CONFLICT (id) DO NOTHING RETURNING {_COLUMNS}",
+                (
+                    id,
+                    dict(request_identity),
+                    dict(options),
+                    coverage_stamp,
+                    estimate.rows,
+                    estimate.requests,
+                    now,
+                    now,
+                    now,
+                    origin_catalogue_build_id,
+                ),
+            )
+        # `_RESETTABLE` re-checks the row as it stands when the update runs.
+        return tx.fetch_one(
+            "UPDATE datasets.operation SET state = 'pending', "
+            "claimed_at = NULL, lease_seconds = NULL, final_delivery = NULL, "
+            "refusal_code = NULL, refusal = NULL, retryable = NULL, rows_written = 0, "
+            "submission_count = submission_count + 1, dispatched_at = NULL, "
+            "submitted_at = %s, updated_at = %s "
+            f"WHERE id = %s AND {_RESETTABLE} RETURNING {_COLUMNS}",
+            (now, now, id, now, now - _UNTRACKED_LEASE, now - self._deadline),
+        )
 
     def mark_dispatched(self, id: str, *, submission_count: int) -> Operation | None:
         now = self._now()

@@ -1112,10 +1112,10 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
     `_U_FEMALE`'s constraint, so it shows that member, counts its own country alone, and the
     lone alternate previews its series there. The elected answer's two places preview
     through a scope-wide SDMX read, which this test's SDMX double holds no rows for. A reply
-    drafting `gender` and `age` unbound leaves each a slot whose sampled taxonomy holds one
-    value, so the engine claims both from the sample, and the walk over the members' arcs,
-    which reads the family with both claims open, refutes each on the member that asserts
-    the other."""
+    drafting `gender` and `age` unbound, or leaving both out, leaves each a slot whose
+    sampled taxonomy holds one value, so the engine claims both from the sample, and the
+    walk over the members' arcs, which reads the family with both claims open, refutes each
+    on the member that asserts the other."""
     elected = answer in ("elected", "elected_slots_drafted")
 
     def facet(year: str) -> list[dict]:
@@ -1156,7 +1156,7 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
         children=_EARTH_CHILDREN,
     )
     materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
-    if answer == "elected_slots_drafted":
+    if elected:
         materialise_graph = with_member_arcs(materialise_graph, graph)
 
     result = _run(

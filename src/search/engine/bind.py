@@ -139,10 +139,11 @@ class SlotBindingDraft(BaseModel):
     # Whether a ``sole_option`` claim of the reply rests on a recall sample that does not
     # refute it (`phase_election._validate_sole_option_bindings`), so the walk of the
     # family reads the slot open and confirms or refutes the claim
-    # (`phase_place_materialise._judge_sampled_claims`). False for a claim the whole family
-    # backs, for one the value an unexported family is told apart by backs
-    # (`bound_values.bind_shared_values`), and for every draft the validator did not judge.
-    # Left out of the schema and of every dump, as `drafted_by` is.
+    # (`phase_place_materialise._judge_sampled_claims`). Every rule before the walk that
+    # asks whether a slot is bound reads such a claim open, and a binding one of them writes
+    # replaces it (`phase_election.without_sampled_claims`). False for a claim the whole
+    # family backs and for every draft the validator did not judge. Left out of the schema
+    # and of every dump, as `drafted_by` is.
     sampled: SkipJsonSchema[bool] = Field(default=False, exclude=True)
 
     @model_validator(mode="after")
@@ -160,6 +161,25 @@ class SlotBindingDraft(BaseModel):
                 {"kind": self.kind, "property": self.property_dcid},
             )
         return self
+
+
+def sole_option_properties(bindings: Iterable[SlotBindingDraft]) -> frozenset[str]:
+    """The properties the bind reply bound to a value only because the slot offered no
+    other (`SlotBindingDraft.evidence` ``sole_option``, `drafted_by` the reply): the
+    request's words name none of them, and each claims that every member asserts its
+    value, which a member conflicting on it refutes. A ``sole_option`` value the engine
+    wrote makes no such claim: a partition value (`standard.bind_partition_values`) sits
+    on a slot the members differ on, and a series code's shared values
+    (`bound_values.bind_member_values`) are shared by that code's StatVars alone. Those
+    give way as values the request named."""
+    return frozenset(
+        b.property_dcid
+        for b in bindings
+        if b.kind == "value"
+        and b.evidence == "sole_option"
+        and b.drafted_by == "reply"
+        and b.property_dcid is not None
+    )
 
 
 class ShapeRating(BaseModel):

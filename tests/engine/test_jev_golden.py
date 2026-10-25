@@ -20,7 +20,9 @@ from tests.engine._jev_golden import (
     golden_paths,
     load_item,
     replay,
+    store_expected,
     stored_ids,
+    updating,
 )
 
 _PATHS = golden_paths()
@@ -36,6 +38,9 @@ def test_stored_answers_give_the_stored_output(path: Path):
 
     out, _conf = replay(item)
 
+    if updating():
+        store_expected(path, out)
+        return
     assert out == item.expected
 
 

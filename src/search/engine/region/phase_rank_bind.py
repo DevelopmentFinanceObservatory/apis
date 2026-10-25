@@ -27,6 +27,7 @@ from search.engine.bind import (
     _slot_name,
     _UniversalBindOutput,
     rank_elected,
+    sole_option_properties,
     split_stray_bindings,
 )
 from search.engine.bind_repair import (
@@ -1186,11 +1187,19 @@ def _out_of_scope_records(
 def _bound_code_records(bindings: Sequence[SlotBindingDraft]) -> tuple[ResolvedQualifier, ...]:
     """Each code `bindings` bind on a what or how slot, as an unbound record under its
     label: what a part cannot bind when no table it may answer from holds a row with all
-    of them."""
+    of them. A value bound as its slot's sole option (`sole_option_properties`) is one the
+    request did not name, so it is no code the part cannot bind, whether a recall sample
+    or the whole family backs it. A sampled claim can sit on an indexed five-tuple whose
+    part datasets publish none of its rows; such a part, unserved, would answer once the
+    claim is relaxed, as materialise relaxes it, and this rule only keeps the value out of
+    the refusal."""
     index = get_index()
+    unnamed = sole_option_properties(bindings)
     records: list[ResolvedQualifier] = []
     for binding in bindings:
         if binding.axis not in ("what", "how") or binding.kind not in ("value", "set"):
+            continue
+        if binding.property_dcid in unnamed:
             continue
         for dcid in binding.value_dcids:
             row = index.code_by_dcid(dcid)

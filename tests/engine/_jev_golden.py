@@ -17,6 +17,11 @@ election among the house policies' survivors `phase_rank_bind._elected_index`, a
 settlement of the elected shape's bindings `phase_election._settle_bindings`), and reads
 the result in the form `expected` holds (`canonical`). The items store no query qualifier
 matches, so the settlement forces no query code.
+
+The expected output is engine output over the stored answers, so an engine change that
+moves it is re-recorded from `replay`: run the golden tests without xdist with
+``SEARCH_UPDATE_JEV_GOLDEN=1`` (`updating`), and each item's `expected` is rewritten
+(`store_expected`). The stored answers and arguments are never rewritten.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import json
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,6 +76,7 @@ _BIND_FIELDS = (
     "refused",
     "availability",
 )
+_UPDATE_ENV = "SEARCH_UPDATE_JEV_GOLDEN"
 # Stored answers to questions the bind request does not ask.
 _UNASKED_PREFIXES = ("topic", "within|")
 
@@ -307,3 +314,25 @@ def replay(
         "rules": conf.rules,
     }
     return out, conf
+
+
+def updating() -> bool:
+    """Whether this run re-records each item's `expected` (``SEARCH_UPDATE_JEV_GOLDEN=1``).
+    Recording under xdist is refused, since workers would write the files concurrently."""
+    if os.environ.get(_UPDATE_ENV) != "1":
+        return False
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        raise RuntimeError(f"{_UPDATE_ENV}=1 records golden items only without xdist")
+    return True
+
+
+def store_expected(path: Path, expected: dict[str, Any]) -> None:
+    """Rewrite the item file `path` with `expected` as its expected output, every other
+    field as stored, in the files' compact form. A file holding non-ASCII text keeps it
+    unescaped, as it was stored, and an item whose output has not moved is left as it is."""
+    text = path.read_text()
+    record = json.loads(text)
+    if record["expected"] == expected:
+        return
+    record["expected"] = expected
+    path.write_text(json.dumps(record, separators=(",", ":"), ensure_ascii=text.isascii()) + "\n")

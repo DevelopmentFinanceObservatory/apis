@@ -19,7 +19,7 @@ from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import get_trace_id
 from materialise.place_scope import DefaultPresence
 from materialise.roles import RoleAxis, axis_for_role
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient, force_full_facets
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import SEARCH_MAX_UNIT_ALTERNATIVES, settings
@@ -459,12 +459,14 @@ def _settle_direction(
         state.capped_shapes.append(shape)
     # Binding repair settled the bindings under no role keys, so each whole total the
     # served direction offers is judged under them, in the order offered
-    # (`place_roles.whole_total_candidates`).
+    # (`place_roles.whole_total_candidates`). A claim selects no series until the walk
+    # confirms it, so the total is judged on the claim-free bindings.
+    held_bindings = without_sampled_claims(state.bindings)
     return next(
         (
             whole
             for whole in whole_total_candidates(state, shape, served)
-            if holds_whole_total(state, shape, whole, state.bindings)
+            if holds_whole_total(state, shape, whole, held_bindings)
         ),
         served,
     )
@@ -1179,7 +1181,11 @@ def _walk_assignment(
             stray_values=_strays_by_property(state),
             bindings=state.breakdown_rivals.get(index),
         )
-        if settled is not None and holds_whole_total(state, settled.shape, whole, settled.bindings):
+        # A breakdown copy's bindings keep the elected shape's sampled claims, which select no
+        # series until the walk confirms them.
+        if settled is not None and holds_whole_total(
+            state, settled.shape, whole, without_sampled_claims(settled.bindings)
+        ):
             return whole
     return placed
 
@@ -1753,11 +1759,29 @@ def _members_holding_bound_values(
     }
 
 
+def _stand_in_members(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> dict[str, dict]:
+    """The members of the stand-in `shape` that keep the elected `bindings`, with their arcs:
+    those asserting every property a binding the request named binds at a bound value
+    (`_members_holding_bound_values`), and no value other than the one a value the request
+    did not name binds (`sole_option_properties`). Such a value is the elected family's
+    own description of itself, so a member stating nothing on its property reads the same
+    quantity another way: the IDS gross national income states its income as
+    ``economicActivityType`` beside the Atlas method's ``activitySource=GrossNationalIncome``."""
+    unnamed = sole_option_properties(bindings)
+    asked = bound_values_from_bindings([b for b in bindings if b.property_dcid not in unnamed])
+    sole = bound_values_from_bindings([b for b in bindings if b.property_dcid in unnamed])
+    return {
+        sv: arcs
+        for sv, arcs in _members_holding_bound_values(shape, asked).items()
+        if all(read_constraints(arcs).get(prop) in (None, *values) for prop, values in sole.items())
+    }
+
+
 def _stand_in_indices(state: ResolveState) -> list[int]:
     """The capped-shape indices of the readings status rule 1 tries in the elected shape's
     place when it has no observations at its places, in the order the rule takes them: its
-    equivalent readings, then its measurement-qualifier siblings that hold the elected
-    bindings' values (`_members_holding_bound_values`). Each passes the alternate guard
+    equivalent readings, then its measurement-qualifier siblings that keep the elected
+    bindings (`_stand_in_members`). Each passes the alternate guard
     (`AlternateJudge.inadmissible`) judged beside an elected shape without data, so no
     default price basis is imposed, within the candidate budget. A part with a registry twin
     of the elected shape takes none: the equivalent-series diversion answers with the twin
@@ -1766,14 +1790,9 @@ def _stand_in_indices(state: ResolveState) -> list[int]:
     plan = state.status_plan
     if plan.twins:
         return []
-    bound_values = bound_values_from_bindings(state.bindings)
     indices = [
         *plan.equivalents,
-        *(
-            i
-            for i in plan.stand_ins
-            if _members_holding_bound_values(state.capped_shapes[i], bound_values)
-        ),
+        *(i for i in plan.stand_ins if _stand_in_members(state.capped_shapes[i], state.bindings)),
     ]
     if indices:
         inadmissible = _guard_judge(state, elected_has_data=False).inadmissible(
@@ -1785,14 +1804,12 @@ def _stand_in_indices(state: ResolveState) -> list[int]:
 
 def _sibling_shapes_of(state: ResolveState) -> dict[int, ShapeDraft]:
     """Each re-election sibling (`state.reelection_siblings`) by capped-shape index, holding
-    the members it is probed and answered through: those that hold the elected bindings'
-    values among every member it stands for (`_members_holding_bound_values`), and those
-    alone (`narrowed_to`)."""
-    elected_bound_values = bound_values_from_bindings(state.bindings)
+    the members it is probed and answered through: those that keep the elected bindings
+    among every member it stands for (`_stand_in_members`), and those alone
+    (`narrowed_to`)."""
     return {
         i: narrowed_to(
-            state.capped_shapes[i],
-            _members_holding_bound_values(state.capped_shapes[i], elected_bound_values),
+            state.capped_shapes[i], _stand_in_members(state.capped_shapes[i], state.bindings)
         )
         for i in state.reelection_siblings
     }
