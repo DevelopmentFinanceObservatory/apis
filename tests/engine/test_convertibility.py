@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from unittest.mock import patch
 
 import pytest
@@ -298,18 +298,18 @@ def test_declared_non_nominal_qualifier_refuses_unsupported_with_cause():
     assert result.unsupported.cause.code == "nominal_undeclared"
 
 
-def test_provenance_default_undefined_refuses_facet_not_available():
-    """Missing provenance and default policy raises `facet_not_available` before conversion checks.
-    The fixture also has no nominal qualifier, confirming the earlier refusal.
-    """
+def test_a_native_request_answers_over_a_top_facet_carrying_no_provenance():
+    """A search read does not require provenance, so a native USD request over a facet
+    carrying none answers from it, with no source named. The StatVar declares no
+    measurement qualifier, which a natively satisfied request accepts."""
     result = _run_text(
         unit_text="USD",
         obs_facets=[_obs_facet(unit="CurrencyUSD", provenance_id=None)],
         nominal=False,
         provenance_declares_recipe={},
     )
-    assert result.status == "no_data", f"expected no_data, got {result.status!r}"
-    assert result.no_data_reason == "facet_not_available"
+    assert result.status == "definite", f"expected definite, got {result.status!r}"
+    assert result.no_data_reason is None
 
 
 def test_no_unit_at_all_refuses_facet_binding_unsupported():
@@ -726,21 +726,31 @@ def test_resubmit_missing_materialise_graph_raises_infra_error():
         )
 
 
-def test_resubmit_provenance_default_undefined_raises_facet_not_available_422():
-    """Promote-door mirror: undeclared-provenance-default raises
-    DefaultFacetUndefinedError, mapped to EngineInputError(facet_not_available, 422)."""
-    request = IdentityUnitRequest(currency="USD", prices="current")
-    with pytest.raises(EngineInputError) as exc_info:
-        _resubmit(
-            request=request,
-            obs_facets=[_obs_facet(unit="CurrencyUSD", provenance_id=None)],
-            nominal=False,
-            provenance_declares_recipe={},
-        )
-    assert exc_info.value.code == "facet_not_available"
-    assert exc_info.value.status == 422
-    assert exc_info.value.pointer == "/input/identity/facets/unit"
-    assert exc_info.value.cause is None
+def test_resubmit_decides_a_native_request_over_a_facet_carrying_no_provenance(monkeypatch):
+    """Promote-door mirror: the unit decision resolves the unbound provenance axis of a facet
+    carrying none to the null ref (`absent_on_selected_facet`), and the resubmit answers.
+    The spy wraps the real decision to read its selections."""
+    from search.engine.region import promote_ground
+
+    decided: list[Mapping[str, tuple[Mapping[str, FacetSelection], ...]]] = []
+
+    def spy(*args, **kwargs):
+        elected = decide_part_unit(*args, **kwargs)
+        decided.append(elected)
+        return elected
+
+    monkeypatch.setattr(promote_ground, "decide_part_unit", spy)
+    result = _resubmit(
+        request=IdentityUnitRequest(currency="USD", prices="current"),
+        obs_facets=[_obs_facet(unit="CurrencyUSD", provenance_id=None)],
+        nominal=False,
+        provenance_declares_recipe={},
+    )
+    assert result.status == "definite"
+    ((selections,),) = [elected[_SV] for elected in decided]
+    assert selections["provenance"].ref is None
+    assert selections["provenance"].selection_reason == "absent_on_selected_facet"
+    assert selections["unit"].ref == "CurrencyUSD"
 
 
 def test_resubmit_no_unit_at_all_raises_facet_binding_unsupported_422():

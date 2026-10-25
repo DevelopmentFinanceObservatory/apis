@@ -622,6 +622,7 @@ def _select_member_facets(
                 policies=policies,
                 breadth=breadth,
                 variable_breadth=variable_breadth,
+                requires_provenance=request.requires_provenance,
             )
         except NonCurrencyUnitError as exc:
             unit_error = exc

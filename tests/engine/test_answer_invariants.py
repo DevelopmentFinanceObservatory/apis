@@ -759,16 +759,23 @@ def _window_gap_fact_agrees(cell: Cell, world: World, door: str, answer: Answer)
 
 def _scope_warning_agrees(answer: Answer) -> Iterator[str]:
     """A scope count in a response's warning against the scope each of its Specs lists. No
-    warning counts an empty scope: a response that lists no member resolved across none."""
+    warning counts an empty scope: a response that lists no member resolved across none. A
+    response that states no Spec serves no member, so its warning counts none."""
     if answer.result is None:
         return
-    scopes = {len(spec.scope) for spec in statements(answer) if spec.scope}
+    specs = statements(answer)
+    scopes = {len(spec.scope) for spec in specs if spec.scope}
     for warning in answer.result.warnings:
         match = _SCOPE_COUNT.search(warning.message)
         if warning.code != "role_scope_defaulted" or match is None:
             continue
         if int(match.group(1)) == 0:
             yield f"the warning states a scope of no member: {warning.message!r}"
+        elif not specs:
+            yield (
+                f"the warning counts {match.group(1)} with data and the {_status(answer)} "
+                f"response states no Spec: {warning.message!r}"
+            )
         elif scopes and scopes != {int(match.group(1))}:
             yield (
                 f"the warning counts {match.group(1)} with data and the Specs' scopes list "
@@ -1054,25 +1061,11 @@ def i3_one_election(run: Doors) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _is_unsourced_native_refusal(cell: Cell, first: Answer) -> bool:
-    """Whether a first answer's refusal is issue #1055: over the `unsourced` rows a native
-    unit request answers `facet_not_available`, while the facet with no provenance holds
-    that unit."""
-    return (
-        cell.row_set == "unsourced"
-        and cell.unit == "native"
-        and outcome(first)[:2] == ("no_data", "facet_not_available")
-    )
-
-
 def i4_dates(run: Doors) -> list[str]:
     """`latest` names the latest year the cited sources hold at the places served, every
     cited source holds a point in the years read, and an answer holds data exactly when the
     world holds a point there, so a wholly future window answers from the facet holding
-    those years.
-
-    The one expected difference is issue #1055: a native unit request over the `unsourced`
-    rows answers `facet_not_available` (`_is_unsourced_native_refusal`)."""
+    those years."""
     cell, world = run.cell, run.world
     read = _read(cell.date)
     found: list[str] = []
@@ -1111,9 +1104,7 @@ def i4_dates(run: Doors) -> list[str]:
     if cell.pin == "none":
         with_points = [sv for sv in world.stat_vars if _holds_points(world, sv, read, **admitted)]
         expected = {0: "no_data", 1: "definite"}.get(len(with_points), "candidates")
-        if _status(run.first) != expected and _is_unsourced_native_refusal(cell, run.first):
-            _pass_over("#1055", cell)
-        elif _status(run.first) != expected:
+        if _status(run.first) != expected:
             found.append(
                 f"{FIRST} is {outcome(run.first)[:3]} and {len(with_points)} variables "
                 f"hold a point of {admitted or 'any facet'} in the years {cell.date} reads"
@@ -1831,11 +1822,10 @@ def test_every_cell_holds_every_invariant(
     """Each cell the grid runs (`CELLS_RUN`) runs its doors once and every invariant's
     check reads them. The cells of one block share their first doors. A
     failure lists one line per disagreement: the cell, the invariant and the two statements
-    that disagree. The grid expects three differences, each passed over by one predicate
+    that disagree. The grid expects two differences, each passed over by one predicate
     tied to its issue: #1049, an undated datasets read electing a facet with a gap across
-    the window (`i3_one_election`); #1055, a native unit request over the
-    `unsourced` rows answering `facet_not_available` (`i4_dates`); and #1060, a Spec with
-    more than one variable (`i3_one_election`). I9 runs on the covering array's cells only
+    the window (`i3_one_election`); and #1060, a Spec with more than one variable
+    (`i3_one_election`). I9 runs on the covering array's cells only
     (`checks_for`)."""
     recorded_engine(route)
     failures: list[str] = []

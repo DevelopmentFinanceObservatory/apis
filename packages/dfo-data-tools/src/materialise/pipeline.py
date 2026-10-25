@@ -101,6 +101,11 @@ class MaterialisationRequest:
     # member elects only among the candidates it admits (`facets.admitted_candidates`), so
     # a filtered request serves its best admitted facet. None admits every candidate.
     candidate_filter: Callable[[Facet], bool] | None = None
+    # A read whose product must cite a source. With it, an unbound provenance axis refuses a
+    # winning facet that carries none (`DefaultFacetUndefinedError`); without it the axis
+    # resolves to the null ref as `measurementMethod` and `unit` do, and the answer states
+    # no source.
+    requires_provenance: bool = True
 
     def __post_init__(self) -> None:
         for axis, binding in self.facet_bindings.items():

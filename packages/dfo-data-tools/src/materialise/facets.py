@@ -2007,10 +2007,8 @@ def served_facets(
     in `window` (`continuation`). Empty when no candidate carries a `facet_id`, since only
     those dispatch.
 
-    A top carrying no provenance serves too: unbound, `select_facet` refuses it, so the
-    preview binds its provenance axis to the null ref (`FacetBinding(state="bound",
-    ref=None)`), which selects it and dispatches its group by facet id, as a bulk read
-    dispatches its facet."""
+    A top carrying no provenance serves under a request that does not require one
+    (`pipeline.MaterialisationRequest.requires_provenance`)."""
     dispatchable = [c for c in candidates if c.facet_id is not None]
     if not dispatchable:
         return ()
@@ -2234,6 +2232,7 @@ def select_facet(
     policies: Mapping[str, FacetDefaultPolicy | None],
     breadth: Mapping[str, int] | None = None,
     variable_breadth: VariableBreadth = None,
+    requires_provenance: bool = True,
 ) -> FacetSelection:
     """Resolves one axis and raises at most one refusal. The pipeline aggregates axis errors.
     Only candidates with `facet_id` dispatch.
@@ -2259,9 +2258,10 @@ def select_facet(
     `dfo_precedence` ranked DFO's facet over another origin's, or
     `most_observations_over_disagreement`, which triggers a warning. Each reason describes the
     window-narrowed pool. About two in five observed pairs lack `measurementMethod` or `unit`,
-    so a missing value returns `ref=None` on those axes. Missing provenance raises
-    `DefaultFacetUndefinedError`. The
-    caller checks cross-axis fit."""
+    so a missing value returns `ref=None` on those axes. Missing provenance returns
+    `ref=None` too, unless `requires_provenance`
+    (`pipeline.MaterialisationRequest.requires_provenance`), when it raises
+    `DefaultFacetUndefinedError`. The caller checks cross-axis fit."""
     dispatchable = [c for c in candidates if c.facet_id is not None]
 
     if binding.state == "bound":
@@ -2333,7 +2333,7 @@ def select_facet(
     viable, precedence, top = ranked_pool.pool, ranked_pool.precedence, ranked_pool.ranked[0]
     value = facet_axis_value(top, axis)
     if value is None:
-        if axis == "provenance":
+        if axis == "provenance" and requires_provenance:
             raise DefaultFacetUndefinedError(
                 "facet axis 'provenance' is unbound, no default policy is declared, and "
                 "the winning candidate carries no provenance",
