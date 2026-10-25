@@ -546,7 +546,11 @@ jobs:
       # directory holds a format root's contents, so it mounts at the root
       # name the image reads (`origin_catalogue.schema.FORMAT_ROOT`). Search
       # refuses to import without SEARCH_GRAPH_BASE, and healthz reads no
-      # graph, so an unroutable host is enough.
+      # graph, so an unroutable host is enough. Search's startup proves
+      # GEMINI_API_KEY with a models.get (`search.engine.clients.llm.warm`),
+      # so a stub from the same image (.github/scripts/gemini_stub.py) on a
+      # shared network answers it in Google's place, and the job requires
+      # the stub to have seen that request.
       - name: Run the image read-only and confirm the Graph surface starts
         run: |
           format_root="$(docker run --rm dfo-apis:ci \
@@ -560,7 +564,13 @@ jobs:
             dfo-apis:ci \
             python -c 'from tests.graph_release.support import build_view_release; build_view_release("file:///graph-release")'
 
-          docker run -d --name dfo-apis-ci \
+          docker network create dfo-apis-ci > /dev/null
+          docker run -d --name gemini-stub --network dfo-apis-ci \
+            -v "$(pwd)/.github/scripts:/stub:ro" \
+            dfo-apis:ci \
+            python /stub/gemini_stub.py 8090
+
+          docker run -d --name dfo-apis-ci --network dfo-apis-ci \
             --read-only --tmpfs /tmp \
             -v "$release_dir:/graph-release:ro" \
             -v "$(pwd)/tests/fixtures/origin_catalogue:/origin-catalogue/${format_root}:ro" \
@@ -568,6 +578,7 @@ jobs:
             -e DFO_GRAPH_SURFACE=1 \
             -e GRAPH_DCP_BASE_URL=http://dcp.invalid \
             -e GEMINI_API_KEY=ci-not-a-real-key \
+            -e GOOGLE_GEMINI_BASE_URL=http://gemini-stub:8090 \
             -e SEARCH_GRAPH_BASE=https://graph.invalid \
             -e GRAPH_RELEASE_URI=file:///graph-release \
             -e ORIGIN_CATALOGUE_URI=file:///origin-catalogue \
@@ -598,11 +609,18 @@ jobs:
             fi
           fi
 
-          # Both are best-effort cleanup and diagnostics. Under `set -e` an
+          gemini_ok=""
+          if docker logs gemini-stub 2>&1 | grep -q "GET /v1beta/models/"; then
+            gemini_ok=1
+          fi
+
+          # These are best-effort cleanup and diagnostics. Under `set -e` an
           # unguarded failure here would exit before the gate below and
           # replace the real reason with a docker error.
           docker logs dfo-apis-ci || true
-          docker rm -f dfo-apis-ci > /dev/null || true
+          docker logs gemini-stub || true
+          docker rm -f dfo-apis-ci gemini-stub > /dev/null || true
+          docker network rm dfo-apis-ci > /dev/null || true
 
           if [ -z "$ok" ]; then
             echo "::error::Graph surface never answered /api/graph/healthz under --read-only"
@@ -611,6 +629,11 @@ jobs:
 
           if [ -z "$commit_ok" ]; then
             echo "::error::/api/graph/healthz did not carry x-dfo-commit: ${{ github.sha }}"
+            exit 1
+          fi
+
+          if [ -z "$gemini_ok" ]; then
+            echo "::error::Search started without sending its Gemini key check to the stub"
             exit 1
           fi
 

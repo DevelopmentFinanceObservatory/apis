@@ -10,6 +10,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import partial
+from types import MappingProxyType
 
 import httpx
 import pytest
@@ -43,6 +44,7 @@ from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import BulkPlan, PairPlan, PlanSeries, PlanYears, ReadPlan
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_resolve import _role_plan
+from search.engine.unit.conversion_catalogue import ConversionCatalogue
 from search.models import CoverageBare, CoverageExact, TimeWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -206,33 +208,57 @@ def _destination_coverage(plan) -> UnitCoverage:
 
 _KES_RATES = {**_RATES, "CurrencyKES": {2020: 100.0, 2021: 110.0}}
 _TWELVE_REGIONS = tuple(f"region/R{i:02d}" for i in range(12))
+# A catalogue holding a name for one omitted region only.
+_NAMING_CATALOGUE = ConversionCatalogue(
+    recipes=MappingProxyType({}),
+    tables=MappingProxyType({}),
+    national_currencies=MappingProxyType({}),
+    default_base_year=2024,
+    entity_names=MappingProxyType({"africaRegion": "Africa"}),
+)
 
 
 @pytest.mark.parametrize(
-    ("regions", "named"),
+    ("regions", "named", "params"),
     [
-        pytest.param(_REGIONS, "2 entities: africaRegion, southOfSahara", id="named"),
+        pytest.param(
+            _REGIONS,
+            "It left out 2 entities.",
+            {
+                "count": 2,
+                "entities": list(_REGIONS),
+                "entity_labels": ["Africa", ""],
+            },
+            id="two",
+        ),
         pytest.param(
             _TWELVE_REGIONS,
-            "12 entities: " + ", ".join(_TWELVE_REGIONS[:10]) + " (truncated)",
-            id="truncated",
+            "It left out 12 entities.",
+            {
+                "count": 12,
+                "entities": list(_TWELVE_REGIONS[:10]),
+                "entity_labels": [""] * 10,
+            },
+            id="twelve",
         ),
     ],
 )
-def test_regional_recipients_under_a_destination_currency_are_omitted_and_named(
-    regions: tuple[str, ...], named: str
+def test_regional_recipients_under_a_destination_currency_are_omitted_and_counted(
+    regions: tuple[str, ...], named: str, params: dict[str, object]
 ):
     """Regional recipients beside Kenya: no region has a national currency, so their rows are
-    omitted, Kenya's convert, and the answer's warning names every region."""
+    omitted, Kenya's convert, and the answer's warning counts every region. Its params carry
+    the first ten with the names the conversion catalogue holds."""
     coverage = _destination_coverage(_pair_plan(_KEN, *regions))
     assert coverage.refusal is None
     assert coverage.omitted_entities == tuple(sorted(regions))
-    warning = coverage.omitted_warning(spec_id="spec-1")
+    warning = coverage.omitted_warning(catalogue=_NAMING_CATALOGUE, spec_id="spec-1")
     assert warning is not None
-    assert (warning.code, warning.severity, warning.spec_id) == (
+    assert (warning.code, warning.severity, warning.spec_id, warning.params) == (
         "currency_unmapped_omitted",
         "warn",
         "spec-1",
+        params,
     )
     assert warning.message.endswith(named)
 
@@ -248,7 +274,7 @@ def test_only_regional_recipients_under_a_destination_currency_refuse_naming_eac
         _REGIONS,
         False,
     )
-    assert coverage.omitted_warning() is None
+    assert coverage.omitted_warning(catalogue=None) is None
 
 
 def test_regional_recipients_beside_rows_no_conversion_reads_are_omitted_without_refusing():
@@ -382,7 +408,7 @@ def test_datasets_and_search_agree_on_the_omitted_recipients(
     preview = _preview_of(
         tuple((_DONOR, r) for r in recipients), recipient_years=years, window=window
     )
-    search = _destination_coverage(plan_of(*recipients)).omitted_warning()
+    search = _destination_coverage(plan_of(*recipients)).omitted_warning(catalogue=None)
     assert search is not None
     (datasets,) = [w for w in preview.warnings if w["code"] == "currency_unmapped_omitted"]
     assert (datasets["severity"], datasets["message"]) == (search.severity, search.message)

@@ -95,18 +95,17 @@ def test_compute_operation_id_is_deterministic() -> None:
     assert id_a.startswith("op_")
 
 
-def test_a_coverage_build_leaves_the_operation_and_its_completion_in_place(
+def test_a_coverage_build_leaves_the_operation_and_its_admitted_stamp_in_place(
     store: LiveOperationStore,
 ) -> None:
     """The coverage stamp stays out of the id, so a resubmission after a coverage build finds
-    the done operation. Its rebuild rejected an older head, so the completion stays."""
+    the done operation and resets it under the stamp it was admitted with."""
     first = store.create_or_get(
         request_identity=_IDENTITY,
         options=_OPTIONS,
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     assert store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=False)
     assert store.complete(
@@ -123,12 +122,11 @@ def test_a_coverage_build_leaves_the_operation_and_its_completion_in_place(
         coverage_stamp="cov_stamp_2",
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version="cv_0",
     )
 
     assert (after_build.id, after_build.state, after_build.coverage_stamp) == (
         first.id,
-        "done",
+        "pending",
         _STAMP,
     )
 
@@ -172,7 +170,6 @@ def test_a_completed_operation_is_not_reused_under_a_new_catalogue_build(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     claimed = store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=False)
     assert claimed is not None
@@ -190,7 +187,6 @@ def test_a_completed_operation_is_not_reused_under_a_new_catalogue_build(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id="20261006T000000Z-ef567890",
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
     assert rebuilt.id != first.id
@@ -208,7 +204,6 @@ def test_create_or_get_is_idempotent_on_repeat_submit_of_the_same_rendering(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     assert first.state == "pending"
     assert first.rows_written == 0
@@ -221,7 +216,6 @@ def test_create_or_get_is_idempotent_on_repeat_submit_of_the_same_rendering(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=Estimate(rows=1, requests=1),
-        rejected_version=None,
     )
     assert second.id == first.id
     assert second.options == _OPTIONS
@@ -237,7 +231,6 @@ def test_create_or_get_starts_a_different_operation_for_a_different_rendering(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     csv = store.create_or_get(
         request_identity=_IDENTITY,
@@ -245,7 +238,6 @@ def test_create_or_get_starts_a_different_operation_for_a_different_rendering(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
     assert parquet.id != csv.id
@@ -265,7 +257,6 @@ def test_create_or_get_refuses_a_new_operation_at_the_backlog_max() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         store.create_or_get(
             request_identity={"input": {"spec_id": "spec_b"}},
@@ -273,7 +264,6 @@ def test_create_or_get_refuses_a_new_operation_at_the_backlog_max() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         with pytest.raises(OperationBacklogFull) as excinfo:
@@ -283,7 +273,6 @@ def test_create_or_get_refuses_a_new_operation_at_the_backlog_max() -> None:
                 coverage_stamp=_STAMP,
                 origin_catalogue_build_id=_BUILD,
                 estimate=_ESTIMATE,
-                rejected_version=None,
             )
         assert excinfo.value.in_flight == 2
         assert excinfo.value.limit == 2
@@ -311,7 +300,6 @@ def test_create_or_get_at_the_backlog_max_still_returns_an_existing_operation() 
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         second = store.create_or_get(
@@ -320,7 +308,6 @@ def test_create_or_get_at_the_backlog_max_still_returns_an_existing_operation() 
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         assert second.id == first.id
@@ -340,7 +327,6 @@ def test_create_or_get_backlog_count_excludes_terminal_operations() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.complete(
@@ -357,7 +343,6 @@ def test_create_or_get_backlog_count_excludes_terminal_operations() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         assert second.state == "pending"
     finally:
@@ -390,7 +375,6 @@ def test_create_or_get_backlog_count_excludes_a_run_nothing_will_finish(
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         assert store.claim(
             first.id, submission_count=0, lease_seconds=60, final_delivery=final_delivery
@@ -404,7 +388,6 @@ def test_create_or_get_backlog_count_excludes_a_run_nothing_will_finish(
                 coverage_stamp=_STAMP,
                 origin_catalogue_build_id=_BUILD,
                 estimate=_ESTIMATE,
-                rejected_version=None,
             )
 
         if admitted:
@@ -423,7 +406,6 @@ def _create(store: LiveOperationStore, spec_id: str):
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
 
@@ -538,7 +520,6 @@ def test_create_or_get_takes_the_advisory_lock_before_counting_on_a_new_row() ->
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         statements = [s.strip().upper() for s in recording.executed]
         lock_index = next(
@@ -561,7 +542,6 @@ def test_create_or_get_skips_the_advisory_lock_for_an_existing_operation() -> No
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         recording.executed.clear()
 
@@ -571,7 +551,6 @@ def test_create_or_get_skips_the_advisory_lock_for_an_existing_operation() -> No
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         assert not any(
@@ -581,6 +560,90 @@ def test_create_or_get_skips_the_advisory_lock_for_an_existing_operation() -> No
         recording.close()
 
 
+_RESET_UPDATE = "UPDATE datasets.operation SET state = 'pending'"
+
+
+class _InterleavingTransaction:
+    """Runs `before` and `after` around the first reset update, inside the same transaction."""
+
+    def __init__(self, inner: Any, store: _InterleavingOperationDatasetStore) -> None:
+        self._inner = inner
+        self._store = store
+
+    def _around_reset(self, sql: str, run):
+        hooks = self._store.pending_hooks
+        if hooks is None or not sql.startswith(_RESET_UPDATE):
+            return run()
+        self._store.pending_hooks = None
+        before, after = hooks
+        before(self._inner)
+        result = run()
+        after(self._inner)
+        return result
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        self._around_reset(sql, lambda: self._inner.execute(sql, params))
+
+    def fetch_one(self, sql: str, params: Sequence[object] = ()):
+        return self._around_reset(sql, lambda: self._inner.fetch_one(sql, params))
+
+    def fetch_all(self, sql: str, params: Sequence[object] = ()):
+        return self._around_reset(sql, lambda: self._inner.fetch_all(sql, params))
+
+
+class _InterleavingOperationDatasetStore:
+    """Injects writes around the next reset update `create_or_get` sends."""
+
+    def __init__(self) -> None:
+        self._inner = FakeOperationDatasetStore()
+        self.pending_hooks: tuple[Any, Any] | None = None
+
+    def close(self) -> None:
+        self._inner.close()
+
+    @contextmanager
+    def transaction(self) -> Generator[_InterleavingTransaction, None, None]:
+        with self._inner.transaction() as tx:
+            yield _InterleavingTransaction(tx, self)
+
+
+def test_create_or_get_decides_again_when_a_claim_and_completion_land_around_its_reset() -> None:
+    """A redelivery claims the abandoned row after the locked read, so the reset matches
+    nothing, and the run completes before the call returns. The call resets the done row
+    and returns the pending row it wrote."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    fake = _InterleavingOperationDatasetStore()
+    try:
+        store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
+        first = _create(store, "spec_a")
+        assert store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+        now_box["t"] += timedelta(seconds=61)
+
+        def _redelivery_claims(tx: Any) -> None:
+            tx.execute(
+                "UPDATE datasets.operation SET attempt_count = attempt_count + 1, "
+                "claimed_at = %s WHERE id = %s",
+                (now_box["t"], first.id),
+            )
+
+        def _redelivery_completes(tx: Any) -> None:
+            tx.execute(
+                "UPDATE datasets.operation SET state = 'done', subject_id = 'spec_a', "
+                "content_version = 'cv_1', confirmed_at = %s WHERE id = %s",
+                (now_box["t"], first.id),
+            )
+
+        fake.pending_hooks = (_redelivery_claims, _redelivery_completes)
+
+        resubmitted = _create(store, "spec_a")
+
+        assert fake.pending_hooks is None
+        assert (resubmitted.state, resubmitted.submission_count) == ("pending", 1)
+        assert store.get(first.id) == resubmitted
+    finally:
+        fake.close()
+
+
 def test_claim_moves_pending_to_running(store: LiveOperationStore) -> None:
     op = store.create_or_get(
         request_identity=_IDENTITY,
@@ -588,7 +651,6 @@ def test_claim_moves_pending_to_running(store: LiveOperationStore) -> None:
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
     claimed = store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
@@ -609,7 +671,6 @@ def test_claim_refuses_a_live_lease(store: LiveOperationStore) -> None:
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     store.claim(op.id, submission_count=0, lease_seconds=3600, final_delivery=False)
 
@@ -629,7 +690,6 @@ def test_claim_takes_over_a_lease_only_once_it_has_ended(elapsed: int, attempt: 
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     live_store.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
 
@@ -646,7 +706,6 @@ def test_claim_refuses_a_terminal_operation(store: LiveOperationStore) -> None:
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     store.complete(
@@ -667,7 +726,6 @@ def test_progress_only_applies_while_running(store: LiveOperationStore) -> None:
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
     assert store.progress(op.id, attempt=1, rows_written=100) is None
@@ -688,7 +746,6 @@ def test_complete_sets_the_manifest_reference_and_is_running_only(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
     assert (
@@ -736,7 +793,6 @@ def test_fail_sets_the_refusal_code_and_is_running_only(store: LiveOperationStor
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
     assert store.fail(op.id, attempt=1, refusal_code="excel_limit", retryable=False) is None
@@ -774,7 +830,6 @@ def test_fail_stores_the_classified_refusal_beside_its_code(store: LiveOperation
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     assert op.refusal is None
     store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
@@ -809,7 +864,6 @@ def test_an_unparseable_stored_refusal_reads_as_none_and_keeps_the_code(
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(
@@ -841,7 +895,6 @@ def test_fail_without_a_refusal_leaves_the_column_null(store: LiveOperationStore
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
 
@@ -858,7 +911,6 @@ def test_a_retryable_reset_clears_a_stored_refusal(store: LiveOperationStore) ->
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     store.fail(op.id, attempt=1, refusal_code="upstream_error", retryable=True, refusal=_REFUSAL)
@@ -869,7 +921,6 @@ def test_a_retryable_reset_clears_a_stored_refusal(store: LiveOperationStore) ->
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
     assert resubmitted.state == "pending"
@@ -884,7 +935,6 @@ def test_fail_persists_retryable_true_for_a_transient_failure(store: LiveOperati
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
 
@@ -903,7 +953,6 @@ def test_release_moves_running_back_to_pending_and_clears_the_claim(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
 
     assert store.release(op.id, attempt=1) is None
@@ -937,7 +986,6 @@ def test_release_is_a_no_op_once_terminal(store: LiveOperationStore) -> None:
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     store.complete(
@@ -963,7 +1011,6 @@ def test_fail_unservable_done_fails_only_a_done_row_at_the_polled_attempt(
         "coverage_stamp": _STAMP,
         "origin_catalogue_build_id": _BUILD,
         "estimate": _ESTIMATE,
-        "rejected_version": None,
     }
     op = store.create_or_get(**submission)
     assert store.fail_unservable_done(op.id, attempt=0) is None
@@ -1015,7 +1062,6 @@ def _reclaimed(now_box: dict[str, datetime], store: LiveOperationStore) -> str:
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     first = store.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
     assert first is not None and first.attempt_count == 1
@@ -1111,7 +1157,6 @@ def test_claim_refuses_a_delivery_from_an_earlier_submission(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
@@ -1121,7 +1166,6 @@ def test_claim_refuses_a_delivery_from_an_earlier_submission(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     assert reset.submission_count == 1
 
@@ -1145,7 +1189,6 @@ def test_get_returns_a_terminal_operation(store: LiveOperationStore) -> None:
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     store.fail(op.id, attempt=1, refusal_code="excel_limit", retryable=False)
@@ -1166,7 +1209,6 @@ def test_create_or_get_returns_a_deterministic_failed_row_unchanged() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="excel_limit", retryable=False)
@@ -1177,7 +1219,6 @@ def test_create_or_get_returns_a_deterministic_failed_row_unchanged() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         assert resubmitted.id == op.id
@@ -1200,7 +1241,6 @@ def test_create_or_get_resets_a_retryable_failed_row_to_pending() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
@@ -1211,7 +1251,6 @@ def test_create_or_get_resets_a_retryable_failed_row_to_pending() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         assert resubmitted.id == op.id
@@ -1232,34 +1271,21 @@ def test_create_or_get_resets_a_retryable_failed_row_to_pending() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         assert twice_resubmitted.submission_count == 2
     finally:
         fake.close()
 
 
-@pytest.mark.parametrize(
-    ("rejected_version", "state"),
-    [
-        pytest.param("cv_1", "pending", id="rejected-head-is-the-done-version"),
-        pytest.param(None, "pending", id="no-head"),
-        pytest.param("cv_0", "done", id="done-after-the-rejected-head"),
-    ],
-)
-def test_create_or_get_resets_a_done_row_the_rebuild_rejected(
-    store: LiveOperationStore, rejected_version: str | None, state: str
-) -> None:
-    """A rebuild that rejected the head at the done row's version, or found no head, restarts
-    the operation, so its 202 has something to wait for. A done row at another version completed
-    after the caller read the head and stays."""
+def test_create_or_get_resets_a_done_row(store: LiveOperationStore) -> None:
+    """A submission reaches the store only when the head could not answer it, so a done row
+    resets whatever version it holds and its next claim takes a new attempt."""
     op = store.create_or_get(
         request_identity=_IDENTITY,
         options=_OPTIONS,
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=None,
     )
     assert store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     assert store.complete(
@@ -1276,15 +1302,16 @@ def test_create_or_get_resets_a_done_row_the_rebuild_rejected(
         coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
-        rejected_version=rejected_version,
     )
 
-    assert (resubmitted.id, resubmitted.state) == (op.id, state)
-    assert resubmitted.submission_count == (0 if state == "done" else 1)
-    if state == "pending":
-        claimed = store.claim(op.id, submission_count=1, lease_seconds=60, final_delivery=False)
-        assert claimed is not None
-        assert claimed.attempt_count == 2
+    assert (resubmitted.id, resubmitted.state, resubmitted.submission_count) == (
+        op.id,
+        "pending",
+        1,
+    )
+    claimed = store.claim(op.id, submission_count=1, lease_seconds=60, final_delivery=False)
+    assert claimed is not None
+    assert claimed.attempt_count == 2
 
 
 def test_create_or_get_reset_of_a_retryable_failed_row_takes_the_backlog_lock() -> None:
@@ -1298,7 +1325,6 @@ def test_create_or_get_reset_of_a_retryable_failed_row_takes_the_backlog_lock() 
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
@@ -1310,7 +1336,6 @@ def test_create_or_get_reset_of_a_retryable_failed_row_takes_the_backlog_lock() 
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         statements = [s.strip().upper() for s in recording.executed]
@@ -1338,7 +1363,6 @@ def test_create_or_get_reset_survives_a_concurrent_reset_of_the_same_row() -> No
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
@@ -1363,7 +1387,6 @@ def test_create_or_get_reset_survives_a_concurrent_reset_of_the_same_row() -> No
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         assert resubmitted.id == op.id
@@ -1415,7 +1438,6 @@ def test_create_or_get_new_row_survives_a_concurrent_insert_of_the_same_id() -> 
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         assert op.id == id_
@@ -1436,7 +1458,6 @@ def test_create_or_get_reset_refuses_at_the_backlog_max() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
@@ -1448,7 +1469,6 @@ def test_create_or_get_reset_refuses_at_the_backlog_max() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
 
         with pytest.raises(OperationBacklogFull):
@@ -1458,7 +1478,6 @@ def test_create_or_get_reset_refuses_at_the_backlog_max() -> None:
                 coverage_stamp=_STAMP,
                 origin_catalogue_build_id=_BUILD,
                 estimate=_ESTIMATE,
-                rejected_version=None,
             )
     finally:
         fake.close()
@@ -1494,7 +1513,6 @@ def test_mark_dispatched_records_once_per_submission() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         assert op.dispatched_at is None
 
@@ -1512,7 +1530,6 @@ def test_mark_dispatched_records_once_per_submission() -> None:
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         assert (reset.submission_count, reset.dispatched_at) == (1, None)
         # A late record from submission 0 leaves the new submission undispatched.
@@ -1545,7 +1562,6 @@ def test_abandon_fails_a_running_row_only_once_nothing_will_finish_it(
             coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
-            rejected_version=None,
         )
         assert store.abandon(op.id, attempt=0) is None
         assert store.claim(
@@ -1591,7 +1607,6 @@ def test_create_or_get_resets_a_running_row_only_past_its_lease(
             "coverage_stamp": _STAMP,
             "origin_catalogue_build_id": _BUILD,
             "estimate": _ESTIMATE,
-            "rejected_version": None,
         }
         op = store.create_or_get(**submission)
         assert store.claim(

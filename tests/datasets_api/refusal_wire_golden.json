@@ -375,6 +375,22 @@
   "status": 410,
   "truncated": false
  },
+ "extra-133-FacetNotAvailableError": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "facet_not_available",
+  "constraint_id": null,
+  "count": null,
+  "detail": "exemplar",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 422,
+  "truncated": false
+ },
  "extra-134-FacetNotAvailableError": {
   "alternatives": null,
   "cap": null,
@@ -401,22 +417,6 @@
   "count": null,
   "detail": "exemplar",
   "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 422,
-  "truncated": false
- },
- "extra-136-FacetNotAvailableError": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "facet_not_available",
-  "constraint_id": null,
-  "count": null,
-  "detail": "exemplar",
-  "headers": null,
   "issues": [
    {
     "alternatives": null,
@@ -433,7 +433,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-137-DefaultFacetUndefinedError": {
+ "extra-136-DefaultFacetUndefinedError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -449,7 +449,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-138-DefaultFacetUndefinedError": {
+ "extra-137-DefaultFacetUndefinedError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -475,7 +475,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-139-DefaultFacetUndefinedError": {
+ "extra-138-DefaultFacetUndefinedError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -501,7 +501,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-140-DefaultFacetUndefinedError": {
+ "extra-139-DefaultFacetUndefinedError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -517,7 +517,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-141-RecipeNotDeclaredError": {
+ "extra-140-RecipeNotDeclaredError": {
   "alternatives": null,
   "cap": null,
   "cause": {
@@ -537,7 +537,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-142-NonCurrencyUnitError": {
+ "extra-141-NonCurrencyUnitError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -553,8 +553,8 @@
   "status": 422,
   "truncated": false
  },
- "extra-143-MixedGrainError": null,
- "extra-144-MemberNotResolvable": {
+ "extra-142-MixedGrainError": null,
+ "extra-143-MemberNotResolvable": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -589,7 +589,7 @@
   "status": 422,
   "truncated": true
  },
- "extra-145-ColumnUnknownError": {
+ "extra-144-ColumnUnknownError": {
   "alternatives": [
    {
     "label": "place.name",
@@ -610,7 +610,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-146-PivotOverColumnCapError": {
+ "extra-145-PivotOverColumnCapError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -626,7 +626,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-147-PivotNotUniqueError": {
+ "extra-146-PivotNotUniqueError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -661,7 +661,7 @@
   "status": 422,
   "truncated": true
  },
- "extra-148-OverCeilingError": {
+ "extra-147-OverCeilingError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -677,7 +677,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-149-DatasetsStoreUnavailable": {
+ "extra-148-DatasetsStoreUnavailable": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -693,7 +693,7 @@
   "status": 500,
   "truncated": false
  },
- "extra-150-SnapshotSigningFailed": {
+ "extra-149-SnapshotSigningFailed": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -709,7 +709,7 @@
   "status": 500,
   "truncated": false
  },
- "extra-151-ArtifactInventoryError": {
+ "extra-150-ArtifactInventoryError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -725,7 +725,7 @@
   "status": 503,
   "truncated": false
  },
- "extra-152-RefreshNotPermitted": {
+ "extra-151-RefreshNotPermitted": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -773,7 +773,7 @@
   "status": 503,
   "truncated": false
  },
- "meta-132-OperationNotFound": {
+ "meta-131-OperationNotFound": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -789,7 +789,7 @@
   "status": 404,
   "truncated": false
  },
- "meta-133-OperationFailed": {
+ "meta-132-OperationFailed": {
   "alternatives": null,
   "cap": null,
   "cause": {
@@ -2456,23 +2456,7 @@
   "status": 500,
   "truncated": false
  },
- "refresh-129-RefreshRebuildUnservable": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "service_unavailable",
-  "constraint_id": null,
-  "count": null,
-  "detail": "the queued rebuild 'op_exemplar' is done but its file is no longer in storage; retry",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": true,
-  "status": 503,
-  "truncated": false
- },
- "refresh-130-RefreshBackpressure": {
+ "refresh-129-RefreshBackpressure": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -2488,7 +2472,7 @@
   "status": 503,
   "truncated": false
  },
- "refresh-131-RefreshNotPermitted": {
+ "refresh-130-RefreshNotPermitted": {
   "alternatives": null,
   "cap": null,
   "cause": null,

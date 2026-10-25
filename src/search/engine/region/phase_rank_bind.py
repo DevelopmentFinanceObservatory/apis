@@ -19,7 +19,7 @@ from code_index.members import ProvenanceScope, is_opt_in
 from code_index.query import CodeIndex, fold_word
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, text_matches, tokenize, word_tokens
-from code_index.types import CodeRow, DatasetDeclaration, MeasureAxis, StatedWord
+from code_index.types import CodeRow, DatasetDeclaration, MeasureAxis, MeasureValueRow, StatedWord
 from origin_catalogue import current_catalogue
 from search.engine.bind import (
     CandidateMenu,
@@ -130,7 +130,11 @@ from search.engine.region.place_roles import (
     without_open_axis_gaps,
     without_unasked_axes,
 )
-from search.engine.region.qualifier_readings import match_query_readings, reading_for_shape
+from search.engine.region.qualifier_readings import (
+    answer_reads_measure,
+    match_query_readings,
+    reading_for_shape,
+)
 from search.engine.region.result import RegionResult
 from search.engine.region.seating import is_expansion, seat_menu
 from search.engine.region.sentence_events import _build_shape_event
@@ -2871,15 +2875,22 @@ def _coverage_records(
     """The variable's words no reader covers on the elected shape, each run as one record
     with evidence ``"uncovered"``. They catch restrictions the answer would otherwise drop
     silently. A run beside a recognised code is ``unbound``, naming that code's rows:
-    "maternal" in "maternal health ODA" binds nothing beside health, sector 120. In any
-    other run the readers only nominate, and the binder rates how likely the shape's
-    series states each word (`ResolveState.stated_word_ratings`). Each stretch of words it
-    rates below `SearchSettings.stated_word_bar` is ``no_vocabulary``, naming none:
-    "refugee" in "refugee population" on the count of all persons, "tax" in "tax revenue
-    as a percent of GDP" on total revenue. A word it rates at the bar or above, or does
-    not rate, is read. Either way a record refuses the part, and the reading it found is
-    its flagged match. A shape none of whose members has a name states no words of its
-    measure, so on it only a run beside a code is a record.
+    "maternal" in "maternal health ODA" binds nothing beside health, sector 120. On a
+    shape the measure index describes, a word naming a matchable measure value the answer
+    does not carry, one every name of the value's reading holds
+    (`_uncarried_measure_words`), is unread, and its record names the value too:
+    "mobilised" in "private sector investment mobilised" on an amount shape names the
+    amount mobilised, and so does "mobilised" beside ODA in "health ODA mobilised". The
+    readers only nominate the run's other words, and the binder
+    rates how likely the shape's series states each (`ResolveState.stated_word_ratings`).
+    Each stretch of unread words is a record, ``unbound`` naming the measure values its
+    words name, else ``no_vocabulary`` naming none: "refugee" in "refugee population" on
+    the count of all persons, "tax" in "tax revenue as a percent of GDP" on total revenue,
+    each rated below `SearchSettings.stated_word_bar`. A word it rates at the bar or
+    above, or does not rate, is read. Either way a record refuses the part, and the
+    reading it found is its flagged match. A shape none of whose members has a name states
+    no words of its measure, so on it only a run beside a code and a measure value's word
+    are records.
 
     The readers are the spans of the elected shape's own reading (code and measure
     values), the terms in `recorded`, a phrase a menu choice reads among them
@@ -2936,7 +2947,8 @@ def _coverage_reading(
 ) -> _CoverageReading:
     """`_coverage_records` with the verdict of each word of the variable, in query order:
     the name of the reader that reads it (`_Reading.verdicts`), else, in a run beside no
-    code span on a shape with a named member, ``"stated"`` when the binder rates the
+    code span on a shape with a named member, for a word naming no measure value the
+    answer lacks (`_uncarried_measure_words`), ``"stated"`` when the binder rates the
     shape's series stating it at `SearchSettings.stated_word_bar` or above
     (`ResolveState.stated_word_ratings`), ``"unrated"`` when it gives the word no rating,
     which counts as stated, and ``"unread"`` when it rates it below, else ``"unread"``."""
@@ -3010,30 +3022,49 @@ def _coverage_reading(
     verdicts = dict(reading.verdicts)
     ratings = state.stated_word_ratings
     bar = settings().stated_word_bar
+    measure_values = _uncarried_measure_words(state, tokens)
     records: list[ResolvedQualifier] = []
     for run in reading.runs:
         if run.adjacent or run.joined:
             start, end = tokens[run.first].start, tokens[run.last].end
             records.append(
-                _uncovered_record(variable[start:end], start, end, run.adjacent or run.joined)
+                _uncovered_record(
+                    variable[start:end],
+                    start,
+                    end,
+                    run.adjacent or run.joined,
+                    _run_measure_values(measure_values, run.first, run.last),
+                )
             )
             continue
-        if measure_words is None:
-            continue
-        # A word beside no code is unread only on the binder's rating, so each stretch of
-        # the run it rates below the bar is one record.
+        # A word beside no code naming a measure value the answer does not carry is unread
+        # whatever the binder would rate it. Any other is unread only on the binder's
+        # rating, on a shape with a named member. Each stretch of unread words is one
+        # record.
         unread: list[tuple[int, int]] = []
         for position in range(run.first, run.last + 1):
-            rating = ratings.get(tokens[position].text.casefold())
-            if rating is None or rating >= bar:
-                verdicts[position] = "unrated" if rating is None else "stated"
-            elif unread and unread[-1][1] == position - 1:
+            if position not in measure_values:
+                if measure_words is None:
+                    continue
+                rating = ratings.get(tokens[position].text.casefold())
+                if rating is None or rating >= bar:
+                    verdicts[position] = "unrated" if rating is None else "stated"
+                    continue
+            if unread and unread[-1][1] == position - 1:
                 unread[-1] = (unread[-1][0], position)
             else:
                 unread.append((position, position))
         for first, last in unread:
             start, end = tokens[first].start, tokens[last].end
-            records.append(_uncovered_record(variable[start:end], start, end, ()))
+            records.append(
+                _uncovered_record(
+                    variable[start:end],
+                    start,
+                    end,
+                    (),
+                    _run_measure_values(measure_values, first, last),
+                )
+            )
 
     records.extend(
         _uncovered_record(variable[run.start : run.end], run.start, run.end, [run.span])
@@ -3046,6 +3077,90 @@ def _coverage_reading(
         [*unsupported, *records],
         tuple((tokens[position].text, verdicts[position]) for position in sorted(verdicts)),
     )
+
+
+def _uncarried_measure_words(
+    state: ResolveState, tokens: Sequence[Token]
+) -> dict[int, tuple[GraphRef, ...]]:
+    """The matchable measure values each word of the variable, whose tokens are `tokens`,
+    names that the answer over the elected shape and the final bindings does not carry
+    (`answer_reads_measure`), by token position. Only a shape the measure index describes,
+    one whose answer carries a value of its population type axis (the financial flow, the
+    financial obligation), has rival measure values to name, so on any other a word names
+    none.
+
+    A word names a value when every name of its reading holds it, folded as the code index
+    folds words (`fold_word`): the label and each synonym of the value and of each alias of
+    it (`MeasureIndex.reading_set`). No span of the variable may name the value. "mobilised"
+    names `amountMobilised`, "amount mobilised", "amounts mobilised from the private sector"
+    and "private finance mobilised", where "private" and "finance" name nothing, and
+    "inflation" names no `RealValue`, which "real terms" names beside its alias "inflation
+    adjusted". A function word names none, and neither does a word inside a span of the
+    variable read in every code system together, which is that span's
+    (`ResolveState.variable_spans_in_every_system`), nor a word of a name of a measure value
+    the answer carries, matchable or not: "financial" on a shape whose population type is
+    the financial flow names no financial obligation."""
+    measure_index = get_measure_index()
+    shape, bindings = state.shape_draft, state.bindings
+    spans = state.variable_spans_in_every_system
+    spanned = frozenset().union(
+        *(
+            measure_index.reading_set(row.dcid)
+            for span in spans
+            for row in span.rows
+            if isinstance(row, MeasureValueRow)
+        )
+    )
+    described = False
+    carried: set[str] = set()
+    named: dict[str, list[GraphRef]] = {}
+    for value in measure_index.values:
+        if value.same_reading_as is not None:
+            continue
+        reading = measure_index.reading_set(value.dcid)
+        names = [
+            {fold_word(word.text) for word in word_tokens(text)}
+            for row in measure_index.values
+            if row.axis == value.axis and row.dcid in reading
+            for text in (row.label, *row.synonyms)
+        ]
+        match = QualifierMatch(
+            code_system=value.axis,
+            code_dcid=value.dcid,
+            label=value.label,
+            source="label",
+            matched_text=value.label,
+        )
+        if answer_reads_measure(shape, match, bindings):
+            described |= value.axis == "populationType"
+            carried.update(*names)
+        elif value.matchable and value.dcid not in spanned:
+            for word in set.intersection(*names):
+                named.setdefault(word, []).append(GraphRef(ref=value.dcid, label=value.label))
+    if not described:
+        return {}
+    return {
+        position: tuple(values)
+        for position, token in enumerate(tokens)
+        if token.kind == "word"
+        and token.text.casefold() not in FUNCTION_WORDS
+        and not any(span.start <= token.start and token.end <= span.end for span in spans)
+        and (word := fold_word(token.text)) not in carried
+        and (values := named.get(word))
+    }
+
+
+def _run_measure_values(
+    measure_values: Mapping[int, Sequence[GraphRef]], first: int, last: int
+) -> list[GraphRef]:
+    """The measure values the words at token positions `first`..`last` name
+    (`_uncarried_measure_words`), once each, in query order."""
+    values = {
+        ref.ref: ref
+        for position in range(first, last + 1)
+        for ref in measure_values.get(position, ())
+    }
+    return list(values.values())
 
 
 def _occurrences(tokens: Sequence[Token], texts: Iterable[str | None]) -> list[tuple[int, int]]:
@@ -3151,7 +3266,7 @@ def _member_names(shape: ShapeDraft) -> dict[str, frozenset[str]]:
     return {
         dcid: _label_words(name)
         for dcid, arcs in shape_population_arcs(shape).items()
-        if (name := read_name(arcs)) is not None
+        if (name := read_name(arcs, dcid)) is not None
     }
 
 
@@ -3273,7 +3388,7 @@ def served_member_names(state: ResolveState) -> dict[str, str | None]:
     if not served:
         return {}
     arcs = shape_population_arcs(state.shape_draft)
-    return {dcid: read_name(arcs.get(dcid, {})) for dcid in served}
+    return {dcid: read_name(arcs.get(dcid, {}), dcid) for dcid in served}
 
 
 def _label_words(label: str) -> frozenset[str]:
@@ -3568,8 +3683,8 @@ def judge_value_requirements(
         for value in binding.value_dcids
     }
     selected = _selected_members(shape, bindings)
-    constraints = [read_constraints(arcs) for arcs in selected]
-    names = [_casefolded_words(read_name(arcs) or "") for arcs in selected]
+    constraints = [read_constraints(arcs) for arcs in selected.values()]
+    names = [_casefolded_words(read_name(arcs, dcid) or "") for dcid, arcs in selected.items()]
     stated = _series_words(shape) | _dataset_stated_words(shape, get_index(), state)
     read_broadly = {
         (reading.property_dcid, reading.value_dcid)
@@ -3627,7 +3742,7 @@ def judge_value_requirements(
     )
 
 
-def _selected_members(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> list[dict]:
+def _selected_members(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> dict[str, dict]:
     """The arcs of each member `shape` stands for (`shape_population_arcs`) that
     `bindings` select, as materialisation selects them (`bound_values_from_bindings`): one
     holding a value of each property they bind as a value or set, or a descendant of one, and
@@ -3640,13 +3755,13 @@ def _selected_members(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -
         for binding in bindings
         if binding.property_dcid is not None and binding.kind == "absent"
     }
-    selected: list[dict] = []
-    for arcs in shape_population_arcs(shape).values():
+    selected: dict[str, dict] = {}
+    for dcid, arcs in shape_population_arcs(shape).items():
         member = read_constraints(arcs)
         if all(member.get(prop) in values for prop, values in bound.items()) and not (
             absent & member.keys()
         ):
-            selected.append(arcs)
+            selected[dcid] = arcs
     return selected
 
 
@@ -3743,16 +3858,22 @@ def _unsupported_records(
 
 
 def _uncovered_record(
-    text: str, start: int, end: int, spans: Sequence[QualifierSpan]
+    text: str,
+    start: int,
+    end: int,
+    spans: Sequence[QualifierSpan],
+    measure_values: Sequence[GraphRef] = (),
 ) -> ResolvedQualifier:
     """The record of the uncovered words `text` at `start`..`end`: ``unbound``, naming the
-    code rows of `spans` once each, or ``no_vocabulary`` when `spans` name none."""
+    code rows of `spans` once each and the `measure_values` its words name
+    (`_uncarried_measure_words`), or ``no_vocabulary`` when they name none."""
     named = {
         row.dcid: GraphRef(ref=row.dcid, label=row.label)
         for span in spans
         for row in span.rows
         if isinstance(row, CodeRow)
     }
+    named.update((ref.ref, ref) for ref in measure_values)
     return ResolvedQualifier(
         text=text,
         named=list(named.values()),
@@ -3814,10 +3935,12 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        system records nothing more, and no unavailable term inside it is recorded.
     9. Under ``SearchSettings.qualifier_coverage="refuse"``, the variable's words no reader
        covers beside a recognised code, each run ``unbound`` with evidence
-       ``"uncovered"``, the words beside none that the binder rates unread, each stretch
-       ``no_vocabulary`` with that evidence, and every other exclusion or comparison
-       phrase (`_coverage_records`). In log mode the coverage judgement logs them instead
-       (`phase_election.judge_coverage`) and the answer reads without them.
+       ``"uncovered"``, the words beside none that name a measure value the answer does
+       not carry or that the binder rates unread, each stretch with that evidence,
+       ``unbound`` naming the measure values its words name, else ``no_vocabulary``,
+       and every other exclusion or comparison phrase (`_coverage_records`). In log mode
+       the coverage judgement logs them instead (`phase_election.judge_coverage`) and the
+       answer reads without them.
     10. Each value the bind drafted on a property the elected shape has no slot for and a
        recorded term supports (`ResolveState.stray_requirements`), ``unbound`` with
        evidence ``"model"``, in every coverage mode, unless a record above already names
@@ -4208,7 +4331,7 @@ def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:
         (len(arcs.get("observationProperties", {}).get("nodes", [])), name)
         for shape in shapes
         for dcid, arcs in (shape.sv_arc_facts or {}).items()
-        if dcid in code.dcids and (name := read_name(arcs)) is not None
+        if dcid in code.dcids and (name := read_name(arcs, dcid)) is not None
     ]
     return min(named)[1] if named else state.variable
 

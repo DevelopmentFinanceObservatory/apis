@@ -81,7 +81,6 @@ from datasets_api.doors.refresh import (
     FrameNotRefreshable,
     RefreshBackpressure,
     RefreshRebuildFailed,
-    RefreshRebuildUnservable,
     RenderingNotRecorded,
 )
 from datasets_api.doors.register import RegistryBackpressure
@@ -435,7 +434,6 @@ CASES: tuple[tuple[str, BaseException], ...] = (
     ("refresh", FrameNotRefreshable(spec_id="ops_exemplar")),
     ("refresh", RenderingNotRecorded(spec_id="spec_exemplar", content_version="cv_exemplar")),
     ("refresh", RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling")),
-    ("refresh", RefreshRebuildUnservable(operation_id="op_exemplar")),
     ("refresh", RefreshBackpressure()),
     ("refresh", RefreshNotPermitted(presented=False)),
     ("meta", OperationNotFound(operation_id="op_exemplar")),
@@ -530,12 +528,12 @@ _GOLDEN = Path(__file__).with_name("refusal_wire_golden.json")
 _DELIBERATE_DIFFS: dict[str, dict[str, object]] = {
     # A refusal renders its own alternatives. A facet refusal's alternatives reach the top level
     # only when it is raised outside aggregation with alternatives, which no raise site does.
-    "extra-135-FacetNotAvailableError": {
+    "extra-134-FacetNotAvailableError": {
         "alternatives": [{"ref": "Exemplar", "label": "Exemplar"}],
     },
     # `/facets/unit` locates the failure in the materialisation request, not the posted body,
     # so it stays the refusal's `facet_pointer` and leaves the top level.
-    "extra-137-DefaultFacetUndefinedError": {"pointer": None},
+    "extra-136-DefaultFacetUndefinedError": {"pointer": None},
     # Publish stores the canonical frame, so its refusals name a stored frame in place of frame1.
     "publish-105-PublishBytesDiverge": {
         "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds a stored "

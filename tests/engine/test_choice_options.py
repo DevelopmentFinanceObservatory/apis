@@ -27,6 +27,7 @@ from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_
 
 _FERTILITY = "fertility rate"
 _COD = "country/COD"
+_COG = "country/COG"
 _FERTILITY_SV = "FertilityRate_Person_Female"
 _FLOW_SV = "TESTFIXTURE/ChoiceOptions/Flow"
 _PLACES = {
@@ -86,12 +87,14 @@ def _fertility_client(llm: FakeLLM | _ShapeZeroLLM | None = None) -> TestClient:
     )
 
 
-def _flow_client() -> TestClient:
-    """A flow StatVar declaring a creditor and a debtor role, over four countries and the
-    European Union."""
+def _flow_client(llm: _ShapeZeroLLM | None = None) -> TestClient:
+    """A flow StatVar declaring a creditor and a debtor role, over six countries, two of
+    them Congos, and the European Union."""
     graph = FakeGraph(
         nodes={
             **{dcid: {"label": name, "type": "Country"} for name, dcid in _PLACES.items()},
+            _COD: {"label": "Congo [DRC]", "type": "Country"},
+            _COG: {"label": "Congo [Republic]", "type": "Country"},
             _FLOW_SV: {
                 "label": "Test flow",
                 "arcs": {
@@ -108,7 +111,7 @@ def _flow_client() -> TestClient:
         resolve=dict(_PLACES),
         obs={},
     )
-    return _client(graph, _ShapeZeroLLM())
+    return _client(graph, llm or _ShapeZeroLLM())
 
 
 def _client(graph: FakeGraph, llm: _ShapeZeroLLM) -> TestClient:
@@ -193,10 +196,57 @@ def test_a_name_the_query_words_leave_open_asks_its_choice_in_those_words():
     assert no_data["entity_terms"] == ["Congo"]
     (group,) = no_data["ambiguous_entities"]
     assert group["text"] == "Congo"
-    assert {c["ref"] for c in group["candidates"]} == {_COD, "country/COG"}
+    assert {c["ref"] for c in group["candidates"]} == {_COD, _COG}
     assert [o["mentions"] for o in no_data["options"]] == [["Congo"], ["Congo"]]
     assert [e["text"] for e in part["restatement"]["entities"]] == ["Congo"]
     _assert_options_settle(client, no_data)
+
+
+class _TwoCongosExtractionLLM(_ShapeZeroLLM):
+    """Reads every query as aid from the Republic of the Congo to the Democratic Republic
+    of the Congo, each named in the query "Congo", and elects shape 0 with no bindings."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is Extraction:
+            entities = [
+                ExtractedEntity(
+                    text="Republic of the Congo", span="Congo", flow_role="origin", role_span="from"
+                ),
+                ExtractedEntity(
+                    text="Democratic Republic of the Congo",
+                    span="Congo",
+                    flow_role="destination",
+                    role_span="to",
+                ),
+            ]
+            return Extraction(kind="resolution", variables=["aid"], entities=entities), None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+def test_two_names_the_query_words_alike_ask_each_choice_on_its_own():
+    """The parsed door reads one text as one place, so two names that "Congo" leaves open
+    keep the extraction's names, and each end offers its own choice."""
+    client = _flow_client(_TwoCongosExtractionLLM())
+
+    part = _raw_part(client, "aid from Congo to Congo")
+
+    no_data = part["no_data"]
+    assert no_data["reason"] == "entity_ambiguous"
+    names = ["Republic of the Congo", "Democratic Republic of the Congo"]
+    assert [group["text"] for group in no_data["ambiguous_entities"]] == names
+    pins = [
+        {e["text"]: e.get("dcid") for e in option["data_query"]["parts"][0]["entities"]}
+        for option in no_data["options"]
+    ]
+    assert pins == [
+        {names[0]: _COD, names[1]: None},
+        {names[0]: _COG, names[1]: None},
+        {names[0]: None, names[1]: _COD},
+        {names[0]: None, names[1]: _COG},
+    ]
+    for option in no_data["options"]:
+        response = client.post("/api/search/resolve", json={"input": option["data_query"]})
+        assert response.status_code == 200, (option["label"], response.text)
 
 
 def test_a_name_the_query_words_settle_keeps_its_name():

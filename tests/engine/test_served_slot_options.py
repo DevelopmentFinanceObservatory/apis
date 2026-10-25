@@ -1416,19 +1416,26 @@ def test_a_series_two_facets_serve_in_different_years_counts_an_upper_bound(monk
 
 
 @pytest.mark.parametrize(
-    ("names", "named", "unnamed"),
+    ("names", "named", "unnamed", "label"),
     [
-        pytest.param(_CATALOGUE.entity_names, (("Germany", (2019,), (2020,)),), 0, id="named"),
-        pytest.param({}, (), 1, id="no-name-held-counts-it"),
+        pytest.param(
+            _CATALOGUE.entity_names,
+            (("Germany", (2019,), (2020,)),),
+            0,
+            "Germany",
+            id="named",
+        ),
+        pytest.param({}, (), 1, "", id="no-name-held-counts-it"),
     ],
 )
 def test_a_constant_price_answer_names_the_donor_years_its_deflators_leave_out(
-    monkeypatch, names, named, unnamed
+    monkeypatch, names, named, unnamed, label
 ):
     """Germany's deflator lacks 2019 and France's holds it, so the answer keeps 2019 for
     France, leaves out Germany's 2019 row, and departs on the unit token naming Germany
-    with the year it loses, or counting it when the catalogue holds no name for it. Its
-    download counts the three rows its conversion keeps."""
+    with the year it loses, or counting it when the catalogue holds no name for it. The
+    warning's params carry Germany with that name and year. Its download counts the three
+    rows its conversion keeps."""
     region = _crs_region(
         monkeypatch,
         bound={},
@@ -1440,7 +1447,17 @@ def test_a_constant_price_answer_names_the_donor_years_its_deflators_leave_out(
     )
 
     assert region.status == "definite", region.no_data_reason
-    assert [w.code for w in region.warnings] == ["deflator_missing_omitted"]
+    assert [(w.code, w.params) for w in region.warnings] == [
+        (
+            "deflator_missing_omitted",
+            {
+                "count": 1,
+                "entities": [_DEU],
+                "entity_labels": [label],
+                "entity_years": ["2019"],
+            },
+        )
+    ]
     assert [
         (fact.binding_ref, fact.omitted_years, fact.omitted_unnamed)
         for fact in region.departure_facts.values()
@@ -1468,7 +1485,7 @@ def test_a_constant_price_answer_the_tables_cannot_count_warns_rows_may_be_left_
     )
 
     assert region.status == "definite", region.no_data_reason
-    assert [w.code for w in region.warnings] == ["deflator_missing_omitted"]
+    assert [(w.code, w.params) for w in region.warnings] == [("deflator_missing_omitted", None)]
     assert [
         (fact.binding_ref, fact.omitted_years, fact.omission_undecided)
         for fact in region.departure_facts.values()

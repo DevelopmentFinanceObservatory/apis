@@ -1075,7 +1075,6 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
             coverage_stamp=stamp,
             origin_catalogue_build_id="fake-catalogue",
             estimate=estimate,
-            rejected_version=None,
         )
     target = setup_store.create_or_get(
         request_identity=identity,
@@ -1083,7 +1082,6 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
         coverage_stamp=stamp,
         origin_catalogue_build_id="fake-catalogue",
         estimate=estimate,
-        rejected_version=None,
     )
     setup_store.claim(target.id, submission_count=0, lease_seconds=60, final_delivery=False)
     setup_store.fail(target.id, attempt=1, refusal_code="internal_error", retryable=True)
@@ -1112,7 +1110,6 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
                     coverage_stamp=stamp,
                     origin_catalogue_build_id="fake-catalogue",
                     estimate=estimate,
-                    rejected_version=None,
                 )
             # surfaced on the main thread below
             except BaseException as exc:
@@ -1135,7 +1132,6 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
                 coverage_stamp=stamp,
                 origin_catalogue_build_id="fake-catalogue",
                 estimate=estimate,
-                rejected_version=None,
             )
         finally:
             winner_pool.close_all()
@@ -1157,6 +1153,102 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
         assert result.submission_count == 1
     finally:
         loser_pool.close_all()
+
+
+class _InterleavingTransaction:
+    """Commits `before` and `after` on another connection around the first reset update."""
+
+    def __init__(self, inner, store: _InterleavingDatasetStore) -> None:
+        self._inner = inner
+        self._store = store
+
+    def _around_reset(self, sql: str, run):
+        hooks = self._store.pending_hooks
+        if hooks is None or not sql.startswith("UPDATE datasets.operation SET state = 'pending'"):
+            return run()
+        self._store.pending_hooks = None
+        before, after = hooks
+        before()
+        result = run()
+        after()
+        return result
+
+    def execute(self, sql: str, params=()) -> None:
+        self._around_reset(sql, lambda: self._inner.execute(sql, params))
+
+    def fetch_one(self, sql: str, params=()):
+        return self._around_reset(sql, lambda: self._inner.fetch_one(sql, params))
+
+    def fetch_all(self, sql: str, params=()):
+        return self._around_reset(sql, lambda: self._inner.fetch_all(sql, params))
+
+
+class _InterleavingDatasetStore:
+    """Wraps each real transaction in `_InterleavingTransaction`."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.pending_hooks = None
+
+    @contextmanager
+    def transaction(self):
+        with self._inner.transaction() as tx:
+            yield _InterleavingTransaction(tx, self)
+
+
+def test_operation_store_create_or_get_decides_again_when_its_reset_matches_nothing(live_store):
+    """A redelivery claims the abandoned row after the locked read and commits, so the reset
+    re-checks the new version and matches nothing. The run completes before the call returns.
+    Under READ COMMITTED a final read would see `done`. The call resets the done row instead."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    run_id = uuid4().hex
+    subject_id = f"spec-test-live-operation-redecide-{run_id}"
+    identity = {"input": {"spec_id": subject_id}}
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+    interleaving = _InterleavingDatasetStore(live_store)
+    store = LiveOperationStore(store=interleaving, now=lambda: now_box["t"], backlog_max=10_000)
+    # The redelivery commits on its own connection while the submission's transaction is open.
+    worker_pool = _pool(size=1)
+    worker = LiveOperationStore(
+        store=LiveDatasetStore(connections=worker_pool), now=lambda: now_box["t"]
+    )
+
+    try:
+
+        def _submit():
+            return store.create_or_get(
+                request_identity=identity,
+                options={"format": "parquet"},
+                coverage_stamp=f"cov-test-live-operation-redecide-{run_id}",
+                origin_catalogue_build_id="fake-catalogue",
+                estimate=Estimate(rows=1, requests=1),
+            )
+
+        first = _submit()
+        assert worker.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+        now_box["t"] += timedelta(seconds=61)
+
+        def _redelivery_claims() -> None:
+            assert worker.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+
+        def _redelivery_completes() -> None:
+            assert worker.complete(
+                first.id,
+                attempt=2,
+                subject_id=subject_id,
+                content_version="cv1",
+                confirmed_at=now_box["t"],
+            )
+
+        interleaving.pending_hooks = (_redelivery_claims, _redelivery_completes)
+
+        resubmitted = _submit()
+
+        assert interleaving.pending_hooks is None
+        assert (resubmitted.state, resubmitted.submission_count) == ("pending", 1)
+        assert worker.get(first.id) == resubmitted
+    finally:
+        worker_pool.close_all()
 
 
 def test_operation_insert_predating_submitted_at_still_succeeds(live_store):
@@ -1295,7 +1387,6 @@ def _new_operation(store: LiveOperationStore, run_id: str, label: str):
         coverage_stamp=f"cov-test-live-fence-{run_id}",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=1, requests=1),
-        rejected_version=None,
     )
 
 
@@ -1386,27 +1477,16 @@ def test_operation_store_complete_keeps_the_runs_confirmed_instant(live_store):
     assert stored is not None and stored.confirmed_at == confirmed_at
 
 
-@pytest.mark.parametrize(
-    ("rejected_version", "state"),
-    [
-        pytest.param("cv1", "pending", id="rejected-head-is-the-done-version"),
-        pytest.param(None, "pending", id="no-head"),
-        pytest.param("cv0", "done", id="done-after-the-rejected-head"),
-    ],
-)
-def test_operation_store_create_or_get_resets_a_done_row_the_rebuild_rejected(
-    live_store, rejected_version: str | None, state: str
-):
-    """The reset `UPDATE` binds the rejected head's version on PostgreSQL: a done row at that
-    version, or any done row with no head, returns to pending, and one at another version
-    stays."""
+def test_operation_store_create_or_get_resets_a_done_row(live_store):
+    """The reset `UPDATE`'s `_RESETTABLE` admits a done row on PostgreSQL, so it returns to
+    pending under a new submission and its next claim takes a new attempt."""
     run_id = uuid4().hex
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     operations = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
-    op = _new_operation(operations, run_id, "rejected")
+    op = _new_operation(operations, run_id, "done-reset")
     claimed = operations.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
     assert claimed is not None
-    subject_id = f"spec-test-live-rejected-{run_id}"
+    subject_id = f"spec-test-live-done-reset-{run_id}"
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
     assert operations.complete(
         op.id,
@@ -1422,11 +1502,16 @@ def test_operation_store_create_or_get_resets_a_done_row_the_rebuild_rejected(
         coverage_stamp=op.coverage_stamp,
         origin_catalogue_build_id="fake-catalogue",
         estimate=op.estimate,
-        rejected_version=rejected_version,
     )
 
-    assert (resubmitted.id, resubmitted.state) == (op.id, state)
-    assert resubmitted.submission_count == (0 if state == "done" else 1)
+    assert (resubmitted.id, resubmitted.state, resubmitted.submission_count) == (
+        op.id,
+        "pending",
+        1,
+    )
+    reclaimed = operations.claim(op.id, submission_count=1, lease_seconds=30, final_delivery=False)
+    assert reclaimed is not None
+    assert reclaimed.attempt_count == claimed.attempt_count + 1
 
 
 def _materialisation_count(live_store, subject_id: str) -> int:
@@ -1822,7 +1907,6 @@ def _subject_operation(store: LiveOperationStore, run_id: str):
         coverage_stamp="cov-test-live-admission",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=200_000, requests=5),
-        rejected_version=None,
     )
 
 

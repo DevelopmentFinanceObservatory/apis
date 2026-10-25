@@ -62,11 +62,14 @@ set is never returned to a submission that resolved another.
 `0024_operation_attempt_fencing.sql`) stores the request identity, rendering options, the
 admission coverage stamp, catalogue build and estimate, the lifecycle state (`pending`, `running`,
 `done`, `failed`), and the dispatch and fencing columns described below. A submit that finds an
-existing row returns it. A `failed` row marked `retryable`, a `running` row whose lease has ended,
-or a `pending` row past the operation deadline (see [Abandoned runs](#abandoned-runs)) is reset to
-`pending` as a new submission, with `submission_count` incremented. A new row or a reset first
+existing row returns it. A `done` row, a `failed` row marked `retryable`, a `running` row whose
+lease has ended, or a `pending` row past the operation deadline (see
+[Abandoned runs](#abandoned-runs)) is reset to `pending` as a new submission, with
+`submission_count` incremented. A `done` row resets because a submission reaches the store only
+when the subject's head could not answer it, and the rerun serves what the head gives at run
+time. A new row or a reset first
 counts the other live rows (every `pending` or `running` row not abandoned) under an advisory
-lock and refuses `service_unavailable` (503, retryable) at `DATASETS_OPERATION_BACKLOG_MAX` (20).
+lock and refuses `service_unavailable` (503, retryable) at `DATASETS_OPERATION_BACKLOG_MAX` (20). A backlog refusal re-reads the subject's head, and when the head serves the request it answers 200 from the head.
 Every mint and definition door call that reaches this point raises `OperationSubmitted`, caught by
 the door itself. The response is `202 Accepted` with a `Location` header pointing at
 `/api/datasets/operations/{operation_id}` and a body carrying `operation_id`, `status`, `poll`, and

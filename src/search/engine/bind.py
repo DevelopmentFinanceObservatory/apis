@@ -136,6 +136,15 @@ class SlotBindingDraft(BaseModel):
     # every dump. A ``sole_option`` draft of the reply claims that every member asserts
     # its value; one the engine wrote is bound by the rule that wrote it.
     drafted_by: SkipJsonSchema[Literal["reply", "engine"]] = Field(default="engine", exclude=True)
+    # Whether a ``sole_option`` claim of the reply rests on a recall sample that does not
+    # refute it (`phase_election._validate_sole_option_bindings`), so the walk of the
+    # family reads the slot open and confirms or refutes the claim
+    # (`phase_place_materialise._judge_sampled_claims`). Every rule before the walk that
+    # asks whether a slot is bound reads such a claim open, and a binding one of them writes
+    # replaces it (`phase_election.without_sampled_claims`). False for a claim the whole
+    # family backs and for every draft the validator did not judge. Left out of the schema
+    # and of every dump, as `drafted_by` is.
+    sampled: SkipJsonSchema[bool] = Field(default=False, exclude=True)
 
     @model_validator(mode="after")
     def _names_its_values(self) -> SlotBindingDraft:

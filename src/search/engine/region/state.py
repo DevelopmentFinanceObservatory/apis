@@ -254,7 +254,8 @@ def _elected_stat_vars(
     # materialise runs only after bind sets `shape_draft`.
     arc_facts = shape_population_arcs(shape_draft)
     return [
-        GraphRef(ref=dcid, label=read_name(arc_facts.get(dcid, {})) or dcid) for dcid in sv_dcids
+        GraphRef(ref=dcid, label=read_name(arc_facts.get(dcid, {}), dcid) or dcid)
+        for dcid in sv_dcids
     ]
 
 

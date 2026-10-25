@@ -29,7 +29,6 @@ from datasets_api.operations.task_client import TaskClient
 from datasets_api.origin import catalogue_build_id
 from datasets_api.schema import OperationEnvelope, OperationResource
 from datasets_api.timings import phase
-from datasets_api.versions import SubjectHead
 from series_coverage.index import Estimate
 
 # The shortest poll interval an operation advertises, and the refresh door's fixed retry interval.
@@ -41,7 +40,8 @@ OPERATION_POLL_MAX_MS = 8_000
 
 class OperationSubmitted(Exception):
     """Signals a successful 202 submission after recording the operation and creating its task
-    when the submission records no dispatch.
+    when the submission records no dispatch. `operation` is the row as recorded, before the
+    task create.
 
     Mint and definition doors render the envelope outside RFC 9457 error handling.
     """
@@ -63,15 +63,15 @@ def submit_over_budget(
     async_max_rows: int,
     async_max_requests: int,
     members: Sequence[str],
-    rejected_head: SubjectHead | None,
 ) -> None:
     """Returns when the caller's sync-budget decision allows inline work.
 
     `members` are the StatVar refs a door resolved, `dcid:`-prefixed or bare. The operation
-    stores them as `member_dcids`. `rejected_head` is the head `serve_current` rejected before
-    this rebuild, or `None` when the subject has none. A done operation at its version, which
-    could serve nothing, restarts (`OperationStore.create_or_get`), so the 202 reads pending or
-    running.
+    stores them as `member_dcids`. A done operation restarts (`OperationStore.create_or_get`),
+    so the row the submission records reads pending or running, or failed for a deterministic
+    failure. `OperationSubmitted` carries that row. The task create can run the operation to
+    completion before it returns, so the row `dispatch_if_due` returns may read done, and the
+    202 never reads it.
 
     Otherwise, async row or request limits raise `OverCeilingError` before a row or task exists.
     `OperationBacklogFull` also propagates. The function records or reuses the operation,
@@ -88,19 +88,16 @@ def submit_over_budget(
         estimate, async_max_rows=async_max_rows, async_max_requests=async_max_requests
     )
     with phase("operation"):
-        operation = operation_store.create_or_get(
+        accepted = operation_store.create_or_get(
             request_identity=_request_identity(subject_id, members),
             options=options.model_dump(mode="json"),
             coverage_stamp=coverage_stamp,
             origin_catalogue_build_id=catalogue_build_id(),
             estimate=estimate,
-            rejected_version=rejected_head.content_version if rejected_head is not None else None,
         )
     with phase("dispatch"):
-        operation = dispatch_if_due(
-            operation, operation_store=operation_store, task_client=task_client
-        )
-    raise OperationSubmitted(operation=operation)
+        dispatch_if_due(accepted, operation_store=operation_store, task_client=task_client)
+    raise OperationSubmitted(operation=accepted)
 
 
 _STAT_VAR_REF_PREFIX = "dcid:"
@@ -139,10 +136,10 @@ def poll_interval_ms(operation: Operation, *, now: datetime) -> int:
     time since its current submission (`submitted_at`), held between
     `OPERATION_SUBMIT_RETRY_AFTER_MS` and `OPERATION_POLL_MAX_MS`. A repeat submission that
     joins a long build gets the slow value, a resubmission that restarts a failed build starts
-    at the floor, and a waiting browser backs off as the build runs. A done or failed
-    operation answers its next poll at once, so it gets the shortest interval.
+    at the floor, and a waiting browser backs off as the build runs. A failed operation
+    answers its next poll at once, so it gets the shortest interval.
     """
-    if operation.state in ("done", "failed"):
+    if operation.state == "failed":
         return OPERATION_SUBMIT_RETRY_AFTER_MS
     age_ms = (now - operation.submitted_at) // timedelta(milliseconds=1)
     return min(OPERATION_POLL_MAX_MS, max(OPERATION_SUBMIT_RETRY_AFTER_MS, age_ms // 4))
@@ -159,8 +156,9 @@ def retry_after_headers(envelope: OperationEnvelope) -> dict[str, str]:
 def operation_submitted_resource(
     submitted: OperationSubmitted, *, now: datetime
 ) -> OperationResource:
-    """Builds the 202 resource from the returned operation state, which may already be running or
-    terminal. Progress stays unset in the submit response and appears on polls.
+    """Builds the 202 resource from the operation state the submission recorded, which may be a
+    running or failed row it joined. Progress stays unset in the submit response and appears on
+    polls.
     """
     operation = submitted.operation
     return OperationResource(

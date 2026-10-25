@@ -396,6 +396,8 @@ sentence-panel *ARGS:
     uv run {{SYNC_ARGS}} python scripts/sentence_panel/run.py {{ARGS}}
 
 # Pass --nightly URL [--summary FILE] to also run the nightly experiment on the app at URL; it exits 0, 1 or 3.
+# A corpus holding a dataset_resubmit case, and the nightly, also open GRAPH_RELEASE_URI's release,
+# with Google credentials for a gs:// URI. A release that does not open exits 3, an unset URI 2.
 #
 # Mirror corpus/*.yaml to the Langfuse datasets. Live; reads credentials from the env file
 eval-sync *ARGS: _check-env

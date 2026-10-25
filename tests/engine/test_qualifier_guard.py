@@ -34,6 +34,7 @@ from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import QualifierSpan
 from search.engine.quantity import NamedDenominator
+from search.engine.region.phase_answer import _assemble_carve_outs
 from search.engine.region.phase_election import _repair_bindings, judge_coverage
 from search.engine.region.phase_rank_bind import (
     _coverage_reading,
@@ -921,6 +922,104 @@ def test_the_binder_rates_the_words_left_unrated_once_the_bindings_settle(
     assert all(request.shape_index == 1 for request in binder.requests)
     assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
     assert lost.reads == degraded
+
+
+# A CRS amount series of financial flows, the population type the measure index describes,
+# whose name states none of the words the rows below ask about.
+_PSI_SHAPE = replace(
+    _answering(_shape(*_CRS_SLOTS), "amount", "provenance/OECDCreditorReportingSystem"),
+    pop_type_dcid="FinancialFlow",
+    sv_arc_facts={"psi_member": {"name": {"nodes": [{"value": "Gross disbursements"}]}}},
+)
+_PSI_BOUND = (("crsTypeOfFlow", ["CRSTypeOfFlow60"]),)
+_ODA_BOUND = ("crsTypeOfFlow", ["CRSTypeOfFlow10"])
+_HEALTH_ODA_BOUND = (_ODA_BOUND, ("crsPurpose", ["CRSPurposeCode120"]))
+
+
+@pytest.mark.parametrize(
+    ("variable", "shape", "bound", "refused"),
+    [
+        (
+            "private sector investment mobilised",
+            _PSI_SHAPE,
+            _PSI_BOUND,
+            [("mobilised", ["amountMobilised"])],
+        ),
+        # Beside a code span the record names the measure value beside the code's rows.
+        (
+            "health ODA mobilised",
+            _PSI_SHAPE,
+            _HEALTH_ODA_BOUND,
+            [("mobilised", ["CRSTypeOfFlow10", "amountMobilised"])],
+        ),
+        # A series measuring the amount mobilised carries it.
+        (
+            "private sector investment mobilised",
+            replace(_PSI_SHAPE, meas_prop_dcid="amountMobilised"),
+            _PSI_BOUND,
+            [],
+        ),
+        # "inflation" is no word of "real terms", so it names no RealValue beside its alias
+        # "inflation adjusted", and "grant equivalent" is a span naming its value.
+        ("inflation", _PSI_SHAPE, (), []),
+        ("grant equivalent ODA", _PSI_SHAPE, (_ODA_BOUND,), []),
+        # A shape outside the measure family has no rival measure value to name.
+        ("seasonally adjusted unemployment", _READER_TAX, (), []),
+        ("inflation rate", _READER_TAX, (), []),
+        ("debt service obligations", _READER_TAX, (), []),
+        ("financial inclusion", _READER_TAX, (), []),
+        ("full time equivalent teachers", _READER_TAX, (), []),
+        ("capital flow", _READER_TAX, (), []),
+        ("private sector investment mobilised", _READER_TAX, (), []),
+    ],
+    ids=[
+        "mobilised-refuses",
+        "mobilised-beside-a-code",
+        "mobilised-carried",
+        "alias-word",
+        "spanned-value",
+        "off-family-adjusted",
+        "off-family-inflation",
+        "off-family-obligations",
+        "off-family-financial",
+        "off-family-equivalent",
+        "off-family-flow",
+        "off-family-mobilised",
+    ],
+)
+def test_a_word_naming_a_measure_value_the_answer_lacks_refuses_whatever_its_rating(
+    search_settings, variable, shape, bound, refused
+):
+    """A word every name of a matchable measure value holds, which no span names, refuses
+    ``qualifier_not_bound`` on a financial-flow answer that does not carry the value,
+    though the binder would rate it stated, and the binder is not asked about it:
+    "mobilised" names the amount mobilised on an amount series bound to flow type 60, whose
+    name reads "private" and "sector"."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable=variable,
+        shape_draft=shape,
+        bindings=[
+            _binding(prop, kind="value" if len(dcids) == 1 else "set", value_dcids=dcids)
+            for prop, dcids in bound
+        ],
+        unplaced=[],
+        entities=(),
+    )
+    state.capped_shapes = [shape]
+    state.binder = RatingBinder(GeminiBinder())
+    _run(state)
+    spec = Spec.model_validate(minimal_spec())
+    materialised = Materialised(
+        sv_dcids=["psi_member"], has_data=True, coverage=CoverageBare(has_data=True)
+    )
+    result = asyncio.run(_assemble_carve_outs(state, materialised, spec))
+
+    terms = result.unbound_qualifiers if result is not None else ()
+    assert (result is not None and result.no_data_reason == "qualifier_not_bound") == bool(refused)
+    assert [(q.text, [ref.ref for ref in q.named]) for q in terms] == refused
+    if refused:
+        assert all("mobilised" not in request.words for request in state.binder.requests)
 
 
 @pytest.mark.parametrize(

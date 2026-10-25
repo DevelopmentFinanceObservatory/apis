@@ -171,7 +171,6 @@ def test_a_crash_between_commit_and_enqueue_is_recovered_by_the_next_poll() -> N
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
             members=["dcid:sv_a"],
-            rejected_head=None,
         )
     operation_id = excinfo.value.operation.id
     crashed = store.get(operation_id)

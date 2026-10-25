@@ -44,6 +44,7 @@ from origin_catalogue.graph import (
     is_un_dcid,
 )
 from origin_catalogue.topic_walk import walk_topics
+from statvar_members.enumerate import _candidate_properties
 from tests.graph_release.support import origin_release
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue, un_mirror, un_variable
 from tests.origin_catalogue.support import build_arc_tables
@@ -804,7 +805,7 @@ def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_n
     graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:
     """The graph's `->*` read names a nameless node by its dcid and a node of several names
-    by its first, and `node_label` gives the first no label and the second its last name.
+    by its first, and `node_label` gives the first no label and the second its `display_name`.
     The release and the tables answer each read as the graph does, with no request."""
     age, alcohol = "Years0", "Alcohol"
     crs = {
@@ -835,6 +836,28 @@ def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_n
         age: age,
         alcohol: "Alcohol",
     }
+    assert graph.requests == []
+
+
+def test_a_node_held_with_only_member_of_reads_as_a_whole_body_with_no_definition_arc(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """Dev's base table holds `Count_Person_15OrMoreYears_Female_Unmarried` as one `memberOf`
+    arc. The member walk reads only the arcs that define a StatVar and its slots
+    (`_candidate_properties`), so its read is a held body with every requested arc empty, not
+    an absence, and the tables answer it whole (`arcs_complete`), with no request."""
+    stub = "Count_Person_15OrMoreYears_Female_Unmarried"
+    group = "dc/g/Person_Gender-Female_MaritalStatus-Unmarried"
+    arcs = build_arc_tables(
+        dfo={}, base={stub: {"memberOf": {"nodes": [{"dcid": group}]}}}, schema={}
+    )
+    bind_catalogue(_catalogue(arcs=arcs))
+    properties = _candidate_properties({"gender": ("unbound",), "maritalStatus": ("unbound",)})
+
+    assert client.node_arcs_many([stub], properties=properties) == {
+        stub: dict.fromkeys(properties, ())
+    }
+    assert client.arcs_complete(stub)
     assert graph.requests == []
 
 

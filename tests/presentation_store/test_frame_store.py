@@ -789,6 +789,63 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     )
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("Ethiopia", "Federal Democratic Republic of Ethiopia"),
+        ("Federal Democratic Republic of Ethiopia", "Ethiopia"),
+    ],
+)
+def test_load_labels_a_node_of_several_names_as_the_node_door_does(bind_catalogue, names):
+    """A card's label is the node's `display_name`, whatever order the graph gives its names."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    graph = _FakeGraphReader(labels={}, arcs={"country/ETH": {"name": names}})
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["country/ETH"] == "Federal Democratic Republic of Ethiopia"
+
+
+def test_load_labels_the_entities_and_members_a_coverage_warning_counts():
+    """An entity or member that served nothing holds no row, so the refs a
+    `coverage_below_scope` warning carries join the frame's one label batch."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    warning = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": "Short of scope.",
+        "unserved_entities": {"count": 1, "refs": ["dcid:country/SEN"]},
+        "member_count": 3,
+        "off_cadence_members": {"count": 1, "refs": ["dcid:YouthRate"]},
+        "out_of_window_members": {"count": 1, "refs": ["dcid:AdultRate"]},
+    }
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, warnings=[warning])
+    )
+    graph = _FakeGraphReader(
+        labels={
+            "MalariaGrantDisbursements": "Malaria Grant Disbursements",
+            "YouthRate": "Youth rate",
+            "AdultRate": "Adult rate",
+            "country/SEN": "Senegal",
+        }
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert (
+        resolved.labels["dcid:country/SEN"],
+        resolved.labels["dcid:YouthRate"],
+        resolved.labels["dcid:AdultRate"],
+    ) == ("Senegal", "Youth rate", "Adult rate")
+    assert graph.calls == 1
+    assert {"country/SEN", "YouthRate", "AdultRate"} <= set(graph.node_arcs_many_calls[0])
+
+
 _WDI_GDP = "worldBank/NY_GDP_MKTP_CD"
 
 

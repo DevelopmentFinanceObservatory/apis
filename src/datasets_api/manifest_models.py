@@ -257,10 +257,48 @@ class CitationModel(BaseModel):
         return by_ref
 
 
+class CountedRefsModel(BaseModel):
+    """The things of one kind a warning counts: how many, and the `dcid:` refs of the first
+    five, or ten for a conversion's left-out entities (`materialise.codes.CountedRefs`). The message states the count and names none, so a
+    reader labels the refs."""
+
+    model_config = ConfigDict(extra="forbid")
+    count: int = Field(description="how many there are")
+    refs: list[str] = Field(
+        description=(
+            "the `dcid:` refs of the first five of them, ten for omitted_entities: a "
+            "group's members in request order, entities sorted"
+        )
+    )
+
+
+class EntityYearsModel(BaseModel):
+    """One entity a conversion left rows out of, and the years of those rows
+    (`materialise.codes.EntityYears`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    ref: str = Field(description="the entity's `dcid:` ref")
+    years: list[str] = Field(
+        description="the years left out, as runs of consecutive years, `1990-2001` or `2004`"
+    )
+
+
+class CountedEntityYearsModel(BaseModel):
+    """The entities a conversion left rows out of, each with its years: how many, and the
+    first ten, sorted (`materialise.codes.CountedEntityYears`). The message states the count
+    and names none, so a reader labels the refs."""
+
+    model_config = ConfigDict(extra="forbid")
+    count: int = Field(description="how many entities there are")
+    entities: list[EntityYearsModel] = Field(description="the first ten of them, sorted")
+
+
 class WarningModel(BaseModel):
-    """One manifest warning. Only `stat_vars_summed` sets the three structured fields. A `None`
-    field is left out of every dump, so other codes' warnings, on the wire and in stored version
-    bodies, stay exactly `{code, severity, message}`.
+    """One manifest warning. Only `stat_vars_summed` sets its three structured fields, a
+    group's `coverage_below_scope` its three member fields, `coverage_below_scope`
+    `unserved_entities`, `currency_unmapped_omitted` `omitted_entities`, and
+    `deflator_missing_omitted` `omitted_entity_years`. A `None` field is left out of every dump, so other codes' warnings, on
+    the wire and in stored version bodies, stay exactly `{code, severity, message}`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -291,6 +329,56 @@ class WarningModel(BaseModel):
             "gives `stat_var_ref` on a chart (`code_index.labels.family_label` over the spec "
             "identity: its measure partition label, then its bound slots' labels); absent "
             "when neither has a label"
+        ),
+    )
+    member_count: int | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only, when it names a group member: how many series the "
+            "group requested"
+        ),
+    )
+    off_cadence_members: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only: the group members holding observations in the "
+            "requested years at another frequency than the group serves, which the figures "
+            "leave out; absent when there are none"
+        ),
+    )
+    out_of_window_members: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only: the group members holding no observation in the "
+            "requested years; absent when there are none, and when the served provenance reads "
+            "an absent member as zero"
+        ),
+    )
+    unserved_entities: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only: the entities the request binds that served no "
+            "observation, sorted; absent when there are none"
+        ),
+    )
+    omitted_entities: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "currency_unmapped_omitted only: the entities whose rows the conversion left "
+            "out, sorted"
+        ),
+    )
+    omitted_entity_years: CountedEntityYearsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "deflator_missing_omitted only: the entities whose rows the conversion left out "
+            "for a missing deflator, sorted, each with the years of those rows"
         ),
     )
 

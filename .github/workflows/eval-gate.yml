@@ -83,7 +83,7 @@ env:
   UV_NO_SYNC: "1"
   # The deployed artifact roots, owned by the `apis` stack in `infra`. The eval
   # reader service account reads these buckets and nothing else.
-  DEPLOYED_RELEASE_URI: gs://dfo-dev-graph-release-dev-fin-observatory/
+  DEPLOYED_RELEASE_URI: ${{ vars.GRAPH_RELEASE_URI }}
   DEPLOYED_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
   HEAD_PORT: "8100"
   BASE_PORT: "8101"

@@ -80,6 +80,7 @@ from pydantic import ConfigDict, Field
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import CodeRow
+from dc_graph import display_name
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from dfo_platform.static_response import gapped_public_json
@@ -115,7 +116,6 @@ from graph_api.doors.sources import build_source_catalogue
 from graph_api.kinds import code_system_of
 from graph_api.node_models import BuiltFromTable
 from graph_api.reader import GraphNodeReader
-from graph_api.refs import first_name
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from origin_catalogue import current_catalogue, load_registry
 
@@ -549,12 +549,13 @@ def _page[R](
 
 
 def _names_sync(graph: GraphNodeReader, dcids: list[str], *, deadline: float) -> dict[str, str]:
-    """Each dcid's first name unequal to the dcid; a dcid with none is left out."""
-    names = graph.node_names_many(dcids, deadline=deadline)
+    """Each dcid's `display_name`, read from its `name` arc alone, as the node door labels it;
+    a dcid with none is left out. An `alternateName` never becomes a label."""
+    arcs = graph.node_arcs_many(dcids, properties=("name",), deadline=deadline)
     return {
         dcid: label
-        for dcid, values in names.items()
-        if (label := first_name(values, dcid)) is not None
+        for dcid, held in arcs.items()
+        if held is not None and (label := display_name(held.get("name", ()), dcid)) is not None
     }
 
 

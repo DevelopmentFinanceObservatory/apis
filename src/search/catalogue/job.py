@@ -708,7 +708,7 @@ def _live_engine() -> Iterator[tuple[Resolve, PlaceNames]]:
             )
 
         def place_names(dcids: Sequence[str]) -> Mapping[str, str]:
-            return {dcid: names[0] for dcid, names in graph.node_names_many(dcids).items() if names}
+            return graph.node_labels_batch(list(dcids))
 
         yield resolve, place_names
 

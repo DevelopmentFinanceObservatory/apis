@@ -83,7 +83,7 @@ jobs:
           # WAF bypass for the graph: CI runner IPs are datacenter ranges the
           # graph's bot protection challenges, and this header exempts them.
           SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
-          GRAPH_RELEASE_URI: gs://dfo-dev-graph-release-dev-fin-observatory/
+          GRAPH_RELEASE_URI: ${{ vars.GRAPH_RELEASE_URI }}
           ORIGIN_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
           ALERT: ${{ vars.EVAL_NIGHTLY_ALERT }}
           GH_TOKEN: ${{ github.token }}

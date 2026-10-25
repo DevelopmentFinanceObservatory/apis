@@ -93,6 +93,10 @@ class MaterialisationRequest:
     # The whole population the definition's identity admits, shared by every request of the
     # definition and stated in the trace. `None` when the resolver could not state it.
     family: MemberFamily | None = None
+    # The `dcid:` refs member resolution left out of that family as stubs, nodes whose complete
+    # read carries no definition arc, shared by every request of the definition and stated in
+    # the trace.
+    stub_candidates: tuple[str, ...] = ()
     # A caller's facet filter over each probed candidate's provenance, method and unit. The
     # member elects only among the candidates it admits (`facets.admitted_candidates`), so
     # a filtered request serves its best admitted facet. None admits every candidate.
@@ -251,6 +255,7 @@ def materialise_group(
     coverage: CoverageIndex | None = None,
     deadline: float | None = None,
     progress: RowProgress | None = None,
+    absent_reads_zero: Callable[[str], bool] | None = None,
 ) -> MaterialisationResult:
     """Generate and finish a group. Returns one frame, trace and content version covering every
     member.
@@ -297,6 +302,12 @@ def materialise_group(
     rows whose deflator the table lacks; when no row of the group survives and some were
     omitted, the call refuses `currency_unmapped` naming the unnamed entities, else
     `deflator_missing` naming each entity and year (`refuse_if_every_row_omitted`).
+
+    `absent_reads_zero` says whether a provenance reads an absent member as zero
+    (`code_index.members.absent_member_reads_zero`), the rule a sum over the frame reads. A
+    group served from one provenance it holds true for raises no warning for its members
+    holding no observation in the requested years (`finish._build_warnings`). Without it
+    every provenance reads unknown.
     """
     if not requests:
         raise MaterialisationUsageError("materialise_group requires at least one member")
@@ -356,6 +367,7 @@ def materialise_group(
     refuse_if_every_row_omitted(
         served_rows=outcome.coverage.rows, records=outcome.member_conversion_records.values()
     )
+    served = dispatched_provenances(outcome.selections)
     return _finish_group(
         requests,
         outcome,
@@ -363,9 +375,12 @@ def materialise_group(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         enrichment=enrichment,
+        absent_reads_zero=(
+            absent_reads_zero is not None and len(served) == 1 and absent_reads_zero(served[0])
+        ),
         dependencies=build_dependencies(
             requests,
-            source_refs=dispatched_provenances(outcome.selections),
+            source_refs=served,
             provenance_refresh=outcome.provenance_refresh,
             conversion_records=outcome.member_conversion_records.values(),
             latest_years=outcome.latest_years,

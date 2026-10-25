@@ -397,6 +397,24 @@ class TestUnits:
         assert node["unit"] == expected
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("United States", "United States of America"),
+        ("United States of America", "United States"),
+    ],
+)
+def test_a_node_of_several_names_is_labelled_as_every_surface_labels_it(names):
+    """The label is the node's `display_name`, the name a card and `node_label` give it, in
+    whatever order the graph returns the names."""
+    graph = FakeGraphNodeReader(nodes={"country/USA": {"typeOf": ("Country",), "name": names}})
+
+    with _client(graph, policy=None) as client:
+        node = client.get("/api/graph/node/country/USA").json()
+
+    assert node["label"] == "United States of America"
+
+
 def test_a_node_with_no_name_names_the_label_gap():
     graph = FakeGraphNodeReader(nodes={"dc/base/Foo": {"typeOf": ("SomeOtherType",)}})
 

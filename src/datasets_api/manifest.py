@@ -126,12 +126,9 @@ _PROCESSING_LEVEL_UNDECLARED_TITLE, _PROCESSING_LEVEL_UNDECLARED_DETAIL = BUNDLE
 
 
 def warning_model(warning: Mapping[str, object]) -> WarningModel:
-    """Converts a complete `{code, severity, message}` warning mapping without reformatting it."""
-    return WarningModel(
-        code=cast(str, warning["code"]),
-        severity=cast(str, warning["severity"]),
-        message=cast(str, warning["message"]),
-    )
+    """Converts a complete `{code, severity, message}` warning mapping, with any structured
+    fields it carries (`materialise.codes.MaterialisationWarning`), without reformatting it."""
+    return WarningModel.model_validate(warning)
 
 
 def reshape_warning_models(warnings: Sequence[Mapping[str, object]]) -> tuple[WarningModel, ...]:

@@ -59,6 +59,11 @@ is left out, and an input record holding `steps: null` is held, and either leave
 record not final, so a later load reads the inputs again. A
 failed input read raises as a failed record read does.
 
+A version's warnings carry by ref the entities and group members they count and their
+messages do not name: the bound entities and members that served nothing, and the entities a
+conversion left out (`assembler.mint.warned_refs`). These hold no row, so their refs join the
+frame's label read ahead of its own refs, and a card names them by label.
+
 A frame's continuation (`ResolvedFrame.continuation`, `assembler.frame_view.frame_continuation`)
 comes from its stored version alone: a dataset version's `trace.continuations`, or the
 `continuations` a computed version stored when it was published, inherited from the versions it
@@ -154,6 +159,7 @@ from assembler.frame_view import (
     frame_continuation,
 )
 from assembler.limits import LABEL_MAX, joined_label
+from assembler.mint import warned_refs
 from assembler.ports import (
     FrameRef,
     FrameUnavailable,
@@ -191,6 +197,7 @@ from datasets_api.manifest_models import CitationModel
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import servable_frame_location
 from datasets_api.subject_ids import served_subject_ids
+from dc_graph import label_or_self_name
 from description.citation import figures_processed
 from description.compose import version_title
 from description.facts import ComposedVariable, DescriptionRecord
@@ -205,7 +212,7 @@ from materialise.formats import (
     canonical_frame_document,
     read_canonical_frame_table,
 )
-from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
+from materialise.graph import GraphReader, GraphReadError
 from materialise.provenance_doc import SourceCitation, read_source_citations
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
@@ -772,6 +779,7 @@ class LiveFrameStore:
                 record=record,
                 composed=_composed(record, stored=stored),
                 inputs=inputs,
+                warned=warned_refs(manifest=document),
                 deadline=deadline,
             )
             continuation = frame_continuation(manifest=document)
@@ -836,6 +844,7 @@ class LiveFrameStore:
                     record=record,
                     composed=_composed(record, stored=stored),
                     inputs=inputs,
+                    warned=warned_refs(manifest=document),
                     deadline=deadline,
                 )
                 if record_changed and not labels_resolved:
@@ -1370,10 +1379,13 @@ class LiveFrameStore:
         record: DescriptionRecord | None,
         composed: Sequence[ComposedVariable],
         inputs: Sequence[DescriptionRecord],
+        warned: Sequence[str],
         deadline: float,
     ) -> tuple[dict[str, str], dict[str, str], bool]:
-        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the refs each of
-        `inputs` names in its title (`datasets_api.description_record.title_named`) and the
+        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the entities and group
+        members its version's warnings count (`warned`, `assembler.mint.warned_refs`) under
+        their `dcid:` refs, since what served nothing or was left out has no row, and the refs
+        each of `inputs` names in its title (`datasets_api.description_record.title_named`) and the
         entities `record`'s steps record on their sides (`bound_entities`) under their bare dcids,
         then add the name of each variable `record` and `composed` name
         (`_computed_labels`), under the ref its `stat_var` cells hold, and read the description
@@ -1387,7 +1399,7 @@ class LiveFrameStore:
             )
         labels, resolved = self._resolve_ref_labels(
             doc,
-            leading_stat_vars=_composed_sides(composed),
+            leading_stat_vars=[*_composed_sides(composed), *warned],
             worded=sorted(worded),
             named=frozenset(_named_refs(record, composed=composed)),
             deadline=deadline,
@@ -1549,11 +1561,9 @@ class LiveFrameStore:
         for bare, arcs in arcs_by_bare.items():
             if arcs is None:
                 continue
-            # The last truthy resolved name is the fuller roll-up label.
-            values = [value for value in arcs.get("name", ()) if value and value != UNRESOLVED_NODE]
-            if not values:
+            label = label_or_self_name(arcs.get("name", ()), bare)
+            if label is None:
                 continue
-            label = values[-1]
             for ref in graph_bare_to_refs[bare]:
                 labels[ref] = label
         return labels, family_read_ok

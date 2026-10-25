@@ -701,6 +701,7 @@ def _finish_candidate(
     cand_open_axis_facts = open_constraint_axes(
         cand_measure_bound_values,
         dict(zip(cand_mat.sv_dcids, cand_served_members, strict=True)),
+        value_labels=cand_shape.value_labels or {},
     )
     # Reuse materialised role facts without extra SDMX reads. Labelled entity options are
     # built only for a surviving definite answer.
