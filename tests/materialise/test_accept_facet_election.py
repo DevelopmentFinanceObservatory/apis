@@ -575,10 +575,13 @@ class _UnGraph(FakeGraphReader):
         *,
         stat_vars: Sequence[str],
         entities: Sequence[str],
+        needs_dates: bool = False,
         deadline: float | None = None,
         max_bytes: int | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
-        found = super().observation_facets_batch_many(stat_vars=stat_vars, entities=entities)
+        found = super().observation_facets_batch_many(
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates
+        )
         if _GDP not in stat_vars:
             return found
         if self.un_fails:

@@ -388,10 +388,15 @@ class LiveGraphClient:
         return self._client.exists_batch(dcids)
 
     def variable_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_var: str,
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, list[dc_graph.Facet]]:
         return self._client.variable_facets_batch(
-            stat_var=stat_var, entities=entities, deadline=deadline
+            stat_var=stat_var, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     def observation_facets_batch_many(
@@ -399,11 +404,16 @@ class LiveGraphClient:
         *,
         stat_vars: Sequence[str],
         entities: Sequence[str],
+        needs_dates: bool = False,
         deadline: float | None = None,
         max_bytes: int | None = None,
     ) -> dict[str, dict[str, list[dc_graph.Facet]]]:
         return self._client.observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline, max_bytes=max_bytes
+            stat_vars=stat_vars,
+            entities=entities,
+            needs_dates=needs_dates,
+            deadline=deadline,
+            max_bytes=max_bytes,
         )
 
     def un_observation_reader(self) -> OriginGraphClient:

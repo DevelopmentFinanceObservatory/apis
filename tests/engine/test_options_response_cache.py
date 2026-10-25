@@ -116,7 +116,9 @@ def _materialise_graph() -> FakeGraphReader:
 class _FailingFacetsGraphReader(FakeGraphReader):
     """Raises `GraphReadError` on facet reads to test that warning-bearing responses are not cached."""
 
-    def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+    def observation_facets_batch_many(
+        self, *, stat_vars, entities, needs_dates=False, deadline=None
+    ):
         self._count("observation_facets_batch_many")
         raise GraphReadError("synthetic coverage-probe transport failure")
 

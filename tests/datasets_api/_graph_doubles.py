@@ -98,13 +98,23 @@ class FakeMintGraphReader:
         return {dcid: self._labels[dcid] for dcid in dcids if dcid in self._labels}
 
     def variable_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_var: str,
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, list[Facet]]:
         self._count("variable_facets_batch")
         return {entity: self._facets.get((stat_var, entity), []) for entity in entities}
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         self._count("observation_facets_batch_many")
         return {
@@ -263,17 +273,27 @@ class BlockingFakeMintGraphReader:
         return self._delegate.node_labels_batch(dcids)
 
     def variable_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_var: str,
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, list[Facet]]:
         return self._delegate.variable_facets_batch(
-            stat_var=stat_var, entities=entities, deadline=deadline
+            stat_var=stat_var, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         return self._delegate.observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     def child_places_batch(

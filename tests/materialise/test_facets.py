@@ -363,10 +363,12 @@ class _ProbeRecordingGraph(FakeGraphReader):
         super().__init__(**kwargs)
         self.probed: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
 
-    def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+    def observation_facets_batch_many(
+        self, *, stat_vars, entities, needs_dates=False, deadline=None
+    ):
         self.probed.append((tuple(stat_vars), tuple(entities)))
         return super().observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
 
@@ -515,7 +517,19 @@ def test_probe_facets_role_bearing_with_no_bound_role_covers_every_coverage_row(
     assert sum(graph.calls.values()) == 0
 
 
-def test_probe_facets_forwards_deadline_to_the_graph_call():
+_WINDOWS_READ_DATED = [
+    (None, False),
+    (RequestedWindow(kind="all"), False),
+    (RequestedWindow(kind="latest"), False),
+    (RequestedWindow(kind="range", start_year=2010, end_year=2020), True),
+    (RequestedWindow(kind="range", start_year=2010, end_year=2026, end_unstated=True), True),
+]
+
+
+@pytest.mark.parametrize(("window", "dated"), _WINDOWS_READ_DATED)
+def test_probe_facets_forwards_deadline_and_reads_dates_under_a_range_only(
+    window: RequestedWindow | None, dated: bool
+):
     graph = FakeGraphReader(facets={(_STAT_VAR, "country/KEN"): [_FACET_KEN]})
     deadlines: list[float | None] = []
     original = graph.variable_facets_batch
@@ -533,10 +547,12 @@ def test_probe_facets_forwards_deadline_to_the_graph_call():
         bound_entities=["country/KEN"],
         settle=True,
         graph=graph,
+        window=window,
         deadline=deadline,
     )
 
     assert deadlines == [deadline]
+    assert graph.facet_reads == [("variable_facets_batch", dated)]
 
 
 def test_probe_facets_observation_about_declared_roles_takes_graph_path_byte_identical():

@@ -464,6 +464,7 @@ def decide_member_unit(
             declared_roles=request.declared_roles,
             role_bindings=request.role_bindings,
             coverage=coverage,
+            window=request.window,
             deadline=deadline,
         )
         probed, breadth = probe.candidates, probe.breadth_in(request.window)

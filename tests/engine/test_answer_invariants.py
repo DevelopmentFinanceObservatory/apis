@@ -943,25 +943,6 @@ def _datasets_read(
     return _READS[key]
 
 
-def _is_undated_gap_election(
-    cell: Cell, world: World, stat_vars: Iterable[str], elected: str | None
-) -> bool:
-    """Whether a datasets read electing `elected` is issue #1049, the declared limit of the
-    shared election: a subject-only read probes spans with no dates, so it elects a facet
-    whose span reaches the years the election ranks under (`_read`, an open end stopping at
-    the clock) while it holds no point in them. A facet whose span lies wholly outside those
-    years is no such election."""
-    read = _read(cell.date)
-    if world.role or read is None:
-        return False
-    reaches = any(
-        _within(first, (None, read[1])) and _within(last, (read[0], None))
-        for first, last in _spans(world, stat_vars, provenance=elected)
-    )
-    holds = any(_holds_points(world, stat_var, read, provenance=elected) for stat_var in stat_vars)
-    return reaches and not holds
-
-
 def _is_multi_member(spec: Stated) -> bool:
     """Whether a Spec is issue #1060: it lists more than one variable. The answer elects
     each member's group on its own and a mint elects one group across the members, so no
@@ -994,10 +975,7 @@ def i3_one_election(run: Doors) -> list[str]:
     rows that read returns lie inside the years the answer states. A named place the one
     group does not serve is stated as unserved, at each door that previews.
 
-    The two expected differences are issue #1049, where on the standard route a datasets
-    read probes spans with no dates, so it can elect a facet with a gap across the whole
-    window and read no row, while the answer read dates and serves a sibling facet
-    (`_is_undated_gap_election`), and issue #1060, a Spec with more than one variable
+    The one expected difference is issue #1060, a Spec with more than one variable
     (`_is_multi_member`)."""
     cell, world = run.cell, run.world
     found: list[str] = []
@@ -1020,13 +998,10 @@ def i3_one_election(run: Doors) -> list[str]:
                     f"its Spec elects {read[0]} alone and reads {read[2]} rows"
                 )
             elif said.sources != (read[0],):
-                if _is_undated_gap_election(cell, world, said.stat_vars, read[0]):
-                    _pass_over("#1049", cell)
-                else:
-                    found.append(
-                        f"{door} cites {said.sources} and a datasets read of its Spec elects "
-                        f"{read[0]} and reads {read[2]} rows"
-                    )
+                found.append(
+                    f"{door} cites {said.sources} and a datasets read of its Spec elects "
+                    f"{read[0]} and reads {read[2]} rows"
+                )
             elif (
                 read[3] is not None
                 and said.window is not None
@@ -1684,7 +1659,7 @@ def i11_download_is_the_datasets_read(run: Doors) -> list[str]:
     """The rows and years a Spec states for its file (`ResolvedSpec.download`) are those a
     datasets read of its Spec reads: the same rows when stated exact, at least as many when
     stated as an upper bound. A Spec whose read refuses has no file to state. The read and
-    the answer elect apart in issues #1049 and #1060, as `i3_one_election` passes over."""
+    the answer elect apart in issue #1060, as `i3_one_election` passes over."""
     found: list[str] = []
     for door, answer in run.answers():
         for spec, said in zip(answer.specs, statements(answer), strict=True):
@@ -1692,10 +1667,6 @@ def i11_download_is_the_datasets_read(run: Doors) -> list[str]:
                 continue
             read = _datasets_read(run.world, spec)
             if isinstance(read, str):
-                continue
-            if said.sources != (read[0],) and _is_undated_gap_election(
-                run.cell, run.world, said.stat_vars, read[0]
-            ):
                 continue
             download = spec.resolved.download
             if download is None or download.rows is None:
@@ -1822,10 +1793,8 @@ def test_every_cell_holds_every_invariant(
     """Each cell the grid runs (`CELLS_RUN`) runs its doors once and every invariant's
     check reads them. The cells of one block share their first doors. A
     failure lists one line per disagreement: the cell, the invariant and the two statements
-    that disagree. The grid expects two differences, each passed over by one predicate
-    tied to its issue: #1049, an undated datasets read electing a facet with a gap across
-    the window (`i3_one_election`); and #1060, a Spec with more than one variable
-    (`i3_one_election`). I9 runs on the covering array's cells only
+    that disagree. The grid expects one difference, passed over by a predicate tied to its
+    issue: #1060, a Spec with more than one variable (`i3_one_election`). I9 runs on the covering array's cells only
     (`checks_for`)."""
     recorded_engine(route)
     failures: list[str] = []
@@ -1858,25 +1827,6 @@ def test_a_bulk_read_substitution_does_not_excuse_extra_pair_reads_or_serial_dep
     assert excess(deeper) == [
         "runs 2 serial steps against 1 baseline, 0 for its relaxations' walks and 0 for its facet options"
     ]
-
-
-def test_the_1049_exemption_needs_a_span_that_reaches_the_window_and_holds_no_point() -> None:
-    """In the `gap` rows IDS runs 2010 to 2030 and holds no point from 2016 to 2026. An
-    undated read electing it for 2019 to 2024 is issue #1049. Its span lies wholly outside
-    1950 to 1955 and it holds points in 2027 to 2029, so neither of those elections is
-    passed over, and none is on a role route, whose read probes dates."""
-
-    def passed_over(route: str, date: str) -> bool:
-        cell = Cell(route, "gap", "definite", "none", date, True, "none", "dcid_order")
-        world = _world(route, "gap", "definite")
-        return _is_undated_gap_election(cell, world, world.stat_vars, IDS)
-
-    assert passed_over("standard", "clip_end")
-    assert passed_over("standard", "since")
-    assert not passed_over("standard", "unreached")
-    assert not passed_over("standard", "future")
-    assert not passed_over("standard", "dateless")
-    assert not passed_over("named_pair", "clip_end")
 
 
 def test_the_grid_skips_only_combinations_no_request_can_form() -> None:

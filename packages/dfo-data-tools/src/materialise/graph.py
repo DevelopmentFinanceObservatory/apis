@@ -100,24 +100,35 @@ class GraphReader(Protocol):
         ...
 
     def variable_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_var: str,
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, list[Facet]]:
         """Returns facets per entity from one POST. Empty entities return `{}`.
 
-        An entity without observations maps to `[]`. Transport errors raise
-        `GraphReadError`. An expired absolute monotonic `deadline` raises
-        `GraphDeadlineExceededError` before the request. Otherwise the
-        absolute deadline bounds the httpx timeout.
+        An entity without observations maps to `[]`. `needs_dates` adds each facet's
+        per-observation dates and values (`Facet.dates`); without it they are empty.
+        Transport errors raise `GraphReadError`. An expired absolute monotonic `deadline`
+        raises `GraphDeadlineExceededError` before the request. Otherwise the absolute
+        deadline bounds the httpx timeout.
         """
         ...
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         """Returns facets for each StatVar/entity pair in one POST.
 
         Pairs without observations map to `[]`. Empty `stat_vars` or `entities`
-        returns `{}`.
+        returns `{}`. `needs_dates` follows `variable_facets_batch`.
         Transport errors raise `GraphReadError`. `deadline` follows
         `variable_facets_batch`'s absolute-time contract.
         """

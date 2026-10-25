@@ -55,6 +55,8 @@ class FakeGraphReader:
     generation token (`generation_stamp`). Other missing nodes return `None`.
     `node_subjects` returns the `subjects` page for `(dcid, property)` when one is
     given, and otherwise scans `arcs` in reverse, in insertion order.
+    Facet reads return the facets as given, dates included whatever `needs_dates` says, and
+    `facet_reads` records each read's `(method, needs_dates)`.
     Name reads combine `name` then `alternateName`, deduplicated. Calls are
     lock-protected for concurrent collection tests. Probe budgets and each
     `(dcids, properties)` read are recorded for assertions.
@@ -93,6 +95,7 @@ class FakeGraphReader:
         self.last_individual_probe_budget: int | None = None
         self.node_arcs_many_calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
         self.presence_reads: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        self.facet_reads: list[tuple[str, bool]] = []
         self._place_nodes = frozenset(entity for _stat_var, entity in facets)
         self._generation = FakeGeneration(token=f"fake-graph-{next(_FAKE_GENERATIONS)}")
 
@@ -121,23 +124,42 @@ class FakeGraphReader:
         self._count("node_labels_batch")
         return {dcid: self._labels[dcid] for dcid in dict.fromkeys(dcids) if dcid in self._labels}
 
+    def _facets_at(self, stat_var: str, entity: str, *, needs_dates: bool) -> list[Facet]:
+        return self._facets.get((stat_var, entity), [])
+
     def variable_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_var: str,
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, list[Facet]]:
         self._count("variable_facets_batch")
-        return {entity: self._facets.get((stat_var, entity), []) for entity in entities}
+        with self._calls_lock:
+            self.facet_reads.append(("variable_facets_batch", needs_dates))
+        return {
+            entity: self._facets_at(stat_var, entity, needs_dates=needs_dates)
+            for entity in entities
+        }
 
     def observation_facets_batch_many(
         self,
         *,
         stat_vars: Sequence[str],
         entities: Sequence[str],
+        needs_dates: bool = False,
         deadline: float | None = None,
         max_bytes: int | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         self._count("observation_facets_batch_many")
+        with self._calls_lock:
+            self.facet_reads.append(("observation_facets_batch_many", needs_dates))
         return {
-            stat_var: {entity: self._facets.get((stat_var, entity), []) for entity in entities}
+            stat_var: {
+                entity: self._facets_at(stat_var, entity, needs_dates=needs_dates)
+                for entity in entities
+            }
             for stat_var in stat_vars
         }
 

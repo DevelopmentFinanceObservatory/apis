@@ -122,7 +122,8 @@ def _search_answer() -> Spec:
 
 def test_a_search_answer_and_a_mint_of_its_spec_serve_the_same_source() -> None:
     """The answer cites the short series, and a preview of its unpinned identity, the
-    selection a mint runs over an undated probe, elects the short series too."""
+    selection a mint runs, elects the short series too. A probe reads no dates unless it
+    asks, and the preview's range window asks."""
     spec = _search_answer()
     identity = spec.definition.identity
 
@@ -257,7 +258,7 @@ def test_a_converting_unit_decision_dispatches_the_facet_the_plan_cites(from_ans
 
 _GHA = "country/GHA"
 # What one place holds: each facet's id, source and years. Every range is unbroken, so an
-# undated probe and a dated read see the same points (the gap case is the known limit below).
+# undated probe and a dated read see the same points; a gap across the window is below.
 _HELD: list[tuple[tuple[str, str, range], ...]] = [
     (("f-long", _LONG, range(2005, 2023)), ("f-short", _SHORT, range(2019, 2022))),
     (("f-short", _SHORT, range(2000, 2024)), ("f-long", _LONG, range(2018, 2021))),
@@ -370,12 +371,12 @@ _GAP_OBS = {
 }
 
 
-def test_an_undated_mint_elects_a_facet_with_a_gap_across_the_window_and_reads_no_rows() -> None:
-    """The known limit of the shared election. One facet is recorded to 2015 and projected
-    from 2027, another holds 2021 and 2022, and the request asks for 2018 to 2026. Search
-    reads dates, sees the gapped facet holds no point there, and serves the recent one. A
-    mint's probe carries spans alone, so the gapped facet, whose span covers all nine years,
-    is elected and its read returns no row in the window."""
+def test_a_mint_passes_over_a_facet_with_a_gap_across_the_window_as_the_answer_does() -> None:
+    """One facet is recorded to 2015 and projected from 2027, another holds 2021 and 2022,
+    and the request asks for 2018 to 2026. Search reads dates, sees the gapped facet holds
+    no point there, and serves the recent one. A mint's probe reads dates under a range
+    window too, so it passes over the gapped facet, whose span covers all nine years, elects
+    the recent one and reads its two rows."""
     window = TimeWindow(start_year=2018, end_year=2026)
     dated = [
         Facet(
@@ -405,5 +406,6 @@ def test_an_undated_mint_elects_a_facet_with_a_gap_across_the_window_and_reads_n
         limit=100,
     )
 
-    assert preview.selections["provenance"].ref == _GAP
-    assert preview.total_rows == 0
+    assert preview.selections["provenance"].ref == _RECENT
+    assert preview.selections["provenance"].dispatch_facet_id == "f-recent"
+    assert preview.total_rows == 2

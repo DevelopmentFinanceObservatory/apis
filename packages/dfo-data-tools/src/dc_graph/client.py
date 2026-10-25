@@ -1821,20 +1821,22 @@ class GraphClient:
         *,
         stat_vars: Sequence[str],
         entities: Sequence[str],
+        needs_dates: bool = False,
         deadline: float | None = None,
         max_bytes: int | None = None,
         domains: tuple[str, ...] | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         """Fetch the Cartesian product of StatVars and entities with `select=["variable", "entity",
-        "facet"]`. Empty pairs map to `[]`. Empty input returns `{}`. This read is uncached.
-        `deadline` follows `post`, `max_bytes` and `domains` follow `observation_facets_batch`.
+        "facet"]`, adding `date` and `value` under `needs_dates`. Empty pairs map to `[]`. Empty
+        input returns `{}`. This read is uncached. `deadline` follows `post`; `needs_dates`,
+        `max_bytes` and `domains` follow `observation_facets_batch`.
         """
         if not stat_vars or not entities:
             return {}
         return self._read_observation_facets(
             stat_vars,
             entities,
-            with_dates=False,
+            with_dates=needs_dates,
             max_bytes=max_bytes,
             deadline=deadline,
             domains=domains,
@@ -2010,12 +2012,17 @@ class GraphClient:
         *,
         stat_var: str,
         entities: Sequence[str],
+        needs_dates: bool = False,
         deadline: float | None = None,
         domains: tuple[str, ...] | None = None,
     ) -> dict[str, list[Facet]]:
         """One `stat_var`'s slice of `observation_facets_batch_many`."""
         return self.observation_facets_batch_many(
-            stat_vars=[stat_var], entities=entities, deadline=deadline, domains=domains
+            stat_vars=[stat_var],
+            entities=entities,
+            needs_dates=needs_dates,
+            deadline=deadline,
+            domains=domains,
         ).get(stat_var, {})
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:

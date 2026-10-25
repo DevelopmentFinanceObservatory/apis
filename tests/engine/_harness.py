@@ -457,14 +457,31 @@ class ObsFacetFixture:
     observation_period: str | None = None
 
 
+class PointsGraphReader(FakeGraphReader):
+    """`FakeGraphReader` over facets holding their fixtures' points (`_facet_from_fixture`),
+    whose reads return each facet's dates and values only under `needs_dates`, as the graph's
+    do."""
+
+    def _facets_at(
+        self, stat_var: str, entity: str, *, needs_dates: bool
+    ) -> list[MaterialiseFacet]:
+        facets = super()._facets_at(stat_var, entity, needs_dates=needs_dates)
+        if needs_dates:
+            return facets
+        return [replace(facet, dates=(), values=(), dates_complete=True) for facet in facets]
+
+
 def _facet_from_fixture(fixture: ObsFacetFixture) -> MaterialiseFacet:
+    """The facet a dated graph read returns for `fixture`: its points' dates and values, short
+    of its count (`dates_complete`) when `obs_count` names more points than it holds."""
     dates = [d for d, _ in fixture.points]
+    obs_count = fixture.obs_count if fixture.obs_count is not None else len(fixture.points)
     return MaterialiseFacet(
         facet_id=fixture.facet_id,
         provenance_id=fixture.provenance_id,
         measurement_method=fixture.measurement_method,
         unit=fixture.unit,
-        obs_count=fixture.obs_count if fixture.obs_count is not None else len(fixture.points),
+        obs_count=obs_count,
         earliest_date=fixture.earliest_date
         if fixture.earliest_date is not None
         else (min(dates) if dates else None),
@@ -472,6 +489,9 @@ def _facet_from_fixture(fixture: ObsFacetFixture) -> MaterialiseFacet:
         if fixture.latest_date is not None
         else (max(dates) if dates else None),
         scaling_factor=fixture.scaling_factor,
+        dates=tuple(dates),
+        values=tuple(value for _, value in fixture.points),
+        dates_complete=len(dates) >= obs_count,
     )
 
 
@@ -577,7 +597,7 @@ def build_materialise_double(
         return httpx.Response(200, text=body, headers={"content-type": _SDMX_CSV_CONTENT_TYPE})
 
     sdmx = MaterialiseSdmxClient(base_url=base_url, transport=httpx.MockTransport(handler))
-    return FakeGraphReader(facets=facets_map), sdmx, requests
+    return PointsGraphReader(facets=facets_map), sdmx, requests
 
 
 def _open_role_body(
@@ -634,7 +654,7 @@ def build_materialise_double_union_candidates(
         # its candidate list once per dcid, never once per role occurrence.
         for dcid in {dcid for _role, dcid in role_tuple}:
             candidates_by_dcid.setdefault((stat_var, dcid), []).extend(facets)
-    return FakeGraphReader(facets=candidates_by_dcid), materialise_sdmx, requests
+    return PointsGraphReader(facets=candidates_by_dcid), materialise_sdmx, requests
 
 
 def _candidate_facets_by_dcid(
@@ -649,7 +669,7 @@ def _candidate_facets_by_dcid(
     return facets_map
 
 
-class _ProbeFailingGraphReader(FakeGraphReader):
+class _ProbeFailingGraphReader(PointsGraphReader):
     """Fail batched facet-coverage reads while per-pair materialise reads succeed.
 
     This isolates option-coverage failures from preview dispatch; `message` names the error.
@@ -660,7 +680,12 @@ class _ProbeFailingGraphReader(FakeGraphReader):
         self._probe_failure_message = message
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, list[MaterialiseFacet]]]:
         self._count("observation_facets_batch_many")
         raise GraphInfraError(self._probe_failure_message)
