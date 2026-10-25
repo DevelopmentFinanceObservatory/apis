@@ -477,18 +477,24 @@ def _three_recipient_rows() -> list:
 
 _DISCOVERED = CoverageForm(variables=True, open_axis=("recipients", "recipient"))
 
+# Parties the recorded code index declares a total and a residual of other parties.
+_TOTAL_PROVIDER = "AfricanDevelopmentBankGroup"
+_TOTAL_RECIPIENT, _RESIDUAL_RECIPIENT = "DACAfrica", "DACAfricaUnallocated"
+
 
 @pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
 def test_an_open_origin_counts_the_parties_its_plan_serves(
     monkeypatch, search_settings, bulk: bool
 ) -> None:
     """Debt flows to Aland and Bland from an unnamed creditor, 2015 to 2020. The plan serves
-    `f1`, which Creditors A and B hold in those years. Creditor C holds only `f9`, which no
-    election serves, and Creditor D holds `f1` only before 2015, so the answer counts two
-    creditors, as its data holds, on a first answer and on its resubmit."""
+    `f1`, which Creditors A and B and the African Development Bank Group hold in those years.
+    The code index declares the group a total of its institutions, so it is no creditor of its
+    own. Creditor C holds only `f9`, which no election serves, and Creditor D holds `f1` only
+    before 2015, so the answer counts two creditors, as its data holds, on a first answer and
+    on its resubmit."""
     rows = [
         (_FLOW, "f1", creditor, place, list(range(2010, 2021)))
-        for creditor in (_CREDITOR, "country/CRB")
+        for creditor in (_CREDITOR, "country/CRB", _TOTAL_PROVIDER)
         for place in (_ALAND, _BLAND)
     ]
     rows += [
@@ -566,6 +572,37 @@ def test_a_discovered_scope_lists_the_members_its_plan_serves(
     assert resolved.scope is not None
     assert [m.ref for m in resolved.scope.members] == expected
     assert {d.label: d.count for d in resolved.coverage.dimensions}["recipients"] == len(expected)
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_a_discovered_scope_lists_no_total_and_keeps_a_residual(
+    monkeypatch, search_settings, bulk: bool
+) -> None:
+    """`f1` also serves Africa, a total of its recipients, and Africa unallocated by country, a
+    residual. The total sums other recipients and a `without_party_totals` download leaves its
+    rows out, so the scope, coverage's recipient count, the `role_scope_defaulted` warning and
+    the sentence all name Aland, Bland and the residual."""
+    rows = _three_recipient_rows() + [
+        (_FLOW, "f1", _CREDITOR, party, list(range(2010, 2021)))
+        for party in (_TOTAL_RECIPIENT, _RESIDUAL_RECIPIENT)
+    ]
+    first, _index = _role_answer(
+        monkeypatch,
+        search_settings,
+        discovered=True,
+        bulk=bulk,
+        rows=rows,
+        metadata=_TWO_SOURCES,
+    )
+    assert first.status == "definite", (first.status, first.no_data_reason)
+
+    members, count, warning = _stated_scope(first)
+    assert (members, count) == ([_RESIDUAL_RECIPIENT, _ALAND, _BLAND], 3)
+    assert "resolved across the 3 recipients with data" in warning
+    spec = first.specs[0]
+    facts = [(f.role, f.member_count) for f in spec.resolved.role_axis_facts or ()]
+    assert facts == [("destination", 3), ("origin", 1)]
+    assert " to 3 recipients" in render_sentence(spec), render_sentence(spec)
 
 
 @pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])

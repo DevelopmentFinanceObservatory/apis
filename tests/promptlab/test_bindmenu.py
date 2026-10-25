@@ -8,6 +8,7 @@ from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from promptlab.bindmenu import BindMenuError, parse_menu, truncate_menu
 from search.engine import bind as bind_module
 from search.engine.bind import _build_universal_bind_prompt
+from search.engine.door_names import own_texts
 from search.engine.frame import door_frame
 from search.engine.interpretation import Interpretation
 from search.engine.qualifier_match import QualifierMatch
@@ -255,6 +256,7 @@ def _framed_prompt(shapes: list[ShapeDraft]) -> str:
         door="parsed",
         variable=VARIABLE,
         entities=["Ghana"],
+        entity_texts=own_texts(["Ghana"]),
         entity_roles={},
         member_entities=frozenset(),
         pins={},

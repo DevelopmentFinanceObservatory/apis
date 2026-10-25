@@ -30,6 +30,8 @@ from search.engine.region.place_roles import (
     part_sets,
     place_key,
     set_choices,
+    set_text,
+    single_node_dcids,
     stated_party_words,
     totalled_axes,
 )
@@ -97,6 +99,7 @@ async def _phase_recall(state: ResolveState) -> None:
         raw_query=state.detect_query,
         pre_resolved=state.pre_resolved,
         entity_surfaces=state.entity_surfaces,
+        entity_texts=state.entity_texts,
         members=None if state.source_code is None else state.source_code.dcids,
         party_words=frozenset(named.word for named in stated_party_words(state)),
     )
@@ -250,7 +253,8 @@ def _whole_named(state: ResolveState, resolved: Mapping[str, Entity]) -> dict[st
     named: dict[str, tuple[str, ...]] = {}
     for name in dict.fromkeys(state.entities):
         entity = resolved.get(name)
-        if (dcids := named_whole(name, None if entity is None else entity.dcid)) is not None:
+        text = state.entity_texts[name]
+        if (dcids := named_whole(text, None if entity is None else entity.dcid)) is not None:
             named[name] = dcids
     return named
 
@@ -399,22 +403,14 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
         )
         for name in ambiguous
     )
-    # Each option of an `entity_ambiguous` refusal pins these. A group, and a set read as
-    # its members, stay unpinned: re-resolving the text keeps the members, whether an alias
-    # row or the part's flag asked for them.
-    resolved_entity_dcids = {
-        name: place_set.node.dcid
-        for name in dict.fromkeys(state.entities)
-        if (place_set := state.place_sets.get(name)) is not None
-        and place_set.kind != "group"
-        and place_set.reading != "members"
-        and place_set.node is not None
-    }
     reason = elect_no_data_reason(reasons.values())
     return state.no_data(
         reason,
         ambiguous_entities=ambiguous_entities,
-        resolved_entity_dcids=resolved_entity_dcids if reason == "entity_ambiguous" else None,
+        # Each option of an `entity_ambiguous` refusal pins these. A group, and a set read
+        # as its members, stay unpinned: re-resolving the text keeps the members, whether
+        # an alias row or the part's flag asked for them.
+        resolved_entity_dcids=single_node_dcids(state) if reason == "entity_ambiguous" else None,
         unresolved_entity_names=tuple(
             name for name, name_reason in reasons.items() if name_reason != "entity_set_too_large"
         ),
@@ -539,7 +535,7 @@ async def _prune_shapes_by_admission(
         return survivors, []
 
     refused = [s for key, s in judged.items() if not admitted_anywhere[key]] or place_sets
-    return [], [not_admitted_entity(place_set) for place_set in refused]
+    return [], [not_admitted_entity(state, place_set) for place_set in refused]
 
 
 def _prune_shapes_by_listing(
@@ -613,7 +609,12 @@ def _prune_shapes_by_listing(
             if any(map(fails, classes))
         }
     return [], [
-        RoleNotAdmittedEntity(text=name, dcid=listed[name][0], graph_type=None, unlisted=population)
+        RoleNotAdmittedEntity(
+            text=state.entity_texts[name],
+            dcid=listed[name][0],
+            graph_type=None,
+            unlisted=population,
+        )
         for name, population in unlisted.items()
     ]
 
@@ -636,15 +637,17 @@ def _admission_types(place_set: PlaceSet) -> tuple[str, ...]:
     return types
 
 
-def not_admitted_entity(place_set: PlaceSet) -> RoleNotAdmittedEntity:
+def not_admitted_entity(state: ResolveState, place_set: PlaceSet) -> RoleNotAdmittedEntity:
     """The refusal's account of `place_set`: its node, or for a set with none its first
     member and the type its members share."""
     if place_set.node is not None:
         return RoleNotAdmittedEntity(
-            text=place_set.name, dcid=place_set.node.dcid, graph_type=place_set.node.graph_type
+            text=set_text(state, place_set),
+            dcid=place_set.node.dcid,
+            graph_type=place_set.node.graph_type,
         )
     return RoleNotAdmittedEntity(
-        text=place_set.name,
+        text=set_text(state, place_set),
         dcid=cast(tuple[str, ...], place_set.members)[0],
         graph_type=place_set.member_type,
     )

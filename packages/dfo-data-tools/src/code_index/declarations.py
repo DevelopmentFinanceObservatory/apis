@@ -1395,6 +1395,19 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         ),
     ),
     _noun(
+        "gross national income",
+        (_POPULATION, "EconomicUnit"),
+        (_PROPERTY, "primaryIncome"),
+        (_STAT_TYPE, "measuredValue"),
+        ("fixedCapitalConsumptionBasis", "GrossOfFixedCapitalConsumption"),
+        # PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal: the graph names the
+        # series by its property, "primary income", which the sentence cannot promote.
+        definition=(
+            "The income earned by an economy's residents from production and from abroad, "
+            "before any deduction for the wear on fixed capital."
+        ),
+    ),
+    _noun(
         "gross capital formation",
         (_POPULATION, "FinalExpenditure"),
         (_PROPERTY, "amount"),

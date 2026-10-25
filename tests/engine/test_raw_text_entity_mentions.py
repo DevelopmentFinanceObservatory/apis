@@ -22,6 +22,7 @@ from entity_resolution import (
 )
 from search.engine.binders import GeminiBinder
 from search.engine.concurrency import scoped_concurrency
+from search.engine.door_names import own_texts
 from search.engine.entry import raw_text
 from search.engine.entry.params import EntryParams
 from search.engine.entry.raw_text import (
@@ -93,6 +94,7 @@ def _lookup(
     resolutions = asyncio.run(
         resolve_names(
             names,
+            texts=own_texts(names),
             resolver=cast(EntityResolver, resolver),
             surfaces=_entity_surfaces(entities, query=query),
         )
@@ -638,16 +640,17 @@ def test_a_recovered_span_takes_no_words_another_entity_names(
                 ExtractedEntity(text=_COG_NAME, span="Congo", flow_role="origin"),
                 ExtractedEntity(text=_COD_NAME, span="Congo", flow_role="destination"),
             ],
-            [_COG_NAME, _COD_NAME],
-            id="two_names_keep_their_own",
+            ["Congo", "Congo"],
+            id="two_names_take_their_words_alike",
         ),
     ],
 )
 def test_words_that_leave_a_choice_open_become_one_name_s_text(
     query: str, entities: list[ExtractedEntity], texts: list[str]
 ) -> None:
-    """A name its words leave open reads as those words only when no other name would read
-    the same, since the parsed door reads one text as one place per part."""
+    """A name its words leave open reads as those words, so its choice is asked in them.
+    Two names that take one text on opposite ends stay two places
+    (`door_names.door_names`), and each asks its choice as "Congo"."""
     resolver = _Resolver(
         {
             "Congo": Ambiguous(candidates=(_COD, _COG)),
@@ -866,7 +869,10 @@ async def _raw_pipeline_capture(
         interpretation = next(event for event in events if isinstance(event, InterpretationEvent))
         (prep,) = captured
         resolutions = await resolve_names(
-            prep.entities, resolver=resolver, surfaces=prep.entity_surfaces
+            prep.entities,
+            texts=prep.entity_texts,
+            resolver=resolver,
+            surfaces=prep.entity_surfaces,
         )
     return interpretation, prep, dict(zip(prep.entities, resolutions, strict=True))
 

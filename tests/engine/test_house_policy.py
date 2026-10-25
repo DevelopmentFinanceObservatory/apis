@@ -21,6 +21,7 @@ from search.engine.binders.house_policy import (
     context_of,
     shape_facts,
 )
+from search.engine.door_names import own_texts
 from search.engine.extract import DateRequest
 from search.engine.frame import Frame, door_frame
 from search.engine.qualifier_match import QualifierMatch
@@ -419,6 +420,7 @@ def _frame(
         door="parsed",
         variable="aid",
         entities=list(places),
+        entity_texts=own_texts(list(places)),
         entity_roles={
             name: [DoorRole(axis=axis, span=name) for axis in axes] for name, axes in places.items()
         },

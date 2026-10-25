@@ -10,6 +10,7 @@ import pytest
 from code_index.shared import get_index
 from entity_resolution import Resolved
 from search.engine.clients.graph import DetectedSV, Detection, settled_un
+from search.engine.door_names import own_texts
 from search.engine.errors import GraphInfraError
 from search.engine.interpret import (
     Recall,
@@ -44,6 +45,7 @@ class TestRecall:
             recall(
                 "government education spending",
                 ["Kenya"],
+                entity_texts=own_texts(["Kenya"]),
                 graph=graph,
                 resolver=make_resolver(graph),
                 raw_query="government education spending Kenya",
@@ -70,7 +72,11 @@ class TestRecall:
                 }
             },
         )
-        result = run(recall("multi score query", [], graph=graph, resolver=make_resolver(graph)))
+        result = run(
+            recall(
+                "multi score query", [], entity_texts={}, graph=graph, resolver=make_resolver(graph)
+            )
+        )
         assert [c.dcid for c in result.candidates] == ["sv/High", "sv/Mid", "sv/Low"]
         assert result.candidate_sv_scores == [0.91, 0.75, 0.61]
 
@@ -80,6 +86,7 @@ class TestRecall:
             recall(
                 "health ODA grants to Ethiopia",
                 ["Ethiopia"],
+                entity_texts=own_texts(["Ethiopia"]),
                 graph=graph,
                 resolver=make_resolver(graph),
             )
@@ -92,6 +99,7 @@ class TestRecall:
             recall(
                 "health ODA grants from USA to Kenya",
                 ["USA", "Kenya"],
+                entity_texts=own_texts(["USA", "Kenya"]),
                 graph=graph,
                 resolver=make_resolver(graph),
             )
@@ -101,7 +109,13 @@ class TestRecall:
     def test_unknown_entity_not_in_resolved(self):
         graph = FakeGraph()
         result = run(
-            recall("ODA to Atlantis", ["Atlantis"], graph=graph, resolver=make_resolver(graph))
+            recall(
+                "ODA to Atlantis",
+                ["Atlantis"],
+                entity_texts=own_texts(["Atlantis"]),
+                graph=graph,
+                resolver=make_resolver(graph),
+            )
         )
         assert set(result.resolutions) == {"Atlantis"}
         assert _resolved_dcids(result) == {}
@@ -109,7 +123,13 @@ class TestRecall:
     def test_no_entities(self):
         graph = FakeGraph()
         result = run(
-            recall("health ODA grants to Kenya", [], graph=graph, resolver=make_resolver(graph))
+            recall(
+                "health ODA grants to Kenya",
+                [],
+                entity_texts={},
+                graph=graph,
+                resolver=make_resolver(graph),
+            )
         )
         assert result.resolutions == {}
 
@@ -120,7 +140,11 @@ class TestRecall:
         with pytest.raises(GraphInfraError):
             run(
                 recall(
-                    "health ODA grants", ["Ethiopia"], graph=graph, resolver=make_resolver(graph)
+                    "health ODA grants",
+                    ["Ethiopia"],
+                    entity_texts=own_texts(["Ethiopia"]),
+                    graph=graph,
+                    resolver=make_resolver(graph),
                 )
             )
 
@@ -134,6 +158,7 @@ class TestRecall:
                 recall(
                     "health ODA grants",
                     ["Ethiopia", "Kenya"],
+                    entity_texts=own_texts(["Ethiopia", "Kenya"]),
                     graph=graph,
                     resolver=make_resolver(graph),
                 )
@@ -163,7 +188,16 @@ class TestAcronymCanonicalization:
             resolve={},
             detect={"gross national income": {"svs": ["sv/GNI"], "cosine_scores": [0.82]}},
         )
-        result = run(recall("GNI", [], graph=graph, resolver=make_resolver(graph), raw_query="GNI"))
+        result = run(
+            recall(
+                "GNI",
+                [],
+                entity_texts={},
+                graph=graph,
+                resolver=make_resolver(graph),
+                raw_query="GNI",
+            )
+        )
         assert graph.detect_calls == ["gross national income"]
         assert result.candidate_svs == ["sv/GNI"]
 
@@ -180,6 +214,7 @@ class TestAcronymCanonicalization:
             recall(
                 "GNI per capita",
                 [],
+                entity_texts={},
                 graph=graph,
                 resolver=make_resolver(graph),
                 raw_query="GNI per capita",
@@ -194,7 +229,16 @@ class TestAcronymCanonicalization:
             resolve={},
             detect={"carbon dioxide emissions": {"svs": ["sv/CO2"], "cosine_scores": [0.87]}},
         )
-        run(recall("co2", [], graph=graph, resolver=make_resolver(graph), raw_query="co2"))
+        run(
+            recall(
+                "co2",
+                [],
+                entity_texts={},
+                graph=graph,
+                resolver=make_resolver(graph),
+                raw_query="co2",
+            )
+        )
         assert graph.detect_calls == ["carbon dioxide emissions"]
 
     @pytest.mark.parametrize(
@@ -214,6 +258,7 @@ class TestAcronymCanonicalization:
             recall(
                 variable_text,
                 [],
+                entity_texts={},
                 graph=graph,
                 resolver=make_resolver(graph),
                 raw_query=variable_text,
@@ -227,6 +272,7 @@ class TestAcronymCanonicalization:
             recall(
                 "health ODA grants",
                 ["Ethiopia"],
+                entity_texts=own_texts(["Ethiopia"]),
                 graph=graph,
                 resolver=make_resolver(graph),
                 raw_query="health ODA grants",
@@ -242,7 +288,16 @@ class TestAcronymCanonicalization:
             resolve={},
             detect={"GNI": {"svs": ["sv/A"], "cosine_scores": [0.6]}},
         )
-        run(recall("GNI", [], graph=graph, resolver=make_resolver(graph), raw_query="GNI"))
+        run(
+            recall(
+                "GNI",
+                [],
+                entity_texts={},
+                graph=graph,
+                resolver=make_resolver(graph),
+                raw_query="GNI",
+            )
+        )
         assert graph.detect_calls == ["GNI"]
 
 
@@ -268,7 +323,11 @@ class TestRelevanceFloor:
             resolve={},
             detect={"q": {"svs": ["sv/Strong", "sv/Weak"], "cosine_scores": [0.9, 0.1]}},
         )
-        result = run(recall("q", [], graph=graph, resolver=make_resolver(graph), raw_query="q"))
+        result = run(
+            recall(
+                "q", [], entity_texts={}, graph=graph, resolver=make_resolver(graph), raw_query="q"
+            )
+        )
         assert result.candidate_svs == ["sv/Strong"]
 
     def test_floor_set_to_zero_is_a_no_op(self, search_settings):
@@ -279,7 +338,11 @@ class TestRelevanceFloor:
             resolve={},
             detect={"q": {"svs": ["sv/Weak"], "cosine_scores": [0.01]}},
         )
-        result = run(recall("q", [], graph=graph, resolver=make_resolver(graph), raw_query="q"))
+        result = run(
+            recall(
+                "q", [], entity_texts={}, graph=graph, resolver=make_resolver(graph), raw_query="q"
+            )
+        )
         assert result.candidate_svs == ["sv/Weak"]
 
     @pytest.mark.parametrize(
@@ -304,7 +367,11 @@ class TestRelevanceFloor:
                 }
             },
         )
-        result = run(recall("q", [], graph=graph, resolver=make_resolver(graph), raw_query="q"))
+        result = run(
+            recall(
+                "q", [], entity_texts={}, graph=graph, resolver=make_resolver(graph), raw_query="q"
+            )
+        )
         assert result.candidate_svs == ["dc/topic/Weak"]
 
     def test_floor_can_empty_the_pool_entirely(self, search_settings):
@@ -315,7 +382,11 @@ class TestRelevanceFloor:
             resolve={},
             detect={"q": {"svs": ["sv/A"], "cosine_scores": [0.5]}},
         )
-        result = run(recall("q", [], graph=graph, resolver=make_resolver(graph), raw_query="q"))
+        result = run(
+            recall(
+                "q", [], entity_texts={}, graph=graph, resolver=make_resolver(graph), raw_query="q"
+            )
+        )
         assert result.candidate_svs == []
 
 
@@ -571,7 +642,16 @@ class TestStatedWordSearch:
     def test_the_graph_is_searched_once_unless_the_text_holds_a_stated_word(self, text, searched):
         graph = _CountingGraph()
 
-        run(recall(text, [], graph=graph, resolver=make_resolver(graph), raw_query=text))
+        run(
+            recall(
+                text,
+                [],
+                entity_texts={},
+                graph=graph,
+                resolver=make_resolver(graph),
+                raw_query=text,
+            )
+        )
 
         assert sorted(graph.detect_calls) == sorted(searched)
 
@@ -608,6 +688,7 @@ class TestStatedWordSearch:
             recall(
                 text,
                 [],
+                entity_texts={},
                 graph=graph,
                 resolver=make_resolver(graph),
                 raw_query=text,
@@ -637,6 +718,7 @@ class TestStatedWordSearch:
             recall(
                 "bilateral ODA to Kenya",
                 [],
+                entity_texts={},
                 graph=graph,
                 resolver=make_resolver(graph),
                 raw_query="bilateral ODA to Kenya",

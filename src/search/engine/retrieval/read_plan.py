@@ -35,12 +35,13 @@ count, date, member and source an answer states is one of the rows it serves.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING
 
 from code_index.shared import get_index
+from materialise.enrichment import party_kind_of
 from materialise.facets import (
     MemberProbe,
     overlaps_window,
@@ -1123,6 +1124,29 @@ def served_role_entities(plan: ReadPlan, role: str) -> frozenset[str]:
             for _sv, candidate, (first, last) in plan.member_pairs()
         )
     )
+
+
+def own_parties(members: Iterable[str], *, datasets: Collection[str]) -> list[str]:
+    """`members` of a flow role, in order, without those the code index declares a `total` in
+    `datasets` (`materialise.enrichment.party_kind_of`), since a total sums other parties. A
+    residual ("Africa, unallocated by country") stays, as do a member the index does not list
+    and one whose kind differs between `datasets`, so the count matches the rows a
+    `without_party_totals` download keeps (`datasets_api.party_totals`). An answer counts its
+    open role's members from this list: its scope (`coverage.scope_members`), coverage's
+    breadth dimension, the `role_scope_defaulted` warning and the sentence
+    (`ResolvedSpec.role_axis_facts`)."""
+    parties = get_index().parties
+    return [
+        member
+        for member in members
+        if party_kind_of(member, parties=parties, datasets=datasets) != "total"
+    ]
+
+
+def plan_datasets(plan: ReadPlan) -> frozenset[str]:
+    """The provenances of the facets `plan` serves (`facets_served`), the datasets a party's
+    kind is read in (`own_parties`)."""
+    return frozenset(f.provenance_id for f in facets_served(plan) if f.provenance_id)
 
 
 def dated_without_complete_dates(facets: Iterable[Facet]) -> bool:

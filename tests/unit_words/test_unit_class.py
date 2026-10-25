@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from unit_words.unit_class import UnitClass, classify_unit
+from unit_words.unit_class import CountBase, UnitClass, classify_unit
 
 # The shape `graph.currency_units()` returns: CurrencyUnit members, the `Currency` members
 # named by their code (INR), and USDollar.
 _CURRENCY_UNITS = {"CurrencyUSD": "USD", "CurrencyKES": "KES", "INR": "INR", "USDollar": "USD"}
 _EXPORTS = "Amount_EconomicActivity_ExportsOfGoodsServicesAndPrimaryIncome_Nominal"
+_LIVE_BIRTHS = "Count_BirthEvent_LiveBirth"
 
 
 @pytest.mark.parametrize(
@@ -111,6 +112,48 @@ _EXPORTS = "Amount_EconomicActivity_ExportsOfGoodsServicesAndPrimaryIncome_Nomin
             id="undata-thousand-usd",
         ),
         pytest.param(
+            "Per1000Persons",
+            "Count_Person",
+            UnitClass(
+                "other",
+                "Per1000Persons",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                base=CountBase(1000, "people"),
+            ),
+            True,
+            id="wdi-crude-birth-rate-per-1000-people",
+        ),
+        pytest.param(
+            "Per1000LiveBirths",
+            _LIVE_BIRTHS,
+            UnitClass(
+                "other",
+                "Per1000LiveBirths",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                base=CountBase(1000, "live births"),
+            ),
+            True,
+            id="wdi-infant-mortality-per-1000-live-births",
+        ),
+        pytest.param(
+            "SDG_PER_100000_POP",
+            None,
+            UnitClass(
+                "other",
+                "SDG_PER_100000_POP",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                base=CountBase(100_000, "people"),
+            ),
+            True,
+            id="sdg-rate-with-no-denominator",
+        ),
+        pytest.param(
             "Year",
             None,
             UnitClass("other", "Year", None, per_head=False, ratio_denominator=None),
@@ -132,3 +175,7 @@ def test_classify_unit(
     unit_class = classify_unit(unit=unit, denominator=denominator, currency_units=_CURRENCY_UNITS)
     assert unit_class == expected
     assert unit_class.changes_magnitude is changes_magnitude
+
+
+def test_a_count_base_reads_with_its_size_grouped() -> None:
+    assert CountBase(100_000, "live births").phrase == "per 100,000 live births"

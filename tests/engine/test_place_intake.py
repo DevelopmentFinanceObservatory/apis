@@ -11,6 +11,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.door_names import own_texts
 from search.engine.interpret import Recall
 from search.engine.region.phase_intake import _phase_resolve_places
 from search.engine.region.state import ResolveState
@@ -34,6 +35,7 @@ def _state(graph: FakeGraph, names: list[str]) -> ResolveState:
     return ResolveState(
         variable="population",
         entities=names,
+        entity_texts=own_texts(names),
         date_request=None,
         detect_query="population",
         role_query="population",

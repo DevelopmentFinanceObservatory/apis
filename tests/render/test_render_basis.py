@@ -47,13 +47,50 @@ def test_a_unit_that_keeps_the_magnitude_stays_out_of_the_heading(facets):
 
 @pytest.mark.parametrize("denominator", ["Count_Person", "PerCapita"])
 def test_a_per_head_denominator_reads_per_capita(denominator: str):
-    """Both per-head denominators read "per capita", whatever the unit."""
+    """Both per-head denominators read "per capita" under a unit that states no count base."""
     spec = _spec(
         measured_property=_ref("valueAdded", "Value added"),
         measurement_denominator=_ref(denominator, "Total population"),
         facets=_unit("USDollar", "US dollar"),
     )
     assert _rendered(spec) == "Value added per capita."
+
+
+@pytest.mark.parametrize(
+    ("denominator", "unit", "expected"),
+    [
+        pytest.param(
+            _ref("Count_Person", "Total population"),
+            _unit("Per1000Persons", "Per 1000 people"),
+            "Crude birth rate per 1,000 people.",
+            id="per-1000-people-over-count-person",
+        ),
+        pytest.param(
+            _ref("Count_BirthEvent_LiveBirth", "Live births"),
+            _unit("Per1000LiveBirths", "Per 1000 live births"),
+            "Crude birth rate per 1,000 live births.",
+            id="per-1000-live-births-over-live-births",
+        ),
+        pytest.param(
+            None,
+            _unit("SDG_PER_1000_POP", "Per 1,000 population"),
+            "Crude birth rate per 1,000 people.",
+            id="sdg-unit-with-no-denominator",
+        ),
+    ],
+)
+def test_a_unit_with_a_count_base_states_its_base(denominator, unit, expected):
+    """A unit that names its own count base reads that base in place of "per capita" or
+    "relative to" the denominator, and its token states the unit."""
+    spec = _spec(
+        measured_property=_ref("crudeBirthRate", "Crude birth rate"),
+        measurement_denominator=denominator,
+        facets=unit,
+    )
+    plan = render_sentence_plan(spec)
+    assert sentence_from_plan([t for t in plan if t.segment == "heading"]) == expected
+    (token,) = [t for t in plan if t.axis == "unit"]
+    assert token.states == [UNIT_REF]
 
 
 def test_purchasing_power_per_capita_is_one_unit_token():
@@ -242,16 +279,23 @@ def _shape(denominator) -> Shape:
 
 
 def test_a_pre_materialise_plan_states_only_the_per_head_unit():
-    """Before facets resolve (`facets=None`, the bind-time sentence event) the shape
-    alone fixes a per-head rate, so "per capita" reads; a ratio waits for the unit,
-    which decides "as a share of" against "relative to". An empty mapping is a resolved
-    answer and states the ratio."""
+    """Before facets resolve (`facets=None`, the bind-time sentence event) only a
+    `PerCapita` denominator fixes a per-head rate, so "per capita" reads. A
+    `Count_Person` denominator waits for the unit, which may name a count base ("per
+    1,000 people"), and a ratio waits for the unit, which decides "as a share of"
+    against "relative to". An empty mapping is a resolved answer and states the ratio."""
     per_head = plan_tokens(
+        heading_from_parts(
+            [], [], _shape(_ref("PerCapita", "")), window=None, pinned_properties=frozenset()
+        )
+    )
+    assert sentence_from_plan(per_head) == "Adolescent birth rate per capita."
+    per_person = plan_tokens(
         heading_from_parts(
             [], [], _shape(_ref("Count_Person", "")), window=None, pinned_properties=frozenset()
         )
     )
-    assert sentence_from_plan(per_head) == "Adolescent birth rate per capita."
+    assert sentence_from_plan(per_person) == "Adolescent birth rate."
     pre = plan_tokens(
         heading_from_parts([], [], _shape(_LIVE_BIRTHS), window=None, pinned_properties=frozenset())
     )

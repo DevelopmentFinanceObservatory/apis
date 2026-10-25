@@ -393,7 +393,7 @@ class TestPlaceContext:
             **{
                 **vars(subject_place_roles(_KEN, _GHA)),
                 "discarded_directions": (("Kenya", "destination"), ("Ghana", "destination")),
-                "inferred_directions": frozenset({"Ghana"}),
+                "inferred_directions": frozenset({("Ghana", "destination")}),
             }
         )
 

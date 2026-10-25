@@ -647,25 +647,31 @@ def _ambiguous_entity_plan(
     entity_terms: list[str] | None,
     *,
     ambiguous_candidates: list[str] | None,
-    ambiguous_roles: Mapping[str, RoleAxis] | None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None,
 ) -> list[SentenceToken] | None:
     """Return the bare entity_ambiguous phrase with each ambiguous wording as a slot token.
 
     The tokens join to `no_data_phrase`'s text. Each wording's token carries the flow
-    axis the door gave it as `role`, and the place axis unless that role is origin, as
-    an entity read-back does; it has no `entity_refs`, since the wording names no node.
-    Return `None` when no wording is left after stripping.
+    axis the door gave it as `role`, `ambiguous_roles` holding one per wording in
+    `entity_terms`' order, so one wording asked on both ends carries each end's. It
+    carries the place axis unless that role is origin, as an entity read-back does, and
+    no `entity_refs`, since the wording names no node. Return `None` when no wording is
+    left after stripping.
     """
-    terms = [t.strip() for t in entity_terms or () if t and t.strip()]
-    if not terms:
+    given = list(ambiguous_roles or ())
+    worded = [
+        (term.strip(), given[i] if i < len(given) else None)
+        for i, term in enumerate(entity_terms or ())
+        if term and term.strip()
+    ]
+    if not worded:
         return None
+    terms = [term for term, _ in worded]
     phrase = no_data_phrase(
         "entity_ambiguous", entity_terms=terms, ambiguous_candidates=ambiguous_candidates
     )
-    roles = ambiguous_roles or {}
     tokens = [_text('"')]
-    for term, separator in zip(terms, [*_join_separators(len(terms)), None], strict=True):
-        role = roles.get(term)
+    for (term, role), separator in zip(worded, [*_join_separators(len(terms)), None], strict=True):
         tokens.append(
             SentenceToken(
                 kind="slot", text=term, axis=None if role == "origin" else "where", role=role
@@ -802,7 +808,7 @@ def no_data_sentence_plan(
     role_axis: EntityRoleKey | None = None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
-    ambiguous_roles: Mapping[str, RoleAxis] | None = None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
     source_terms: list[str] | None = None,
     scope: ScopeSources | None = None,
@@ -850,7 +856,8 @@ def no_data_sentence_plan(
     ``entity_terms`` are omitted for the place-availability gate to avoid
     naming the place twice. ``bound_role_dcids`` checks alternate roles.
     ``ambiguous_candidates`` and ``ambiguous_roles`` apply only to the bare
-    entity-ambiguity form; ``ambiguous_roles`` maps a wording to its flow axis.
+    entity-ambiguity form; ``ambiguous_roles`` holds each wording's flow axis, in
+    ``entity_terms``' order.
     ``unlisted`` words the bare entity_role_not_admitted verdict for populations no source
     lists exactly (`no_data_phrase`).
     ``elected_stat_vars`` are added when the verdict would not repeat a
@@ -918,7 +925,7 @@ def _no_data_verdict_plan(
     role_axis: EntityRoleKey | None,
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None,
     ambiguous_candidates: list[str] | None,
-    ambiguous_roles: Mapping[str, RoleAxis] | None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None,
     qualifier_terms: list[ResolvedQualifier] | None,
     source_terms: list[str] | None,
     scope: ScopeSources | None,

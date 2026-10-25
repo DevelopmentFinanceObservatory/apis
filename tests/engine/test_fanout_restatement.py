@@ -7,6 +7,7 @@ Directional legs echo each entity's role. A name bound on both axes has no resta
 from __future__ import annotations
 
 from search.engine.core import _quick_no_data
+from search.engine.door_names import own_texts
 from search.engine.envelope import now_ms
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction, ExtractionResult
 from search.engine.fanout import _leg_restatement, _placeholder_no_data
@@ -99,6 +100,7 @@ class TestOneAxisRule:
         restatement = _leg_restatement(
             "aid",
             entities=["Kenya"],
+            entity_texts=own_texts(["Kenya"]),
             date_request=None,
             unit_text=None,
             entity_roles={
@@ -114,6 +116,7 @@ class TestOneAxisRule:
         restatement = _leg_restatement(
             "aid",
             entities=["Kenya"],
+            entity_texts=own_texts(["Kenya"]),
             date_request=None,
             unit_text=None,
             entity_roles={"Kenya": [DoorRole(axis="origin", span="from Kenya")]},
@@ -126,6 +129,7 @@ class TestOneAxisRule:
         restatement = _leg_restatement(
             "aid",
             entities=["France", "Kenya"],
+            entity_texts=own_texts(["France", "Kenya"]),
             date_request=None,
             unit_text=None,
             entity_roles={
@@ -146,6 +150,7 @@ class TestOneAxisRule:
             0,
             reason="timed_out",
             entities=["Kenya"],
+            entity_texts=own_texts(["Kenya"]),
             role_query="aid to Kenya",
             entity_roles={"Kenya": [DoorRole(axis="destination", span="Kenya")]},
         )

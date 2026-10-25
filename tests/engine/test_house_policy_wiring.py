@@ -38,6 +38,7 @@ from search.engine.binders.house_policy import shape_facts as policy_shape_facts
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.door_names import own_texts
 from search.engine.errors import LLMOutputRefused
 from search.engine.frame import Frame, door_frame
 from search.engine.interpret import Recall
@@ -136,6 +137,7 @@ def _frame(places: Mapping[str, tuple[str, ...]]) -> Frame:
         door="parsed",
         variable="aid",
         entities=list(places),
+        entity_texts=own_texts(list(places)),
         entity_roles={
             name: [DoorRole(axis=axis, span=name) for axis in axes] for name, axes in places.items()
         },

@@ -689,7 +689,7 @@ def _not_admitted_places(state: ResolveState, exc: PlaceSetNotAdmittedError) -> 
     )
     return state.no_data(
         "entity_role_not_admitted",
-        role_not_admitted_entities=tuple(not_admitted_entity(s) for s in exc.place_sets),
+        role_not_admitted_entities=tuple(not_admitted_entity(state, s) for s in exc.place_sets),
         llm_usage=state.var_usage,
     )
 
@@ -720,6 +720,7 @@ def _install_shape(
     state.elected_index = index
     state.bindings = with_where(bindings, place)
     state.place = place
+    state.places_bound = True
     state.unsettled_place = unsettled
     install_place_warnings(state.warnings, place, departure_facts=state.departure_facts)
 

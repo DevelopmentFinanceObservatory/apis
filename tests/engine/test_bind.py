@@ -25,6 +25,7 @@ from search.engine.bind import (
     split_stray_bindings,
 )
 from search.engine.binders import BindRequest, GeminiBinder
+from search.engine.door_names import own_texts
 from search.engine.errors import LLMOutputRefused
 from search.engine.extract import DateRequest
 from search.engine.frame import door_frame, with_recall
@@ -1225,6 +1226,7 @@ def _ghana_debt_frame(
         door="parsed",
         variable=variable,
         entities=["Ghana"],
+        entity_texts=own_texts(["Ghana"]),
         entity_roles={},
         member_entities=frozenset(),
         pins={},
@@ -1245,6 +1247,8 @@ def _ghana_debt_frame(
         named_denominator=named_denominator,
         measure_class=None,
         place_sets={},
+        names=["Ghana"],
+        entity_texts=own_texts(["Ghana"]),
         role_bearing=False,
         slot_defaults=(),
     )
@@ -1300,6 +1304,7 @@ def test_a_stated_direction_and_a_rank_operation_reach_the_frame_block():
         door="parsed",
         variable="external debt by creditor",
         entities=["Kenya"],
+        entity_texts=own_texts(["Kenya"]),
         entity_roles={"Kenya": (DoorRole(axis="destination", span="Kenya", stated=True),)},
         member_entities=frozenset(),
         pins={},
@@ -1346,6 +1351,7 @@ def test_a_frame_place_shows_a_set_by_its_name_and_count_and_one_place_by_its_dc
         door="parsed",
         variable="aid",
         entities=[place_set.name],
+        entity_texts=own_texts([place_set.name]),
         entity_roles={
             place_set.name: (DoorRole(axis="destination", span=place_set.name, stated=True),)
         },
@@ -1366,6 +1372,8 @@ def test_a_frame_place_shows_a_set_by_its_name_and_count_and_one_place_by_its_dc
         requirement=quantity_requirement(["aid"]),
         measure_class=None,
         place_sets={place_set.name: place_set},
+        names=[place_set.name],
+        entity_texts=own_texts([place_set.name]),
         role_bearing=False,
         slot_defaults=(),
     )

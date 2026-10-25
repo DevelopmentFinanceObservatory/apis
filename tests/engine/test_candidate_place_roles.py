@@ -39,6 +39,7 @@ from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_async
 from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.door_names import own_texts
 from search.engine.errors import GraphInfraError
 from search.engine.extract import Extraction
 from search.engine.interpret import Recall
@@ -835,6 +836,7 @@ def _state(*, names_and_roles: dict[str, list[DoorRole]], places: dict[str, str]
     return ResolveState(
         variable="flow",
         entities=list(places),
+        entity_texts=own_texts(list(places)),
         entity_roles=names_and_roles,
         place_sets=place_sets(places),
         role_bearing_outranks=True,

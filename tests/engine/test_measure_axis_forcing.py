@@ -18,6 +18,7 @@ from search.engine.bind import DraftBindingKind, SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.door_names import own_texts
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.phase_election import _repair_bindings
@@ -106,6 +107,7 @@ def _state(*, shape_draft: ShapeDraft, bindings: list[SlotBindingDraft]) -> Reso
     return ResolveState(
         variable="a widget query",
         entities=["Kenya"],
+        entity_texts=own_texts(["Kenya"]),
         date_request=None,
         detect_query="a widget query",
         role_query="a widget query",

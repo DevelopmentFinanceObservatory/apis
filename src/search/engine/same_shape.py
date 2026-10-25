@@ -354,14 +354,24 @@ def _merge_option_dcids(opts: Sequence[EntityOptions]) -> tuple[list, set[str]]:
     return merged, seen
 
 
+def _union_if_known(
+    group: list[RegionResult], sets: list[frozenset[str] | None]
+) -> frozenset[str] | None:
+    """The union of `sets`, one per member of `group`, or None unless every member gives one."""
+    if len(sets) != len(group) or any(s is None for s in sets):
+        return None
+    return frozenset().union(*(s for s in sets if s is not None))
+
+
 def _union_role_axis_facts(
     group: list[RegionResult],
 ) -> tuple[list[RoleAxisFactInput], list[EntityOptions]]:
     """Merge role facts and entity options together so their counts agree.
 
-    Open role populations can overlap across members, so the merged count is the size of
-    the union of the members' populations (`RegionResult.role_axis_facts`). It is known
-    only when every member records the role's population. The role's options are the
+    Open role populations can overlap across members, so the merged population is the union
+    of the members' populations (`RegionResult.role_axis_facts`), and the merged count the
+    size of the union of their parties of their own (`RoleAxisFactInput.party_dcids`). Both
+    are known only when every member records the role's population. The role's options are the
     members' lists merged by dcid in group order when every member lists the role in
     full. Otherwise they are withheld as a single answer withholds them
     (`option_coverage._entity_options_count_only`): an empty list, truncated unless the
@@ -372,13 +382,13 @@ def _union_role_axis_facts(
     first-seen group order.
     """
     order: list[RoleAxis] = []
-    populations: dict[RoleAxis, list[frozenset[str] | None]] = {}
+    populations: dict[RoleAxis, list[RoleAxisFactInput]] = {}
     options_by_role: dict[RoleAxis, list[EntityOptions]] = {}
     for r in group:
         for fact in r.role_axis_facts:
             if fact.role not in populations:
                 order.append(fact.role)
-            populations.setdefault(fact.role, []).append(fact.member_dcids)
+            populations.setdefault(fact.role, []).append(fact)
         for eo in r.spec.resolved.entity_options:
             if eo.role not in options_by_role and eo.role not in order:
                 order.append(eo.role)
@@ -388,10 +398,10 @@ def _union_role_axis_facts(
     merged_options: list[EntityOptions] = []
     cap = settings().max_options
     for role in order:
-        members = populations.get(role)
+        facts = populations.get(role)
         opts = options_by_role.get(role, [])
 
-        if members is None:
+        if facts is None:
             # Bound-axis seed options have no open-role population to count.
             merged_slot_options, _ = _merge_option_dcids(opts)
             merged_options.append(
@@ -405,10 +415,11 @@ def _union_role_axis_facts(
             )
             continue
 
-        member_dcids: frozenset[str] | None = None
-        if len(members) == len(group) and all(m is not None for m in members):
-            member_dcids = frozenset().union(*(m for m in members if m is not None))
-        role_inputs.append(RoleAxisFactInput(role=role, member_dcids=member_dcids))
+        member_dcids = _union_if_known(group, [f.member_dcids for f in facts])
+        party_dcids = _union_if_known(group, [f.party_dcids for f in facts])
+        role_inputs.append(
+            RoleAxisFactInput(role=role, member_dcids=member_dcids, party_dcids=party_dcids)
+        )
 
         if len(opts) == len(group) and not any(eo.truncated for eo in opts):
             merged_slot_options, _ = _merge_option_dcids(opts)

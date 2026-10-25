@@ -340,6 +340,7 @@ async def resolve_parsed_entries(
     async for _ev in _run_variables_streaming(
         interpretation.variable_texts,
         entities=[],
+        entity_texts={},
         date_request=None,
         query="",
         pac=pac,
@@ -368,6 +369,7 @@ async def resolve_parsed_entries(
         per_variable_date_requests=interpretation.date_requests,
         per_variable_role_queries=interpretation.role_queries,
         per_variable_entity_roles=interpretation.entity_roles,
+        per_variable_entity_texts=interpretation.entity_texts,
         per_variable_member_entities=interpretation.member_entities,
         per_variable_unit_texts=interpretation.unit_texts,
         per_variable_source_scopes=interpretation.source_scopes,

@@ -555,6 +555,8 @@ def _completed_frame(
         named_denominator=state.named_denominator,
         measure_class=measure_class(state.variable),
         place_sets=state.place_sets,
+        names=state.entities,
+        entity_texts=state.entity_texts,
         role_bearing=state.role_bearing_outranks,
         slot_defaults=_slot_defaults(eligible_shapes),
     )

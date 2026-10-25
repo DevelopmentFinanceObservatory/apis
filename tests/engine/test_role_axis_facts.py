@@ -90,7 +90,13 @@ def test_bound_destination_open_origin_publishes_a_role_axis_fact(monkeypatch):
     result = _bound_destination_open_origin_result(monkeypatch)
 
     facts = _role_axis_facts(
-        [RoleAxisFactInput(role="origin", member_dcids=result.open_origin_dcids)]
+        [
+            RoleAxisFactInput(
+                role="origin",
+                member_dcids=result.open_origin_dcids,
+                party_dcids=result.open_origin_dcids,
+            )
+        ]
     )
 
     assert facts == [
@@ -179,7 +185,9 @@ def test_both_axes_open_derives_the_same_fact_from_role_index_by_sv(monkeypatch)
     )
     assert members == frozenset({"country/FRA", "country/USA"})
 
-    facts = _role_axis_facts([RoleAxisFactInput(role="origin", member_dcids=members)])
+    facts = _role_axis_facts(
+        [RoleAxisFactInput(role="origin", member_dcids=members, party_dcids=members)]
+    )
     assert facts == [RoleAxisFact(role="origin", member_count=2, members_available=True)]
 
 
@@ -193,8 +201,12 @@ def test_role_axis_facts_none_when_empty():
 def test_role_axis_facts_reports_both_roles_when_both_open():
     facts = _role_axis_facts(
         [
-            RoleAxisFactInput(role="destination", member_dcids=frozenset({"country/KEN"})),
-            RoleAxisFactInput(role="origin", member_dcids=frozenset()),
+            RoleAxisFactInput(
+                role="destination",
+                member_dcids=frozenset({"country/KEN"}),
+                party_dcids=frozenset({"country/KEN"}),
+            ),
+            RoleAxisFactInput(role="origin", member_dcids=frozenset(), party_dcids=frozenset()),
         ]
     )
     assert facts == [

@@ -16,6 +16,7 @@ from typing import Any, cast
 import pytest
 
 from entity_resolution import Entity
+from search.engine.door_names import own_texts
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.interpret import PinnedResolved
@@ -28,6 +29,7 @@ from search.engine.region.place_roles import (
     group_request_names,
     part_sets,
     place_key,
+    set_text,
     settle_place_sets,
 )
 from search.engine.region.place_set import PlaceNode, PlaceSet
@@ -474,6 +476,7 @@ def _state(
         ResolveState,
         SimpleNamespace(
             entities=[place_set.name for place_set in sets],
+            entity_texts=own_texts(place_set.name for place_set in sets),
             place_sets={place_set.name: place_set for place_set in sets},
             party_sets={},
             whole_sets={},
@@ -627,7 +630,8 @@ def test_a_set_takes_the_members_reading_any_of_its_texts_asks_for(members_first
 def test_a_set_expands_when_any_of_its_texts_does(pin_first) -> None:
     """The European Union's node pinned as one place under a text of the caller's, beside
     the union's name. The part's one set is the group, under the union's name, and a
-    pin's text is only its key. The pin alone is one place under the graph's label."""
+    pin's text is only its key. The pin alone is one place the request's words name by
+    the graph's label (`set_text`)."""
     pin = PlaceSet(name="the union", kind="place", node=_EU.node)
     texts = [pin, _EU] if pin_first else [_EU, pin]
     pins = {pin.name: "European Union (graph)"}
@@ -635,9 +639,9 @@ def test_a_set_expands_when_any_of_its_texts_does(pin_first) -> None:
     (merged,) = part_sets(_state(texts, pins=pins)).values()
 
     assert merged == _EU
-    assert part_sets(_state([pin], pins=pins)) == {
-        place_key(pin): dataclasses.replace(pin, name="European Union (graph)")
-    }
+    alone = _state([pin], pins=pins)
+    assert part_sets(alone) == {place_key(pin): pin}
+    assert set_text(alone, pin) == "European Union (graph)"
 
 
 @pytest.mark.parametrize("other_text", [None, "Africa"], ids=["alone", "beside-a-text-equal-to-it"])

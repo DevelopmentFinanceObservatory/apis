@@ -28,6 +28,7 @@ from search.engine.degraded_reads import (
     note_degraded_read,
     recording_degraded_reads,
 )
+from search.engine.door_names import own_texts
 from search.engine.envelope import _sum_usage, now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
@@ -161,6 +162,7 @@ async def resolve_variable(
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None = None,
     entity_surfaces: dict[str, str] | None = None,
+    entity_texts: Mapping[str, str] | None = None,
     variable_index: int = 0,
     emit: EventSink | None = None,
     unit_text: str | None = None,
@@ -193,7 +195,10 @@ async def resolve_variable(
     `Admission(graph=graph)`. The request path supplies a shared instance. `resolver` resolves
     named entities during recall and place expansion. `pre_resolved` avoids per-variable
     resolver calls for shared entities. `entity_surfaces` maps an entity name to the query
-    words recall resolves it through (`surface_resolution.resolve_names`). `pac` enables place-as-constraint. `coverage` is the
+    words recall resolves it through (`surface_resolution.resolve_names`), and `entity_texts`
+    each name of `entities` to the text it names a place of (`ResolveState.entity_texts`),
+    which every door states; a direct caller passing none names each place by its text
+    (`door_names.own_texts`). `pac` enables place-as-constraint. `coverage` is the
     required request snapshot, shared with materialisation, unit decisions, and observation
     dispatch.
 
@@ -292,6 +297,7 @@ async def resolve_variable(
             deadline=deadline,
             pre_resolved=pre_resolved,
             entity_surfaces=entity_surfaces or {},
+            entity_texts=dict(own_texts(entities) if entity_texts is None else entity_texts),
             variable_index=variable_index,
             emit=emit,
             include_option_coverage=_options.include_option_coverage,

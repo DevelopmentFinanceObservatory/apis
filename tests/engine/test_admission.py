@@ -10,6 +10,7 @@ import pytest
 
 from entity_resolution import Admission
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.door_names import own_texts
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult, resolve_variable
@@ -252,6 +253,7 @@ def _pruning_state(place_sets: dict[str, PlaceSet]) -> ResolveState:
     return ResolveState(
         variable="aid",
         entities=list(place_sets),
+        entity_texts=own_texts(list(place_sets)),
         date_request=None,
         detect_query="aid",
         role_query="aid",

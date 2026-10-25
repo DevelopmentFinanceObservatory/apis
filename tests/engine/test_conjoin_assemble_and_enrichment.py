@@ -12,6 +12,7 @@ import pytest
 
 from search.engine.conjoin import BINDING_FOLDED, assemble_region, combine_regions
 from search.engine.deadline import _cancel_and_await
+from search.engine.door_names import own_texts
 from search.engine.enrichment import _reconcile_after_collapse, _stream_slot_options
 from search.engine.envelope import now_ms
 from search.engine.events import SlotOptionsEvent
@@ -203,6 +204,7 @@ def _entity_terms_part(region: RegionResult) -> NoDataPart:
 
 def test_assemble_region_threads_every_unresolved_entity_term():
     region = RegionResult(
+        entity_texts=own_texts(["Atlantis", "El Dorado"]),
         variable_text="population",
         status="no_data",
         specs=(),
@@ -229,6 +231,7 @@ def test_assemble_region_entity_not_resolved_keeps_ambiguous_candidates_off_the_
     elects. The wire carries candidates only on entity_ambiguous, the one reason whose part
     a client can post back with a candidate pinned."""
     region = RegionResult(
+        entity_texts=own_texts(["Congo", "Atlantis"]),
         variable_text="population",
         status="no_data",
         specs=(),
@@ -268,6 +271,7 @@ def test_assemble_region_threads_every_ambiguous_entity_term():
     and this assertion would catch it.
     """
     region = RegionResult(
+        entity_texts=own_texts(["Guinea", "Congo"]),
         variable_text="population",
         status="no_data",
         specs=(),
@@ -305,6 +309,7 @@ def test_assemble_region_threads_every_ambiguous_entity_term():
 
 
 _TWO_AMBIGUOUS = RegionResult(
+    entity_texts=own_texts(["Korea", "Congo", "Kenya"]),
     variable_text="ODA",
     status="no_data",
     specs=(),
@@ -384,6 +389,7 @@ def test_a_group_candidate_on_a_members_row_posts_the_group_name_without_a_pin(
             variable_text="ODA", entities=[ParsedEntity(text="the Union", members=True)]
         ),
         resolved_entity_dcids={},
+        entity_texts=own_texts(["the Union"]),
         ambiguous_entities=(
             AmbiguousEntity(
                 text="the Union",

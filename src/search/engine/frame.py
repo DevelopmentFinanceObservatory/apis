@@ -282,6 +282,7 @@ def door_frame(
     variable: str,
     entities: Sequence[str],
     entity_roles: Mapping[str, Sequence[DoorRole]],
+    entity_texts: Mapping[str, str],
     member_entities: Collection[str],
     pins: Mapping[str, str],
     date_request: DateRequest | None,
@@ -293,14 +294,16 @@ def door_frame(
     """The door-time frame of a part posted on the raw_text or parsed door.
 
     `entities` are the part's place names, `entity_roles` the axes the door gave each,
-    `member_entities` the names asked for as their members, and `pins` the dcid the caller
-    pinned for a name. `scope` is the part's compiled source mentions. `open_axes` are the
-    axes the part asks every member of, its operations' among them.
+    `entity_texts` the text each name names a place of, which its place states
+    (`door_names.DoorNames.texts`), `member_entities` the names asked for as their
+    members, and `pins` the dcid the caller pinned for a name. `scope` is the part's
+    compiled source mentions. `open_axes` are the axes the part asks every member of, its
+    operations' among them.
     """
     language = _language(door)
     places = tuple(
         FramePlace(
-            name=name,
+            name=entity_texts[name],
             stated_by=language,
             direction=_direction(entity_roles.get(name, ())),
             direction_stated=any(role.stated for role in entity_roles.get(name, ())),
@@ -381,16 +384,19 @@ def _unresolved(
     role_bearing: bool,
     ties: Iterable[QualifierTie],
     readings: Iterable[QualifierReadings],
+    names: Sequence[str],
+    entity_texts: Mapping[str, str],
 ) -> tuple[Unresolved, ...]:
     """A place named with no axis on a question a recalled shape gives roles, words
     matching two or more codes or a code and a measure value, and a set holding a node
-    and members read by default."""
+    and members read by default. `places` are the frame's, one per name of `names` in
+    order, and a set's name is stated in its text (`entity_texts`)."""
     unresolved: list[Unresolved] = []
     if role_bearing:
         unresolved.extend(
             Unresolved(kind="direction", subject=place.name, readings=("origin", "destination"))
-            for place in places
-            if place.direction == "undirected" and place.name in place_sets
+            for place, name in zip(places, names, strict=True)
+            if place.direction == "undirected" and name in place_sets
         )
     unresolved.extend(
         Unresolved(
@@ -409,7 +415,11 @@ def _unresolved(
         for reading in readings
     )
     unresolved.extend(
-        Unresolved(kind="group_reading", subject=name, readings=("node", "members"))
+        Unresolved(
+            kind="group_reading",
+            subject=entity_texts[name],
+            readings=("node", "members"),
+        )
         for name, place_set in place_sets.items()
         if place_set.node is not None and place_set.members and place_set.reading == "default"
     )
@@ -428,12 +438,16 @@ def with_recall(
     named_denominator: NamedDenominator | None = None,
     measure_class: str | None,
     place_sets: Mapping[str, PlaceSet],
+    names: Sequence[str],
+    entity_texts: Mapping[str, str],
     role_bearing: bool,
     slot_defaults: Iterable[SlotDefault],
 ) -> Frame:
     """`frame` completed after recall.
 
-    Each resolved place takes its set's reading and places (`PlaceSet.dcids`).
+    Each resolved place takes its set's reading and places (`PlaceSet.dcids`), the frame
+    holding one place per name of `names`, the part's place names, in order, as
+    `door_frame` built it, and `entity_texts` the text each name names a place of.
     `dropped_phrases` are the leg's dropped phrases, its operations' phrases among them,
     which the frame leaves out. `matches`, `ties` and `readings` are the codes, tied codes
     and two-reading spans the eligible shapes' vocabularies read in the words, by
@@ -444,11 +458,12 @@ def with_recall(
     subject-only ones (`ResolveState.role_bearing_outranks`), and `slot_defaults` the
     declared defaults of the recalled shapes' slots.
     """
+    keys = list(dict.fromkeys(names))
     places = tuple(
         place
-        if (place_set := place_sets.get(place.name)) is None
+        if (place_set := place_sets.get(name)) is None
         else place.model_copy(update={"reading": place_set.reading, "dcids": place_set.dcids()})
-        for place in frame.places
+        for place, name in zip(frame.places, keys, strict=True)
     )
     operation_phrases = {operation.phrase for operation in frame.operations.value}
     measure = FrameMeasure(
@@ -481,7 +496,13 @@ def with_recall(
                 match for vocabulary_matches in matches.values() for match in vocabulary_matches
             ),
             "unresolved": _unresolved(
-                places, place_sets, role_bearing=role_bearing, ties=ties, readings=readings
+                places,
+                place_sets,
+                role_bearing=role_bearing,
+                ties=ties,
+                readings=readings,
+                names=keys,
+                entity_texts=entity_texts,
             ),
         }
     )

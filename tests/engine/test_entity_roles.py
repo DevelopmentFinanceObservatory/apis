@@ -6,12 +6,9 @@ import asyncio
 
 import pytest
 
+from search.engine.door_names import mention_roles, part_names
 from search.engine.entry.dataset_entries import interpret_parts as dataset_door_interpretation
-from search.engine.entry.parsed import (
-    _entity_roles_for_part,
-    _role_query_for_part,
-    interpret_parts,
-)
+from search.engine.entry.parsed import _role_query_for_part, interpret_parts
 from search.engine.entry.raw_text import _entity_roles
 from search.engine.extract import ExtractedEntity, _validate_role_spans
 from search.engine.quantity_read import QuantityOutput
@@ -472,12 +469,44 @@ class TestRawTextDoorReadsDebtWording:
                 ["GDP", "debt"],
                 {},
             ),
-            # One place is no two-party relation.
+            # One place the extraction left undirected, one whose debt is measured against
+            # a quantity, one with a possessive claim on a debt, or a creditor's claim
+            # words.
+            (
+                "Kenya's external debt",
+                [("Kenya", "Kenya", "unspecified")],
+                ["external debt"],
+                {},
+            ),
+            (
+                "Kenya's government debt",
+                [("Kenya", "Kenya", "unspecified")],
+                ["government debt"],
+                {},
+            ),
             (
                 "Kenya's debt to GDP ratio",
                 [("Kenya", "Kenya", "origin")],
                 ["debt"],
                 {"Kenya": ["origin"]},
+            ),
+            (
+                "China's debt portfolio",
+                [("China", "China", "origin")],
+                ["debt portfolio"],
+                {"China": ["origin"]},
+            ),
+            (
+                "Kenya's share of external debt",
+                [("Kenya", "Kenya", "origin")],
+                ["external debt"],
+                {"Kenya": ["origin"]},
+            ),
+            (
+                "China's debt claims",
+                [("China", "China", "origin")],
+                ["debt claims"],
+                {"China": ["origin"]},
             ),
             # No debt measure.
             ("refugees owing to Syria", [("Syria", "Syria", "unspecified")], ["refugees"], {}),
@@ -536,14 +565,14 @@ class TestRawTextDoorReadsDebtWording:
 
 class TestParsedDoorCarriesEveryOccurrence:
     def test_one_name_on_both_axes_carries_both_in_mention_order(self):
-        roles = _entity_roles_for_part(
+        roles = mention_roles(
             ParsedPart(
                 variable_text="aid",
                 entities=[
                     ParsedEntity(text="Kenya", role_text="from"),
                     ParsedEntity(text="Kenya", role_text="to"),
                 ],
-            )
+            ).entities
         )
         assert roles == {
             "Kenya": [
@@ -553,19 +582,19 @@ class TestParsedDoorCarriesEveryOccurrence:
         }
 
     def test_an_exact_repeat_collapses_to_one_occurrence(self):
-        roles = _entity_roles_for_part(
+        roles = mention_roles(
             ParsedPart(
                 variable_text="aid",
                 entities=[
                     ParsedEntity(text="Kenya", role_text="to"),
                     ParsedEntity(text="Kenya", role_text="to"),
                 ],
-            )
+            ).entities
         )
         assert roles == {"Kenya": [DoorRole(axis="destination", span="Kenya")]}
 
     def test_an_unrecognised_or_absent_role_text_carries_no_occurrence(self):
-        roles = _entity_roles_for_part(
+        roles = mention_roles(
             ParsedPart(
                 variable_text="aid",
                 entities=[
@@ -573,7 +602,7 @@ class TestParsedDoorCarriesEveryOccurrence:
                     ParsedEntity(text="Kenya"),
                     ParsedEntity(text="Kenya", role_text="from"),
                 ],
-            )
+            ).entities
         )
         assert roles == {"Kenya": [DoorRole(axis="origin", span="Kenya")]}
 
@@ -593,12 +622,14 @@ class TestDatasetEntriesDoorCarriesEveryOccurrence:
             [part], pointer_prefixes=["/input/entries/0/part"]
         )
         (roles,) = interpretation.entity_roles
+        ((origin,), (destination,)) = (
+            part_names(part.entities).of("Kenya", axis) for axis in ("origin", "destination")
+        )
         assert roles == {
-            "Kenya": [
-                DoorRole(axis="origin", span="Kenya"),
-                DoorRole(axis="destination", span="Kenya"),
-            ]
+            origin: [DoorRole(axis="origin", span="Kenya")],
+            destination: [DoorRole(axis="destination", span="Kenya")],
         }
+        assert interpretation.entity_texts == [{origin: "Kenya", destination: "Kenya"}]
 
 
 class _FixedBindLLM:
@@ -706,7 +737,7 @@ def test_parsed_door_binds_a_declared_creditor_after_owed_to(monkeypatch):
     )
     role_query, warnings = _role_query_for_part(part)
     assert (role_query, warnings) == ("external debt owed to China Kenya", [])
-    door_roles = _entity_roles_for_part(part)
+    door_roles = mention_roles(part.entities)
     assert door_roles == {
         "China": [DoorRole(axis="origin", span="China")],
         "Kenya": [DoorRole(axis="destination", span="Kenya")],
@@ -780,3 +811,54 @@ def test_a_country_before_the_measure_takes_the_end_the_other_place_leaves(monke
     door_roles = _entity_roles(extracted, query=query, measures=["loans"])
 
     _assert_binds_china_as_creditor(monkeypatch, query, door_roles)
+
+
+@pytest.mark.parametrize("guessed", ["origin", "destination"])
+def test_a_possessive_over_its_debt_service_binds_the_debtor(monkeypatch, guessed):
+    """ "Kenya's debt service" states Kenya as the debtor at the door (`role_text.debt_axes`),
+    whichever axis the extraction guessed, and the debt flow binds it there."""
+    query = "Which countries does Kenya's gross debt service go to, total"
+    measure = "gross debt service"
+    door_roles = _entity_roles(
+        [ExtractedEntity(text="Kenya", span="Kenya", flow_role=guessed, role_span="'s")],
+        query=query,
+        measures=[measure],
+    )
+    assert door_roles == {"Kenya": [DoorRole(axis="destination", span="Kenya", stated=True)]}
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV_DCID, "ids", _CHN, _KEN, [2018, 2019, 2020])],
+        role_names={_SV_DCID: _CREDITOR_DEBTOR_ROLE_NAMES},
+    )
+    graph = FakeGraph(
+        nodes={
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _SV_DCID: {
+                "label": measure,
+                "arcs": _declaring_arcs(observation_properties=["creditor", "debtor"]),
+            },
+        },
+        detect={measure: {"svs": [_SV_DCID], "cosine_scores": [0.9]}},
+        resolve={"Kenya": _KEN},
+        obs={},
+    )
+    result = asyncio.run(
+        resolve_variable(
+            measure,
+            entities=["Kenya"],
+            date_request=None,
+            detect_query=measure,
+            role_query=query,
+            entity_roles=door_roles,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_FixedBindLLM(),
+            sdmx=FakeSdmxClient(observations={}),
+            base_timing={},
+            coverage=FakeCoverageService(index).snapshot(),
+        )
+    )
+    assert result.status == "definite", result
+    bound = {(entity.ref, entity.role) for entity in result.specs[0].resolved.entities}
+    assert bound == {(_KEN, "destination")}

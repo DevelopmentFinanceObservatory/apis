@@ -39,6 +39,8 @@ from search.engine.retrieval.read_plan import (
     ReadPlan,
     dated_without_complete_dates,
     facets_served,
+    own_parties,
+    plan_datasets,
     series_points,
     served_dates,
     year_of,
@@ -111,24 +113,24 @@ def stated_window(plan: ReadPlan) -> TimeWindow | None:
 def scope_members(plan: ReadPlan, form: CoverageForm) -> list[str]:
     """The members of a defaulted scope that `plan` serves.
 
-    For a discovered role scope (`form.open_axis`) they are the open role's dcids, sorted:
-    those of the served series, or in bulk those the elected facet holds data for inside
-    each member's years (`BulkPlan.member_pairs`). Otherwise they are the places of the
-    served series, in series order. Coverage counts its breadth dimension from this list, and an answer lists it as
-    its scope (`ResolvedSpec.scope`) and counts it in its `role_scope_defaulted` warning, so
-    the three agree."""
+    For a discovered role scope (`form.open_axis`) they are the open role's parties of their
+    own (`read_plan.own_parties` in the datasets the plan serves), sorted: those of the served
+    series, or in bulk those the elected facet holds data for inside each member's years
+    (`BulkPlan.member_pairs`). Otherwise they are the places of the served series, in series
+    order. Coverage counts its breadth dimension from this list, and an answer lists it as its
+    scope (`ResolvedSpec.scope`) and counts it in its `role_scope_defaulted` warning, so the
+    three agree."""
+    members: set[str] = set()
     if isinstance(plan, BulkPlan):
-        members: set[str] = set()
         for _sv, c, (first, last) in plan.member_pairs():
             members |= c.pairs.members_with_data(first_year=first, last_year=last)
-        return sorted(members)
-    if form.open_axis is not None:
+    elif form.open_axis is not None:
         _label, role = form.open_axis
         index = 0 if role == "recipient" else 1
-        return sorted(
-            {member for s in plan.served if s.rows is not None and (member := s.rows[index])}
-        )
-    return list(dict.fromkeys(s.role_tuple[0][1] for s in plan.served))
+        members = {member for s in plan.served if s.rows is not None and (member := s.rows[index])}
+    else:
+        return list(dict.fromkeys(s.role_tuple[0][1] for s in plan.served))
+    return own_parties(sorted(members), datasets=plan_datasets(plan))
 
 
 def _variables_dim(count: int) -> BreadthDim:

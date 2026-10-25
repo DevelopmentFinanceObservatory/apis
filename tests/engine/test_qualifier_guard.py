@@ -29,6 +29,7 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import _build_part
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.departures import measure_not_applied, warning_key
+from search.engine.door_names import own_texts
 from search.engine.errors import LLMInfraError
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import Recall
@@ -129,6 +130,7 @@ def _state(
     return ResolveState(
         variable=variable,
         entities=list(entities),
+        entity_texts=own_texts(list(entities)),
         date_request=None,
         detect_query=variable,
         role_query=variable,

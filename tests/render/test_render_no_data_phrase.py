@@ -655,11 +655,16 @@ def test_no_data_phrase_qualifier_terms_ignored_by_every_other_reason():
 
 
 @pytest.mark.parametrize(
-    "entity_terms",
-    [["World Bank"], ["World Bank", "IFC"], ["World Bank", "IFC", "Georgia"]],
-    ids=["one", "two", "three"],
+    ("entity_terms", "roles"),
+    [
+        (["World Bank"], ["origin"]),
+        (["World Bank", "IFC"], ["origin", "destination"]),
+        (["World Bank", "IFC", "Georgia"], ["origin", "destination", None]),
+        (["Congo", "Congo"], ["origin", "destination"]),
+    ],
+    ids=["one", "two", "three", "one-wording-on-both-ends"],
 )
-def test_entity_ambiguous_plan_marks_each_wording_as_a_slot_token(entity_terms):
+def test_entity_ambiguous_plan_marks_each_wording_as_a_slot_token(entity_terms, roles):
     """Each ambiguous wording is its own slot token, carrying the role the request gave
     it, and the plan still joins to the phrase."""
     candidates = ["International Bank for Reconstruction and Development", "IDA"]
@@ -667,7 +672,7 @@ def test_entity_ambiguous_plan_marks_each_wording_as_a_slot_token(entity_terms):
         "entity_ambiguous",
         entity_terms=entity_terms,
         ambiguous_candidates=candidates,
-        ambiguous_roles={"World Bank": "origin", "IFC": "destination"},
+        ambiguous_roles=roles,
     )
 
     assert sentence_from_plan(plan) == no_data_phrase(
@@ -675,8 +680,8 @@ def test_entity_ambiguous_plan_marks_each_wording_as_a_slot_token(entity_terms):
     )
     slots = [t for t in plan if t.kind == "slot"]
     assert [t.text for t in slots] == entity_terms
-    expected = {"World Bank": ("origin", None), "IFC": ("destination", "where")}
+    axis = {"origin": None, "destination": "where", None: "where"}
+    assert [(t.role, t.axis) for t in slots] == [(role, axis[role]) for role in roles]
     for token in slots:
-        assert (token.role, token.axis) == expected.get(token.text, (None, "where"))
         assert token.entity_refs == []
         assert token.binding_ref is None

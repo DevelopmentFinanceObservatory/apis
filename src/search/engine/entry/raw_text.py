@@ -9,7 +9,6 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
-from collections import Counter
 from collections.abc import AsyncGenerator, Collection, Sequence
 from contextlib import aclosing
 
@@ -42,6 +41,7 @@ from search.engine.departures import (
     price_basis_not_applied,
     warning_key,
 )
+from search.engine.door_names import door_names
 from search.engine.enrichment import _stream_slot_options
 from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
@@ -351,11 +351,10 @@ async def _recover_entity_surfaces(
     `query` (`_grounded`) is read for the qualifier. A name that settles on its surface's
     ambiguity takes the surface as its text (`surface_resolution.ambiguous_surface_names`),
     so "Congo" in "ODA to Congo", which the extraction names "Democratic Republic of the
-    Congo", asks its choice in the query's words. It does so only when no other name in
-    the query would carry the same text: the parsed door reads one text as one place per
-    part, so "aid from Congo to Congo", which the extraction names "Republic of the Congo"
-    and "Democratic Republic of the Congo", keeps both names and asks each end's choice on
-    its own.
+    Congo", asks its choice in the query's words. Two names that take one text stay two
+    places when the query directs them to opposite ends (`door_names.door_names`), so "aid
+    from Congo to Congo", which the extraction names "Republic of the Congo" and
+    "Democratic Republic of the Congo", asks each end's choice as "Congo".
     """
     # Each entity reads the spans the ones before it recovered, so two never take one word.
     spanned = list(entities)
@@ -404,15 +403,9 @@ async def _recover_entity_surfaces(
     ambiguous = await _await_bounded(
         ambiguous_surface_names(surfaces, resolver=resolver), deadline=deadline
     )
-    # The text each name would carry on the wire: its surface when renamed, else itself.
-    claims = Counter(
-        _normalize(surfaces[key] if key in ambiguous else key)
-        for key in dict.fromkeys(_entity_key(entity) for entity in kept)
-    )
-    as_written = {key for key in ambiguous if claims[_normalize(surfaces[key])] == 1}
     return [
         entity.model_copy(update={"text": surfaces[key], "span": surfaces[key]})
-        if (key := _entity_key(entity)) in as_written
+        if (key := _entity_key(entity)) in ambiguous
         else entity
         for entity in kept
     ]
@@ -493,7 +486,7 @@ def _entity_roles(
 ) -> dict[str, list[DoorRole]]:
     """Map stripped entity names to their flow axes and spans.
 
-    The query's debt wording sets the axes of a two-party debt relation
+    The query's debt wording sets the axes of a debt's parties
     (`role_text.debt_axes`), and its receipt wording sets each recipient's
     (`role_text.receipt_axes`); every other place keeps its extracted axis. Preserve
     distinct mentions in order, including self-flows on opposite axes. Collapse duplicate
@@ -717,7 +710,10 @@ class _ExtractionPrep:
     `unique` and `entities` preserve first-seen order. `entities` leaves out an entity
     every occurrence of whose words a source mention covers
     (`source_scan.SourceScan.source_entities`), as do
-    `entity_roles`, `entity_words` and `member_entities`. `interpretation_variables`
+    `entity_roles`, `entity_words` and `member_entities`. `entities` are the names of the
+    places the query mentions (`door_names.door_names`): an entity's text, or one invented
+    name per axis for a text the query directs to both ends. `entity_texts` maps every
+    name to its text (`door_names.DoorNames.texts`). `interpretation_variables`
     adds coded-qualifier sidecars, while resolution and cache keys use bare text.
     `per_variable_operations` runs parallel to `unique`: each variable's operations
     ride on its part, and their phrases reach only that variable's bind, beside
@@ -743,8 +739,9 @@ class _ExtractionPrep:
     `qualifier_facts` holds the departure of each `qualifier_warnings` entry whose phrase
     asks for something (`_dropped_phrase_fact`), under its warning's key. `entity_words`
     maps each entity name to the query's own words for it (`ExtractedEntity.span`), first
-    mention first. `entity_surfaces` holds those words where they occur in the query and
-    differ from the name, which recall resolves the name through (`_entity_surfaces`).
+    mention first, an invented name to those of its end. `entity_surfaces` holds those
+    words where they occur in the query and differ from the name's text, which recall
+    resolves the name through (`_entity_surfaces`).
     `member_entities` are the entity names the query asks for as their
     members (`ResolveState.member_entities`). `separate` runs parallel to `unique` and
     marks each variable the raw query compares with another (`source_spans.read_sources`),
@@ -776,6 +773,7 @@ class _ExtractionPrep:
     qualifier_facts: dict[WarningKey, DepartureFact]
     entity_words: dict[str, str]
     entity_surfaces: dict[str, str]
+    entity_texts: dict[str, str]
     unit_text: str | None
     per_variable_unit_texts: list[str | None]
     separate: list[bool]
@@ -963,8 +961,10 @@ def _prepare_extraction(
             extracted_entities.append(entity)
         else:
             entity_breakdowns.append(words)
-    entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
-    entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
+    names = door_names(
+        (_entity_key(e) for e in extracted_entities),
+        _entity_roles(extracted_entities, query=query, measures=unique),
+    )
 
     # A relative date the extraction could not read is gone from `dates`; its warning says so.
     clamp_warnings: list[Warning] = list(extract_result.warnings)
@@ -1074,10 +1074,22 @@ def _prepare_extraction(
         for words in narrowing
     ]
 
-    entity_words: dict[str, str] = {}
+    text_words: dict[str, str] = {}
     for entity in extracted_entities:
-        entity_words.setdefault(_entity_key(entity), (entity.span or entity.text).strip())
-    entity_surfaces = _entity_surfaces(extracted_entities, query=query)
+        text_words.setdefault(_entity_key(entity), (entity.span or entity.text).strip())
+    text_surfaces = _entity_surfaces(extracted_entities, query=query)
+    # An invented name reads in the words of its own end, and resolves as its text does.
+    entity_words = {
+        name: names.roles[name][0].span.strip()
+        if names.text_of(name) in names.split
+        else text_words[name]
+        for name in names.names
+    }
+    entity_surfaces = {
+        name: text_surfaces[text]
+        for name in names.names
+        if (text := names.text_of(name)) in text_surfaces
+    }
 
     reading = read_sources(query, interpretation_variables)
 
@@ -1106,10 +1118,12 @@ def _prepare_extraction(
     return _ExtractionPrep(
         date_request=date_request,
         unique=unique,
-        entities=entities,
-        entity_roles=entity_roles,
+        entities=list(names.names),
+        entity_roles=dict(names.roles),
         # One text holds one reading: a mention that asks for the members decides it.
-        member_entities=frozenset(_entity_key(e) for e in extracted_entities if e.members),
+        member_entities=frozenset(
+            name for e in extracted_entities if e.members for name in names.of(_entity_key(e), None)
+        ),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
         per_variable_open_axes=per_variable_open_axes,
@@ -1123,6 +1137,7 @@ def _prepare_extraction(
         qualifier_facts=qualifier_facts,
         entity_words=entity_words,
         entity_surfaces=entity_surfaces,
+        entity_texts=dict(names.texts),
         unit_text=unit_text,
         per_variable_unit_texts=[
             _part_unit_text(extract_result.unit_texts.get(v), unit_text) for v in unique
@@ -1189,6 +1204,7 @@ async def _handle_single_variable(
         prep.unique,
         entities=prep.entities,
         entity_roles=prep.entity_roles,
+        entity_texts=prep.entity_texts,
         member_entities=prep.member_entities,
         date_request=prep.date_request,
         query=query,
@@ -1318,6 +1334,7 @@ async def _handle_multi_variable(
             resolver=resolver,
             deadline=params.deadline,
             surfaces=prep.entity_surfaces,
+            texts=prep.entity_texts,
         )
         if runs
         else {}
@@ -1327,6 +1344,7 @@ async def _handle_multi_variable(
         prep.unique,
         entities=prep.entities,
         entity_roles=prep.entity_roles,
+        entity_texts=prep.entity_texts,
         member_entities=prep.member_entities,
         date_request=prep.date_request,
         query=query,
@@ -1473,7 +1491,8 @@ async def handle(
 
     yield InterpretationEvent(
         variables=prep.interpretation_variables,
-        entities=prep.entities,
+        # The event echoes the entities' texts, so a place named apart reads as its text.
+        entities=list(dict.fromkeys(prep.entity_texts[name] for name in prep.entities)),
         dates=extraction.dates,
         expected_results=len(prep.unique),
     )

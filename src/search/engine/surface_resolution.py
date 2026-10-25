@@ -95,18 +95,28 @@ def _sole_of_its_kind(entity: Entity, candidates: Sequence[Entity]) -> bool:
 
 
 async def resolve_names(
-    names: Sequence[str], *, resolver: EntityResolver, surfaces: Mapping[str, str]
+    names: Sequence[str],
+    *,
+    resolver: EntityResolver,
+    surfaces: Mapping[str, str],
+    texts: Mapping[str, str],
 ) -> list[Resolution]:
     """Resolve `names` in one resolver call, in order, each through its surface.
 
     `surfaces` maps a name to the query words that name it; a name it omits resolves as
-    itself. With no surface among `names`, the resolver receives `names` unchanged.
+    its text. `texts` maps each of `names` to the text it names a place of
+    (`door_names.DoorNames.texts`), which it resolves as, so the resolver never reads an
+    invented name; a name `texts` omits raises `KeyError`. With no surface among `names`
+    and each its own text, the resolver receives `names` unchanged.
     """
-    if not any(name in surfaces for name in names):
+    read = [(texts[name], surfaces.get(name)) for name in names]
+    if all(
+        surface is None and text == name for name, (text, surface) in zip(names, read, strict=True)
+    ):
         return await resolver.resolve(list(names))
-    texts = list(dict.fromkeys(text for name in names for text in _texts(name, surfaces.get(name))))
-    by_text = dict(zip(texts, await resolver.resolve(texts), strict=True))
-    return [_settle(name, surfaces.get(name), by_text) for name in names]
+    asked = list(dict.fromkeys(text for name, surface in read for text in _texts(name, surface)))
+    by_text = dict(zip(asked, await resolver.resolve(asked), strict=True))
+    return [_settle(name, surface, by_text) for name, surface in read]
 
 
 async def ambiguous_surface_names(

@@ -71,6 +71,7 @@ async def _run_cancellation_scenario() -> tuple[_FanOutResult, asyncio.Task]:
         agen = _run_variables_streaming(
             ["v0", "v1"],
             entities=[],
+            entity_texts={},
             date_request=None,
             query="",
             pac=False,
@@ -148,6 +149,7 @@ def test_infra_error_cancels_a_completed_siblings_live_task_unread():
                 async for _ev in _run_variables_streaming(
                     ["v0", "v1"],
                     entities=[],
+                    entity_texts={},
                     date_request=None,
                     query="",
                     pac=False,

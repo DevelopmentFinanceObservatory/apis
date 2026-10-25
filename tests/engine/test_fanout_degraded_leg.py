@@ -40,6 +40,7 @@ def _fanout_kwargs(**overrides: Any) -> dict[str, Any]:
     llm = FakeLLM(responses={})
     kwargs: dict[str, Any] = {
         "entities": [],
+        "entity_texts": {},
         "date_request": None,
         "query": "",
         "pac": False,

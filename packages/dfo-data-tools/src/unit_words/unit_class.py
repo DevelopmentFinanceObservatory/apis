@@ -17,8 +17,13 @@ The class comes from graph types:
   `PPPInternationalDollar` and the `UnitOfMeasure` nodes `InternationalDollar` and
   `PurchasingPowerStandard`, listed in `_PURCHASING_POWER_UNITS`.
 - Percent is `Percent` and `SDG_PERCENT`, listed in `_PERCENT_UNITS`.
+- A count base is a unit that names the count it divides by, "per 1,000 people" or "per
+  100,000 live births", listed with its base in `_COUNT_BASE_UNITS`. A count base is the
+  unit's own: the World Development Indicators crude birth rate,
+  `Count_BirthEvent_LiveBirth_AsFractionOf_Count_Person`, divides by `Count_Person` and is
+  served in `Per1000Persons`, so it is a rate per 1,000 people.
 - Per head is a `measurementDenominator` of `Count_Person` (WEO, IDS) or `PerCapita` (base
-  Data Commons), listed in `PER_HEAD_DENOMINATORS`.
+  Data Commons), listed in `PER_HEAD_DENOMINATORS`, under a unit with no count base.
 """
 
 from __future__ import annotations
@@ -30,8 +35,8 @@ from typing import Final, Literal
 
 PER_CAPITA_DENOMINATOR: Final = "PerCapita"
 """The base Data Commons `measurementDenominator` that frames a measure as per capita. A
-`Count_Person` denominator is a per-person rate too, but also the denominator of rates no
-query calls per capita (a crude birth rate)."""
+`Count_Person` denominator is a per-person rate too, but also the denominator of rates
+whose unit names a count base (a crude birth rate in `Per1000Persons`)."""
 
 PER_HEAD_DENOMINATORS: Final = frozenset({"Count_Person", PER_CAPITA_DENOMINATOR})
 """`measurementDenominator` dcids of a per-person rate."""
@@ -41,6 +46,49 @@ _PURCHASING_POWER_UNITS: Final = frozenset(
 )
 _PERCENT_UNITS: Final = frozenset({"Percent", "SDG_PERCENT"})
 _PLAIN_CURRENCY: Final = "USD"
+
+
+@dataclass(frozen=True, slots=True)
+class CountBase:
+    """The count a unit divides by: `size` of `noun`, a plural ("people")."""
+
+    size: int
+    noun: str
+
+    @property
+    def phrase(self) -> str:
+        """The base as a heading reads it: "per 1,000 people"."""
+        return f"per {self.size:,} {self.noun}"
+
+
+_PEOPLE: Final = "people"
+_LIVE_BIRTHS: Final = "live births"
+
+_COUNT_BASE_UNITS: Final[Mapping[str, CountBase]] = MappingProxyType(
+    {
+        "Per1000Persons": CountBase(1000, _PEOPLE),
+        "Per100000Persons": CountBase(100_000, _PEOPLE),
+        "Per100000Females": CountBase(100_000, "females"),
+        "Per100000Males": CountBase(100_000, "males"),
+        "Per1000LiveBirths": CountBase(1000, _LIVE_BIRTHS),
+        "Per1000FemaleLiveBirths": CountBase(1000, "female live births"),
+        "Per1000MaleLiveBirths": CountBase(1000, "male live births"),
+        "SDG_PER_1000_POP": CountBase(1000, _PEOPLE),
+        "SDG_PER_100000_POP": CountBase(100_000, _PEOPLE),
+        "SDG_PER_1000_UNINFECTED_POP": CountBase(1000, "uninfected people"),
+        "SDG_PER_1000_LIVE_BIRTHS": CountBase(1000, _LIVE_BIRTHS),
+        "SDG_PER_100000_LIVE_BIRTHS": CountBase(100_000, _LIVE_BIRTHS),
+        "undata/UNIT_MEASURE-RATIO_COUNT_CASES_PER_COUNT_1000_COUNT_POP": CountBase(1000, _PEOPLE),
+        "undata/UNIT_MEASURE-RATIO_COUNT_DEATHS_PER_1000_COUNT_LIVEBIRTHS": CountBase(
+            1000, _LIVE_BIRTHS
+        ),
+        "undata/UNIT_MEASURE-RATE_MORTALITY_PER_1000_COUNT_LIVEBIRTHS": CountBase(
+            1000, _LIVE_BIRTHS
+        ),
+    }
+)
+"""Units that name the count they divide by, as the World Development Indicators, the
+UN SDG indicators and the UN System Data Commons serve them."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +122,13 @@ def is_per_head_denominator(denominator: str | None) -> bool:
     return denominator in PER_HEAD_DENOMINATORS
 
 
+def fixes_per_head(denominator: str | None) -> bool:
+    """Whether a `measurementDenominator` dcid makes the measure per capita before its unit
+    is known. `PerCapita` does. A `Count_Person` rate waits for its unit, which may name a
+    count base (`_COUNT_BASE_UNITS`)."""
+    return denominator == PER_CAPITA_DENOMINATOR
+
+
 @dataclass(frozen=True, slots=True)
 class UnitClass:
     """The class of a series' unit and its denominator.
@@ -82,7 +137,10 @@ class UnitClass:
     `currency`. `per_head` is true for a per-person rate. `ratio_denominator` is the
     `measurementDenominator` dcid of any other ratio ("% of exports"), which
     `measure_noun.denominator_noun` names. `base_year` is the year of a unit
-    in constant prices of that year (`ChainedUSDollarBaseYr2017`), else `None`.
+    in constant prices of that year (`ChainedUSDollarBaseYr2017`), else `None`. `base` is
+    the count a unit names as its base ("per 1,000 people"), else `None`; a unit with a
+    base sets neither `per_head` nor `ratio_denominator`, since the base is the
+    denominator.
     """
 
     kind: UnitKind
@@ -91,16 +149,17 @@ class UnitClass:
     per_head: bool
     ratio_denominator: str | None
     base_year: int | None = None
+    base: CountBase | None = None
 
     @property
     def changes_magnitude(self) -> bool:
         """Whether the unit changes what the number means, so the heading states it.
 
-        True for a per-head rate, a percent or other ratio, PPP or international dollars,
-        and any currency other than US dollars. False for US dollars and for units outside
-        these classes, which the byline states.
+        True for a per-head rate, a percent or other ratio, a unit with a count base, PPP
+        or international dollars, and any currency other than US dollars. False for US
+        dollars and for units outside these classes, which the byline states.
         """
-        if self.per_head or self.ratio_denominator is not None:
+        if self.per_head or self.ratio_denominator is not None or self.base is not None:
             return True
         if self.kind in ("percent", "purchasing_power"):
             return True
@@ -122,12 +181,14 @@ def classify_unit(
         currency_units: `graph.currency_units()`, unit dcid to ISO 4217 code.
 
     Returns:
-        The unit's class. The denominator sets `per_head` or `ratio_denominator`
-        whatever the unit's kind, so a per-capita amount in Kenyan shillings is a
-        `currency` with `per_head` true.
+        The unit's class. A unit with a count base (`_COUNT_BASE_UNITS`) sets `base`, and
+        the denominator is ignored. Otherwise the denominator sets `per_head` or
+        `ratio_denominator` whatever the unit's kind, so a per-capita amount in Kenyan
+        shillings is a `currency` with `per_head` true.
     """
-    per_head = is_per_head_denominator(denominator)
-    ratio_denominator = None if per_head else denominator
+    base = _COUNT_BASE_UNITS.get(unit) if unit is not None else None
+    per_head = base is None and is_per_head_denominator(denominator)
+    ratio_denominator = None if per_head or base is not None else denominator
     declared = _DECLARED_CURRENCY_UNITS.get(unit) if unit is not None else None
     currency: str | None = None
     if declared is not None:
@@ -152,4 +213,5 @@ def classify_unit(
         per_head=per_head,
         ratio_denominator=ratio_denominator,
         base_year=declared.base_year if declared is not None else None,
+        base=base,
     )

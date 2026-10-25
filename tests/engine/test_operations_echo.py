@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from search.engine.config import SearchSettings
+from search.engine.door_names import own_texts
 from search.engine.entry.parsed import _dedupe_parts_with_indices
 from search.engine.extract import MAX_OPERATIONS
 from search.engine.fanout import _placeholder_no_data
@@ -207,7 +208,12 @@ def test_an_untargeted_operation_serialises_without_a_target_year():
 def test_a_leg_backfilled_at_the_deadline_keeps_its_operations():
     """The soft-deadline placeholder carries the leg's operations and restates them."""
     region = _placeholder_no_data(
-        "education aid", 0, reason="timed_out", entities=["Kenya"], operations=(_RANK_PLACES,)
+        "education aid",
+        0,
+        reason="timed_out",
+        entities=["Kenya"],
+        entity_texts=own_texts(["Kenya"]),
+        operations=(_RANK_PLACES,),
     )
 
     assert region.operations == (_RANK_PLACES,)

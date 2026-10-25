@@ -222,6 +222,7 @@ def _leg_parsed_form(
     sources: Sequence[SourceMention] = (),
     source_code: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
+    entity_texts: Mapping[str, str],
     member_entities: Collection[str] = (),
     operations: Sequence[Operation] = (),
     open_axes: Collection[RoleAxis] = (),
@@ -230,8 +231,11 @@ def _leg_parsed_form(
     """Build the leg's inputs as one parsed part, the form `NoData.options` are built from.
 
     Each entity appears once per distinct axis the door gave it, with that axis as
-    `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
-    without an axis appears bare. An entity of `member_entities` states `members`.
+    `role_text`, as the parsed door reads a name repeated on opposite axes, and in the
+    text its name names a place of (`entity_texts`, `door_names.DoorNames.texts`, which
+    holds every name of `entities`), so a place the door named apart reads back as its
+    own row. An entity without an axis appears bare. An entity of `member_entities` states
+    `members`.
     `sources` are the mentions it echoes (`restated_sources`), so a reposted part answers
     from the same sources, and `source_code` is the series code it names. The leg's own
     open roles appear as their axes in `open_roles`, and the axes its operations open ride
@@ -244,7 +248,7 @@ def _leg_parsed_form(
             variable_text=variable_text,
             entities=[
                 ParsedEntity(
-                    text=e,
+                    text=entity_texts[e],
                     role_text=role_text_for_axis(axis) if axis is not None else None,
                     members=e in member_entities,
                 )
@@ -274,6 +278,7 @@ def _leg_restatement(
     source_code: str | None = None,
     directional: bool = False,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
+    entity_texts: Mapping[str, str],
     member_entities: Collection[str] = (),
     operations: Sequence[Operation] = (),
     open_axes: Collection[RoleAxis] = (),
@@ -304,6 +309,7 @@ def _leg_restatement(
         sources=sources,
         source_code=source_code,
         entity_roles=roles,
+        entity_texts=entity_texts,
         member_entities=member_entities,
         operations=operations,
         open_axes=open_axes,
@@ -323,6 +329,7 @@ def _placeholder_no_data(
     source_code: str | None = None,
     role_query: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
+    entity_texts: Mapping[str, str],
     member_entities: Collection[str] = (),
     operations: tuple[Operation, ...] = (),
     open_axes: Collection[RoleAxis] = (),
@@ -344,6 +351,7 @@ def _placeholder_no_data(
         source_code=source_code,
         directional=bool(role_query),
         entity_roles=entity_roles,
+        entity_texts=entity_texts,
         member_entities=member_entities,
         operations=operations,
         open_axes=open_axes,
@@ -360,6 +368,7 @@ def _placeholder_no_data(
         restatement=restatement,
         operations=operations,
         separate=separate,
+        entity_texts=dict(entity_texts),
     )
 
 
@@ -441,6 +450,7 @@ async def _stream_one_variable(
     stream_observations: bool = False,
     role_query: str | None = None,
     entity_roles: dict[str, list[DoorRole]] | None = None,
+    entity_texts: Mapping[str, str],
     member_entities: frozenset[str] = frozenset(),
     unit_text: str | None = None,
     unit_text_best_effort: bool = False,
@@ -475,8 +485,10 @@ async def _stream_one_variable(
     series code: its StatVars are the leg's recall, its words leave `v` too, and a refusal
     answers the leg no_data after the source refusals (`source_code_refusal_result`).
     `entity_surfaces` maps an entity name to the query words its recall resolves it through.
-    `member_entities` are the entities asked for as their members
-    (`ResolveState.member_entities`), which the restatement states.
+    `entity_texts` maps each name of `entities` to the text it names a place of
+    (`door_names.DoorNames.texts`): recall resolves it, and the region and its
+    restatement state it, by that text. `member_entities` are the entities asked for as
+    their members (`ResolveState.member_entities`), which the restatement states.
     `entity_roles` also supplies the axes written into the leg's restatement, which carries
     its source mentions (`restated_sources`). `operations` ride on the final
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
@@ -516,6 +528,7 @@ async def _stream_one_variable(
             detect_query=variable_text,
             role_query=role_query if role_query is not None else query,
             entity_roles=entity_roles,
+            entity_texts=entity_texts,
             member_entities=member_entities,
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
@@ -584,6 +597,7 @@ async def _stream_one_variable(
             source_code=code,
             role_query=role_query if role_query is not None else query,
             entity_roles=entity_roles,
+            entity_texts=entity_texts,
             member_entities=member_entities,
             operations=operations,
             open_axes=open_axes,
@@ -609,6 +623,7 @@ async def _stream_one_variable(
                 entity_roles=entity_roles,
             ),
             entity_roles=entity_roles,
+            entity_texts=entity_texts,
             member_entities=member_entities,
             operations=operations,
             open_axes=open_axes,
@@ -618,6 +633,7 @@ async def _stream_one_variable(
             region,
             variable_text=variable_text,
             separate=separate,
+            entity_texts=dict(entity_texts),
             restatement=restatement,
             parsed_form=_leg_parsed_form(
                 variable_text,
@@ -627,6 +643,7 @@ async def _stream_one_variable(
                 sources=sources,
                 source_code=code,
                 entity_roles=entity_roles,
+                entity_texts=entity_texts,
                 member_entities=member_entities,
                 operations=operations,
                 open_axes=open_axes,
@@ -658,11 +675,13 @@ class _LegOverrides:
     pre_resolved: dict[str, Resolution] | None
     entity_surfaces: dict[str, str] | None
     entity_roles: dict[str, list[DoorRole]] | None
+    entity_texts: Mapping[str, str]
     member_entities: frozenset[str]
     per_variable_entities: list[list[str]] | None
     per_variable_date_requests: list[DateRequest | None] | None
     per_variable_role_queries: list[str] | None
     per_variable_entity_roles: list[dict[str, list[DoorRole]]] | None
+    per_variable_entity_texts: list[dict[str, str]] | None
     per_variable_member_entities: list[frozenset[str]] | None
     per_variable_unit_texts: list[str | None] | None
     unit_text_best_effort: bool
@@ -810,6 +829,12 @@ def _leg_entity_roles(overrides: _LegOverrides, i: int) -> dict[str, list[DoorRo
     return overrides.entity_roles
 
 
+def _leg_entity_texts(overrides: _LegOverrides, i: int) -> Mapping[str, str]:
+    if overrides.per_variable_entity_texts is not None:
+        return overrides.per_variable_entity_texts[i]
+    return overrides.entity_texts
+
+
 def _leg_member_entities(overrides: _LegOverrides, i: int) -> frozenset[str]:
     if overrides.per_variable_member_entities is not None:
         return overrides.per_variable_member_entities[i]
@@ -891,6 +916,7 @@ def _launch_variable_tasks(
                     else None
                 ),
                 entity_roles=_leg_entity_roles(overrides, i),
+                entity_texts=_leg_entity_texts(overrides, i),
                 member_entities=_leg_member_entities(overrides, i),
                 unit_text=_leg_unit_text(overrides, i),
                 unit_text_best_effort=overrides.unit_text_best_effort,
@@ -979,11 +1005,13 @@ async def _run_variables_streaming(
     stream_observations: bool = False,
     entity_surfaces: dict[str, str] | None = None,
     entity_roles: dict[str, list[DoorRole]] | None = None,
+    entity_texts: Mapping[str, str],
     member_entities: frozenset[str] = frozenset(),
     per_variable_entities: list[list[str]] | None = None,
     per_variable_date_requests: list[DateRequest | None] | None = None,
     per_variable_role_queries: list[str] | None = None,
     per_variable_entity_roles: list[dict[str, list[DoorRole]]] | None = None,
+    per_variable_entity_texts: list[dict[str, str]] | None = None,
     per_variable_member_entities: list[frozenset[str]] | None = None,
     per_variable_unit_texts: list[str | None] | None = None,
     unit_text_best_effort: bool = False,
@@ -1017,7 +1045,9 @@ async def _run_variables_streaming(
     pre-resolution values override their broadcast counterparts by index.
     `None` broadcasts the shared value. `per_variable_pre_resolved` replaces
     the shared map; parsed-door callers merge pins before passing it. `entity_surfaces`
-    maps an entity name to the query words every leg's recall resolves it through.
+    maps an entity name to the query words every leg's recall resolves it through, and
+    `entity_texts` each name of `entities` to the text it names a place of, which
+    `per_variable_entity_texts` gives each leg its own of, for that leg's entities.
     Request-level dependencies are broadcast unchanged.
     `per_variable_operations` gives each leg its own operations, which ride on its
     region and restatement and join its bind's dropped phrases; `None` gives every
@@ -1042,11 +1072,13 @@ async def _run_variables_streaming(
         pre_resolved=pre_resolved,
         entity_surfaces=entity_surfaces,
         entity_roles=entity_roles,
+        entity_texts=entity_texts,
         member_entities=member_entities,
         per_variable_entities=per_variable_entities,
         per_variable_date_requests=per_variable_date_requests,
         per_variable_role_queries=per_variable_role_queries,
         per_variable_entity_roles=per_variable_entity_roles,
+        per_variable_entity_texts=per_variable_entity_texts,
         per_variable_member_entities=per_variable_member_entities,
         per_variable_unit_texts=per_variable_unit_texts,
         unit_text_best_effort=unit_text_best_effort,
@@ -1167,6 +1199,7 @@ async def _run_variables_streaming(
                 source_code=_code_text(_leg_source_code(overrides, i)),
                 role_query=_leg_role_query(overrides, i),
                 entity_roles=_leg_entity_roles(overrides, i),
+                entity_texts=_leg_entity_texts(overrides, i),
                 member_entities=_leg_member_entities(overrides, i),
                 operations=_leg_operations(overrides, i),
                 open_axes=_leg_open_axes(overrides, i),
@@ -1207,12 +1240,14 @@ async def _resolve_entities_bounded(
     resolver: EntityResolver,
     deadline: float,
     surfaces: Mapping[str, str] | None = None,
+    texts: Mapping[str, str],
 ) -> dict[str, Resolution]:
     """Resolve the deduplicated names in one resolver call before fan-out.
 
     Caller-side limits cap parsed-door input at 96 entities by default
     (`SEARCH_MAX_PARTS * SEARCH_MAX_PART_ENTITIES`) and raw-text input at
-    `SEARCH_MAX_ENTITIES`. `surfaces` maps a name to the query words it resolves through
+    `SEARCH_MAX_ENTITIES`. `surfaces` maps a name to the query words it resolves through,
+    and `texts` each name to the text it resolves as
     (`surface_resolution.resolve_names`). `_await_bounded` bounds the wait by the shared
     monotonic deadline.
     """
@@ -1220,7 +1255,7 @@ async def _resolve_entities_bounded(
         return {}
 
     resolutions = await _await_bounded(
-        resolve_names(unique_entities, resolver=resolver, surfaces=surfaces or {}),
+        resolve_names(unique_entities, resolver=resolver, surfaces=surfaces or {}, texts=texts),
         deadline=deadline,
     )
     return dict(zip(unique_entities, resolutions, strict=True))

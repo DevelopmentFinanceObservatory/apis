@@ -24,6 +24,7 @@ from search.engine.assemble import (
     skills_index_unavailable_warning,
 )
 from search.engine.departures import surviving_facts
+from search.engine.door_names import part_names
 from search.engine.envelope import make_diagnostics, make_query_echo, make_response, now_ms
 from search.engine.errors import EngineInputError
 from search.engine.region.source_choice import scope_records
@@ -165,36 +166,45 @@ def _shared_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
     return {}
 
 
+def _text_of(region: RegionResult, name: str) -> str:
+    """The request text `name` names a place of in `region` (`RegionResult.entity_texts`).
+    A name the region does not hold raises `KeyError`."""
+    return region.entity_texts[name]
+
+
 def _entity_refs(region: RegionResult) -> list[EntityRefs]:
     """The binding of each entity text of the region's restatement, once per text in
-    restatement order (`Part.entity_refs`). A text the region binds nothing for
-    (`RegionResult.entity_refs`) states []."""
+    restatement order (`Part.entity_refs`): the places it binds for every place the text
+    names, so a text named on both ends states both ends' refs, each once. A text the
+    region binds nothing for (`RegionResult.entity_refs`) states []."""
     if region.restatement is None:
         return []
+    refs: dict[str, list[str]] = {}
+    for name, bound in region.entity_refs.items():
+        refs.setdefault(_text_of(region, name), []).extend(bound)
     texts = dict.fromkeys(entity.text for entity in region.restatement.entities or ())
-    return [EntityRefs(text=text, refs=list(region.entity_refs.get(text, ()))) for text in texts]
+    return [EntityRefs(text=text, refs=list(dict.fromkeys(refs.get(text, ())))) for text in texts]
 
 
 def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[str] | None]:
     """Return entity terms and candidates for no-data reasons that carry them.
 
-    Ambiguous entities supply terms and ordered candidate names.
-    Role-not-admitted entities supply terms only. Unresolved entities use
-    ``unresolved_entity_names``, and so do the names whose direction a
-    ``role_not_resolved`` refusal could not tell and the whole populations a
-    ``role_incompatible`` refusal found directed to the other side, each in the request's
-    own words for it (``RegionResult.entity_words``). Other reasons or empty values return
-    ``None``.
+    Ambiguous entities supply terms and ordered candidate names, and unresolved entities
+    use ``unresolved_entity_names``, each name stating its text (`_text_of`).
+    Role-not-admitted entities supply terms only, in the words they carry. So do the names
+    whose direction a ``role_not_resolved`` refusal could not tell and the whole
+    populations a ``role_incompatible`` refusal found directed to the other side, each in
+    the request's own words for it (``RegionResult.entity_words``). Other reasons or empty
+    values return ``None``.
     """
     if region.no_data_reason == "entity_ambiguous":
-        entity_terms = [e.text for e in region.ambiguous_entities] or None
+        entity_terms = [_text_of(region, e.text) for e in region.ambiguous_entities] or None
         candidates = [c.name for e in region.ambiguous_entities for c in e.candidates] or None
         return entity_terms, candidates
     if region.no_data_reason == "entity_role_not_admitted":
-        entity_terms = [e.text for e in region.role_not_admitted_entities] or None
-        return entity_terms, None
+        return [e.text for e in region.role_not_admitted_entities] or None, None
     if region.no_data_reason == "entity_not_resolved":
-        return list(region.unresolved_entity_names) or None, None
+        return [_text_of(region, name) for name in region.unresolved_entity_names] or None, None
     if region.no_data_reason in ("role_not_resolved", "role_incompatible"):
         return _untold_terms(region) or None, None
     return None, None
@@ -238,14 +248,15 @@ def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]
     only. A region refused for another reason can still name ambiguous entities
     (`phase_intake._phase_check_entities`), and the wire field is empty for it.
 
-    Engine candidates use ``name``. Wire candidates use ``label``. Other
-    fields copy directly.
+    Engine candidates use ``name``. Wire candidates use ``label``. A group states the text
+    its name names a place of (`_text_of`), so one text asked on both ends is two groups of
+    that text. Other fields copy directly.
     """
     if region.no_data_reason != "entity_ambiguous":
         return []
     return [
         AmbiguousEntityGroup(
-            text=entity.text,
+            text=_text_of(region, entity.text),
             candidates=[
                 AmbiguousEntityCandidate(ref=c.dcid, label=c.name, kind=c.kind)
                 for c in entity.candidates
@@ -324,18 +335,29 @@ def _option(mentions: Sequence[str], label: str, part: ParsedPart) -> NoDataOpti
 
 
 def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
-    """One option per ambiguous wording and candidate: the part with every entity that
-    resolved to one node pinned, and every row with the wording pinned to the candidate.
-    A row asked for its members takes a group's own node by the group's registered name,
-    with no dcid, since a pin cannot ask for a group's members; a group node with no
-    registered name that resolves to it alone has no option. Other ambiguous wordings stay
-    unpinned."""
-    base = [
-        entity.model_copy(
-            update={"dcid": region.resolved_entity_dcids.get(entity.text, entity.dcid)}
-        )
+    """One option per ambiguous place and candidate: the part with every place that
+    resolved to one node pinned, and every row naming the ambiguous place pinned to the
+    candidate. A row names the places `door_names.part_names` reads it as, so of a text
+    posted on both ends each end is its own place, and an option pins one end. A row asked
+    for its members takes a group's own node by the group's registered name, with no dcid,
+    since a pin cannot ask for a group's members; a group node with no registered name that
+    resolves to it alone has no option. Other ambiguous places stay unpinned.
+
+    The label is the candidate's name, led by its end ("From Republic of the Congo") when
+    the text is posted on both ends, so each option reads differently."""
+    names = part_names(part.entities)
+    rows = [
+        (entity, names.of(entity.text, role_axis_for_text(entity.role_text)))
         for entity in part.entities or ()
     ]
+
+    def pinned(entity: ParsedEntity, row_names: tuple[str, ...]) -> ParsedEntity:
+        dcids = {region.resolved_entity_dcids.get(name) for name in row_names}
+        if len(dcids) != 1 or None in dcids:
+            return entity
+        return entity.model_copy(update={"dcid": dcids.pop()})
+
+    base = [(pinned(entity, row_names), row_names) for entity, row_names in rows]
 
     def chosen(entity: ParsedEntity, candidate: EngineCandidate) -> ParsedEntity | None:
         if entity.members and candidate.group_node:
@@ -346,21 +368,24 @@ def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption
 
     options: list[NoDataOption | None] = []
     for group in region.ambiguous_entities:
+        text = _text_of(region, group.text)
+        end = next(
+            (axis for axis, name in names.split.get(text, {}).items() if name == group.text), None
+        )
         for candidate in group.candidates:
             entities = [
-                chosen(entity, candidate) if entity.text == group.text else entity
-                for entity in base
+                chosen(entity, candidate) if group.text in row_names else entity
+                for entity, row_names in base
             ]
             if None in entities:
                 continue
-            options.append(
-                _option(
-                    [group.text],
-                    candidate.name,
-                    part.model_copy(update={"entities": entities}),
-                )
-            )
+            label = candidate.name if end is None else f"{_END_WORDS[end]} {candidate.name}"
+            options.append(_option([text], label, part.model_copy(update={"entities": entities})))
     return options
+
+
+# The word an option label names a place's end with, as `_direction_label` does.
+_END_WORDS: dict[RoleAxis, str] = {"origin": "From", "destination": "To"}
 
 
 def _source_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
@@ -660,9 +685,7 @@ def _build_part(
         bound_role_dcids=region.no_data_bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
         ambiguous_entities=_ambiguous_entity_groups(region),
-        ambiguous_roles={
-            entity.text: entity.role for entity in region.ambiguous_entities if entity.role
-        },
+        ambiguous_roles=[entity.role for entity in region.ambiguous_entities],
         options=_options(region),
         source_terms=list(region.source_terms) or None,
         ambiguous_sources=_ambiguous_source_groups(region),

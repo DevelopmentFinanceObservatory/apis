@@ -11,6 +11,7 @@ import pytest
 
 from search.engine.config import settings
 from search.engine.conjoin import BINDING_FOLDED, VARIABLES_CLAMPED, combine_regions
+from search.engine.door_names import own_texts
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction
@@ -81,6 +82,7 @@ def _rr(
         timing_by_step={},
         earliest_index=earliest_index,
         unresolved_entity_names=unresolved_entity_names,
+        entity_texts=own_texts(unresolved_entity_names),
     )
 
 

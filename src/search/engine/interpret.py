@@ -288,6 +288,7 @@ async def recall(
     raw_query: str | None = None,
     pre_resolved: dict[str, Resolution] | None = None,
     entity_surfaces: Mapping[str, str] | None = None,
+    entity_texts: Mapping[str, str],
     members: Sequence[str] | None = None,
     party_words: AbstractSet[str] = frozenset(),
 ) -> Recall:
@@ -297,7 +298,8 @@ async def recall(
     add coded-qualifier retrieval hints. Those hints do not constrain the
     population. `pre_resolved` supplies entity results shared across variables;
     only missing names go to one resolver call alongside `detect_svs`. `entity_surfaces`
-    maps a name to the query words that name it, which that call resolves it through
+    maps a name to the query words that name it, which that call resolves it through, and
+    `entity_texts` each name to the text it resolves as
     (`surface_resolution.resolve_names`).
 
     Candidates stay in descending score order. The recall floor drops low
@@ -321,11 +323,13 @@ async def recall(
 
     if members is not None:
         detection = _member_detection(members)
-        miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
+        miss_resolutions = await resolve_names(
+            misses, resolver=resolver, surfaces=surfaces, texts=entity_texts
+        )
     else:
         detection, miss_resolutions = await asyncio.gather(
             _detect(graph, _canonicalize_acronyms(detect_query), party_words),
-            resolve_names(misses, resolver=resolver, surfaces=surfaces),
+            resolve_names(misses, resolver=resolver, surfaces=surfaces, texts=entity_texts),
         )
     candidates = _above_recall_floor(detection.candidates)
     resolutions: dict[str, Resolution] = dict(cache_hits)

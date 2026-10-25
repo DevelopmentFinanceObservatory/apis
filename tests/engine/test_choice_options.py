@@ -8,13 +8,17 @@ elect their one shape through a scripted bind."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
 import origin_catalogue.service as catalogue_service_module
 from origin_catalogue import DFO, ProvenanceRow, SourceRef
+from search.engine.door_names import part_names
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
+from search.models import ParsedEntity
 from series_coverage.schema import RoleNames
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import patch_coverage
@@ -203,50 +207,175 @@ def test_a_name_the_query_words_leave_open_asks_its_choice_in_those_words():
 
 
 class _TwoCongosExtractionLLM(_ShapeZeroLLM):
-    """Reads every query as aid from the Republic of the Congo to the Democratic Republic
-    of the Congo, each named in the query "Congo", and elects shape 0 with no bindings."""
+    """Reads every query as aid from one Congo to another, the origin named `origin` and
+    the destination `destination`, each named in the query "Congo", and elects shape 0
+    with no bindings."""
+
+    def __init__(self, origin: str, destination: str) -> None:
+        self.texts = (origin, destination)
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is Extraction:
+            origin, destination = self.texts
             entities = [
+                ExtractedEntity(text=origin, span="Congo", flow_role="origin", role_span="from"),
                 ExtractedEntity(
-                    text="Republic of the Congo", span="Congo", flow_role="origin", role_span="from"
-                ),
-                ExtractedEntity(
-                    text="Democratic Republic of the Congo",
-                    span="Congo",
-                    flow_role="destination",
-                    role_span="to",
+                    text=destination, span="Congo", flow_role="destination", role_span="to"
                 ),
             ]
             return Extraction(kind="resolution", variables=["aid"], entities=entities), None
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
 
 
-def test_two_names_the_query_words_alike_ask_each_choice_on_its_own():
-    """The parsed door reads one text as one place, so two names that "Congo" leaves open
-    keep the extraction's names, and each end offers its own choice."""
-    client = _flow_client(_TwoCongosExtractionLLM())
+def _rows(option: dict) -> list[tuple[str, str | None, str | None]]:
+    """Each entity row an option posts, as (text, role_text, dcid)."""
+    return [
+        (e["text"], e.get("role_text"), e.get("dcid"))
+        for e in option["data_query"]["parts"][0]["entities"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        pytest.param(("Republic of the Congo", "Democratic Republic of the Congo"), id="two_names"),
+        pytest.param(("Congo", "Congo"), id="one_text"),
+    ],
+)
+def test_one_text_on_both_ends_asks_each_end_its_own_choice(texts):
+    """One (text, axis) names one place in a part. "Congo" from and "Congo" to are two
+    places, whether the extraction names the ends apart or alike, so each end asks its
+    own choice, each option pins one end and leaves the other open, and two choices reach
+    a flow from one Congo to the other."""
+    client = _flow_client(_TwoCongosExtractionLLM(*texts))
 
     part = _raw_part(client, "aid from Congo to Congo")
 
     no_data = part["no_data"]
     assert no_data["reason"] == "entity_ambiguous"
-    names = ["Republic of the Congo", "Democratic Republic of the Congo"]
-    assert [group["text"] for group in no_data["ambiguous_entities"]] == names
-    pins = [
-        {e["text"]: e.get("dcid") for e in option["data_query"]["parts"][0]["entities"]}
-        for option in no_data["options"]
+    assert no_data["entity_terms"] == ["Congo", "Congo"]
+    origin, destination = no_data["ambiguous_entities"]
+    assert [origin["text"], destination["text"]] == ["Congo", "Congo"]
+    candidates = [(c["ref"], c["label"]) for c in origin["candidates"]]
+    assert {ref for ref, _ in candidates} == {_COD, _COG}
+    assert [(c["ref"], c["label"]) for c in destination["candidates"]] == candidates
+    assert [e["text"] for e in part["restatement"]["entities"]] == ["Congo", "Congo"]
+    assert [_rows(o) for o in no_data["options"]] == [
+        *([("Congo", "from", ref), ("Congo", "to", None)] for ref, _ in candidates),
+        *([("Congo", "from", None), ("Congo", "to", ref)] for ref, _ in candidates),
     ]
-    assert pins == [
-        {names[0]: _COD, names[1]: None},
-        {names[0]: _COG, names[1]: None},
-        {names[0]: None, names[1]: _COD},
-        {names[0]: None, names[1]: _COG},
+    assert [(o["mentions"], o["label"]) for o in no_data["options"]] == [
+        *((["Congo"], f"From {label}") for _, label in candidates),
+        *((["Congo"], f"To {label}") for _, label in candidates),
     ]
+
+    # Each option settles its own end: the reposted part asks the other end's choice
+    # alone, and each of its options keeps the first pin.
     for option in no_data["options"]:
-        response = client.post("/api/search/resolve", json={"input": option["data_query"]})
-        assert response.status_code == 200, (option["label"], response.text)
+        again = _no_data(client, option["data_query"]["parts"][0])
+        assert again["reason"] == "entity_ambiguous", (option["label"], again)
+        (group,) = again["ambiguous_entities"]
+        assert group["text"] == "Congo"
+        pinned = next(row for row in _rows(option) if row[2] is not None)
+        assert all(pinned in _rows(second) for second in again["options"]), again["options"]
+
+    first = _no_data(client, no_data["options"][0]["data_query"]["parts"][0])
+    (second,) = [o for o in first["options"] if ("Congo", "to", _COG) in _rows(o)]
+    response = client.post("/api/search/resolve", json={"input": second["data_query"]})
+    assert response.status_code == 200, response.text
+    (answered,) = response.json()["parts"]
+    assert not {"Congo"} & _asked(answered.get("no_data") or {}), answered
+    assert answered["entity_refs"] == [{"text": "Congo", "refs": [_COD, _COG]}]
+
+
+@pytest.mark.parametrize(
+    ("entities", "origin", "destination"),
+    [
+        pytest.param(
+            [
+                {"text": "Congo", "role_text": "from", "dcid": _COD},
+                {"text": "Congo", "role_text": "to", "dcid": _COG},
+            ],
+            _COD,
+            _COG,
+            id="one-text-pinned-on-each-end",
+        ),
+        pytest.param(
+            [{"text": "Norway", "role_text": "from"}, {"text": "Norway", "role_text": "to"}],
+            _PLACES["Norway"],
+            _PLACES["Norway"],
+            id="one-text-on-both-ends-is-a-self-flow",
+        ),
+    ],
+)
+def test_one_text_posted_on_both_ends_names_a_place_on_each(entities, origin, destination):
+    """One (text, axis) names one place in a part, so a text posted on both ends is two
+    places, each bound on its own end by its pin or its resolution, and the part states
+    the text once with the places both ends bind. The fixture holds no observations, so
+    the flow is the refusal's flagged match."""
+    client = _flow_client()
+
+    part = {"variable_text": "aid", "entities": entities}
+    response = client.post(
+        "/api/search/resolve", json={"input": {"kind": "parsed", "parts": [part]}}
+    )
+
+    assert response.status_code == 200, response.text
+    (answered,) = response.json()["parts"]
+    flow = answered["no_data"]["flagged_match"]["definition"]["identity"]["entities"]
+    assert flow == {"origin": [origin], "destination": [destination]}
+    refs = list(dict.fromkeys([origin, destination]))
+    assert answered["entity_refs"] == [{"text": entities[0]["text"], "refs": refs}]
+    assert answered["restatement"]["entities"] == entities
+
+
+def test_a_place_named_apart_reaches_no_response_by_its_invented_name():
+    """The names the doors invent for "Congo" on each end key the engine's state only.
+    Every response of the two-choice flow, its streamed events included, states "Congo"
+    and none of them."""
+    client = _flow_client(_TwoCongosExtractionLLM("Congo", "Congo"))
+    both_ends = [ParsedEntity(text="Congo", role_text=word) for word in ("from", "to")]
+    invented = list(part_names(both_ends).texts)
+    assert len(invented) == 2
+    stream = {"Accept": "text/event-stream"}
+
+    def streamed(request: dict) -> str:
+        response = client.post("/api/search/resolve", json={"input": request}, headers=stream)
+        assert response.status_code == 200, response.text
+        return response.text
+
+    first = _raw_part(client, "aid from Congo to Congo")["no_data"]["options"][0]["data_query"]
+    second = _no_data(client, first["parts"][0])["options"][-1]["data_query"]
+    bodies = [
+        streamed({"kind": "raw_text", "query": "aid from Congo to Congo"}),
+        streamed(first),
+        streamed(second),
+    ]
+
+    for body in bodies:
+        assert "Congo" in body
+        for name in invented:
+            assert name not in body
+            assert json.dumps(name)[1:-1] not in body
+
+
+def test_a_group_with_no_node_named_on_both_ends_is_labelled_in_its_text():
+    """G7 has no graph node, so the answer labels it by the request's text. Posted on both
+    ends, each end is a place the door names apart, and both read as G7."""
+    client = _flow_client()
+    part = {
+        "variable_text": "aid",
+        "entities": [{"text": "G7", "role_text": word} for word in ("from", "to")],
+    }
+
+    response = client.post(
+        "/api/search/resolve", json={"input": {"kind": "parsed", "parts": [part]}}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["rendered_sentence"] == (
+        "No data for test flow to the 7 G7 members from the 7 G7 members."
+    )
 
 
 def test_a_name_the_query_words_settle_keeps_its_name():

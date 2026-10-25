@@ -37,7 +37,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient, RoleFacetIndex
 from search.engine.core import resolve_async, resolve_events
 from search.engine.errors import GraphInfraError
-from search.engine.events import Event
+from search.engine.events import Event, serialize_sse
 from search.engine.extract import DateRequest
 from search.engine.region.bound_unit_gate import UnitEvidence, plan_unit_evidence
 from search.engine.region.convertibility import elected_unit_refs
@@ -88,6 +88,7 @@ from series_coverage.shared import CoverageSnapshot
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._invented_names import assert_no_invented_names
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
 from tests.fixtures.provenance import facet_provenance
 from tests.materialise._scope_availability import NO_SCOPE_READ
@@ -986,6 +987,9 @@ def offline_resolve(
 
     `sdmx` overrides the empty default; inject a fake for SDMX behavior without live calls.
 
+    The response, serialised, must hold no place name a door invented
+    (`_invented_names.assert_no_invented_names`).
+
     `pac` overrides `seam_default` for this call.
 
     Inject both materialise clients for observations; the default preview returns
@@ -1001,7 +1005,7 @@ def offline_resolve(
     """
     graph = _FAKE_GRAPH if graph is None else graph
     with _offline(pac):
-        return asyncio.run(
+        response = asyncio.run(
             resolve_async(
                 request,
                 graph=graph,
@@ -1014,6 +1018,8 @@ def offline_resolve(
                 binder=binder,
             )
         )
+    assert_no_invented_names(response.model_dump_json(), where="offline_resolve response")
+    return response
 
 
 def offline_events(
@@ -1033,7 +1039,8 @@ def offline_events(
 ) -> list[Event]:
     """Every event `resolve_events` streams for `request`, in order, under the shared fakes
     and the pinned extraction date `offline_resolve` runs with. `graph` and `llm` replace
-    the shared fakes for this call, and `binder` the configured binder. `stream_slot_options`
+    the shared fakes for this call, and `binder` the configured binder. Each event, as the
+    SSE route writes it, must hold no place name a door invented. `stream_slot_options`
     streams the trailing events as the SSE route does; `response_cache` and
     `place_options_pool` are the app's shared ones.
     `close_after` names an event kind: the stream is closed after the first such event, as
@@ -1063,7 +1070,10 @@ def offline_events(
         return events
 
     with _offline(None):
-        return asyncio.run(collect())
+        events = asyncio.run(collect())
+    for event in events:
+        assert_no_invented_names(serialize_sse(event), where=f"streamed {event.kind} event")
+    return events
 
 
 def _materialise_graph(

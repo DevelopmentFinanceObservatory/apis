@@ -329,7 +329,11 @@ def _settle_bindings(
         state.variable,
         state.dropped_qualifier_phrases,
         shape_draft,
-        entities=(*state.entities, *state.entity_surfaces.values()),
+        entities=(
+            *state.entities,
+            *state.entity_texts.values(),
+            *state.entity_surfaces.values(),
+        ),
     )
 
     # The elected shape's own qualifiers: the matches its vocabulary reads and admits, and its

@@ -78,6 +78,8 @@ from search.engine.retrieval.read_plan import (
     PlanYears,
     ReadPlan,
     minimal_constraint_svs,
+    own_parties,
+    plan_datasets,
     points_in_years,
     served_role_entities,
 )
@@ -130,18 +132,26 @@ def role_axis_facts_for_materialised(
     (`read_plan.served_role_entities`), so the count the sentence states is the count of
     parties its data holds; a population the resolver found holds parties in years or
     series the plan does not read. Without a plan, or for an axis the shape names no role
-    on, the resolver's population stands. Unknown role-index data yields
-    `member_dcids=None`. A known empty population is an empty set. Returns `[]` when no
-    role axis is open. These facts add no SDMX reads and feed both the resolved spec and
-    entity options.
+    on, the resolver's population stands. The count reads the population's parties of their
+    own (`read_plan.own_parties`) in the datasets the plan serves, or without a plan in those
+    publishing `mat`'s StatVars, as the answer's scope does, and the entity options list the
+    whole population. Unknown role-index data yields `member_dcids=None`. A known empty
+    population is an empty set. Returns `[]` when no role axis is open. These facts add no
+    SDMX reads and feed both the resolved spec and entity options.
     """
     role_names = role_names_by_axis(shape)
+    datasets = (
+        plan_datasets(plan) if plan is not None else get_index().statvar_provenances(mat.sv_dcids)
+    )
 
     def fact(axis: RoleAxis, population: frozenset[str] | None) -> RoleAxisFactInput:
         role_name = role_names.get(axis)
         if plan is not None and population is not None and role_name is not None:
             population = served_role_entities(plan, role_name)
-        return RoleAxisFactInput(role=axis, member_dcids=population)
+        parties = (
+            None if population is None else frozenset(own_parties(population, datasets=datasets))
+        )
+        return RoleAxisFactInput(role=axis, member_dcids=population, party_dcids=parties)
 
     if mat.open_origin_dcids is not None:
         return [fact("origin", mat.open_origin_dcids)]

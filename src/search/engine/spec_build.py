@@ -914,12 +914,15 @@ def _open_axis_facts(
 class RoleAxisFactInput:
     """Input for an open directional axis from destination confirmation or role-scope reads.
 
-    ``member_dcids`` is None when deriving the population would require another graph
-    read.
+    ``member_dcids`` is the axis's population, totals and residuals included, which its entity
+    options list. ``party_dcids`` are those of them that are parties of their own
+    (`read_plan.own_parties`), which ``RoleAxisFact.member_count`` counts. Both are None when
+    deriving the population would require another graph read.
     """
 
     role: RoleAxis
     member_dcids: frozenset[str] | None
+    party_dcids: frozenset[str] | None
 
 
 def _role_axis_facts(
@@ -927,6 +930,7 @@ def _role_axis_facts(
 ) -> list[RoleAxisFact] | None:
     """Project open role axes, returning None when no facts were supplied.
 
+    ``member_count`` counts the axis's parties of their own (`RoleAxisFactInput.party_dcids`).
     A missing member population yields ``member_count=None`` and
     ``members_available=False``.
     """
@@ -935,7 +939,7 @@ def _role_axis_facts(
     return [
         RoleAxisFact(
             role=fact.role,
-            member_count=len(fact.member_dcids) if fact.member_dcids is not None else None,
+            member_count=len(fact.party_dcids) if fact.party_dcids is not None else None,
             members_available=fact.member_dcids is not None,
         )
         for fact in facts

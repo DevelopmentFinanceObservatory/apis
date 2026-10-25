@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from search.engine.clients.graph import Facet
 from search.engine.departures import warning_key
 from search.engine.quantity_read import QuantityOutput
@@ -18,7 +20,9 @@ from search.engine.region.pipeline import resolve_variable
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     DatasetResubmitInput,
+    EntityRefs,
     ParsedEntity,
+    ParsedInput,
     ParsedPart,
     ResolveRequest,
     ResubmitParsedEntry,
@@ -286,6 +290,41 @@ def test_parsed_door_role_text_also_warns_when_the_shape_drops_it():
     assert "recipient" in warnings[0].message
 
 
+@pytest.mark.parametrize("door", ["parsed", "dataset_resubmit"])
+def test_a_text_on_both_ends_of_a_subject_only_shape_drops_each_direction_in_its_words(door):
+    """Kenya posted from and to names two places the door names apart. A subject-only shape
+    drops each direction, and its warning and departure name Kenya, once per end."""
+    part = ParsedPart(
+        variable_text="inward remittances",
+        entities=[ParsedEntity(text="Kenya", role_text=word) for word in ("from", "to")],
+    )
+    request = ResolveRequest(
+        input=ParsedInput(parts=[part])
+        if door == "parsed"
+        else DatasetResubmitInput(entries=[ResubmitParsedEntry(part=part)])
+    )
+    graph = _graph(
+        resolve={"Kenya": _KEN},
+        sv_arcs=_subject_arcs(),
+        detect_query="inward remittances",
+        obs={f"{_SV_DCID}|{_KEN}": [{"earliestDate": "2015", "latestDate": "2020", "obsCount": 3}]},
+    )
+
+    answered = offline_resolve(request, graph=graph, llm=_FixedBindLLM()).parts[0]
+
+    assert answered.status == "definite", answered
+    assert answered.spec.definition.identity.entities == {"observationAbout": [_KEN]}
+    assert [w.message for w in answered.warnings if w.code == DIRECTION_DISCARDED] == [
+        f"Kenya was named as the {noun}; this shape reports the place as its own subject, so "
+        "the direction was dropped."
+        for noun in ("recipient", "provider")
+    ]
+    assert [(d.code, d.asked) for d in answered.departures] == [
+        ("direction_discarded", "Kenya"),
+        ("direction_discarded", "Kenya"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # (c) The raw_text -> dataset_resubmit round trip keeps the status.
 # ---------------------------------------------------------------------------
@@ -337,7 +376,8 @@ def test_directional_binding_replays_to_the_same_status(monkeypatch):
 
 
 def test_parsed_door_roleless_place_on_a_role_bearing_shape_refuses_role_not_resolved():
-    """A parsed place without `role_text` refuses before observation probing."""
+    """A parsed place without `role_text` refuses before observation probing. The shape is
+    elected but binds no place, so Kenya states the one node it resolved to."""
     entry = ResubmitParsedEntry(
         part=ParsedPart(variable_text="aid", entities=[ParsedEntity(text="Kenya")])
     )
@@ -356,6 +396,7 @@ def test_parsed_door_roleless_place_on_a_role_bearing_shape_refuses_role_not_res
     part = response.parts[0]
     assert part.status == "no_data", part
     assert part.no_data.reason == "role_not_resolved"
+    assert part.entity_refs == [EntityRefs(text="Kenya", refs=[_KEN])]
 
 
 # ---------------------------------------------------------------------------

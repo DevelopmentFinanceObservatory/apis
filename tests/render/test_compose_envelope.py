@@ -1382,7 +1382,7 @@ def test_an_ambiguous_wording_keeps_its_slot_token_beside_a_resolved_sibling():
         "entity_ambiguous",
         entity_terms=["Congo"],
         ambiguous_candidates=["Congo [DRC]", "Congo [Republic]"],
-        ambiguous_roles={"Congo": "destination"},
+        ambiguous_roles=["destination"],
     )
     ambiguous = _no_data_with_plan("entity_ambiguous", "GDP", plan)
 

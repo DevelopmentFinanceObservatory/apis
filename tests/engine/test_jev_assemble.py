@@ -38,6 +38,7 @@ from search.engine.binders.jev_request import (
     quantity_request,
     span_id,
 )
+from search.engine.door_names import own_texts
 from search.engine.frame import Frame, FrameNormalisation, Stated, StatedBy, door_frame
 from search.engine.qualifier_match import QualifierMatch, QualifierTie, names_plain_name
 from search.engine.region.phase_rank_bind import _HousePolicyStep
@@ -79,6 +80,7 @@ def _frame(*, donors: Sequence[str] = ()) -> Frame:
         door="parsed",
         variable="aid",
         entities=list(donors),
+        entity_texts=own_texts(list(donors)),
         entity_roles={name: [DoorRole(axis="origin", span=name)] for name in donors},
         member_entities=frozenset(),
         pins={},

@@ -1517,6 +1517,7 @@ def test_both_transports_give_a_dac2a_donor_menu_the_trust_funds_dac2a_kind():
         RoleAxisFactInput(
             role="origin",
             member_dcids=frozenset({"IMFConcessionalTrustFunds", "InternationalMonetaryFund"}),
+            party_dcids=frozenset({"InternationalMonetaryFund"}),
         )
     ]
     raw, buffered, _warn = _build_and_enrich_entity_options(

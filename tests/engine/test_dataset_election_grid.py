@@ -81,6 +81,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import _unbound_terms
 from search.engine.departures import WarningKey, warning_key
+from search.engine.door_names import own_texts
 from search.engine.interpret import Recall
 from search.engine.options.population import options_population
 from search.engine.qualifier_match import QualifierMatch, _normalize
@@ -1617,6 +1618,7 @@ def _repair_state(
     return ResolveState(
         variable="aid",
         entities=list(places),
+        entity_texts=own_texts(list(places)),
         date_request=None,
         detect_query="aid",
         role_query="aid from Germany to Kenya",

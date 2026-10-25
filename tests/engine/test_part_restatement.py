@@ -14,6 +14,7 @@ import pytest
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.rate_tables import RateTableCache
 from search.engine.conjoin import BINDING_FOLDED, assemble_region, combine_regions
+from search.engine.door_names import own_texts
 from search.engine.envelope import now_ms
 from search.engine.extract import DateRequest, dates_to_request
 from search.engine.fanout import (
@@ -187,6 +188,7 @@ class TestLegRestatement:
         restatement = _leg_restatement(
             "GDP",
             entities=["Brazil", "Angola"],
+            entity_texts=own_texts(["Brazil", "Angola"]),
             date_request=date_request,
             unit_text="US dollars",
             sources=[SourceMention(text="World Bank", ref="dc/s/WorldBank")],
@@ -204,6 +206,7 @@ class TestLegRestatement:
         restatement = _leg_restatement(
             "aid",
             entities=["Africa", "France"],
+            entity_texts=own_texts(["Africa", "France"]),
             date_request=None,
             unit_text=None,
             entity_roles={
@@ -219,13 +222,17 @@ class TestLegRestatement:
         ]
 
     def test_no_entities_is_none_not_an_empty_list(self):
-        restatement = _leg_restatement("GDP", entities=[], date_request=None, unit_text=None)
+        restatement = _leg_restatement(
+            "GDP", entities=[], entity_texts={}, date_request=None, unit_text=None
+        )
         assert restatement is not None
         assert restatement.entities is None
 
     def test_a_leg_input_ParsedPart_cannot_express_yields_no_restatement(self):
         # Empty variable text fails ParsedPart validation.
-        restatement = _leg_restatement("", entities=[], date_request=None, unit_text=None)
+        restatement = _leg_restatement(
+            "", entities=[], entity_texts={}, date_request=None, unit_text=None
+        )
         assert restatement is None
 
     def test_directional_leg_with_no_axis_for_the_entity_yields_no_restatement(self):
@@ -233,6 +240,7 @@ class TestLegRestatement:
         restatement = _leg_restatement(
             "aid",
             entities=["France"],
+            entity_texts=own_texts(["France"]),
             date_request=None,
             unit_text=None,
             directional=True,
@@ -244,6 +252,7 @@ class TestLegRestatement:
         restatement = _leg_restatement(
             "population",
             entities=["Brazil"],
+            entity_texts=own_texts(["Brazil"]),
             date_request=None,
             unit_text=None,
             directional=False,
@@ -348,6 +357,7 @@ class TestSuccessDirectional:
         restatement = _leg_restatement(
             "aid",
             entities=["USA"],
+            entity_texts=own_texts(["USA"]),
             date_request=None,
             unit_text=None,
             directional=directional,
@@ -370,6 +380,7 @@ class TestSuccessDirectional:
         restatement = _leg_restatement(
             "aid",
             entities=[],
+            entity_texts={},
             date_request=None,
             unit_text=None,
             directional=directional,
@@ -393,6 +404,7 @@ class TestSuccessDirectional:
         restatement = _leg_restatement(
             "population",
             entities=["Brazil"],
+            entity_texts=own_texts(["Brazil"]),
             date_request=None,
             unit_text=None,
             directional=directional,
@@ -422,6 +434,7 @@ class TestSuccessDirectional:
         restatement = _leg_restatement(
             "aid",
             entities=["France"],
+            entity_texts=own_texts(["France"]),
             date_request=None,
             unit_text=None,
             directional=directional,
@@ -461,6 +474,7 @@ class TestSuccessDirectional:
         restatement = _leg_restatement(
             "debt service",
             entities=["Ghana"],
+            entity_texts=own_texts(["Ghana"]),
             date_request=None,
             unit_text=None,
             directional=_success_directional(region, role_query="debt service of Ghana"),
@@ -486,13 +500,19 @@ class TestPlaceholderNoDataDirectionalRule:
             0,
             reason="timed_out",
             entities=["France"],
+            entity_texts=own_texts(["France"]),
             role_query="how much aid comes from France",
         )
         assert region.restatement is None
 
     def test_no_role_query_still_yields_a_restatement(self):
         region = _placeholder_no_data(
-            "population", 0, reason="timed_out", entities=["Brazil"], role_query=None
+            "population",
+            0,
+            reason="timed_out",
+            entities=["Brazil"],
+            entity_texts=own_texts(["Brazil"]),
+            role_query=None,
         )
         assert region.restatement == ParsedPart(
             variable_text="population", entities=[ParsedEntity(text="Brazil")]
@@ -506,6 +526,7 @@ class TestPlaceholderNoDataDirectionalRule:
             0,
             reason="timed_out",
             entities=["France"],
+            entity_texts=own_texts(["France"]),
             role_query="how much aid comes from France",
             entity_roles={"France": [DoorRole(axis="origin", span="from France")]},
         )
@@ -516,7 +537,12 @@ class TestPlaceholderNoDataDirectionalRule:
 
     def test_no_entities_yields_a_restatement_even_with_a_role_query(self):
         region = _placeholder_no_data(
-            "aid", 0, reason="timed_out", entities=[], role_query="how much aid comes from France"
+            "aid",
+            0,
+            reason="timed_out",
+            entities=[],
+            entity_texts={},
+            role_query="how much aid comes from France",
         )
         assert region.restatement is not None
         assert region.restatement.entities is None
@@ -557,6 +583,7 @@ def _rr(
         restatement=restatement,
         unsupported=unsupported,
         entity_refs=entity_refs or {},
+        entity_texts=own_texts(entity_refs or {}),
     )
 
 
@@ -626,7 +653,13 @@ class TestEntityRefs:
 
     def test_a_degraded_placeholder_binds_no_text(self):
         """A soft-deadline placeholder states each restated text with no binding."""
-        region = _placeholder_no_data("GDP", 0, reason="timed_out", entities=["Brazil", "Kenya"])
+        region = _placeholder_no_data(
+            "GDP",
+            0,
+            reason="timed_out",
+            entities=["Brazil", "Kenya"],
+            entity_texts=own_texts(["Brazil", "Kenya"]),
+        )
         part = _assemble(region).parts[0]
         assert part.restatement is not None
         assert part.entity_refs == [

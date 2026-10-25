@@ -108,8 +108,9 @@ class AmbiguousEntity:
 
 @dataclass(frozen=True)
 class RoleNotAdmittedEntity:
-    """Resolved entity that no surviving shape can assign to a declared role. A place set
-    is named by its node, and one with no node by its first member."""
+    """Resolved entity that no surviving shape can assign to a declared role, by the
+    request's words for it (`place_roles.set_text`). A place set is identified by its node,
+    and one with no node by its first member."""
 
     text: str
     dcid: str
@@ -412,10 +413,16 @@ class RegionResult:
     # post `open_roles`. A side read whole states its way back to the members in that form.
     members_in_words: bool = False
     # The places the answer binds for each entity text of the part, by that text
-    # (`place_roles.bound_entity_refs`), read once the part's places have settled. A text
-    # absent here binds none: an ambiguous or unresolved one, every text of a part refused
-    # before its places are bound, and every text of a soft-deadline placeholder.
+    # (`place_roles.bound_entity_refs`), read once the part's places have settled, or the
+    # node each text resolved to alone in a part refused before its places are bound. A
+    # text absent here binds none: an ambiguous or unresolved one, and every text of a
+    # soft-deadline placeholder.
     entity_refs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # The text each name of the part names a place of (`door_names.DoorNames.texts`), set
+    # by the fan-out leg for every name. The part states a name in its text wherever it
+    # states the request's texts: its restatement, `entity_refs`, entity terms and
+    # ambiguous groups (`conjoin._text_of`). A name missing here raises `KeyError`.
+    entity_texts: Mapping[str, str] = field(default_factory=dict)
     # The flow sides a whole population the part asks for member by member opens
     # (`ResolveState.whole_listed`). The leg warns for each one the answer drops as it
     # does for its own open roles (`with_dropped_open_roles`).
@@ -676,8 +683,8 @@ def _unrunnable_warning(operation: Operation) -> Warning:
 def with_entity_words(region: RegionResult, words: Mapping[str, str]) -> RegionResult:
     """Return `region` holding `words`, the request's own words for each entity name
     (`RegionResult.entity_words`). A group label `region` already maps to the request's name
-    for the group maps on to that name's words."""
+    for the group maps on to that name's words, which `words` holds for every name."""
     if not words:
         return region
-    by_label = {label: words.get(name, name) for label, name in (region.entity_words or {}).items()}
+    by_label = {label: words[name] for label, name in (region.entity_words or {}).items()}
     return dataclasses.replace(region, entity_words={**words, **by_label})

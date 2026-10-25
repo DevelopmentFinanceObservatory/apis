@@ -74,7 +74,7 @@ def _role_bound_region(
         ref=_gr(recipient_dcid),
         role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
     )
-    facts = (RoleAxisFactInput(role="origin", member_dcids=origin_dcids),)
+    facts = (RoleAxisFactInput(role="origin", member_dcids=origin_dcids, party_dcids=origin_dcids),)
     spec = build_spec(
         open_roles=(),
         measure_elected_properties=frozenset(),
@@ -125,7 +125,9 @@ def test_a_merged_answer_unions_each_members_own_known_origin_population(options
     assert facts == [RoleAxisFact(role="origin", member_count=3, members_available=True)]
     assert merged.role_axis_facts == (
         RoleAxisFactInput(
-            role="origin", member_dcids=frozenset({"country/FRA", "country/DEU", "country/JPN"})
+            role="origin",
+            member_dcids=frozenset({"country/FRA", "country/DEU", "country/JPN"}),
+            party_dcids=frozenset({"country/FRA", "country/DEU", "country/JPN"}),
         ),
     )
 

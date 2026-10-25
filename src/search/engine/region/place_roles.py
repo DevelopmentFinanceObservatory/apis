@@ -101,12 +101,13 @@ class PlaceAssignment:
     # The flow axes the request asks every member of that no set fills. A subject-only
     # shape leaves it empty.
     open_axes: frozenset[RoleAxis] = frozenset()
-    # Each directed text a subject-only shape reads as its subject, in query order: the
-    # text, the axis it drops, and the place key of the set the text names.
+    # Each directed name a subject-only shape reads as its subject, in query order: the
+    # text it names a place of (`ResolveState.entity_texts`), the axis it drops, and the
+    # place key of the set the name names.
     discarded_directions: tuple[tuple[str, RoleAxis, str], ...] = ()
-    # The texts in `discarded_directions` whose direction the request's words did not state
-    # (`DoorRole.stated`), so the extractor inferred it.
-    inferred_directions: frozenset[str] = frozenset()
+    # The text and axis of each entry of `discarded_directions` whose direction the
+    # request's words did not state (`DoorRole.stated`), so the extractor inferred it.
+    inferred_directions: frozenset[tuple[str, RoleAxis]] = frozenset()
     # The side the shape reads as its whole population, whose parties' sets fill its role in
     # `sets` (`whole_total_candidates`), `None` when it reads none.
     whole: WholeReading | None = None
@@ -154,12 +155,12 @@ class PlaceRoles:
     where_dcids: list[str]
     # The single place an observation probe falls back to.
     obs_destination_dcid: str | None
-    # Directed query names a subject-only shape reads as its subject, with the dropped
-    # axis, in place order, each name at its first place.
+    # The texts of the directed query names a subject-only shape reads as its subject, with
+    # the dropped axis, in place order, each at its first place.
     discarded_directions: tuple[tuple[str, RoleAxis], ...] = ()
-    # The names in `discarded_directions` whose direction the request's words did not state
-    # (`DoorRole.stated`), so the extractor inferred it.
-    inferred_directions: frozenset[str] = frozenset()
+    # The entries of `discarded_directions` whose direction the request's words did not
+    # state (`DoorRole.stated`), so the extractor inferred it.
+    inferred_directions: frozenset[tuple[str, RoleAxis]] = frozenset()
     # The flow axes the request asks every member of that no place binds, until the
     # members are elected, and then those of them the elected members declare
     # (`PlaceContext.settled`). The role keys read them (`bound_values.entity_role_keys`),
@@ -274,7 +275,7 @@ def undirected_place_name(state: ResolveState) -> str | None:
         if name in state.place_sets and state.entity_roles.get(name)
     }
     undirected = [key for key in named if key not in directed]
-    return named[undirected[0]].name if len(undirected) == 1 else None
+    return set_text(state, named[undirected[0]]) if len(undirected) == 1 else None
 
 
 def subject_shapes_refused(state: ResolveState) -> bool:
@@ -473,15 +474,18 @@ def first_spellings(names: Iterable[str], place_sets: Mapping[str, PlaceSet]) ->
     return spelled
 
 
-def place_texts(names: Iterable[str], place_sets: Mapping[str, PlaceSet]) -> dict[str, str]:
+def place_texts(
+    names: Iterable[str], place_sets: Mapping[str, PlaceSet], texts: Mapping[str, str]
+) -> dict[str, str]:
     """The request's text for each place a set named in `names` holds, at its first
-    spelling (`first_spellings`): a set's own name for its node, and the resolver's name
-    for a group's member. A place has one text whichever Spec binds it."""
+    spelling (`first_spellings`): the text of a set's name for its node (`texts`,
+    `ResolveState.entity_texts`), and the resolver's name for a group's member. A place
+    has one text whichever Spec binds it."""
     return {
         dcid: (
             place_sets[name].member_names.get(dcid, dcid)
             if place_sets[name].kind == "group"
-            else name
+            else texts[name]
         )
         for dcid, name in first_spellings(names, place_sets).items()
     }
@@ -503,8 +507,8 @@ def part_sets(state: ResolveState) -> dict[str, PlaceSet]:
     place, in whatever order they come. It expands when any text's set does: it takes that
     set's kind, members and graph label, so a group's node pinned by dcid beside the
     group's name is the group. Its reading is the members when any text asked for them. Its
-    name is the first text that is not a pinned dcid's key, else the graph's label for the
-    node, else the first text: a pin's key names the node for the caller and no more.
+    name is the first of its names that is not a pinned dcid's key, else the first, and
+    `set_text` gives the request's words for it.
     """
     texts: dict[str, list[PlaceSet]] = {}
     for name in state.entities:
@@ -516,16 +520,26 @@ def part_sets(state: ResolveState) -> dict[str, PlaceSet]:
         # The first text's set that expands, else the first text's.
         whole = next((place_set for place_set in named if place_set.expands), named[0])
         asked = any(place_set.reading == "members" for place_set in named)
-        first = named[0].name
         sets[key] = dataclasses.replace(
             whole,
-            name=next(
-                (s.name for s in named if _pin_label(state, s.name) is None),
-                whole.label or _pin_label(state, first) or first,
-            ),
+            name=next((s.name for s in named if _pin_label(state, s.name) is None), named[0].name),
             reading="members" if asked else whole.reading,
         )
     return sets
+
+
+def set_text(state: ResolveState, place_set: PlaceSet) -> str:
+    """The request's words for `place_set`. A set of `part_sets` reads as the text its name
+    names a place of (`ResolveState.entity_texts`), or, when every name of it is a pinned
+    dcid's key, as the graph's label for the node, since a pin's key names the node for the
+    caller and no more. A party's or whole total's set, which no name of the part keys
+    (`ResolveState.party_sets`, `ResolveState.whole_sets`), is named by the code index's
+    label for it, which is words."""
+    if place_set.name not in state.place_sets:
+        return place_set.name
+    if (pinned := _pin_label(state, place_set.name)) is not None:
+        return place_set.label or pinned
+    return state.entity_texts[place_set.name]
 
 
 def _pin_label(state: ResolveState, name: str) -> str | None:
@@ -1084,15 +1098,17 @@ def assign_named_places(
     subject = tuple(named.values())
     sets = {"observationAbout": subject} if subject else {}
     discarded: list[tuple[str, RoleAxis, str]] = []
-    inferred: set[str] = set()
+    inferred: set[tuple[str, RoleAxis]] = set()
     for name in dict.fromkeys(state.entities):
         if name not in place_sets or not state.entity_roles.get(name):
             continue
-        # Use the first axis when a name occurs at both flow ends.
+        # Use the first axis when a name occurs at both flow ends. A text the door named
+        # apart reads once per axis, in its own words.
         first = state.entity_roles[name][0]
-        discarded.append((name, first.axis, place_key(place_sets[name])))
+        text = state.entity_texts[name]
+        discarded.append((text, first.axis, place_key(place_sets[name])))
         if not first.stated:
-            inferred.add(name)
+            inferred.add((text, first.axis))
     return PlaceAssignment(
         sets=sets,
         members_asked=_members_asked(state, sets, named),
@@ -1469,13 +1485,13 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
     `build_spec` names a role by one of these when the role binds exactly its members or its
     total (`PlaceSet.total`). A group with its own graph node takes that node's type and the
     graph's label for it. One without, or one the graph gives no label, keeps the query's
-    name, and one without names its registry id (`PlaceSet.group_id`). Each states the
+    words (`set_text`), and one without names its registry id (`PlaceSet.group_id`). Each states the
     members the query also named as places of their own, on the role `roles`, one Spec's
     binding, puts each of those places on (`PlaceRoles.named_alone`).
     """
     return tuple(
         NamedGroup(
-            label=place_set.name if place_set.label is None else place_set.label,
+            label=set_text(state, place_set) if place_set.label is None else place_set.label,
             dcid=None if place_set.node is None else place_set.node.dcid,
             entity_type=None if place_set.node is None else place_set.node.graph_type,
             member_dcids=frozenset(place_set.members),
@@ -1493,8 +1509,9 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
 def group_request_names(state: ResolveState) -> dict[str, str]:
     """The query's name for each group `request_named_groups` labels otherwise, keyed by that
     label ("EU" for "European Union"), so a departure asks for the group in the request's
-    words (`RegionResult.entity_words`). A label the request posts as a text of its own is
-    left out, so no text of the request is read as another of its texts. A whole population
+    words (`RegionResult.entity_words`). A label the request posts as a text of its own,
+    and that of a set named only by pins (`set_text`), are left out, so no text of the
+    request is read as another of its texts. A whole population
     the query names ("all donors", `ResolveState.whole_named`) is keyed by the label the side
     reading it carries (`whole_totals.named_whole_label`)."""
     groups = {
@@ -1502,8 +1519,8 @@ def group_request_names(state: ResolveState) -> dict[str, str]:
         for place_set in part_sets(state).values()
         if place_set.members
         and place_set.label is not None
-        and place_set.label != place_set.name
-        and place_set.label not in state.entities
+        and place_set.label != set_text(state, place_set)
+        and place_set.label not in state.entity_texts.values()
     }
     wholes = {
         label: text
@@ -1511,6 +1528,21 @@ def group_request_names(state: ResolveState) -> dict[str, str]:
         if (label := named_whole_label(dcids)) is not None
     }
     return {**groups, **wholes}
+
+
+def single_node_dcids(state: ResolveState) -> dict[str, str]:
+    """The node each entity name of the part resolved to alone, in query order: a set with
+    a node that is neither a group nor read as its members. A group, a set read as its
+    members, and an ambiguous or unresolved name are left out, since re-resolving such a
+    text keeps its members or its candidates."""
+    return {
+        name: place_set.node.dcid
+        for name in dict.fromkeys(state.entities)
+        if (place_set := state.place_sets.get(name)) is not None
+        and place_set.kind != "group"
+        and place_set.reading != "members"
+        and place_set.node is not None
+    }
 
 
 def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
@@ -1522,9 +1554,14 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     as its members states its own ref first, so a client matches the set it named: its
     node, else its total, else its registry id (`PlaceSet.group_id`). A text naming a whole
     population ("all donors", `ResolveState.whole_named`) binds the parties it names that
-    the binding holds. A text with neither, ambiguous or unresolved, is left out, as is
-    every text before the part's places are bound.
+    the binding holds. A text with neither, ambiguous or unresolved, is left out.
+
+    A part refused before a shape's places are installed (`ResolveState.places_bound`),
+    whether before election or after it, states the node each text names alone
+    (`single_node_dcids`).
     """
+    if not state.places_bound:
+        return {text: (dcid,) for text, dcid in single_node_dcids(state).items()}
     bound = {dcid for dcid, _role in state.place.roles.roles}
     refs: dict[str, tuple[str, ...]] = {}
     for text, place_set in state.place_sets.items():

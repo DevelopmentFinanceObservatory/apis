@@ -115,6 +115,7 @@ def test_run_variables_streaming_use_semaphore_without_a_scope_raises():
             async for _ev in _run_variables_streaming(
                 ["v0", "v1"],
                 entities=[],
+                entity_texts={},
                 date_request=None,
                 query="",
                 pac=False,
@@ -152,6 +153,7 @@ def test_scoped_concurrency_lets_the_same_call_succeed():
             async for _ev in _run_variables_streaming(
                 ["v0", "v1"],
                 entities=[],
+                entity_texts={},
                 date_request=None,
                 query="",
                 pac=False,

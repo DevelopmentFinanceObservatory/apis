@@ -1494,6 +1494,7 @@ def test_n2_fanout_broadcasts_query_text_none_to_every_leg():
             async for _ev in _run_variables_streaming(
                 ["v0", "v1"],
                 entities=[],
+                entity_texts={},
                 date_request=None,
                 query="a raw query naming two variables",
                 pac=False,

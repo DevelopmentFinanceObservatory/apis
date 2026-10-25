@@ -13,13 +13,16 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
+from starlette.testclient import TestClient
 
 from code_index import shared as code_index_shared
 from dfo_platform import trace as _trace_mod
 from search.engine.region import related_read
 from search.engine.retrieval import bound_values
 from tests import fixtures
+from tests.engine._invented_names import assert_no_invented_names
 from tests.engine._request_log import checked_requests
 from tests.fixtures import PINNED_DATE
 
@@ -38,6 +41,28 @@ def _pin_extract_date():
         # Keep date(year, month, day) construction backed by the real class.
         mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
         yield
+
+
+# The response bodies `_no_invented_names_on_the_wire` reads: JSON, SSE and other text.
+def _reads_as_text(response: httpx.Response) -> bool:
+    content_type = response.headers.get("content-type", "")
+    return "json" in content_type or content_type.startswith("text/")
+
+
+@pytest.fixture(autouse=True)
+def _no_invented_names_on_the_wire(monkeypatch: pytest.MonkeyPatch):
+    """Fail a test whose app response, JSON or streamed SSE, holds a place name a door
+    invented (`door_names.NAME_SEPARATOR`). The offline harness checks the responses and
+    events it runs alike (`_harness.offline_resolve`, `_harness.offline_events`)."""
+    send = TestClient.request
+
+    def checked(self: TestClient, method: str, url: httpx.URL | str, **kwargs: Any):
+        response = send(self, method, url, **kwargs)
+        if _reads_as_text(response):
+            assert_no_invented_names(response.text, where=f"{method} {url} response")
+        return response
+
+    monkeypatch.setattr(TestClient, "request", checked)
 
 
 @pytest.fixture(autouse=True)

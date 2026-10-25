@@ -21,6 +21,7 @@ from materialise.errors import MaterialisationError
 from materialise.facets import FacetSelection
 from materialise.member_conversion import decide_member_conversion
 from materialise.recipes import RecipeNotDeclaredError
+from search.engine.door_names import own_texts
 from search.engine.region import candidate_grounding
 from search.engine.region.candidate_grounding import _prepare_candidate_context
 from search.engine.region.candidates import _Candidate
@@ -125,6 +126,7 @@ def _resolve_state(shape: ShapeDraft, unit_request: IdentityUnitRequest) -> Reso
         variable="debt",
         # One undirected place, which binds to the twin shape's one required role.
         entities=["Kenya"],
+        entity_texts=own_texts(["Kenya"]),
         place_sets=place_sets({"Kenya": _DESTINATION}),
         date_request=None,
         detect_query="debt",

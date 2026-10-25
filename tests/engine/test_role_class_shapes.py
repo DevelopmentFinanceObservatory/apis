@@ -31,6 +31,7 @@ from search.engine import core as search_core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder
 from search.engine.departures import warning_key
+from search.engine.door_names import own_texts
 from search.engine.entry.parsed import _open_axes_for_part
 from search.engine.errors import EngineInputError, FamilyNotResolvableError, RoleSignatureError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming, _success_directional
@@ -1153,6 +1154,7 @@ def _run_leg(
         async for _event in _run_variables_streaming(
             [query],
             entities=["Kenya"],
+            entity_texts=own_texts(["Kenya"]),
             date_request=None,
             query=query,
             pac=True,

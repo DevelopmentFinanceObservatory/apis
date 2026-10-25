@@ -19,6 +19,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.departures import warning_key
+from search.engine.door_names import own_texts
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.reading_coverage import ObservedYears
 from search.engine.region.alternate_guard import leaves_price_basis_unread
@@ -115,6 +116,7 @@ def _state(
     return ResolveState(
         variable=variable,
         entities=["Kenya"],
+        entity_texts=own_texts(["Kenya"]),
         date_request=None,
         detect_query=variable,
         role_query=variable,

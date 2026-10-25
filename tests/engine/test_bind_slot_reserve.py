@@ -12,6 +12,7 @@ from entity_resolution import Admission, EntityResolver
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
+from search.engine.door_names import own_texts
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
@@ -42,6 +43,7 @@ def _state(shapes_found: list[ShapeDraft]) -> ResolveState:
     return ResolveState(
         variable="aid to Kenya",
         entities=["Kenya"],
+        entity_texts=own_texts(["Kenya"]),
         date_request=None,
         detect_query="aid to Kenya",
         role_query="aid to Kenya",

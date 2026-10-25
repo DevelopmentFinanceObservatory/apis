@@ -165,6 +165,7 @@ def _completed(variable: str, *, date_request: DateRequest | None = None) -> Fra
         door="parsed",
         variable=variable,
         entities=[],
+        entity_texts={},
         entity_roles={},
         member_entities=frozenset(),
         pins={},
@@ -183,6 +184,8 @@ def _completed(variable: str, *, date_request: DateRequest | None = None) -> Fra
         requirement=quantity_requirement([variable]),
         measure_class=None,
         place_sets={},
+        names=[],
+        entity_texts={},
         role_bearing=False,
         slot_defaults=(),
     )

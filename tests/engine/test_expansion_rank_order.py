@@ -14,6 +14,7 @@ from origin_catalogue import BASE, UN_SYSTEM
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
+from search.engine.door_names import own_texts
 from search.engine.events import Event, FrameEvent
 from search.engine.interpret import Recall
 from search.engine.interpretation import Interpretation
@@ -244,6 +245,7 @@ def _state(
     return ResolveState(
         variable=variable,
         entities=["Kenya"],
+        entity_texts=own_texts(["Kenya"]),
         date_request=None,
         detect_query=variable,
         role_query=variable,
@@ -985,6 +987,7 @@ def _run_prune_over(shapes_found: list[ShapeDraft], *, variable: str) -> list[Sh
     state = ResolveState(
         variable=variable,
         entities=["Ethiopia"],
+        entity_texts=own_texts(["Ethiopia"]),
         date_request=None,
         detect_query=variable,
         role_query=variable,

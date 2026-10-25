@@ -694,6 +694,11 @@ class ResolveState:
     # The query words naming an entity, which recall resolves it through
     # (`surface_resolution.resolve_names`). The raw-text door alone supplies them.
     entity_surfaces: dict[str, str] = field(default_factory=dict)
+    # The text each name of `entities` names a place of (`door_names.DoorNames.texts`). Recall
+    # resolves a name, and the answer labels its place, by its text, so an invented name
+    # reaches no resolver and no label. Every read is strict: a name missing here raises
+    # `KeyError`. A state naming no place may leave it empty.
+    entity_texts: dict[str, str] = field(default_factory=dict)
     variable_index: int
     emit: EventSink | None
     include_option_coverage: bool
@@ -1064,6 +1069,10 @@ class ResolveState:
     # (`UnsettledPlace.unread`); once the elected result stands it is the context the
     # answer is read over (`PlaceContext.settled`).
     place: PlaceContext = field(default_factory=empty_place_context)
+    # Whether a shape's places are installed in `place` (`_install_shape`). A part refused
+    # before then binds none of its places, whether or not a shape is elected
+    # (`place_roles.bound_entity_refs`).
+    places_bound: bool = False
     # The elected shape's places before its place sets settle. Materialisation settles
     # them on the shape's own read (`place_context.settle_sets`).
     unsettled_place: UnsettledPlace | None = None
@@ -1226,6 +1235,7 @@ class ResolveState:
             variable=self.variable,
             entities=self.entities,
             entity_roles=self.entity_roles,
+            entity_texts=self.entity_texts,
             member_entities=self.member_entities,
             pins={
                 name: resolution.entity.dcid
@@ -1279,7 +1289,7 @@ class ResolveState:
         """The request's text for each place its sets hold (`place_roles.place_texts`),
         so the elected Spec and an alternate label a place alike. Grounding uses it for
         display, while identity remains keyed by dcid."""
-        return place_texts(self.entities, self.place_sets)
+        return place_texts(self.entities, self.place_sets, self.entity_texts)
 
     @property
     def entity_label_text_by_dcid(self) -> dict[str, str]:

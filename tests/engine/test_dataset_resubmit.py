@@ -765,10 +765,10 @@ def test_parsed_entry_resolves_through_the_shared_per_part_pipeline():
             [
                 ResubmitParsedEntry(
                     part=ParsedPart(
-                        variable_text="aid from Congo to Congo",
+                        variable_text="aid from Congo",
                         entities=[
                             ParsedEntity(text="Congo", role_text="from", dcid="country/COD"),
-                            ParsedEntity(text="Congo", role_text="to", dcid="country/COG"),
+                            ParsedEntity(text="Congo", role_text="donor", dcid="country/COG"),
                         ],
                     )
                 )
@@ -782,10 +782,10 @@ def test_parsed_entry_resolves_through_the_shared_per_part_pipeline():
             [
                 ResubmitParsedEntry(
                     part=ParsedPart(
-                        variable_text="aid from Congo to Congo",
+                        variable_text="aid from Congo",
                         entities=[
                             ParsedEntity(text="Congo", role_text="from", members=True),
-                            ParsedEntity(text="Congo", role_text="to"),
+                            ParsedEntity(text="Congo", role_text="donor"),
                         ],
                     )
                 )

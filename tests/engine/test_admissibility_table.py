@@ -25,6 +25,7 @@ from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _Universa
 from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.door_names import own_texts
 from search.engine.extract import DateRequest
 from search.engine.interpretation import Interpretation, InterpretationSet
 from search.engine.qualifier_match import QualifierMatch, QualifierReadings
@@ -2615,6 +2616,7 @@ def _part(
     state = ResolveState(
         variable=variable,
         entities=list(places),
+        entity_texts=own_texts(list(places)),
         date_request=None,
         detect_query=variable,
         role_query=variable,

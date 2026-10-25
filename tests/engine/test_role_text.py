@@ -293,6 +293,17 @@ _COMPARISONS = [
 ]
 
 
+# One place a possessive names over its own debt.
+_ONE_POSSESSIVE_OVER_ITS_DEBT = [
+    ("Which countries does Kenya's gross debt service go to, total", "gross debt service"),
+    ("Kenya's debt by creditor", "debt"),
+    ("Kenya\u2019s debt by creditor", "debt"),
+    ("Kenya's GDP and debt", "debt"),
+    ("Kenya's external debt", "external debt"),
+    ("Kenya's government debt", "government debt"),
+]
+
+
 class TestDebtAxes:
     """A two-party debt relation puts the creditor on origin and the debtor on destination."""
 
@@ -501,6 +512,7 @@ class TestDebtAxes:
             ("aid owed to Kenya by Norway", ["aid"], ("Kenya", "Norway")),
             ("total population India", ["total population"], ("India",)),
             ("Norway's aid to Kenya", ["aid"], ("Norway", "Kenya")),
+            ("Germany's aid to Kenya", ["aid"], ("Germany", "Kenya")),
             ("China's debt relief to Kenya", ["debt relief"], ("China", "Kenya")),
             ("France's debt forgiveness to Haiti", ["debt forgiveness"], ("France", "Haiti")),
             (
@@ -508,11 +520,20 @@ class TestDebtAxes:
                 ["concessional loans"],
                 ("Sri Lanka", "Japan"),
             ),
-            # Other than two places.
-            ("Kenya's GDP and debt", ["debt"], ("Kenya",)),
+            # One place that no possessive names over its own debt, or whose debt is
+            # measured against a quantity.
             ("Kenya's debt to GDP ratio", ["debt to GDP ratio"], ("Kenya",)),
             ("refugees owing to Syria", ["refugees"], ("Syria",)),
             ("aid owed to Kenya", ["aid"], ("Kenya",)),
+            ("Germany's aid", ["aid"], ("Germany",)),
+            ("debt owed to China", ["debt"], ("China",)),
+            ("external debt of Kenya", ["external debt"], ("Kenya",)),
+            ("Kenya's share of external debt", ["external debt"], ("Kenya",)),
+            ("China's debt claims", ["debt claims"], ("China",)),
+            ("China's debt holdings", ["debt holdings"], ("China",)),
+            ("China's debt portfolio", ["debt portfolio"], ("China",)),
+            ("China's lending to Africa", ["lending"], ("China",)),
+            # More than two places.
             ("Kenya's debt to China and India", ["debt"], ("Kenya", "China", "India")),
             # No cue on either place.
             ("external debt of Kenya and Uganda", ["external debt"], ("Kenya", "Uganda")),
@@ -539,6 +560,25 @@ class TestDebtAxes:
             dict.fromkeys(places, directed_axis) if directed_axis is not None else {}
         )
         axes = debt_axes(query, measures=measures, places=_places(*places), directed=directed)
+        assert axes == {}
+
+    @pytest.mark.parametrize(("query", "measure"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
+    @pytest.mark.parametrize("guessed", ["origin", "destination"])
+    def test_one_directed_possessive_over_its_own_debt_is_the_debtor(
+        self, query: str, measure: str, guessed: RoleAxis
+    ) -> None:
+        """One place the extraction directed is read by its possessive alone, whichever
+        axis the extraction guessed."""
+        axes = debt_axes(
+            query, measures=[measure], places=_places("Kenya"), directed={"Kenya": guessed}
+        )
+        assert axes == {"Kenya": "destination"}
+
+    @pytest.mark.parametrize(("query", "measure"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
+    def test_one_undirected_possessive_sets_no_axis(self, query: str, measure: str) -> None:
+        """One place the extraction left undirected keeps no axis, so a subject-only series
+        drops no direction for it."""
+        axes = debt_axes(query, measures=[measure], places=_places("Kenya"), directed={})
         assert axes == {}
 
     @pytest.mark.parametrize(

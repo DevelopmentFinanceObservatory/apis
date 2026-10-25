@@ -111,7 +111,7 @@ class PlaceContext:
                 self.roles.discarded_directions,
                 strict=True,
             )
-            if name not in self.roles.inferred_directions
+            if (name, axis) not in self.roles.inferred_directions
         }
 
     def presence_for(self, presence: DefaultPresence | None) -> DefaultPresence | None:
