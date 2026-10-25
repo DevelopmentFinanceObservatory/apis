@@ -12,6 +12,7 @@ from search.engine.assemble import OBSERVATIONS_OMITTED
 from search.engine.conjoin import BINDING_FOLDED, NESTED_SHAPE_STEPS
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction
 from search.engine.quantity_read import QuantityOutput
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     CandidatesPart,
     DatasetResubmitInput,
@@ -32,7 +33,7 @@ from tests.engine._harness import (
     offline_resolve,
     parse_sse,
 )
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine._search_app import search_app
 from tests.engine.test_availability import TestMemberProbeRunsNearestReal
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
@@ -164,6 +165,8 @@ class _FixedShapeBindLLM:
             return elected_reply(0, also_plausible=None), None
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         return await self._fake.generate_structured(prompt=prompt, system=system, schema=schema)
 
 

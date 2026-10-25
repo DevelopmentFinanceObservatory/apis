@@ -30,6 +30,7 @@ from search.engine.region.codes import (
     OBSERVATIONS_TIMED_OUT,
 )
 from search.engine.region.state import EngineOptions
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import IdentityUnitRequest
 from search.observations import OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -50,7 +51,7 @@ from tests.engine._harness import (
     materialise_double_from_obs,
     preview_and_plan,
 )
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
@@ -146,6 +147,8 @@ def _set_bind_llm() -> object:
         async def generate_structured(self, *, prompt, system, schema):
             if schema is QuantityOutput:
                 return NO_QUANTITY
+            if schema is StatedWordsOutput:
+                return NO_RATING
             assert schema.__name__ == "_UniversalBindOutput"
             return elected_reply(
                 0,
@@ -398,6 +401,8 @@ class _SetPlusAltBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(
             0,
