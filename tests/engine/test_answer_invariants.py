@@ -62,8 +62,8 @@ from search.engine.departures import spec_departure_facts
 from search.engine.region.result import RegionResult
 from search.models import IdentityBindingValue, Spec
 from tests._covering_array import Grid, uncovered
+from tests.engine import _answer_invariants_record, _grid_cells
 from tests.engine import _answer_invariants_world as fixture_world
-from tests.engine import _grid_cells
 from tests.engine._answer_invariants_world import (
     ALAND,
     ALT,
@@ -1321,10 +1321,12 @@ def _measurements(path: Path) -> dict[str, Any]:
 
 
 def _measurement(path: Path, cell: Cell, door: str, index: int) -> dict[str, Any] | None:
-    """The measurement `path` holds for one door of `cell`, None when it holds none."""
+    """The measurement `path` holds for one door of `cell`, None when it holds none. A
+    door's list holds None at each position the file does not hold."""
     held = _measurements(path)
     indices = held["doors"].get(str(cell), {}).get(_DOOR_KEYS[door], ())
-    return held["records"][indices[index]] if index < len(indices) else None
+    record = indices[index] if index < len(indices) else None
+    return held["records"][record] if record is not None else None
 
 
 def _same_answer(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -1409,6 +1411,13 @@ def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> d
         max(0, limit["requests"].get(_BULK_READ, 0) - now["requests"].get(_BULK_READ, 0)),
     )
     return {_PAIR_READ: count} if count else {}
+
+
+def _held_grants(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
+    """The reads a door may make beyond a recorded door with its answer: batched reads in
+    place of per-node reads (`_batched_type_read`) and pair reads in place of bulk reads
+    (`_pair_read_in_place_of_bulk`)."""
+    return _batched_type_read(now, limit) | _pair_read_in_place_of_bulk(now, limit)
 
 
 def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
@@ -1497,7 +1506,8 @@ def i9_latency(run: Doors) -> list[str]:
       measured there.
     - For a door c669cc874 answered differently or not at all, the measurement recorded for
       it on this branch in `answer_invariants_requests_uncompared.json`, under the same
-      condition. That file holds the preview-off doors with no comparable door at c669cc874.
+      condition. That file holds the covering array's doors with neither a comparable door
+      at c669cc874 nor a preview-off door with their outcome.
       A re-recording may lower an entry and never raise one. `_answer_invariants_record`
       regenerates both files and refuses a list that grows.
 
@@ -1551,8 +1561,7 @@ def i9_latency(run: Doors) -> list[str]:
         for path, source in ((_BASE_PATH, "at c669cc874"), (_BRANCH_PATH, "as recorded")):
             limit = _measurement(path, cell, door, index)
             if limit is not None and _same_answer(limit, now):
-                granted = _batched_type_read(now, limit)
-                granted |= _pair_read_in_place_of_bulk(now, limit)
+                granted = _held_grants(now, limit)
                 if path == _BASE_PATH:
                     granted |= _rate_table_reads(now)
                 found += [
@@ -1911,6 +1920,28 @@ def test_i9_checks_exactly_the_committed_cells() -> None:
     for cell in every:
         expected = set(CHECKS) - (set() if str(cell) in committed else {"I9"})
         assert set(checks_for(cell)) == expected, cell
+    assert set(_measurements(_BRANCH_PATH)["doors"]) <= committed
+
+
+def test_the_recorder_lists_only_committed_doors_at_their_positions(tmp_path: Path) -> None:
+    """`_answer_invariants_record` lists the doors of the committed cells alone, and a door
+    whose earlier position is bounded keeps its own position in the written list."""
+    committed, other = sorted(_grid_cells.ANSWER_INVARIANTS)[:2]
+    same = {"outcome": ["definite", None, None, None], "served": [], "requests": {}, "depth": 1}
+    changed = {**same, "served": [[1, 3, None]]}
+    base = {(committed, "resubmit", 0): same, (committed, "resubmit", 1): same}
+    branch = {
+        (committed, "resubmit", 0): same,
+        (committed, "resubmit", 1): changed,
+        (other, "resubmit", 0): changed,
+    }
+    listed = _answer_invariants_record.uncompared(base, branch, cells=frozenset({committed}))
+    assert listed == {(committed, "resubmit", 1): changed}
+    path = tmp_path / "uncompared.json"
+    path.write_text(_answer_invariants_record._dump(listed))
+    cell = next(cell for _row, cell in GRID.cells() if str(cell) == committed)
+    assert _measurement(path, cell, RESUBMIT, 0) is None
+    assert _measurement(path, cell, RESUBMIT, 1) == changed
 
 
 def test_the_committed_cells_cover_every_four_values_a_request_can_form() -> None:

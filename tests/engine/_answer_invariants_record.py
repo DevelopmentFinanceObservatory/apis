@@ -8,11 +8,12 @@ of the grid measured at commit c669cc874 (`test_answer_invariants.measured`). It
 regenerated only from a copy of that tree, and only when the grid or the recorder changes.
 
 `tests/fixtures/answer_invariants_requests_uncompared.json` is recorded from the current
-tree: the doors that no door at c669cc874 with the same answer bounds and that have no
-preview-off door with the same outcome to bound them. It may only shrink. `write` refuses a
-list that adds a door, changes a door's answer or raises a door's requests or depth, unless
-`--grow` names the reason. A pull request that changes a door's answer on purpose fails I9
-and re-records the list in that pull request.
+tree: the covering array's doors that no door at c669cc874 with the same answer bounds and
+that have no preview-off door with the same outcome to bound them. A door's list holds null
+at a position the file does not hold. The list may only shrink: `write` refuses a list that
+adds a door, changes a door's answer or lets a door request more or run deeper than
+`i9_latency` allows its held record, unless `--grow` names the reason. A pull request that
+changes a door's answer on purpose fails I9 and re-records the list in that pull request.
 
 Each command runs from the root of the tree it measures, with `DFO_SPEC_KIT_DIR` set.
 
@@ -20,6 +21,8 @@ Measure the current tree, then rebuild the uncompared list against the base fixt
 
     uv run python -m tests.engine._answer_invariants_record measure /tmp/branch.jsonl
     uv run python -m tests.engine._answer_invariants_record write --branch /tmp/branch.jsonl
+
+On an unchanged tree the two commands leave the list as it is.
 
 Regenerate the base fixture as well. Make the copy with `git archive c669cc874 | tar -x -C
 <copy>`, sync its own environment there, copy `test_answer_invariants.py`,
@@ -31,7 +34,8 @@ and copy `tests/_covering_array.py` into its `tests/`:
         --base /tmp/base.jsonl --branch /tmp/branch.jsonl
 
 `measure` runs the grid's covering array (`DFO_FULL_GRIDS=0`) under pytest with this module as
-a plugin, which replaces the grid's checks with one that writes each door's measurement.
+a plugin, which replaces the grid's checks with one that writes each door's measurement, and
+each preview-off door `i9_latency` runs to bound a preview-on cell of the array.
 """
 
 from __future__ import annotations
@@ -41,7 +45,8 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +72,9 @@ type Doors = dict[DoorKey, dict[str, Any]]
 @pytest.fixture(autouse=True, scope="session")
 def _write_measurements() -> Iterator[None]:
     """Under `measure`, replace the grid's checks with one that writes every door's
-    measurement to this worker's file. Without `measure` the fixture does nothing."""
+    measurement to this worker's file, and for a preview-on cell its preview-off cell's
+    doors, which `i9_latency` runs to bound it, when the covering array does not hold that
+    cell. Without `measure` the fixture does nothing."""
     out = os.environ.get(_OUT_ENV)
     if out is None:
         yield
@@ -77,7 +84,7 @@ def _write_measurements() -> Iterator[None]:
     worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
     with open(f"{out}.{worker}", "w") as handle:
 
-        def record(run) -> list[str]:
+        def write_doors(run) -> None:
             positions: dict[str, int] = {}
             for door, answer in run.answers():
                 index = positions.setdefault(door, 0)
@@ -89,6 +96,12 @@ def _write_measurements() -> Iterator[None]:
                     **grid.measured(answer),
                 }
                 handle.write(json.dumps(row) + "\n")
+
+        def record(run) -> list[str]:
+            write_doors(run)
+            off = replace(run.cell, preview=False)
+            if run.cell.preview and str(off) not in grid._I9_CELLS:
+                write_doors(grid.doors(off))
             return []
 
         grid.CHECKS.clear()
@@ -137,23 +150,24 @@ def _held(path: Path) -> Doors:
         for cell, doors in data["doors"].items()
         for door, indices in doors.items()
         for position, index in enumerate(indices)
+        if index is not None
     }
 
 
 def _dump(doors: Doors) -> str:
     """`doors` as fixture text: each distinct record once, then each cell's doors as indices
-    into the records, one cell a line."""
+    into the records, one cell a line. A door's list holds null at each position `doors`
+    does not hold, so each index stands at its door's position."""
     records: list[str] = []
     index: dict[str, int] = {}
-    cells: dict[str, dict[str, list[int]]] = {}
+    cells: dict[str, dict[str, list[int | None]]] = {}
     for (cell, door, position), record in sorted(doors.items()):
         text = json.dumps(record, sort_keys=True)
         if text not in index:
             index[text] = len(records)
             records.append(text)
         held = cells.setdefault(cell, {}).setdefault(door, [])
-        if len(held) != position:
-            raise SystemExit(f"write: {cell} {door} skips position {len(held)}")
+        held += [None] * (position - len(held))
         held.append(index[text])
     lines = ["{", ' "records": [', ",\n".join("  " + r for r in records), " ],", ' "doors": {']
     lines.append(
@@ -163,16 +177,16 @@ def _dump(doors: Doors) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _same_answer(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
-    return a["outcome"] == b["outcome"] and a["served"] == b["served"]
+def uncompared(base: Doors, branch: Doors, *, cells: frozenset[str]) -> Doors:
+    """The branch doors of `cells` that `i9_latency` holds to neither a door at c669cc874
+    nor their own preview-off door."""
+    from tests.engine.test_answer_invariants import _same_answer
 
-
-def uncompared(base: Doors, branch: Doors) -> Doors:
-    """The branch doors `i9_latency` holds to neither a door at c669cc874 nor their own
-    preview-off door."""
     doors: Doors = {}
     for key, now in branch.items():
         cell, door, position = key
+        if cell not in cells:
+            continue
         at_base = base.get(key)
         if at_base is not None and _same_answer(at_base, now):
             continue
@@ -186,7 +200,10 @@ def uncompared(base: Doors, branch: Doors) -> Doors:
 
 def growth(held: Doors, now: Doors) -> list[str]:
     """Each way `now` grows on the list `held`: a door added, a door answering differently,
-    or a door requesting more or running deeper."""
+    or a door requesting more or running deeper than `i9_latency` allows its held record
+    (`_beyond` with `_held_grants`)."""
+    from tests.engine.test_answer_invariants import _beyond, _held_grants, _same_answer
+
     grown: list[str] = []
     for key, record in sorted(now.items()):
         name = f"{key[0]} {key[1]} {key[2]}"
@@ -196,24 +213,21 @@ def growth(held: Doors, now: Doors) -> list[str]:
         elif not _same_answer(old, record):
             grown.append(f"{name}: answers {record['outcome']} against {old['outcome']}")
         else:
-            over = {
-                request: f"{count} against {old['requests'].get(request, 0)}"
-                for request, count in record["requests"].items()
-                if count > old["requests"].get(request, 0)
-            }
-            if over:
-                grown.append(f"{name}: requests {over}")
-            if record["depth"] > old["depth"]:
-                grown.append(f"{name}: runs {record['depth']} steps against {old['depth']}")
+            granted = _held_grants(record, old)
+            grown += [f"{name}: {line}" for line in _beyond(record, old, "held", granted=granted)]
     return grown
 
 
 def write(*, base: Path | None, branch: Path, grow: str | None) -> None:
     """Write the uncompared list from `branch`, and the base fixture from `base` when given."""
+    # `search.engine.config` needs a graph base at import; `write` reads no graph.
+    os.environ.setdefault("SEARCH_GRAPH_BASE", "https://graph.offline.invalid")
+    from tests.engine.test_answer_invariants import _I9_CELLS
+
     base_doors = _measured(base) if base is not None else _held(_BASE_PATH)
     if not base_doors:
         raise SystemExit(f"write: {_BASE_PATH.name} is missing; pass --base")
-    listed = uncompared(base_doors, _measured(branch))
+    listed = uncompared(base_doors, _measured(branch), cells=_I9_CELLS)
     grown = growth(_held(_UNCOMPARED_PATH), listed) if _UNCOMPARED_PATH.exists() else []
     if grown and grow is None:
         shown = "\n  ".join(grown[:20])

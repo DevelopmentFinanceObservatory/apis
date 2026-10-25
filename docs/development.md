@@ -58,14 +58,14 @@ just check       # lint, type check, and the full suite, as CI runs them
 
 ### Invariant grids
 
-`tests/engine/test_answer_invariants.py` and `tests/engine/test_read_plan_grid.py` check the invariants of an answer and of its read plan on every cell of a grid of factors. `just check` and CI run a strength-4 covering array of the cells (`tests/engine/_grid_cells.py`). `.github/workflows/full-grids.yml` runs every cell (`DFO_FULL_GRIDS=1`, about 8,700 tests) against `dev` each night, and a failed nightly opens the issue "Nightly full grids: failing", or comments on it when it is open. The nightly checks every invariant on every cell except I9, which holds each door to the requests recorded for it in `tests/fixtures/answer_invariants_requests_c669cc874.json` and `tests/fixtures/answer_invariants_requests_uncompared.json`. I9 runs on the covering array's cells alone, and the bound covers those cells. A pull request that changes a door's answer on purpose fails I9 with "has no door to be held to", and re-records the bound in that pull request:
+`tests/engine/test_answer_invariants.py` and `tests/engine/test_read_plan_grid.py` check the invariants of an answer and of its read plan on every cell of a grid of factors. `just check` and CI run a strength-4 covering array of the cells (`tests/engine/_grid_cells.py`). `.github/workflows/full-grids.yml` runs every cell (`DFO_FULL_GRIDS=1`, about 8,700 tests) against `dev` each night, and a failed nightly opens the issue "Nightly full grids: failing", or comments on it when it is open. The nightly checks every invariant on every cell except I9, which holds each door to the requests recorded for it in `tests/fixtures/answer_invariants_requests_c669cc874.json` and `tests/fixtures/answer_invariants_requests_uncompared.json`. I9 runs on the covering array's cells alone, and the second file holds those cells' doors alone. A pull request that changes a door's answer on purpose fails I9 with "has no door to be held to", and re-records the bound in that pull request:
 
 ```bash
 uv run python -m tests.engine._answer_invariants_record measure <file>.jsonl
 uv run python -m tests.engine._answer_invariants_record write --branch <file>.jsonl --grow "<the answer that changed>"
 ```
 
-`measure` runs the covering array. `write` refuses a bound that grows unless `--grow` gives the reason.
+`measure` runs the covering array, and the preview-off cells I9 runs to bound its preview-on cells. `write` rebuilds `answer_invariants_requests_uncompared.json` and refuses to add a door, change a door's answer, or let a door request more or run deeper than I9 allows its held record, unless `--grow` gives the reason. On an unchanged tree `write` needs no `--grow` and leaves the file as it is.
 
 ### Changing what the clients read
 
