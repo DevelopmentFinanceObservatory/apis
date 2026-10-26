@@ -208,6 +208,37 @@ class TestRequestInputDiscrimination:
         )
         assert isinstance(req.input, ParsedInput)
 
+    def test_parsed_arm_carries_the_user_message_and_carried_entries(self):
+        carried = {
+            "axis": "provider",
+            "option_id": "provider:bilateral",
+            "provenance": "carried",
+            "origin": {"kind": "text", "text": "bilateral", "start": 0, "end": 9},
+        }
+        payload = {
+            "kind": "parsed",
+            "parts": [{"variable_text": "ODA"}],
+            "user_message": "bilateral ODA to Kenya",
+            "carried_entries": [carried],
+        }
+        req = ResolveRequest.model_validate({"input": payload})
+
+        assert isinstance(req.input, ParsedInput)
+        assert req.input.user_message == payload["user_message"]
+        entries = req.input.carried_entries or []
+        assert [e.model_dump(mode="json", exclude_none=True) for e in entries] == [carried]
+
+        explicit = {**carried, "provenance": "explicit"}
+        with pytest.raises(ValidationError, match="carried_entries"):
+            ResolveRequest.model_validate({"input": {**payload, "carried_entries": [explicit]}})
+        for message in ("", "x" * 4001):
+            with pytest.raises(ValidationError, match="user_message"):
+                ResolveRequest.model_validate({"input": {**payload, "user_message": message}})
+        ResolveRequest.model_validate({"input": {**payload, "user_message": "x" * 4000}})
+        ResolveRequest.model_validate({"input": {**payload, "carried_entries": [carried] * 16}})
+        with pytest.raises(ValidationError, match="carried_entries"):
+            ResolveRequest.model_validate({"input": {**payload, "carried_entries": [carried] * 17}})
+
     def test_dataset_resubmit_identity_arm(self):
         shape = {"kind": "statvar_schema", "population_type": "df-flow"}
         req = ResolveRequest.model_validate(

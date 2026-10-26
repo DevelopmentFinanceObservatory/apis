@@ -59,6 +59,7 @@ from search.engine.response_cache_keys import (
 )
 from search.engine.response_cache_memo import PartMemo
 from search.engine.role_text import DoorRole, contradicts, every_member_axis
+from search.engine.stated_scope import intake_key_document
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.engine.written_phrase import written_phrase
 from search.models import (
@@ -71,6 +72,7 @@ from search.models import (
     SourceMention,
     Warning,
 )
+from search.scope.state import ScopeIntake
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -399,6 +401,7 @@ class CacheScope:
         extraction_warnings: Sequence[Warning] = (),
         measure_qualifiers: Sequence[tuple[str, ...]] = (),
         open_axes: Sequence[frozenset[RoleAxis]] = (),
+        stated_scopes: Sequence[ScopeIntake] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
@@ -411,7 +414,8 @@ class CacheScope:
         `variables` and marks each one the raw query compares with another.
         `measure_qualifiers` runs parallel to `variables` and holds the words narrowing each
         one's measure. `open_axes` runs parallel to `variables` and holds the flow roles each
-        one asks one value per member of.
+        one asks one value per member of. `stated_scopes` runs parallel to `variables`
+        and holds the scope entries and total intent each one's words state.
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
         serves as stored. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
@@ -458,6 +462,7 @@ class CacheScope:
             extraction_warnings=extraction_warnings,
             measure_qualifiers=measure_qualifiers,
             open_axes=open_axes,
+            stated_scopes=[intake_key_document(intake) for intake in stated_scopes],
         )
         self._layer2_key = key
         value, self._layer2_lease = await self._acquire(key)

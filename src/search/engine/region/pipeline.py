@@ -97,6 +97,7 @@ from search.engine.source_scope import SourceScope
 from search.models import EntryPath, Operation, RoleAxis, Warning
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
+from search.scope.state import ScopeIntake
 from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
@@ -175,6 +176,7 @@ async def resolve_variable(
     coverage: CoverageSnapshot,
     options: EngineOptions | None = None,
     door: EntryPath = "parsed",
+    scope_intake: ScopeIntake | None = None,
 ) -> RegionResult:
     """Run recall, binding, materialisation, and answer assembly for one variable.
 
@@ -221,6 +223,8 @@ async def resolve_variable(
     `options` configures enrichment, streaming, clients, caches, and the deadline. `None` uses default `EngineOptions()` settings.
     `door` is the door the part was posted on, which decides who states each field of the
     part's frame (`ResolveState.frame`); a direct caller states them as the parsed door's does.
+    `scope_intake` is the part's posted scope entries and total intent, which every
+    resolution of the part starts its `ResolveState.scope_selection` from; None posts none.
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
     availability reads use `sdmx`. `llm` is stateless per call. `binder` reads the quantity
@@ -328,6 +332,7 @@ async def resolve_variable(
             # spec identity, fetch facet filter, and resolved unit request basis.
             bound_unit_outcome=None,
             unit_facet_filter=None,
+            scope_selection=(scope_intake or ScopeIntake()).state(),
         )
 
     async def attempt(
@@ -551,21 +556,24 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
 def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     built from the scope entries and axis records the pass's binders hold
-    (`ResolveState.scope_selection`) over the answer's identity. A result that is not
-    definite, or whose pass wrote no axis record, states none. In memory: the rules read the
-    bound release's code index and the request's coverage snapshot. Entries that cannot hold
-    together refuse 422 (`scope.build.refusal_error`)."""
+    (`ResolveState.scope_selection`) over the answer's identity. Only the entries that attach
+    to the part compile (`ScopeState.attached`): those on an axis a binder settled, for the
+    concept it was asked for. A result that is not definite, or whose pass wrote no axis
+    record, states none. In memory: the rules read the bound release's code index and the
+    request's coverage snapshot. Entries that cannot hold together refuse 422
+    (`scope.build.refusal_error`), at the request field the refused entry was posted in."""
     selection = state.scope_selection
     if result.status != "definite" or not selection.records:
         return result
+    attached = selection.attached()
     built = build_part_scope(
         base=result.spec.definition.identity,
-        entries=selection.entries,
+        entries=[entry for entry, _ in attached],
         records=selection.records,
         facts=ScopeFacts(index=get_index(), coverage=state.coverage),
     )
     if isinstance(built, Refusal):
-        raise refusal_error(built, pointer=None)
+        raise refusal_error(built, pointer=attached[built.entry][1])
     return dataclasses.replace(result, scope_choices=built)
 
 

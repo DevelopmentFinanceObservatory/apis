@@ -67,6 +67,7 @@ from search.models import (
     SourceMention,
     asked_open_axes,
 )
+from search.scope.state import ScopeIntake
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -461,6 +462,7 @@ async def _stream_one_variable(
     coverage: CoverageSnapshot,
     phase: LegPhase,
     door: EntryPath = "parsed",
+    scope_intake: ScopeIntake | None = None,
 ) -> None:
     """Run one variable leg, queue its events, then send one terminal marker.
 
@@ -492,7 +494,8 @@ async def _stream_one_variable(
     others (`RegionResult.separate`). The final region is appended to `landed` before
     its terminal marker is queued. `phase` records the step the leg is in
     (`search.engine.leg_phase`). `door` is the door the leg was posted on
-    (`resolve_variable`).
+    (`resolve_variable`). `scope_intake` is the leg's posted scope entries and total
+    intent (`resolve_variable`).
     """
     track_leg_phase(phase)
     v = _measure_words(v, source_scope, source_code)
@@ -544,6 +547,7 @@ async def _stream_one_variable(
             emit=emit,
             coverage=coverage,
             door=door,
+            scope_intake=scope_intake,
             options=EngineOptions(
                 deadline=deadline,
                 include_option_coverage=include_option_coverage,
@@ -681,6 +685,7 @@ class _LegOverrides:
     per_variable_open_axes: list[frozenset[RoleAxis]] | None
     per_variable_separate: list[bool] | None
     per_variable_dropped_qualifier_phrases: list[list[str]] | None
+    per_variable_scope_intakes: list[ScopeIntake] | None
     door: EntryPath
 
 
@@ -760,6 +765,14 @@ def _leg_open_axes(overrides: _LegOverrides, i: int) -> frozenset[RoleAxis]:
         overrides.per_variable_open_axes[i]
         if overrides.per_variable_open_axes is not None
         else frozenset()
+    )
+
+
+def _leg_scope_intake(overrides: _LegOverrides, i: int) -> ScopeIntake | None:
+    return (
+        overrides.per_variable_scope_intakes[i]
+        if overrides.per_variable_scope_intakes is not None
+        else None
     )
 
 
@@ -932,6 +945,7 @@ def _launch_variable_tasks(
                 coverage=coverage,
                 phase=phases[i],
                 door=overrides.door,
+                scope_intake=_leg_scope_intake(overrides, i),
             )
         )
         for i, v in enumerate(unique)
@@ -1019,6 +1033,7 @@ async def _run_variables_streaming(
     per_variable_separate: list[bool] | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
     per_variable_dropped_qualifier_phrases: list[list[str]] | None = None,
+    per_variable_scope_intakes: list[ScopeIntake] | None = None,
     query_text: str | None = None,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -1056,6 +1071,8 @@ async def _run_variables_streaming(
     are the entities every leg is asked the members of, and `per_variable_member_entities`
     gives each leg its own. `per_variable_entity_surfaces` and `per_variable_entity_words`
     give each leg its own `entity_surfaces` and `entity_words`.
+    `per_variable_scope_intakes` gives each leg its posted scope entries and total intent,
+    and `None` gives every leg none.
     `query_text` is supplied only for a single-variable request.
     `unit_text_best_effort` marks every leg's unit text as the raw-text door's typed phrase.
     `door` is the door every leg was posted on (`resolve_variable`).
@@ -1087,6 +1104,7 @@ async def _run_variables_streaming(
         per_variable_open_axes=per_variable_open_axes,
         per_variable_separate=per_variable_separate,
         per_variable_dropped_qualifier_phrases=per_variable_dropped_qualifier_phrases,
+        per_variable_scope_intakes=per_variable_scope_intakes,
         door=door,
     )
 

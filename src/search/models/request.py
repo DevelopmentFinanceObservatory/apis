@@ -78,6 +78,11 @@ _RESUBMIT_MAX_ASSUMPTIONS = 67
 # Four scope axes, each with one explicit entry and the carried entries of earlier parts:
 # a bound well past the four entries one part applies.
 _RESUBMIT_MAX_SCOPE_ENTRIES = 16
+# The choices a conversation carries: one per axis, and on the sector axis one per concept
+# asked for, the same bound a resubmitted part's scope entries hold.
+_PARSED_MAX_CARRIED_ENTRIES = 16
+# A user's message, which can quote a pasted answer beside the question.
+_PARSED_MAX_USER_MESSAGE_CHARS = 4000
 # Equal to config's max_dropped_qualifier_length, the length a dropped qualifier keeps;
 # extract discards an operation whose phrase is longer. A test pins the relation.
 _PARSED_MAX_OPERATION_PHRASE_CHARS = 200
@@ -540,6 +545,39 @@ class ParsedInput(StrictModel):
         max_length=_PARSED_MAX_RAW_QUERY_CHARS,
         description="original query text, for echo only; does not affect resolution",
     )
+    user_message: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=_PARSED_MAX_USER_MESSAGE_CHARS,
+        description=(
+            "the user's own message for the turn, as written. On a request of one part, "
+            "the scope words it states ('bilateral', 'excluding multilateral', 'net', "
+            "'gross', 'grant equivalent', 'commitments') become explicit scope entries and "
+            "'total' a total intent, read in place of the part's variable_text. A request "
+            "of several parts reads each part's own variable_text, so one part's words "
+            "never reach another. None reads the part's variable_text"
+        ),
+    )
+    carried_entries: list[Entry] | None = Field(
+        default=None,
+        max_length=_PARSED_MAX_CARRIED_ENTRIES,
+        description=(
+            "the scope entries earlier searches of the conversation settled, each with "
+            "provenance carried, from their resolved.scope_choices. Each attaches to the "
+            "parts that settle its axis, and an entry made for a concept only to a part "
+            "asking for that concept. An explicit entry on the same axis wins; a carried "
+            "entry a part cannot take is reported in that part's "
+            "resolved.scope_choices.dropped_entries. None carries none"
+        ),
+    )
+
+    @field_validator("carried_entries")
+    @classmethod
+    def _entries_carried(cls, entries: list[Entry] | None) -> list[Entry] | None:
+        for i, entry in enumerate(entries or ()):
+            if entry.provenance != "carried":
+                raise ValueError(f"carried_entries[{i}] has provenance {entry.provenance!r}")
+        return entries
 
 
 _ENTITY_GROUPS_DESCRIPTION = (

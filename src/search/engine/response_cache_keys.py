@@ -268,6 +268,7 @@ def layer2_key(
     extraction_warnings: Sequence[Warning] = (),
     measure_qualifiers: Sequence[tuple[str, ...]] = (),
     open_axes: Sequence[frozenset[str]] = (),
+    stated_scopes: Sequence[Mapping[str, object] | None] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -294,6 +295,11 @@ def layer2_key(
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
     positions and adds nothing when none is marked.
+    `stated_scopes` runs parallel to `variables` when given and holds the scope entries and
+    total intent each part's words state (`stated_scope.intake_key_document`), None for a
+    part whose words state none, so "ODA to Kenya" and "bilateral ODA to Kenya", or "net ODA
+    to Kenya", never share an entry whatever their extractions. The key states them and
+    adds nothing when no part states any.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -350,6 +356,8 @@ def layer2_key(
             for variable, axes in zip(variables, open_axes, strict=True)
             if axes
         }
+    if any(stated is not None for stated in stated_scopes):
+        document["stated_scopes"] = list(stated_scopes)
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):

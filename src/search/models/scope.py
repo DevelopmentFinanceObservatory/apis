@@ -35,12 +35,13 @@ YearSpan = tuple[int, int]
 
 
 class TextOrigin(StrictModel):
-    """The words of the user's message an explicit entry was read from."""
+    """The words an explicit entry was read from: the user's message on a request of one
+    part, or the part's own variable text on a request of several."""
 
     kind: Literal["text"] = "text"
     text: str = Field(min_length=1, max_length=256, description="the words, as written")
-    start: int = Field(ge=0, description="the offset of the first character in the message")
-    end: int = Field(ge=0, description="the offset past the last character in the message")
+    start: int = Field(ge=0, description="the offset of the first character in the text read")
+    end: int = Field(ge=0, description="the offset past the last character in the text read")
 
 
 class ChoiceOrigin(StrictModel):

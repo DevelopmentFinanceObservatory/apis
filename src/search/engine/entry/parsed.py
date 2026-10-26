@@ -1,7 +1,11 @@
 """Resolve pre-parsed inputs with per-part variable, entity, time, unit, and source data.
 
 Parsed inputs bypass extraction. A part names or excludes the sources it answers from in
-`sources`, which `interpret_parts` compiles into each part's source scope.
+`sources`, which `interpret_parts` compiles into each part's source scope. The scope words of
+the user's message (`ParsedInput.user_message`) on a request of one part, or of each part's
+own text on a request of several, become the part's explicit scope entries beside the
+conversation's carried entries (`ParsedInput.carried_entries`,
+`stated_scope.part_scope_intakes`).
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ from search.engine.source_scope import (
     compile_part_sources,
     without_source_words,
 )
+from search.engine.stated_scope import part_scope_intakes
 from search.engine.time_bind import parse_time_text, time_window_defaulted_warning
 from search.models import Operation, ParsedInput, ParsedPart, QueryEcho, RoleAxis, Warning
 
@@ -608,6 +613,13 @@ async def handle(
 
     interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
     variable_texts = interpretation.variable_texts
+    scope_intakes = part_scope_intakes(
+        message=inp.user_message,
+        message_pointer="/input/user_message",
+        part_texts=[part.variable_text for part in parts],
+        part_pointers=[f"{prefix}/variable_text" for prefix in pointer_prefixes],
+        carried=inp.carried_entries or (),
+    )
     all_dates = [d for dates in interpretation.dates for d in dates]
 
     entities_flat = list(
@@ -672,6 +684,7 @@ async def handle(
             per_variable_operations=interpretation.operations,
             per_variable_open_axes=interpretation.open_axes,
             per_variable_separate=interpretation.separate,
+            per_variable_scope_intakes=scope_intakes,
             coverage=params.coverage,
         ):
             yield ev
@@ -771,6 +784,7 @@ async def handle(
         per_variable_operations=interpretation.operations,
         per_variable_open_axes=interpretation.open_axes,
         per_variable_separate=interpretation.separate,
+        per_variable_scope_intakes=scope_intakes,
         coverage=params.coverage,
     ):
         yield ev
