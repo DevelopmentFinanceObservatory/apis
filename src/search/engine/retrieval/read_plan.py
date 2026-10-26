@@ -916,36 +916,45 @@ class BulkPlan:
         they read: `continued_pairs` with a continuation, else `elected_pairs`."""
         return self.continued_pairs if self.continuing else self.elected_pairs
 
+    def continued_years(
+        self, sv: str
+    ) -> Iterator[tuple[str, RoleTuple, tuple[tuple[int, int], ...]]]:
+        """Each role tuple of `sv` under a facet continuing the lead that the group's
+        selection does not serve it, with the facet id and the observations by year it keeps
+        there: those in the member's years (`member_years`) after the tuple's last year under
+        the selected facets, every one where they hold none, as
+        `materialise.columnar.continuation_mask` keeps a continuation's rows. Coverage counts
+        by year, so a year the selected facets hold keeps none of the continuation. A tuple
+        keeping no year is left out."""
+        first, last = self.member_years(sv)
+        lead = self.selected_candidates(sv)
+        ends: dict[RoleTuple, int] = {}
+        for c in lead:
+            for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
+                year = by_year[-1][0]
+                ends[role_tuple] = max(year, ends.get(role_tuple, year))
+        for c in self.served_candidates(sv)[len(lead) :]:
+            for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
+                end = ends.get(role_tuple)
+                if kept := tuple((y, n) for y, n in by_year if end is None or y > end):
+                    yield c.facet_id, role_tuple, kept
+
     @cached_property
     def continued_pairs(self) -> Mapping[str, Mapping[RoleTuple, int]]:
         """Each served member's role tuples with an observation the read serves in its
         years, each with the observations it serves there, under a plan with `continuing`
-        facets: the selected facets' (`elected_pairs`), then a continuing facet's in each
-        year after the tuple's last year under the selected facets in the member's years, as
-        `materialise.columnar.continuation_mask` keeps a continuation's rows. Coverage
-        counts by year, so a year the selected facets hold serves none of the continuation.
-        Each facet's tuples are read once with their observations by year
-        (`RolePairs.year_counts`), as ranking the joined candidate decoded every tuple
-        (`facet_election.rank_role_candidates`).
+        facets: the selected facets' (`elected_pairs`), then those a continuing facet keeps
+        after the selected facets' (`continued_years`). Each facet's tuples are read once
+        with their observations by year (`RolePairs.year_counts`), as ranking the joined
+        candidate decoded every tuple (`facet_election.rank_role_candidates`).
         Empty without `continuing`."""
         if not self.continuing:
             return {}
         counted: dict[str, Mapping[RoleTuple, int]] = {}
         for sv in self.served_members:
-            first, last = self.member_years(sv)
-            lead = self.selected_candidates(sv)
-            ends: dict[RoleTuple, int] = {}
-            for c in lead:
-                for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
-                    year = by_year[-1][0]
-                    ends[role_tuple] = max(year, ends.get(role_tuple, year))
             counts = dict(self.elected_pairs[sv])
-            for c in self.served_candidates(sv)[len(lead) :]:
-                for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
-                    end = ends.get(role_tuple)
-                    after = sum(n for year, n in by_year if end is None or year > end)
-                    if after:
-                        counts[role_tuple] = counts.get(role_tuple, 0) + after
+            for _facet_id, role_tuple, by_year in self.continued_years(sv):
+                counts[role_tuple] = counts.get(role_tuple, 0) + sum(n for _y, n in by_year)
             counted[sv] = counts
         return counted
 

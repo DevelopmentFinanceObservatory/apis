@@ -578,7 +578,13 @@ def test_facet_ranked_by_role_tuple_coverage_not_facet_id(monkeypatch):
 _R1, _R2, _R3 = "country/BRMethod1", "country/BRMethod2", "country/BRMethod3"
 # `FM1` and `FM3` share source, unit and method; `FM2` and `FM4`, an estimated method
 # (`materialise.method_status`), share their source and unit alone.
-_METHODS = {"FM1": "Commitment", "FM2": "Disbursement", "FM3": "Commitment", "FM4": "Estimated"}
+_METHODS = {
+    "FM1": "Commitment",
+    "FM2": "Disbursement",
+    "FM3": "Commitment",
+    "FM4": "Estimated",
+    "FM5": "Estimated",
+}
 
 
 @pytest.mark.parametrize(
@@ -709,15 +715,14 @@ def test_an_index_sourced_bulk_read_serves_each_member_its_own_method_s_facet(
                 (_SV, "FM1", _R2, [2017, 2018, 2019, 2020]),
                 (_SV, "FM3", _R1, [2019, 2020]),
             ],
-            read,
+            "every-year",
             {"FM1", "FM3"},
             {
-                (_SV, _R1): ("Commitment", [("2019", 3.0), ("2020", r1_2020)]),
+                (_SV, _R1): ("Commitment", [("2019", 3.0), ("2020", 1.0)]),
                 (_SV, _R2): ("Commitment", [(str(y), 1.0) for y in range(2017, 2021)]),
             },
-            id="range-one-identity-contested",
+            id="every-year-one-identity-contested",
         )
-        for read, r1_2020 in (("range", 1.0),)
     ],
 )
 def test_a_bulk_read_labels_and_ranks_the_points_a_mint_keeps(
@@ -776,20 +781,22 @@ def test_a_fixed_read_of_some_pairs_ranks_facets_over_the_member_s_table(
 
 
 def test_a_converting_read_ranks_by_series_only_the_members_it_converts(monkeypatch):
-    """One USD request reads `_SV`, whose elected unit is USD natively, and `_SV_B`, whose
-    unit converts, each holding `_CONTESTED`. A mint ranks within each series only for a
-    member whose conversion runs arithmetic (`generation._convert_by_series`), so `_SV`
-    ranks over its whole table and keeps `FM1`'s 2020 value at `_R1`, and `_SV_B` ranks at
-    `_R1` alone and keeps `FM3`'s."""
+    """One USD request reads `_SV`, whose elected unit for the read's USD facets is USD
+    natively, and `_SV_B`, whose unit converts, each holding `_CONTESTED`. A mint ranks
+    within each series only for a member whose conversion runs arithmetic
+    (`generation._convert_by_series`), decided from the combination its rows convert under,
+    so `_SV` ranks over its whole table and keeps `FM1`'s 2020 value at `_R1` though another
+    of its combinations converts from EUR, and `_SV_B` ranks at `_R1` alone and keeps
+    `FM3`'s."""
     monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
 
-    def unit(reason: str) -> dict[str, FacetSelection]:
-        return {"unit": _facet_selection(axis="unit", ref="CurrencyUSD", selection_reason=reason)}
+    def unit(reason: str, ref: str = "CurrencyUSD") -> dict[str, FacetSelection]:
+        return {"unit": _facet_selection(axis="unit", ref=ref, selection_reason=reason)}
 
     conversion = BulkConversion(
         unit_request=UnitRequest(currency="USD", prices="current"),
         elected={
-            _SV: (unit(NATIVE_CURRENCY_SELECTION_REASON),),
+            _SV: (unit(NATIVE_CURRENCY_SELECTION_REASON), unit("most_observations", "CurrencyEUR")),
             _SV_B: (unit("converted_from_native"),),
         },
         graph=cast("GraphReader", None),
@@ -808,6 +815,42 @@ def test_a_converting_read_ranks_by_series_only_the_members_it_converts(monkeypa
         if any(e.ref == _R1 for e in s.entities)
     }
     assert at_r1 == {_SV: 1.0, _SV_B: 3.0}
+
+
+@pytest.mark.parametrize("order", ["ranked", "fixed"])
+def test_continuing_facets_rank_over_the_rows_the_continuation_keeps(
+    monkeypatch, search_settings, order: str
+):
+    """`FM1` serves both pairs to 2020 and `FM4` and `FM5`, estimates of one identity,
+    continue it in a 2018 to 2022 range. `FM4` holds `_R1` from 2018 and `FM5` both pairs
+    from 2021. A mint ranks them over the rows its continuation mask keeps after `FM1`'s
+    2020, where `FM5`'s four outrank `FM4`'s two, so `_R1` serves `FM5`'s 2021 and 2022
+    values, though `FM4` holds more rows before the cut."""
+    if order == "fixed":
+        search_settings(role_bulk_rank_max_rows=0)
+    _sdmx, observations = _read_holdings(
+        monkeypatch,
+        [
+            (_SV, "FM1", _R1, [2018, 2019, 2020]),
+            (_SV, "FM1", _R2, [2018, 2019, 2020]),
+            (_SV, "FM4", _R1, [2018, 2019, 2020, 2021, 2022]),
+            (_SV, "FM5", _R1, [2021, 2022]),
+            (_SV, "FM5", _R2, [2021, 2022]),
+        ],
+        index_sourced=False,
+        time_period=[str(y) for y in range(2018, 2023)],
+    )
+    served = {
+        next(e.ref for e in s.entities if e.role == "destination"): sorted(
+            (p.date, p.value) for p in s.points
+        )
+        for s in observations.series
+    }
+    fm1 = [(str(y), 1.0) for y in (2018, 2019, 2020)]
+    assert served == {
+        _R1: [*fm1, ("2021", 5.0), ("2022", 5.0)],
+        _R2: [*fm1, ("2021", 5.0), ("2022", 5.0)],
+    }
 
 
 @pytest.mark.parametrize(
@@ -932,6 +975,67 @@ def test_a_latest_member_falling_back_reads_a_selected_facet_without_its_elected
         ]
         for s in observations.series
     } == {_R1: [("2021", 2.0)]}
+
+
+def test_a_latest_member_falling_back_ranks_facets_in_the_year_it_serves(monkeypatch):
+    """Coverage holds `FM1` at both pairs in 2021, so the member elects 2021, and `FM1` at
+    `_R1` and `FM3`, one identity, at both pairs in 2019. SDMX holds no 2021 row, so the
+    member falls back to 2019, where `FM1` and `FM3` contest `_R1`. A mint ranks over the
+    rows at that period, where `FM3`'s two outrank `FM1`'s one, so `_R1` serves `FM3`'s
+    value, though `FM1` alone holds rows in the elected year."""
+    holdings = [
+        ("FM1", _R1, [2019, 2021]),
+        ("FM1", _R2, [2021]),
+        ("FM3", _R1, [2019]),
+        ("FM3", _R2, [2019]),
+    ]
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, facet_id, _DONOR, r, years) for facet_id, r, years in holdings],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=_METHODS[facet_id],
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id in ("FM1", "FM3")
+        },
+    )
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(_R1): [
+                    _facet(dates=["2019"], value=1.0, facet_id="FM1"),
+                    _facet(dates=["2019"], value=3.0, facet_id="FM3"),
+                ],
+                _role_tuple(_R2): [_facet(dates=["2019"], value=3.0, facet_id="FM3")],
+            }
+        }
+    )
+    observations, _warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities([_R1, _R2]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        coverage=FakeCoverageService(index).snapshot(),
+        index_sourced=True,
+        latest=True,
+        roles=PlanRoles(
+            bound={"donor": frozenset({_DONOR}), "recipient": frozenset({_R1, _R2})},
+            role_names={"recipient": "recipient", "donor": "provider"},
+        ),
+        elect=lambda _plan: {_SV: 2021},
+    )
+
+    assert observations is not None
+    assert {
+        next(e.ref for e in s.entities if e.role == "destination"): [
+            (p.date, p.value) for p in s.points
+        ]
+        for s in observations.series
+    } == {_R1: [("2019", 3.0)], _R2: [("2019", 3.0)]}
 
 
 def _read_holdings(monkeypatch, holdings, *, index_sourced: bool, **read):
@@ -1399,7 +1503,9 @@ def test_a_converted_role_read_whose_conversion_read_fails_omits_the_preview(
         facet_filter=None,
         coverage=coverage,
         # The conversion itself never runs: `convert_pairs` fails first.
-        conversion=SimpleNamespace(target_unit_ref="CurrencyUSD", converts=lambda _sv: True),
+        conversion=SimpleNamespace(
+            target_unit_ref="CurrencyUSD", converts_under=lambda _sv, _facet: True
+        ),
     )
 
     assert observations.series == []
@@ -1438,7 +1544,7 @@ def test_a_role_conversion_names_the_pairs_whose_deflator_it_lacks(monkeypatch, 
         graph=_GRAPH,
         facet_filter=None,
         coverage=coverage,
-        conversion=SimpleNamespace(target_unit_ref=None, converts=lambda _sv: True),
+        conversion=SimpleNamespace(target_unit_ref=None, converts_under=lambda _sv, _facet: True),
     )
 
     assert len(observations.series) == len(recipients) - omitted_count
@@ -1574,7 +1680,9 @@ def test_series_truncated_to_the_order_the_row_gate_chooses(
     conversion = None
     if target_unit != "absent":
         monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
-        conversion = SimpleNamespace(target_unit_ref=target_unit, converts=lambda _sv: True)
+        conversion = SimpleNamespace(
+            target_unit_ref=target_unit, converts_under=lambda _sv, _facet: True
+        )
     observations, warn = bulk_role_series_planned(
         [_SV],
         _obs_entities(recipients),

@@ -302,16 +302,11 @@ def bulk_plan(
     )
     merged = merge_role_candidates(index, members)
     listed = tuple(read_years) if read_years is not None else None
-    facet_id, selected, unserved, _continuing = role_election(
-        merged, members=members, read_years=listed
-    )
     return BulkPlan(
         members=tuple(members),
         years=window,
         read_years=listed,
-        facet_id=facet_id,
-        selected=selected,
-        unserved=unserved,
+        **role_election(merged, members=members, read_years=listed)._asdict(),
         candidates=merged,
     )
 

@@ -102,17 +102,20 @@ selection_reason is read directly here rather than re-deriving the currency
 comparison a second time."""
 
 
-def converts(combinations: Iterable[Mapping[str, FacetSelection]]) -> bool:
-    """Whether a member whose unit decision elected `combinations` converts its points by
-    arithmetic: one of them selects a unit other than the native currency the request named
-    (`NATIVE_CURRENCY_SELECTION_REASON`). A member all of whose combinations select it
-    natively, or none of which selects a unit, is natively satisfied
+def combination_converts(selections: Mapping[str, FacetSelection]) -> bool:
+    """Whether a member converted under `selections`, one elected combination, converts its
+    points by arithmetic: its unit selection names a unit other than the native currency the
+    request named (`NATIVE_CURRENCY_SELECTION_REASON`). Under a native selection, or none on
+    the unit axis, the member is natively satisfied
     (`materialise.member_conversion.MemberConversionPlan.natively_satisfied`)."""
-    return any(
-        (unit := combo.get("unit")) is not None
-        and unit.selection_reason != NATIVE_CURRENCY_SELECTION_REASON
-        for combo in combinations
-    )
+    unit = selections.get("unit")
+    return unit is not None and unit.selection_reason != NATIVE_CURRENCY_SELECTION_REASON
+
+
+def any_combination_converts(combinations: Iterable[Mapping[str, FacetSelection]]) -> bool:
+    """Whether some combination a member's unit decision elected converts by arithmetic
+    (`combination_converts`), so a read serving the member under it needs a conversion."""
+    return any(combination_converts(selections) for selections in combinations)
 
 
 @dataclass(frozen=True)
@@ -128,10 +131,20 @@ class BulkConversion:
     rate_cache: RateTableCache
     deadline: float | None = None
 
-    def converts(self, stat_var: str) -> bool:
-        """Whether `stat_var` converts its points by arithmetic (`converts`), which ranks
-        its facets within each series, as a mint does (`generation._convert_by_series`)."""
-        return converts(self.elected.get(stat_var, ()))
+    def converts_under(self, stat_var: str, facet: ServedFacet) -> bool:
+        """Whether `stat_var` converts its points by arithmetic (`combination_converts`)
+        under the one combination its points read from `facet` convert under
+        (`convertibility.facet_selections`, as `convert_pairs` picks it). A mint decides the
+        member's conversion from that combination, and ranks its facets within each series
+        when it converts (`generation._convert_by_series`). False when no combination is
+        elected for `facet`'s unit, which leaves the member out."""
+        # Deferred to avoid the import cycle with `convertibility`.
+        from search.engine.region.convertibility import facet_selections
+
+        selections = facet_selections(
+            self.elected.get(stat_var, ()), (facet.unit, facet.provenance_id)
+        )
+        return selections is not None and combination_converts(selections)
 
     @property
     def target_unit_ref(self) -> str | None:

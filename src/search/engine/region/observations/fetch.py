@@ -76,7 +76,10 @@ from search.engine.region.codes import (
     OBSERVATIONS_PROBE_FAILED,
     OBSERVATIONS_TIMED_OUT,
 )
-from search.engine.region.observations.bulk_conversion import BulkConversion, converts
+from search.engine.region.observations.bulk_conversion import (
+    BulkConversion,
+    any_combination_converts,
+)
 from search.engine.region.observations.bulk_role_series import _bulk_role_series
 from search.engine.region.observations.bulk_scope import BulkScope, _bulk_scope_series
 from search.engine.region.result import FacetAxisFilter
@@ -150,11 +153,12 @@ def _elected_requires_conversion(
     its points (`bulk_conversion`).
 
     Missing elections conservatively require conversion. StatVars absent from `elected` add
-    no series. A member converting by arithmetic (`bulk_conversion.converts`) requires it.
+    no series. A member with any combination converting by arithmetic
+    (`bulk_conversion.any_combination_converts`) requires it.
     """
     if elected is None:
         return True
-    return any(converts(elected.get(sv, ())) for sv in sv_dcids)
+    return any(any_combination_converts(elected.get(sv, ())) for sv in sv_dcids)
 
 
 def _native_unit_refs(
