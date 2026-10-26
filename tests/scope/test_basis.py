@@ -42,7 +42,7 @@ from search.models import (
     ResubmitIdentityEntry,
     Spec,
 )
-from search.scope.basis import basis_binding, window_class
+from search.scope.basis import basis_binding, basis_label, window_class
 from search.scope.edits import apply_binding
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import elected_reply
@@ -359,6 +359,47 @@ def test_neither_the_wording_nor_the_binders_pick_moves_the_basis(
     assert set(served.values()) == {row.basis}, served
 
 
+@pytest.mark.parametrize("variable", ["Total ODA", "ODA", "official development assistance"])
+def test_a_donor_total_recalling_only_amounts_is_counted_in_grant_equivalents(
+    variable: str, search_settings
+):
+    """Recall finds DAC1's ODA amounts and none of its grant equivalents for these words;
+    recall adds the grant-equivalent family (`clients.graph.with_rival_families`), so the
+    convention still elects the headline basis for a window from 2018."""
+    search_settings(qualifier_coverage="log")
+    amounts = tuple(m for m in _DAC1_MEMBERS if m.startswith("Amount_"))
+    graph = FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            **{dcid: _member_node(dcid) for dcid in _DAC1_MEMBERS},
+        },
+        detect={variable: {"svs": list(amounts), "cosine_scores": [0.9] * len(amounts)}},
+        resolve={"United States": _USA},
+    )
+    response = offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text=variable,
+                        entities=[ParsedEntity(text="United States", role_text="from")],
+                        time_text="2019",
+                    )
+                ]
+            )
+        ),
+        graph=graph,
+        llm=_PickingLLM(0),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+
+    assert _served_basis(part.spec) == _GE_DAC1
+    assert _basis_choice(part.spec) == ("measure_basis:grant_equivalent", "default", None)
+
+
 @pytest.mark.parametrize(
     ("cell", "message", "basis", "option", "text"),
     [
@@ -465,6 +506,62 @@ def test_the_options_are_the_bases_the_parts_dataset_publishes():
         ),
     ]
     assert choice.options[2].availability.detail == {"dataset": _DAC2A}
+
+
+def _net_identity(qualifier: str | None, unit_request: dict | None) -> BaseIdentity:
+    shape = {
+        "kind": "statvar_schema",
+        "population_type": "FinancialFlow",
+        "measured_property": "amount",
+        "stat_type": "measuredValue",
+    }
+    if qualifier is not None:
+        shape["measurement_qualifier"] = qualifier
+    document: dict = {
+        "identity_version": "spec1",
+        "shape": shape,
+        "slots": [{"property": "nettingBasis", "binding": {"state": "value", "ref": "Net"}}],
+        "entities": {"origin": [_USA]},
+        "requested_window": {"kind": "range", "start_year": 2019, "end_year": 2019},
+    }
+    if unit_request is not None:
+        document["facets"] = {"unit": {"state": "value", "request": unit_request}}
+    return BaseIdentity.model_validate(document)
+
+
+@pytest.mark.parametrize(
+    ("qualifier", "unit_request", "expected"),
+    [
+        pytest.param("Nominal", None, "net disbursements, current USD", id="qualifier"),
+        pytest.param(None, None, "net disbursements", id="no-price-basis"),
+        pytest.param(
+            "Nominal",
+            {"currency": "USD", "prices": "constant", "base_year": 2024},
+            "net disbursements, constant 2024 USD",
+            id="constant-request",
+        ),
+        pytest.param(
+            "Nominal",
+            {"currency": "EUR", "prices": "current"},
+            "net disbursements, current EUR",
+            id="currency-request",
+        ),
+        pytest.param(
+            "Nominal",
+            {"currency": {"role": "origin"}, "prices": "constant", "base_year": 2023},
+            "net disbursements, constant 2023 donor currency",
+            id="role-currency-request",
+        ),
+    ],
+)
+def test_a_basis_label_states_the_prices_and_currency_the_part_is_served_in(
+    qualifier: str | None, unit_request: dict | None, expected: str
+):
+    """A unit request converts the part, so its prices and currency name every basis option
+    over the shape's own price basis."""
+    net = next(row for row in BASIS_MEASURES if row.basis == "net")
+
+    assert basis_label(net, _net_identity(qualifier, unit_request)) == expected
 
 
 @pytest.mark.parametrize("cell", ["sector", "donor-only-2016"])

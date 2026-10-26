@@ -15,7 +15,7 @@ import json
 from collections.abc import Callable, Mapping
 
 from code_index import scope_conventions
-from search.models import BaseIdentity, ScopeAxis
+from search.models import SCOPE_AXES, BaseIdentity, ScopeAxis
 from search.scope.basis import basis_rule
 from search.scope.region import region_rule
 from search.scope.sector import sector_rule
@@ -30,6 +30,9 @@ AXIS_RULES: Mapping[ScopeAxis, AxisRule] = {
     "measure_basis": basis_rule,
 }
 """The rule of every live axis."""
+
+UNRULED_AXES: frozenset[ScopeAxis] = frozenset(SCOPE_AXES) - AXIS_RULES.keys()
+"""The scope axes no rule serves yet, whose stated words a part reports as not applied."""
 
 CONFLICTS: tuple[Conflict, ...] = ()
 """The pairs of options of different axes that cannot hold together."""
@@ -49,6 +52,7 @@ def rule_version(rules: Mapping[ScopeAxis, AxisRule], conflicts: tuple[Conflict,
         scope_conventions.BASIS_RESTRICTIONS,
         scope_conventions.OPTION_LABELS,
         scope_conventions.REGION_NAMES,
+        scope_conventions.CONVENTION_CURRENCY,
     )
 
 
@@ -62,6 +66,7 @@ def _version(
     basis_restrictions: tuple[str, ...],
     option_labels: scope_conventions.OptionLabels,
     region_names: tuple[tuple[str, str], ...],
+    convention_currency: str,
 ) -> str:
     document = {
         "sector_groupings": [dataclasses.asdict(row) for row in sector_groupings],
@@ -70,6 +75,7 @@ def _version(
         "basis_restrictions": list(basis_restrictions),
         "option_labels": dataclasses.asdict(option_labels),
         "region_names": [list(pair) for pair in region_names],
+        "convention_currency": convention_currency,
         "axes": list(axes),
         "conflicts": [dataclasses.asdict(conflict) for conflict in conflicts],
     }

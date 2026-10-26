@@ -11,6 +11,7 @@ declarations, so a change to one moves the declarations hash and the scope rule 
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -112,6 +113,20 @@ SECTOR_GROUPINGS: tuple[SectorGrouping, ...] = (
 )
 
 
+def grouping_of(code_system: str, codes: Iterable[str]) -> SectorGrouping | None:
+    """The declared grouping whose codes on `code_system` are exactly `codes`, None when
+    none is."""
+    held = frozenset(codes)
+    return next(
+        (
+            g
+            for g in SECTOR_GROUPINGS
+            if g.code_system == code_system and frozenset(g.codes) == held
+        ),
+        None,
+    )
+
+
 @dataclass(frozen=True)
 class OptionLabels:
     """The wording of the scope options whose label is built from the part: each a
@@ -122,9 +137,10 @@ class OptionLabels:
     `sector_code_alone` one code of a grouping offered without the others.
     `region_with_residuals` and `region_members_only` name a region's two readings from its
     `region` name and its possessive `region_of`. `measure_basis` names a measure basis from
-    its `words` (`BasisMeasure.words`) and the `prices` of the identity's price basis
-    ("current", "constant"), and `measure_basis_unpriced` from its words alone, for an
-    identity whose measurement qualifier states no price basis."""
+    its `words` (`BasisMeasure.words`), the `prices` of the identity's price basis
+    ("current", "constant 2024") and its `currency` ("USD", "donor currency"), and
+    `measure_basis_unpriced` from its words alone, for an identity that states no price
+    basis."""
 
     sector_code: str
     sector_code_alone: str
@@ -139,9 +155,13 @@ OPTION_LABELS = OptionLabels(
     sector_code_alone="{label}, CRS {code} alone",
     region_with_residuals="{region} incl. regional and unspecified amounts",
     region_members_only="{region_of} countries only",
-    measure_basis="{words}, {prices} USD",
+    measure_basis="{words}, {prices} {currency}",
     measure_basis_unpriced="{words}",
 )
+
+CONVENTION_CURRENCY = "USD"
+"""The currency the datasets the basis conventions read publish their amounts in, which a
+measure-basis option names when no unit request converts the part."""
 
 REGION_NAMES: tuple[tuple[str, str], ...] = (
     ("DACAfrica", "Africa"),

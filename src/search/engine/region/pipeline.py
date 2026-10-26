@@ -97,6 +97,7 @@ from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
 from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Spec, Warning
 from search.scope.build import build_part_scope
+from search.scope.rules import UNRULED_AXES
 from search.scope.state import ScopeIntake
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -559,8 +560,8 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     over the answer's identity. Only the entries a binder applied compile
     (`AxisRecord.entry`), so every choice states the option the answer serves; the other
     entries that attach to the part (`ScopeState.attached`: those on an axis a binder
-    settled, for the concept it was asked for) are reported in
-    `PartScope.dropped_entries`. A result that is not definite, or whose pass wrote no axis
+    settled, for the concept it was asked for, and the stated ones on an axis no rule
+    serves, `UNRULED_AXES`) are reported in `PartScope.dropped_entries`. A result that is not definite, or whose pass wrote no axis
     record, states none, and so does one whose answer the recorded axes do not reach, as a
     region read at its published total. In memory: the rules read the bound release's code
     index, the request's coverage snapshot and the part's operations, groups and served
@@ -575,7 +576,7 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
         entries=[],
         records=selection.records,
         facts=scope_facts(spec, operations=state.operations, coverage=state.coverage),
-        read=selection.attached(),
+        read=selection.attached(unruled=UNRULED_AXES),
         refuse=False,
     )
     assert isinstance(built, PartScope)

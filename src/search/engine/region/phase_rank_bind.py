@@ -3180,6 +3180,23 @@ def _occurrences(tokens: Sequence[Token], texts: Iterable[str | None]) -> list[t
     return [occurrence for text in texts if text for occurrence in _token_occurrences(tokens, text)]
 
 
+def _resolved_name_words(state: ResolveState) -> tuple[str, ...]:
+    """The content words, less `FUNCTION_WORDS`, of each text naming an entity the part
+    resolved (`ResolveState.place_sets`) and of the request's words for it. The variable
+    can name the entity by one of them ("Gates funding" beside "Bill & Melinda Gates
+    Foundation"), which then reads as the entity, and no rating asks whether the series
+    states it."""
+    texts = (*state.place_sets, *(state.entity_words.get(name, "") for name in state.place_sets))
+    return tuple(
+        dict.fromkeys(
+            word.text
+            for text in texts
+            for word in word_tokens(text)
+            if word.text.casefold() not in FUNCTION_WORDS
+        )
+    )
+
+
 class _FreeReaders(NamedTuple):
     """The readers of the variable's words on one shape that read no binding
     (`_free_readers`), each under the name its verdict gives the words it reads."""
@@ -3230,6 +3247,7 @@ def _free_readers(
                 [
                     *state.entity_texts,
                     *(role.span for roles in state.entity_roles.values() for role in roles),
+                    *_resolved_name_words(state),
                 ],
             ),
         ),
