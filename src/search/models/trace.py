@@ -19,7 +19,8 @@ class ResolvedFilter(StrictModel):
         default="binder",
         description=(
             "whether the bind call's own election produced this value, a code "
-            "row recognised in the query's own text forced it, or the "
+            "row recognised in the query's own text forced it, a sector concept "
+            "the text named bound its declared grouping of codes, or the "
             "measure-family election forced it on an axis the binder left open"
         ),
     )

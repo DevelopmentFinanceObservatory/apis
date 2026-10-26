@@ -401,6 +401,7 @@ async def _elected_flagged_match(
         # bindings list _phase_settle may have forced a qualifier-match
         # value onto. Every caller runs after that phase, so the forced set is final.
         text_recognized_properties=state.text_recognized_properties,
+        grouped_properties=state.grouped_properties,
         # Every caller runs from _phase_place_bindings or later (the role refusals and
         # the materialise quantity gate), and all of those phases run after
         # _phase_settle's measure-election splice, so

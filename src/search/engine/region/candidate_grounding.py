@@ -634,6 +634,7 @@ def _finish_candidate(
     measure_family_cache: dict[MeasureFamilyCacheKey, tuple[MeasurePartition, ...]],
     *,
     text_recognized_properties: frozenset[str],
+    grouped_properties: frozenset[str],
     measure_elected_properties: frozenset[str],
     defaulted_properties: frozenset[str],
     rivalled: bool,
@@ -753,6 +754,7 @@ def _finish_candidate(
         text_recognized_properties=(
             text_recognized_properties if cand_bindings is state.bindings else frozenset()
         ),
+        grouped_properties=(grouped_properties if cand_bindings is state.bindings else frozenset()),
         # Judged under the unit request this candidate is served under, as the definite
         # answer's trace is.
         query_qualifiers=answer_terms(
@@ -959,6 +961,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     # These forced qualifier, measure, and default bindings belong only to candidates that
     # reuse the elected ``state.bindings`` list.
     text_recognized_properties = state.text_recognized_properties
+    grouped_properties = state.grouped_properties
     measure_elected_properties = state.measure_elected_properties
     defaulted_properties = state.defaulted_properties
     rivalled = any(
@@ -1009,6 +1012,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             prep,
             measure_family_cache,
             text_recognized_properties=text_recognized_properties,
+            grouped_properties=grouped_properties,
             measure_elected_properties=measure_elected_properties,
             defaulted_properties=defaulted_properties,
             rivalled=rivalled,

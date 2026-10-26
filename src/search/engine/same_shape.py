@@ -930,14 +930,22 @@ def _merge_coverage(group: list[RegionResult], base_spec: Spec):
 
 def _merge_slot_filter_properties(
     group: list[RegionResult],
-) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-    """Union slot-filter properties by provenance across the group.
+) -> tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]:
+    """Union slot-filter properties by provenance across the group: the text-recognised,
+    the grouped, the measure-elected and the defaulted.
 
     Query-recognized properties outrank measure elections, which outrank
     defaults. Subtraction keeps each property in one set, as ``build_spec``
-    requires.
+    requires. A property a member's sector concept bound to its declared grouping is
+    grouped on the merge, and text-recognised too, as ``build_spec`` requires.
     """
-    text_recognized = frozenset(
+    grouped = frozenset(
+        sf.key.property.ref
+        for r in group
+        for sf in r.spec.resolved.trace.slot_filters
+        if sf.provenance == "declared_grouping" and sf.key.property is not None
+    )
+    text_recognized = grouped | frozenset(
         sf.key.property.ref
         for r in group
         for sf in r.spec.resolved.trace.slot_filters
@@ -962,7 +970,7 @@ def _merge_slot_filter_properties(
         - text_recognized
         - measure_elected
     )
-    return text_recognized, measure_elected, defaulted
+    return text_recognized, grouped, measure_elected, defaulted
 
 
 def _merge_measure_partition(
@@ -1137,7 +1145,7 @@ def _merge_group(
     merged_shape = _merge_shape(group, base_spec, is_where)
     inapplicable_slots, unresolved_slots = _merge_slot_flags(group, merged_slots)
     merged_coverage = _merge_coverage(group, base_spec)
-    text_recognized, measure_elected, defaulted = _merge_slot_filter_properties(group)
+    text_recognized, grouped, measure_elected, defaulted = _merge_slot_filter_properties(group)
     measure_partition, measure_siblings = _merge_measure_partition(group)
     open_axis_facts = _union_open_axis_facts(group)
     role_axis_facts, entity_options = _union_role_axis_facts(group)
@@ -1174,6 +1182,7 @@ def _merge_group(
         facet_options=[],
         equivalent_readings=_union_equivalent_readings(group),
         text_recognized_properties=text_recognized,
+        grouped_properties=grouped,
         query_qualifiers=_union_query_qualifiers(group),
         # Every member comes from one leg, which applied one default reading.
         default_reading=base_spec.resolved.trace.default_reading,

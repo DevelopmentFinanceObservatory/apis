@@ -156,6 +156,7 @@ def conjoin_spec(
     measure_elected_properties: frozenset[str] | None = None,
     measure_partition: MeasurePartition | None = None,
     measure_siblings: list[MeasurePartition] | None = None,
+    grouped_properties: frozenset[str] | None = None,
 ):
     """Build a definite Spec with one constraint value slot and one StatVar.
 
@@ -179,6 +180,7 @@ def conjoin_spec(
         unresolved_slots=unresolved_slots,
         equivalent_readings=equivalent_readings,
         text_recognized_properties=text_recognized_properties or frozenset(),
+        grouped_properties=grouped_properties or frozenset(),
         measure_elected_properties=measure_elected_properties or frozenset(),
         measure_partition=measure_partition,
         measure_siblings=measure_siblings or (),

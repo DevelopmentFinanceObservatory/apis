@@ -33,12 +33,15 @@ class SectorGrouping:
     """One sector concept and the CRS purpose codes it reads as.
 
     `concept` is the lowercase concept word, `code_system` the code-system property the
-    codes bind, and `codes` the code dcids in ascending order. `label` names the grouping
-    for a reader."""
+    codes bind, and `codes` the code dcids in ascending order. `words` are the phrases,
+    casefolded, a qualifier match on `code_system` reads the concept from: a match whose
+    phrase is one of them binds `codes` in place of the code it names. `label` names the
+    grouping for a reader."""
 
     concept: str
     code_system: str
     codes: tuple[str, ...]
+    words: tuple[str, ...]
     label: str
 
 
@@ -64,18 +67,24 @@ _DAC2A = "provenance/OECDDAC2A"
 # ONE's analytical groupings of CRS sectors. Health joins Health (120) and Population
 # policies and programmes and reproductive health (130); it is not an OECD definition.
 # Humanitarian joins emergency response (720), reconstruction relief and rehabilitation
-# (730) and disaster prevention and preparedness (740).
+# (730) and disaster prevention and preparedness (740). The words are the phrases the
+# qualifier matcher reads each concept from: "health" is CRS 120's label, so "health aid"
+# reads it, and "humanitarian aid" is the label of CRS 700, the sector the three codes
+# make up. "basic health" (122) and "reproductive health" (130) are phrases of their own
+# and stay code bindings.
 SECTOR_GROUPINGS: tuple[SectorGrouping, ...] = (
     SectorGrouping(
         concept="health",
         code_system=_CRS_PURPOSE,
         codes=("CRSPurposeCode120", "CRSPurposeCode130"),
+        words=("health",),
         label="health, including population and reproductive health (CRS 120 + 130)",
     ),
     SectorGrouping(
         concept="humanitarian",
         code_system=_CRS_PURPOSE,
         codes=("CRSPurposeCode720", "CRSPurposeCode730", "CRSPurposeCode740"),
+        words=("humanitarian aid",),
         label="humanitarian aid (CRS 720 + 730 + 740)",
     ),
 )

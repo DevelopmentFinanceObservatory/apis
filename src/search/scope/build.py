@@ -36,11 +36,13 @@ def build_part_scope(
 
     Each rule (`rules.AXIS_RULES` unless `rules` is given) reads `base`, its axis's record
     and `facts`, in `SCOPE_AXES` order, and the axes whose rule returns a table are
-    compiled with `entries` under `conflicts` (`rules.CONFLICTS` unless given). An entry a
-    binder read from the request's words itself (`AxisRecord.entry`, absent from
-    `entries`) joins them after the posted entries where its axis is present, so a binder's
-    reading never refuses a part its axis does not reach. The scope's id is the base
-    identity's spec_id. The server keeps no ledger, so the scope's is []."""
+    compiled with `entries` under `conflicts` (`rules.CONFLICTS` unless given). The entry a
+    binder applied from the request's words or the conversation (`AxisRecord.entry`) joins
+    them after the posted entries when it is not among them and its axis's table holds the
+    option the record settled (`AxisTable.held`): a part whose axis is absent, or whose base
+    no longer holds the binder's option, adds nothing, so a binder's reading never refuses a
+    part. The scope's id is the base identity's spec_id. The server keeps no ledger, so the
+    scope's is []."""
     rules = scope_rules.AXIS_RULES if rules is None else rules
     conflicts = scope_rules.CONFLICTS if conflicts is None else conflicts
     tables = tuple(
@@ -49,13 +51,15 @@ def build_part_scope(
         if (rule := rules.get(axis)) is not None
         and (table := rule(base, records.get(axis), facts)) is not None
     )
-    present = {table.axis for table in tables}
-    read = [
+    held = {table.axis: table.held for table in tables}
+    recorded = [
         record.entry
-        for axis, record in records.items()
-        if axis in present and record.entry is not None and record.entry not in entries
+        for record in records.values()
+        if record.entry is not None
+        and record.entry not in entries
+        and held.get(record.axis) == record.active
     ]
-    entries = [*entries, *read]
+    entries = [*entries, *recorded]
     compiled = compile(base, entries, CompileFacts(axes=tables, conflicts=conflicts))
     if isinstance(compiled, Refusal):
         return compiled

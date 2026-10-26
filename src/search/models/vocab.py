@@ -38,8 +38,13 @@ CoverageKind = Literal["exact", "breadth", "bare"]
 # graph code named by the query. "measure_elected" comes from the elected
 # measure partition. "declared_default" fills an open slot from its code
 # system's declared default when another slot binds within that subtree, or
-# from the default its shape's population type declares.
-BindingProvenance = Literal["binder", "text_recognized", "measure_elected", "declared_default"]
+# from the default its shape's population type declares. "declared_grouping" is
+# a sector concept the query named, bound to the codes its declared grouping
+# reads it as (`code_index.scope_conventions.SECTOR_GROUPINGS`): "health" binds
+# CRS 120 and 130.
+BindingProvenance = Literal[
+    "binder", "text_recognized", "measure_elected", "declared_default", "declared_grouping"
+]
 
 # ---------------------------------------------------------------------------
 # FacetAxis describes observation facets. Axis describes request slots.
@@ -150,6 +155,7 @@ ScopeReasonCode = Literal[
     "residuals_need_summed_region",
     "conflicts_with",
     "carried_choice_not_applied",
+    "option_not_covered",
 ]
 """Every reason a scope option is partial or unavailable, or a carried entry is not
 applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary

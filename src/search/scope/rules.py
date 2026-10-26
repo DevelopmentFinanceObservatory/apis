@@ -16,12 +16,13 @@ from collections.abc import Callable, Mapping
 from code_index import scope_conventions
 from search.models import BaseIdentity, ScopeAxis
 from search.scope.region import region_rule
+from search.scope.sector import sector_rule
 from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, Conflict, ScopeFacts
 
 type AxisRule = Callable[[BaseIdentity, AxisRecord | None, ScopeFacts], AxisTable | None]
 
-AXIS_RULES: Mapping[ScopeAxis, AxisRule] = {"region": region_rule}
+AXIS_RULES: Mapping[ScopeAxis, AxisRule] = {"sector": sector_rule, "region": region_rule}
 """The rule of every live axis."""
 
 CONFLICTS: tuple[Conflict, ...] = ()

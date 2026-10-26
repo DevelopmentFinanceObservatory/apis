@@ -1076,10 +1076,12 @@ def _build_slot_filters(
     slots: list[Slot],
     *,
     text_recognized_properties: frozenset[str],
+    grouped_properties: frozenset[str],
     measure_elected_properties: frozenset[str],
     defaulted_properties: frozenset[str],
 ) -> list[ResolvedFilter]:
-    """Build slot filters with refs and provenance."""
+    """Build slot filters with refs and provenance. A grouped property is text-recognised
+    too, and reads `declared_grouping`."""
     slot_filters: list[ResolvedFilter] = []
     for slot in slots:
         binding = slot.binding
@@ -1092,7 +1094,9 @@ def _build_slot_filters(
         kind: BindingKind = binding.kind  # type: ignore[assignment]
         prop_dcid = slot.key.property.ref if slot.key.property is not None else None
         provenance: BindingProvenance
-        if prop_dcid is not None and prop_dcid in text_recognized_properties:
+        if prop_dcid is not None and prop_dcid in grouped_properties:
+            provenance = "declared_grouping"
+        elif prop_dcid is not None and prop_dcid in text_recognized_properties:
             provenance = "text_recognized"
         elif prop_dcid is not None and prop_dcid in measure_elected_properties:
             provenance = "measure_elected"
@@ -1135,6 +1139,7 @@ def build_spec(
     equivalent_readings: list[Spec] | None = None,
     scope: ResolvedScope | None = None,
     text_recognized_properties: frozenset[str] = frozenset(),
+    grouped_properties: frozenset[str] = frozenset(),
     query_qualifiers: list[ResolvedQualifier] | None = None,
     default_reading: TraceDefaultReading | None = None,
     stated_form: QuantityForm | None = None,
@@ -1182,6 +1187,9 @@ def build_spec(
             ``ResolvedSpec`` and excluded from identity.
         text_recognized_properties, measure_elected_properties, defaulted_properties:
             Slot provenance sources. They must be disjoint.
+        grouped_properties: The text-recognised properties a sector concept bound to its
+            declared grouping, whose slots read ``declared_grouping``. A subset of
+            ``text_recognized_properties``.
         measure_partition and measure_siblings: Served partition and alternatives for
             the response label.
         measure_served_rows: Counts the rows a resubmit of each alternative measure would
@@ -1216,6 +1224,11 @@ def build_spec(
     _check_provenance_disjoint(
         text_recognized_properties, measure_elected_properties, defaulted_properties
     )
+    if not grouped_properties <= text_recognized_properties:
+        raise ValueError(
+            f"grouped_properties {sorted(grouped_properties - text_recognized_properties)!r} "
+            "are not text-recognised; a grouping binds only what the text named"
+        )
 
     if pin_served_provenance and (served := served_provenances(plan)):
         slots = with_served_provenance(slots, served)
@@ -1279,6 +1292,7 @@ def build_spec(
     slot_filters = _build_slot_filters(
         slots,
         text_recognized_properties=text_recognized_properties,
+        grouped_properties=grouped_properties,
         measure_elected_properties=measure_elected_properties,
         defaulted_properties=defaulted_properties,
     )
