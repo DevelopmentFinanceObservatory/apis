@@ -489,6 +489,7 @@ def test_a_role_answer_counts_the_points_its_preview_serves(
     search_settings(obs_preview_max_pairs=1 if bulk else 120)
     fixture = _role_fixture(monkeypatch, _holdings(ken, nor))
     dispatches = _record_dispatches(monkeypatch)
+    bulk_reads = _record_bulk_reads(monkeypatch)
     result = _role_answer(fixture, discovered=discovered, date_request=_REQUESTS[request_kind])
     # An answer is `no_observations` exactly when no place holds a point in its years.
     assert (result.status == "definite") == bool(
@@ -501,20 +502,25 @@ def test_a_role_answer_counts_the_points_its_preview_serves(
 
     _assert_agreement(spec.resolved.coverage, spec.resolved.observations, _served_destinations)
     assert all(dispatched <= planned for planned, dispatched in dispatches)
-    if bulk:
-        # A bulk read asks for the facets of the variable's one group its selection serves
-        # in the years read, as its mint dispatches them, in each call.
-        group = _group(fixture.holdings, request_kind)
-        assert all(set(call["facet_ids"]) <= group for call in fixture.sdmx.series_calls)
+    group = _group(fixture.holdings, request_kind)
+    assert len(bulk_reads) <= 1
+    if bulk_reads:
+        # A bulk read asks, in each call, for the facets of the variable's one group holding
+        # a point in the years read, as its mint dispatches them, and for the facets
+        # continuing its lead. A bulk cell holding one pair reads it per series.
+        assert bulk
+        holding = {f for f in group if _places_with_data(fixture.holdings, request_kind, {f})}
+        asked = holding | set(bulk_reads[0].continuing)
+        assert fixture.sdmx.series_calls
+        assert all(set(call["facet_ids"]) == asked for call in fixture.sdmx.series_calls)
     else:
         assert all(len(call["facet_ids"]) == 1 for call in fixture.sdmx.series_calls)
-        # Every per-series read plans facets of the variable's one group alone, and the
-        # preview serves each place holding a point on it in the years read.
-        group = _group(fixture.holdings, request_kind)
+        # Every per-series read plans facets of the variable's one group alone.
         assert all(planned and planned <= group for planned, _dispatched in dispatches)
-        assert _served_places(spec.resolved.observations) == _places_served(
-            fixture.holdings, request_kind
-        )
+    # The preview serves each place holding a point on the group in the years read.
+    assert _served_places(spec.resolved.observations) == _places_served(
+        fixture.holdings, request_kind
+    )
 
 
 # ---------------------------------------------------------------------------

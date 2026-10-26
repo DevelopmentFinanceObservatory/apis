@@ -225,19 +225,22 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
 
 
 def _member_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
-    """The variables the answer's one group leaves out, by name. A group is one source, unit
-    and method, so the text says they hold no values under the three this answer reads, and
-    names the source (`shown`) and the unit (`DepartureFact.unit`) where the fact holds them.
-    It names what the answer reads and gives no reason for the choice."""
+    """The variables a reading's one group leaves out, by name. A group is one source, unit
+    and method, so the text says the source read (`shown`) holds no values for them under
+    the unit and method read, naming the unit (`DepartureFact.unit`) where the fact holds
+    it. Naming the source ties the text to its reading on a part showing several. It names
+    what the reading reads and gives no reason for the choice."""
     if not fact.members:
         raise ValueError("member_unavailable needs the variables the answer leaves out")
-    holds = "It holds" if len(fact.members) == 1 else "They hold"
-    named = [text for text in (fact.shown, fact.unit) if text]
-    read = f" ({', '.join(named)})" if named else ""
-    return (
-        f"You asked for {_join_labels(list(fact.members))}. {holds} no values under the "
-        f"source, unit and method this answer reads{read}."
-    )
+    one = len(fact.members) == 1
+    unit = f" ({fact.unit})" if fact.unit else ""
+    if fact.shown:
+        held = f"{fact.shown} holds no values for {'it' if one else 'them'} under the unit and method read"
+    else:
+        held = (
+            f"{'It holds' if one else 'They hold'} no values under the source, unit and method read"
+        )
+    return f"You asked for {_join_labels(list(fact.members))}. {held}{unit}."
 
 
 def _latest_period(years: tuple[int, int] | None) -> str:

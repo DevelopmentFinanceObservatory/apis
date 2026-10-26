@@ -830,7 +830,9 @@ def build_candidates_part(
     the remaining distinctions. ``include_observations`` adds a warning because no candidate
     is selected for observation retrieval. Requested skills attach to each clamped candidate
     when the index snapshot is available. ``departure_facts`` are the raised facts that
-    hold for every reading the part shows; no single spec answers, so none is read off one.
+    hold for every reading the part shows. A reading's `member_unavailable` is read off its
+    own spec (`member_unavailable_fact`), and its text names the source that reading reads,
+    which ties it to the reading.
     ``reading_facts`` are the facts of each reading by `spec_id`, each naming the dataset
     it holds for (`RegionResult.unpublished_whole_facts`); the part states those of the
     readings it shows, once each. Their text names roles in the flow family every clamped

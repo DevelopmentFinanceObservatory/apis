@@ -1125,6 +1125,53 @@ def test_a_bulk_plan_serves_every_member_holding_the_group_s_source_and_unit(
     assert read_plan.unserved_members(plan) == unserved
 
 
+def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects(
+    search_settings,
+) -> None:
+    """`_FLOW` holds `fM1` at `_AAA` and `_CCC` to 2019, so `fM1` leads, and `fM2`, one
+    source and unit under another method, at `_BBB` to 2021. An index-resolved family's
+    group selects both, so under `latest` the member's year is the newest either reaches,
+    2021, its dates are that year, and the facets its series state are those holding a pair
+    there: `fM2` alone. Both state a monthly period, so coverage elects the member no year
+    (`CoverageIndex.elected_years`) and it serves its own latest period."""
+    search_settings(obs_preview_max_pairs=1)
+    rows = [
+        *((_FLOW, "fM1", ABSENT_ENTITY, place, list(range(2015, 2020))) for place in (_AAA, _CCC)),
+        (_FLOW, "fM2", ABSENT_ENTITY, _BBB, list(range(2015, 2022))),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1M",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fM2", "Disbursement"))
+        },
+    )
+    plan = _role_plan(
+        [_FLOW],
+        member_facts={_FLOW: _Constraints()},
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB, _CCC],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB, _CCC})},
+        years=read_plan.role_years(DateRequest(window=None, latest=True), index.horizon),
+        coverage_index=index,
+    )
+    assert isinstance(plan, BulkPlan)
+    plan = replace(plan, index_sourced=True).narrowed(lambda _sv, _candidate: True)
+
+    assert (plan.facet_id, set(plan.selected[_FLOW])) == ("fM1", {"fM1", "fM2"})
+    assert plan.member_year(_FLOW) == 2021
+    assert read_plan.served_dates(plan) == {_FLOW: ("2021", "2021")}
+    assert [f.facet_id for f in read_plan.series_facets(plan)] == ["fM2"]
+    assert [f.facet_id for f in read_plan.facets_served(plan)] == ["fM2"]
+
+
 def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
     search_settings,
 ) -> None:

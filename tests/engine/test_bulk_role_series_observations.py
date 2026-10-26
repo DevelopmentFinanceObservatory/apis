@@ -36,6 +36,7 @@ from search.engine.region.observations.bulk_conversion import ConvertedPairs
 from search.engine.region.observations.bulk_role_series import (
     _narrowest_common_role,
     _preview_pairs,
+    _served_points,
 )
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
@@ -565,29 +566,115 @@ def test_facet_ranked_by_role_tuple_coverage_not_facet_id(monkeypatch):
     assert len(observations.series) == 5
 
 
+_R1, _R2, _R3 = "country/BRMethod1", "country/BRMethod2", "country/BRMethod3"
+# `FM1` and `FM3` share source, unit and method; `FM2` and `FM4`, an estimated method
+# (`materialise.method_status`), share their source and unit alone.
+_METHODS = {"FM1": "Commitment", "FM2": "Disbursement", "FM3": "Commitment", "FM4": "Estimated"}
+
+
 @pytest.mark.parametrize(
-    ("index_sourced", "served"),
+    ("holdings", "index_sourced", "facet_ids", "series"),
     [
-        pytest.param(True, {_SV, _SV_B}, id="index-sourced"),
-        pytest.param(False, {_SV}, id="by-facet-id"),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV_B, "FM2", _R1, [2020])],
+            True,
+            {"FM1", "FM2"},
+            {
+                (_SV, _R1): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+                (_SV_B, _R1): ("Disbursement", [("2020", 2.0)]),
+            },
+            id="two-members-index-sourced",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV_B, "FM2", _R1, [2020])],
+            False,
+            {"FM1"},
+            {
+                (_SV, _R1): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+            },
+            id="two-members-by-facet-id",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV, "FM2", _R3, [2020])],
+            True,
+            {"FM1", "FM2"},
+            {
+                (_SV, _R1): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R3): ("Disbursement", [("2020", 2.0)]),
+            },
+            id="one-member-a-method-per-pair",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM2", _R1, [2020]), (_SV, "FM1", _R2, [2020])],
+            True,
+            {"FM1", "FM2"},
+            {
+                (_SV, _R1): (None, [("2020", 1.0), ("2020", 2.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+            },
+            id="one-pair-two-methods-one-date",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2019, 2020]), (_SV, "FM3", _R1, [2020])],
+            True,
+            {"FM1", "FM3"},
+            {(_SV, _R1): ("Commitment", [("2019", 1.0), ("2020", 1.0)])},
+            id="one-pair-one-identity-one-date",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV, "FM3", _R1, [2019, 2020])],
+            True,
+            {"FM1", "FM3"},
+            {
+                (_SV, _R1): ("Commitment", [("2019", 3.0), ("2020", 3.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+            },
+            id="one-pair-one-identity-the-wider-facet-wins",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV, "FM4", _R3, [2020])],
+            True,
+            {"FM1", "FM4"},
+            {
+                (_SV, _R1): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R3): ("Estimated", [("2020", 4.0)]),
+            },
+            id="one-pair-an-estimated-method",
+        ),
     ],
 )
+@pytest.mark.parametrize("order", ["ranked", "fixed"])
 def test_an_index_sourced_bulk_read_serves_each_member_its_own_method_s_facet(
-    monkeypatch, index_sourced: bool, served: set[str]
+    monkeypatch,
+    search_settings,
+    order: str,
+    holdings: list[tuple[str, str, str, list[int]]],
+    index_sourced: bool,
+    facet_ids: set[str],
+    series: dict[tuple[str, str], tuple[str | None, list[tuple[str, float]]]],
 ):
-    """`_SV` holds `FM1` and `_SV_B` `FM2`, one source, unit and cadence under two methods.
-    An index-resolved family's group is that source and unit, so its one bulk read asks for
-    both facets and serves each member its own, as its mint dispatches, and names no member
-    left out. Grouped by facet id, the read asks for the lead's facet alone and serves its
-    holder."""
-    recipients = ["country/BRMethod1", "country/BRMethod2"]
+    """`FM1` and `FM2` hold one source, unit and cadence under two methods. An
+    index-resolved family's group is that source and unit, so its one bulk read asks for
+    both facets and each pair serves its own, as its mint dispatches them; grouped by facet
+    id, the read asks for the lead's facet alone and serves its holder. Each series states
+    the method of the facet serving its pair. A pair holding both methods on one date keeps
+    both points, as a mint keeps rows of distinct methods, and states no method. A pair
+    holding `FM1` and `FM3`, one identity, on one date keeps the best-ranked facet's point
+    alone, as `materialise.facet_collapse` keeps a mint's, and counts its points so: every
+    pair is read, so `total_obs` is the points served, in a ranked read and in a fixed one
+    over the row gate alike. A pair served by an estimated method holds estimates."""
+    if order == "fixed":
+        search_settings(role_bulk_rank_max_rows=0)
+    stat_vars = list(dict.fromkeys(sv for sv, *_rest in holdings))
+    recipients = sorted({r for _sv, _f, r, _y in holdings})
     index = patch_coverage(
         monkeypatch,
-        [
-            *((_SV, "FM1", _DONOR, r, [2020]) for r in recipients),
-            (_SV_B, "FM2", _DONOR, recipients[0], [2020]),
-        ],
-        role_names={sv: RoleNames(donor="provider", recipient="recipient") for sv in (_SV, _SV_B)},
+        [(sv, facet_id, _DONOR, r, years) for sv, facet_id, r, years in holdings],
+        role_names={sv: RoleNames(donor="provider", recipient="recipient") for sv in stat_vars},
         facet_metadata={
             facet_id: FacetMetadata(
                 provenance_id="dc/base/Shared",
@@ -595,27 +682,81 @@ def test_an_index_sourced_bulk_read_serves_each_member_its_own_method_s_facet(
                 unit="CurrencyUSD",
                 observation_period="P1Y",
             )
-            for facet_id, method in (("FM1", "Commitment"), ("FM2", "Disbursement"))
+            for facet_id, method in _METHODS.items()
         },
     )
-    sdmx = FakeSdmxClient(
-        observations={
-            _SV: {_role_tuple(r): [_facet(dates=["2020"], facet_id="FM1")] for r in recipients},
-            _SV_B: {_role_tuple(recipients[0]): [_facet(dates=["2020"], facet_id="FM2")]},
-        }
-    )
+    observations_by_sv: dict[str, dict] = {}
+    for sv, facet_id, r, years in holdings:
+        observations_by_sv.setdefault(sv, {}).setdefault(_role_tuple(r), []).append(
+            _facet(
+                dates=[str(y) for y in years],
+                value=float(sorted(_METHODS).index(facet_id) + 1),
+                facet_id=facet_id,
+            )
+        )
+    sdmx = FakeSdmxClient(observations=observations_by_sv)
     observations, _warn = bulk_role_series_planned(
-        [_SV, _SV_B],
+        stat_vars,
         _obs_entities(recipients),
         sdmx=sdmx,
         graph=_GRAPH,
         coverage=FakeCoverageService(index).snapshot(),
         index_sourced=index_sourced,
     )
-    assert len(sdmx.series_calls) == 1
-    assert sdmx.series_calls[0]["facet_ids"] == ({"FM1", "FM2"} if index_sourced else {"FM1"})
+    assert [set(call["facet_ids"]) for call in sdmx.series_calls] == [facet_ids]
     assert observations is not None
-    assert {s.stat_var.ref for s in observations.series} == served
+    served = {
+        (s.stat_var.ref, next(e.ref for e in s.entities if e.role == "destination")): (
+            s.facet["measurementMethod"].ref if "measurementMethod" in s.facet else None,
+            sorted((p.date, p.value) for p in s.points),
+        )
+        for s in observations.series
+    }
+    assert served == series
+    assert {
+        (s.stat_var.ref, next(e.ref for e in s.entities if e.role == "destination"))
+        for s in observations.series
+        if s.holds_estimates
+    } == {key for key, (method, _points) in series.items() if method == "Estimated"}
+    assert observations.total_obs == sum(len(points) for _method, points in series.values())
+
+
+def test_a_pair_serves_no_point_of_a_facet_another_member_selects() -> None:
+    """`_SV`'s pair holds `FM2`, which the group's selection serves `_SV_B` alone (as when
+    `_SV`'s copy of it sits at another cadence), dated after `FM1`'s last point. `FM2`
+    continues no facet (`BulkPlan.continuing`), so the pair serves `FM1`'s point alone and
+    states `FM1`, as a mint of `_SV` dispatches no row of `FM2`."""
+    pair = _role_tuple(_R1)
+    candidates = {
+        facet_id: role_candidate(
+            facet_id=facet_id,
+            role_tuples=[pair],
+            latest_date="2021",
+            provenance_id="dc/base/Shared",
+            measurement_method=_METHODS[facet_id],
+            unit="CurrencyUSD",
+        )
+        for facet_id in ("FM1", "FM2")
+    }
+    merged = merge_role_candidates(
+        {_SV: list(candidates.values()), _SV_B: [candidates["FM2"]]}, [_SV, _SV_B]
+    )
+    plan = BulkPlan(
+        members=(_SV, _SV_B),
+        years=None,
+        facet_id="FM1",
+        selected={_SV: ("FM1",), _SV_B: ("FM2",)},
+        candidates=merged,
+    )
+
+    read = _served_points(
+        _SV,
+        [_facet(dates=["2020"], facet_id="FM1"), _facet(dates=["2021"], value=2.0, facet_id="FM2")],
+        plan=plan,
+        estimated=frozenset(),
+    )
+
+    assert (read.points, [c.facet_id for c in read.stating]) == ([("2020", 0.0)], ["FM1"])
 
 
 def test_merged_candidates_keep_or_drop_whole_and_preview_pairs_in_sorted_order():

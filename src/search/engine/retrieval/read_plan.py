@@ -800,11 +800,21 @@ class BulkPlan:
 
     @property
     def served_facets(self) -> tuple[RoleBulkCandidate, ...]:
-        """The candidates of `served_facet_ids`."""
+        """The candidates of `served_facet_ids` holding a pair with data in the years the
+        read serves a member it is selected for (`member_years`): the facets the preview
+        reads. Under `latest` a selected facet holding no pair in its member's one year
+        serves nothing."""
         return tuple(
-            self.candidates[facet_id]
+            candidate
             for facet_id in self.served_facet_ids
-            if facet_id in self.candidates
+            if (candidate := self.candidates.get(facet_id)) is not None
+            and any(
+                c.pairs.n_with_data(first_year=first, last_year=last)
+                for sv in self.served_members
+                if facet_id in self.selected.get(sv, ())
+                for first, last in (self.member_years(sv),)
+                for c in candidate.by_sv.get(sv, ())
+            )
         )
 
     def selected_candidates(self, sv: str) -> list[RoleFacetCandidate]:
@@ -875,15 +885,35 @@ class BulkPlan:
             for candidate in self.served_candidates(sv):
                 yield sv, candidate, years
 
+    @property
+    def merges(self) -> bool:
+        """Whether a member's pairs read more than one facet: a facet continuing the lead
+        (`continuing`), or a selection of several (`selected`). Such a plan counts its pairs
+        once across their facets (`counted_pairs`)."""
+        return bool(self.continuing) or any(len(ids) > 1 for ids in self.selected.values())
+
     @cached_property
     def elected_pairs(self) -> Mapping[str, Mapping[RoleTuple, int]]:
         """Each served member's role tuples with an observation under the facets the group's
         selection serves it (`selected_candidates`) in its years, each with the observations
-        it holds there. Empty with no election."""
-        return {
-            sv: _tuple_counts(self.selected_candidates(sv), *self.member_years(sv))
-            for sv in self.served_members
-        }
+        it serves there: one facet's own, or across several the points a mint keeps of them
+        (`_collapsed_counts`). Empty with no election."""
+        counted: dict[str, Mapping[RoleTuple, int]] = {}
+        for sv in self.served_members:
+            candidates = self.selected_candidates(sv)
+            years = self.member_years(sv)
+            if len(self.selected.get(sv, ())) > 1:
+                counted[sv] = _collapsed_counts(candidates, *years)
+            else:
+                counted[sv] = _tuple_counts(candidates, *years)
+        return counted
+
+    @property
+    def counted_pairs(self) -> Mapping[str, Mapping[RoleTuple, int]]:
+        """Each served member's role tuples with an observation the read serves in its
+        years, each with the observations it serves there, counted once across the facets
+        they read: `continued_pairs` with a continuation, else `elected_pairs`."""
+        return self.continued_pairs if self.continuing else self.elected_pairs
 
     @cached_property
     def continued_pairs(self) -> Mapping[str, Mapping[RoleTuple, int]]:
@@ -922,10 +952,10 @@ class BulkPlan:
     def population(self) -> int:
         """The series the read can serve: one per full role tuple with an observation in its
         member's years under the facets the read dispatches (`member_pairs`, or
-        `continued_pairs` when a continuation joins the elected facet). The bulk read's
+        `counted_pairs` when its pairs read several facets (`merges`)). The bulk read's
         truncation baseline."""
-        if self.continuing:
-            return sum(len(counts) for counts in self.continued_pairs.values())
+        if self.merges:
+            return sum(len(counts) for counts in self.counted_pairs.values())
         return sum(
             c.pairs.n_with_data(first_year=first, last_year=last)
             for _sv, c, (first, last) in self.member_pairs()
@@ -934,10 +964,9 @@ class BulkPlan:
     @property
     def observation_count(self) -> int:
         """The observations the read serves across every pair in its member's years
-        (`member_pairs`, or `continued_pairs` when a continuation joins the elected
-        facet)."""
-        if self.continuing:
-            return sum(sum(counts.values()) for counts in self.continued_pairs.values())
+        (`member_pairs`, or `counted_pairs` when its pairs read several facets)."""
+        if self.merges:
+            return sum(sum(counts.values()) for counts in self.counted_pairs.values())
         return sum(
             c.pairs.n_obs(first_year=first, last_year=last)
             for _sv, c, (first, last) in self.member_pairs()
@@ -946,11 +975,10 @@ class BulkPlan:
     @property
     def max_pair_observations(self) -> int:
         """The most observations the read serves at one full role tuple in its member's
-        years (`member_pairs`, or `continued_pairs` when a continuation joins the elected
-        facet)."""
-        if self.continuing:
+        years (`member_pairs`, or `counted_pairs` when its pairs read several facets)."""
+        if self.merges:
             return max(
-                (n for counts in self.continued_pairs.values() for n in counts.values()),
+                (n for counts in self.counted_pairs.values() for n in counts.values()),
                 default=0,
             )
         return max(
@@ -1105,6 +1133,29 @@ def _tuple_counts(
         ):
             counts[role_tuple] = counts.get(role_tuple, 0) + n_obs
     return counts
+
+
+def _collapsed_counts(
+    candidates: Iterable[RoleFacetCandidate], first: int | None, last: int | None
+) -> dict[RoleTuple, int]:
+    """`_tuple_counts` across facets a mint collapses: facets sharing a unit, method and
+    provenance count a tuple's year once, at the larger of their counts there, since a mint
+    keeps one row per date of them (`materialise.facet_collapse`), and facets of different
+    methods add. Coverage holds counts by year, so the count is exact for facets dating a
+    year once, the annual facets a cadence-agreeing selection holds, and counts a
+    sub-annual year's larger facet alone."""
+    by_year: dict[tuple[RoleTuple, tuple[str | None, ...], int], int] = {}
+    for c in candidates:
+        identity = (c.unit, c.measurement_method, c.provenance_id)
+        for role_tuple, counts in c.pairs.year_counts(first_year=first, last_year=last):
+            for year, n_obs in counts:
+                key = (role_tuple, identity, year)
+                by_year[key] = max(n_obs, by_year.get(key, 0))
+    tuples: dict[RoleTuple, int] = {}
+    for (role_tuple, _identity, _year), n_obs in by_year.items():
+        if n_obs:
+            tuples[role_tuple] = tuples.get(role_tuple, 0) + n_obs
+    return tuples
 
 
 def _without(

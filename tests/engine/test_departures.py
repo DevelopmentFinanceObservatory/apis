@@ -21,6 +21,7 @@ from search.engine.departures import (
     surviving_facts,
     warning_key,
     window_gap_fact,
+    without_request_words,
 )
 from search.engine.entry.raw_text import _dropped_phrase_fact
 from search.engine.retrieval.read_plan import WindowGap, data_years, plan_standard, served_dates
@@ -393,6 +394,45 @@ def test_group_read_as_members_asks_in_the_request_s_words(role, binding_ref, en
     assert [
         (fact.code, fact.binding_ref, fact.asked, fact.group, fact.group_dcid) for fact in facts
     ] == [("group_read_as_members", binding_ref, asked, "European Union", "EuropeanUnion")]
+
+
+@pytest.mark.parametrize(
+    ("fact", "stated"),
+    [
+        pytest.param(
+            DepartureFact(code="group_read_as_members", binding_ref="where:", asked="Africa"),
+            DepartureFact(code="group_read_as_members", binding_ref="where:"),
+            id="request-words-dropped",
+        ),
+        pytest.param(
+            DepartureFact(code="measure_not_applied", binding_ref="how:x", asked="loans"),
+            DepartureFact(code="measure_not_applied", binding_ref="how:x", values=("loans",)),
+            id="measure-value-moves-to-values",
+        ),
+        pytest.param(
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            id="spec-members-stand",
+        ),
+    ],
+)
+def test_a_door_without_request_words_asks_only_for_what_the_spec_names(
+    fact: DepartureFact, stated: DepartureFact
+):
+    """A resubmit holds no words of the request, so its part states no `asked` the words
+    gave. `member_unavailable` asks for the Spec's own members, which no request words name,
+    so it keeps them."""
+    assert without_request_words(fact) == stated
 
 
 _AFRICA_GROUP = EntityGroup(ref="africa", label="Africa", entity_type="Continent")

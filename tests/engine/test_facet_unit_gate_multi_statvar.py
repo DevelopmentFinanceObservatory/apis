@@ -37,7 +37,7 @@ from search.observations import OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import elected_reply
-from tests.engine._conjoin_fixtures import member_departures
+from tests.engine._conjoin_fixtures import member_departure_texts, member_departures
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -437,7 +437,8 @@ def test_a_partly_served_candidate_stays_beside_the_full_alternate():
     """A dollar request serves the SET candidate's SV_A, its native dollar facet, and leaves
     SV_B, which holds only euros, unserved. The candidate stays beside the SV_C alternate,
     which serves in full, so the answer offers both, and the part names SV_B as left out of
-    the SET reading's source."""
+    the SET reading's source, by that source and unit, so the text is true of the one reading
+    it concerns."""
     obs = {
         f"{_SV_A}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=10.0)],
         f"{_SV_B}|country/KEN": [_obs_facet(unit="CurrencyEUR", value=5.0)],
@@ -455,6 +456,10 @@ def test_a_partly_served_candidate_stays_beside_the_full_alternate():
         {_SV_C},
     ]
     assert member_departures(result) == [(f"how:{_PROP}", "Unit gate SourceB", _SOURCE_PROVENANCE)]
+    assert member_departure_texts(result) == [
+        f"You asked for Unit gate SourceB. {_SOURCE_PROVENANCE} holds no values for it under "
+        "the unit and method read (US dollars)."
+    ]
 
 
 # A role-bearing bulk scope: the role-pair product exceeds `obs_preview_max_pairs`, so the
