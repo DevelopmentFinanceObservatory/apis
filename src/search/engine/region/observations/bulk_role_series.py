@@ -3,7 +3,7 @@
 The read plan (`read_plan.BulkPlan`) names the one facet the read serves, the facets
 continuing it past its last year, and its years. One `sdmx.role_series` call reads the
 points, and each pair serves a continuing facet's points only after its last elected one
-(`_served_points`), as a mint of the answer's Spec does. Coverage counts the rows the answer
+(`_served_pairs`), as a mint of the answer's Spec does. Coverage counts the rows the answer
 keeps before any read (`BulkPlan.observation_count`). When they fit `role_bulk_rank_max_rows`, the call
 reads every series with the open role left unfiltered (or, with every role open, filtered
 on the population's own values of its narrowest role), and the preview shows the first
@@ -35,7 +35,7 @@ from typing import NamedTuple
 from code_index.shared import get_index
 from dc_sdmx import SdmxCapExceededError, is_observed
 from dfo_platform.executor import submit_with_context
-from materialise.facet_collapse import CollapseCell, series_keep_mask
+from materialise.facet_collapse import CollapseCell, keep_mask
 from materialise.method_status import status_of
 from materialise.window import latest_periods
 from search.engine.clients.graph import EngineGraphClient, Facet
@@ -137,83 +137,115 @@ def _points_from_facets(facets: list[Facet]) -> list[tuple[str, float | None]]:
     ]
 
 
-class _PairRead(NamedTuple):
-    """One pair's served points (`_served_points`), whether one comes from an estimated
-    facet, and the facets whose points state the series' refs (`_series_refs`)."""
+_Point = tuple[str, float | None, str]
+"""One observed point a bulk read returned: its date, its value and the facet id it is
+read under, which the read keeps until it has fixed the points a pair serves."""
 
-    points: list[tuple[str, float | None]]
-    holds_estimates: bool
-    stating: tuple[RoleBulkCandidate, ...]
+_PairRows = dict[tuple[str, RoleTuple], list[_Point]]
 
 
-def _served_points(
-    sv: str,
-    facets: list[Facet],
-    *,
+def _pair_rows(sv: str, facets: list[Facet], *, plan: BulkPlan) -> list[_Point]:
+    """The observed points (`_points_from_facets`) the read returned for one pair of `sv`
+    under the facets that can serve it: those the group's selection serves `sv`
+    (`BulkPlan.selected`) and those continuing the lead (`BulkPlan.continuing`). A returned
+    facet in neither, such as another member's selection, serves nothing here."""
+    serving = {*plan.selected.get(sv, ()), *plan.continuing}
+    return [
+        (date, value, f.facet_id)
+        for f in facets
+        if f.facet_id in serving
+        for date, value in _points_from_facets([f])
+    ]
+
+
+class _Served(NamedTuple):
+    """The points each pair serves, the refs its series states, and the pairs holding a
+    point of an estimated method (`_served_pairs`)."""
+
+    points: dict[tuple[str, RoleTuple], list[tuple[str, float | None]]]
+    stated: dict[tuple[str, RoleTuple], dict[str, str]]
+    estimated: frozenset[tuple[str, RoleTuple]]
+
+
+def _served_pairs(
     plan: BulkPlan,
+    rows: Mapping[tuple[str, RoleTuple], list[_Point]],
+    *,
+    rank_within_series: bool,
     estimated: frozenset[str],
-) -> _PairRead:
-    """One pair of `sv`'s points from the facets the read returned for it, each holding an
-    observation (`_points_from_facets`), as a mint of the pair keeps its rows.
+) -> _Served:
+    """The points each pair of `rows` serves, as a mint of its member keeps its rows once
+    it has reduced them to their period: `rows` arrive cut to it (`_at_member_latest`).
 
-    The pair serves the facets the group's selection serves `sv` (`BulkPlan.selected`),
-    keeping on a date two of them contest under one unit, method and provenance the
-    best-ranked facet's point alone, and both points where their methods differ
-    (`materialise.facet_collapse.series_keep_mask`). Then it serves the facets continuing
-    the lead (`BulkPlan.continuing`) dated after the last of those points, or all of
-    theirs where the selection holds none (`materialise.columnar.continuation_mask`). A
-    returned facet in neither, such as another member's selection, serves nothing here.
-    The selected facets holding a kept point state the series, else the continuing ones."""
-    selected = frozenset(plan.selected.get(sv, ()))
-    points, held = _collapsed_points(
-        sv, [f for f in facets if f.facet_id in selected], plan.candidates
-    )
-    last = max((date for date, _value in points), default=None)
-    continued: list[str] = []
-    for f in facets:
-        if f.facet_id is None or f.facet_id in selected or f.facet_id not in plan.continuing:
-            continue
-        kept = [(d, v) for d, v in _points_from_facets([f]) if last is None or d > last]
-        if kept:
-            points.extend(kept)
-            continued.append(f.facet_id)
-    stating = held or continued
-    return _PairRead(
-        points=points,
-        holds_estimates=not estimated.isdisjoint({*held, *continued}),
-        stating=tuple(
-            plan.candidates[facet_id]
-            for facet_id in dict.fromkeys(stating)
-            if facet_id in plan.candidates
+    Each pair keeps its selected facets' points, then those of the facets continuing the
+    lead dated after the last of them, or all of theirs where the selection holds none
+    (`materialise.columnar.continuation_mask`). Each member's kept points then collapse
+    across every pair it serves at once (`materialise.facet_collapse.keep_mask`): on a date
+    two facets contest at one pair under one unit, method and provenance, the facet ranked
+    best over the member's whole table keeps it, or over the pair alone under
+    `rank_within_series`, as a mint ranks when a conversion plan runs arithmetic
+    (`materialise.generation._convert_by_series`). Points of different methods both stay.
+
+    A series states the refs its pair's served facets share (`_series_refs`): the selected
+    facets holding a served point, else the continuing ones. A pair holds estimates when a
+    served point comes from one of the `estimated` facet ids. Refs and the flag read only
+    the points served, so a point the period cut or the collapse drops shapes neither."""
+    kept_by_sv: dict[str, list[tuple[RoleTuple, _Point]]] = {}
+    for (sv, role_tuple), points in rows.items():
+        ids = frozenset(plan.selected.get(sv, ()))
+        selected = [point for point in points if point[2] in ids]
+        last = max((point[0] for point in selected), default=None)
+        kept = [
+            *selected,
+            *(p for p in points if p[2] not in ids and (last is None or p[0] > last)),
+        ]
+        kept_by_sv.setdefault(sv, []).extend((role_tuple, point) for point in kept)
+    served: dict[tuple[str, RoleTuple], list[_Point]] = {}
+    for sv, entries in kept_by_sv.items():
+        mask = keep_mask(
+            [
+                _collapse_cell(sv, role_tuple, point, plan.candidates)
+                for role_tuple, point in entries
+            ],
+            rank_within_series=rank_within_series,
+        )
+        for (role_tuple, point), keep in zip(entries, mask, strict=True):
+            if keep:
+                served.setdefault((sv, role_tuple), []).append(point)
+    stated: dict[tuple[str, RoleTuple], dict[str, str]] = {}
+    for (sv, role_tuple), points in served.items():
+        ids = list(dict.fromkeys(point[2] for point in points))
+        stating = [i for i in ids if i in plan.selected.get(sv, ())] or ids
+        stated[(sv, role_tuple)] = _series_refs(
+            [plan.candidates[i] for i in stating if i in plan.candidates]
+        )
+    return _Served(
+        points={pair: [(d, v) for d, v, _f in points] for pair, points in served.items()},
+        stated=stated,
+        estimated=frozenset(
+            pair for pair, points in served.items() if any(p[2] in estimated for p in points)
         ),
     )
 
 
-def _collapsed_points(
-    sv: str, facets: list[Facet], candidates: Mapping[str, RoleBulkCandidate]
-) -> tuple[list[tuple[str, float | None]], list[str]]:
-    """The observed points of `facets`, one pair of `sv`, that a mint keeps
-    (`materialise.facet_collapse.series_keep_mask`), each facet's unit, method, provenance
-    and period read off its candidate, and the ids of the facets holding a kept point."""
-    observed = [(f.facet_id, point) for f in facets for point in _points_from_facets([f])]
-    cells = []
-    for facet_id, (date, _value) in observed:
-        candidate = candidates.get(facet_id) if facet_id is not None else None
-        cells.append(
-            CollapseCell(
-                variable=sv,
-                role_values=(),
-                time_period=date,
-                unit=candidate.unit if candidate is not None else None,
-                measurement_method=candidate.measurement_method if candidate else None,
-                provenance=candidate.provenance_id if candidate is not None else None,
-                observation_period=candidate.observation_period if candidate else None,
-                facet_id=facet_id,
-            )
-        )
-    kept = [entry for entry, keep in zip(observed, series_keep_mask(cells), strict=True) if keep]
-    return [point for _facet_id, point in kept], list(
-        dict.fromkeys(facet_id for facet_id, _point in kept if facet_id is not None)
+def _collapse_cell(
+    sv: str, role_tuple: RoleTuple, point: _Point, candidates: Mapping[str, RoleBulkCandidate]
+) -> CollapseCell:
+    """`point` of `sv` at `role_tuple` as the mint's collapse keys and ranks a row
+    (`materialise.facet_collapse.CollapseCell`), its facet's unit, method, provenance and
+    period read off its candidate. The pair's dcids are the row's role values, so its grain
+    key keeps places apart."""
+    date, _value, facet_id = point
+    candidate = candidates.get(facet_id)
+    return CollapseCell(
+        variable=sv,
+        role_values=tuple(dcid for _role, dcid in role_tuple),
+        time_period=date,
+        unit=candidate.unit if candidate is not None else None,
+        measurement_method=candidate.measurement_method if candidate is not None else None,
+        provenance=candidate.provenance_id if candidate is not None else None,
+        observation_period=candidate.observation_period if candidate is not None else None,
+        facet_id=facet_id,
     )
 
 
@@ -618,42 +650,30 @@ def _read_and_assemble(
         if status_of(c.measurement_method, c.provenance_id) == "estimated"
     )
 
-    stated: dict[tuple[str, RoleTuple], dict[str, str]] = {}
-
-    def served(
-        rows: _RoleRows, *, every_pair_of: Collection[str] = ()
-    ) -> tuple[
-        dict[tuple[str, RoleTuple], list[tuple[str, float | None]]], set[tuple[str, RoleTuple]]
-    ]:
-        """Each dispatched pair's points in `rows`, and the pairs serving a point of an
-        estimated method, recording in `stated` the refs each pair's series states
-        (`_series_refs`). A member in `every_pair_of` serves every pair `rows` holds for it
+    def pair_rows(rows: _RoleRows, *, every_pair_of: Collection[str] = ()) -> _PairRows:
+        """Each dispatched pair's points in `rows` under the facets that can serve it
+        (`_pair_rows`). A member in `every_pair_of` reads every pair `rows` holds for it
         that the plan does not omit (`_omitted`)."""
-        pair_points: dict[tuple[str, RoleTuple], list[tuple[str, float | None]]] = {}
-        estimated: set[tuple[str, RoleTuple]] = set()
+        found: _PairRows = {}
         for sv in fetch_plan.facet_svs:
             for role_tuple, facets in rows.get(sv, {}).items():
                 if (sv, role_tuple) not in dispatched_pairs and (
                     sv not in every_pair_of or _omitted(plan, sv, role_tuple)
                 ):
                     continue
-                read = _served_points(sv, facets, plan=plan, estimated=estimated_ids)
-                if read.points:
-                    pair_points[(sv, role_tuple)] = read.points
-                    stated[(sv, role_tuple)] = _series_refs(read.stating)
-                    if read.holds_estimates:
-                        estimated.add((sv, role_tuple))
-        return pair_points, estimated
+                if points := _pair_rows(sv, facets, plan=plan):
+                    found[(sv, role_tuple)] = points
+        return found
 
     fell_back: Sequence[str] = ()
     try:
         if latest:
             newest = read(fetch_plan.facet_svs, "LATEST")
             rows = dict(newest)
-            pair_points, estimated = served(rows)
+            pair_points = pair_rows(rows)
             if lagging := _ending_after_elected(plan, pair_points):
                 rows.update(_read_each_year(read, _by_elected_year(plan, lagging)))
-                pair_points, estimated = served(rows)
+                pair_points = pair_rows(rows)
             fell_back = _without_elected_points(plan, fetch_plan.facet_svs, pair_points)
             if fell_back:
                 logger.warning(
@@ -662,9 +682,9 @@ def _read_and_assemble(
                     fell_back,
                 )
                 rows.update({sv: newest.get(sv, {}) for sv in fell_back})
-                pair_points, estimated = served(rows, every_pair_of=fell_back)
+                pair_points = pair_rows(rows, every_pair_of=fell_back)
         else:
-            pair_points, estimated = served(
+            pair_points = pair_rows(
                 read(
                     fetch_plan.facet_svs,
                     list(plan.read_years) if plan.read_years is not None else None,
@@ -706,29 +726,28 @@ def _read_and_assemble(
                 short,
             )
         pair_points = at_latest
+    served = _served_pairs(
+        plan, pair_points, rank_within_series=conversion is not None, estimated=estimated_ids
+    )
     converted = None
     if conversion is not None:
         try:
-            converted = convert_pairs(pair_points, facet=best, conversion=conversion)
+            converted = convert_pairs(served.points, facet=best, conversion=conversion)
         except (*UPSTREAM_READ_ERRORS, TimeoutError) as exc:
             return conversion_failed_omission(exc)
-        pair_points = converted.points
     return _assemble_role_bulk_series(
-        stated,
+        served.stated,
         fetch_plan,
-        pair_points,
+        converted.points if converted is not None else served.points,
         member_constraints=member_constraints,
         graph=graph,
         converted=converted,
         target_unit_ref=conversion.target_unit_ref if conversion is not None else None,
-        estimated=frozenset(estimated),
+        estimated=served.estimated,
     )
 
 
-def _ending_after_elected(
-    plan: BulkPlan,
-    pair_points: Mapping[tuple[str, RoleTuple], list[tuple[str, float | None]]],
-) -> list[str]:
+def _ending_after_elected(plan: BulkPlan, pair_points: _PairRows) -> list[str]:
     """The members that elected a year (`BulkPlan.elected_years`) one of whose pairs in
     `pair_points`, each pair's `LATEST` row, is dated after: the `LATEST` read cannot
     return that pair's point in the elected year, so the member is read again there. In
@@ -738,7 +757,7 @@ def _ending_after_elected(
         sv
         for (sv, _role_tuple), points in pair_points.items()
         if (year := elected.get(sv)) is not None
-        and any((held := year_of(date)) is not None and held > year for date, _value in points)
+        and any((held := year_of(point[0])) is not None and held > year for point in points)
     }
     return [sv for sv in plan.members if sv in after]
 
@@ -790,9 +809,7 @@ def _omitted(plan: BulkPlan, sv: str, role_tuple: RoleTuple) -> bool:
 
 
 def _without_elected_points(
-    plan: BulkPlan,
-    variables: Sequence[str],
-    pair_points: Mapping[tuple[str, RoleTuple], list[tuple[str, float | None]]],
+    plan: BulkPlan, variables: Sequence[str], pair_points: _PairRows
 ) -> list[str]:
     """Those of `variables` that elected a year (`BulkPlan.elected_years`) in which none of
     their pairs in `pair_points` serves a point: coverage dates them a year SDMX holds no
@@ -801,17 +818,14 @@ def _without_elected_points(
     held = {
         sv
         for (sv, _role_tuple), points in pair_points.items()
-        if any(year_of(date) == elected.get(sv) for date, _value in points)
+        if any(year_of(point[0]) == elected.get(sv) for point in points)
     }
     return [sv for sv in variables if sv in elected and sv not in held]
 
 
 def _at_member_latest(
-    plan: BulkPlan,
-    pair_points: Mapping[tuple[str, RoleTuple], list[tuple[str, float | None]]],
-    *,
-    undated: Collection[str] = (),
-) -> dict[tuple[str, RoleTuple], list[tuple[str, float | None]]]:
+    plan: BulkPlan, pair_points: _PairRows, *, undated: Collection[str] = ()
+) -> _PairRows:
     """`pair_points` at each member's one period, as a mint keeps a StatVar's rows
     (`materialise.columnar.latest_rows`): the plan fixes the member's year
     (`BulkPlan.member_year`, the year it elected or else the year coverage dates its
@@ -831,7 +845,7 @@ def _at_member_latest(
         for pair, points in pair_points.items()
     }
     latest = latest_periods(
-        (sv, date) for (sv, _rt), points in in_year.items() for date, _value in points
+        (sv, point[0]) for (sv, _rt), points in in_year.items() for point in points
     )
     return {
         pair: kept

@@ -506,8 +506,9 @@ def test_a_role_answer_counts_the_points_its_preview_serves(
     assert len(bulk_reads) <= 1
     if bulk_reads:
         # A bulk read asks, in each call, for the facets of the variable's one group holding
-        # a point in the years read, as its mint dispatches them, and for the facets
-        # continuing its lead. A bulk cell holding one pair reads it per series.
+        # a point in the years read, under `latest` in any year, since a member whose
+        # elected year SDMX holds no row falls back to its newest period, and for the
+        # facets continuing its lead. A bulk cell holding one pair reads it per series.
         assert bulk
         holding = {f for f in group if _places_with_data(fixture.holdings, request_kind, {f})}
         asked = holding | set(bulk_reads[0].continuing)

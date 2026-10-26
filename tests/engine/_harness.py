@@ -9,7 +9,7 @@ import json
 import math
 import re
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import aclosing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -327,12 +327,13 @@ def bulk_role_series_planned(
     latest: bool = False,
     roles: PlanRoles | None = None,
     index_sourced: bool = False,
+    elect: Callable[[ReadPlan], Mapping[str, int]] | None = None,
     **kwargs,
 ) -> tuple[SpecObservations, Warning | None]:
     """`_bulk_role_series` over the bulk plan a resolver records for these inputs
     (`bulk_plan`): `latest`, a range over `time_period`, or every year, narrowed by
-    `facet_filter`, with the plan's bound `roles` when given, and elected as an
-    index-resolved family's under `index_sourced`."""
+    `facet_filter`, with the plan's bound `roles` when given, its `latest` years elected by
+    `elect` when given, and elected as an index-resolved family's under `index_sourced`."""
     window: PlanYears = (
         "latest"
         if latest
@@ -350,6 +351,8 @@ def bulk_role_series_planned(
     )
     if roles is not None:
         plan = replace(plan, roles=roles)
+    if elect is not None:
+        plan = replace(plan, elect=elect)
     if index_sourced:
         plan = replace(plan, index_sourced=True).narrowed(lambda _sv, _candidate: True)
     if facet_filter:

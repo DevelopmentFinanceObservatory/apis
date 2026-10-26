@@ -65,13 +65,15 @@ def collapse_duplicate_identity_facets_table(
     return table.filter(pa.array(keep, type=pa.bool_()))
 
 
-def series_keep_mask(cells: Sequence[CollapseCell]) -> tuple[bool, ...]:
-    """The cells of one series `collapse_duplicate_identity_facets_table` keeps, in input
-    order: on a grain key two facets contest (one date under the same unit, method and
-    provenance), those of the best-ranked facet (`_facet_selection_rank`); every other cell.
+def keep_mask(cells: Sequence[CollapseCell], *, rank_within_series: bool) -> tuple[bool, ...]:
+    """The cells of `cells` that `collapse_duplicate_identity_facets_table` keeps of a table
+    holding them, in input order, under the same `rank_within_series`: on a grain key two
+    facets contest (one date at one set of role values under the same unit, method and
+    provenance), those of the facet ranked best (`_facet_selection_rank`) over all its
+    cells, or over its cells in each series under `rank_within_series`; every other cell.
     Cells under different methods hold different grain keys, so both stay. A caller holding
-    a series' rows outside an Arrow table, such as Search's bulk role read, keeps by it."""
-    keep = _duplicate_facet_keep_mask(cells, rank_within_series=False)
+    a member's rows outside an Arrow table, such as Search's bulk role read, keeps by it."""
+    keep = _duplicate_facet_keep_mask(cells, rank_within_series=rank_within_series)
     return keep if keep is not None else (True,) * len(cells)
 
 
