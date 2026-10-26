@@ -4,15 +4,17 @@ Every resolver builds one `ReadPlan` per answer and records it on `Materialised.
 and every consumer reads that plan rather than derive its own:
 
 - A `PairPlan` reads each series on its own: every candidate series `(stat_var, role
-  tuple)` with its candidate facets and the group the preview dispatches for it. Each
-  member gets one group across every place and role tuple the answer names, elected over
-  the member's probe as a mint elects it (`PairPlan.probes`,
-  `materialise.group_facets.group_served`). A series the group does not cover serves nothing. A
-  scope-defaulted read serves the one facet elected across every place
-  (`facet_election.rank_scope_candidates`).
+  tuple)` with its candidate facets and the group the preview dispatches for it. The
+  members share one group across every place and role tuple the answer names, elected
+  over every member's probe as a mint of the answer's Spec elects it (`PairPlan.probes`,
+  `materialise.group_facets.elect_probes`): the group serving the most members. A series
+  the group does not cover serves nothing, so a member the group leaves out serves nothing
+  and its series are `PairPlan.uncovered`. A scope-defaulted read serves the one facet
+  elected across every place (`facet_election.rank_scope_candidates`).
 - A `BulkPlan` reads a role-bearing population whose bound pairs or series pass
   `obs_preview_max_pairs` (`search.observations.preview_mode`) in one read of one facet,
-  elected over the merged role index (`facet_election.select_role_candidate`). Its pairs can run to 1.6M and are not listed.
+  elected over the merged role index as a group of its members
+  (`facet_election.select_role_candidate`). Its pairs can run to 1.6M and are not listed.
 
 Both carry the antichain-minimal members the preview reads and the years it reads
 (`plan_years`). The years apply before anything is counted, ranked or built: a per-pair
@@ -47,7 +49,7 @@ from materialise.facets import (
     read_variable_breadths,
     subject_probe,
 )
-from materialise.group_facets import group_served
+from materialise.group_facets import elect_probes
 from materialise.window import RequestedWindow, election_window, latest_period, latest_periods
 from search.engine import extract as _extract
 from search.engine.clients.graph import Facet
@@ -471,16 +473,27 @@ def series_probes(
 
 
 def _member_groups(
-    probes: Mapping[str, MemberProbe], *, years: PlanYears
-) -> dict[str, tuple[Facet, ...]]:
-    """The facets of the one group each member's preview dispatches at every series, in
-    serving order: `group_served` over the member's probe alone under `years`, led by the series
-    each facet holds a point at (`MemberProbe.breadth_in`), with a tie at one place broken on
-    the facet's places across the whole variable (`MemberProbe.variable_breadth`). The
-    elected facets come first and the facets continuing them past their last year after
-    (`materialise.facets.continuation`), which a mint of the answer's Spec dispatches too."""
-    window = plan_window(years)
-    return {sv: group_served({sv: probe}, window=window)[sv] for sv, probe in probes.items()}
+    probes: Mapping[str, MemberProbe], *, years: PlanYears, index_sourced: bool
+) -> tuple[dict[str, tuple[Facet, ...]], dict[str, frozenset[str]]]:
+    """The facets of the one group every member's preview dispatches at every series, in
+    serving order, and each member's selection (`PairPlan.selections`): one election over
+    every member's probe under `years` (`materialise.group_facets.elect_probes`), led by the
+    series each facet holds a point at summed across the members, with a tie broken on the
+    facets' places across the whole variables. The elected facets come first and the facets
+    continuing them past their last year after (`materialise.facets.continuation`), which a
+    mint of the answer's Spec dispatches too. A member the group does not serve holds no
+    facet and no selection. `index_sourced` lets an index-resolved family's members agree on
+    provenance and unit alone, as its mint does (`MaterialisationRequest.index_sourced`)."""
+    group = elect_probes(probes, window=plan_window(years), index_sourced=index_sourced)
+    if group is None:
+        return dict.fromkeys(probes, ()), {}
+    groups: dict[str, tuple[Facet, ...]] = {}
+    selections: dict[str, frozenset[str]] = {}
+    for member, (sv, probe) in enumerate(probes.items()):
+        groups[sv] = group.served(member, probe.candidates)
+        if selected := group.selected(member):
+            selections[sv] = selected
+    return groups, selections
 
 
 def _elect_groups(
@@ -490,6 +503,7 @@ def _elect_groups(
     years: PlanYears,
     scope: bool,
     probes: Mapping[str, MemberProbe],
+    index_sourced: bool,
 ) -> tuple[tuple[PlanSeries, ...], str | None, dict[str, frozenset[str]]]:
     """Each series with the group its preview dispatches, a scope read's one facet, and each
     member's selection (`PairPlan.selections`). A series holds its member's group where it
@@ -501,21 +515,10 @@ def _elect_groups(
             group[0] if group else None,
             dict.fromkeys(members, selection),
         )
-    groups = _member_groups(probes, years=years)
+    groups, selections = _member_groups(probes, years=years, index_sourced=index_sourced)
     ids = {
         sv: tuple(f.facet_id for f in group if f.facet_id is not None)
         for sv, group in groups.items()
-    }
-    # `group_served` puts the selection, which shares one method, before the estimates
-    # continuing it.
-    selections = {
-        sv: frozenset(
-            f.facet_id
-            for f in group
-            if f.facet_id is not None and f.measurement_method == group[0].measurement_method
-        )
-        for sv, group in groups.items()
-        if group
     }
     return (
         tuple(replace(s, group=_group_of(s.candidates, ids.get(s.stat_var, ()))) for s in series),
@@ -562,8 +565,10 @@ class PairPlan:
     role-bearing plan was built with, which every plan derived from it runs over its own
     rows. A scope-defaulted read (`scope`) serves `scope_facet_id` at every place.
     `selections` holds each member's facet ids a mint of the answer's Spec serves before any
-    continuation: those sharing the elected facet's provenance, method, unit and cadence. A
-    series' group holds all of them, a scope read's only `scope_facet_id`.
+    continuation: those matching the one group's selections at its cadence, absent for a
+    member the group does not serve. A series' group holds all of them, a scope read's only
+    `scope_facet_id`. `index_sourced` marks an index-resolved family, whose group agrees on
+    provenance and unit alone (`in_elected_datasets`).
     `roles` is set for a role-bearing read. `probes` holds each member's election input
     (`plan_pairs`): its candidates merged across every place and role tuple the answer
     names, and each facet's series count. A unit decision reads the same probes. `places`
@@ -582,6 +587,7 @@ class PairPlan:
     roles: PlanRoles | None = None
     places: tuple[str, ...] = ()
     omitted: Omissions = frozenset()
+    index_sourced: bool = False
     probes: Mapping[str, MemberProbe] = field(default_factory=dict, compare=False)
     elect: Election | None = field(default=None, compare=False, repr=False)
 
@@ -705,6 +711,7 @@ class PairPlan:
                 for sv, probe in self.probes.items()
             }
             or None,
+            index_sourced=self.index_sourced,
             elect=self.elect,
         )
         return replace(narrowed, omitted=self.omitted)
@@ -726,6 +733,7 @@ class PairPlan:
             roles=self.roles,
             places=self.places,
             probes=self.probes or None,
+            index_sourced=self.index_sourced,
             elect=self.elect,
         )
         return replace(dated, omitted=self.omitted)
@@ -746,7 +754,8 @@ class BulkPlan:
     (`member_years`). Under `latest` each member serves one year of its own
     (`member_year`), as a mint reduces each StatVar to its own period. `elect` is the
     election the plan was built with, which every plan derived from it runs over its own
-    rows (`elected_years`).
+    rows (`elected_years`). `index_sourced` marks an index-resolved family, whose members
+    agree on provenance and unit alone (`in_elected_datasets`).
     """
 
     members: tuple[str, ...]
@@ -758,6 +767,7 @@ class BulkPlan:
     roles: PlanRoles | None = None
     omitted: Omissions = frozenset()
     omitted_served: frozenset[str] = frozenset()
+    index_sourced: bool = False
     elect: Election | None = field(default=None, compare=False, repr=False)
 
     @cached_property
@@ -949,7 +959,10 @@ class BulkPlan:
                     ),
                 )
         facet_id, continuing = _role_election(
-            candidates, members=self.members, read_years=self.read_years
+            candidates,
+            members=self.members,
+            read_years=self.read_years,
+            index_sourced=self.index_sourced,
         )
         return replace(self, facet_id=facet_id, continuing=continuing, candidates=candidates)
 
@@ -960,7 +973,10 @@ class BulkPlan:
         assert years.start_year is not None and years.end_year is not None
         listed = tuple(str(year) for year in range(years.start_year, years.end_year + 1))
         facet_id, continuing = _role_election(
-            self.candidates, members=self.members, read_years=listed
+            self.candidates,
+            members=self.members,
+            read_years=listed,
+            index_sourced=self.index_sourced,
         )
         return replace(
             self, years=years, read_years=listed, facet_id=facet_id, continuing=continuing
@@ -1017,11 +1033,15 @@ def _role_election(
     *,
     members: Sequence[str],
     read_years: Sequence[str] | None,
+    index_sourced: bool = False,
 ) -> tuple[str | None, tuple[str, ...]]:
-    """The facet a bulk read of `members` serves from `candidates` inside `read_years`
-    (`facet_election.select_role_candidate`) and the facets continuing it there
-    (`facet_election.role_continuation`), or None and nothing with no candidate."""
-    best = select_role_candidate(candidates, stat_vars=members, time_period=read_years)
+    """The facet a bulk read of `members` serves from `candidates` inside `read_years`, the
+    lead of the members' one group (`facet_election.select_role_candidate`), and the facets
+    continuing it there (`facet_election.role_continuation`), or None and nothing with no
+    candidate."""
+    best = select_role_candidate(
+        candidates, stat_vars=members, time_period=read_years, index_sourced=index_sourced
+    )
     if best is None:
         return None, ()
     return best.facet_id, role_continuation(best, candidates, window=window_of(read_years))
@@ -1403,12 +1423,16 @@ def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts])
     elected again from them (`narrowed`). A mint filters a member's candidates by the same
     test before it ranks (`materialise.facets.dataset_candidates`), so an answer and a mint
     of its Spec elect within one dataset, and a member holding data under another dataset
-    alone serves nothing. Every resolver passes its plan through here. A plan none of whose
-    members has an elected dataset is returned as it is."""
+    alone serves nothing. Every resolver passes its plan through here. A plan every member of
+    which has an elected dataset reads an index-resolved family, so its group agrees on
+    provenance and unit alone (`PairPlan.index_sourced`, `BulkPlan.index_sourced`), as the
+    mint's does (`MaterialisationRequest.index_sourced`). A plan none of whose members has an
+    elected dataset is returned as it is."""
     datasets = elected_datasets(member_facts)
     if not datasets:
         return plan
-    return plan.narrowed(lambda sv, candidate: publishes(datasets, sv, candidate))
+    indexed = replace(plan, index_sourced=all(sv in datasets for sv in plan.members))
+    return indexed.narrowed(lambda sv, candidate: publishes(datasets, sv, candidate))
 
 
 def preview_years(plan: ReadPlan | None) -> PlanYears:
@@ -1434,6 +1458,7 @@ def plan_pairs(
     probes: Mapping[str, MemberProbe] | None = None,
     places: Sequence[str] = (),
     deadline: float | None = None,
+    index_sourced: bool = False,
     elect: Election | None = None,
 ) -> PairPlan:
     """A per-series plan over `series`, each member's group elected under `years` from its
@@ -1442,7 +1467,8 @@ def plan_pairs(
     `deadline` if a tie needs it. A role-bearing
     plan passes the coverage probe a mint reads (`materialise.facets.coverage_probe`), since
     its series are only the role tuples holding a point in the years, and `elect`, the
-    election of the year its `latest` read serves each member in."""
+    election of the year its `latest` read serves each member in. `index_sourced` marks an
+    index-resolved family (`PairPlan.index_sourced`)."""
     series = list(series)
     if probes is None:
         probes = series_probes(
@@ -1451,7 +1477,12 @@ def plan_pairs(
             deadline=deadline,
         )
     elected, facet_id, selections = _elect_groups(
-        series, members=members, years=years, scope=scope, probes=probes
+        series,
+        members=members,
+        years=years,
+        scope=scope,
+        probes=probes,
+        index_sourced=index_sourced,
     )
     return PairPlan(
         members=tuple(members),
@@ -1463,6 +1494,7 @@ def plan_pairs(
         roles=roles,
         probes=probes,
         places=tuple(places),
+        index_sourced=index_sourced,
         elect=elect,
     )
 

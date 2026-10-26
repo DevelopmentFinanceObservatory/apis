@@ -421,11 +421,16 @@ class GroupElection:
     unserved: tuple[int, ...] = ()
     incoherent: tuple[int, ...] = ()
 
+    def selected(self, member: int) -> frozenset[str]:
+        """The facet ids member `member` dispatches for the selection itself: its dispatch
+        ids less those continuing the selected series."""
+        return frozenset(self.dispatch_ids[member]) - frozenset(self.continuing_ids[member])
+
     def served(self, member: int, candidates: Sequence[Facet]) -> tuple[Facet, ...]:
         """Member `member`'s `candidates` its dispatch serves, in serving order: the
         selection's facets, then those continuing them, each in candidate order."""
         continuing = set(self.continuing_ids[member])
-        selected = set(self.dispatch_ids[member]) - continuing
+        selected = self.selected(member)
         return tuple(c for c in candidates if c.facet_id in selected) + tuple(
             c for c in candidates if c.facet_id in continuing
         )
@@ -543,22 +548,46 @@ def elect_group(
     )
 
 
-def group_served(
+def rank_group(
+    members: Sequence[Sequence[Facet]],
+    *,
+    stat_vars: Sequence[str],
+    window: RequestedWindow | None,
+    index_sourced: bool,
+    breadth: Mapping[str, int] | None = None,
+    variable_breadth: VariableBreadth = None,
+) -> RankedPool | None:
+    """The ranking `elect_group` runs over `members` when no axis is bound and no default is
+    declared: the merged candidates of the agreement keys held by the most members
+    (`_group_pool`), ranked by `rank_pool`. Its top is the facet such an election leads
+    with. None when no member holds a candidate. A caller serving one facet across every
+    member reads its top without the cadence and continuation an election adds."""
+    pool, _holders = _group_pool(members, bindings={}, index_sourced=index_sourced)
+    if not pool:
+        return None
+    return rank_pool(
+        pool,
+        stat_vars=stat_vars,
+        window=window,
+        breadth=breadth,
+        variable_breadth=variable_breadth,
+    )
+
+
+def elect_probes(
     probes: Mapping[str, MemberProbe],
     *,
     window: RequestedWindow | None,
     index_sourced: bool = False,
-) -> dict[str, tuple[Facet, ...]]:
-    """The facets each member of `probes`, keyed by StatVar, serves under `window` when no
-    axis is bound and the graph declares no default, in serving order
-    (`GroupElection.served`): one group elected across every member (`elect_group`), led by
-    the series each facet holds (`group_breadth`), with a tie broken on each facet's places
-    across the whole variables (`group_variable_breadth`). A member holding no facet of the
-    group serves none, and every member serves none when no candidate carries a `facet_id`.
-    A top carrying no provenance serves, since such a read need not cite a source."""
-    members = [probe.candidates for probe in probes.values()]
-    group = elect_group(
-        members,
+) -> GroupElection | None:
+    """The one group the members of `probes`, keyed by StatVar, serve under `window` when no
+    axis is bound and the graph declares no default (`elect_group`, members in `probes`
+    order), led by the series each facet holds (`group_breadth`), with a tie broken on each
+    facet's places across the whole variables (`group_variable_breadth`). A top carrying no
+    provenance serves, since such a read need not cite a source. None when no candidate
+    carries a `facet_id`."""
+    return elect_group(
+        [probe.candidates for probe in probes.values()],
         stat_vars=list(probes),
         window=window,
         index_sourced=index_sourced,
@@ -566,11 +595,24 @@ def group_served(
         breadth=group_breadth(list(probes.values()), window=window),
         variable_breadth=group_variable_breadth(list(probes.values())),
     )
+
+
+def group_served(
+    probes: Mapping[str, MemberProbe],
+    *,
+    window: RequestedWindow | None,
+    index_sourced: bool = False,
+) -> dict[str, tuple[Facet, ...]]:
+    """The facets each member of `probes`, keyed by StatVar, serves under `window` in the
+    group `elect_probes` elects, in serving order (`GroupElection.served`). A member holding
+    no facet of the group serves none, and every member serves none when no candidate
+    carries a `facet_id`."""
+    group = elect_probes(probes, window=window, index_sourced=index_sourced)
     if group is None:
         return dict.fromkeys(probes, ())
     return {
-        stat_var: group.served(index, candidates)
-        for index, (stat_var, candidates) in enumerate(zip(probes, members, strict=True))
+        stat_var: group.served(index, probe.candidates)
+        for index, (stat_var, probe) in enumerate(probes.items())
     }
 
 

@@ -77,7 +77,7 @@ def _member_arcs(node_arcs: dict) -> dict[str, tuple[str, ...]]:
     }
 
 
-def _obs(*, method_a: str, method_b: str) -> dict:
+def _obs(*, method_a: str, method_b: str, provenance_b: str = "dc/base/SourceB") -> dict:
     return {
         f"{_SV_A}|{_ENTITY}": [
             {
@@ -93,7 +93,7 @@ def _obs(*, method_a: str, method_b: str) -> dict:
                 "earliestDate": "2015",
                 "latestDate": "2020",
                 "obsCount": 2,
-                "provenanceId": "dc/base/SourceB",
+                "provenanceId": provenance_b,
                 "measurementMethod": method_b,
             }
         ],
@@ -141,8 +141,13 @@ def test_binding_satisfied_by_only_one_stat_var_refuses_through_resubmit():
 
 
 def test_binding_satisfied_by_every_stat_var_answers_definite_with_all_series():
-    """Both StatVars satisfy the binding and contribute a series."""
-    obs = _obs(method_a="GrossDisbursement", method_b="GrossDisbursement")
+    """Both StatVars satisfy the binding under one source and contribute a series, since
+    the members of one Spec serve one group."""
+    obs = _obs(
+        method_a="GrossDisbursement",
+        method_b="GrossDisbursement",
+        provenance_b="dc/base/SourceA",
+    )
     region = _resubmit(obs, {"measurementMethod": IdentityBindingValue(ref="GrossDisbursement")})
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     spec = region.specs[0]

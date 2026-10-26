@@ -4,14 +4,16 @@ A bulk preview serves one facet across many series: a scope-defaulted query acro
 place in its scope, or a role-bearing query across more role pairs than the per-pair path
 takes. Both merge the series' candidates by `facet_id` and rank them with
 `materialise.facets.rank_pool`, the ordering a single member uses, led by the number of
-series each facet covers. Coverage calls the same elections to date a `latest` answer, so
-the year it names is the year the preview reads.
+series each facet covers. A role-bearing read ranks only the facets held by the most of its
+StatVars, the group a mint of its Spec elects (`materialise.group_facets.rank_group`).
+Coverage calls the same elections to date a `latest` answer, so the year it names is the
+year the preview reads.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from materialise.facets import (
@@ -23,6 +25,7 @@ from materialise.facets import (
     overlaps_window,
     rank_pool,
 )
+from materialise.group_facets import rank_group
 from materialise.window import RequestedWindow
 from search.engine.clients.graph import Facet
 from search.engine.clients.sdmx import RoleFacetCandidate, RoleFacetIndex, RoleTuple
@@ -246,12 +249,17 @@ def rank_role_candidates(
     *,
     stat_vars: Sequence[str],
     window: RequestedWindow | None,
+    index_sourced: bool = False,
 ) -> list[RoleBulkCandidate]:
-    """Narrow to candidates reaching `window`, then rank by `rank_pool`, led by the number
-    of role pairs each facet covers, then the window years its span covers, then its
-    observation count. Every read plan builds `candidates` from a role index over the
-    window's years, so each holds a pair with data in them and the pair count is those
-    years' count.
+    """The ranking of the one group a mint of `stat_vars` elects from `candidates`
+    (`materialise.group_facets.rank_group`), top first: the facets whose agreement key, the
+    facet id or under `index_sourced` the provenance and unit, the most StatVars hold, each
+    read over every StatVar's own copy (`_member_facets`), narrowed to those reaching
+    `window` and ranked by `rank_pool`, led by the role pairs each facet covers summed across
+    the StatVars, then the window years its span covers, then its observation count. A
+    facet serving more StatVars therefore outranks a broader one serving fewer. Every read
+    plan builds `candidates` from a role index over the window's years, so each holds a pair
+    with data in them and the pair count is those years' count.
 
     The span, the observation count and the first series' end are the facet's over every
     year (`lifetime`, summed and widened across the StatVars the candidate keeps), as a mint
@@ -264,16 +272,28 @@ def rank_role_candidates(
     A joined candidate (`materialise.facets.union_count`) counts the role tuples any of its
     facets holds, read from their pairs only when the ranking forms it (`_pair_union`).
     """
-    ranked = rank_pool(
-        [_ranked_facet(c, window=window) for c in candidates.values()],
+    ranked = rank_group(
+        _member_facets(candidates, stat_vars, window=window),
         stat_vars=stat_vars,
         window=window,
-        breadth=SeriesCounts(
-            counts={c.facet_id: c.pair_count for c in candidates.values()},
-            union_of=lambda ids: _pair_union([candidates[i] for i in ids], window=window),
-        ),
-    ).ranked
-    return [candidates[f.facet_id] for f in ranked if f.facet_id is not None]
+        index_sourced=index_sourced,
+        breadth=_pair_breadth(candidates, window=window),
+    )
+    if ranked is None:
+        return []
+    return [candidates[f.facet_id] for f in ranked.ranked if f.facet_id is not None]
+
+
+def _pair_breadth(
+    candidates: Mapping[str, RoleBulkCandidate], *, window: RequestedWindow | None
+) -> SeriesCounts:
+    """Each facet's role pairs summed across its StatVars (`RoleBulkCandidate.pair_count`),
+    with a joined candidate's read from its facets' pairs only when a ranking forms it
+    (`_pair_union`)."""
+    return SeriesCounts(
+        counts={c.facet_id: c.pair_count for c in candidates.values()},
+        union_of=lambda ids: _pair_union([candidates[i] for i in ids], window=window),
+    )
 
 
 def _pair_union(candidates: Sequence[RoleBulkCandidate], *, window: RequestedWindow | None) -> int:
@@ -351,10 +371,50 @@ def select_role_candidate(
     *,
     stat_vars: Sequence[str],
     time_period: Sequence[str] | None,
+    index_sourced: bool = False,
 ) -> RoleBulkCandidate | None:
     """The facet a bulk role read serves from `candidates`: the top of
-    `rank_role_candidates` over `time_period`'s window. `read_plan.BulkPlan` elects through
-    here, at build and again after a filter narrows it. None when `candidates` is empty."""
-    if not candidates:
-        return None
-    return rank_role_candidates(candidates, stat_vars=stat_vars, window=window_of(time_period))[0]
+    `rank_role_candidates` over `time_period`'s window, the lead of the members' one group.
+    `read_plan.BulkPlan` elects through here, at build and again after a filter narrows it.
+    None when `candidates` is empty."""
+    ranked = rank_role_candidates(
+        candidates,
+        stat_vars=stat_vars,
+        window=window_of(time_period),
+        index_sourced=index_sourced,
+    )
+    return ranked[0] if ranked else None
+
+
+def _member_facets(
+    candidates: Mapping[str, RoleBulkCandidate],
+    stat_vars: Sequence[str],
+    *,
+    window: RequestedWindow | None,
+) -> list[list[Facet]]:
+    """Each of `stat_vars`' facets as `rank_role_candidates` ranks a candidate, read over
+    that StatVar's pairs and lifetime alone (`_for_member`), one list per StatVar in
+    `stat_vars` order."""
+    return [
+        [
+            _ranked_facet(_for_member(candidate, sv), window=window)
+            for candidate in candidates.values()
+            if sv in candidate.by_sv
+        ]
+        for sv in stat_vars
+    ]
+
+
+def _for_member(candidate: RoleBulkCandidate, sv: str) -> RoleBulkCandidate:
+    """`candidate` holding `sv`'s pairs and lifetime alone, as it if were merged for `sv`
+    alone (`merge_role_candidates`). A candidate of `sv` alone is returned as it is."""
+    if candidate.by_sv.keys() == {sv}:
+        return candidate
+    held = candidate.by_sv[sv]
+    return replace(
+        candidate,
+        by_sv={sv: held},
+        pair_count=sum(c.pair_count for c in held),
+        latest_date=max((c.latest_date for c in held if c.latest_date), default=None),
+        lifetime={sv: candidate.lifetime[sv]} if sv in candidate.lifetime else {},
+    )

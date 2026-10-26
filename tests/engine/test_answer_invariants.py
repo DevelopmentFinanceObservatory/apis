@@ -962,13 +962,6 @@ def _is_undated_gap_election(
     return reaches and not holds
 
 
-def _is_multi_member(spec: Stated) -> bool:
-    """Whether a Spec is issue #1060: it lists more than one variable. The answer elects
-    each member's group on its own and a mint elects one group across the members, so no
-    one datasets read stands for the answer."""
-    return len(spec.stat_vars) != 1
-
-
 def _unserved_places_stated(world: World, spec: Stated) -> Iterator[str]:
     """An answer naming places serves one group across them, and states as unserved
     (`ResolvedSpec.unserved_entities`) exactly the named places its preview serves no
@@ -994,19 +987,15 @@ def i3_one_election(run: Doors) -> list[str]:
     rows that read returns lie inside the years the answer states. A named place the one
     group does not serve is stated as unserved, at each door that previews.
 
-    The two expected differences are issue #1049, where on the standard route a datasets
-    read probes spans with no dates, so it can elect a facet with a gap across the whole
-    window and read no row, while the answer read dates and serves a sibling facet
-    (`_is_undated_gap_election`), and issue #1060, a Spec with more than one variable
-    (`_is_multi_member`)."""
+    The one expected difference is issue #1049, where on the standard route a datasets read
+    probes spans with no dates, so it can elect a facet with a gap across the whole window
+    and read no row, while the answer read dates and serves a sibling facet
+    (`_is_undated_gap_election`)."""
     cell, world = run.cell, run.world
     found: list[str] = []
     for door, answer in run.answers():
         for spec, said in zip(answer.specs, statements(answer), strict=True):
             found += [f"in {door}, {message}" for message in _unserved_places_stated(world, said)]
-            if _is_multi_member(said):
-                _pass_over("#1060", cell)
-                continue
             read = _datasets_read(world, spec)
             if isinstance(read, str):
                 # A provenance-less top facet refuses a read that binds no provenance (`i5`).
@@ -1684,12 +1673,10 @@ def i11_download_is_the_datasets_read(run: Doors) -> list[str]:
     """The rows and years a Spec states for its file (`ResolvedSpec.download`) are those a
     datasets read of its Spec reads: the same rows when stated exact, at least as many when
     stated as an upper bound. A Spec whose read refuses has no file to state. The read and
-    the answer elect apart in issues #1049 and #1060, as `i3_one_election` passes over."""
+    the answer elect apart in issue #1049, as `i3_one_election` passes over."""
     found: list[str] = []
     for door, answer in run.answers():
         for spec, said in zip(answer.specs, statements(answer), strict=True):
-            if _is_multi_member(said):
-                continue
             read = _datasets_read(run.world, spec)
             if isinstance(read, str):
                 continue
@@ -1822,9 +1809,8 @@ def test_every_cell_holds_every_invariant(
     """Each cell the grid runs (`CELLS_RUN`) runs its doors once and every invariant's
     check reads them. The cells of one block share their first doors. A
     failure lists one line per disagreement: the cell, the invariant and the two statements
-    that disagree. The grid expects two differences, each passed over by one predicate
-    tied to its issue: #1049, an undated datasets read electing a facet with a gap across
-    the window (`i3_one_election`); and #1060, a Spec with more than one variable
+    that disagree. The grid expects one difference, passed over by one predicate tied to
+    its issue: #1049, an undated datasets read electing a facet with a gap across the window
     (`i3_one_election`). I9 runs on the covering array's cells only
     (`checks_for`)."""
     recorded_engine(route)

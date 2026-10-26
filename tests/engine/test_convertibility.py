@@ -11,8 +11,16 @@ from unittest.mock import patch
 
 import pytest
 
-from materialise.facets import ElectedDataset, FacetSelection
+from materialise import MaterialisationRequest
+from materialise.facets import (
+    ElectedDataset,
+    FacetBinding,
+    FacetSelection,
+    UnitRequest,
+    probe_facets,
+)
 from materialise.graph import SubjectPage
+from materialise.group_facets import group_breadth, select_group_facets
 from materialise.rate_tables import RateTableCache
 from materialise.recipes import CONVERSION_NODE_PROPERTIES
 from search.engine.errors import EngineInfraError, EngineInputError
@@ -20,6 +28,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.convertibility import decide_part_unit, elected_unit_refs
 from search.engine.region.state import EngineOptions
+from search.engine.retrieval.read_plan import plan_window
 from search.engine.unit.base_year import TABLE_PROVENANCES
 from search.models import (
     IdentityBindingSet,
@@ -1045,6 +1054,79 @@ def test_decide_part_unit_two_member_set_returns_each_combinations_own_provenanc
         _PROVENANCE,
         _OTHER_PROVENANCE,
     ]
+
+
+_SV_B = "Test_Convert_Expenditure_B"
+
+
+@pytest.mark.parametrize("planned", [False, True], ids=["probed", "plan_probes"])
+def test_decide_part_unit_elects_one_group_across_the_members(planned: bool):
+    """`_SV` holds a USD facet and `_SV_B` a EUR one, each under its own facet id. A USD
+    request elects one group across both, the native USD facet, as a mint of their Spec
+    does (`select_group_facets` over the same probes), so both members decide under its
+    selections and `_SV_B`, which holds none of it, converts nothing of its own."""
+    obs = {
+        f"{_SV}|{_ENTITY}": [_obs_facet(unit="CurrencyUSD", facet_id="f-usd")],
+        f"{_SV_B}|{_ENTITY}": [_obs_facet(unit="CurrencyEUR", facet_id="f-eur", obs_count=3)],
+    }
+    materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
+    arcs = _materialise_arcs(nominal=True, provenance_declares_recipe={_PROVENANCE: True})
+    materialise_graph._arcs = {**arcs, _SV_B: arcs[_SV]}
+    probes = {
+        sv: probe_facets(
+            stat_var=sv,
+            bound_entities=[_ENTITY],
+            graph=materialise_graph,
+            availability=materialise_sdmx,
+            settle=False,
+            declared_roles=("observationAbout",),
+            role_bindings={"observationAbout": [_ENTITY]},
+            coverage=_SUBJECT_ONLY_COVERAGE,
+        )
+        for sv in (_SV, _SV_B)
+    }
+
+    elected = decide_part_unit(
+        [_SV, _SV_B],
+        unit_request=IdentityUnitRequest(currency="USD", prices="current"),
+        role_bindings={"observationAbout": [_ENTITY]},
+        declared_roles=("observationAbout",),
+        years=None,
+        graph=materialise_graph,
+        sdmx=materialise_sdmx,
+        coverage=_SUBJECT_ONLY_COVERAGE,
+        probes=probes if planned else None,
+    )
+    requests = [
+        MaterialisationRequest(
+            stat_var=f"dcid:{sv}",
+            role_bindings={"observationAbout": [_ENTITY]},
+            declared_roles=("observationAbout",),
+            facet_bindings={
+                "unit": FacetBinding(
+                    state="request", request=UnitRequest(currency="USD", prices="current")
+                )
+            },
+            window=plan_window(None),
+            requires_provenance=False,
+        )
+        for sv in (_SV, _SV_B)
+    ]
+    minted = select_group_facets(
+        requests,
+        [probe.candidates for probe in probes.values()],
+        graph=materialise_graph,
+        breadth=group_breadth(list(probes.values()), window=None),
+    )
+
+    assert elected[_SV] == elected[_SV_B]
+    (selections,) = elected[_SV]
+    assert selections == minted.election.selections
+    assert (selections["unit"].ref, selections["unit"].dispatch_facet_id) == (
+        "CurrencyUSD",
+        "f-usd",
+    )
+    assert elected_unit_refs(elected) == dict.fromkeys((_SV, _SV_B), frozenset({"CurrencyUSD"}))
 
 
 def test_elected_unit_refs_skips_a_selection_with_a_none_unit_ref():
