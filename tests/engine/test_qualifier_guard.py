@@ -722,31 +722,57 @@ def test_each_word_of_the_variable_is_read_or_unread(
 
 
 @pytest.mark.parametrize(
-    ("resolved", "verdict"),
-    [(True, "entity"), (False, "unrated")],
-    ids=["resolved", "unresolved"],
+    ("variable", "donor", "word", "resolved", "verdict"),
+    [
+        (
+            "Gates funding to Senegal",
+            "Bill & Melinda Gates Foundation",
+            "Gates",
+            True,
+            "entity",
+        ),
+        (
+            "Gates funding to Senegal",
+            "Bill & Melinda Gates Foundation",
+            "Gates",
+            False,
+            "unrated",
+        ),
+        ("aid for women to Senegal", "UN Women", "women", True, "unrated"),
+        (
+            "malaria funding to Senegal",
+            "Global Fund to Fight AIDS, Tuberculosis and Malaria",
+            "malaria",
+            True,
+            "unrated",
+        ),
+        ("climate finance to Senegal", "Green Climate Fund", "climate", True, "unrated"),
+    ],
+    ids=["resolved", "unresolved", "women-beside-un-women", "malaria", "climate"],
 )
 def test_a_word_naming_a_resolved_entity_by_part_of_its_name_reads_as_the_entity(
-    resolved: bool, verdict: str
+    variable: str, donor: str, word: str, resolved: bool, verdict: str
 ):
     """ "Gates funding" names the donor the request resolved as "Bill & Melinda Gates
     Foundation", so "Gates" reads as that entity and no rating asks whether the series
-    states it. A text that did not resolve names no entity, and its word stays unrated."""
-    donor = "Bill & Melinda Gates Foundation"
+    states it. A text that did not resolve names no entity, and its word stays unrated. So
+    does a name word a qualifier vocabulary reads, wherever it stands outside the name:
+    "women" beside UN Women, "malaria" beside the Global Fund, "climate" beside the Green
+    Climate Fund."""
     state = _state(
-        variable="Gates funding to Senegal",
+        variable=variable,
         shape_draft=_reader_shape("Official development assistance"),
         bindings=[],
         unplaced=[],
         entities=(donor, "Senegal"),
     )
     state.place_sets = place_sets(
-        {"Senegal": "country/SEN", **({donor: "GatesFoundation"} if resolved else {})}
+        {"Senegal": "country/SEN", **({donor: "Donor"} if resolved else {})}
     )
 
     verdicts = dict(_coverage_reading(state, []).verdicts)
 
-    assert verdicts["Gates"] == verdict
+    assert verdicts[word] == verdict
     assert verdicts["Senegal"] == "entity"
 
 

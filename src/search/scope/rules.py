@@ -62,6 +62,7 @@ def rule_version(rules: Mapping[ScopeAxis, AxisRule], conflicts: tuple[Conflict,
         scope_conventions.OPTION_LABELS,
         scope_conventions.REGION_NAMES,
         scope_conventions.CONVENTION_CURRENCY,
+        scope_conventions.REGION_READINGS,
     )
 
 
@@ -77,6 +78,7 @@ def _version(
     option_labels: scope_conventions.OptionLabels,
     region_names: tuple[tuple[str, str], ...],
     convention_currency: str,
+    region_readings: tuple[scope_conventions.RegionReading, ...],
 ) -> str:
     document = {
         "sector_groupings": [dataclasses.asdict(row) for row in sector_groupings],
@@ -87,6 +89,7 @@ def _version(
         "option_labels": dataclasses.asdict(option_labels),
         "region_names": [list(pair) for pair in region_names],
         "convention_currency": convention_currency,
+        "region_readings": [dataclasses.asdict(row) for row in region_readings],
         "axes": list(axes),
         "conflicts": [dataclasses.asdict(conflict) for conflict in conflicts],
     }

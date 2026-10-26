@@ -384,8 +384,10 @@ def parsed_key(
     the carried entries reach it only through the scope entries each part is posted with,
     so they enter as `stated_scopes`, parallel to the deduplicated parts
     (`stated_scope.intake_key_document`, None for a part posted with none), as the raw-text
-    door keys them (`layer2_key`): two messages worded apart that state the same scope
-    share an entry. The key states them and adds nothing when no part is posted any."""
+    door keys them (`layer2_key`). Two messages that state no scope share an entry; a
+    stated entry carries its words' offsets in the message (`Entry.origin`), so messages
+    worded apart key apart even where they state the same scope. The key states them and
+    adds nothing when no part is posted any."""
     document: dict[str, object] = {
         "scope": scope,
         "parsed": parsed.model_dump(mode="json", exclude={"user_message", "carried_entries"}),

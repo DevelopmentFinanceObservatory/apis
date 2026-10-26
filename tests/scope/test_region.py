@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import pytest
 
+from code_index.scope_conventions import OPTION_LABELS, REGION_READINGS, RegionReading
 from code_index.shared import get_index
+from entity_resolution.shared import shared_membership_policy
 from search.engine.spec_id import identity_spec_id
 from search.models import BaseIdentity, EntityGroup, Operation, PartScope
 from search.scope.build import build_part_scope
 from search.scope.compile import Refusal
-from search.scope.region import is_residual, without_residuals
+from search.scope.region import is_residual, published_residuals, without_residuals
 from search.scope.tables import PartFacts, ScopeFacts
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.scope._axes import explicit, switch
@@ -179,3 +181,109 @@ def test_a_resolver_group_finds_its_total_by_registry_id():
     add = _region(scope).options[0].binding.model_dump()["add"]
     assert "DACAsiaUnallocated" in add
     assert all(is_residual(dcid, get_index()) for dcid in add)
+
+
+# A graph region the OECD counts with other members reads both ways.
+
+
+def _members(ref: str) -> list[str]:
+    held = shared_membership_policy().members(ref).members
+    assert isinstance(held, tuple), ref
+    return sorted(held)
+
+
+def _oecd_case(row: RegionReading) -> tuple[BaseIdentity, BaseIdentity, EntityGroup]:
+    """The part summed as the OECD counts `row`'s region on the CRS, its group as the answer
+    names it, and the part holding the graph region's members."""
+    total = get_index().parties[row.total]
+    assert total.totals is not None
+    residuals = published_residuals(total, datasets=(_CRS,), index=get_index())
+    summed = _identity([*_members(total.totals), *residuals])
+    group = EntityGroup(label=row.name, group_id=total.totals)
+    return summed, _identity(_members(row.region)), group
+
+
+@pytest.mark.parametrize("row", REGION_READINGS, ids=[row.region for row in REGION_READINGS])
+def test_a_region_the_oecd_counts_otherwise_offers_both_readings_and_round_trips(row):
+    """Summed on the CRS, a graph region the OECD counts with other members holds the OECD's
+    region by default, labelled with the OECD's member count. The other option is the graph
+    region's member countries; a switch to it binds them and a switch back returns the base
+    spec_id. A region whose members the two count alike differs by its residuals alone."""
+    summed, listed, group = _oecd_case(row)
+    total = get_index().parties[row.total]
+    assert total.totals is not None
+
+    scope = _scope(summed, group=group)
+    choice = _region(scope)
+    to_members = _scope(summed, [switch(_MEMBERS)], group=group)
+    back = _scope(summed, [switch(_ALL)], group=group)
+
+    assert (choice.active, choice.provenance) == (_ALL, "default")
+    assert [o.label for o in choice.options] == [
+        OPTION_LABELS.region_as_oecd_counts.format(
+            region=row.name, count=len(_members(total.totals))
+        ),
+        OPTION_LABELS.region_place_members.format(
+            region_of=f"{row.name}'s", count=len(_members(row.region))
+        ),
+    ]
+    assert to_members.compiled.identity.entities["destination"] == _members(row.region)
+    assert to_members.compiled.spec_id == identity_spec_id(listed)
+    assert back.compiled.spec_id == identity_spec_id(summed)
+
+
+def test_sub_saharan_africa_as_the_oecd_counts_it_adds_sudan_and_the_residuals():
+    """The OECD's sub-Saharan Africa holds Sudan, which the graph region does not."""
+    row = next(r for r in REGION_READINGS if r.region == "SubSaharanAfrica")
+    summed, _listed, group = _oecd_case(row)
+
+    choice = _region(_scope(summed, group=group))
+
+    assert choice.options[0].binding.model_dump()["add"][0] == "country/SDN"
+    assert choice.options[1].binding.model_dump()["add"] == []
+
+
+@pytest.mark.parametrize("row", REGION_READINGS, ids=[row.region for row in REGION_READINGS])
+def test_a_ranking_over_a_region_the_oecd_counts_otherwise_reads_the_graphs_members(row):
+    """Ranked, the part holds the graph region's members, named by the graph node, and the
+    OECD's region is unavailable."""
+    _summed, listed, _group = _oecd_case(row)
+    node = EntityGroup(ref=row.region, label=row.name)
+
+    choice = _region(_scope(listed, operations=(_RANK,), group=node))
+
+    assert (choice.active, choice.provenance) == (_MEMBERS, "default")
+    assert choice.options[0].availability.code == "residuals_need_summed_region"
+
+
+def test_a_region_the_oecd_counts_otherwise_has_no_axis_off_dac_data():
+    """A dataset counting no DAC region leaves the graph region as it is: no region axis."""
+    row = next(r for r in REGION_READINGS if r.region == "SubSaharanAfrica")
+    _summed, listed, _group = _oecd_case(row)
+    facts = ScopeFacts(
+        index=get_index(),
+        coverage=empty_coverage_snapshot(),
+        part=PartFacts(
+            entity_groups={"destination": EntityGroup(ref=row.region, label=row.name)},
+            datasets=("provenance/WorldBankWDI",),
+        ),
+    )
+
+    scope = build_part_scope(base=listed, entries=[], records={}, facts=facts)
+
+    assert isinstance(scope, PartScope)
+    assert "region" not in [c.axis for c in scope.choices]
+
+
+def test_every_region_reading_names_a_summing_dac_total_and_a_graph_region():
+    """Each declared reading pairs a graph region the membership policy holds with a DAC
+    total that sums the registry group it holds (`TOTAL_GROUPS`), and no graph region
+    already keys a total of its own."""
+    index = get_index()
+    policy = shared_membership_policy()
+    for row in REGION_READINGS:
+        total = index.parties[row.total]
+        assert total.sums_members and total.residuals and total.totals is not None, row
+        assert total.totals in policy and policy.get(total.totals).kind == "group", row
+        assert policy.holds_region(row.region), row
+        assert row.region not in index.totals_by_group, row

@@ -15,11 +15,15 @@ from typing import Any, cast
 
 import pytest
 
+from code_index.scope_conventions import REGION_READINGS
+from code_index.shared import get_index
 from entity_resolution import Entity
+from entity_resolution.shared import shared_membership_policy
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.interpret import PinnedResolved
 from search.engine.region.decisions import PlaceSetTooLargeError
+from search.engine.region.phase_intake import oecd_reading
 from search.engine.region.place_context import PlaceContext, UnsettledPlace
 from search.engine.region.place_roles import (
     PlaceAssignment,
@@ -28,7 +32,9 @@ from search.engine.region.place_roles import (
     group_request_names,
     part_sets,
     place_key,
+    request_named_groups,
     settle_place_sets,
+    settled_roles,
 )
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.region.state import ResolveState
@@ -804,6 +810,102 @@ def test_a_region_whose_dataset_publishes_no_residual_binds_its_members() -> Non
     assert _settle(assignment, lambda _places: False)["destination"] == (_GHA, _KEN, _TZA)
 
 
+# A graph region the OECD counts with other members reads as the OECD's region where a DAC
+# dataset sums it.
+
+_SDN = "country/SDN"
+_SSA = PlaceSet(
+    name="sub-Saharan Africa",
+    kind="region",
+    node=PlaceNode("SubSaharanAfrica", "UNGeoRegion"),
+    members=(_GHA, _KEN, _TZA),
+    member_type="Country",
+    label="Sub-Saharan Africa",
+)
+_SSA_AS_OECD = dataclasses.replace(
+    _SSA,
+    members=(_GHA, _KEN, _SDN, _TZA),
+    total="DACSouthOfSahara",
+    group_id="groups/OECD.DAC.Region.SouthOfSahara",
+    oecd_read=True,
+)
+_SSA_RESIDUALS = (
+    "DACEasternAfricaUnallocated",
+    "DACMiddleAfricaUnallocated",
+    "DACSouthOfSaharaUnallocated",
+    "DACSouthernAfricaUnallocated",
+    "DACWesternAfricaUnallocated",
+)
+
+
+@pytest.mark.parametrize(
+    ("datasets", "operations", "expected", "record"),
+    [
+        pytest.param(
+            (_CRS,),
+            [],
+            tuple(sorted((_GHA, _KEN, _SDN, _TZA, *_SSA_RESIDUALS))),
+            _WITH_RESIDUALS,
+            id="summed-on-the-crs",
+        ),
+        pytest.param(
+            (_CRS,), [_rank("destination")], (_GHA, _KEN, _TZA), _MEMBERS_ONLY, id="ranked"
+        ),
+        pytest.param(
+            ("provenance/SettleFixture",), [], (_GHA, _KEN, _TZA), None, id="no-dac-dataset"
+        ),
+    ],
+)
+def test_a_graph_region_the_oecd_counts_otherwise_reads_as_the_oecds_on_dac_data(
+    datasets, operations, expected, record
+) -> None:
+    """Sub-saharan Africa to France. Summed on the CRS, which publishes the South of Sahara
+    total, it binds the OECD's members, Sudan among them, and the region's residuals, and
+    the answer names the region by its registry group. A ranking over the recipients and a
+    dataset publishing no DAC total keep the graph region's members and name its node."""
+    region = dataclasses.replace(_SSA, oecd=_SSA_AS_OECD)
+    state = _state(
+        [_FRANCE, region],
+        axes={"France": "origin", "sub-Saharan Africa": "destination"},
+        operations=operations,
+    )
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=datasets)
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    places = _settle(assignment, _flow_holds((_FRA, _KEN)))
+    assert places["destination"] == expected
+    written = state.scope_selection.records.get("region")
+    assert (None if written is None else written.active) == record
+    roles = settled_roles(shape, assignment, places)
+    (group,) = request_named_groups(state, roles)
+    if record == _WITH_RESIDUALS:
+        assert (group.dcid, group.group_id, group.total) == (
+            None,
+            "groups/OECD.DAC.Region.SouthOfSahara",
+            "DACSouthOfSahara",
+        )
+        assert group.member_dcids == {_GHA, _KEN, _SDN, _TZA}
+    else:
+        assert (group.dcid, group.group_id) == ("SubSaharanAfrica", None)
+        assert group.member_dcids == {_GHA, _KEN, _TZA}
+
+
+def test_a_subject_reads_a_graph_region_as_the_graph_does() -> None:
+    """ "Population of sub-Saharan Africa" reads the graph region's node or members, whatever
+    the OECD counts."""
+    region = dataclasses.replace(_SSA, oecd=_SSA_AS_OECD)
+    shape = dataclasses.replace(_shape(), datasets=(_CRS,))
+
+    assignment = bind_place_roles(_state([region]), shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    assert _settle(assignment, _subject_holds("SubSaharanAfrica")) == {
+        "observationAbout": ("SubSaharanAfrica",)
+    }
+
+
 # Settling over a Spec's own read.
 
 _SERIES = "Amount_SettleSeries"
@@ -983,3 +1085,33 @@ def test_the_context_before_the_read_holds_each_undecided_set_at_its_members(
     assert refused_node.decided
     with pytest.raises(PlaceSetTooLargeError):
         refused_node.unread()
+
+
+@pytest.mark.parametrize("row", REGION_READINGS, ids=[row.region for row in REGION_READINGS])
+def test_place_resolution_gives_each_declared_region_the_oecds_reading(row) -> None:
+    """A graph region a reading declares carries the OECD's members, total and registry group
+    under its own node; Africa, whose total the graph place keys, carries none."""
+    policy = shared_membership_policy()
+    graph_members = policy.members(row.region).members
+    assert isinstance(graph_members, tuple)
+    place = PlaceSet(
+        name=row.name,
+        kind="region",
+        node=PlaceNode(row.region, "UNGeoRegion"),
+        members=graph_members,
+        member_type="Country",
+    )
+    total = get_index().parties[row.total]
+    assert total.totals is not None
+
+    reading = oecd_reading(place, membership=policy)
+
+    assert reading is not None
+    assert (reading.node, reading.total, reading.group_id, reading.oecd_read) == (
+        place.node,
+        row.total,
+        total.totals,
+        True,
+    )
+    assert reading.members == policy.members(total.totals).members
+    assert oecd_reading(dataclasses.replace(_AFRICA, total="DACAfrica"), membership=policy) is None

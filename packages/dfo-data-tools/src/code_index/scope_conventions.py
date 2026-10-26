@@ -4,8 +4,9 @@
 `MEASURE_BASIS_CONVENTIONS` names the measure basis each part shape and window defaults to,
 `BASIS_MEASURES` what each basis binds in an identity, and `BASIS_RESTRICTIONS` the code
 systems besides the sector whose admitted code makes a part a restricted one.
-`PROVIDER_CONVENTIONS` names whose spending a part counts by default. `OPTION_LABELS` words the
-options the rules build from code and group labels. `search.scope`
+`PROVIDER_CONVENTIONS` names whose spending a part counts by default. `OPTION_LABELS`
+words the options the rules build from code and group labels, and `REGION_READINGS` names
+the graph regions a DAC dataset counts as the OECD's region. `search.scope`
 reads them all, and `graph_release.declarations` hashes the tables beside the other
 declarations, so a change to one moves the declarations hash and the scope rule version.
 """
@@ -159,7 +160,10 @@ class OptionLabels:
     `sector_code` names one CRS purpose code from its `label` and `code` number, and
     `sector_code_alone` one code of a grouping offered without the others.
     `region_with_residuals` and `region_members_only` name a region's two readings from its
-    `region` name and its possessive `region_of`. `measure_basis` names a measure basis from
+    `region` name and its possessive `region_of`. `region_as_oecd_counts` and
+    `region_place_members` name the two readings of a region the graph and the OECD count
+    differently (`REGION_READINGS`): the OECD's region with its `count` of member countries
+    and its residuals, and the graph region's `count` countries. `measure_basis` names a measure basis from
     its `words` (`BasisMeasure.words`), the `prices` of the identity's price basis
     ("current", "constant 2024") and its `currency` ("USD", "donor currency"), and
     `measure_basis_unpriced` from its words alone, for an identity that states no price
@@ -178,6 +182,8 @@ class OptionLabels:
     provider_bilateral: str
     provider_inclusive: str
     provider_inclusive_years: str
+    region_as_oecd_counts: str
+    region_place_members: str
 
 
 OPTION_LABELS = OptionLabels(
@@ -191,6 +197,9 @@ OPTION_LABELS = OptionLabels(
     provider_bilateral="bilateral flows only",
     provider_inclusive="bilateral plus imputed multilateral",
     provider_inclusive_years="bilateral plus imputed multilateral, {years}",
+    region_as_oecd_counts="{region} as the OECD counts it, {count} countries incl. regional and "
+    "unspecified amounts",
+    region_place_members="{region_of} {count} countries (UN regions)",
 )
 
 CONVENTION_CURRENCY = "USD"
@@ -224,6 +233,44 @@ REGION_NAMES: tuple[tuple[str, str], ...] = (
 total's dcid: "Africa" for `DACAfrica`, whose graph label is "Africa (DAC)". The region
 option labels read it on every door alike, so a search and its switch name the region the
 same way. A total named here by no row is named by its graph label (`PartyRow.label`)."""
+
+
+@dataclass(frozen=True)
+class RegionReading:
+    """A graph region a request names and the OECD region a DAC dataset counts in its place.
+
+    `region` is the graph place the resolver reads the request's words as (`SubSaharanAfrica`
+    for "sub-Saharan Africa"), `total` the DAC regional total whose group the OECD counts
+    (`DACSouthOfSahara`, a `code_index.declarations.TOTAL_GROUPS` row summing its members and
+    residuals), and `name` the reader's name of the region in option labels."""
+
+    region: str
+    total: str
+    name: str
+
+
+# The graph regions a summed recipient region on a DAC dataset reads as the OECD's region:
+# its members as the DAC lists them, its regional total and its residual buckets
+# (`search.engine.region.place_roles`). The graph's members differ from the OECD's for sub-
+# Saharan Africa (Sudan), Asia (Cyprus, Japan, Türkiye), Europe (the OECD lists 13 ODA-eligible
+# countries), the Middle East (the graph's Western Asia: the Caucasus, Cyprus, Türkiye against
+# Iran), North and East Africa (Sudan); Middle and West Africa and South America hold the same
+# members under a total keyed to the DAC's own group. A region whose DAC total is keyed to the
+# graph place itself (Africa, the Americas, Oceania, the Caribbean, Central America, Southern
+# Africa, the Pacific subregions) needs no row. East and South Asia are not the DAC's Far East
+# Asia and South and Central Asia, so no row reads them as those.
+REGION_READINGS: tuple[RegionReading, ...] = (
+    RegionReading("SubSaharanAfrica", "DACSouthOfSahara", "sub-Saharan Africa"),
+    RegionReading("asia", "DACAsia", "Asia"),
+    RegionReading("europe", "DACEurope", "Europe"),
+    RegionReading("WesternAsia", "DACMiddleEast", "the Middle East"),
+    RegionReading("NorthernAfrica", "DACNorthOfSahara", "North Africa"),
+    RegionReading("EasternAfrica", "DACEasternAfrica", "East Africa"),
+    RegionReading("MiddleAfrica", "DACMiddleAfrica", "Middle Africa"),
+    RegionReading("WesternAfrica", "DACWesternAfrica", "West Africa"),
+    RegionReading("southamerica", "DACSouthAmerica", "South America"),
+)
+
 
 # The measure basis each part shape and window is counted on, after the OECD's own
 # reporting: the DAC1 headline for a donor's total, DAC2a receipts for a recipient's,

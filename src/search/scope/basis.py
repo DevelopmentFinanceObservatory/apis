@@ -306,6 +306,38 @@ def identity_part_shape(identity: BaseIdentity, index: CodeIndex) -> PartShape |
     return "donor_only" if identity.entities.get("origin") else None
 
 
+def identity_basis_record(
+    identity: BaseIdentity, index: CodeIndex, entries: Sequence[Entry]
+) -> AxisRecord | None:
+    """The measure-basis record a search of `identity` wrote when no binder runs (a
+    dataset_resubmit, a same-shape merge), read from the identity as `_record_basis` in
+    `phase_election` reads the search: `SERVED_DIFFERS_RULE` where `identity` holds a basis
+    that is not the convention's for its shape (`identity_part_shape`) and window
+    (`identity.requested_window`) and no entry of `entries` settles the axis. None
+    otherwise, so `basis_rule` names `BASIS_RULE`."""
+    held = held_measure(identity)
+    shape = identity_part_shape(identity, index)
+    if held is None or shape is None:
+        return None
+    active = measure_basis_option_id(held.basis)
+    if any(entry.axis == "measure_basis" for entry in entries):
+        return None
+    window = identity.requested_window
+    row = convention(
+        shape,
+        window_class(
+            TimeWindow(start_year=window.start_year, end_year=window.end_year)
+            if window.kind == "range"
+            else window.kind
+        ),
+    )
+    if _MEASURES[_served(row)] == held:
+        return None
+    return AxisRecord(
+        axis="measure_basis", rule=SERVED_DIFFERS_RULE, active=active, provenance="default"
+    )
+
+
 def basis_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
     """The convention dataset that serves `identity` when the measure-basis axis applies to
     it, else None: `identity` holds a declared basis (`held_measure`), the conventions read
@@ -341,15 +373,16 @@ def basis_rule(
 
     Read from `base` alone, whether a binder recorded the axis (`record`) or not, so a
     resubmit of a served identity offers what its search offered. The rule is the record's
-    when a binder wrote one (`SERVED_DIFFERS_RULE` for a basis the convention did not
-    settle), else `BASIS_RULE`. Each declared basis is an option, and so is the OECD
-    headline per year where `_offers_headline` holds. The one `base` holds (`held_option`) is
-    available. Another is available when its identity (`base` with the option's binding)
-    reads a member of the dataset holding every other binding of `base` with a series in the
-    coverage index, `option_not_covered` when the dataset publishes such a member with no
-    series there, and `basis_not_published` otherwise; the headline when both bases it splices
-    are (`_headline_availability`). A composite base is read through the identity its option
-    was set on (`table_document`)."""
+    when it holds the option `base` holds (`SERVED_DIFFERS_RULE` for a basis the convention
+    did not settle, written by the binder or, with none, `identity_basis_record`), else
+    `BASIS_RULE`. Each declared basis is an option, and so is the OECD headline per year where
+    `_offers_headline` holds. The one `base` holds (`held_option`) is available. Another is
+    available when its identity (`base` with the option's binding) reads a member of the
+    dataset holding every other binding of `base` with a series in the coverage index,
+    `option_not_covered` when the dataset publishes such a member with no series there, and
+    `basis_not_published` otherwise; the headline when both bases it splices are
+    (`_headline_availability`). A composite base is read through the identity its option was
+    set on (`table_document`)."""
     dataset = basis_dataset(base, facts.index)
     held_id = held_option(base)
     if dataset is None or held_id is None:
@@ -385,7 +418,7 @@ def basis_rule(
         )
     return AxisTable(
         axis="measure_basis",
-        rule=BASIS_RULE if record is None else record.rule,
+        rule=BASIS_RULE if record is None or record.active != held_id else record.rule,
         options=tuple(options),
         preference=(
             held_id,

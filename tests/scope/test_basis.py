@@ -34,6 +34,7 @@ from search.models import (
     IdentityBindingSet,
     IdentityBindingValue,
     IdentityShapeSchema,
+    IdentityWindowRange,
     ParsedEntity,
     ParsedInput,
     ParsedPart,
@@ -42,7 +43,7 @@ from search.models import (
     ResubmitIdentityEntry,
     Spec,
 )
-from search.scope.basis import basis_binding, basis_label, window_class
+from search.scope.basis import basis_binding, basis_label, identity_basis_record, window_class
 from search.scope.edits import apply_binding
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import elected_reply
@@ -753,15 +754,32 @@ def test_a_part_served_on_grant_equivalents_unelected_binds_what_a_switch_binds(
     """A pool holding only the CRS's grant equivalents serves a health part, whose
     convention is gross disbursements, on grant equivalents. The answer reads ODA as flows
     10 and 60, as a switch to grant equivalents does, so gross and back, twice, returns the
-    same two spec_ids; its choice states that the convention did not settle the basis."""
+    same two spec_ids; its choice states that the convention did not settle the basis, and
+    so does a resubmit of the answer with no entry. A switched answer's choice names the
+    convention's rule, since its entry settled the basis."""
     first = _ask("health aid", time="2019", recipient=True, members=_CRS_GRANT_EQUIVALENTS)
-    scope = first.resolved.scope_choices
-    assert scope is not None
-    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
-    assert (choice.active, choice.provenance, choice.rule) == (
-        "measure_basis:grant_equivalent",
-        "default",
-        "served_differs_from_convention",
+    resubmitted = _resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text="aid", identity=first.definition.identity, scope_entries=[]
+                    )
+                ]
+            )
+        ),
+        "aid",
+        members=_CRS_MEMBERS,
+    )
+    rules = []
+    for spec in (first, resubmitted):
+        scope = spec.resolved.scope_choices
+        assert scope is not None
+        (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+        rules.append((choice.active, choice.provenance, choice.rule))
+    assert (
+        rules
+        == [("measure_basis:grant_equivalent", "default", "served_differs_from_convention")] * 2
     )
     assert _flows(first) == IdentityBindingSet(refs=["CRSTypeOfFlow10", "CRSTypeOfFlow60"])
 
@@ -771,6 +789,9 @@ def test_a_part_served_on_grant_equivalents_unelected_binds_what_a_switch_binds(
         spec = _switch(identity, option, choice.id, members=_CRS_MEMBERS)
         ids.append(spec.spec_id)
         identity = spec.definition.identity
+        assert spec.resolved.scope_choices is not None
+        (switched,) = (c for c in spec.resolved.scope_choices.choices if c.axis == "measure_basis")
+        assert switched.rule == "measure_basis_convention"
 
     assert ids[1] == ids[3] == first.spec_id
     assert ids[0] == ids[2] != first.spec_id
@@ -795,3 +816,43 @@ def test_a_stated_basis_the_pool_cannot_serve_is_reported_and_not_stated_as_serv
     assert [(d.entry.option_id, d.code, d.cause) for d in scope.dropped_entries] == [
         ("measure_basis:grant_equivalent", "stated_choice_not_applied", "not_served")
     ]
+
+
+@pytest.mark.parametrize(
+    ("window", "entries", "expected"),
+    [
+        pytest.param(2019, [], "served_differs_from_convention", id="net-after-2018"),
+        pytest.param(2015, [], None, id="net-before-2018"),
+        pytest.param(
+            2019,
+            [
+                Entry(
+                    axis="measure_basis",
+                    option_id="measure_basis:net",
+                    provenance="explicit",
+                    origin=ChoiceOrigin(choice_id="earlier:measure_basis"),
+                )
+            ],
+            None,
+            id="net-asked-for",
+        ),
+    ],
+)
+def test_an_identity_reads_the_basis_rule_its_search_recorded(
+    window: int, entries: list[Entry], expected: str | None
+):
+    """A merge or resubmit, where no binder runs, reads the rule from the identity: a donor's
+    net flows in 2019, where the convention counts grant equivalents, were served on a basis
+    the convention did not settle; before 2018, or under an entry asking for net, they were
+    not."""
+    identity = _net_identity("Nominal", None).model_copy(
+        update={
+            "requested_window": IdentityWindowRange(start_year=window, end_year=window),
+        }
+    )
+
+    record = identity_basis_record(identity, get_index(), entries)
+
+    assert (None if record is None else (record.rule, record.active)) == (
+        None if expected is None else (expected, "measure_basis:net")
+    )

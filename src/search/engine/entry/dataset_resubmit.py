@@ -114,6 +114,7 @@ from search.models import (
     Unsupported,
     Warning,
 )
+from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
 from search.scope.composite import assemble_composite
@@ -131,7 +132,8 @@ def full_read_deadline_for(deadline: float) -> float:
 def _compiled_scope(
     entry: ResubmitIdentityEntry, *, index: int, coverage: CoverageSnapshot
 ) -> PartScope:
-    """The scope `entry`'s scope entries compile to over its identity. Refuses the
+    """The scope `entry`'s scope entries compile to over its identity, with the basis record
+    the identity reads (`basis.identity_basis_record`). Refuses the
     compile's own refusal (422), pointed at the scope entry it refuses."""
     assert entry.scope_entries is not None
     dataset = identity_dataset(entry.identity)
@@ -139,10 +141,11 @@ def _compiled_scope(
     groups: dict[str, EntityGroup] = {  # noqa: C416
         role: group for role, group in (entry.entity_groups or {}).items()
     }
+    basis = identity_basis_record(entry.identity, get_index(), entry.scope_entries)
     built = build_part_scope(
         base=entry.identity,
         entries=entry.scope_entries,
-        records={},
+        records={} if basis is None else {"measure_basis": basis},
         facts=ScopeFacts(
             index=get_index(),
             coverage=coverage,
