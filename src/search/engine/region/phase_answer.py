@@ -27,7 +27,7 @@ from search.engine.region.arcs import (
     inapplicable_slots_from_member_facts,
     unresolved_slots_from_member_facts,
 )
-from search.engine.region.bound_unit_gate import bound_unit_gate_reason
+from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.candidates import resolve_candidates
 from search.engine.region.codes import (
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
@@ -37,7 +37,7 @@ from search.engine.region.codes import (
 from search.engine.region.convertibility import (
     conversion_period_departure,
     convertible_answer,
-    decide_part_unit,
+    decide_spec_unit,
     deflator_omission_departure,
     elected_unit_refs,
     option_pins,
@@ -222,7 +222,7 @@ async def _decide_bound_unit_convertibility(
     _declared_roles = survivor_declared_roles(mat_result)
     try:
         _decided_selections = await asyncio.to_thread(
-            decide_part_unit,
+            decide_spec_unit,
             mat_result.sv_dcids,
             unit_request=state.unit_request,
             role_bindings=_decision_role_bindings,
@@ -369,7 +369,7 @@ def _runs_unit_conversion(
 ) -> bool:
     """Whether the bound-unit gate will read the answer's conversion: a bound unit, no
     carve-out ahead of the gate (`_gate_carve_out`), a StatVar to convert, and a plan that
-    serves every StatVar under its elected unit (`convertibility.unit_gate`). The plan the
+    serves a StatVar the unit decision serves under its elected unit (`convertibility.unit_gate`). The plan the
     gate read is recorded for the final gate (`ResolveState.unit_gate_plan`)."""
     if state.bound_unit_outcome is None or not mat_result.sv_dcids:
         return False
@@ -757,11 +757,15 @@ def _bound_unit_refusal(
     state: ResolveState, mat_result: Materialised, setup: _DefiniteSetup
 ) -> RegionResult | None:
     """The answer a bound unit request refuses with at the gate, or None when the elected
-    plan serves every StatVar under its unit and every served row converts, as grounding
+    plan serves a StatVar the unit decision serves under its unit and every served row converts, as grounding
     found it (`ResolveState.unit_coverage`). A pass whose conversion omits the rows of
     entities no currency names adds `currency_unmapped_omitted` to the answer's warnings."""
     gate_plan = state.unit_gate_plan if state.unit_gate_plan is not None else state.elected_plan
-    reason = bound_unit_gate_reason(gate_plan, setup.obs_entities, mat_result.sv_dcids)
+    reason = bound_unit_gate_reason(
+        gate_plan,
+        setup.obs_entities,
+        unit_served(state.unit_elected_selections, mat_result.sv_dcids),
+    )
     if reason is not None:
         return state.no_data(reason, llm_usage=state.var_usage)
     # Grounding ran the conversion on every path that reaches here (`_runs_unit_conversion`).
@@ -795,7 +799,7 @@ async def _gather_definite_coverage(
     skip_coverage_probe = _gate_carve_out(state, mat_result) or not state.stat_vars
 
     # The bound unit is decided from the answer's read plan before any fetch, so a request
-    # without a preview reads none: the plan must serve every StatVar under its elected unit
+    # without a preview reads none: the plan must serve a StatVar the unit decision serves, under its elected unit
     # (`bound_unit_gate`), and every row it serves must convert (`unit_coverage`). A
     # known carve-out decides first.
     if state.bound_unit_outcome is not None and not skip_coverage_probe:

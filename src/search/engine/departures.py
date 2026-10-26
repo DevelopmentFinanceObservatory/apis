@@ -41,6 +41,7 @@ from dfo_platform.roles import role_key_axis
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
+    SOURCE_REF,
     UNIT_REF,
     WHERE_REF,
     BindingProvenance,
@@ -51,10 +52,12 @@ from search.models import (
     Operation,
     OperationVerb,
     RoleAxis,
+    Slot,
     Spec,
     Warning,
     role_ref,
 )
+from unit_words.currency_nouns import currency_noun
 
 if TYPE_CHECKING:
     from code_index.types import PartyRow
@@ -235,7 +238,8 @@ def spec_departure_facts(
     members_in_words: bool = False,
 ) -> list[DepartureFact]:
     """The departures read off `spec` and the `operations` its part carries: operations
-    not run, entities the data holds no values for, years outside the served span,
+    not run, entities the data holds no values for, members the one group the answer reads
+    leaves out (`member_unavailable_fact`), years outside the served span,
     modelled values, groups read as members, and sides read as their whole population. On a
     flow role a group read as members names the residuals its total counts that the members
     leave out and the served dataset publishes on that role. A group read as its total
@@ -267,6 +271,8 @@ def spec_departure_facts(
         return facts
     words = entity_words if entity_words is not None else NO_ENTITY_WORDS
     facts.extend(_unavailable_entity_facts(spec, entity_words=words))
+    if left_out := member_unavailable_fact(spec):
+        facts.append(left_out)
     facts.extend(year_facts)
     if modelled := _modelled_fact(spec):
         facts.append(modelled)
@@ -380,8 +386,9 @@ def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[s
 def without_request_words(fact: DepartureFact) -> DepartureFact:
     """`fact` as a part states it on a door that holds no words of the request (a resubmit):
     `asked` is `None`, and a measure value it names (`measure_not_applied`) moves to
-    `values`, so its text still names what the answer left out."""
-    if fact.asked is None:
+    `values`, so its text still names what the answer left out. `member_unavailable` asks
+    for the Spec's own members, which no request words name, and stands."""
+    if fact.asked is None or fact.code == "member_unavailable":
         return fact
     values = (fact.asked,) if fact.code == "measure_not_applied" else fact.values
     return dataclasses.replace(fact, asked=None, values=values)
@@ -443,6 +450,62 @@ def scope_limited_fact(spec: Spec) -> DepartureFact | None:
         binding_ref=f"how:{next(iter(limits.values()))}",
         limits=tuple(limits),
     )
+
+
+def member_unavailable_fact(spec: Spec) -> DepartureFact | None:
+    """`member_unavailable` for the members holding data that the one group `spec`'s answer
+    reads leaves out (`ResolvedSpec.unserved_members`), by label, else by dcid, or `None`
+    when the group serves every member holding data. A group is one source, unit and
+    method, so the fact states the source the answer reads as `shown` and its unit as
+    `unit`, each from the facets its served series carry (`ResolvedSpec.facets`), and
+    nothing of why the group won. Editing the source slot clears it where the answer binds
+    one, else editing the set binding a how slot holds, whose values name the members."""
+    left_out = spec.resolved.unserved_members
+    if not left_out:
+        return None
+    labels = tuple(ref.label or ref.ref for ref in left_out)
+    return DepartureFact(
+        code="member_unavailable",
+        binding_ref=_member_binding_ref(spec.resolved.slots),
+        asked=", ".join(labels),
+        shown=_served_source(spec),
+        members=labels,
+        unit=_served_unit(spec),
+    )
+
+
+def _served_source(spec: Spec) -> str | None:
+    """The one provenance `spec`'s served series carry, by label, else by dcid, or `None`
+    when they carry several or none."""
+    provenance = spec.resolved.facets.get("provenance")
+    if provenance is None or provenance.ref is None:
+        return None
+    return provenance.label or provenance.ref
+
+
+def _member_binding_ref(slots: Sequence[Slot]) -> str | None:
+    """The ref of the slot whose edit serves a member the answer leaves out: the source
+    slot where the answer binds one, else the first how slot holding a set binding, else
+    `None`."""
+    for slot in slots:
+        if slot.key.axis == "source" and slot.binding.kind != "unbound":
+            return SOURCE_REF
+    for slot in slots:
+        if slot.key.axis == "how" and slot.binding.kind == "set" and slot.key.property:
+            return f"how:{slot.key.property.ref}"
+    return None
+
+
+def _served_unit(spec: Spec) -> str | None:
+    """The name of the one unit `spec`'s served series carry: a currency by its plural noun
+    (`currency_noun`), any other unit by label, else by dcid, or `None` when they carry
+    several or none."""
+    unit = spec.resolved.facets.get("unit")
+    if unit is None or unit.ref is None:
+        return None
+    if unit.currency is not None:
+        return currency_noun(unit.currency, label=unit.label)
+    return unit.label or unit.ref
 
 
 def _unavailable_entity_facts(

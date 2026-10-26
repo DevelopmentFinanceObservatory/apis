@@ -568,7 +568,7 @@ class TestMultiPartRateTableFailuresRefuseTheRequest:
         def _raise(*_args, **_kwargs):
             raise exc
 
-        with patch("search.engine.region.phase_answer.decide_part_unit", _raise):
+        with patch("search.engine.region.phase_answer.decide_spec_unit", _raise):
             resp = _post_two_parts(_fertility_kenya_graph(), "US dollars")
         assert resp.status_code == status
         assert resp.json()["code"] == code

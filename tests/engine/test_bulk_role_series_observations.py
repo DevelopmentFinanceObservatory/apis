@@ -8,12 +8,16 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from dc_graph import GraphReadError
 from dc_sdmx import SdmxCapExceededError
+from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from materialise import GraphReader
 from materialise.facets import FacetSelection, UnitRequest
+from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
@@ -32,10 +36,16 @@ from search.engine.region.codes import (
 from search.engine.region.facets import facet_admitted
 from search.engine.region.observations import bulk_role_series
 from search.engine.region.observations import fetch as region_fetch
-from search.engine.region.observations.bulk_conversion import ConvertedPairs
+from search.engine.region.observations.bulk_conversion import (
+    NATIVE_CURRENCY_SELECTION_REASON,
+    BulkConversion,
+    ConvertedPairs,
+)
 from search.engine.region.observations.bulk_role_series import (
     _narrowest_common_role,
+    _pair_rows,
     _preview_pairs,
+    _served_pairs,
 )
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
@@ -69,6 +79,7 @@ from tests.engine._harness import (
     bulk_plan,
     bulk_role_series_planned,
     door_roles_for_test_query,
+    lead_selected,
     sdmx_double,
     unit_check_planned,
 )
@@ -79,6 +90,7 @@ from tests.materialise.conftest import FakeGraphReader
 from tests.series_coverage.support import BUILD_EPOCH_YEAR
 
 _SV = "TEST/BulkRoleObs_Flow"
+_SV_B = "TEST/BulkRoleObs_FlowB"
 _DONOR = "country/BRDonor"
 # One recipient over the cap reproduces a large region-bound destination set.
 _RECIPIENTS = [f"country/BR{i}" for i in range(1, observation_settings().obs_preview_max_pairs + 2)]
@@ -531,11 +543,16 @@ def test_facet_ranked_by_role_tuple_coverage_not_facet_id(monkeypatch):
     # ZZZLow covers 5/5 role tuples, AAAHigh only 3/5 -- coverage (the count
     # of role tuples a facet_id's own coverage rows name) must win the
     # ranking over facet_id ordering and over recency (AAAHigh's own facet
-    # is more recent, per its own SDMX points below).
+    # is more recent, per its own SDMX points below). The two hold different
+    # sources, so the group ZZZLow leads holds it alone.
     coverage = _patch_role_coverage(
         monkeypatch,
         [("ZZZLow", _DONOR, r, [2019]) for r in recipients]
         + [("AAAHigh", _DONOR, r, [2020]) for r in recipients[:3]],
+        facet_metadata={
+            "ZZZLow": FacetMetadata(provenance_id="dc/base/CoverageFixture"),
+            "AAAHigh": FacetMetadata(provenance_id="dc/base/OtherFixture"),
+        },
     )
     obs: dict[tuple[tuple[str, str], ...], list[Facet]] = {}
     for i, r in enumerate(recipients):
@@ -556,6 +573,674 @@ def test_facet_ranked_by_role_tuple_coverage_not_facet_id(monkeypatch):
     assert observations is not None
     assert sdmx.series_calls[0]["facet_ids"] == {"ZZZLow"}
     assert len(observations.series) == 5
+
+
+_R1, _R2, _R3 = "country/BRMethod1", "country/BRMethod2", "country/BRMethod3"
+# `FM1` and `FM3` share source, unit and method; `FM2` and `FM4`, an estimated method
+# (`materialise.method_status`), share their source and unit alone.
+_METHODS = {
+    "FM1": "Commitment",
+    "FM2": "Disbursement",
+    "FM3": "Commitment",
+    "FM4": "Estimated",
+    "FM5": "Estimated",
+}
+
+
+@pytest.mark.parametrize(
+    ("holdings", "index_sourced", "facet_ids", "series"),
+    [
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV_B, "FM2", _R1, [2020])],
+            True,
+            {"FM1", "FM2"},
+            {
+                (_SV, _R1): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+                (_SV_B, _R1): ("Disbursement", [("2020", 2.0)]),
+            },
+            id="two-members-index-sourced",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV_B, "FM2", _R1, [2020])],
+            False,
+            {"FM1"},
+            {
+                (_SV, _R1): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+            },
+            id="two-members-by-facet-id",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV, "FM2", _R3, [2020])],
+            True,
+            {"FM1", "FM2"},
+            {
+                (_SV, _R1): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R3): ("Disbursement", [("2020", 2.0)]),
+            },
+            id="one-member-a-method-per-pair",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM2", _R1, [2020]), (_SV, "FM1", _R2, [2020])],
+            True,
+            {"FM1", "FM2"},
+            {
+                (_SV, _R1): (None, [("2020", 1.0), ("2020", 2.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+            },
+            id="one-pair-two-methods-one-date",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2019, 2020]), (_SV, "FM3", _R1, [2020])],
+            True,
+            {"FM1", "FM3"},
+            {(_SV, _R1): ("Commitment", [("2019", 1.0), ("2020", 1.0)])},
+            id="one-pair-one-identity-one-date",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV, "FM3", _R1, [2019, 2020])],
+            True,
+            {"FM1", "FM3"},
+            {
+                (_SV, _R1): ("Commitment", [("2019", 3.0), ("2020", 3.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+            },
+            id="one-pair-one-identity-the-wider-facet-wins",
+        ),
+        pytest.param(
+            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV, "FM4", _R3, [2020])],
+            True,
+            {"FM1", "FM4"},
+            {
+                (_SV, _R1): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+                (_SV, _R3): ("Estimated", [("2020", 4.0)]),
+            },
+            id="one-pair-an-estimated-method",
+        ),
+    ],
+)
+@pytest.mark.parametrize("order", ["ranked", "fixed"])
+def test_an_index_sourced_bulk_read_serves_each_member_its_own_method_s_facet(
+    monkeypatch,
+    search_settings,
+    order: str,
+    holdings: list[tuple[str, str, str, list[int]]],
+    index_sourced: bool,
+    facet_ids: set[str],
+    series: dict[tuple[str, str], tuple[str | None, list[tuple[str, float]]]],
+):
+    """`FM1` and `FM2` hold one source, unit and cadence under two methods. An
+    index-resolved family's group is that source and unit, so its one bulk read asks for
+    both facets and each pair serves its own, as its mint dispatches them; grouped by facet
+    id, the read asks for the lead's facet alone and serves its holder. Each series states
+    the method of the facet serving its pair. A pair holding both methods on one date keeps
+    both points, as a mint keeps rows of distinct methods, and states no method. A pair
+    holding `FM1` and `FM3`, one identity, on one date keeps the best-ranked facet's point
+    alone, as `materialise.facet_collapse` keeps a mint's, and counts its points so: every
+    pair is read, so `total_obs` is the points served, in a ranked read and in a fixed one
+    over the row gate alike. A pair served by an estimated method holds estimates."""
+    if order == "fixed":
+        search_settings(role_bulk_rank_max_rows=0)
+    sdmx, observations = _read_holdings(monkeypatch, holdings, index_sourced=index_sourced)
+    assert [set(call["facet_ids"]) for call in sdmx.series_calls] == [facet_ids]
+    _assert_serves(observations, series)
+
+
+@pytest.mark.parametrize(
+    ("holdings", "read", "facet_ids", "series"),
+    [
+        pytest.param(
+            [
+                (_SV, "FM1", _R1, [2019, 2020, 2021]),
+                (_SV, lag, _R1, [2019]),
+                (_SV, lag, _R2, [2021]),
+            ],
+            "latest",
+            {"FM1", lag},
+            {
+                (_SV, _R1): ("Commitment", [("2021", 1.0)]),
+                (_SV, _R2): (_METHODS[lag], [("2021", float(sorted(_METHODS).index(lag) + 1))]),
+            },
+            id=f"latest-a-lagging-{_METHODS[lag].lower()}",
+        )
+        for lag in ("FM2", "FM4")
+    ]
+    + [
+        pytest.param(
+            [
+                (_SV, "FM1", _R1, [2020]),
+                (_SV, "FM1", _R2, [2017, 2018, 2019, 2020]),
+                (_SV, "FM3", _R1, [2019, 2020]),
+            ],
+            "every-year",
+            {"FM1", "FM3"},
+            {
+                (_SV, _R1): ("Commitment", [("2019", 3.0), ("2020", 1.0)]),
+                (_SV, _R2): ("Commitment", [(str(y), 1.0) for y in range(2017, 2021)]),
+            },
+            id="every-year-one-identity-contested",
+        )
+    ],
+)
+def test_a_bulk_read_labels_and_ranks_the_points_a_mint_keeps(
+    monkeypatch,
+    holdings: list[tuple[str, str, str, list[int]]],
+    read: str,
+    facet_ids: set[str],
+    series: dict[tuple[str, str], tuple[str | None, list[tuple[str, float]]]],
+):
+    """A series states, and holds estimates by, only the points its pair serves. Under
+    `latest`, `_R1` holds `FM1` to 2021 and a lagging second method to 2019, which `_R2`
+    holds in 2021: the member's period is 2021, so `_R1` serves `FM1`'s point alone and
+    states `FM1`'s method, and holds no estimate where the lagging method is estimated.
+
+    `FM1` and `FM3`, one identity, contest 2020 at `_R1`. A mint with no conversion ranks
+    each facet over the member's whole table (`member_conversion.apply_member_conversion`),
+    where `FM1`'s five points outrank `FM3`'s two, so `_R1` keeps `FM1`'s 2020 value."""
+    sdmx, observations = _read_holdings(
+        monkeypatch, holdings, index_sourced=True, latest=read == "latest"
+    )
+    assert {frozenset(call["facet_ids"]) for call in sdmx.series_calls} == {frozenset(facet_ids)}
+    _assert_serves(observations, series)
+
+
+_CONTESTED = [
+    ("FM1", _R1, [2020]),
+    ("FM1", _R2, [2019, 2020]),
+    ("FM3", _R1, [2018, 2020]),
+]
+"""`FM1` and `FM3`, one identity, contest 2020 at `_R1`: `FM1`'s three points across the
+member outrank `FM3`'s two, though `FM3` spans more years, while at `_R1` alone `FM3`'s
+two outrank `FM1`'s one."""
+
+
+@pytest.mark.parametrize("series_max", [1, 50])
+def test_a_fixed_read_of_some_pairs_ranks_facets_over_the_member_s_table(
+    monkeypatch, search_settings, series_max: int
+):
+    """Over the row gate a read fetches at most `role_bulk_series_max` pairs. With one, it
+    reads `_R1` alone, where `FM3` holds more points than `FM1`; the mint ranks over the
+    member's whole table, where `FM1` holds more, so `_R1` keeps `FM1`'s 2020 value
+    whichever pairs the read fetched."""
+    search_settings(role_bulk_rank_max_rows=0, role_bulk_series_max=series_max)
+    sdmx, observations = _read_holdings(
+        monkeypatch, [(_SV, *holding) for holding in _CONTESTED], index_sourced=True
+    )
+    read = {r for call in sdmx.series_calls for r in call["entities"]["recipient"]}
+    assert read == ({_R1} if series_max == 1 else {_R1, _R2})
+    served = {
+        next(e.ref for e in s.entities if e.role == "destination"): sorted(
+            (p.date, p.value) for p in s.points
+        )
+        for s in observations.series
+    }
+    assert served[_R1] == [("2018", 3.0), ("2020", 1.0)]
+
+
+def test_a_converting_read_ranks_by_series_only_the_members_it_converts(monkeypatch):
+    """One USD request reads `_SV`, whose elected unit for the read's USD facets is USD
+    natively, and `_SV_B`, whose unit converts, each holding `_CONTESTED`. A mint ranks
+    within each series only for a member whose conversion runs arithmetic
+    (`generation._convert_by_series`), decided from the combination its rows convert under,
+    so `_SV` ranks over its whole table and keeps `FM1`'s 2020 value at `_R1` though another
+    of its combinations converts from EUR, and `_SV_B` ranks at `_R1` alone and keeps
+    `FM3`'s."""
+    monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
+
+    def unit(reason: str, ref: str = "CurrencyUSD") -> dict[str, FacetSelection]:
+        return {"unit": _facet_selection(axis="unit", ref=ref, selection_reason=reason)}
+
+    conversion = BulkConversion(
+        unit_request=UnitRequest(currency="USD", prices="current"),
+        elected={
+            _SV: (unit(NATIVE_CURRENCY_SELECTION_REASON), unit("most_observations", "CurrencyEUR")),
+            _SV_B: (unit("converted_from_native"),),
+        },
+        graph=cast("GraphReader", None),
+        sdmx=cast("MaterialiseSdmxClient", None),
+        rate_cache=cast("RateTableCache", None),
+    )
+    _sdmx, observations = _read_holdings(
+        monkeypatch,
+        [(sv, *holding) for sv in (_SV, _SV_B) for holding in _CONTESTED],
+        index_sourced=True,
+        conversion=conversion,
+    )
+    at_r1 = {
+        s.stat_var.ref: {p.date: p.value for p in s.points}["2020"]
+        for s in observations.series
+        if any(e.ref == _R1 for e in s.entities)
+    }
+    assert at_r1 == {_SV: 1.0, _SV_B: 3.0}
+
+
+@pytest.mark.parametrize("order", ["ranked", "fixed"])
+def test_continuing_facets_rank_over_the_rows_the_continuation_keeps(
+    monkeypatch, search_settings, order: str
+):
+    """`FM1` serves both pairs to 2020 and `FM4` and `FM5`, estimates of one identity,
+    continue it in a 2018 to 2022 range. `FM4` holds `_R1` from 2018 and `FM5` both pairs
+    from 2021. A mint ranks them over the rows its continuation mask keeps after `FM1`'s
+    2020, where `FM5`'s four outrank `FM4`'s two, so `_R1` serves `FM5`'s 2021 and 2022
+    values, though `FM4` holds more rows before the cut."""
+    if order == "fixed":
+        search_settings(role_bulk_rank_max_rows=0)
+    _sdmx, observations = _read_holdings(
+        monkeypatch,
+        [
+            (_SV, "FM1", _R1, [2018, 2019, 2020]),
+            (_SV, "FM1", _R2, [2018, 2019, 2020]),
+            (_SV, "FM4", _R1, [2018, 2019, 2020, 2021, 2022]),
+            (_SV, "FM5", _R1, [2021, 2022]),
+            (_SV, "FM5", _R2, [2021, 2022]),
+        ],
+        index_sourced=False,
+        time_period=[str(y) for y in range(2018, 2023)],
+    )
+    served = {
+        next(e.ref for e in s.entities if e.role == "destination"): sorted(
+            (p.date, p.value) for p in s.points
+        )
+        for s in observations.series
+    }
+    fm1 = [(str(y), 1.0) for y in (2018, 2019, 2020)]
+    assert served == {
+        _R1: [*fm1, ("2021", 5.0), ("2022", 5.0)],
+        _R2: [*fm1, ("2021", 5.0), ("2022", 5.0)],
+    }
+
+
+@pytest.mark.parametrize(
+    ("fm3_months", "served"),
+    [
+        pytest.param(["2020-04", "2020-05", "2020-06"], 9, id="months-apart"),
+        pytest.param(["2020-02", "2020-03", "2020-04"], 7, id="months-overlap"),
+    ],
+)
+def test_a_bulk_plan_counts_sub_annual_facets_of_one_identity_from_above(
+    monkeypatch, fm3_months: list[str], served: int
+):
+    """`FM1` and `FM3`, one identity stating a monthly period, hold three months of 2020 at
+    `_R1`, and `FM1` three at `_R2`. Coverage holds no dates, so the plan cannot tell
+    whether their months repeat, and counts each facet's own observations: 9, the points
+    served when the months differ and more than them when they overlap, never fewer, so
+    the read never passes the row gate with more rows than it counted."""
+    fm1_months = ["2020-01", "2020-02", "2020-03"]
+    holdings = [
+        (_SV, "FM1", _R1, fm1_months),
+        (_SV, "FM3", _R1, fm3_months),
+        (_SV, "FM1", _R2, fm1_months),
+    ]
+    index = patch_coverage(
+        monkeypatch,
+        [
+            (sv, facet_id, _DONOR, r, [int(m[:4]) for m in months])
+            for sv, facet_id, r, months in holdings
+        ],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method="Commitment",
+                unit="CurrencyUSD",
+                observation_period="P1M",
+            )
+            for facet_id in ("FM1", "FM3")
+        },
+    )
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [
+                    _facet(dates=months, facet_id=f)
+                    for _sv, f, held, months in holdings
+                    if held == r
+                ]
+                for r in (_R1, _R2)
+            }
+        }
+    )
+    coverage = FakeCoverageService(index).snapshot()
+    plan = bulk_plan([_SV], _obs_entities([_R1, _R2]), coverage=coverage)
+    plan = replace(plan, index_sourced=True).narrowed(lambda _sv, _candidate: True)
+    observations, _warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities([_R1, _R2]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        coverage=coverage,
+        index_sourced=True,
+    )
+
+    assert sum(len(s.points) for s in observations.series) == served
+    assert plan.observation_count == 9
+
+
+def test_a_latest_member_falling_back_reads_a_selected_facet_without_its_elected_year(
+    monkeypatch,
+):
+    """Coverage holds `FM1` at `_R1` to 2020 and `FM2`, one source and unit under another
+    method, at `_R1` in 2018, so the member elects 2020 and `FM2` holds no pair there.
+    SDMX holds no 2020 row, `FM1`'s last at 2019 and `FM2`'s at 2021, so the member falls
+    back to its newest period, 2021, which only `FM2` serves. The election is stubbed at
+    the year coverage dates, so the test reads the fallback alone. The read asks for every
+    selected facet, `FM2` with `FM1`, and `_R1` serves `FM2`'s 2021 point."""
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, "FM1", _DONOR, _R1, [2019, 2020]), (_SV, "FM2", _DONOR, _R1, [2018])],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=_METHODS[facet_id],
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id in ("FM1", "FM2")
+        },
+    )
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(_R1): [
+                    _facet(dates=["2019"], value=1.0, facet_id="FM1"),
+                    _facet(dates=["2021"], value=2.0, facet_id="FM2"),
+                ]
+            }
+        }
+    )
+    observations, _warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities([_R1]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        coverage=FakeCoverageService(index).snapshot(),
+        index_sourced=True,
+        latest=True,
+        roles=PlanRoles(
+            bound={"donor": frozenset({_DONOR}), "recipient": frozenset({_R1})},
+            role_names={"recipient": "recipient", "donor": "provider"},
+        ),
+        elect=lambda _plan: {_SV: 2020},
+    )
+
+    assert all(set(call["facet_ids"]) == {"FM1", "FM2"} for call in sdmx.series_calls)
+    assert observations is not None
+    assert {
+        next(e.ref for e in s.entities if e.role == "destination"): [
+            (p.date, p.value) for p in s.points
+        ]
+        for s in observations.series
+    } == {_R1: [("2021", 2.0)]}
+
+
+@pytest.mark.parametrize(
+    ("order", "served"),
+    [("ranked", {_R2: [("2021", 2.0)]}), ("fixed", {})],
+)
+def test_a_latest_member_falls_back_only_when_the_read_holds_every_pair(
+    monkeypatch, search_settings, order: str, served: dict[str, list[tuple[str, float]]]
+):
+    """Coverage holds `FM1` at `_R1` in 2019 and 2021 and at `_R2` in 2021, so the member
+    elects 2021. SDMX holds `_R1` in 2019 alone and `_R2` in 2021. A mint holds 2021 at
+    `_R2` and serves it. A `ranked` read holds both pairs and serves the same. A `fixed`
+    read of one pair holds `_R1` alone, with no 2021 point, and cannot tell which period a
+    mint serves, so it serves no series, and its preview says none was read."""
+    if order == "fixed":
+        search_settings(role_bulk_rank_max_rows=0, role_bulk_series_max=1)
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, "FM1", _DONOR, _R1, [2019, 2021]), (_SV, "FM1", _DONOR, _R2, [2021])],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            "FM1": FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=_METHODS["FM1"],
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+        },
+    )
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(_R1): [_facet(dates=["2019"], value=1.0, facet_id="FM1")],
+                _role_tuple(_R2): [_facet(dates=["2021"], value=2.0, facet_id="FM1")],
+            }
+        }
+    )
+    observations, _warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities([_R1, _R2]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        coverage=FakeCoverageService(index).snapshot(),
+        index_sourced=True,
+        latest=True,
+        roles=PlanRoles(
+            bound={"donor": frozenset({_DONOR}), "recipient": frozenset({_R1, _R2})},
+            role_names={"recipient": "recipient", "donor": "provider"},
+        ),
+        elect=lambda _plan: {_SV: 2021},
+    )
+
+    assert observations is not None
+    assert {
+        next(e.ref for e in s.entities if e.role == "destination"): [
+            (p.date, p.value) for p in s.points
+        ]
+        for s in observations.series
+    } == served
+    if not served:
+        assert observations.omitted is not None
+        assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+
+
+def test_a_latest_member_falling_back_ranks_facets_in_the_year_it_serves(monkeypatch):
+    """Coverage holds `FM1` at both pairs in 2021, so the member elects 2021, and `FM1` at
+    `_R1` and `FM3`, one identity, at both pairs in 2019. SDMX holds no 2021 row, so the
+    member falls back to 2019, where `FM1` and `FM3` contest `_R1`. A mint ranks over the
+    rows at that period, where `FM3`'s two outrank `FM1`'s one, so `_R1` serves `FM3`'s
+    value, though `FM1` alone holds rows in the elected year."""
+    holdings = [
+        ("FM1", _R1, [2019, 2021]),
+        ("FM1", _R2, [2021]),
+        ("FM3", _R1, [2019]),
+        ("FM3", _R2, [2019]),
+    ]
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, facet_id, _DONOR, r, years) for facet_id, r, years in holdings],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=_METHODS[facet_id],
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id in ("FM1", "FM3")
+        },
+    )
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(_R1): [
+                    _facet(dates=["2019"], value=1.0, facet_id="FM1"),
+                    _facet(dates=["2019"], value=3.0, facet_id="FM3"),
+                ],
+                _role_tuple(_R2): [_facet(dates=["2019"], value=3.0, facet_id="FM3")],
+            }
+        }
+    )
+    observations, _warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities([_R1, _R2]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        coverage=FakeCoverageService(index).snapshot(),
+        index_sourced=True,
+        latest=True,
+        roles=PlanRoles(
+            bound={"donor": frozenset({_DONOR}), "recipient": frozenset({_R1, _R2})},
+            role_names={"recipient": "recipient", "donor": "provider"},
+        ),
+        elect=lambda _plan: {_SV: 2021},
+    )
+
+    assert observations is not None
+    assert {
+        next(e.ref for e in s.entities if e.role == "destination"): [
+            (p.date, p.value) for p in s.points
+        ]
+        for s in observations.series
+    } == {_R1: [("2019", 3.0)], _R2: [("2019", 3.0)]}
+
+
+def _read_holdings(monkeypatch, holdings, *, index_sourced: bool, **read):
+    """The bulk read of `holdings`, each `(stat_var, facet_id, recipient, years)` with the
+    value `_METHODS` orders its facet by, under `_METHODS`' facets of one source, unit and
+    annual cadence: the SDMX double and the observations."""
+    stat_vars = list(dict.fromkeys(sv for sv, *_rest in holdings))
+    recipients = sorted({r for _sv, _f, r, _y in holdings})
+    index = patch_coverage(
+        monkeypatch,
+        [(sv, facet_id, _DONOR, r, years) for sv, facet_id, r, years in holdings],
+        role_names={sv: RoleNames(donor="provider", recipient="recipient") for sv in stat_vars},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in _METHODS.items()
+        },
+    )
+    observations_by_sv: dict[str, dict] = {}
+    for sv, facet_id, r, years in holdings:
+        observations_by_sv.setdefault(sv, {}).setdefault(_role_tuple(r), []).append(
+            _facet(
+                dates=[str(y) for y in years],
+                value=float(sorted(_METHODS).index(facet_id) + 1),
+                facet_id=facet_id,
+            )
+        )
+    sdmx = FakeSdmxClient(observations=observations_by_sv)
+    observations, _warn = bulk_role_series_planned(
+        stat_vars,
+        _obs_entities(recipients),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        coverage=FakeCoverageService(index).snapshot(),
+        index_sourced=index_sourced,
+        **read,
+    )
+    return sdmx, observations
+
+
+def _assert_serves(observations, series) -> None:
+    """`observations` hold exactly `series`, each pair's method and points, hold estimates
+    at the pairs an estimated method serves, and count the points served in `total_obs`."""
+    assert observations is not None
+    served = {
+        (s.stat_var.ref, next(e.ref for e in s.entities if e.role == "destination")): (
+            s.facet["measurementMethod"].ref if "measurementMethod" in s.facet else None,
+            sorted((p.date, p.value) for p in s.points),
+        )
+        for s in observations.series
+    }
+    assert served == series
+    assert {
+        (s.stat_var.ref, next(e.ref for e in s.entities if e.role == "destination"))
+        for s in observations.series
+        if s.holds_estimates
+    } == {key for key, (method, _points) in series.items() if method == "Estimated"}
+    assert observations.total_obs == sum(len(points) for _method, points in series.values())
+
+
+def test_a_pair_serves_no_point_of_a_facet_another_member_selects() -> None:
+    """`_SV`'s pair holds `FM2`, which the group's selection serves `_SV_B` alone (as when
+    `_SV`'s copy of it sits at another cadence), dated after `FM1`'s last point. `FM2`
+    continues no facet (`BulkPlan.continuing`), so the pair serves `FM1`'s point alone and
+    states `FM1`, as a mint of `_SV` dispatches no row of `FM2`."""
+    pair = _role_tuple(_R1)
+    candidates = {
+        facet_id: role_candidate(
+            facet_id=facet_id,
+            role_tuples=[pair],
+            latest_date="2021",
+            provenance_id="dc/base/Shared",
+            measurement_method=_METHODS[facet_id],
+            unit="CurrencyUSD",
+        )
+        for facet_id in ("FM1", "FM2")
+    }
+    merged = merge_role_candidates(
+        {_SV: list(candidates.values()), _SV_B: [candidates["FM2"]]}, [_SV, _SV_B]
+    )
+    plan = BulkPlan(
+        members=(_SV, _SV_B),
+        years=None,
+        facet_id="FM1",
+        selected={_SV: ("FM1",), _SV_B: ("FM2",)},
+        candidates=merged,
+    )
+
+    rows = _pair_rows(
+        _SV,
+        [_facet(dates=["2020"], facet_id="FM1"), _facet(dates=["2021"], value=2.0, facet_id="FM2")],
+        plan=plan,
+    )
+    served = _served_pairs(plan, {(_SV, pair): rows}, ranked_by_series=(), estimated=frozenset())
+
+    assert served.points == {(_SV, pair): [("2020", 0.0)]}
+    assert served.stated[(_SV, pair)]["measurementMethod"] == "Commitment"
+
+
+def test_a_pair_a_continuation_extends_states_the_selection_s_method() -> None:
+    """`FM4`, an estimated method, continues `FM1` past its last year
+    (`BulkPlan.continuing`). A pair served by `FM1` to 2020 and `FM4` in 2021 serves both
+    points, states `FM1`'s method as a mint's selection states the facet a continuation
+    joins, and holds estimates."""
+    pair = _role_tuple(_R1)
+    candidates = {
+        facet_id: role_candidate(
+            facet_id=facet_id,
+            role_tuples=[pair],
+            latest_date=latest,
+            provenance_id="dc/base/Shared",
+            measurement_method=_METHODS[facet_id],
+            unit="CurrencyUSD",
+        )
+        for facet_id, latest in (("FM1", "2020"), ("FM4", "2021"))
+    }
+    plan = BulkPlan(
+        members=(_SV,),
+        years=None,
+        facet_id="FM1",
+        selected={_SV: ("FM1",)},
+        continuing=("FM4",),
+        candidates=merge_role_candidates({_SV: list(candidates.values())}, [_SV]),
+    )
+    rows = _pair_rows(
+        _SV,
+        [
+            _facet(dates=["2020"], value=1.0, facet_id="FM1"),
+            _facet(dates=["2020", "2021"], value=4.0, facet_id="FM4"),
+        ],
+        plan=plan,
+    )
+    served = _served_pairs(
+        plan, {(_SV, pair): rows}, ranked_by_series=(), estimated=frozenset({"FM4"})
+    )
+
+    assert served.points == {(_SV, pair): [("2020", 1.0), ("2021", 4.0)]}
+    assert served.stated[(_SV, pair)]["measurementMethod"] == "Commitment"
+    assert served.estimated == {(_SV, pair)}
 
 
 def test_merged_candidates_keep_or_drop_whole_and_preview_pairs_in_sorted_order():
@@ -593,7 +1278,13 @@ def test_merged_candidates_keep_or_drop_whole_and_preview_pairs_in_sorted_order(
     )
     merged = merge_role_candidates({_SV: [usd_narrow, eur, usd_wide]}, [_SV])
     preview = _preview_pairs(
-        BulkPlan(members=(_SV,), years=None, facet_id="F-A", candidates=merged),
+        BulkPlan(
+            members=(_SV,),
+            years=None,
+            facet_id="F-A",
+            selected=lead_selected(merged, "F-A"),
+            candidates=merged,
+        ),
         10,
         member_year=lambda _sv: 2020,
     )
@@ -874,7 +1565,9 @@ def test_a_converted_role_read_whose_conversion_read_fails_omits_the_preview(
         facet_filter=None,
         coverage=coverage,
         # The conversion itself never runs: `convert_pairs` fails first.
-        conversion=SimpleNamespace(target_unit_ref="CurrencyUSD"),
+        conversion=SimpleNamespace(
+            target_unit_ref="CurrencyUSD", converts_under=lambda _sv, _facet: True
+        ),
     )
 
     assert observations.series == []
@@ -913,7 +1606,7 @@ def test_a_role_conversion_names_the_pairs_whose_deflator_it_lacks(monkeypatch, 
         graph=_GRAPH,
         facet_filter=None,
         coverage=coverage,
-        conversion=SimpleNamespace(target_unit_ref=None),
+        conversion=SimpleNamespace(target_unit_ref=None, converts_under=lambda _sv, _facet: True),
     )
 
     assert len(observations.series) == len(recipients) - omitted_count
@@ -1049,7 +1742,9 @@ def test_series_truncated_to_the_order_the_row_gate_chooses(
     conversion = None
     if target_unit != "absent":
         monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
-        conversion = SimpleNamespace(target_unit_ref=target_unit)
+        conversion = SimpleNamespace(
+            target_unit_ref=target_unit, converts_under=lambda _sv, _facet: True
+        )
     observations, warn = bulk_role_series_planned(
         [_SV],
         _obs_entities(recipients),
@@ -1181,7 +1876,15 @@ def test_unshipped_pair_total_obs_selects_the_same_facet_as_the_shipped_ones(
     rows = [("F1", _DONOR, r, [2020]) for r in recipients if r != "country/BRTrunc7"]
     rows.append(("F1", _DONOR, "country/BRTrunc7", [2020, 2021]))
     rows.append(("F2", _DONOR, "country/BRTrunc7", [2020, 2021, 2022, 2023, 2024]))
-    coverage = _patch_role_coverage(monkeypatch, rows)
+    # F2 holds another source, so the group F1 leads holds F1 alone.
+    coverage = _patch_role_coverage(
+        monkeypatch,
+        rows,
+        facet_metadata={
+            "F1": FacetMetadata(provenance_id="dc/base/CoverageFixture"),
+            "F2": FacetMetadata(provenance_id="dc/base/OtherFixture"),
+        },
+    )
     obs = {
         _role_tuple(r): [_facet(dates=["2020"], value=float(i))] for i, r in enumerate(recipients)
     }
@@ -1333,7 +2036,13 @@ def test_preview_pairs_takes_stat_vars_newest_year_first_round_robin_up_to_the_l
 
     member_years = {sv_b: 2022, sv_a: 2021, sv_c: 2019}
     preview = _preview_pairs(
-        BulkPlan(members=(sv_b, sv_c, sv_a), years=None, facet_id="F1", candidates=merged),
+        BulkPlan(
+            members=(sv_b, sv_c, sv_a),
+            years=None,
+            facet_id="F1",
+            selected=lead_selected(merged, "F1"),
+            candidates=merged,
+        ),
         2,
         member_year=member_years.get,
     )
@@ -1818,4 +2527,4 @@ def test_unit_availability_confirms_only_the_elected_unit(monkeypatch):
         coverage=FakeCoverageService(index).snapshot(),
     )
     assert evidence.confirmed == frozenset()
-    assert evidence.covers([_SV]) is False
+    assert evidence.serves_any([_SV]) is False

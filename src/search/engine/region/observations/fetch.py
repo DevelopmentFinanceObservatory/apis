@@ -76,7 +76,10 @@ from search.engine.region.codes import (
     OBSERVATIONS_PROBE_FAILED,
     OBSERVATIONS_TIMED_OUT,
 )
-from search.engine.region.observations.bulk_conversion import BulkConversion
+from search.engine.region.observations.bulk_conversion import (
+    BulkConversion,
+    any_combination_converts,
+)
 from search.engine.region.observations.bulk_role_series import _bulk_role_series
 from search.engine.region.observations.bulk_scope import BulkScope, _bulk_scope_series
 from search.engine.region.result import FacetAxisFilter
@@ -142,21 +145,6 @@ def _role_bearing_pairs(
     ]
 
 
-_NATIVE_CURRENCY_SELECTION_REASON = "native_currency_preferred"
-"""`FacetSelection.selection_reason`'s own literal on the unit axis
-(`materialise.facets._preferred_native_unit_selection`) when a request-form
-unit binding's elected facet already carries the requested `{currency,
-prices: "current"}` natively -- the same condition `materialise.
-member_conversion.decide_member_conversion` calls `natively_satisfied` and
-runs no recipe/table/arithmetic for. `_preferred_native_unit_selection` is
-tried first, over the same narrowed candidate pool `decide_member_conversion`
-later re-checks: it finds a candidate carrying this reason if and only if
-that pool holds one whose own unit ref already equals the requested native
-currency, which is exactly `natively_satisfied`'s own test -- so this
-selection_reason is read directly here rather than re-deriving the currency
-comparison a second time."""
-
-
 def _elected_requires_conversion(
     sv_dcids: Sequence[str],
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None,
@@ -165,18 +153,12 @@ def _elected_requires_conversion(
     its points (`bulk_conversion`).
 
     Missing elections conservatively require conversion. StatVars absent from `elected` add
-    no series. Any non-native unit selection among the remaining combinations requires it.
+    no series. A member with any combination converting by arithmetic
+    (`bulk_conversion.any_combination_converts`) requires it.
     """
     if elected is None:
         return True
-    for sv in sv_dcids:
-        for combo in elected.get(sv, ()):
-            unit_selection = combo.get("unit")
-            if unit_selection is None:
-                continue
-            if unit_selection.selection_reason != _NATIVE_CURRENCY_SELECTION_REASON:
-                return True
-    return False
+    return any(any_combination_converts(elected.get(sv, ())) for sv in sv_dcids)
 
 
 def _native_unit_refs(

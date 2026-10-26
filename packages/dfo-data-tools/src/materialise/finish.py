@@ -402,7 +402,8 @@ def _build_warnings(
     the entities and members in its message and names them by ref in its structured fields.
     The members are those at another observation period in the requested years
     (`_GroupOutcome.off_cadence_members`), and those holding observations only outside them
-    (`_GroupOutcome.out_of_window_members`). The second are left out with `absent_reads_zero`,
+    (`_GroupOutcome.out_of_window_members`), and those holding no facet of the elected group
+    (`_GroupOutcome.unserved_members`). The second are left out with `absent_reads_zero`,
     when the served dataset reads an absent member as zero, since such a member adds nothing
     to the requested years. One `coverage_below_scope` states every cause that applies.
     `currency_unmapped_omitted` applies when any conversion record omitted an entity's rows;
@@ -452,15 +453,18 @@ def _build_warnings(
     countries_fallback = row_count > 0 and not outcome.default_scope.every_place
     off_cadence: Sequence[str] = ()
     out_of_window: Sequence[str] = ()
+    unserved_members: Sequence[str] = ()
     member_count = 0
     if isinstance(outcome, _GroupOutcome) and row_count:
         off_cadence = outcome.off_cadence_members
         out_of_window = () if absent_reads_zero else outcome.out_of_window_members
+        unserved_members = outcome.unserved_members
         member_count = len(outcome.member_observation_counts)
     if (
         countries_fallback
         or off_cadence
         or out_of_window
+        or unserved_members
         or coverage_below_scope(
             outcome.coverage, applied_window=outcome.applied_window, unserved=unserved
         )
@@ -471,6 +475,7 @@ def _build_warnings(
                 countries_fallback=countries_fallback,
                 off_cadence=off_cadence,
                 out_of_window=out_of_window,
+                unserved_members=unserved_members,
                 member_count=member_count,
                 years=_clamped_years(request.window, outcome.applied_window),
             )
@@ -561,6 +566,7 @@ def _coverage_below_scope_warning(
     countries_fallback: bool,
     off_cadence: Sequence[str],
     out_of_window: Sequence[str],
+    unserved_members: Sequence[str],
     member_count: int,
     years: tuple[YearRange, YearRange] | None = None,
 ) -> MaterialisationWarning:
@@ -569,9 +575,11 @@ def _coverage_below_scope_warning(
     2020 to 2024.", and carries them as `requested_years` and `served_years`. Then it counts
     the `unserved` entity dcids. Then, of the group's `member_count` series, it counts those in `off_cadence`, which report the requested years
     at another frequency than the group serves and are left out, and those in
-    `out_of_window`, which hold no observation in the requested years. The message names no
-    entity or member, so a stored version holds no name that can go stale. The warning's
-    `unserved_entities`, `off_cadence_members` and `out_of_window_members` carry each count
+    `out_of_window`, which hold no observation in the requested years, and those in
+    `unserved_members`, which hold no observation under the source, unit and method the
+    group serves and are left out. The message names no entity or member, so a stored
+    version holds no name that can go stale. The warning's `unserved_entities`,
+    `off_cadence_members`, `out_of_window_members` and `unserved_members` carry each count
     and the first five refs (`CountedRefs`), beside `member_count` for the members, for a
     reader to name them. Then, with `countries_fallback`, it says a request binding no place
     was served the countries with data because the full list of places with data was too
@@ -600,6 +608,11 @@ def _coverage_below_scope_warning(
             f"{message} {len(out_of_window)} of {member_count} series hold no observations "
             "in the requested years."
         )
+    if unserved_members:
+        message = (
+            f"{message} {len(unserved_members)} of {member_count} series hold no observations "
+            "under the source, unit and method the figures use and are left out."
+        )
     if countries_fallback:
         message = (
             f"{message} No place was named, so the answer covers the countries with data, "
@@ -614,12 +627,14 @@ def _coverage_below_scope_warning(
         warning["requested_years"], warning["served_years"] = years
     if unserved:
         warning["unserved_entities"] = _counted_entities(unserved)
-    if off_cadence or out_of_window:
+    if off_cadence or out_of_window or unserved_members:
         warning["member_count"] = member_count
     if off_cadence:
         warning["off_cadence_members"] = _counted(off_cadence)
     if out_of_window:
         warning["out_of_window_members"] = _counted(out_of_window)
+    if unserved_members:
+        warning["unserved_members"] = _counted(unserved_members)
     return warning
 
 

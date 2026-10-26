@@ -500,10 +500,10 @@ def _run_to_completion[T](main: Coroutine[Any, Any, T]) -> T:
 
 
 def log_unit_decisions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Log every unit decision either door makes (`convertibility.decide_part_unit`) on the
+    """Log every unit decision either door makes (`convertibility.decide_spec_unit`) on the
     answer's recorder."""
     for module in (phase_answer, promote_ground):
-        real = module.decide_part_unit
+        real = module.decide_spec_unit
 
         def decide(*args, _real=real, **kwargs):
             decided = _real(*args, **kwargs)
@@ -511,7 +511,7 @@ def log_unit_decisions(monkeypatch: pytest.MonkeyPatch) -> None:
                 _ACTIVE[-1].unit_decisions.append(decided)
             return decided
 
-        monkeypatch.setattr(module, "decide_part_unit", decide)
+        monkeypatch.setattr(module, "decide_spec_unit", decide)
 
 
 def log_relaxation_walks(monkeypatch: pytest.MonkeyPatch) -> None:

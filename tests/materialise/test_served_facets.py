@@ -1,5 +1,5 @@
-"""`served_facets` names the facets materialise dispatches for an unbound member: the ids
-`joint_dispatch_facet_ids` takes over the selections `_select_member_facets` makes, so
+"""`group_served` names the facets materialise dispatches for an unbound member alone: the
+ids `joint_dispatch_facet_ids` takes over the selections `_select_member_facets` makes, so
 search coverage dates and counts the same group the preview reads."""
 
 from __future__ import annotations
@@ -12,12 +12,12 @@ from materialise.facets import (
     FacetBinding,
     admitted_candidates,
     joint_dispatch_facet_ids,
-    served_facets,
 )
 from materialise.generation import _select_member_facets
 from materialise.graph import Facet
 from materialise.window import RequestedWindow
 
+from ._group_support import served_alone
 from .conftest import FakeGraphReader
 
 _VARIABLE = "Count_Person"
@@ -66,7 +66,9 @@ _WINDOWS = {
 
 @pytest.mark.parametrize("window_name", list(_WINDOWS))
 @pytest.mark.parametrize("case", list(_CASES))
-def test_served_facets_are_the_joint_dispatch_group(case: str, window_name: str) -> None:
+def test_a_lone_members_served_facets_are_its_joint_dispatch_group(
+    case: str, window_name: str
+) -> None:
     candidates = _CASES[case]
     window = _WINDOWS[window_name]
     request = MaterialisationRequest(
@@ -78,7 +80,7 @@ def test_served_facets_are_the_joint_dispatch_group(case: str, window_name: str)
     )
     election = _select_member_facets(request, candidates, graph=FakeGraphReader())
 
-    served = served_facets(candidates, stat_vars=[f"dcid:{_VARIABLE}"], window=window)
+    served = served_alone(candidates, stat_var=f"dcid:{_VARIABLE}", window=window)
 
     assert tuple(sorted(f.facet_id for f in served if f.facet_id)) == joint_dispatch_facet_ids(
         candidates, election, member=0
@@ -86,8 +88,8 @@ def test_served_facets_are_the_joint_dispatch_group(case: str, window_name: str)
 
 
 def test_one_import_serves_both_facets() -> None:
-    served = served_facets(
-        [_LONG, _SAME_IMPORT], stat_vars=[_VARIABLE], window=RequestedWindow(kind="latest")
+    served = served_alone(
+        [_LONG, _SAME_IMPORT], stat_var=_VARIABLE, window=RequestedWindow(kind="latest")
     )
     assert [f.facet_id for f in served] == ["f-long", "f-short"]
 
@@ -219,7 +221,7 @@ def test_a_window_past_the_elected_series_takes_its_imports_estimates(
     candidates, window, bindings, continued_by, dispatched
 ) -> None:
     """A mint continues the elected series with the same import's estimated facets in its
-    unit, and Search's group (`served_facets`) names the same facets."""
+    unit, and Search's group (`group_served`) names the same facets."""
     request = MaterialisationRequest(
         stat_var=f"dcid:{_VARIABLE}",
         role_bindings={"observationAbout": ["country/KEN"]},
@@ -233,5 +235,5 @@ def test_a_window_past_the_elected_series_takes_its_imports_estimates(
     assert election.selections["measurementMethod"].continued_by == continued_by
     assert joint_dispatch_facet_ids(candidates, election, member=0) == dispatched
     if not bindings:
-        served = served_facets(candidates, stat_vars=[f"dcid:{_VARIABLE}"], window=window)
+        served = served_alone(candidates, stat_var=f"dcid:{_VARIABLE}", window=window)
         assert tuple(sorted(f.facet_id for f in served if f.facet_id)) == dispatched

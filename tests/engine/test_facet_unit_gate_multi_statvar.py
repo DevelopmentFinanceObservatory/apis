@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import httpx
+import pytest
 
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.facets import FacetSelection, UnitRequest
@@ -36,6 +37,7 @@ from search.observations import OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import elected_reply
+from tests.engine._conjoin_fixtures import member_departure_texts, member_departures
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -167,7 +169,10 @@ def _set_bind_llm() -> object:
 
 
 def _obs_facet(*, unit: str, value: float, provenance_id: str = _SOURCE_PROVENANCE) -> dict:
+    """One 2020 point under a facet id naming its source and unit, as the graph keys a facet
+    by both, so StatVars sharing a source and unit share the facet."""
     return {
+        "facetId": f"{provenance_id}/{unit}",
         "earliestDate": "2020",
         "latestDate": "2020",
         "obsCount": 1,
@@ -258,7 +263,7 @@ def _resolution(
         **conversion_arcs(
             recipe_id=_RECIPE,
             provenance_id=_SOURCE_PROVENANCE,
-            currencies=["CurrencyUSD", "CurrencyEUR"],
+            currencies=["CurrencyUSD", "CurrencyEUR", "CurrencyGBP"],
         ),
     }
     materialise_graph._subjects = {
@@ -292,23 +297,29 @@ def _resolution(
 
 
 def test_single_shape_rate_gap_refuses_rate_coverage_gap():
-    """SV_B's only facet is EUR, which the recipe converts to USD, and the rate table holds
-    no EUR rate for 2020. The gate finds the gap from the plan before any read and refuses
-    with the cause the conversion would raise."""
+    """Neither StatVar holds pounds, so a pound request serves SV_B's euro facet: the two tie
+    on every count under one source and the euro unit sorts before the dollar. The recipe
+    converts it, and the rate table holds no pound rate for 2020. The gate
+    finds the gap from the plan before any read and refuses with the cause the conversion
+    would raise."""
     obs = {
         f"{_SV_A}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=10.0)],
         f"{_SV_B}|country/KEN": [_obs_facet(unit="CurrencyEUR", value=5.0)],
     }
-    result = _run(obs=obs, unit_text="US dollars")
+    result = _run(
+        obs=obs, unit_text="GBP", rates={"CurrencyUSD": {2020: 1.0}, "CurrencyEUR": {2020: 0.9}}
+    )
     assert result.status == "no_data"
     assert result.no_data_reason == "rate_coverage_gap"
     assert result.cause is not None
-    assert (result.cause.code, result.cause.entities) == ("rate_missing", ["CurrencyEUR@2020"])
+    assert (result.cause.code, result.cause.entities) == ("rate_missing", ["CurrencyGBP@2020"])
 
 
 def test_a_covered_conversion_answers_definite_without_an_observation_read(monkeypatch):
-    """With a 2020 euro rate SV_B's euro facet converts, so the gate passes from the plan
-    and the rate table alone; an answer without a preview reads no observation."""
+    """A dollar request serves SV_A's native dollar facet and leaves SV_B, which holds only
+    euros, unserved, so the gate passes from the plan and the rate table alone; an answer
+    without a preview reads no observation. The Spec still lists both members, and the part
+    names SV_B as left out of the source it reads, on the set binding naming the members."""
 
     def _no_read(*args, **kwargs):
         raise AssertionError("the bound-unit gate must not read observations")
@@ -326,6 +337,7 @@ def test_a_covered_conversion_answers_definite_without_an_observation_read(monke
     )
     assert result.status == "definite", result
     assert {sv.ref.ref for sv in result.specs[0].resolved.members} == {_SV_A, _SV_B}
+    assert member_departures(result) == [(f"how:{_PROP}", "Unit gate SourceB", _SOURCE_PROVENANCE)]
 
 
 def test_a_unit_gate_refusal_never_probes_coverage(monkeypatch):
@@ -352,13 +364,15 @@ def test_a_unit_gate_refusal_never_probes_coverage(monkeypatch):
         f"{_SV_A}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=10.0)],
         f"{_SV_B}|country/KEN": [_obs_facet(unit="CurrencyEUR", value=5.0)],
     }
-    result = _run(obs=obs, unit_text="US dollars", include_option_coverage=True)
+    # A pound request with no pound rate refuses at the gate (`test_single_shape_rate_gap_…`).
+    result = _run(obs=obs, unit_text="GBP", include_option_coverage=True)
     assert result.status == "no_data"
     assert result.no_data_reason == "rate_coverage_gap"
 
 
 def test_single_shape_full_coverage_answers_definite_with_all_series():
-    """Both StatVars satisfy the USD request and contribute a series."""
+    """Both StatVars satisfy the USD request and contribute a series, so the part names no
+    member left out."""
     obs = {
         f"{_SV_A}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=10.0)],
         f"{_SV_B}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=20.0)],
@@ -369,6 +383,7 @@ def test_single_shape_full_coverage_answers_definite_with_all_series():
     assert {sv.ref.ref for sv in spec.resolved.members} == {_SV_A, _SV_B}
     assert spec.resolved.observations is not None
     assert {s.stat_var.ref for s in spec.resolved.observations.series} == {_SV_A, _SV_B}
+    assert member_departures(result) == []
 
 
 def test_single_shape_empty_read_answers_from_the_plan():
@@ -418,8 +433,12 @@ class _SetPlusAltBindLLM:
         ), None
 
 
-def test_candidate_with_partial_coverage_is_dropped_leaving_the_full_alternate():
-    """The per-StatVar filter drops the partial USD set and keeps the fully covered SV_C alternate."""
+def test_a_partly_served_candidate_stays_beside_the_full_alternate():
+    """A dollar request serves the SET candidate's SV_A, its native dollar facet, and leaves
+    SV_B, which holds only euros, unserved. The candidate stays beside the SV_C alternate,
+    which serves in full, so the answer offers both, and the part names SV_B as left out of
+    the SET reading's source, by that source and unit, so the text is true of the one reading
+    it concerns."""
     obs = {
         f"{_SV_A}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=10.0)],
         f"{_SV_B}|country/KEN": [_obs_facet(unit="CurrencyEUR", value=5.0)],
@@ -431,12 +450,16 @@ def test_candidate_with_partial_coverage_is_dropped_leaving_the_full_alternate()
         llm=_SetPlusAltBindLLM(),
         also_plausible_svs=[_SV_C],
     )
-    assert result.status == "definite", (
-        f"expected the partial-coverage SET candidate to be dropped, collapsing to a "
-        f"lone-survivor definite; got status={result.status!r}"
-    )
-    spec = result.specs[0]
-    assert {sv.ref.ref for sv in spec.resolved.members} == {_SV_C}
+    assert result.status == "candidates", f"expected both candidates, got status={result.status!r}"
+    assert [{sv.ref.ref for sv in spec.resolved.members} for spec in result.specs] == [
+        {_SV_A, _SV_B},
+        {_SV_C},
+    ]
+    assert member_departures(result) == [(f"how:{_PROP}", "Unit gate SourceB", _SOURCE_PROVENANCE)]
+    assert member_departure_texts(result) == [
+        f"You asked for Unit gate SourceB. {_SOURCE_PROVENANCE} holds no values for it under "
+        "the unit and method read (US dollars)."
+    ]
 
 
 # A role-bearing bulk scope: the role-pair product exceeds `obs_preview_max_pairs`, so the
@@ -487,11 +510,13 @@ _ROLE_NODES = {
 
 @dataclass(frozen=True)
 class _RoleFacet:
-    """A USD facet holding one point a year in `years` at every recipient."""
+    """A facet in `unit`, by default USD, holding one point a year in `years` at every
+    recipient."""
 
     facet_id: str = _ROLE_FACET
     provenance_id: str = _ROLE_PROVENANCE
     years: tuple[int, ...] = (2020,)
+    unit: str = "CurrencyUSD"
 
 
 type _RoleFacets = Mapping[str, Sequence[_RoleFacet]]
@@ -520,7 +545,7 @@ def _role_coverage(
             for sv in (_ROLE_SV_A, _ROLE_SV_B)
         },
         facet_metadata={
-            f.facet_id: FacetMetadata(provenance_id=f.provenance_id, unit="CurrencyUSD")
+            f.facet_id: FacetMetadata(provenance_id=f.provenance_id, unit=f.unit)
             for per_sv in facets.values()
             for f in per_sv
         },
@@ -550,7 +575,7 @@ def _role_sdmx(
                         values=(1.0,) * len(f.years),
                         facet_id=f.facet_id,
                         provenance_id=f.provenance_id,
-                        unit="CurrencyUSD",
+                        unit=f.unit,
                     )
                     for f in facets[sv]
                 ]
@@ -587,7 +612,7 @@ def _run_role_bulk(
                 facet_id=f.facet_id,
                 points=tuple((str(year), 1.0) for year in f.years),
                 provenance_id=f.provenance_id,
-                unit="CurrencyUSD",
+                unit=f.unit,
             ),
             date_str=str(year),
             value=1.0,
@@ -667,6 +692,36 @@ def test_role_bulk_scope_answers_definite_when_every_statvar_is_confirmed(
     assert observations is not None
     assert {s.stat_var.ref for s in observations.series} == {_ROLE_SV_A}
     assert any(w.code == OBSERVATIONS_SERIES_TRUNCATED for w in result.warnings)
+    assert member_departures(result) == []
+
+
+def test_a_role_bulk_dollar_request_names_the_euro_member_it_leaves_out(
+    monkeypatch, search_settings
+):
+    """SV_A holds dollars and SV_B euros under another source, at every pair. A dollar
+    request elects SV_A's native dollars, so the bulk read serves SV_A alone and the part
+    names SV_B as left out of the source it reads, on the set binding naming the members.
+    Every member serving names none
+    (`test_role_bulk_scope_answers_definite_when_every_statvar_is_confirmed`)."""
+    search_settings(obs_preview_max_pairs=1, role_bulk_series_max=4)
+    facets = {
+        _ROLE_SV_A: (_RoleFacet(),),
+        _ROLE_SV_B: (
+            _RoleFacet(
+                facet_id="FRoleEUR", provenance_id="dc/base/UnitGateRoleSrcB", unit="CurrencyEUR"
+            ),
+        ),
+    }
+    result = _run_role_bulk(monkeypatch, unit_text="US dollars", rates=_EUR_RATES, facets=facets)
+    assert result.status == "definite", (
+        f"expected definite, got {result.status!r} (no_data_reason={result.no_data_reason!r})"
+    )
+    observations = result.specs[0].resolved.observations
+    assert observations is not None
+    assert {s.stat_var.ref for s in observations.series} == {_ROLE_SV_A}
+    assert member_departures(result) == [
+        (f"how:{_PROP}", "Unit gate role SourceB", _ROLE_PROVENANCE)
+    ]
 
 
 def test_role_bulk_display_read_failure_answers_from_coverage(monkeypatch, search_settings):
@@ -839,8 +894,15 @@ def _usd_election(*, converted: bool) -> dict[str, tuple[dict[str, FacetSelectio
     return {sv: ({"unit": selection},) for sv in (_ROLE_SV_A, _ROLE_SV_B)}
 
 
-def _role_bulk_gate(monkeypatch, *, covered_svs: tuple[str, ...], converted: bool):
-    """Run the role-bearing bulk fetch for both StatVars, then the single-shape gate."""
+def _role_bulk_gate(
+    monkeypatch,
+    *,
+    covered_svs: tuple[str, ...],
+    converted: bool,
+    served: tuple[str, ...] = (_ROLE_SV_A, _ROLE_SV_B),
+):
+    """Run the role-bearing bulk fetch for both StatVars, then the single-shape gate over the
+    StatVars the unit decision serves, `served`."""
     obs_entities = {"provider": [_NOR], "recipient": list(_RECIPIENTS)}
     sdmx = _role_sdmx(covered_svs)
     preview, plan = preview_and_plan(
@@ -854,17 +916,30 @@ def _role_bulk_gate(monkeypatch, *, covered_svs: tuple[str, ...], converted: boo
         elected=_usd_election(converted=converted),
         coverage=_role_coverage(monkeypatch, covered_svs),
     )
-    reason = bound_unit_gate_reason(plan, obs_entities, [_ROLE_SV_A, _ROLE_SV_B])
+    reason = bound_unit_gate_reason(plan, obs_entities, served)
     return preview[0], plan_unit_evidence(plan), reason, sdmx
 
 
-def test_role_bulk_gate_refuses_a_statvar_absent_from_coverage(monkeypatch, search_settings):
+@pytest.mark.parametrize("converted", [False, True], ids=["native", "converted"])
+@pytest.mark.parametrize(
+    ("served", "reason"),
+    [
+        pytest.param((_ROLE_SV_A, _ROLE_SV_B), None, id="a-served-member-confirmed"),
+        pytest.param((_ROLE_SV_B,), "facet_not_available", id="no-served-member-confirmed"),
+    ],
+)
+def test_role_bulk_gate_needs_one_served_statvar_confirmed(
+    monkeypatch, search_settings, converted: bool, served: tuple[str, ...], reason: str | None
+):
+    """Coverage holds SV_A's pairs and none of SV_B's. The gate passes while a StatVar the
+    unit decision serves is confirmed, as the mint serves a group with a member holding no
+    point, and refuses when none is."""
     search_settings(obs_preview_max_pairs=1, role_bulk_series_max=1)
-    _obs, evidence, reason, _sdmx = _role_bulk_gate(
-        monkeypatch, covered_svs=(_ROLE_SV_A,), converted=False
+    _obs, evidence, gate_reason, _sdmx = _role_bulk_gate(
+        monkeypatch, covered_svs=(_ROLE_SV_A,), converted=converted, served=served
     )
     assert evidence.confirmed == {_ROLE_SV_A}
-    assert reason == "facet_not_available"
+    assert gate_reason == reason
 
 
 def test_converted_role_bulk_gate_confirms_from_the_native_index_without_a_read(
@@ -880,14 +955,3 @@ def test_converted_role_bulk_gate_confirms_from_the_native_index_without_a_read(
     assert evidence.confirmed == {_ROLE_SV_A, _ROLE_SV_B}
     assert reason is None
     assert sdmx.series_calls == []
-
-
-def test_converted_role_bulk_gate_refuses_a_statvar_with_no_native_pairs(
-    monkeypatch, search_settings
-):
-    search_settings(obs_preview_max_pairs=1, role_bulk_series_max=1)
-    _obs, evidence, reason, _sdmx = _role_bulk_gate(
-        monkeypatch, covered_svs=(_ROLE_SV_A,), converted=True
-    )
-    assert evidence.confirmed == {_ROLE_SV_A}
-    assert reason == "facet_not_available"

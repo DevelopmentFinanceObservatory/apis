@@ -16,6 +16,7 @@ import pytest
 from materialise.window import RequestedWindow
 from origin_catalogue import BASE, DFO, Catalogue
 from search.engine.clients.graph import Facet
+from search.engine.clients.sdmx import RoleFacetCandidate
 from search.engine.retrieval import facet_election
 from search.engine.retrieval.facet_election import (
     merge_role_candidates,
@@ -188,6 +189,75 @@ def test_role_ranking_leads_with_pairs_then_observations_then_recency():
     )
 
     assert order == ["wide", "late", "deep"]
+
+
+_SV_B = "Count_Person_Female"
+
+
+def _member_candidate(facet_id: str, *, recipients: int, method: str = "M") -> RoleFacetCandidate:
+    return role_candidate(
+        facet_id=facet_id,
+        role_tuples=_pairs(*_PLACES[:recipients]),
+        latest_date="2020",
+        provenance_id=_BASE_PROVENANCE if facet_id == "wide" else "dc/base/Shared",
+        measurement_method=method,
+        unit="USD",
+    )
+
+
+@pytest.mark.parametrize(
+    ("index", "index_sourced", "expected"),
+    [
+        pytest.param(
+            {
+                _SV: [
+                    _member_candidate("wide", recipients=3),
+                    _member_candidate("shared", recipients=1),
+                ],
+                _SV_B: [_member_candidate("shared", recipients=1)],
+            },
+            False,
+            ["shared"],
+            id="the-facet-both-hold-beats-a-broader-one",
+        ),
+        pytest.param(
+            {
+                _SV: [
+                    _member_candidate("wide", recipients=3),
+                    _member_candidate("own", recipients=2),
+                ],
+                _SV_B: [_member_candidate("other", recipients=1, method="N")],
+            },
+            False,
+            ["wide", "own", "other"],
+            id="no-facet-both-hold-pairs-lead",
+        ),
+        pytest.param(
+            {
+                _SV: [
+                    _member_candidate("wide", recipients=3),
+                    _member_candidate("own", recipients=2),
+                ],
+                _SV_B: [_member_candidate("other", recipients=1, method="N")],
+            },
+            True,
+            ["own", "other"],
+            id="index-sourced-members-agree-on-source-and-unit",
+        ),
+    ],
+)
+def test_role_ranking_of_several_members_ranks_the_group_most_of_them_hold(
+    index: dict, index_sourced: bool, expected: list[str]
+):
+    """Several StatVars rank only the facets of the key held by the most of them, the
+    group a mint elects (`materialise.group_facets.rank_group`): the facet id, or under an
+    index-sourced family the provenance and unit. Among those the pairs lead."""
+    merged = merge_role_candidates(index, list(index))
+    ranked = rank_role_candidates(
+        merged, stat_vars=list(index), window=None, index_sourced=index_sourced
+    )
+
+    assert [c.facet_id for c in ranked] == expected
 
 
 @pytest.mark.usefixtures("overlap")

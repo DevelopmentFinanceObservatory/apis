@@ -311,11 +311,11 @@ class YearRangeModel(BaseModel):
 
 class WarningModel(BaseModel):
     """One manifest warning. Only `stat_vars_summed` sets its three structured fields, a
-    group's `coverage_below_scope` its three member fields, `coverage_below_scope`
+    group's `coverage_below_scope` its four member fields, `coverage_below_scope`
     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
-    `omitted_entities`, and
-    `deflator_missing_omitted` `omitted_entity_years`. A `None` field is left out of every dump, so other codes' warnings, on
-    the wire and in stored version bodies, stay exactly `{code, severity, message}`.
+    `omitted_entities`, and `deflator_missing_omitted` `omitted_entity_years`. A `None` field
+    is left out of every dump, so other codes' warnings, on the wire and in stored version
+    bodies, stay exactly `{code, severity, message}`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -372,6 +372,15 @@ class WarningModel(BaseModel):
             "coverage_below_scope only: the group members holding no observation in the "
             "requested years; absent when there are none, and when the served provenance reads "
             "an absent member as zero"
+        ),
+    )
+    unserved_members: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only: the group members holding no observation under the "
+            "source, unit and method the group serves, which the figures leave out; absent "
+            "when there are none"
         ),
     )
     unserved_entities: CountedRefsModel | None = Field(

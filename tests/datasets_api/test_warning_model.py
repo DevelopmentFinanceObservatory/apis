@@ -55,6 +55,7 @@ def test_a_stored_stat_vars_summed_warning_without_a_label_omits_the_label_key()
                 "member_count": 9,
                 "off_cadence_members": {"count": 2, "refs": ["dcid:MemberA", "dcid:MemberB"]},
                 "out_of_window_members": {"count": 1, "refs": ["dcid:MemberC"]},
+                "unserved_members": {"count": 1, "refs": ["dcid:MemberD"]},
             },
             id="group-members",
         ),

@@ -380,6 +380,37 @@ def test_a_merged_answer_states_the_places_no_part_serves(
         assert [(d.code, d.binding_ref, d.asked) for d in part.departures] == expected
 
 
+@pytest.mark.parametrize(
+    ("sv_b", "named"),
+    [("sv_ValB", ["Left flow"]), ("sv_Left", [])],
+    ids=["no_part_serves_it", "the_other_part_serves_it"],
+)
+def test_a_merged_answer_names_the_members_no_part_serves(sv_b: str, named: list[str]) -> None:
+    """Two parts merge on their constraint value, the first leaving out `sv_Left`. The
+    merged answer names it in a `member_unavailable` departure while no part serves it, and
+    names none once the second part's member is `sv_Left`."""
+    left = GraphRef(ref="sv_Left", label="Left flow")
+    first = _spec(_PERSON_SHAPE, "ValA", sv_dcid="sv_ValA")
+    first = first.model_copy(update={"resolved": first.resolved.stating_unserved_members((left,))})
+    regions = [
+        _region(first, "ValA", earliest_index=0),
+        _region(_spec(_PERSON_SHAPE, "ValB", sv_dcid=sv_b), "ValB", earliest_index=1),
+    ]
+
+    response, _effective = combine_regions(
+        regions,
+        query="ValA and ValB in Kenya",
+        extra_warnings=[],
+        start_ms=now_ms(),
+        engine_build="test",
+        max_candidates=10,
+    )
+
+    assert response.parts[0].spec.spec_id == response.parts[1].spec.spec_id
+    for part in response.parts:
+        assert [d.asked for d in part.departures if d.code == "member_unavailable"] == named
+
+
 def test_collapse_same_shape_refuses_merge_when_dcid_flips_role():
     """A dcid changing from recipient to provider changes two identity buckets and blocks merging."""
     shape = _recipient_only_shape()

@@ -12,7 +12,8 @@ import dataclasses
 
 import pytest
 
-from materialise.errors import DatasetDisagreementError, FacetNotAvailableError
+from materialise import EnrichmentLookup, materialise_group
+from materialise.errors import DatasetDisagreementError
 from materialise.facets import (
     CoverageAdmission,
     ElectedDataset,
@@ -35,7 +36,17 @@ from tests.origin_catalogue.fake_catalogue import (
     restrictive_catalogue,
 )
 
-from ._group_support import _BARE_A, _ENTITY, _STAT_VAR_A, _STAT_VAR_B, _request
+from ._group_support import (
+    _BARE_A,
+    _BARE_B,
+    _CSV_HEADER,
+    _ENTITY,
+    _STAT_VAR_A,
+    _STAT_VAR_B,
+    _csv_row,
+    _request,
+    _sdmx_client_for,
+)
 from ._scope_availability import NO_SCOPE_READ
 from .conftest import FakeGraphReader
 
@@ -71,17 +82,74 @@ def test_a_group_whose_members_span_datasets_selects_the_elected_provenance():
     requests = [_member(_STAT_VAR_A), _member(_STAT_VAR_B, recorded=(_ELECTED, _OTHER))]
     candidates = [[_facet(_ELECTED)], [_facet(_OTHER, obs_count=9)]]
 
-    selections = select_group_facets(requests, candidates, graph=FakeGraphReader()).selections
+    selections = select_group_facets(
+        requests, candidates, graph=FakeGraphReader()
+    ).election.selections
 
     assert selections["provenance"].ref == _ELECTED
 
 
-def test_the_same_group_without_an_election_refuses_for_mixed_provenance():
+def test_the_same_group_without_an_election_serves_the_broader_source_and_names_the_other():
+    """With no elected dataset the members share no source, so the broader one serves its
+    member and the mint names the other as unserved."""
     requests = [_member(_STAT_VAR_A, pinned=False), _member(_STAT_VAR_B, pinned=False)]
     candidates = [[_facet(_ELECTED)], [_facet(_OTHER, obs_count=9)]]
 
-    with pytest.raises(FacetNotAvailableError, match="no probed facet serves every member"):
-        select_group_facets(requests, candidates, graph=FakeGraphReader())
+    group = select_group_facets(requests, candidates, graph=FakeGraphReader())
+
+    assert group.election.selections["provenance"].ref == _OTHER
+    assert group.dispatch_ids == ((), (f"facet-{_OTHER}",))
+    assert group.unserved == (0,)
+
+    coverage = build_coverage_index(
+        [
+            (_BARE_A, f"facet-{_ELECTED}", "country/DONOR", _ENTITY, [2015]),
+            *[(_BARE_B, f"facet-{_OTHER}", f"country/DONOR{i}", _ENTITY, [2015]) for i in range(9)],
+        ],
+        role_names={
+            bare: RoleNames(donor="donor", recipient="recipient") for bare in (_BARE_A, _BARE_B)
+        },
+        facet_metadata={
+            f"facet-{provenance}": FacetMetadata(
+                provenance_id=provenance,
+                measurement_method="METH",
+                unit="UNIT",
+                observation_period="P1Y",
+            )
+            for provenance in (_ELECTED, _OTHER)
+        },
+    )
+    sdmx, _requests = _sdmx_client_for(
+        {
+            bare: _CSV_HEADER
+            + _csv_row(
+                stat_var=bare,
+                year="2015",
+                value="10",
+                unit="UNIT",
+                method="METH",
+                provenance=provenance,
+                facet_id=f"facet-{provenance}",
+            )
+            for bare, provenance in ((_BARE_A, _ELECTED), (_BARE_B, _OTHER))
+        }
+    )
+    graph = FakeGraphReader()
+
+    result = materialise_group(
+        requests,
+        sdmx=sdmx,
+        graph=graph,
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        materialiser_build="build-123",
+        capability_version="cap-v1",
+        coverage=coverage,
+    )
+
+    counts = {entry["ref"]: entry["observation_count"] for entry in result.trace.resolved_stat_vars}
+    assert counts == {_STAT_VAR_A: 0, _STAT_VAR_B: 1}
+    (warning,) = [w for w in result.warnings if w["code"] == "coverage_below_scope"]
+    assert warning["unserved_members"] == {"count": 1, "refs": [_STAT_VAR_A]}
 
 
 def test_a_member_selects_the_elected_provenance_over_a_larger_facet_of_another_dataset():
@@ -126,7 +194,7 @@ def test_a_group_ranks_only_the_elected_dataset_however_many_places_another_cove
         candidates,
         graph=FakeGraphReader(),
         breadth={f"facet-{_OTHER}": 10, f"facet-{_ELECTED}": 2},
-    ).selections
+    ).election.selections
 
     assert selections["provenance"].ref == _ELECTED
     assert selections["provenance"].dispatch_facet_id == f"facet-{_ELECTED}"

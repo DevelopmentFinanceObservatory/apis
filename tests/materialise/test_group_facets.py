@@ -1,6 +1,6 @@
-"""`materialise_group`: group-level facet selection, shared-facet ranking
-by summed obs_count, honouring a graph-declared default policy agreed across
-members, the empty-intersection refusal, the per-member bound-axis refusal,
+"""`materialise_group`: group-level facet selection, the facet serving the most members
+ranked by summed obs_count, members it leaves unserved named, honouring a graph-declared
+default policy agreed across members, the per-member bound-axis refusal,
 an axis absent from the chosen facet (null on `measurementMethod`, refused
 via `DefaultFacetUndefinedError` on `provenance`), and members that bind
 no entity minting every series coverage holds.
@@ -32,7 +32,7 @@ from materialise.generation import (
     _RawRowBudget,
 )
 from materialise.graph import Facet, FacetDefaultPolicy
-from materialise.group_facets import _group_shared_candidates, select_group_facets
+from materialise.group_facets import _group_pool, elect_group, select_group_facets
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -323,7 +323,7 @@ def test_group_honours_graph_declared_policy_agreed_across_members():
     assert result.coverage.rows == 2
 
 
-def test_empty_facet_id_intersection_refuses_with_alternatives_unioned_across_members():
+def test_a_group_sharing_no_facet_serves_the_top_members_rows_and_names_the_other():
     graph = FakeGraphReader()
     bodies = {
         _BARE_A: _CSV_HEADER
@@ -347,7 +347,7 @@ def test_empty_facet_id_intersection_refuses_with_alternatives_unioned_across_me
             facet_id="onlyB",
         ),
     }
-    sdmx, requests = _sdmx_client_for(bodies)
+    sdmx, _requests = _sdmx_client_for(bodies)
     coverage = _coverage_for(
         _GroupFacet(_BARE_A, "onlyA", "PROV_A", "METH_A", "UNIT_A"),
         _GroupFacet(_BARE_B, "onlyB", "PROV_B", "METH_B", "UNIT_B"),
@@ -357,27 +357,25 @@ def test_empty_facet_id_intersection_refuses_with_alternatives_unioned_across_me
         _request(stat_var=_STAT_VAR_B, facet_bindings={}),
     ]
 
-    with pytest.raises(FacetNotAvailableError) as excinfo:
-        materialise_group(
-            group_requests,
-            sdmx=sdmx,
-            graph=graph,
-            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
-            materialiser_build="build-123",
-            capability_version="cap-v1",
-            coverage=coverage,
-        )
+    result = materialise_group(
+        group_requests,
+        sdmx=sdmx,
+        graph=graph,
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        materialiser_build="build-123",
+        capability_version="cap-v1",
+        coverage=coverage,
+    )
 
-    # Candidates come from `coverage`, an in-memory lookup: refused during
-    # selection with no SDMX call at all.
-    assert requests == []
-    issues = excinfo.value.issues
-    assert issues is not None
-    assert {issue.axis for issue in issues} == {"provenance", "measurementMethod", "unit"}
-    provenance_issue = next(issue for issue in issues if issue.axis == "provenance")
-    assert provenance_issue.member is None
-    alternative_refs = {alt.ref for alt in provenance_issue.alternatives or []}
-    assert alternative_refs == {"PROV_A", "PROV_B"}
+    # The facets tie, and the ranking's provenance order elects `PROV_A`'s.
+    facets_by_axis = {entry["axis"]: entry for entry in result.trace.facets}
+    assert facets_by_axis["provenance"]["ref"] == "PROV_A"
+    assert result.coverage.rows == 1
+    counts = {entry["ref"]: entry["observation_count"] for entry in result.trace.resolved_stat_vars}
+    assert counts == {_STAT_VAR_A: 1, _STAT_VAR_B: 0}
+    (warning,) = [w for w in result.warnings if w["code"] == "coverage_below_scope"]
+    assert warning["member_count"] == 2
+    assert warning["unserved_members"] == {"count": 1, "refs": [_STAT_VAR_B]}
 
 
 def test_member_missing_bound_axis_refuses_with_its_own_alternatives_and_pointer():
@@ -780,7 +778,7 @@ def test_group_selection_narrows_the_shared_pool_to_the_requested_window():
         ],
         candidates,
         graph=FakeGraphReader(),
-    ).selections
+    ).election.selections
     windowed = select_group_facets(
         [
             _request(stat_var=_STAT_VAR_A, facet_bindings={}, window=window_2027),
@@ -788,7 +786,7 @@ def test_group_selection_narrows_the_shared_pool_to_the_requested_window():
         ],
         candidates,
         graph=FakeGraphReader(),
-    ).selections
+    ).election.selections
 
     assert unwindowed["measurementMethod"].ref is None
     assert unwindowed["provenance"].dispatch_facet_id == "facetRecorded"
@@ -845,7 +843,7 @@ def test_a_group_continues_its_series_with_the_same_sources_estimates(
         ],
         candidates,
         graph=FakeGraphReader(),
-    )
+    ).election
 
     assert election.selections["measurementMethod"].ref is None
     assert election.selections["measurementMethod"].continued_by == continued_by
@@ -897,7 +895,7 @@ def test_group_request_prefers_native_currency_candidate_over_a_higher_ranked_al
 
     selections = select_group_facets(
         requests, [[facet_usd, facet_eur], [facet_usd, facet_eur]], graph=FakeGraphReader()
-    ).selections
+    ).election.selections
 
     assert selections["unit"].ref == "CurrencyUSD"
     assert selections["unit"].selection_reason == "native_currency_preferred"
@@ -918,7 +916,7 @@ def test_group_request_falls_to_ordinary_default_when_no_native_currency_candida
 
     selections = select_group_facets(
         requests, [[facet_eur], [facet_eur]], graph=FakeGraphReader()
-    ).selections
+    ).election.selections
 
     assert selections["unit"].ref == "CurrencyEUR"
     assert selections["unit"].selection_reason == "sole_candidate"
@@ -962,7 +960,9 @@ def test_group_request_declared_policy_agreed_across_members_wins_over_ranking()
     )
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
 
-    selections = select_group_facets(requests, [[facet_gbp], [facet_gbp]], graph=graph).selections
+    selections = select_group_facets(
+        requests, [[facet_gbp], [facet_gbp]], graph=graph
+    ).election.selections
 
     assert selections["unit"].basis == "declared_default"
     assert selections["unit"].ref == "CurrencyGBP"
@@ -996,11 +996,11 @@ def test_group_request_narrows_provenance_and_measurement_method_to_the_currency
 
     election_request = select_group_facets(
         requests_with_request_unit, candidates, graph=FakeGraphReader()
-    )
+    ).election
     selections_request = election_request.selections
     selections_unbound = select_group_facets(
         requests_with_unbound_unit, candidates, graph=FakeGraphReader()
-    ).selections
+    ).election.selections
 
     # An unbound unit ranks the full, disagreeing pool: facet_p2 (the
     # higher-summed-obs_count facet) wins.
@@ -1029,23 +1029,12 @@ def test_group_request_narrows_provenance_and_measurement_method_to_the_currency
 
 # --- Group axis resolution's own axis rule, and dispatch-facet agreement --
 
-from types import SimpleNamespace  # noqa: E402
-
 from materialise.errors import MaterialisationUsageError  # noqa: E402
 
 
 def test_group_axis_resolution_rejects_a_request_binding_for_an_axis_other_than_unit():
-    # Request construction rejects this binding first, so a stand-in with
-    # the same fields exercises group-level axis validation directly.
-    invalid_request = SimpleNamespace(
-        facet_bindings={
-            "provenance": FacetBinding(state="request", request=_GROUP_UNIT_REQUEST_USD_CURRENT)
-        },
-        stat_var=_STAT_VAR_A,
-        index_sourced=False,
-        dataset=None,
-        window=None,
-    )
+    # Request construction rejects this binding first, so the request-free election
+    # exercises group-level axis validation directly.
     candidate = Facet(
         facet_id="facet1",
         provenance_id="PROV1",
@@ -1057,7 +1046,16 @@ def test_group_axis_resolution_rejects_a_request_binding_for_an_axis_other_than_
     )
 
     with pytest.raises(MaterialisationUsageError):
-        select_group_facets([invalid_request], [[candidate]], graph=FakeGraphReader())
+        elect_group(
+            [[candidate]],
+            stat_vars=[_STAT_VAR_A],
+            window=None,
+            index_sourced=False,
+            requires_provenance=True,
+            bindings={
+                "provenance": FacetBinding(state="request", request=_GROUP_UNIT_REQUEST_USD_CURRENT)
+            },
+        )
 
 
 def test_group_unit_request_binding_dispatches_from_facetusd_not_top():
@@ -1084,7 +1082,9 @@ def test_group_unit_request_binding_dispatches_from_facetusd_not_top():
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
     candidates = [[facet_usd, facet_eur], [facet_usd, facet_eur]]
 
-    selections = select_group_facets(requests, candidates, graph=FakeGraphReader()).selections
+    selections = select_group_facets(
+        requests, candidates, graph=FakeGraphReader()
+    ).election.selections
 
     assert selections["unit"].dispatch_facet_id == "facetUSD"
 
@@ -1124,8 +1124,12 @@ def test_group_shares_a_facet_even_when_each_members_own_currency_native_candida
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
     candidates = [[member1_usd, shared_eur], [member2_usd, shared_eur]]
 
-    selections = select_group_facets(requests, candidates, graph=FakeGraphReader()).selections
-    shared_candidates = _group_shared_candidates(requests, candidates, graph=FakeGraphReader())
+    selections = select_group_facets(
+        requests, candidates, graph=FakeGraphReader()
+    ).election.selections
+    shared_candidates, _holders = _group_pool(
+        candidates, bindings=requests[0].facet_bindings, index_sourced=False
+    )
     (shared_facet,) = shared_candidates
 
     assert shared_facet.facet_id == "shared_EUR"
@@ -1188,8 +1192,9 @@ def test_group_shared_candidates_raise_when_a_member_with_candidates_matches_non
     assert {issue.axis for issue in issues} == {"provenance", "measurementMethod", "unit"}
 
 
-def test_group_shared_candidates_raises_when_only_each_members_own_private_facet_carries_the_currency():
-    # The members have no shared facet id, so the group is refused.
+def test_a_group_whose_members_hold_the_currency_under_their_own_facet_ids_serves_both():
+    # The members share no facet id. The first member's facet wins the tie, and the second
+    # member's own facet carries the same source, method and currency, so it serves too.
     member1_usd = Facet(
         facet_id="member1_USD",
         provenance_id="PROV1",
@@ -1209,10 +1214,12 @@ def test_group_shared_candidates_raises_when_only_each_members_own_private_facet
         latest_date="2015",
     )
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
-    candidates = [[member1_usd], [member2_usd]]
 
-    with pytest.raises(FacetNotAvailableError):
-        select_group_facets(requests, candidates, graph=FakeGraphReader())
+    group = select_group_facets(requests, [[member1_usd], [member2_usd]], graph=FakeGraphReader())
+
+    assert group.election.selections["unit"].dispatch_facet_id == "member1_USD"
+    assert group.dispatch_ids == (("member1_USD",), ("member2_USD",))
+    assert group.unserved == ()
 
 
 def test_index_sourced_group_agrees_on_provenance_and_unit_despite_differing_facet_ids_and_methods():
@@ -1243,7 +1250,7 @@ def test_index_sourced_group_agrees_on_provenance_and_unit_despite_differing_fac
     candidates = [[facet_a], [facet_b]]
     graph = FakeGraphReader()
 
-    election = select_group_facets(requests, candidates, graph=graph)
+    election = select_group_facets(requests, candidates, graph=graph).election
     selections = election.selections
 
     assert set(selections) == {"provenance", "unit"}
@@ -1257,8 +1264,9 @@ def test_index_sourced_group_agrees_on_provenance_and_unit_despite_differing_fac
     assert joint_dispatch_facet_ids([facet_b], election, member=1) == ("facetB",)
 
 
-def test_index_sourced_group_with_differing_unit_still_refuses_facet_not_available():
-    # The members disagree on unit, so they share neither required axis.
+def test_index_sourced_group_with_differing_unit_serves_the_broader_unit_and_names_the_other():
+    # The members disagree on unit, so no `(provenance, unit)` serves both: the broader
+    # facet serves its member and the other member is named unserved.
     facet_a = Facet(
         facet_id="facetA",
         provenance_id="PROV_CRS",
@@ -1281,41 +1289,111 @@ def test_index_sourced_group_with_differing_unit_still_refuses_facet_not_availab
         _request(stat_var=_STAT_VAR_A, facet_bindings={}, index_sourced=True),
         _request(stat_var=_STAT_VAR_B, facet_bindings={}, index_sourced=True),
     ]
-    candidates = [[facet_a], [facet_b]]
 
-    with pytest.raises(FacetNotAvailableError):
-        select_group_facets(requests, candidates, graph=FakeGraphReader())
+    group = select_group_facets(requests, [[facet_a], [facet_b]], graph=FakeGraphReader())
+
+    assert group.election.selections["unit"].ref == "UNIT_USD"
+    assert group.dispatch_ids == (("facetA",), ())
+    assert group.unserved == (1,)
 
 
-def test_non_index_group_keeps_exact_facet_id_agreement_despite_shared_provenance_and_unit():
-    # Non-index members share provenance and unit but have different facet
-    # ids, so exact-id agreement rejects the empty intersection.
-    facet_a = Facet(
-        facet_id="facetA",
-        provenance_id="PROV_CRS",
-        measurement_method="METH_A",
+def _facet_of(facet_id: str, *, obs_count: int, provenance: str = "PROV") -> Facet:
+    """A facet of one import, method and unit apart from its id and its size."""
+    return Facet(
+        facet_id=facet_id,
+        provenance_id=provenance,
+        measurement_method=f"METH_{facet_id}",
         unit="UNIT_USD",
-        obs_count=5,
+        obs_count=obs_count,
         earliest_date="2020",
         latest_date="2020",
     )
-    facet_b = Facet(
-        facet_id="facetB",
-        provenance_id="PROV_CRS",
-        measurement_method="METH_B",
-        unit="UNIT_USD",
-        obs_count=3,
-        earliest_date="2020",
-        latest_date="2020",
-    )
+
+
+@pytest.mark.parametrize(
+    ("candidates", "bindings", "breadth", "dispatched", "unserved"),
+    [
+        # Non-index members share provenance and unit but no facet id: the broader facet
+        # serves its member and the other is named.
+        pytest.param(
+            [[_facet_of("facetA", obs_count=5)], [_facet_of("facetB", obs_count=3)]],
+            {},
+            None,
+            (("facetA",), ()),
+            (1,),
+            id="no-shared-facet-the-broader-serves",
+        ),
+        # A facet every member holds wins over a broader facet one member holds alone.
+        pytest.param(
+            [
+                [_facet_of("facetA", obs_count=50), _facet_of("facetShared", obs_count=3)],
+                [_facet_of("facetShared", obs_count=3)],
+            ],
+            {},
+            None,
+            (("facetShared",), ("facetShared",)),
+            (),
+            id="a-shared-facet-serves-every-member",
+        ),
+        # Among facets serving as many members, the larger summed breadth wins over the
+        # larger count.
+        pytest.param(
+            [
+                [_facet_of("facetA", obs_count=9)],
+                [_facet_of("facetA", obs_count=9)],
+                [_facet_of("facetB", obs_count=1)],
+                [_facet_of("facetB", obs_count=1)],
+            ],
+            {},
+            {"facetA": 2, "facetB": 6},
+            ((), (), ("facetB",), ("facetB",)),
+            (0, 1),
+            id="a-tie-on-members-goes-to-summed-breadth",
+        ),
+        # A member holding no candidate serves nothing and is not named.
+        pytest.param(
+            [[_facet_of("facetA", obs_count=5)], []],
+            {},
+            None,
+            (("facetA",), ()),
+            (),
+            id="an-unpopulated-member-is-not-named",
+        ),
+        # A member holding each bound ref, but on no one candidate, serves nothing and is
+        # named.
+        pytest.param(
+            [
+                [_facet_of("facetA", obs_count=5)],
+                [
+                    _facet_of("facetB", obs_count=5),
+                    dataclasses.replace(
+                        _facet_of("facetA", obs_count=5, provenance="OTHER"), facet_id="facetC"
+                    ),
+                ],
+            ],
+            {
+                "provenance": FacetBinding(state="bound", ref="PROV"),
+                "measurementMethod": FacetBinding(state="bound", ref="METH_facetA"),
+            },
+            None,
+            (("facetA",), ()),
+            (1,),
+            id="a-member-no-joint-bound-combination-covers-is-named",
+        ),
+    ],
+)
+def test_a_group_elects_the_facet_serving_the_most_members(
+    candidates, bindings, breadth, dispatched, unserved
+):
     requests = [
-        _request(stat_var=_STAT_VAR_A, facet_bindings={}),
-        _request(stat_var=_STAT_VAR_B, facet_bindings={}),
+        _request(stat_var=stat_var, facet_bindings=bindings)
+        for stat_var in (_STAT_VAR_A, _STAT_VAR_B, _STAT_VAR_C, "dcid:Stat_D")[: len(candidates)]
     ]
-    candidates = [[facet_a], [facet_b]]
 
-    with pytest.raises(FacetNotAvailableError):
-        select_group_facets(requests, candidates, graph=FakeGraphReader())
+    group = select_group_facets(requests, candidates, graph=FakeGraphReader(), breadth=breadth)
+
+    assert group.dispatch_ids == dispatched
+    assert group.unserved == unserved
 
 
 # --- A member whose bound entities publish nothing reaches zero rows without refusing the group ---
@@ -1355,7 +1433,9 @@ def test_group_shared_candidates_ignores_a_member_with_an_empty_pool():
     ]
     candidates = [[shared], []]
 
-    selections = select_group_facets(requests, candidates, graph=FakeGraphReader()).selections
+    selections = select_group_facets(
+        requests, candidates, graph=FakeGraphReader()
+    ).election.selections
 
     assert selections["provenance"].ref == "PROV_SHARED"
     assert selections["provenance"].dispatch_facet_id == "facetShared"
@@ -1623,7 +1703,7 @@ def test_group_empty_member_does_not_break_the_populated_members_declared_policy
     ]
     candidates = [[facet_policy, facet_big], [], [facet_policy, facet_big]]
 
-    selections = select_group_facets(requests, candidates, graph=graph).selections
+    selections = select_group_facets(requests, candidates, graph=graph).election.selections
 
     assert selections["provenance"].basis == "declared_default"
     assert selections["provenance"].ref == "PROV_POLICY"
@@ -1670,7 +1750,7 @@ def test_index_sourced_group_empty_member_does_not_break_the_populated_members_d
     ]
     candidates = [[facet_a], [], [facet_c]]
 
-    selections = select_group_facets(requests, candidates, graph=graph).selections
+    selections = select_group_facets(requests, candidates, graph=graph).election.selections
 
     assert selections["provenance"].basis == "declared_default"
     assert selections["provenance"].ref == "PROV_POLICY"
@@ -1712,7 +1792,7 @@ def test_group_generate_chunk_role_bearing_member_with_empty_dispatch_ids_report
     )
     selections = select_group_facets(
         [request_a, request_b], [[shared_facet], [shared_facet]], graph=FakeGraphReader()
-    ).selections
+    ).election.selections
     bodies = {
         _BARE_A: _CSV_HEADER
         + _csv_row(

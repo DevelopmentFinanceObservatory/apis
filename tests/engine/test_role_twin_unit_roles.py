@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
@@ -82,15 +82,15 @@ def unit_request() -> IdentityUnitRequest:
 
 @pytest.fixture
 def captured(monkeypatch: pytest.MonkeyPatch) -> list[MaterialisationRequest]:
-    """Capture requests reaching `decide_member_unit` from the one unit decision
-    (`convertibility.decide_part_unit`), which the candidate fan-out calls too."""
+    """Capture requests reaching `decide_group_unit` from the one unit decision
+    (`convertibility.decide_spec_unit`), which the candidate fan-out calls too."""
     requests: list[MaterialisationRequest] = []
 
-    def _capture(request: MaterialisationRequest, **_: object) -> None:
-        requests.append(request)
+    def _capture(group: Sequence[MaterialisationRequest], _probes: object, **_: object) -> None:
+        requests.extend(group)
         raise _StopAfterRequest
 
-    monkeypatch.setattr("search.engine.region.convertibility.decide_member_unit", _capture)
+    monkeypatch.setattr("search.engine.region.convertibility.decide_group_unit", _capture)
     return requests
 
 
@@ -296,7 +296,10 @@ def _role_currency_decision(
         }
     )
 
-    def _decide(request: MaterialisationRequest, *, graph: Any, **_: object):
+    def _decide(
+        group: Sequence[MaterialisationRequest], _probes: object, *, graph: Any, **_: object
+    ):
+        (request,) = group
         unit_request = request.facet_bindings["unit"].request
         selections = {
             axis: FacetSelection(
@@ -316,9 +319,9 @@ def _role_currency_decision(
             )
         }
         decide_member_conversion(request=request, selections=selections, graph=graph)
-        return selections
+        return (selections,)
 
-    monkeypatch.setattr("search.engine.region.convertibility.decide_member_unit", _decide)
+    monkeypatch.setattr("search.engine.region.convertibility.decide_group_unit", _decide)
     twin_shape = _shape(_twin_nodes(), [_TOTAL, _BY_CREDITOR])
     total = materialise(
         twin_shape,
