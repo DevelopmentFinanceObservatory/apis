@@ -721,6 +721,35 @@ def test_each_word_of_the_variable_is_read_or_unread(
     assert list(_coverage_reading(state, []).verdicts) == verdicts
 
 
+@pytest.mark.parametrize(
+    ("resolved", "verdict"),
+    [(True, "entity"), (False, "unrated")],
+    ids=["resolved", "unresolved"],
+)
+def test_a_word_naming_a_resolved_entity_by_part_of_its_name_reads_as_the_entity(
+    resolved: bool, verdict: str
+):
+    """ "Gates funding" names the donor the request resolved as "Bill & Melinda Gates
+    Foundation", so "Gates" reads as that entity and no rating asks whether the series
+    states it. A text that did not resolve names no entity, and its word stays unrated."""
+    donor = "Bill & Melinda Gates Foundation"
+    state = _state(
+        variable="Gates funding to Senegal",
+        shape_draft=_reader_shape("Official development assistance"),
+        bindings=[],
+        unplaced=[],
+        entities=(donor, "Senegal"),
+    )
+    state.place_sets = place_sets(
+        {"Senegal": "country/SEN", **({donor: "GatesFoundation"} if resolved else {})}
+    )
+
+    verdicts = dict(_coverage_reading(state, []).verdicts)
+
+    assert verdicts["Gates"] == verdict
+    assert verdicts["Senegal"] == "entity"
+
+
 # The reader gaps: a word no reader reads on a series that states it, which the binder rates
 # stated.
 _READER_UNDER_FIVE = _reader_shape("Under-five mortality rate [under 5 years old]")

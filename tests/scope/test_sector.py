@@ -706,3 +706,34 @@ def test_a_record_entry_joins_the_entries_only_while_the_base_holds_its_option()
     assert held.entries == [entry]
     assert [(c.active, c.provenance) for c in moved.choices] == [("sector:110", "default")]
     assert moved.entries == []
+
+
+def test_a_scope_build_scans_each_family_once_however_many_options_ask(monkeypatch):
+    """The rules read the coverage index only through family scans (`ScopeFacts.family_values`),
+    one per family and property set: the sector table's three options and the basis table's
+    four ask more often than that, and the memo answers the rest, so the rows a build reads
+    do not grow with its options."""
+    asks: list[tuple[int, tuple[str, ...]]] = []
+    scans: list[tuple[int, tuple[str, ...]]] = []
+    scan = ScopeFacts.family_values
+
+    def counted(self, family, properties):
+        key = (id(family), properties)
+        asks.append(key)
+        if key not in self._scans:
+            scans.append(key)
+        return scan(self, family, properties)
+
+    monkeypatch.setattr(ScopeFacts, "family_values", counted)
+
+    built = build_part_scope(
+        base=_base({"state": "set", "refs": list(_HEALTH)}),
+        entries=[],
+        records={},
+        facts=_facts(),
+        refuse=False,
+    )
+
+    assert isinstance(built, PartScope)
+    assert [c.axis for c in built.choices] == ["sector", "measure_basis"]
+    assert len(scans) == len(set(asks)) < len(asks)

@@ -246,3 +246,29 @@ def test_an_unavailable_stated_option_is_dropped_and_the_default_derives(monkeyp
     )
     choice = next(c for c in scope.choices if c.axis == "measure_basis")
     assert choice.provenance == "default"
+
+
+def test_a_stated_word_on_an_axis_no_rule_serves_is_reported_not_applied(monkeypatch):
+    """No rule serves the provider axis yet, so "bilateral" applies nothing; the part reports
+    it rather than dropping it unseen. A carried entry there stays another part's."""
+    _write_a_record(monkeypatch)
+    carried = _carried("provider", "provider:inclusive")
+
+    scope = _answer(user_message="bilateral fertility in Kenya", carried=[carried]).spec
+    scope = scope.resolved.scope_choices
+
+    assert scope is not None
+    (dropped,) = scope.dropped_entries
+    assert (dropped.entry.option_id, dropped.entry.provenance, dropped.code, dropped.cause) == (
+        "provider:bilateral",
+        "explicit",
+        "stated_choice_not_applied",
+        "axis_absent",
+    )
+    assert dropped.entry.origin.model_dump() == {
+        "kind": "text",
+        "text": "bilateral",
+        "start": 0,
+        "end": 9,
+    }
+    assert scope.entries == []

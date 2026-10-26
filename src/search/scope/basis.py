@@ -31,6 +31,7 @@ from code_index.query import CodeIndex
 from code_index.scope_conventions import (
     BASIS_MEASURES,
     BASIS_RESTRICTIONS,
+    CONVENTION_CURRENCY,
     MEASURE_BASIS_CONVENTIONS,
     OPTION_LABELS,
     BasisConvention,
@@ -45,6 +46,8 @@ from search.models import (
     Entry,
     IdentityBindingSet,
     IdentityBindingValue,
+    IdentityCurrencyRole,
+    IdentityFacetValueRequest,
     IdentityShapeSchema,
     Option,
     OptionAvailability,
@@ -205,6 +208,18 @@ def _served(row: BasisConvention) -> MeasureBasis:
     return HEADLINE_SERVED_AS if row.basis == "oecd_headline" else row.basis
 
 
+def convention_measures(dataset: str) -> tuple[BasisMeasure, ...]:
+    """The bases the conventions reading `dataset` count a part on, each once, in table
+    order: the DAC1 headline's grant equivalents and net flows (the per-year headline is
+    served as `HEADLINE_SERVED_AS`), DAC2a's net receipts, the CRS's gross disbursements.
+    Empty for a dataset no convention reads."""
+    return tuple(
+        dict.fromkeys(
+            _MEASURES[_served(row)] for row in MEASURE_BASIS_CONVENTIONS if row.dataset == dataset
+        )
+    )
+
+
 def measure_of(
     population_type: str | None, measured_property: str | None, netting_basis: str | None
 ) -> BasisMeasure | None:
@@ -336,14 +351,38 @@ def basis_rule(
 
 def basis_label(row: BasisMeasure, identity: BaseIdentity) -> str:
     """The reader's name of `row`'s basis on `identity` (`OPTION_LABELS`): its words and the
-    prices of the identity's price basis, "gross disbursements, current USD", or its words
-    alone when the identity states no price basis."""
+    identity's prices and currency, "gross disbursements, current USD". A unit request
+    (`identity.facets["unit"]`) states both, so a part converted to constant prices reads
+    "net disbursements, constant 2024 USD" and one converted to a role's currency "net
+    disbursements, current donor currency". Without one, the prices are the shape's price
+    basis (`PRICES_BY_QUALIFIER`) in the conventions' currency (`CONVENTION_CURRENCY`), and
+    the words stand alone when the shape states no price basis."""
+    unit = (identity.facets or {}).get("unit")
+    if isinstance(unit, IdentityFacetValueRequest):
+        request = unit.request
+        prices = "current" if request.prices == "current" else f"constant {request.base_year}"
+        currency = (
+            _ROLE_CURRENCIES[request.currency.role]
+            if isinstance(request.currency, IdentityCurrencyRole)
+            else request.currency
+        )
+        return OPTION_LABELS.measure_basis.format(words=row.words, prices=prices, currency=currency)
     shape = identity.shape
     qualifier = shape.measurement_qualifier if isinstance(shape, IdentityShapeSchema) else None
-    prices = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
-    if prices is None:
+    qualified = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
+    if qualified is None:
         return OPTION_LABELS.measure_basis_unpriced.format(words=row.words)
-    return OPTION_LABELS.measure_basis.format(words=row.words, prices=prices)
+    return OPTION_LABELS.measure_basis.format(
+        words=row.words, prices=qualified, currency=CONVENTION_CURRENCY
+    )
+
+
+_ROLE_CURRENCIES: Mapping[str, str] = {
+    "origin": "donor currency",
+    "destination": "recipient currency",
+    "observationAbout": "national currency",
+}
+"""The reader's name of the currency a unit request reads from a role's entity."""
 
 
 def _availability(

@@ -10,6 +10,7 @@ import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import BindResult, GeminiBinder, JevBinder, StatedWordsRequest
+from search.engine.binders.jev_request import restated_request
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import LLMInfraError
 from search.engine.region.state import ResolveState
@@ -153,6 +154,38 @@ def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, re
         "  0: stateless\n"
         "  1: refugee\n"
     )
+
+
+_PURPOSE = SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="Purpose")
+_AID = replace(_PERSONS, label="Official development assistance", slot_keys=(_PURPOSE,))
+
+
+@pytest.mark.parametrize(
+    ("codes", "named"),
+    [
+        (
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
+            "health incl. population and reproductive health (CRS 120 + 130)",
+        ),
+        (["CRSPurposeCode110", "CRSPurposeCode120"], "education or health"),
+    ],
+    ids=["declared-grouping", "other-set"],
+)
+def test_both_judges_name_a_declared_grouping_by_its_label(codes, named):
+    """A set the declared grouping holds is the grouping the part asked for, so the stated-word
+    judges, Gemini's prompt and Jev's restated question, quote its label; another set reads
+    each code's label joined by "or"."""
+    bindings = (
+        SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="set", value_dcids=codes),
+    )
+
+    prompt = build_stated_words_prompt("Gates funding", _AID, ("gates",), bindings=bindings)
+    _, questions = restated_request("Gates funding", _AID, 0, ("gates",), bindings=bindings)
+
+    assert f"Purpose={named}\n" in prompt
+    instructions = questions["unread|0|0"].get("instructions")
+    assert isinstance(instructions, str)
+    assert f"restricted to {named})" in instructions
 
 
 @pytest.mark.parametrize(

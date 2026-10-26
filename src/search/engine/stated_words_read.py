@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from code_index.labels import without_property_suffix
+from code_index.scope_conventions import grouping_of
 from code_index.shared import get_index
 from search.engine.bind import stated_reading
 from search.engine.clients.llm import SupportsLLM, for_stage, generate_structured_async
@@ -179,8 +180,7 @@ def _property_values(shape: ShapeDraft, values: Iterable[tuple[str, Sequence[str
     label on `shape`."""
     slot_labels = {key.property_dcid: key.label for key in shape.slot_keys}
     return "; ".join(
-        f"{_humanize_ref(prop, slot_labels.get(prop))}="
-        + " or ".join(bound_value_label(shape, prop, dcid) for dcid in dcids)
+        f"{_humanize_ref(prop, slot_labels.get(prop))}=" + bound_values_label(shape, prop, dcids)
         for prop, dcids in values
     )
 
@@ -197,6 +197,16 @@ def restricting(bindings: Sequence[SlotBindingDraft]) -> dict[str, tuple[str, ..
         and (prop := binding.property_dcid) is not None
         and binding.value_dcids
     }
+
+
+def bound_values_label(shape: ShapeDraft, prop: str, dcids: Sequence[str]) -> str:
+    """Values `dcids` of `shape`'s slot `prop` as a prompt names them: the label of the
+    declared grouping they are (`scope_conventions.grouping_of`, "health incl. population
+    and reproductive health (CRS 120 + 130)"), since the grouping is what the part asked
+    for, else each value's label (`bound_value_label`) joined by "or"."""
+    if len(dcids) > 1 and (grouping := grouping_of(prop, dcids)) is not None:
+        return grouping.label
+    return " or ".join(bound_value_label(shape, prop, dcid) for dcid in dcids)
 
 
 def bound_value_label(shape: ShapeDraft, prop: str, dcid: str) -> str:
