@@ -38,6 +38,7 @@ def rule_version(rules: Mapping[ScopeAxis, AxisRule], conflicts: tuple[Conflict,
         "measure_basis_conventions": [
             dataclasses.asdict(row) for row in scope_conventions.MEASURE_BASIS_CONVENTIONS
         ],
+        "option_labels": dataclasses.asdict(scope_conventions.OPTION_LABELS),
         "axes": sorted(rules),
         "conflicts": [dataclasses.asdict(conflict) for conflict in conflicts],
     }

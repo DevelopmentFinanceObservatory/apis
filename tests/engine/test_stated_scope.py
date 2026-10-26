@@ -143,27 +143,16 @@ _CARRIED = Entry(
 
 def test_one_part_reads_the_message_and_takes_every_carried_entry():
     (intake,) = part_scope_intakes(
-        message="net health ODA to Kenya",
-        message_pointer="/input/user_message",
-        part_texts=["gross health ODA"],
-        part_pointers=["/input/parts/0/variable_text"],
-        carried=[_CARRIED],
+        message="net health ODA to Kenya", part_texts=["gross health ODA"], carried=[_CARRIED]
     )
 
     assert [e.option_id for e in intake.entries] == [_NET, _INCLUSIVE]
-    assert intake.pointers == ("/input/user_message", "/input/carried_entries/0")
 
 
 def test_one_part_without_a_message_reads_its_own_text():
-    (intake,) = part_scope_intakes(
-        message=None,
-        message_pointer="/input/user_message",
-        part_texts=["total gross health ODA"],
-        part_pointers=["/input/parts/0/variable_text"],
-    )
+    (intake,) = part_scope_intakes(message=None, part_texts=["total gross health ODA"])
 
     assert [e.option_id for e in intake.entries] == [_GROSS]
-    assert intake.pointers == ("/input/parts/0/variable_text",)
     assert intake.total
 
 
@@ -171,18 +160,12 @@ def test_several_parts_read_their_own_text_and_never_the_message():
     """One part's words never reach another, and the message's reach none."""
     intakes = part_scope_intakes(
         message="total net bilateral aid to Kenya and GDP",
-        message_pointer="/input/user_message",
         part_texts=["net aid to Kenya", "GDP of Kenya"],
-        part_pointers=["/input/parts/0/variable_text", "/input/parts/2/variable_text"],
         carried=[_CARRIED],
     )
 
     assert [[e.option_id for e in i.entries] for i in intakes] == [
         [_NET, _INCLUSIVE],
         [_INCLUSIVE],
-    ]
-    assert [i.pointers for i in intakes] == [
-        ("/input/parts/0/variable_text", "/input/carried_entries/0"),
-        ("/input/carried_entries/0",),
     ]
     assert [i.total for i in intakes] == [False, False]

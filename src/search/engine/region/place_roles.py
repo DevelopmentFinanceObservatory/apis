@@ -891,7 +891,7 @@ def _with_region_residuals(
     The first shape that binds a recipient region writes the part's region record
     (`ResolveState.scope_selection`), with the entry that settled it. An entry read from
     the request's words rides on the record, and `scope.build.build_part_scope` applies it
-    where the answer's identity holds the region."""
+    where the answer's identity holds the option the record settled."""
     regions = _region_sets(assignment)
     if not regions:
         return assignment

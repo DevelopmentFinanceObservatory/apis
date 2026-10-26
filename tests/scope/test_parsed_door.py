@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import pytest
 
-from search.engine.errors import EngineInputError
 from search.engine.region import phase_answer
 from search.models import (
     ChoiceOrigin,
@@ -219,11 +218,21 @@ def test_a_carried_entry_attaches_to_the_part_asking_for_its_concept(monkeypatch
     assert [(c.axis, c.provenance) for c in scope.choices] == [("sector", "carried")]
 
 
-def test_an_unavailable_stated_option_refuses_at_the_user_message(monkeypatch):
+def test_an_unavailable_stated_option_is_dropped_and_the_default_derives(monkeypatch):
+    """A fresh search never refuses its scope: the stated option the part cannot serve is
+    reported with the reason it cannot apply, and the axis takes its default."""
     _write_records(monkeypatch, basis=True)
 
-    with pytest.raises(EngineInputError) as refused:
-        _answer(user_message="fertility in Kenya in grant equivalents")
+    scope = _answer(user_message="fertility in Kenya in grant equivalents").spec
+    scope = scope.resolved.scope_choices
 
-    assert refused.value.code == "requested_option_unavailable"
-    assert refused.value.pointer == "/input/user_message"
+    assert scope is not None
+    assert scope.entries == []
+    (dropped,) = scope.dropped_entries
+    assert (dropped.entry.option_id, dropped.code, dropped.cause) == (
+        _GRANT_EQUIVALENT,
+        "stated_choice_not_applied",
+        "basis_not_published",
+    )
+    choice = next(c for c in scope.choices if c.axis == "measure_basis")
+    assert choice.provenance == "default"

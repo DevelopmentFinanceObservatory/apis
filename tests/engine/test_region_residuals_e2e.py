@@ -22,6 +22,7 @@ from search.models import (
     DatasetResubmitInput,
     DefinitePart,
     Entry,
+    ParsedInput,
     ResolveRequest,
     ResubmitIdentityEntry,
     Spec,
@@ -162,6 +163,29 @@ def test_a_ranking_or_a_members_ask_binds_the_members_alone(africa, operation, r
     assert [(e.option_id, e.origin.kind) for e in entries] == (
         [(_MEMBERS, "text")] if region[1] == "explicit" else []
     )
+
+
+def test_a_carried_members_only_entry_reaches_the_region_binder():
+    """A members-only choice the conversation settled earlier binds a summed region's
+    members alone on a new part, and the scope states it as carried."""
+    carried = Entry(
+        axis="region",
+        option_id=_MEMBERS,
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id="earlier:region"),
+    )
+    request = _parsed(
+        {"variable": _VARIABLE, "entities": [_FROM_FRANCE, {"role": "to", "text": "Africa"}]}
+    )
+    assert isinstance(request.input, ParsedInput)
+    request.input.carried_entries = [carried]
+
+    spec = _run(request).spec
+
+    assert _destination(spec) == sorted(_AFRICA_MEMBERS)
+    assert _region(spec) == (_MEMBERS, "carried", None)
+    assert spec.resolved.scope_choices is not None
+    assert spec.resolved.scope_choices.entries == [carried]
 
 
 def test_a_switch_round_trips_through_dataset_resubmit():

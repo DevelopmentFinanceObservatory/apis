@@ -95,9 +95,8 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
-from search.models import EntryPath, Operation, RoleAxis, Warning
-from search.scope.build import build_part_scope, refusal_error
-from search.scope.compile import Refusal
+from search.models import EntryPath, Operation, PartScope, RoleAxis, Warning
+from search.scope.build import build_part_scope
 from search.scope.state import ScopeIntake
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -563,16 +562,17 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     record, states none, and so does one whose answer the recorded axes do not reach, as a
     region read at its published total. In memory: the rules read the bound release's code
     index, the request's coverage snapshot and the part's operations, groups and served
-    datasets (`PartFacts`). Entries that cannot hold together refuse 422
-    (`scope.build.refusal_error`), at the request field the refused entry was posted in."""
+    datasets (`PartFacts`). A fresh search never refuses its scope: an entry that cannot
+    apply is dropped and reported in `PartScope.dropped_entries`, and the rest compile
+    without it (`build_part_scope` with `refuse` false). Only a dataset_resubmit's posted
+    `scope_entries` refuse 422."""
     selection = state.scope_selection
     if result.status != "definite" or not selection.records:
         return result
     spec = result.spec
-    attached = selection.attached()
     built = build_part_scope(
         base=spec.definition.identity,
-        entries=[entry for entry, _ in attached],
+        entries=list(selection.attached()),
         records=selection.records,
         facts=ScopeFacts(
             index=get_index(),
@@ -583,9 +583,9 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
                 datasets=tuple(sorted(served_datasets(spec))),
             ),
         ),
+        refuse=False,
     )
-    if isinstance(built, Refusal):
-        raise refusal_error(built, pointer=attached[built.entry][1])
+    assert isinstance(built, PartScope)
     if not built.choices:
         return result
     return dataclasses.replace(result, scope_choices=built)

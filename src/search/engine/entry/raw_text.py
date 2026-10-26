@@ -1147,12 +1147,7 @@ def _prepare_extraction(
         per_variable_source_scopes=per_variable_source_scopes,
         per_variable_source_codes=per_variable_source_codes,
         per_variable_compiled_codes=per_variable_compiled_codes,
-        per_variable_scope_intakes=part_scope_intakes(
-            message=query,
-            message_pointer="/input/query",
-            part_texts=unique,
-            part_pointers=["/input/query"] * len(unique),
-        ),
+        per_variable_scope_intakes=part_scope_intakes(message=query, part_texts=unique),
         name_corrections=name_corrections,
     )
 

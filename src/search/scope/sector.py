@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 from code_index.members import identity_family_query, query_family
 from code_index.query import CodeIndex
-from code_index.scope_conventions import SECTOR_GROUPINGS, SectorGrouping
+from code_index.scope_conventions import OPTION_LABELS, SECTOR_GROUPINGS, SectorGrouping
 from search.models import (
     BaseIdentity,
     Entry,
@@ -197,9 +197,7 @@ def sector_rule(
     table_options = tuple(
         Option(
             option_id=option_id,
-            label=grouping.label
-            if grouping is not None and option_codes == grouping.codes
-            else _codes_label(option_codes, facts.index),
+            label=_label(option_codes, grouping, facts.index),
             binding=SlotBinding(
                 slot=prop,
                 state="value" if len(option_codes) == 1 else "set",
@@ -281,9 +279,16 @@ def _serves(codes: Sequence[str], covered: frozenset[str], index: CodeIndex) -> 
     return any(not covered.isdisjoint(index.expansion(code)) for code in codes)
 
 
-def _codes_label(codes: Sequence[str], index: CodeIndex) -> str:
-    """`codes` for a reader: each code's label and number, joined: "health (CRS 120)"."""
+def _label(codes: Sequence[str], grouping: SectorGrouping | None, index: CodeIndex) -> str:
+    """The reader's name of the option binding `codes` (`OPTION_LABELS`): the grouping's
+    own label for its codes together, "health, CRS 120 alone" for one of its codes, else
+    each code's label and number, joined: "basic health (CRS 122)"."""
+    if grouping is not None and tuple(codes) == grouping.codes:
+        return grouping.label
+    template = OPTION_LABELS.sector_code if grouping is None else OPTION_LABELS.sector_code_alone
     return " + ".join(
-        f"{row.label} (CRS {row.code})" if (row := index.code_by_dcid(code)) else code
+        template.format(label=row.label, code=row.code)
+        if (row := index.code_by_dcid(code))
+        else code
         for code in sorted(codes)
     )

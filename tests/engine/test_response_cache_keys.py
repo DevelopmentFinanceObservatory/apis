@@ -710,11 +710,7 @@ def test_the_scope_a_query_states_changes_layer2_key() -> None:
     "net") or a total key apart; a query stating none keys as one that omits the field."""
 
     def stated(text: str) -> dict[str, object] | None:
-        return intake_key_document(
-            part_scope_intakes(
-                message=text, message_pointer="/input/query", part_texts=[text], part_pointers=[""]
-            )[0]
-        )
+        return intake_key_document(part_scope_intakes(message=text, part_texts=[text])[0])
 
     keys = {
         _layer2_key(stated_scopes=[stated(text)])

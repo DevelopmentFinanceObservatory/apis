@@ -166,7 +166,7 @@ def test_no_region_axis_where_the_role_reads_no_summed_members(destination):
     region axis."""
     scope = _scope(_identity(destination), group=None)
 
-    assert [c.axis for c in scope.choices] == []
+    assert "region" not in [c.axis for c in scope.choices]
 
 
 def test_a_resolver_group_finds_its_total_by_registry_id():

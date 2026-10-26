@@ -167,14 +167,24 @@ class ScopeChoice(StrictModel):
 
 
 class DroppedEntry(StrictModel):
-    """A carried entry left out because it cannot apply to this part."""
+    """An entry left out because it cannot apply to this part: a carried entry, or on a
+    fresh search an entry the request's words stated."""
 
-    entry: Entry = Field(description="the carried entry")
-    code: Literal["carried_choice_not_applied"] = "carried_choice_not_applied"
+    entry: Entry = Field(description="the entry left out")
+    code: Literal["carried_choice_not_applied", "stated_choice_not_applied"] = Field(
+        default="carried_choice_not_applied",
+        description=(
+            "carried_choice_not_applied for a carried entry, stated_choice_not_applied for "
+            "an entry the request's words stated"
+        ),
+    )
     cause: str = Field(
         description=(
             "axis_absent, option_unknown, option_unavailable, entry_on_axis (an explicit or "
-            "earlier carried entry settles the axis) or conflicts_with_entry"
+            "earlier carried entry settles the axis) or conflicts_with_entry for a carried "
+            "entry; for a stated one, why the option cannot apply: axis_absent, "
+            "option_unknown, the option's unavailability reason (a ScopeReasonCode) or the "
+            "conflict that blocks it"
         )
     )
 
@@ -228,7 +238,11 @@ class PartScope(StrictModel):
         description="the explicit and carried entries applied, the input a switch posts back"
     )
     dropped_entries: list[DroppedEntry] = Field(
-        default_factory=list, description="the carried entries left out, each with its cause"
+        default_factory=list,
+        description=(
+            "the entries left out, each with its code and cause: carried entries the part "
+            "cannot take, and on a fresh search the stated entries it cannot serve"
+        ),
     )
     choices: list[ScopeChoice] = Field(description="one per axis the part settles")
     compiled: CompiledScope = Field(description="what the active options compile to")

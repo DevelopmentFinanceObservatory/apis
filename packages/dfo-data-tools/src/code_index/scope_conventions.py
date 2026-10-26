@@ -2,7 +2,8 @@
 
 `SECTOR_GROUPINGS` names the sets of CRS purpose codes a sector concept word reads as, and
 `MEASURE_BASIS_CONVENTIONS` names the measure basis each part shape and window defaults to.
-`search.scope` reads both, and `graph_release.declarations` hashes them with the other
+`OPTION_LABELS` words the options the rules build from code and group labels.
+`search.scope` reads all three, and `graph_release.declarations` hashes them with the other
 declarations, so a change to either moves the declarations hash and the scope rule version.
 """
 
@@ -36,7 +37,7 @@ class SectorGrouping:
     codes bind, and `codes` the code dcids in ascending order. `words` are the phrases,
     casefolded, a qualifier match on `code_system` reads the concept from: a match whose
     phrase is one of them binds `codes` in place of the code it names. `label` names the
-    grouping for a reader."""
+    grouping for a reader as a standalone noun phrase, the option's only reader copy."""
 
     concept: str
     code_system: str
@@ -78,7 +79,7 @@ SECTOR_GROUPINGS: tuple[SectorGrouping, ...] = (
         code_system=_CRS_PURPOSE,
         codes=("CRSPurposeCode120", "CRSPurposeCode130"),
         words=("health",),
-        label="health, including population and reproductive health (CRS 120 + 130)",
+        label="health incl. population and reproductive health (CRS 120 + 130)",
     ),
     SectorGrouping(
         concept="humanitarian",
@@ -87,6 +88,31 @@ SECTOR_GROUPINGS: tuple[SectorGrouping, ...] = (
         words=("humanitarian aid",),
         label="humanitarian aid (CRS 720 + 730 + 740)",
     ),
+)
+
+
+@dataclass(frozen=True)
+class OptionLabels:
+    """The wording of the scope options whose label is built from the part: each a
+    standalone noun phrase naming its subject, since a reader sees the label alone ("Counted
+    as: health, CRS 120 alone · Africa's countries only").
+
+    `sector_code` names one CRS purpose code from its `label` and `code` number, and
+    `sector_code_alone` one code of a grouping offered without the others.
+    `region_with_residuals` and `region_members_only` name a region's two readings from its
+    `region` name and its possessive `region_of`."""
+
+    sector_code: str
+    sector_code_alone: str
+    region_with_residuals: str
+    region_members_only: str
+
+
+OPTION_LABELS = OptionLabels(
+    sector_code="{label} (CRS {code})",
+    sector_code_alone="{label}, CRS {code} alone",
+    region_with_residuals="{region} incl. regional and unspecified amounts",
+    region_members_only="{region_of} countries only",
 )
 
 # The measure basis each part shape and window is counted on, after the OECD's own

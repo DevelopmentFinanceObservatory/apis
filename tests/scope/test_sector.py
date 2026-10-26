@@ -167,7 +167,7 @@ def _resolve(request: ResolveRequest, variable: str) -> Spec:
     return part.spec
 
 
-def _ask(variable: str) -> Spec:
+def _ask(variable: str, *, carried: list[Entry] | None = None) -> Spec:
     return _resolve(
         ResolveRequest(
             input=ParsedInput(
@@ -176,7 +176,8 @@ def _ask(variable: str) -> Spec:
                         variable_text=variable,
                         entities=[ParsedEntity(text="Kenya", role_text="to")],
                     )
-                ]
+                ],
+                carried_entries=carried,
             )
         ),
         variable,
@@ -298,6 +299,25 @@ def test_a_sector_phrase_binds_and_states_its_sector_choice(variable: str, searc
     assert texts == ([] if row.entry_text is None else [row.entry_text])
     if scope is not None:
         assert scope.compiled.spec_id == scope.base.spec_id == spec.spec_id
+
+
+def test_a_carried_entry_for_the_concept_binds_on_a_new_part():
+    """`sector:120` settled earlier for health binds CRS 120 alone on a new "health aid"
+    part, and the scope states it as carried."""
+    carried = Entry(
+        axis="sector",
+        option_id="sector:120",
+        provenance="carried",
+        concept="health",
+        origin=ChoiceOrigin(choice_id="earlier:sector"),
+    )
+
+    spec = _ask("health aid", carried=[carried])
+
+    assert _purpose(spec) == (["CRSPurposeCode120"], "declared_grouping")
+    assert _choice(spec) == ("sector_grouping", "carried", "sector:120", _HEALTH_OPTIONS)
+    assert spec.resolved.scope_choices is not None
+    assert spec.resolved.scope_choices.entries == [carried]
 
 
 def test_an_unavailable_option_states_why():

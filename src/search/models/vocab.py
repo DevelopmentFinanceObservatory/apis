@@ -155,10 +155,11 @@ ScopeReasonCode = Literal[
     "residuals_need_summed_region",
     "conflicts_with",
     "carried_choice_not_applied",
+    "stated_choice_not_applied",
     "option_not_covered",
 ]
-"""Every reason a scope option is partial or unavailable, or a carried entry is not
-applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary
+"""Every reason a scope option is partial or unavailable, or a carried or stated entry is
+not applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary
 of its own, like `DepartureCode`: no reason code is a `Warning.code` or a refusal code. The
 two refusals a scope entry can draw, `requested_option_unavailable` and
 `conflicting_requested_options`, are registry codes in `engine.codes`."""

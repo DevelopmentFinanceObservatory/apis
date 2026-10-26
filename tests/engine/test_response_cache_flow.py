@@ -287,10 +287,7 @@ def test_queries_whose_words_state_another_scope_never_share_a_layer2_entry():
             sources=[(), ()],
         )
         bilateral = part_scope_intakes(
-            message=None,
-            message_pointer="/input/query",
-            part_texts=["bilateral ODA to India", "GDP of India"],
-            part_pointers=["/input/query"] * 2,
+            message=None, part_texts=["bilateral ODA to India", "GDP of India"]
         )
         plain = [ScopeIntake(), ScopeIntake()]
         writer = _make_scope(cache)

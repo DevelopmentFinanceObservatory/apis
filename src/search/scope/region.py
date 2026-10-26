@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Sequence
 
 from code_index.query import CodeIndex
+from code_index.scope_conventions import OPTION_LABELS
 from code_index.types import PartyRow
 from search.models import (
     BaseIdentity,
@@ -116,7 +117,8 @@ def region_rule(
     none. A part that does not sum the region (`sums_recipients`) offers the residuals as
     unavailable, `residuals_need_summed_region`, and takes the members alone. `record`,
     the binder's, adds nothing the identity and `facts.part` do not state, so a
-    dataset_resubmit, where no binder runs, builds the same table."""
+    dataset_resubmit, where no binder runs, builds the same table. The labels name the
+    region by the group the role stands for, else by its total ("Africa (DAC)")."""
     held = base.entities.get(REGION_ROLE)
     if not held:
         return None
@@ -134,9 +136,10 @@ def region_rule(
     if not residuals or not without_residuals(held, index):
         return None
     summed = sums_recipients(part.operations)
+    region = (total.label or total.dcid) if group is None else group.label
     with_residuals = Option(
         option_id=REGION_MEMBERS_AND_RESIDUALS,
-        label="the member countries and the amounts not allocated to any one of them",
+        label=OPTION_LABELS.region_with_residuals.format(region=region),
         binding=EntitiesBinding(role=REGION_ROLE, add=list(residuals)),
         availability=(
             OptionAvailability(status="available")
@@ -146,7 +149,7 @@ def region_rule(
     )
     members_only = Option(
         option_id=REGION_MEMBERS_ONLY,
-        label="the member countries alone",
+        label=OPTION_LABELS.region_members_only.format(region_of=_possessive(region)),
         binding=EntitiesBinding(role=REGION_ROLE, add=[]),
         availability=OptionAvailability(status="available"),
     )
@@ -161,3 +164,8 @@ def region_rule(
         ),
         held=REGION_MEMBERS_AND_RESIDUALS if bound else REGION_MEMBERS_ONLY,
     )
+
+
+def _possessive(name: str) -> str:
+    """`name` as a possessive: "Africa's", "the Americas'"."""
+    return f"{name}'" if name.endswith("s") else f"{name}'s"

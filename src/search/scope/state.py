@@ -38,23 +38,15 @@ class ScopeIntake:
     """The scope a request posts for one part, before its binders run.
 
     `entries` are the explicit entries read from the part's words and the conversation's
-    carried entries, and `pointers` the request field each was read from, one per entry.
-    `total` is whether the words ask for a total ("total health aid"), which the provider
-    default reads; it is a fact about the request, not an entry.
-
-    Raises `ValueError` when `pointers` and `entries` differ in length."""
+    carried entries. `total` is whether the words ask for a total ("total health aid"),
+    which the provider default reads; it is a fact about the request, not an entry."""
 
     entries: tuple[Entry, ...] = ()
-    pointers: tuple[str, ...] = ()
     total: bool = False
-
-    def __post_init__(self) -> None:
-        if len(self.pointers) != len(self.entries):
-            raise ValueError(f"{len(self.entries)} entries hold {len(self.pointers)} pointers")
 
     def state(self) -> ScopeState:
         """A fresh state for one resolution of the part."""
-        return ScopeState(entries=self.entries, pointers=self.pointers, total=self.total)
+        return ScopeState(entries=self.entries, total=self.total)
 
 
 @dataclass(slots=True)
@@ -64,13 +56,10 @@ class ScopeState:
 
     `entries` are the part's explicit and carried entries. A binder reads those on its axis
     (`entries_on`) and applies precedence itself, then writes one `AxisRecord` (`write`).
-    `pointers` are the request fields the entries were posted in, one per entry, or empty
-    for entries no request posted. `total` is the request's total intent
-    (`ScopeIntake.total`)."""
+    `total` is the request's total intent (`ScopeIntake.total`)."""
 
     entries: tuple[Entry, ...] = ()
     records: dict[ScopeAxis, AxisRecord] = field(default_factory=dict)
-    pointers: tuple[str, ...] = ()
     total: bool = False
 
     def entries_on(self, axis: ScopeAxis, *, concept: str | None = None) -> tuple[Entry, ...]:
@@ -95,16 +84,14 @@ class ScopeState:
             raise ValueError(f"the {record.axis!r} axis is already settled")
         self.records[record.axis] = record
 
-    def attached(self) -> tuple[tuple[Entry, str | None], ...]:
-        """The entries that attach to the part, each with its pointer: those on an axis a
-        binder settled, and of those made for a concept, the ones whose concept is the one
+    def attached(self) -> tuple[Entry, ...]:
+        """The entries that attach to the part: those on an axis a binder settled, and of those made for a concept, the ones whose concept is the one
         the axis was asked for. An entry on an axis the part does not have, or for another
         concept ("health" on an education part), is not the part's, so it neither applies
         nor is reported as dropped."""
-        pointers = self.pointers or (None,) * len(self.entries)
         return tuple(
-            (entry, pointer)
-            for entry, pointer in zip(self.entries, pointers, strict=True)
+            entry
+            for entry in self.entries
             if (record := self.records.get(entry.axis)) is not None
             and entry.concept in (None, record.concept)
         )

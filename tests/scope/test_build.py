@@ -120,16 +120,19 @@ def test_a_refused_selection_passes_the_refusal_through():
 
 
 def test_a_base_settling_no_live_axis_holds_no_choices_and_refuses_an_entry_on_one():
-    unsectored = BASE.model_copy(
-        update={"slots": [slot for slot in BASE.slots if slot.property != "crsPurpose"]}
+    unscoped = BASE.model_copy(
+        update={
+            "slots": [slot for slot in BASE.slots if slot.property != "crsPurpose"],
+            "entities": {"origin": ["country/USA"], "destination": ["country/KEN"]},
+        }
     )
-    empty = build_part_scope(base=unsectored, entries=[], records={}, facts=_FACTS)
+    empty = build_part_scope(base=unscoped, entries=[], records={}, facts=_FACTS)
     refused = build_part_scope(
-        base=unsectored, entries=[explicit(SECTOR_SET)], records={}, facts=_FACTS
+        base=unscoped, entries=[explicit(SECTOR_SET)], records={}, facts=_FACTS
     )
 
     assert isinstance(empty, PartScope)
-    assert (empty.choices, empty.compiled.identity) == ([], unsectored)
+    assert (empty.choices, empty.compiled.identity) == ([], unscoped)
     assert refused == Refusal(code="requested_option_unavailable", entry=0, cause="axis_absent")
 
 

@@ -615,9 +615,7 @@ async def handle(
     variable_texts = interpretation.variable_texts
     scope_intakes = part_scope_intakes(
         message=inp.user_message,
-        message_pointer="/input/user_message",
         part_texts=[part.variable_text for part in parts],
-        part_pointers=[f"{prefix}/variable_text" for prefix in pointer_prefixes],
         carried=inp.carried_entries or (),
     )
     all_dates = [d for dates in interpretation.dates for d in dates]

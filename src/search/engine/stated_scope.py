@@ -194,34 +194,19 @@ def _cue_start(text: str, start: int) -> int:
 def part_scope_intakes(
     *,
     message: str | None,
-    message_pointer: str,
     part_texts: Sequence[str],
-    part_pointers: Sequence[str],
     carried: Sequence[Entry] = (),
-    carried_pointer: str = "/input/carried_entries",
 ) -> list[ScopeIntake]:
     """The scope each part is posted with, in part order.
 
-    A request of one part reads `message` (at `message_pointer`), or the part's own text
-    when there is none; a request of several reads each part's own text (at its entry of
-    `part_pointers`). Every part also takes every `carried` entry, at its index under
-    `carried_pointer`, which attaches to it by axis and concept once its binders have run
+    A request of one part reads `message`, or the part's own text when there is none; a
+    request of several reads each part's own text. Every part also takes every `carried`
+    entry, which attaches to it by axis and concept once its binders have run
     (`ScopeState.attached`)."""
-    if len(part_texts) == 1 and message is not None:
-        scanned = [(read_stated_scope(message), message_pointer)]
-    else:
-        scanned = [
-            (read_stated_scope(text), pointer)
-            for text, pointer in zip(part_texts, part_pointers, strict=True)
-        ]
-    carried_pointers = tuple(f"{carried_pointer}/{k}" for k in range(len(carried)))
+    texts = [message] if len(part_texts) == 1 and message is not None else part_texts
     return [
-        ScopeIntake(
-            entries=(*stated.entries, *carried),
-            pointers=(*(pointer,) * len(stated.entries), *carried_pointers),
-            total=stated.total,
-        )
-        for stated, pointer in scanned
+        ScopeIntake(entries=(*stated.entries, *carried), total=stated.total)
+        for stated in map(read_stated_scope, texts)
     ]
 
 
