@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Literal
 from code_index.members import family_declares_roles
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, tokenize, word_tokens
-from code_index.types import PartyWord
+from code_index.types import PartyRow, PartyWord
 from entity_resolution.types import Group, Kind, Resolved, entity_kind
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
@@ -75,7 +75,10 @@ from search.engine.shape import (
     role_names_by_axis,
 )
 from search.engine.spec_build import NamedGroup
-from search.models import EntityRoleKey, RoleAxis
+from search.models import EntityRoleKey, Entry, RoleAxis, TextOrigin
+from search.scope.region import REGION_RULE, published_residuals, sums_recipients
+from search.scope.state import AxisRecord
+from search.scope.vocabulary import REGION_MEMBERS_AND_RESIDUALS, REGION_MEMBERS_ONLY
 
 if TYPE_CHECKING:
     # `ResolveState` holds a `PlaceContext`, which holds `PlaceRoles`.
@@ -98,6 +101,9 @@ class PlaceAssignment:
     # The place keys of the sets whose members the request asks for: a set named for its
     # members, and one a rank runs over (`_members_asked`).
     members_asked: frozenset[str] = frozenset()
+    # The residual buckets each recipient set read as one sum binds beside its members,
+    # by place key (`_with_region_residuals`). A set absent here binds its members alone.
+    residuals: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # The flow axes the request asks every member of that no set fills. A subject-only
     # shape leaves it empty.
     open_axes: frozenset[RoleAxis] = frozenset()
@@ -819,6 +825,7 @@ def bind_place_roles(
     assignment = assign_named_places(state, shape, direction=direction)
     if isinstance(assignment, str):
         return assignment
+    assignment = _with_region_residuals(state, shape, assignment)
     assignment = _named_wholes(state, shape, assignment)
     # A side a listed population opens was named in the request's words.
     listed = frozenset(state.whole_listed.values()) - assignment.sets.keys()
@@ -833,6 +840,95 @@ def bind_place_roles(
     if not parties:
         return assignment
     return _in_axis_order(dataclasses.replace(assignment, sets={**assignment.sets, **parties}))
+
+
+def _region_sets(assignment: PlaceAssignment) -> tuple[tuple[PlaceSet, PartyRow], ...]:
+    """Each recipient set of `assignment` that holds members, with the total that sums them
+    with residuals (`PartyRow.sums_members`, `PartyRow.residuals`)."""
+    parties = get_index().parties
+    found = []
+    for place_set in assignment.sets.get("destination", ()):
+        total = None if place_set.total is None else parties.get(place_set.total)
+        if place_set.members and total is not None and total.sums_members and total.residuals:
+            found.append((place_set, total))
+    return tuple(found)
+
+
+def region_selection(state: ResolveState, assignment: PlaceAssignment) -> tuple[str, Entry | None]:
+    """The region option the part's recipient sets take (`scope.region`), and the entry
+    that settled it, None for the default.
+
+    An explicit region entry wins, then a set the request names for its members ("African
+    countries"), an explicit members-only entry read from the request's words for it, then
+    a carried entry, then the default, the members and residuals. The residuals hold only
+    where the part sums the recipients (`region.sums_recipients`); elsewhere the part takes
+    the members alone by default, whatever an entry asked."""
+    entries = state.scope_selection.entries_on("region")
+    named = next(
+        (place_set for place_set, _ in _region_sets(assignment) if place_set.reading == "members"),
+        None,
+    )
+    if entries and entries[0].provenance == "explicit":
+        entry: Entry | None = entries[0]
+    elif named is not None:
+        entry = _members_entry(state, named)
+    else:
+        entry = entries[0] if entries else None
+    wanted = REGION_MEMBERS_AND_RESIDUALS if entry is None else entry.option_id
+    if wanted == REGION_MEMBERS_AND_RESIDUALS and not sums_recipients(state.operations):
+        return REGION_MEMBERS_ONLY, None
+    return wanted, entry
+
+
+def _with_region_residuals(
+    state: ResolveState, shape: ShapeDraft, assignment: PlaceAssignment
+) -> PlaceAssignment:
+    """`assignment` with the residuals each recipient set binds beside its members where
+    the part takes `region:members_and_residuals` (`region_selection`): those its total
+    counts that a dataset `shape` answers from publishes on the recipient axis
+    (`region.published_residuals`), in `PlaceAssignment.residuals`.
+
+    The first shape that binds a recipient region writes the part's region record
+    (`ResolveState.scope_selection`), with the entry that settled it. An entry read from
+    the request's words rides on the record, and `scope.build.build_part_scope` applies it
+    where the answer's identity holds the region."""
+    regions = _region_sets(assignment)
+    if not regions:
+        return assignment
+    option, entry = region_selection(state, assignment)
+    if "region" not in state.scope_selection.records:
+        state.scope_selection.write(
+            AxisRecord(
+                axis="region",
+                rule=REGION_RULE,
+                active=option,
+                provenance="default" if entry is None else entry.provenance,
+                entry=entry,
+            )
+        )
+    if option != REGION_MEMBERS_AND_RESIDUALS:
+        return assignment
+    index = get_index()
+    datasets = shape_part_datasets(shape, index)
+    residuals = {
+        place_key(place_set): found
+        for place_set, total in regions
+        if (found := published_residuals(total, datasets=datasets, index=index))
+    }
+    return dataclasses.replace(assignment, residuals=residuals) if residuals else assignment
+
+
+def _members_entry(state: ResolveState, place_set: PlaceSet) -> Entry:
+    """The explicit members-only entry a set named for its members makes, read from the
+    request's words for it, at their offset in the part's query when they occur there."""
+    words = state.words_of(place_set.name)
+    start = max(state.role_query.find(words), 0)
+    return Entry(
+        axis="region",
+        option_id=REGION_MEMBERS_ONLY,
+        provenance="explicit",
+        origin=TextOrigin(text=words, start=start, end=start + len(words)),
+    )
 
 
 def _in_axis_order(assignment: PlaceAssignment) -> PlaceAssignment:
@@ -1112,9 +1208,12 @@ def assign_named_places(
 type PlaceLists = dict[EntityRoleKey, tuple[str, ...]]
 
 
-def _members_reading(place_set: PlaceSet) -> tuple[str, ...]:
-    """The set's members, or its node when it does not expand or holds no member."""
-    return place_set.members or place_set.dcids("default")
+def _members_reading(place_set: PlaceSet, residuals: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """The set's members and the `residuals` it binds beside them as one sum
+    (`PlaceAssignment.residuals`), or its node when it does not expand or holds no member."""
+    if not place_set.members:
+        return place_set.dcids("default")
+    return (*place_set.members, *residuals)
 
 
 # The readings one Spec can give a set: one of node or members, or either, which the
@@ -1232,7 +1331,10 @@ def settle_place_sets(
         for s in assignment.distinct_sets
         if choices[place_key(s)] == "node" and s.node is not None
     }
-    readings = {place_key(s): _members_reading(s) for s in assignment.distinct_sets} | nodes
+    readings = {
+        place_key(s): _members_reading(s, assignment.residuals.get(place_key(s), ()))
+        for s in assignment.distinct_sets
+    } | nodes
 
     def places(readings: Mapping[str, tuple[str, ...]]) -> PlaceLists:
         return {

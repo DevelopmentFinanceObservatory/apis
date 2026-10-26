@@ -77,6 +77,9 @@ class DepartureFact:
     - `excluded` (`group_read_as_members`): the labels of the residuals the total of the
       group counts beside its members ("Africa, unallocated by country (DAC)"), which the
       members leave out, in the code index's order. Empty for a group no total holds.
+    - `included` (`group_read_as_members`): the labels of the residuals the role binds
+      beside the members, where the part sums the group with them (`scope.region`), in the
+      answer's entity order.
     - `sum_differs` (`group_read_as_members`): a dataset the answer serves publishes, on the
       role's flow axis, its own figure for the group, which can differ from one built from its
       members (`PartyRow.sums_members` false).
@@ -121,6 +124,7 @@ class DepartureFact:
     group_size: int | None = None
     group_dcid: str | None = None
     excluded: tuple[str, ...] = ()
+    included: tuple[str, ...] = ()
     sum_differs: bool = False
     whole_of: tuple[PartyClass, ...] = ()
     side_classes: tuple[PartyClass, ...] = ()

@@ -114,6 +114,7 @@ from search.models import (
     TraceDefaultReading,
     served_date_range,
 )
+from search.scope.region import without_residuals
 from unit_words.price_basis import price_basis_option_label
 
 if TYPE_CHECKING:
@@ -443,9 +444,12 @@ def _dcids_by_role(entities: Iterable[Entity]) -> dict[str, set[str]]:
 
 
 def _role_group(groups: Sequence[NamedGroup], dcids: set[str]) -> NamedGroup | None:
-    """The group whose members or total a role's dcids equal. Of groups with the same
-    members, one with a node wins over one without, then the first by dcid, then label."""
-    matches = [g for g in groups if g.member_dcids == dcids or {g.total} == dcids]
+    """The group whose members or total a role's dcids equal, the members with or without
+    the residual buckets a summed region binds beside them (`scope.region.is_residual`).
+    Of groups with the same members, one with a node wins over one without, then the first
+    by dcid, then label."""
+    members = set(without_residuals(dcids, get_index())) or dcids
+    matches = [g for g in groups if g.member_dcids in (dcids, members) or {g.total} == dcids]
     if not matches:
         return None
     return min(matches, key=lambda g: (g.dcid is None, g.dcid or "", g.label))

@@ -3,10 +3,11 @@ axes, and the engine facts the axis rules build the tables from."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 from code_index.query import CodeIndex
-from search.models import Option, ScopeAxis
+from search.models import EntityGroup, Operation, Option, ScopeAxis
 from search.scope.edits import AXIS_BINDING, ScopeTableError
 from series_coverage.shared import CoverageSnapshot
 
@@ -69,9 +70,23 @@ class CompileFacts:
 
 
 @dataclass(frozen=True, kw_only=True)
+class PartFacts:
+    """What the part asks beside its identity, which a rule reads on both doors alike: its
+    operations, the groups its roles stand for by role key (`ResolvedSpec.entity_groups`,
+    or those a dataset_resubmit posts), and the datasets its identity is served from,
+    empty when unknown."""
+
+    operations: tuple[Operation, ...] = ()
+    entity_groups: Mapping[str, EntityGroup] = field(default_factory=dict)
+    datasets: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
 class ScopeFacts:
-    """The engine state the axis rules read: the release's code index and the request's
-    coverage snapshot, both in memory. Passed explicitly, so a rule reads no global."""
+    """The engine state the axis rules read: the release's code index, the request's
+    coverage snapshot and the part's own facts (`PartFacts`), all in memory. Passed
+    explicitly, so a rule reads no global."""
 
     index: CodeIndex
     coverage: CoverageSnapshot
+    part: PartFacts = field(default_factory=PartFacts)

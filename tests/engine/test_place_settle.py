@@ -37,7 +37,8 @@ from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.standard import FacetBatch, standard_resolve
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
-from search.models import Operation, RoleAxis, TimeWindow
+from search.models import ChoiceOrigin, Entry, Operation, RoleAxis, TimeWindow
+from search.scope.state import ScopeState
 from tests.fixtures import FakeGraph
 
 _GHA, _KEN, _TZA = "country/GHA", "country/KEN", "country/TZA"
@@ -462,6 +463,7 @@ def _state(
     axes: Mapping[str, str] | None = None,
     operations: Sequence[Operation] = (),
     pins: Mapping[str, str] | None = None,
+    scope_entries: Sequence[Entry] = (),
 ) -> ResolveState:
     """A resolve state naming `sets`, each directed to the flow axis `axes` gives it. The
     caller pinned each text in `pins` to its set's node, which the graph labels as
@@ -484,6 +486,8 @@ def _state(
             open_axes=frozenset(),
             role_bearing_outranks=False,
             role_query="",
+            words_of=lambda name: name,
+            scope_selection=ScopeState(entries=tuple(scope_entries)),
             shape_draft=None,
             elected_place_roles=None,
             rcl=SimpleNamespace(
@@ -672,6 +676,132 @@ def test_a_set_named_for_its_members_is_asked_for_them() -> None:
 
     assert isinstance(assignment, PlaceAssignment)
     assert assignment.members_asked == {place_key(_AFRICA)}
+
+
+# A recipient region read as one sum binds its residual buckets beside its members.
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+_AFRICA_DAC = dataclasses.replace(_AFRICA, total="DACAfrica")
+_AFRICA_RESIDUALS = (
+    "DACAfricaUnallocated",
+    "DACEasternAfricaUnallocated",
+    "DACMiddleAfricaUnallocated",
+    "DACNorthOfSaharaUnallocated",
+    "DACSouthOfSaharaUnallocated",
+    "DACSouthernAfricaUnallocated",
+    "DACWesternAfricaUnallocated",
+)
+_MEMBERS_ONLY = "region:members_only"
+_WITH_RESIDUALS = "region:members_and_residuals"
+
+
+def _region_entry(option_id: str, provenance: str) -> Entry:
+    return Entry(
+        axis="region",
+        option_id=option_id,
+        provenance=provenance,
+        origin=ChoiceOrigin(choice_id="earlier:region"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("africa", "operations", "entries", "residuals", "record"),
+    [
+        pytest.param(_AFRICA_DAC, [], [], True, (_WITH_RESIDUALS, "default"), id="no-operation"),
+        pytest.param(
+            _AFRICA_DAC,
+            [Operation(verb="aggregate", phrase="total", over="destination")],
+            [],
+            True,
+            (_WITH_RESIDUALS, "default"),
+            id="aggregate-over-the-recipients",
+        ),
+        pytest.param(
+            _AFRICA_DAC,
+            [_rank("destination")],
+            [],
+            False,
+            (_MEMBERS_ONLY, "default"),
+            id="ranking-the-recipients",
+        ),
+        pytest.param(
+            _AFRICA_DAC,
+            [_rank("origin")],
+            [],
+            True,
+            (_WITH_RESIDUALS, "default"),
+            id="ranking-the-donors",
+        ),
+        pytest.param(
+            dataclasses.replace(_AFRICA_DAC, reading="members"),
+            [],
+            [],
+            False,
+            (_MEMBERS_ONLY, "explicit"),
+            id="named-for-its-members",
+        ),
+        pytest.param(
+            _AFRICA_DAC,
+            [],
+            [_region_entry(_MEMBERS_ONLY, "carried")],
+            False,
+            (_MEMBERS_ONLY, "carried"),
+            id="carried-members-only",
+        ),
+        pytest.param(
+            _AFRICA_DAC,
+            [_rank("destination")],
+            [_region_entry(_WITH_RESIDUALS, "carried")],
+            False,
+            (_MEMBERS_ONLY, "default"),
+            id="carried-residuals-on-a-ranking",
+        ),
+    ],
+)
+def test_a_summed_recipient_region_binds_its_residuals_beside_its_members(
+    africa, operations, entries, residuals, record
+) -> None:
+    """Africa to France on a CRS shape. Where the part sums the recipients, Africa binds
+    its seven residual buckets beside its members when its total holds no data, and its
+    total when it does. A ranking over the recipients, a set named for its members and a
+    members-only entry bind the members alone. The part records the region option it took
+    and what settled it; a set named for its members is an explicit entry."""
+    state = _state(
+        [_FRANCE, africa],
+        axes={"France": "origin", "Africa": "destination"},
+        operations=operations,
+        scope_entries=entries,
+    )
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=(_CRS,))
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    members = (_GHA, _KEN, _TZA)
+    expected = tuple(sorted((*members, *_AFRICA_RESIDUALS))) if residuals else members
+    assert _settle(assignment, _flow_holds((_FRA, _KEN)))["destination"] == expected
+    asked = place_key(africa) in assignment.members_asked
+    assert _settle(assignment, _flow_holds((_FRA, "DACAfrica")))["destination"] == (
+        members if asked else ("DACAfrica",)
+    )
+    written = state.scope_selection.records["region"]
+    assert (written.active, written.provenance) == record
+    if record[1] == "explicit":
+        assert written.entry is not None
+        assert (written.entry.option_id, written.entry.origin.kind) == (_MEMBERS_ONLY, "text")
+
+
+def test_a_region_whose_dataset_publishes_no_residual_binds_its_members() -> None:
+    """A shape answering from a dataset that publishes none of Africa's residuals on the
+    recipient axis binds the members alone, as one with no dataset does."""
+    state = _state([_FRANCE, _AFRICA_DAC], axes={"France": "origin", "Africa": "destination"})
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=("provenance/OECDDAC1",))
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    assert assignment.residuals == {}
+    assert _settle(assignment, lambda _places: False)["destination"] == (_GHA, _KEN, _TZA)
 
 
 # Settling over a Spec's own read.

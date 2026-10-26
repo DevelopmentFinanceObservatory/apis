@@ -368,14 +368,20 @@ def _group_read_as_members(
     fact: DepartureFact, _family: FlowFamily | None, shows_data: bool
 ) -> str:
     """The group asked for, read as its members, which a region group names as the places
-    in it (`labels.group_members_text`), and the residuals its total counts that the members
-    leave out (`DepartureFact.excluded`), separated by semicolons since each label holds a
-    comma, or that the source publishes its own figure for the group, which can differ from
+    in it (`labels.group_members_text`), the residuals the answer counts beside them
+    (`DepartureFact.included`), and the residuals its total counts that the members leave
+    out (`DepartureFact.excluded`), each list separated by semicolons since each label holds
+    a comma, or that the source publishes its own figure for the group, which can differ from
     one built from its members (`DepartureFact.sum_differs`). A door holding no words for the
     group (a resubmit, `asked` is `None`) states only the members shown, as the heading names
     them (`labels.group_text`)."""
     verb = "shows" if shows_data else "checked"
     left_out = (
+        f", with what the data allocates to no single country: {'; '.join(fact.included)}"
+        if fact.included
+        else ""
+    )
+    left_out += (
         f", and {'leaves' if shows_data else 'left'} out what the data allocates to no single "
         f"country: "
         f"{'; '.join(fact.excluded)}"
