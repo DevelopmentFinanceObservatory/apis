@@ -19,6 +19,7 @@ from code_index.shared import get_index
 from dc_graph import GraphReadError
 from dfo_platform.executor import submit_with_context
 from materialise import GraphReader
+from materialise.enrichment import party_count
 from materialise.roles import axis_noun
 from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient
@@ -89,7 +90,6 @@ from search.engine.spec_build import (
     build_stat_vars,
     inapplicable_property_dcid,
     pair_slot_drafts,
-    party_count,
 )
 from search.engine.unit.refs import unit_currency
 from search.models import (
@@ -301,7 +301,7 @@ def role_scope_defaulted_message(
     """Build the defaulted-scope warning with member count and any bound opposite-role entities.
 
     `member_count` is how many parties of the open axis the materialised read plan serves
-    (`Materialised.scope_member_dcids`, counted by `spec_build.party_count`), or None for a
+    (`Materialised.scope_member_dcids`, counted by `enrichment.party_count`), or None for a
     response whose answers serve different members, which the warning then counts as every
     member with data. Use `from` when
     destination is discovered, otherwise `to`. Spell out up to three labels; for four or
@@ -373,7 +373,7 @@ def role_scope_defaulted_warnings(
     A discovered scope reports how many parties the answer serves (`members`, by default
     `mat.scope_member_dcids`, those of the materialised read plan), leaving out the totals
     the code index declares in the datasets of `mat.sv_dcids` as the role's
-    `RoleAxisFact.member_count` does (`spec_build.party_count`), or with `state_count`
+    `RoleAxisFact.member_count` does (`enrichment.party_count`), or with `state_count`
     false every member with data, and any bound opposite-role entities. A second open axis
     adds an unqualified warning. A bound
     destination with an open origin also warns, even when `open_origin_dcids` is empty.
@@ -425,7 +425,7 @@ def role_scope_defaulted_warnings(
 
 
 def _scope_party_count(mat: Materialised, members: Collection[str] | None) -> int:
-    """How many of `members` the warning counts: the parties `spec_build.party_count`
+    """How many of `members` the warning counts: the parties `enrichment.party_count`
     keeps, read in the datasets that publish `mat`'s StatVars."""
     index = get_index()
     return party_count(

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from entity_resolution import Resolution
@@ -16,6 +18,7 @@ from tests.engine._harness import EMPTY_SDMX, make_request
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 N = 2  # number of variables in the fake extraction
+_PAST_ANY_DEADLINE_S = 1e6  # a clock offset that outruns every request budget
 
 
 class _LegRendezvous:
@@ -211,13 +214,23 @@ def test_entity_pre_resolution_precedes_fan_out_with_deduplicated_entities():
     assert order == ["resolve", "leg:v0", "leg:v1"]
 
 
-def test_soft_deadline_logs_the_phase_of_each_unfinished_leg(search_settings, caplog):
-    """A leg still running at the soft deadline gets one WARNING naming its step."""
-    search_settings(request_timeout_s=0.3)
+def test_soft_deadline_logs_the_phase_of_each_unfinished_leg(caplog):
+    """A leg still running at the soft deadline gets one WARNING naming its step.
+
+    The fan-out reads a clock that jumps past the soft deadline once the second leg is in
+    its phase, and the first leg finishes only after that, so the deadline fires with one
+    leg done and one running on any runner."""
+    in_phase = asyncio.Event()
+
+    def _clock() -> float:
+        return time.monotonic() + (_PAST_ANY_DEADLINE_S if in_phase.is_set() else 0.0)
 
     async def _stub(variable: str, **_kwargs: object) -> RegionResult:
-        if variable == "v1":
+        if variable == "v0":
+            await in_phase.wait()
+        else:
             enter_phase("ours:materialise")
+            in_phase.set()
             await asyncio.Event().wait()
         return RegionResult(
             variable_text=variable,
@@ -243,6 +256,7 @@ def test_soft_deadline_logs_the_phase_of_each_unfinished_leg(search_settings, ca
     with (
         patch("search.engine.entry.raw_text.extract", fake_extraction),
         patch("search.engine.fanout.resolve_variable", new=_stub),
+        patch("search.engine.fanout.time", SimpleNamespace(monotonic=_clock)),
         caplog.at_level(logging.WARNING, logger="search.engine.fanout"),
     ):
         response = _run(

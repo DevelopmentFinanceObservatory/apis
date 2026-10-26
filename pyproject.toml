@@ -243,16 +243,20 @@ dfo-data-tools = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is 9cd1389 on spec-kit. It registers
-# slot_default_not_applied, the three source-code refusals,
-# whole_total_available and the scope-choice refusals
+# The pin is 9cd1389 on spec-kit, one commit on 26f733c of spec-kit's dev
+# branch. It registers slot_default_not_applied, the three source-code
+# refusals, whole_total_available and the scope-choice refusals
 # requested_option_unavailable and conflicting_requested_options, retires
 # starved_axis_binding_restored, and holds the
 # client contract `dfo-spec-kit-client-contract` reads, whose ref format admits
 # a `without_party_totals` rendering and whose warning codes include
 # `ref_digest_changed`, and it registers the `timed_out` no_data reason. The
 # client contract reads the website proxy's refusals as problem documents and
-# refuses a 202 that reads `done`.
+# refuses a 202 that reads `done`. Its registry maps the Presentation write
+# refusals at the write routes' statuses, and its client contract, recorded at
+# dfo-apis d80df9f5f, leaves party totals out by default, orders a dataset's
+# columns and rows for reading, and states the client-identity, base-URL and
+# role-keys rules.
 # Follow-up: move all six to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
 dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "9cd13896bd5934d140683c21f211176c575f9b42", subdirectory = "python/spec-kit" }
