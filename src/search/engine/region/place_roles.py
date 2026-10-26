@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -76,7 +76,12 @@ from search.engine.shape import (
 )
 from search.engine.spec_build import NamedGroup
 from search.models import EntityRoleKey, Entry, RoleAxis, TextOrigin
-from search.scope.region import REGION_RULE, published_residuals, sums_recipients
+from search.scope.region import (
+    REGION_RULE,
+    counts_oecd_region,
+    published_residuals,
+    sums_recipients,
+)
 from search.scope.state import AxisRecord
 from search.scope.vocabulary import REGION_MEMBERS_AND_RESIDUALS, REGION_MEMBERS_ONLY
 
@@ -187,6 +192,10 @@ class PlaceRoles:
     # The sides a named whole population reads as left unnamed
     # (`PlaceAssignment.unnamed_wholes`).
     unnamed_wholes: frozenset[RoleAxis] = frozenset()
+    # The OECD reading each request set the binding read as the OECD's region
+    # (`PlaceSet.oecd`, `_with_region_residuals`), by the set's place key, so the groups and
+    # refs the answer names read the set as the binding did (`request_named_groups`).
+    readings: Mapping[str, PlaceSet] = field(default_factory=dict)
 
 
 def _required_role_axis(shape: ShapeDraft) -> RoleAxis | None:
@@ -891,11 +900,21 @@ def _with_region_residuals(
     The first shape that binds a recipient region writes the part's region record
     (`ResolveState.scope_selection`), with the entry that settled it. An entry read from
     the request's words rides on the record, and `scope.build.build_part_scope` applies it
-    where the answer's identity holds the option the record settled."""
-    regions = _region_sets(assignment)
+    where the answer's identity holds the option the record settled.
+
+    A recipient set with an OECD reading (`PlaceSet.oecd`, a graph region the OECD counts
+    with other members) on a shape answering from a dataset that counts the OECD's region
+    (`region.counts_oecd_region`) reads as the OECD's region where the part takes the
+    members and residuals: its DAC members, total and registry group replace the graph
+    region's. Elsewhere it keeps the graph region's members, as a ranking over the region
+    does."""
+    index = get_index()
+    datasets = shape_part_datasets(shape, index)
+    as_oecd = _with_oecd_readings(assignment, datasets)
+    regions = _region_sets(as_oecd)
     if not regions:
         return assignment
-    option, entry = region_selection(state, assignment)
+    option, entry = region_selection(state, as_oecd)
     if "region" not in state.scope_selection.records:
         state.scope_selection.write(
             AxisRecord(
@@ -908,14 +927,37 @@ def _with_region_residuals(
         )
     if option != REGION_MEMBERS_AND_RESIDUALS:
         return assignment
-    index = get_index()
-    datasets = shape_part_datasets(shape, index)
     residuals = {
         place_key(place_set): found
         for place_set, total in regions
         if (found := published_residuals(total, datasets=datasets, index=index))
     }
-    return dataclasses.replace(assignment, residuals=residuals) if residuals else assignment
+    return dataclasses.replace(as_oecd, residuals=residuals) if residuals else as_oecd
+
+
+def _with_oecd_readings(assignment: PlaceAssignment, datasets: Collection[str]) -> PlaceAssignment:
+    """`assignment` with each recipient set that has an OECD reading (`PlaceSet.oecd`) whose
+    region one of `datasets` counts (`region.counts_oecd_region`) replaced by that reading
+    on every role it fills. The reading keeps the set's node, so its place key is the
+    set's."""
+    index = get_index()
+    readings = {
+        place_key(place_set): place_set.oecd
+        for place_set in assignment.sets.get("destination", ())
+        if place_set.oecd is not None
+        and place_set.oecd.total is not None
+        and (total := index.parties.get(place_set.oecd.total)) is not None
+        and counts_oecd_region(total, datasets=datasets, index=index)
+    }
+    if not readings:
+        return assignment
+    return dataclasses.replace(
+        assignment,
+        sets={
+            key: tuple(readings.get(place_key(s), s) for s in sets)
+            for key, sets in assignment.sets.items()
+        },
+    )
 
 
 def _members_entry(state: ResolveState, place_set: PlaceSet) -> Entry:
@@ -1397,6 +1439,7 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
         for place_set in placed
         if place_set.node is not None and not place_set.expands
     )
+    readings = {place_key(s): s for s in assignment.distinct_sets if s.oecd_read}
     if is_role_bearing(shape):
         destination_dcids = list(places.get("destination", ()))
         origin_dcids = list(places.get("origin", ()))
@@ -1414,6 +1457,7 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
             + [(dcid, "origin") for dcid in origin_dcids],
             where_dcids=destination_dcids,
             obs_destination_dcid=destination_dcids[0] if destination_dcids else None,
+            readings=readings,
         )
     subject = list(places.get("observationAbout", ()))
     bound = set(subject)
@@ -1601,25 +1645,32 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
     binding reads on one side (`PlaceRoles.whole`, `WholeReading.named_group`).
 
     `build_spec` names a role by one of these when the role binds exactly its members or its
-    total (`PlaceSet.total`). A group with its own graph node takes that node's type and the
+    total (`PlaceSet.total`). A set the binding read as the OECD's region
+    (`PlaceRoles.readings`) is that reading, named by its registry group (`PlaceSet.group_id`)
+    with no node, so a resubmit restores it from the registry. A group with its own graph node takes that node's type and the
     graph's label for it. One without, or one the graph gives no label, keeps the query's
     name, and one without names its registry id (`PlaceSet.group_id`). Each states the
     members the query also named as places of their own, on the role `roles`, one Spec's
     binding, puts each of those places on (`PlaceRoles.named_alone`).
     """
+    named = [roles.readings.get(key, place_set) for key, place_set in part_sets(state).items()]
     return tuple(
         NamedGroup(
             label=place_set.label or _pin_label(state, place_set.name) or place_set.name,
-            dcid=None if place_set.node is None else place_set.node.dcid,
-            entity_type=None if place_set.node is None else place_set.node.graph_type,
+            dcid=None if place_set.node is None or place_set.oecd_read else place_set.node.dcid,
+            entity_type=(
+                None if place_set.node is None or place_set.oecd_read else place_set.node.graph_type
+            ),
             member_dcids=frozenset(place_set.members),
             named_alone=frozenset(
                 (role, dcid) for role, dcid in roles.named_alone if dcid in place_set.members
             ),
             total=place_set.total,
-            group_id=place_set.group_id if place_set.node is None else None,
+            group_id=(
+                place_set.group_id if place_set.node is None or place_set.oecd_read else None
+            ),
         )
-        for place_set in part_sets(state).values()
+        for place_set in named
         if place_set.members
     ) + (() if roles.whole is None else (roles.whole.named_group(),))
 
@@ -1660,14 +1711,17 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     every text before the part's places are bound.
     """
     bound = {dcid for dcid, _role in state.place.roles.roles}
+    readings = state.place.roles.readings
     refs: dict[str, tuple[str, ...]] = {}
-    for text, place_set in state.place_sets.items():
+    for text, request_set in state.place_sets.items():
+        place_set = readings.get(place_key(request_set), request_set)
         node = None if place_set.node is None else place_set.node.dcid
         whole = next((d for d in (node, place_set.total) if d is not None and d in bound), None)
         if whole is not None:
             refs[text] = (whole,)
         elif held := place_order(d for d in place_set.members or () if d in bound):
-            own = next((d for d in (node, place_set.total, place_set.group_id) if d), None)
+            owns = (place_set.total, place_set.group_id) if place_set.oecd_read else (node,)
+            own = next((d for d in (*owns, place_set.total, place_set.group_id) if d), None)
             refs[text] = tuple(held) if own is None else (own, *held)
     for text, dcids in state.whole_named.items():
         if held := place_order(d for d in dcids if d in bound):

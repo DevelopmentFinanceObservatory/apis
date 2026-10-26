@@ -56,6 +56,7 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (scope_conventions, "BASIS_MEASURES"),
     (scope_conventions, "BASIS_RESTRICTIONS"),
     (scope_conventions, "MEASURE_BASIS_CONVENTIONS"),
+    (scope_conventions, "REGION_READINGS"),
     (scope_conventions, "SECTOR_GROUPINGS"),
 )
 """The tables read from their modules rather than passed as arguments, each with its module:
