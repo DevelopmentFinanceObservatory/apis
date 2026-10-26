@@ -867,9 +867,9 @@ def region_selection(state: ResolveState, assignment: PlaceAssignment) -> tuple[
     """The region option the part's recipient sets take (`scope.region`), and the entry
     that settled it, None for the default.
 
-    An explicit region entry wins, then a set the request names for its members ("African
-    countries"), an explicit members-only entry read from the request's words for it, then
-    a carried entry, then the default, the members and residuals. The residuals hold only
+    An explicit region entry wins. Next comes a set the request names for its members
+    ("African countries"), which makes an explicit members-only entry from the request's
+    words for it, then a carried entry, then the default, the members and residuals. The residuals hold only
     where the part sums the recipients (`region.sums_recipients`); elsewhere the part takes
     the members alone by default, whatever an entry asked."""
     entries = state.scope_selection.entries_on("region")

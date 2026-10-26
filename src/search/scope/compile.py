@@ -2,7 +2,7 @@
 
 Pure: it reads only its arguments and does no I/O. The rules it holds to:
 
-- An explicit entry is applied or refused, never moved. One naming an absent axis, an
+- An explicit entry is applied or refused as posted. One naming an absent axis, an
   option the axis does not offer, or an unavailable option refuses
   `requested_option_unavailable`; two that cannot hold together refuse
   `conflicting_requested_options`.
@@ -12,8 +12,8 @@ Pure: it reads only its arguments and does no I/O. The rules it holds to:
   its option unknown or unavailable, its axis settled by an explicit or earlier carried
   entry, or in conflict with an entry read from the words) is dropped and reported as
   `carried_choice_not_applied`. A switch that conflicts with an applied entry is refused,
-  so a switch never moves an explicit or carried entry. Carried entries are weighed in
-  axis order, then by option id, so the order they are posted in never matters.
+  so a switch leaves every explicit or carried entry where it is. Carried entries are
+  weighed in axis order, then by option id, so posting order has no effect.
 - A partial option (one serving fewer years than the part asks for, with its own shorter
   window) applies only to a switch, since only a click may change the period asked for. A
   stated or carried entry asking for it is refused or dropped with the option's reason.

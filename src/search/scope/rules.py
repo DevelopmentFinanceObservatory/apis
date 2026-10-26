@@ -1,7 +1,7 @@
 """The registered axis rules, the conflicts between their options, and the rule version.
 
 `AXIS_RULES` maps each live axis to its rule, in `models.vocab.SCOPE_AXES` order; an axis
-with no rule is never settled. A rule reads the base identity, the record the part's binder
+with no rule is left unsettled. A rule reads the base identity, the record the part's binder
 wrote for its axis (None on a dataset_resubmit, where no binder runs) and the engine facts,
 and returns the axis's table, or None when the axis is absent from the part.
 """

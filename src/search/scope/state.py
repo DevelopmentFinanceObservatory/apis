@@ -39,7 +39,8 @@ class ScopeIntake:
 
     `entries` are the explicit entries read from the part's words and the conversation's
     carried entries. `total` is whether the words ask for a total ("total health aid"),
-    which the provider default reads; it is a fact about the request, not an entry."""
+    which the provider default reads. It is a fact about the request and sits outside the
+    entries."""
 
     entries: tuple[Entry, ...] = ()
     total: bool = False

@@ -160,7 +160,7 @@ ScopeReasonCode = Literal[
 ]
 """Every reason a scope option is partial or unavailable, or a carried or stated entry is
 not applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary
-of its own, like `DepartureCode`: no reason code is a `Warning.code` or a refusal code. The
+of its own, like `DepartureCode`, separate from `Warning.code` and the refusal codes. The
 two refusals a scope entry can draw, `requested_option_unavailable` and
 `conflicting_requested_options`, are registry codes in `engine.codes`."""
 ComponentRole = Literal["whole", "bilateral", "imputed", "headline_net", "headline_ge"]

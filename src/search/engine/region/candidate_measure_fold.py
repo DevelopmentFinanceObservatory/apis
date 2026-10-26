@@ -57,7 +57,7 @@ def _fold_measure_sibling_candidates(
     A folded sibling shares the retained Spec's price basis, so it is a measure option
     (axis "what"), labelled without the price basis. A sibling of another measure basis of
     a retained Spec the measure-basis axis applies to (`scope.basis.basis_dataset`) folds
-    without becoming an option: the axis's scope choice offers it once the Spec is
+    without becoming an option. The axis's scope choice offers it once the Spec is
     resubmitted.
     """
     measure_index = get_measure_index()

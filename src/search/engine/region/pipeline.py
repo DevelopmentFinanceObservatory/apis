@@ -564,17 +564,17 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     built from the axis records the pass's binders hold (`ResolveState.scope_selection`)
     and, on a part whose binders settled some axis, the provider scope settled over the
-    answer's identity (`provider.settle_provider`).
-    Only the entries a binder applied compile (`AxisRecord.entry`), so every choice states
-    the option the answer serves; the other entries that attach to the part
-    (`ScopeState.attached`: those on an axis a binder settled, for the concept it was asked
-    for) are reported in `PartScope.dropped_entries`. A result that is not definite, or
+    answer's identity (`provider.settle_provider`). Only the entries a binder applied
+    compile (`AxisRecord.entry`), so every choice states the option the answer serves. The
+    other entries that attach to the part (`ScopeState.attached`: those on an axis a binder
+    settled, for the concept it was asked for, and the stated ones on an axis the part
+    lacks) are reported in `PartScope.dropped_entries`. A result that is not definite, or
     whose pass settled no axis, states none, and so does one whose answer the recorded axes
-    do not reach, as a region read at its published total. In memory: the rules read the
-    bound release's code index, the request's coverage snapshot and the part's operations,
-    groups and served datasets (`scope_facts`). A fresh search never refuses its scope
-    (`build_part_scope` with `refuse` false); only a dataset_resubmit's posted
-    `scope_entries` refuse 422.
+    do not reach, as a region read at its published total. The scope is built in memory,
+    and the rules read the bound release's code index, the request's coverage snapshot and
+    the part's operations, groups and served datasets (`scope_facts`). A fresh search does
+    not refuse its scope (`build_part_scope` with `refuse` false). Only a dataset_resubmit's
+    posted `scope_entries` refuse 422.
 
     When the binders settle a composite option (the inclusive provider scope, the OECD
     headline per year), the scope's base is the composite, and the answer is restated as it
@@ -635,7 +635,7 @@ def merged_scope_choices(
     members' applied entries and the basis record its identity reads
     (`basis.identity_basis_record`). None when no member states a scope,
     or the merged identity settles no axis. An entry the merged identity cannot take is
-    reported in `PartScope.dropped_entries`, never refused."""
+    reported in `PartScope.dropped_entries`."""
     scopes = [region.scope_choices for region in group if region.scope_choices is not None]
     if not scopes:
         return None

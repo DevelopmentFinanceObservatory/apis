@@ -241,7 +241,7 @@ def spec_departure_facts(
     modelled values, groups read as members, and sides read as their whole population. On a
     flow role a group read as members names the residuals the role binds beside them, and
     those its total counts that the role leaves out and the served dataset publishes on
-    that role; its size counts the members alone. A group read as its total
+    that role. Its size counts the members alone. A group read as its total
     departs nothing. A side read whole (`EntityGroup.whole_of`) departs as
     `whole_total_read`, which names the population and the way back to its members, in the
     question's words where the part's door asks for members in them (`members_in_words`). An
@@ -513,7 +513,7 @@ def unavailable_entity_facts(
     one, a member the request named alone on this role (`ResolvedSpec.named_alone`)
     included. A role whose group holds such a member is read the same way. A residual
     bucket a role read as a group binds beside its members (`scope.region.is_residual`) is
-    no member: it neither counts toward the group nor departs. On a `latest` request each
+    no member, so it neither counts toward the group nor departs. On a `latest` request each
     names the latest period the answer serves."""
     window = spec.resolved.coverage.window
     latest_years = (

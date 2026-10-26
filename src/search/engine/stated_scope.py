@@ -10,8 +10,7 @@ Two axes are read:
   `bind_repair.occurrence_negated`). "including multilateral" (also "incl.", "inclusive of",
   "plus", and "bilateral plus imputed multilateral") states `provider:inclusive`. Any other
   mention of "multilateral" ("multilateral development banks", "bilateral/multilateral")
-  names a kind of provider, not a scope, and beside a "bilateral" it leaves the axis
-  unstated.
+  names a kind of provider and leaves the axis unstated, even beside a "bilateral".
 - Measure basis. "net", "gross", "grant equivalent(s)" and "commitments" state their
   basis. The singular "commitment" is a pledge ("has the US kept its commitment") and
   states none. A word that heads another measure ("net worth", "gross national income", "ODA net
@@ -21,11 +20,11 @@ A negated or excluded occurrence ("not just gross disbursements", "non-bilateral
 nothing. An axis whose words state two options ("both gross and net ODA", "commitments and
 gross disbursements") is left unstated, since the text asks for both and neither is the
 scope. "total" ("total health aid", "totalled across donors") states the total intent the
-provider default reads, which is a fact about the request and not an entry.
+provider default reads. It is a fact about the request and sits outside the entries.
 
 Which text a part is read from is the door's choice (`part_scope_intakes`): a request of one
-part reads the user's message, and a request of several reads each part's own text, so one
-part's words never reach another.
+part reads the user's message, and a request of several reads each part's own text, so
+each part's words stay with that part.
 """
 
 from __future__ import annotations

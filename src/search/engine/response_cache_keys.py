@@ -297,8 +297,8 @@ def layer2_key(
     positions and adds nothing when none is marked.
     `stated_scopes` runs parallel to `variables` when given and holds the scope entries and
     total intent each part's words state (`stated_scope.intake_key_document`), None for a
-    part whose words state none, so "ODA to Kenya" and "bilateral ODA to Kenya", or "net ODA
-    to Kenya", never share an entry whatever their extractions. The key states them and
+    part whose words state none, so "ODA to Kenya", "bilateral ODA to Kenya" and "net ODA
+    to Kenya" key apart whatever their extractions. The key states them and
     adds nothing when no part states any.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,

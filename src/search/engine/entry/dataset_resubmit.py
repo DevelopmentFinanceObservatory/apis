@@ -133,8 +133,8 @@ def _compiled_scope(
     entry: ResubmitIdentityEntry, *, index: int, coverage: CoverageSnapshot
 ) -> PartScope:
     """The scope `entry`'s scope entries compile to over its identity, with the basis record
-    the identity reads (`basis.identity_basis_record`). Refuses the
-    compile's own refusal (422), pointed at the scope entry it refuses."""
+    the identity reads (`basis.identity_basis_record`). Raises the compile's refusal as a
+    422 error pointed at the scope entry it refuses."""
     assert entry.scope_entries is not None
     dataset = identity_dataset(entry.identity)
     # The comprehension widens the posted role keys to `str`, which `dict()` cannot.

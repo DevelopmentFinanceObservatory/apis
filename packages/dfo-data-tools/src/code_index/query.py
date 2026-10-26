@@ -858,8 +858,8 @@ class CodeIndex:
 
     def names_word(self, word: str) -> bool:
         """Whether the label or a synonym of some code holds `word`, compared as
-        `candidate_codes` compares it (`fold_word`): "malaria" (CRS 12262, "Malaria
-        control"), not "Gates"."""
+        `candidate_codes` compares it (`fold_word`). "malaria" is such a word
+        (CRS 12262, "Malaria control")."""
         return fold_word(word) in self._codes_by_word
 
     def words_shared(self, dcid: str, words: Iterable[str]) -> frozenset[str]:

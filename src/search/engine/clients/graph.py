@@ -209,8 +209,9 @@ def with_rival_families(
     (`scope.basis.convention_measures`) on the hit's statistic, qualifier and denominator,
     when no family among the hits measures that basis there. The conventions elect the basis
     from the part's shape and window, so its family must reach the menu whatever words
-    recalled the other: "ODA" from the United States recalls DAC1's ODA amounts and none of
-    its grant equivalents, the headline basis from 2018. A row added so is marked
+    recalled the other. "ODA" from the United States, for example, recalls DAC1's ODA
+    amounts and none of its grant equivalents, the headline basis from 2018. A row added
+    this way is marked
     `DetectedSV.rival` and takes its hit family's best score."""
     scope = catalogue.scope
     best: dict[FiveTuple, float] = {}
