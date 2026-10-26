@@ -120,6 +120,8 @@ class _RecordedBirthRateLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         recorded = _UniversalBindOutput.model_validate_json(

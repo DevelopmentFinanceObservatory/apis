@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, cast
 from dfo_platform import Cause
 from materialise.roles import axis_for_role, axis_noun
 from search.engine.clients.graph import Facet
-from search.engine.departures import FactsByWarning, breakdown_not_applied, warning_key
+from search.engine.departures import (
+    NO_ENTITY_WORDS,
+    FactsByWarning,
+    breakdown_not_applied,
+    warning_key,
+)
 from search.engine.events import PlaceOptionsEvent
 from search.engine.region.codes import (
     ALTERNATES_UNEVALUATED,
@@ -166,6 +171,10 @@ class RegionResult:
     # untold place set in query order (`place_roles.untold_direction_groups`), so the
     # refusal's sentence counts places. Empty for every other outcome.
     untold_groups: tuple[tuple[str, ...], ...] = ()
+    # The graph's label for each place of `untold_groups`, parallel to it
+    # (`place_roles.untold_direction_labels`), so the refusal tells apart two places written
+    # alike. `None` for a text that resolved to no place. Empty for every other outcome.
+    untold_labels: tuple[str | None, ...] = ()
     # Query qualifiers without a final binding, including terms absent from the
     # index vocabulary. Populated only for `qualifier_not_bound`. Full records
     # live on `flagged_match.resolved.trace.query_qualifiers`.
@@ -208,11 +217,14 @@ class RegionResult:
     # Computed from resolved entities after shape construction. `{}` for
     # subject-only shapes or earlier no-data outcomes. This read makes no graph call.
     no_data_bound_role_dcids: Mapping[EntityRoleKey, tuple[str, ...]] = field(default_factory=dict)
-    # The answer a refusal raised on behalf of a candidate is about, as its shape and
-    # bindings: the candidates door answers with that candidate's refusal. `None` for a
-    # refusal about the elected reading. A refusal that judged no answer is judged on it
+    # The answer a refusal raised on behalf of a candidate is about, as its shape, its
+    # bindings and the records of the words it leaves unread (`_Candidate.uncovered`): the
+    # candidates door answers with that candidate's refusal. `None` for a refusal about the
+    # elected reading. A refusal that judged no answer is judged on it
     # (`phase_shared.settle_unjudged_refusal`).
-    refused_answer: tuple[ShapeDraft, tuple[SlotBindingDraft, ...]] | None = None
+    refused_answer: (
+        tuple[ShapeDraft, tuple[SlotBindingDraft, ...], tuple[ResolvedQualifier, ...] | None] | None
+    ) = None
     # Stripped, case-folded qualifier spans forced into bindings by this region, answered
     # by a slot default it warns about, or asking for every member of a flow role its
     # answer leaves unbound (`every_member_phrases`). Same-shape merges union the sets.
@@ -414,6 +426,12 @@ class RegionResult:
     # `None` on a door that holds no words for any entity (a resubmit), whose departures
     # then quote none.
     entity_words: Mapping[str, str] | None = field(default_factory=dict)
+    # The words resolution read beside each entity name, where they differ from it
+    # (`surface_resolution.resolve_names`): the query's words where they occur in it on the
+    # raw-text door, a posted row's text beside its name on the parsed door. A choice posts
+    # an ambiguous name's row with these words as its text, so the parsed door settles it
+    # as this region did. A name absent here resolved as itself.
+    entity_surfaces: Mapping[str, str] = field(default_factory=dict)
     # Whether the part's door asks for a flow side's members in the question's words ("by
     # donor"), as the raw-text door does (`raw_text._ExtractionPrep.onto`). The other doors
     # post `open_roles`. A side read whole states its way back to the members in that form.
@@ -432,6 +450,11 @@ class RegionResult:
     def spec(self) -> Spec:
         """Convenience for the definite path (status == 'definite')."""
         return self.specs[0]
+
+    def words_of(self, name: str) -> str:
+        """The request's own words for the entity `name` (`entity_words`), else `name`: what
+        a refusal, option label or mention quotes for it."""
+        return (self.entity_words or {}).get(name, name)
 
     @property
     def alternates_left_out(self) -> bool:
@@ -680,11 +703,21 @@ def _unrunnable_warning(operation: Operation) -> Warning:
     )
 
 
-def with_entity_words(region: RegionResult, words: Mapping[str, str]) -> RegionResult:
+def with_entity_words(
+    region: RegionResult,
+    words: Mapping[str, str],
+    *,
+    surfaces: Mapping[str, str] = NO_ENTITY_WORDS,
+) -> RegionResult:
     """Return `region` holding `words`, the request's own words for each entity name
-    (`RegionResult.entity_words`). A group label `region` already maps to the request's name
-    for the group maps on to that name's words."""
-    if not words:
+    (`RegionResult.entity_words`), and `surfaces`, the words resolution read beside each name
+    (`RegionResult.entity_surfaces`). A group label `region` already maps to the request's
+    name for the group maps on to that name's words."""
+    if not words and not surfaces:
         return region
     by_label = {label: words.get(name, name) for label, name in (region.entity_words or {}).items()}
-    return dataclasses.replace(region, entity_words={**words, **by_label})
+    return dataclasses.replace(
+        region,
+        entity_words={**words, **by_label},
+        entity_surfaces={**region.entity_surfaces, **surfaces},
+    )

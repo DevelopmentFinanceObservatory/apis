@@ -100,7 +100,12 @@ class _MutableGraph:
         return {entity: self._facets.get((stat_var, entity), []) for entity in entities}
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         return {
             stat_var: {entity: self._facets.get((stat_var, entity), []) for entity in entities}

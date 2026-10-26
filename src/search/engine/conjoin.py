@@ -24,6 +24,7 @@ from search.engine.assemble import (
     skills_index_unavailable_warning,
 )
 from search.engine.departures import surviving_facts
+from search.engine.entity_checks import part_entities
 from search.engine.envelope import make_diagnostics, make_query_echo, make_response, now_ms
 from search.engine.errors import EngineInputError
 from search.engine.region.source_choice import scope_records
@@ -165,36 +166,80 @@ def _shared_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
     return {}
 
 
-def _entity_refs(region: RegionResult) -> list[EntityRefs]:
-    """The binding of each entity text of the region's restatement, once per text in
-    restatement order (`Part.entity_refs`). A text the region binds nothing for
-    (`RegionResult.entity_refs`) states []."""
-    if region.restatement is None:
+def _entity_refs(region: RegionResult, restatement: ParsedPart | None) -> list[EntityRefs]:
+    """The binding of each row of the part's `restatement`, one per row in row order
+    (`Part.entity_refs`), looked up by the row's identity (`ParsedEntity.identity`) in
+    `RegionResult.entity_refs`: a self-flow's two rows state the same refs, and "Congo" to
+    "Congo" states each end's. A row the region binds nothing for states []."""
+    if restatement is None:
         return []
-    texts = dict.fromkeys(entity.text for entity in region.restatement.entities or ())
-    return [EntityRefs(text=text, refs=list(region.entity_refs.get(text, ()))) for text in texts]
+    return [
+        EntityRefs(text=entity.text, refs=list(region.entity_refs.get(entity.identity, ())))
+        for entity in restatement.entities or ()
+    ]
 
 
-def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[str] | None]:
+def _asked_words(region: RegionResult) -> dict[str, str]:
+    """The words resolution read for each ambiguous entity name of `region`
+    (``RegionResult.entity_surfaces``), else the name, which its refusal quotes whatever
+    the refusal's reason and its ambiguous rows post (`_asked_row`): "Congo" for the name
+    "Democratic Republic of the Congo". The result is keyed by name, so two names written
+    alike stay two choices."""
+    return {e.text: region.entity_surfaces.get(e.text, e.text) for e in region.ambiguous_entities}
+
+
+def _asked_row(entity: ParsedEntity, asked: Mapping[str, str]) -> ParsedEntity:
+    """`entity`, a row of a region's parsed form, posted as the parsed door reads it back
+    to the same outcome: an ambiguous name's row posts its asked words (`_asked_words`) as
+    its text and the name as its identity (`ParsedEntity.name`), so "aid from Congo to
+    Congo" posts two "Congo" rows under two names and asks two choices again. Every other
+    row posts as it is."""
+    identity = entity.identity
+    if identity not in asked:
+        return entity
+    text = asked[identity]
+    return entity.model_copy(update={"text": text, "name": None if text == identity else identity})
+
+
+def _asked_restatement(region: RegionResult, asked: Mapping[str, str]) -> ParsedPart | None:
+    """The region's restatement with each ambiguous row as the parsed door reads it back
+    (`_asked_row`, from the region's `_asked_words`), so posting it back asks the same
+    choice."""
+    if region.restatement is None or not asked:
+        return region.restatement
+    entities = [_asked_row(entity, asked) for entity in region.restatement.entities or ()]
+    return region.restatement.model_copy(update={"entities": entities})
+
+
+def _no_data_entity_terms(
+    region: RegionResult, asked: Mapping[str, str]
+) -> tuple[list[str] | None, list[str] | None]:
     """Return entity terms and candidates for no-data reasons that carry them.
 
-    Ambiguous entities supply terms and ordered candidate names.
-    Role-not-admitted entities supply terms only. Unresolved entities use
-    ``unresolved_entity_names``, and so do the names whose direction a
+    Ambiguous entities supply terms and ordered candidate names. Role-not-admitted
+    entities supply terms only, in the request's own words (``RegionResult.entity_words``).
+    Unresolved entities use ``unresolved_entity_names`` in the request's own words: an
+    ambiguous one in the words its resolution read (`asked`, the region's `_asked_words`),
+    any other through ``RegionResult.words_of``. So do the names whose direction a
     ``role_not_resolved`` refusal could not tell and the whole populations a
     ``role_incompatible`` refusal found directed to the other side, each in the request's
     own words for it (``RegionResult.entity_words``). Other reasons or empty values return
     ``None``.
     """
     if region.no_data_reason == "entity_ambiguous":
-        entity_terms = [e.text for e in region.ambiguous_entities] or None
-        candidates = [c.name for e in region.ambiguous_entities for c in e.candidates] or None
-        return entity_terms, candidates
+        entity_terms = [asked[e.text] for e in region.ambiguous_entities] or None
+        candidates = list(
+            dict.fromkeys(c.name for e in region.ambiguous_entities for c in e.candidates)
+        )
+        return entity_terms, candidates or None
     if region.no_data_reason == "entity_role_not_admitted":
-        entity_terms = [e.text for e in region.role_not_admitted_entities] or None
-        return entity_terms, None
+        entity_terms = [region.words_of(e.text) for e in region.role_not_admitted_entities]
+        return entity_terms or None, None
     if region.no_data_reason == "entity_not_resolved":
-        return list(region.unresolved_entity_names) or None, None
+        terms = [
+            asked.get(name) or region.words_of(name) for name in region.unresolved_entity_names
+        ]
+        return terms or None, None
     if region.no_data_reason in ("role_not_resolved", "role_incompatible"):
         return _untold_terms(region) or None, None
     return None, None
@@ -202,9 +247,10 @@ def _no_data_entity_terms(region: RegionResult) -> tuple[list[str] | None, list[
 
 def _unlisted_populations(region: RegionResult) -> dict[str, UnlistedPopulation]:
     """Each population an ``entity_role_not_admitted`` region refuses because no shape lists
-    it exactly (`RoleNotAdmittedEntity.unlisted`), by the text the refusal names."""
+    it exactly (`RoleNotAdmittedEntity.unlisted`), by the words the refusal quotes for it
+    (`_no_data_entity_terms`)."""
     return {
-        entity.text: entity.unlisted
+        region.words_of(entity.text): entity.unlisted
         for entity in region.role_not_admitted_entities
         if entity.unlisted is not None
     }
@@ -214,38 +260,58 @@ def _untold_terms(region: RegionResult) -> list[str]:
     """Every request text a ``role_not_resolved`` or ``role_incompatible`` refusal names
     (``RegionResult.unresolved_entity_names``): each place set whose direction the request
     does not tell, or each whole population directed to the other side of the flow. In query
-    order and in the request's own words (``RegionResult.entity_words``), each once: the
-    refusal's entity terms and every role option's mentions."""
-    words = region.entity_words or {}
-    return list(dict.fromkeys(words.get(name, name) for name in region.unresolved_entity_names))
+    order and in the request's own words (``RegionResult.entity_words``), each once per
+    place (``RegionResult.untold_groups``), so two places written alike keep a term each:
+    the refusal's entity terms and every role option's mentions."""
+    place_of = {name: i for i, group in enumerate(region.untold_groups) for name in group}
+    terms = {
+        (place_of.get(name), region.words_of(name)): region.words_of(name)
+        for name in region.unresolved_entity_names
+    }
+    return list(terms.values())
 
 
 def _untold_place_terms(region: RegionResult) -> list[list[str]] | None:
     """The terms of a ``role_not_resolved`` refusal grouped by the place each names
-    (``RegionResult.untold_groups``), in the request's own words as `_untold_terms` gives
-    them, so the sentence counts places. ``None`` for every other reason."""
+    (`_untold_place_words`), so the sentence counts places. ``None`` for every other
+    reason."""
     if region.no_data_reason != "role_not_resolved":
         return None
-    words = region.entity_words or {}
-    return [
-        list(dict.fromkeys(words.get(name, name) for name in group))
+    return list(_untold_place_words(region).values()) or None
+
+
+def _untold_place_words(region: RegionResult) -> dict[tuple[str, ...], list[str]]:
+    """The words naming each untold place (``RegionResult.untold_groups``), by its group of
+    request texts: those texts in the request's own words as `_untold_terms` gives them,
+    each once. A place whose words name another untold place too ends with its graph label
+    (``RegionResult.untold_labels``), so "Congo" and "Congo" read as two places."""
+    named = [
+        list(dict.fromkeys(region.words_of(name) for name in group))
         for group in region.untold_groups
-    ] or None
+    ]
+    return {
+        group: [*terms, label] if label and named.count(terms) > 1 else terms
+        for group, terms, label in zip(
+            region.untold_groups, named, region.untold_labels, strict=True
+        )
+    }
 
 
-def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]:
+def _ambiguous_entity_groups(
+    region: RegionResult, asked: Mapping[str, str]
+) -> list[AmbiguousEntityGroup]:
     """Convert region ambiguity data to the wire shape, for an ``entity_ambiguous`` region
     only. A region refused for another reason can still name ambiguous entities
     (`phase_intake._phase_check_entities`), and the wire field is empty for it.
 
-    Engine candidates use ``name``. Wire candidates use ``label``. Other
-    fields copy directly.
+    Engine candidates use ``name``. Wire candidates use ``label``. Each wording reads in the
+    request's own words (`asked`, the region's `_asked_words`).
     """
     if region.no_data_reason != "entity_ambiguous":
         return []
     return [
         AmbiguousEntityGroup(
-            text=entity.text,
+            text=asked[entity.text],
             candidates=[
                 AmbiguousEntityCandidate(ref=c.dcid, label=c.name, kind=c.kind)
                 for c in entity.candidates
@@ -302,62 +368,81 @@ def _unbound_terms(
     return terms or None, list(sources.values()) or None, naming
 
 
-def _option(mentions: Sequence[str], label: str, part: ParsedPart) -> NoDataOption | None:
-    """One option posting `part`, or `None` when the parsed door would refuse it: `part`
-    breaks the `ParsedPart` bounds, states a direction its own wording contradicts, or
-    names sources that leave it none (`source_scope.compile_part_sources`, which reads the
-    bound catalogue's cached dictionary)."""
+def _option(
+    mentions: Sequence[str], label: str, part: ParsedPart, *, entity_choice: int | None = None
+) -> NoDataOption | None:
+    """One option posting `part`, settling the ambiguous entity group at `entity_choice`
+    when it settles one, or `None` when the parsed door would refuse it: `part`
+    breaks the `ParsedPart` bounds, states a direction its own wording contradicts, posts
+    entities the door's checks refuse (`entity_checks.part_entities`), or names sources that leave
+    it none (`source_scope.compile_part_sources`, which reads the bound catalogue's cached
+    dictionary)."""
     try:
         posted = ParsedPart.model_validate(part.model_dump())
     except ValidationError:
         return None
     if parsed_directions_contradicted(posted):
         return None
-    if posted.sources:
-        try:
+    try:
+        part_entities(posted, pointer_prefix="")
+        if posted.sources:
             compile_part_sources(posted, catalogue=current_catalogue(), pointer_prefix="")
-        except EngineInputError:
-            return None
+    except EngineInputError:
+        return None
     return NoDataOption(
-        mentions=list(mentions), label=label, data_query=ParsedInput(parts=[posted])
+        mentions=list(mentions),
+        label=label,
+        data_query=ParsedInput(parts=[posted]),
+        entity_choice=entity_choice,
     )
 
 
-def _entity_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
+def _entity_options(
+    region: RegionResult, part: ParsedPart, *, asked: Mapping[str, str]
+) -> list[NoDataOption | None]:
     """One option per ambiguous wording and candidate: the part with every entity that
     resolved to one node pinned, and every row with the wording pinned to the candidate.
-    A row asked for its members takes a group's own node by the group's registered name,
-    with no dcid, since a pin cannot ask for a group's members; a group node with no
-    registered name that resolves to it alone has no option. Other ambiguous wordings stay
-    unpinned."""
-    base = [
-        entity.model_copy(
-            update={"dcid": region.resolved_entity_dcids.get(entity.text, entity.dcid)}
-        )
-        for entity in part.entities or ()
-    ]
+    A pinned row posts its words and the dcid, which is its identity, with no name. A row
+    asked for its members takes a group's own node by the group's registered name, with no
+    dcid, since a pin cannot ask for a group's members; a group node with no registered
+    name that resolves to it alone has no option. Every other ambiguous row posts as the
+    parsed door reads it back to the same outcome (`_asked_row`, from `asked`, the region's
+    `_asked_words`), so it asks its choice again and "aid from Congo to Congo" settles one
+    end per option. The option's mentions quote the asked words. Each option names its
+    group's index in `region.ambiguous_entities` (`NoDataOption.entity_choice`), since two
+    groups can share one wording."""
+
+    def pinned(entity: ParsedEntity) -> ParsedEntity:
+        dcid = region.resolved_entity_dcids.get(entity.identity)
+        if dcid is None:
+            return entity
+        return entity.model_copy(update={"name": None, "dcid": dcid})
 
     def chosen(entity: ParsedEntity, candidate: EngineCandidate) -> ParsedEntity | None:
         if entity.members and candidate.group_node:
             if candidate.group_name is None:
                 return None
-            return entity.model_copy(update={"text": candidate.group_name, "dcid": None})
-        return entity.model_copy(update={"dcid": candidate.dcid})
+            return entity.model_copy(
+                update={"text": candidate.group_name, "name": None, "dcid": None}
+            )
+        return entity.model_copy(update={"name": None, "dcid": candidate.dcid})
 
+    base = [_asked_row(pinned(entity), asked) for entity in part.entities or ()]
     options: list[NoDataOption | None] = []
-    for group in region.ambiguous_entities:
+    for i, group in enumerate(region.ambiguous_entities):
         for candidate in group.candidates:
             entities = [
-                chosen(entity, candidate) if entity.text == group.text else entity
+                chosen(entity, candidate) if entity.identity == group.text else entity
                 for entity in base
             ]
             if None in entities:
                 continue
             options.append(
                 _option(
-                    [group.text],
+                    [asked[group.text]],
                     candidate.name,
                     part.model_copy(update={"entities": entities}),
+                    entity_choice=i,
                 )
             )
     return options
@@ -410,8 +495,8 @@ def _role_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption |
     options: list[NoDataOption | None] = []
     for reading in region.role_assignments:
         rows = [
-            entity.model_copy(update={"role_text": role_text_for_axis(reading[entity.text])})
-            if entity.text in reading
+            entity.model_copy(update={"role_text": role_text_for_axis(reading[entity.identity])})
+            if entity.identity in reading
             else entity
             for entity in part.entities or ()
         ]
@@ -424,30 +509,33 @@ def _role_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption |
 def _direction_label(entities: Sequence[ParsedEntity], region: RegionResult) -> str:
     """The directions `entities` state, in words. Origins read "to" destinations, and one
     axis alone reads "From" or "To" with its names. Each untold place set
-    (``RegionResult.untold_groups``) is named once, as the refusal's message names it
-    (`untold_place_name`), as in `Kenya ("KEN") to Norway`."""
-    words = region.entity_words or {}
+    (``RegionResult.untold_groups``) is named once in its words (`_untold_place_words`), as
+    the refusal's message names it (`untold_place_name`), as in `Kenya ("KEN") to Norway`."""
+    place_words = _untold_place_words(region)
     group_of = {name: group for group in region.untold_groups for name in group}
     by_axis: dict[RoleAxis, list[tuple[str, ...]]] = {"origin": [], "destination": []}
     for entity in entities:
         axis = role_axis_for_text(entity.role_text)
-        group = group_of.get(entity.text, (entity.text,))
+        group = group_of.get(entity.identity, (entity.identity,))
         if axis is not None and group not in by_axis[axis]:
             by_axis[axis].append(group)
     origins, destinations = (
-        _axis_label(by_axis[axis], words) for axis in ("origin", "destination")
+        _axis_label(
+            [
+                place_words.get(group) or [region.words_of(text) for text in group]
+                for group in by_axis[axis]
+            ]
+        )
+        for axis in ("origin", "destination")
     )
     if origins and destinations:
         return f"{origins} to {destinations}"
     return f"From {origins}" if origins else f"To {destinations}"
 
 
-def _axis_label(groups: Sequence[Sequence[str]], words: Mapping[str, str]) -> str:
-    """The places `groups` holds, one per group of request texts, in the request's words."""
-    names = (
-        untold_place_name([words.get(text, text) for text in group], quote_first=False)
-        for group in groups
-    )
+def _axis_label(places: Sequence[Sequence[str]]) -> str:
+    """The places `places` holds, each by its words."""
+    names = (untold_place_name(texts, quote_first=False) for texts in places)
     return _join_labels([name for name in names if name])
 
 
@@ -476,7 +564,6 @@ def _unit_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption |
 _OPTION_BUILDERS: dict[
     NoDataReason, Callable[[RegionResult, ParsedPart], list[NoDataOption | None]]
 ] = {
-    "entity_ambiguous": _entity_options,
     "source_ambiguous": _source_options,
     "source_code_ambiguous": _source_code_options,
     "role_not_resolved": _role_options,
@@ -484,15 +571,22 @@ _OPTION_BUILDERS: dict[
 }
 
 
-def _options(region: RegionResult) -> list[NoDataOption]:
+def _options(region: RegionResult, *, asked: Mapping[str, str]) -> list[NoDataOption]:
     """The ready requests of a refusal that asks for a choice, each a one-part parsed input
-    built from the region's parsed form. Empty for every other reason, when the region has
-    no parsed form (its inputs exceed the `ParsedPart` bounds), and for an option the parsed
-    door would refuse (`_option`)."""
-    build = _OPTION_BUILDERS.get(region.no_data_reason) if region.no_data_reason else None
-    if build is None or region.parsed_form is None:
+    built from the region's parsed form; an entity choice reads the region's `_asked_words`
+    as `asked`. Empty for every other reason, when the region has no parsed form (its
+    inputs exceed the `ParsedPart` bounds), and for an option the parsed door would refuse
+    (`_option`)."""
+    reason, part = region.no_data_reason, region.parsed_form
+    if reason is None or part is None:
         return []
-    return [option for option in build(region, region.parsed_form) if option is not None]
+    if reason == "entity_ambiguous":
+        built = _entity_options(region, part, asked=asked)
+    elif (build := _OPTION_BUILDERS.get(reason)) is not None:
+        built = build(region, part)
+    else:
+        return []
+    return [option for option in built if option is not None]
 
 
 def _build_part(
@@ -550,7 +644,7 @@ def _build_part(
             separate=region.separate,
             timing_ms=timing_ms,
             restatement=region.restatement,
-            entity_refs=_entity_refs(region),
+            entity_refs=_entity_refs(region, region.restatement),
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -589,7 +683,7 @@ def _build_part(
             # dataset_resubmit states its posted ordering through this override.
             ordering=region.candidate_ordering_override or "intent_rank",
             restatement=region.restatement,
-            entity_refs=_entity_refs(region),
+            entity_refs=_entity_refs(region, region.restatement),
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -628,7 +722,7 @@ def _build_part(
             separate=region.separate,
             timing_ms=timing_ms,
             restatement=region.restatement,
-            entity_refs=_entity_refs(region),
+            entity_refs=_entity_refs(region, region.restatement),
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -638,12 +732,14 @@ def _build_part(
         "a no_data region must carry a real reason code; a falsy no_data_reason "
         "here is an assembly bug, not a case to default around"
     )
-    entity_terms, ambiguous_candidates = _no_data_entity_terms(region)
+    asked = _asked_words(region)
+    entity_terms, ambiguous_candidates = _no_data_entity_terms(region, asked)
     if region.no_data_reason in ("source_ambiguous", "source_code_ambiguous"):
         ambiguous_candidates = [
             c.label for group in region.ambiguous_sources for c in group.candidates
         ] or None
     qualifier_terms, unbound_sources, scope = _unbound_terms(region)
+    restatement = _asked_restatement(region, asked)
     return build_no_data_part(
         region.no_data_reason,
         variable_text=variable_text,
@@ -661,11 +757,9 @@ def _build_part(
         role_axis=region.no_data_role_axis,
         bound_role_dcids=region.no_data_bound_role_dcids,
         ambiguous_candidates=ambiguous_candidates,
-        ambiguous_entities=_ambiguous_entity_groups(region),
-        ambiguous_roles={
-            entity.text: entity.role for entity in region.ambiguous_entities if entity.role
-        },
-        options=_options(region),
+        ambiguous_entities=_ambiguous_entity_groups(region, asked),
+        ambiguous_roles=[entity.role for entity in region.ambiguous_entities],
+        options=_options(region, asked=asked),
         source_terms=list(region.source_terms) or None,
         ambiguous_sources=_ambiguous_source_groups(region),
         qualifier_terms=qualifier_terms,
@@ -673,8 +767,8 @@ def _build_part(
         scope=scope,
         unit_alternatives=list(region.unit_alternatives) or None,
         denominator=region.denominator,
-        restatement=region.restatement,
-        entity_refs=_entity_refs(region),
+        restatement=restatement,
+        entity_refs=_entity_refs(region, restatement),
         operations=region.operations,
         include_skills=include_skills,
         skills_index=skills_index,

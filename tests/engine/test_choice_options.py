@@ -38,6 +38,17 @@ _PLACES = {
     "European Union": "EuropeanUnion",
 }
 
+# A flow StatVar declaring a creditor and a debtor role.
+_FLOW_NODE = {
+    "label": "Test flow",
+    "arcs": {
+        "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+        "statType": {"nodes": [{"dcid": "measuredValue"}]},
+        "observationProperties": {"nodes": [{"dcid": "creditor"}, {"dcid": "debtor"}]},
+    },
+}
+
 
 class _ShapeZeroLLM:
     """Elects shape 0 with no bindings, for the unrecorded role-bearing fixture."""
@@ -49,18 +60,29 @@ class _ShapeZeroLLM:
         return elected_reply(0), None
 
 
-class _CongoExtractionLLM(_ShapeZeroLLM):
-    """Reads every query as the fertility rate of the Democratic Republic of the Congo,
-    named in the query by `span`, and elects shape 0 with no bindings."""
+class _ExtractionLLM(_ShapeZeroLLM):
+    """Reads every query as `variable` over `entities`, and elects shape 0 with no
+    bindings."""
 
-    def __init__(self, span: str) -> None:
-        self.span = span
+    def __init__(self, variable: str, *entities: ExtractedEntity) -> None:
+        self.variable = variable
+        self.entities = list(entities)
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is Extraction:
-            entity = ExtractedEntity(text="Democratic Republic of the Congo", span=self.span)
-            return Extraction(kind="resolution", variables=[_FERTILITY], entities=[entity]), None
+            extraction = Extraction(
+                kind="resolution", variables=[self.variable], entities=self.entities
+            )
+            return extraction, None
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+def _congo_extraction_llm(span: str) -> _ExtractionLLM:
+    """Reads every query as the fertility rate of the Democratic Republic of the Congo,
+    named in the query by `span`."""
+    return _ExtractionLLM(
+        _FERTILITY, ExtractedEntity(text="Democratic Republic of the Congo", span=span)
+    )
 
 
 def _fertility_client(llm: FakeLLM | _ShapeZeroLLM | None = None) -> TestClient:
@@ -87,23 +109,13 @@ def _fertility_client(llm: FakeLLM | _ShapeZeroLLM | None = None) -> TestClient:
     )
 
 
-def _flow_client(llm: _ShapeZeroLLM | None = None) -> TestClient:
-    """A flow StatVar declaring a creditor and a debtor role, over six countries, two of
-    them Congos, and the European Union."""
+def _flow_client() -> TestClient:
+    """A flow StatVar declaring a creditor and a debtor role, over four countries and the
+    European Union."""
     graph = FakeGraph(
         nodes={
             **{dcid: {"label": name, "type": "Country"} for name, dcid in _PLACES.items()},
-            _COD: {"label": "Congo [DRC]", "type": "Country"},
-            _COG: {"label": "Congo [Republic]", "type": "Country"},
-            _FLOW_SV: {
-                "label": "Test flow",
-                "arcs": {
-                    "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
-                    "measuredProperty": {"nodes": [{"dcid": "amount"}]},
-                    "statType": {"nodes": [{"dcid": "measuredValue"}]},
-                    "observationProperties": {"nodes": [{"dcid": "creditor"}, {"dcid": "debtor"}]},
-                },
-            },
+            _FLOW_SV: _FLOW_NODE,
         },
         detect={
             text: {"svs": [_FLOW_SV], "cosine_scores": [0.9]} for text in ("aid", "aid to Norway")
@@ -111,7 +123,7 @@ def _flow_client(llm: _ShapeZeroLLM | None = None) -> TestClient:
         resolve=dict(_PLACES),
         obs={},
     )
-    return _client(graph, llm or _ShapeZeroLLM())
+    return _client(graph, _ShapeZeroLLM())
 
 
 def _client(graph: FakeGraph, llm: _ShapeZeroLLM) -> TestClient:
@@ -185,9 +197,9 @@ def _raw_part(client: TestClient, query: str) -> dict:
 
 def test_a_name_the_query_words_leave_open_asks_its_choice_in_those_words():
     """The extraction names "Congo" the Democratic Republic of the Congo, but "Congo" names
-    two countries, so the choice quotes the user's word, and an option chosen by it
-    settles the part."""
-    client = _fertility_client(_CongoExtractionLLM("Congo"))
+    two countries, so the choice quotes the user's word. An option posts that word pinned
+    to its candidate, and settles the part under it."""
+    client = _fertility_client(_congo_extraction_llm("Congo"))
 
     part = _raw_part(client, "fertility rate in Congo")
 
@@ -198,60 +210,269 @@ def test_a_name_the_query_words_leave_open_asks_its_choice_in_those_words():
     assert group["text"] == "Congo"
     assert {c["ref"] for c in group["candidates"]} == {_COD, _COG}
     assert [o["mentions"] for o in no_data["options"]] == [["Congo"], ["Congo"]]
+    assert [o["entity_choice"] for o in no_data["options"]] == [0, 0]
+    assert [t.get("entity_choice") for t in part["sentence_plan"] if t["kind"] == "slot"] == [0]
     assert [e["text"] for e in part["restatement"]["entities"]] == ["Congo"]
+    assert [o["data_query"]["parts"][0]["entities"] for o in no_data["options"]] == [
+        [{"text": "Congo", "dcid": c["ref"]}] for c in group["candidates"]
+    ]
+    for option, candidate in zip(no_data["options"], group["candidates"], strict=True):
+        response = client.post("/api/search/resolve", json={"input": option["data_query"]})
+        (answered,) = response.json()["parts"]
+        assert answered["restatement"]["entities"] == [{"text": "Congo", "dcid": candidate["ref"]}]
+        assert answered["entity_refs"] == [{"text": "Congo", "refs": [candidate["ref"]]}]
     _assert_options_settle(client, no_data)
 
 
-class _TwoCongosExtractionLLM(_ShapeZeroLLM):
-    """Reads every query as aid from the Republic of the Congo to the Democratic Republic
-    of the Congo, each named in the query "Congo", and elects shape 0 with no bindings."""
+@pytest.mark.parametrize(
+    ("name", "span", "query", "asked"),
+    [
+        ("Congo", "congo", "fertility rate in congo", "Congo"),
+        ("Democratic Republic of the Congo", "congo", "fertility rate in congo", "congo"),
+        ("Congo", "Kongo", "fertility rate in Congo", "Congo"),
+    ],
+    ids=["case only", "lower-case span", "ungrounded span"],
+)
+def test_a_choice_quotes_the_words_its_rows_post(name, span, query, asked):
+    """The refusal quotes the words its resolution read, the extracted name where the span
+    differs from it only in case or is not in the query, and its restatement row posts
+    those words, so posting the restatement back asks the same choice."""
+    client = _fertility_client(_ExtractionLLM(_FERTILITY, ExtractedEntity(text=name, span=span)))
 
-    async def generate_structured(self, *, prompt, system, schema):
-        if schema is Extraction:
-            entities = [
-                ExtractedEntity(
-                    text="Republic of the Congo", span="Congo", flow_role="origin", role_span="from"
-                ),
-                ExtractedEntity(
-                    text="Democratic Republic of the Congo",
-                    span="Congo",
-                    flow_role="destination",
-                    role_span="to",
-                ),
-            ]
-            return Extraction(kind="resolution", variables=["aid"], entities=entities), None
-        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+    part = _raw_part(client, query)
+
+    no_data = part["no_data"]
+    (group,) = no_data["ambiguous_entities"]
+    assert group["text"] == asked
+    assert no_data["entity_terms"] == [asked]
+    assert [e["text"] for e in part["restatement"]["entities"]] == [asked]
+    assert [o["mentions"] for o in no_data["options"]] == [[asked]] * 2
+    again = _no_data(client, part["restatement"])
+    assert again["ambiguous_entities"] == no_data["ambiguous_entities"]
+    _assert_options_settle(client, no_data)
 
 
-def test_two_names_the_query_words_alike_ask_each_choice_on_its_own():
-    """The parsed door reads one text as one place, so two names that "Congo" leaves open
-    keep the extraction's names, and each end offers its own choice."""
-    client = _flow_client(_TwoCongosExtractionLLM())
+def test_an_ambiguous_name_beside_an_unresolved_one_is_quoted_in_the_users_word():
+    """ "Narnia" names no place, so the part refuses entity_not_resolved, and the refusal
+    quotes "Congo" as the user wrote it."""
+    llm = _ExtractionLLM(
+        _FERTILITY,
+        ExtractedEntity(text="Democratic Republic of the Congo", span="Congo"),
+        ExtractedEntity(text="Narnia"),
+    )
+    client = _fertility_client(llm)
 
-    part = _raw_part(client, "aid from Congo to Congo")
+    part = _raw_part(client, "fertility rate in Congo and Narnia")
+
+    no_data = part["no_data"]
+    assert no_data["reason"] == "entity_not_resolved"
+    assert no_data["entity_terms"] == ["Congo", "Narnia"]
+    assert no_data["ambiguous_entities"] == []
+
+
+_DRC = "Democratic Republic of the Congo"
+_ROC = "Republic of the Congo"
+_IBRD = "InternationalBankForReconstructionAndDevelopment"
+_IDA = "InternationalDevelopmentAssociation"
+# "World Bank" names both of its lending arms.
+_WORLD_BANK = ExtractedEntity(text="World Bank", span="World Bank")
+
+
+def _congo_flow_client(*entities: ExtractedEntity) -> TestClient:
+    """A flow StatVar over the two Congos and the World Bank's two lending arms, with
+    every query read as aid over `entities`."""
+    graph = FakeGraph(
+        nodes={
+            _COD: {"label": _DRC, "type": "Country"},
+            _COG: {"label": _ROC, "type": "Country"},
+            _IBRD: {
+                "label": "International Bank for Reconstruction and Development",
+                "type": "Organization",
+            },
+            _IDA: {"label": "International Development Association", "type": "Organization"},
+            _FLOW_SV: _FLOW_NODE,
+        },
+        detect={"aid": {"svs": [_FLOW_SV], "cosine_scores": [0.9]}},
+        obs={},
+    )
+    return _client(graph, _ExtractionLLM("aid", *entities))
+
+
+def _congo_to_congo(*extra: ExtractedEntity) -> tuple[TestClient, dict]:
+    """The part "aid from Congo to Congo" answers, read as the Democratic Republic of the
+    Congo to the Republic of the Congo, beside `extra`, and its client."""
+    client = _congo_flow_client(
+        ExtractedEntity(text=_DRC, span="Congo", flow_role="origin", role_span="from"),
+        ExtractedEntity(text=_ROC, span="Congo", flow_role="destination", role_span="to"),
+        *extra,
+    )
+    query = "aid from Congo to Congo" + (" by the World Bank" if extra else "")
+    return client, _raw_part(client, query)
+
+
+def _posted(option: dict) -> list[dict]:
+    """The entity rows an option posts."""
+    return option["data_query"]["parts"][0]["entities"]
+
+
+def _congo_rows(rows: list[dict]) -> list[tuple[str, str | None, str | None]]:
+    """The words, name and direction of each Congo row of `rows`."""
+    return [
+        (row["text"], row.get("name"), row.get("role_text"))
+        for row in rows
+        if row["text"] == "Congo"
+    ]
+
+
+def test_two_names_written_alike_ask_each_choice_apart():
+    """ "Congo" names two countries, and the extraction reads "aid from Congo to Congo" as
+    the Democratic Republic of the Congo to the Republic of the Congo. Each end is asked
+    apart in the user's word, and each row posts that word under its own name. An option
+    settles its own end and asks the other again, and an option of that settles the
+    part."""
+    client, part = _congo_to_congo()
 
     no_data = part["no_data"]
     assert no_data["reason"] == "entity_ambiguous"
-    names = ["Republic of the Congo", "Democratic Republic of the Congo"]
-    assert [group["text"] for group in no_data["ambiguous_entities"]] == names
-    pins = [
-        {e["text"]: e.get("dcid") for e in option["data_query"]["parts"][0]["entities"]}
-        for option in no_data["options"]
+    assert no_data["entity_terms"] == ["Congo", "Congo"]
+    assert [
+        (group["text"], {c["ref"] for c in group["candidates"]})
+        for group in no_data["ambiguous_entities"]
+    ] == [("Congo", {_COD, _COG})] * 2
+    assert [o["mentions"] for o in no_data["options"]] == [["Congo"]] * 4
+    ends = [("Congo", _DRC, "from"), ("Congo", _ROC, "to")]
+    assert _congo_rows(part["restatement"]["entities"]) == ends
+    assert [_pins(o) for o in no_data["options"]] == [
+        [("from", _COD), ("to", None)],
+        [("from", _COG), ("to", None)],
+        [("from", None), ("to", _COD)],
+        [("from", None), ("to", _COG)],
     ]
-    assert pins == [
-        {names[0]: _COD, names[1]: None},
-        {names[0]: _COG, names[1]: None},
-        {names[0]: None, names[1]: _COD},
-        {names[0]: None, names[1]: _COG},
-    ]
+    # Each slot and each option names its own group, so a menu per group pins one end.
+    assert [
+        (token["text"], token.get("role"), token.get("entity_choice"))
+        for token in part["sentence_plan"]
+        if token["kind"] == "slot"
+    ] == [("Congo", "origin", 0), ("Congo", "destination", 1)]
+    menus: dict[int, list] = {}
+    for option in no_data["options"]:
+        menus.setdefault(option["entity_choice"], []).append(_pins(option))
+    assert menus == {
+        0: [[("from", _COD), ("to", None)], [("from", _COG), ("to", None)]],
+        1: [[("from", None), ("to", _COD)], [("from", None), ("to", _COG)]],
+    }
+    for option in no_data["options"]:
+        # The pinned end posts its words and the dcid alone, and the other keeps its name.
+        assert [
+            (text, None if dcid else name, role_text)
+            for (text, name, role_text), (_, dcid) in zip(ends, _pins(option), strict=True)
+        ] == _congo_rows(_posted(option))
+        response = client.post("/api/search/resolve", json={"input": option["data_query"]})
+        assert response.status_code == 200, response.text
+        (answered,) = response.json()["parts"]
+        again = answered["no_data"]
+        assert [group["text"] for group in again["ambiguous_entities"]] == ["Congo"]
+        # Each option of the end asked again pins that end alone, and the first pick holds.
+        settled = {role: dcid for role, dcid in _pins(option) if dcid}
+        assert [_pins(o) for o in again["options"]] == [
+            [(role, settled.get(role, ref)) for role in ("from", "to")] for ref in (_COD, _COG)
+        ]
+        _assert_options_settle(client, again)
+
+
+def test_a_candidate_named_by_another_row_s_words_is_pinned_apart_from_it():
+    """The destination posts the candidate label "Congo [Republic]" pinned to the Republic,
+    and the origin "Congo" is asked. Every option answers, and the Republic option pins
+    both ends to the Republic without posting one entity under two texts."""
+    client = _congo_flow_client()
+
+    no_data = _no_data(
+        client,
+        {
+            "variable_text": "aid",
+            "entities": [
+                {"text": "Congo", "role_text": "from"},
+                {"text": "Congo [Republic]", "role_text": "to", "dcid": _COG},
+            ],
+        },
+    )
+
+    assert no_data["reason"] == "entity_ambiguous"
     for option in no_data["options"]:
         response = client.post("/api/search/resolve", json={"input": option["data_query"]})
         assert response.status_code == 200, (option["label"], response.text)
+    (republic,) = [o for o in no_data["options"] if o["label"] == "Congo [Republic]"]
+    assert _pins(republic) == [("from", _COG), ("to", _COG)]
+
+
+def test_the_restatement_of_two_names_written_alike_asks_each_choice_again():
+    """Posted back, the restatement of "aid from Congo to Congo" asks each end apart."""
+    client, part = _congo_to_congo()
+
+    again = _no_data(client, part["restatement"])
+
+    assert again["reason"] == "entity_ambiguous"
+    assert [group["text"] for group in again["ambiguous_entities"]] == ["Congo", "Congo"]
+    assert [_pins(o) for o in again["options"]] == [_pins(o) for o in part["no_data"]["options"]]
+
+
+def test_choosing_another_entity_keeps_two_names_written_alike_apart():
+    """Choosing the World Bank's lender in "aid from Congo to Congo by the World Bank"
+    posts both Congo rows under their names, so the next refusal asks each end apart and
+    each of its options pins its own end alone."""
+    client, part = _congo_to_congo(_WORLD_BANK)
+
+    options = part["no_data"]["options"]
+    (bank_option, _) = [o for o in options if o["mentions"] == ["World Bank"]]
+    assert _congo_rows(_posted(bank_option)) == [
+        ("Congo", _DRC, "from"),
+        ("Congo", _ROC, "to"),
+    ]
+
+    again = _no_data(client, bank_option["data_query"]["parts"][0])
+
+    assert again["reason"] == "entity_ambiguous"
+    assert [group["text"] for group in again["ambiguous_entities"]] == ["Congo", "Congo"]
+    assert [_pins(o) for o in again["options"]] == [
+        [("from", ref), ("to", None), (None, _IBRD)] for ref in (_COD, _COG)
+    ] + [[("from", None), ("to", ref), (None, _IBRD)] for ref in (_COD, _COG)]
+
+
+def test_choosing_another_entity_keeps_a_name_its_words_leave_open_ambiguous():
+    """The extraction names "Congolese" Congo, which names two countries, and "Congolese"
+    alone names none. Choosing the World Bank's lender posts the Congo row in the user's
+    word under its name, so the next refusal asks the Congo choice again."""
+    client = _congo_flow_client(
+        ExtractedEntity(text="World Bank", span="World Bank", flow_role="origin", role_span="from"),
+        ExtractedEntity(text="Congo", span="Congolese", flow_role="destination", role_span="to"),
+    )
+    part = _raw_part(client, "aid from the World Bank to Congolese")
+
+    options = part["no_data"]["options"]
+    (bank_option, _) = [o for o in options if o["mentions"] == ["World Bank"]]
+    (_, congo) = _posted(bank_option)
+    assert congo == {"text": "Congolese", "name": "Congo", "role_text": "to"}
+
+    again = _no_data(client, bank_option["data_query"]["parts"][0])
+
+    assert again["reason"] == "entity_ambiguous"
+    assert [group["text"] for group in again["ambiguous_entities"]] == ["Congolese"]
+    assert [_pins(o) for o in again["options"]] == [
+        [("from", _IBRD), ("to", ref)] for ref in (_COD, _COG)
+    ]
+
+
+def _pins(option: dict) -> list[tuple[str | None, str | None]]:
+    """The direction and pinned dcid of each entity row an option posts."""
+    return [
+        (row.get("role_text"), row.get("dcid"))
+        for row in option["data_query"]["parts"][0]["entities"]
+    ]
 
 
 def test_a_name_the_query_words_settle_keeps_its_name():
     """ "DR Congo" names one country, so the part answers under the extraction's name."""
-    client = _fertility_client(_CongoExtractionLLM("DR Congo"))
+    client = _fertility_client(_congo_extraction_llm("DR Congo"))
 
     part = _raw_part(client, "fertility rate in DR Congo")
 
@@ -538,6 +759,7 @@ def test_a_role_option_states_a_direction_for_every_untold_name():
     no_data = _no_data(client, {"variable_text": "aid", "entities": _entities("Norway", "Kenya")})
 
     assert [o["mentions"] for o in no_data["options"]] == [["Norway", "Kenya"]] * 2
+    assert [o.get("entity_choice") for o in no_data["options"]] == [None, None]
     assert [o["data_query"]["parts"][0]["entities"] for o in no_data["options"]] == [
         [{"text": "Norway", "role_text": "from"}, {"text": "Kenya", "role_text": "to"}],
         [{"text": "Norway", "role_text": "to"}, {"text": "Kenya", "role_text": "from"}],
@@ -620,3 +842,36 @@ def test_a_reading_its_own_wording_contradicts_is_not_offered():
 
     assert no_data["reason"] == "role_not_resolved"
     assert no_data["options"] == []
+
+
+def test_an_untold_direction_tells_apart_two_places_written_alike():
+    """ "Congo" and "Congo", pinned to the two countries, with no direction told. Each place
+    keeps its own term, and the message and the option labels add each one's graph label.
+    Every option answers."""
+    client = _congo_flow_client()
+
+    no_data = _no_data(
+        client,
+        {
+            "variable_text": "aid",
+            "entities": [
+                {"text": "Congo", "dcid": _COD},
+                {"text": "Congo", "dcid": _COG},
+            ],
+        },
+    )
+
+    assert no_data["reason"] == "role_not_resolved"
+    assert no_data["entity_terms"] == ["Congo", "Congo"]
+    assert [o["mentions"] for o in no_data["options"]] == [["Congo", "Congo"]] * 2
+    assert [o["label"] for o in no_data["options"]] == [
+        f'Congo ("{_DRC}") to Congo ("{_ROC}")',
+        f'Congo ("{_ROC}") to Congo ("{_DRC}")',
+    ]
+    assert no_data["message"].split(". ", 1)[0] == (
+        "Could not tell who is giving and who is receiving among "
+        f'"Congo" ("{_DRC}") and "Congo" ("{_ROC}")'
+    )
+    for option in no_data["options"]:
+        response = client.post("/api/search/resolve", json={"input": option["data_query"]})
+        assert response.status_code == 200, (option["label"], response.text)

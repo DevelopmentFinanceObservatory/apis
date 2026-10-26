@@ -43,7 +43,7 @@ from search.engine.region.candidate_admission import alternates_unevaluated_warn
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
-from search.engine.region.phase_election import _phase_settle, log_would_refuse
+from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
 from search.engine.region.phase_intake import (
     _phase_check_entities,
     _phase_derive_shapes,
@@ -161,6 +161,7 @@ async def resolve_variable(
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None = None,
     entity_surfaces: dict[str, str] | None = None,
+    entity_words: dict[str, str] | None = None,
     variable_index: int = 0,
     emit: EventSink | None = None,
     unit_text: str | None = None,
@@ -193,7 +194,9 @@ async def resolve_variable(
     `Admission(graph=graph)`. The request path supplies a shared instance. `resolver` resolves
     named entities during recall and place expansion. `pre_resolved` avoids per-variable
     resolver calls for shared entities. `entity_surfaces` maps an entity name to the query
-    words recall resolves it through (`surface_resolution.resolve_names`). `pac` enables place-as-constraint. `coverage` is the
+    words recall resolves it through (`surface_resolution.resolve_names`). `entity_words`
+    maps an entity name to the request's own words for it, which bind
+    reads as the entity's in the variable phrase (`ResolveState.entity_texts`). `pac` enables place-as-constraint. `coverage` is the
     required request snapshot, shared with materialisation, unit decisions, and observation
     dispatch.
 
@@ -292,6 +295,7 @@ async def resolve_variable(
             deadline=deadline,
             pre_resolved=pre_resolved,
             entity_surfaces=entity_surfaces or {},
+            entity_words=entity_words or {},
             variable_index=variable_index,
             emit=emit,
             include_option_coverage=_options.include_option_coverage,
@@ -817,7 +821,11 @@ async def _run_phases(state: ResolveState) -> RegionResult:
     `phase_<name>` (`_book_unbooked_time`). A refusal of the whole request
     (`_REQUEST_REFUSALS`) a phase raises once the bindings are final, on an elected answer
     leaving terms unmet, gives way to the part's `qualifier_not_bound` refusal
-    (`refuse_unread_answer`)."""
+    (`refuse_unread_answer`). Stated-word coverage is judged once
+    (`phase_election.judge_coverage`): when materialisation has read the answer, or
+    before a refusal returned once the bindings are final is first judged. Each candidate
+    offered beside or in place of it is judged on its own read at assembly
+    (`phase_election.judge_answer_coverage`)."""
     scoped = False
     settled = False
     unbooked: dict[str, int] = {}
@@ -835,7 +843,10 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     # answers on. Once the bindings are final, an elected answer leaving
                     # terms unmet answers nothing, so the part refuses on them instead
                     # (`refuse_unread_answer`).
-                    if not settled or not refusal_terms(state, state.shape_draft, state.bindings):
+                    if not settled:
+                        raise
+                    await judge_coverage(state)
+                    if not refusal_terms(state, state.shape_draft, state.bindings):
                         raise
                     result = await refuse_unread_answer(state)
                 # A refusal once the bindings are final that judged no answer is judged
@@ -847,7 +858,12 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     and state.judgement is None
                     and result.status in ("no_data", "unsupported")
                 ):
+                    await judge_coverage(state)
                     result = await settle_unjudged_refusal(state, result)
+                # The read has served the answer's members, so stated-word coverage is
+                # judged on them before the outcome judges the answer.
+                if result is None and phase is _phase_materialise:
+                    await judge_coverage(state)
                 _book_unbooked_time(
                     state,
                     unbooked,

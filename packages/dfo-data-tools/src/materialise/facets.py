@@ -948,12 +948,16 @@ def probe_facets(
     declared_roles: tuple[str, ...] = _SUBJECT_ROLE_ONLY,
     role_bindings: Mapping[str, EntityFilter] | None = None,
     coverage: CoverageIndex | None = None,
+    window: RequestedWindow | None = None,
     deadline: float | None = None,
 ) -> MemberProbe:
     """Probes candidates for the request's bound entities. The pipeline calls this once per
     generation and shares candidates across all three axes.
 
-    Subject-only StatVars use one `graph.variable_facets_batch` call across all entities.
+    Subject-only StatVars use one `graph.variable_facets_batch` call across all entities,
+    which reads each facet's dates under a range `window` (`_reads_dates`), so the election
+    judges a facet by the points it holds in the window (`overlaps_window`) as Search's dated
+    read does.
     Results merge by `facet_id`, summing counts and widening date
     ranges, and the probe records the places each facet id was admitted at. A subject-only
     request with no `role_bindings` and no `bound_entities` is probed at its default place
@@ -982,14 +986,20 @@ def probe_facets(
             ).scope(stat_var)
             by_entity = (
                 graph.variable_facets_batch(
-                    stat_var=stat_var, entities=scope.places, deadline=deadline
+                    stat_var=stat_var,
+                    entities=scope.places,
+                    needs_dates=_reads_dates(window),
+                    deadline=deadline,
                 )
                 if scope.places
                 else {}
             )
             return _scoped_probe(by_entity, scope)
         by_entity = graph.variable_facets_batch(
-            stat_var=stat_var, entities=bound_entities, deadline=deadline
+            stat_var=stat_var,
+            entities=bound_entities,
+            needs_dates=_reads_dates(window),
+            deadline=deadline,
         )
         breadths = read_variable_breadths([stat_var], places=bound_entities, deadline=deadline)
         return replace(
@@ -1007,6 +1017,14 @@ def probe_facets(
             "a role-bearing shape whose facet candidates require coverage; none was given"
         )
     return _role_bearing_probe(stat_var=stat_var, role_bindings=role_bindings, coverage=coverage)
+
+
+def _reads_dates(window: RequestedWindow | None) -> bool:
+    """Whether a subject-only facet probe under `window` reads each facet's dates: only under
+    a range, the one window `overlaps_window` and `series_breadth` judge by dates. A facet
+    whose dated read comes back short of its count (`Facet.dates_complete`) is judged by its
+    span, as an undated one is."""
+    return window is not None and window.kind == "range"
 
 
 def _scoped_probe(
@@ -1280,7 +1298,9 @@ def probe_collection_candidates(
 
     Empty requests return no members. A subject-only group whose bindings name no plain
     dcid gets no candidates under an empty place admission and makes no call. `ContainedIn`
-    bindings are skipped because expansion requires a graph read.
+    bindings are skipped because expansion requires a graph read. A subject-only group's
+    graph batches read dates when any of its members asks for a range window
+    (`_reads_dates`), as `probe_facets` does.
 
     Before probing, role-bearing groups require `coverage` or raise `MaterialisationUsageError`.
     The cap counts `len(group_stat_vars) * len(group_entities)` across subject-only groups that
@@ -1354,8 +1374,11 @@ def probe_collection_candidates(
     ]
     for indices, group_stat_vars, group_entities in group_plans:
         first = requests[indices[0]]
+        needs_dates = any(_reads_dates(requests[index].window) for index in indices)
         if binds_no_place(first.role_bindings, first.declared_roles):
-            at_own_places = _probe_at_own_places(scopes, graph=graph, deadline=deadline)
+            at_own_places = _probe_at_own_places(
+                scopes, graph=graph, needs_dates=needs_dates, deadline=deadline
+            )
             for index in indices:
                 bare_stat_var = member_specs[index][0]
                 members_by_index[index] = _scoped_probe(
@@ -1366,7 +1389,10 @@ def probe_collection_candidates(
             if not group_entities:
                 continue
             by_stat_var = graph.observation_facets_batch_many(
-                stat_vars=group_stat_vars, entities=group_entities, deadline=deadline
+                stat_vars=group_stat_vars,
+                entities=group_entities,
+                needs_dates=needs_dates,
+                deadline=deadline,
             )
             breadths = read_variable_breadths(
                 group_stat_vars, places=group_entities, deadline=deadline
@@ -1393,7 +1419,11 @@ def probe_collection_candidates(
 
 
 def _probe_at_own_places(
-    scopes: Mapping[str, DefaultPlaceScope], *, graph: GraphReader, deadline: float | None
+    scopes: Mapping[str, DefaultPlaceScope],
+    *,
+    graph: GraphReader,
+    needs_dates: bool,
+    deadline: float | None,
 ) -> dict[str, Mapping[str, Sequence[Facet]]]:
     """Each StatVar's facets at its own places, one graph batch per distinct place list.
 
@@ -1411,7 +1441,10 @@ def _probe_at_own_places(
         try:
             by_stat_var.update(
                 graph.observation_facets_batch_many(
-                    stat_vars=stat_vars, entities=places, deadline=deadline
+                    stat_vars=stat_vars,
+                    entities=places,
+                    needs_dates=needs_dates,
+                    deadline=deadline,
                 )
             )
         except GraphReadError as exc:
@@ -1649,10 +1682,11 @@ def rank_candidates(
     request, and lifetime count breaks a tie. `None`, `all` and `latest` windows rank by
     count. The top candidate is the top of `narrow_to_window`'s pool.
 
-    A reader holding dated candidates and one holding undated ones rank alike, and differ
-    only in the pool: dates show that a facet with a gap across the whole window holds no
-    point there, which a span cannot. An undated read of such a pool elects the gapped facet
-    when its span covers the most window years."""
+    Every probe that elects under a range reads its candidates' dates (Search's answer and
+    option-coverage reads, a mint's `probe_facets` and `probe_collection_candidates`,
+    coverage's years), so a facet
+    with a gap across the whole window leaves the pool on every side. A candidate whose dates
+    are incomplete (`Facet.dates_complete`) is judged by its span."""
     groups = _ranking_groups(
         candidates, window=window, breadth=breadth, national_currency=national_currency
     )
@@ -1968,10 +2002,10 @@ def rank_pool(
     This is the one deployment-fallback election. A single member (`select_facet`), a unit
     request (`_select_unit_request`, `decide_member_unit`), a group (`select_group_facets`)
     and Search's read plan, previews and bulk elections rank their pools here over each
-    candidate's span and count, the fields every probe carries. A search answer and a mint
-    or datasets read of its Spec under the same window therefore serve the same facet,
-    except where only dates show that the top-ranked facet holds no point in the window
-    (`rank_candidates`)."""
+    candidate's span and count, the fields every probe carries, after the pool drops the
+    facets whose dates hold no point in a range window (`overlaps_window`). A search answer
+    and a mint or datasets read of its Spec under the same window therefore serve the same
+    facet."""
     pool = tuple(fallback_pool(candidates, declared or {}, window=window))
     groups = _ranking_groups(
         pool, window=window, breadth=breadth, national_currency=national_currency
@@ -2007,10 +2041,8 @@ def served_facets(
     in `window` (`continuation`). Empty when no candidate carries a `facet_id`, since only
     those dispatch.
 
-    A top carrying no provenance serves too: unbound, `select_facet` refuses it, so the
-    preview binds its provenance axis to the null ref (`FacetBinding(state="bound",
-    ref=None)`), which selects it and dispatches its group by facet id, as a bulk read
-    dispatches its facet."""
+    A top carrying no provenance serves under a request that does not require one
+    (`pipeline.MaterialisationRequest.requires_provenance`)."""
     dispatchable = [c for c in candidates if c.facet_id is not None]
     if not dispatchable:
         return ()
@@ -2234,6 +2266,7 @@ def select_facet(
     policies: Mapping[str, FacetDefaultPolicy | None],
     breadth: Mapping[str, int] | None = None,
     variable_breadth: VariableBreadth = None,
+    requires_provenance: bool = True,
 ) -> FacetSelection:
     """Resolves one axis and raises at most one refusal. The pipeline aggregates axis errors.
     Only candidates with `facet_id` dispatch.
@@ -2259,9 +2292,10 @@ def select_facet(
     `dfo_precedence` ranked DFO's facet over another origin's, or
     `most_observations_over_disagreement`, which triggers a warning. Each reason describes the
     window-narrowed pool. About two in five observed pairs lack `measurementMethod` or `unit`,
-    so a missing value returns `ref=None` on those axes. Missing provenance raises
-    `DefaultFacetUndefinedError`. The
-    caller checks cross-axis fit."""
+    so a missing value returns `ref=None` on those axes. Missing provenance returns
+    `ref=None` too, unless `requires_provenance`
+    (`pipeline.MaterialisationRequest.requires_provenance`), when it raises
+    `DefaultFacetUndefinedError`. The caller checks cross-axis fit."""
     dispatchable = [c for c in candidates if c.facet_id is not None]
 
     if binding.state == "bound":
@@ -2333,7 +2367,7 @@ def select_facet(
     viable, precedence, top = ranked_pool.pool, ranked_pool.precedence, ranked_pool.ranked[0]
     value = facet_axis_value(top, axis)
     if value is None:
-        if axis == "provenance":
+        if axis == "provenance" and requires_provenance:
             raise DefaultFacetUndefinedError(
                 "facet axis 'provenance' is unbound, no default policy is declared, and "
                 "the winning candidate carries no provenance",

@@ -5,6 +5,8 @@ Real StatVar and entity dcids are used. Several cases compare the decision with 
 
 from __future__ import annotations
 
+import dataclasses
+
 import httpx
 import pytest
 
@@ -403,6 +405,51 @@ def test_unit_failure_plus_a_provenance_failure_keeps_the_aggregate():
     assert exc_info.value.code == "default_facet_undefined"
     assert {issue.axis for issue in exc_info.value.issues} == {"provenance", "unit"}
     assert entry_requests == []
+
+
+@pytest.mark.parametrize(
+    ("currency", "requires_provenance", "expected"),
+    [
+        # A search read states no source: a native request selects the unsourced facet.
+        ("USD", False, "absent_on_selected_facet"),
+        # No provenance declares a `conversionRecipe` for a converting request.
+        ("EUR", False, "recipe_undeclared"),
+        # A mint's request keeps the default: it must cite a source, so it refuses.
+        ("USD", None, "default_facet_undefined"),
+    ],
+)
+def test_an_unsourced_top_facet_answers_as_the_request_requires_provenance(
+    currency: str, requires_provenance: bool | None, expected: str
+):
+    facet = Facet(
+        facet_id="f1",
+        provenance_id=None,
+        measurement_method="NotApplicable",
+        unit="CurrencyUSD",
+        obs_count=5,
+        earliest_date="2020",
+        latest_date="2022",
+    )
+    request = _request(unit=FacetBinding(state="request", request=UnitRequest(currency, "current")))
+    if requires_provenance is not None:
+        request = dataclasses.replace(request, requires_provenance=requires_provenance)
+    sdmx, requests = _router_sdmx({})
+
+    try:
+        selections = decide_member_unit(
+            request, settle=True, graph=_graph([facet]), sdmx=sdmx, coverage=_SUBJECT_ONLY_COVERAGE
+        )
+    except RecipeNotDeclaredError as exc:
+        outcome = exc.cause
+    except DefaultFacetUndefinedError as exc:
+        outcome = exc.code
+        assert {issue.axis for issue in exc.issues or ()} == {"provenance"}
+    else:
+        assert selections["provenance"].ref is None
+        assert selections["unit"].ref == "CurrencyUSD"
+        outcome = selections["provenance"].selection_reason
+    assert outcome == expected
+    assert requests == []
 
 
 def test_precomputed_candidates_decide_a_request_binding_no_entity_without_a_probe():

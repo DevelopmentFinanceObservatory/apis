@@ -113,10 +113,12 @@ class _RecordingGraph(FakeGraphReader):
         super().__init__(**kwargs)
         self.batch_many_args: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
 
-    def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+    def observation_facets_batch_many(
+        self, *, stat_vars, entities, needs_dates=False, deadline=None
+    ):
         self.batch_many_args.append((tuple(stat_vars), tuple(entities)))
         return super().observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
 
@@ -134,13 +136,15 @@ class _FailingGraph(_RecordingGraph):
         super().__init__(**kwargs)
         self._failing_entities = tuple(failing_entities)
 
-    def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+    def observation_facets_batch_many(
+        self, *, stat_vars, entities, needs_dates=False, deadline=None
+    ):
         for entity in entities:
             if entity in self._failing_entities:
                 self.batch_many_args.append((tuple(stat_vars), tuple(entities)))
                 raise _ProbeTransportError(entity)
         return super().observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
 

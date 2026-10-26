@@ -486,8 +486,6 @@ def _role_bearing_bulk_dispatch(
 _RoleTuple = tuple[tuple[str, str], ...]
 _SeriesKey = tuple[str, _RoleTuple]
 
-_NULL_PROVENANCE = {"provenance": FacetBinding(state="bound", ref=None)}
-
 
 @dataclass(frozen=True)
 class _Dispatch:
@@ -517,18 +515,11 @@ class _Dispatch:
         return tuple(role for role, _dcid in self.series[0].role_tuple if role not in bound)
 
     def bindings(self, unit_request: UnitRequest | None) -> Mapping[str, FacetBinding]:
-        """The bindings that dispatch the planned group. Unbound, `select_facet` refuses a
-        top facet declaring no provenance, so such a group binds the provenance axis to the
-        null ref, which selects it and dispatches it by facet id
-        (`materialise.facets.served_facets`). A unit request binds the unit axis in
-        `state="request"`, which converts the group's rows."""
-        group = next(s.group for s in self.series if s.group)
-        bindings: dict[str, FacetBinding] = (
-            dict(_NULL_PROVENANCE) if group[0].provenance_id is None else {}
-        )
-        if unit_request is not None:
-            bindings["unit"] = FacetBinding(state="request", request=unit_request)
-        return bindings
+        """The bindings that dispatch the planned group: none, or under a unit request the
+        unit axis in `state="request"`, which converts the group's rows."""
+        if unit_request is None:
+            return {}
+        return {"unit": FacetBinding(state="request", request=unit_request)}
 
 
 def _dispatches(
@@ -758,6 +749,8 @@ def _preview_one(
         facet_bindings=dispatch.bindings(unit_request),
         window=plan_window(dispatch.years),
         candidate_filter=lambda facet: facet.facet_id in group_ids,
+        # An answer may state that its facet names no source.
+        requires_provenance=False,
     )
     if not _OBS_PREVIEW_TOTAL_SEMAPHORE.acquire(timeout=settings().graph_timeout_s):
         raise UpstreamResponseError(
@@ -844,9 +837,9 @@ def _collect_pair_results(
     other reads, and a failed read counts each series it would have served.
 
     - `FacetNotAvailableError` is a facet rejection with a filter or a unit request.
-      Otherwise it is an unfiltered empty read. A bound `DefaultFacetUndefinedError` is a
-      rejection. Without bound axes, it is a hard failure because no declared default
-      exists. Materialise prefers it when both errors arise.
+      Otherwise it is an unfiltered empty read. `DefaultFacetUndefinedError` means no
+      candidate is viable: a rejection under a unit request, which can empty the pool, and
+      otherwise a hard failure. Materialise prefers it when both errors arise.
     - `RecipeNotDeclaredError`, `RateCoverageGapError`, and `NonCurrencyUnitError` are
       conversion rejections. Report recipe causes or the unsupported unit. The aggregate
       warning keeps the last rejection cause. `RateTableInvalidError` and
@@ -909,7 +902,7 @@ def _collect_pair_results(
                 unfiltered_empty_pairs += count
             continue
         except DefaultFacetUndefinedError:
-            if dispatch.bindings(unit_request):
+            if unit_request is not None:
                 facet_rejected_pairs += count
             else:
                 logger.warning(

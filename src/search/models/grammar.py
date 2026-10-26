@@ -455,8 +455,19 @@ class SentenceToken(StrictModel):
             "an entity_ambiguous no_data plan, which has no Spec: the ambiguous wording, "
             "with the role the request gave it (null when it gave none), no entity_refs "
             "and no binding_ref, and text equal to one NoData.ambiguous_entities[i].text "
-            "on the same part. The client titles that wording's candidate menu by this "
-            "role and posts the pick's entry of NoData.options."
+            "on the same part, the i its entity_choice names. The client titles that "
+            "wording's candidate menu by this role and posts the pick's entry of "
+            "NoData.options."
+        ),
+    )
+    entity_choice: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "on the slot token an entity_ambiguous no_data plan marks for an ambiguous "
+            "wording, the index into NoData.ambiguous_entities of the group it asks, on "
+            "the part its part_index names in an envelope plan. The NoData.options with "
+            "the same entity_choice form that slot's menu. Null on every other token"
         ),
     )
     binding_ref: str | None = Field(

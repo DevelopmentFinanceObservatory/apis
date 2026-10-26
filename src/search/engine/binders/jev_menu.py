@@ -31,6 +31,7 @@ from search.engine.stated_words_read import (
     implied_values,
     restricting,
     served_series,
+    serves_beyond_label,
 )
 from search.models import Axis
 
@@ -152,8 +153,9 @@ def describe(
     `stated_words_read.bound_value_label`, a set's values joined by "or". With
     `definition`, it also quotes the values the measure's definition fixes on properties
     `bindings` leave unrestricted (`stated_words_read.implied_values`), as the stated-word
-    questions and Gemini's stated-words prompt do, and so do both for the `served` series
-    an answer serving several serves (`stated_words_read.served_series`)."""
+    questions and Gemini's stated-words prompt do. It also quotes the `served` series when
+    they differ from the label (`stated_words_read.serves_beyond_label`,
+    `stated_words_read.served_series`)."""
     reading = stated_reading(shape)
     parts = [f"{reading.measured_property} of {reading.population_type}"]
     if reading.qualifier:
@@ -169,8 +171,8 @@ def describe(
         parts.append("restricted to " + ", ".join(dict.fromkeys(restricted)))
     if definition and (implied := implied_values(shape, bindings)):
         parts.append(f"its definition fixes {implied}")
-    if served:
-        parts.append(f"served as each of these series: {served_series(served)}")
+    if serves_beyond_label(shape, served):
+        parts.append(f"served as {served_series(served)}")
     slots = [
         s.label
         for s in shape.slot_keys

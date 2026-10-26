@@ -468,7 +468,7 @@ def test_real_materialise_transport_failure_is_fail_open():
             raise GraphReadError("simulated transport error")
 
         def observation_facets_batch_many(
-            self, *, stat_vars, entities, deadline: float | None = None
+            self, *, stat_vars, entities, needs_dates: bool = False, deadline: float | None = None
         ):
             raise GraphReadError("simulated transport error")
 

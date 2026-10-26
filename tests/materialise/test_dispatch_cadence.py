@@ -824,8 +824,8 @@ def test_a_tie_goes_to_the_period_of_the_best_ranked_facet_a_counted_member_hold
 
 @pytest.mark.parametrize("annual_first", [True, False])
 def test_a_null_provenance_read_cites_only_facets_its_served_group_holds(annual_first):
-    # Search binds the provenance axis to the null ref when the top facet carries none
-    # (`served_facets`), and refuses a pair whose selection witnesses fall outside the
+    # A search read does not require provenance, so an unsourced top facet is selected
+    # (`served_facets`), and search refuses a pair whose selection witnesses fall outside the
     # served group. The annual facet carries no provenance either and comes first in graph
     # order, but the quarterly one is elected and served, so every witness must name it.
     def unsourced(facet_id: str, period: str, obs_count: int, latest: str) -> Facet:
@@ -840,7 +840,7 @@ def test_a_null_provenance_read_cites_only_facets_its_served_group_holds(annual_
 
     facets = [unsourced("fA", "P1Y", 3, "2022"), unsourced("fQ", "P3M", 12, "2022-10")]
     candidates = facets if annual_first else facets[::-1]
-    request = _request(_RATE, provenance=FacetBinding(state="bound", ref=None))
+    request = replace(_request(_RATE), requires_provenance=False)
 
     election = _select_member_facets(request, candidates, graph=FakeGraphReader())
     group = served_facets(candidates, stat_vars=[request.stat_var], window=request.window)

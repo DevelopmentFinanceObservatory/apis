@@ -322,8 +322,8 @@ class _Sdmx(_Recording, FakeSdmxClient):
 
 
 class _MaterialiseGraph(_Recording, FakeGraphReader):
-    """A materialise graph whose reverse query keeps the subjects its filters match, as the
-    graph's does."""
+    """A materialise graph whose facet reads return dates only when asked, and whose reverse
+    query keeps the subjects its filters match, as the graph's do."""
 
     _client = "materialise_graph"
 
@@ -954,11 +954,11 @@ class World:
 
     @cached_property
     def materialise_graph(self) -> FakeGraphReader:
-        """What materialise reads: a standard pair's facets, with spans and no dates as the
-        graph's facet probe returns them, each variable's arcs and the variables of each
-        measured property, which the mint's member walk reads, and the arcs that decide a
-        unit request (each source declaring the conversion recipe, each currency naming the
-        entity its rates sit at)."""
+        """What materialise reads: a standard pair's facets, which a facet read returns with
+        their dates only when it asks for them (`FakeGraphReader`), each variable's arcs and
+        the variables of each measured property, which the mint's member walk reads, and the
+        arcs that decide a unit request (each source declaring the conversion recipe, each
+        currency naming the entity its rates sit at)."""
         facets: dict[tuple[str, str], list[MaterialiseFacet]] = {}
         for row in self.rows if not self.role else ():
             provenance, unit = FACETS[row.facet_id]
@@ -972,6 +972,8 @@ class World:
                     earliest_date=str(row.years[0]),
                     latest_date=str(row.years[-1]),
                     scaling_factor=None,
+                    dates=tuple(str(y) for y in row.years),
+                    values=(1.0,) * len(row.years),
                 )
             )
         arcs = {

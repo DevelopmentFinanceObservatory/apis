@@ -655,28 +655,37 @@ def test_no_data_phrase_qualifier_terms_ignored_by_every_other_reason():
 
 
 @pytest.mark.parametrize(
-    "entity_terms",
-    [["World Bank"], ["World Bank", "IFC"], ["World Bank", "IFC", "Georgia"]],
-    ids=["one", "two", "three"],
+    ("entity_terms", "roles"),
+    [
+        (["World Bank"], ["origin"]),
+        (["World Bank", "IFC"], ["origin", "destination"]),
+        (["World Bank", "IFC", "Georgia"], ["origin", "destination", None]),
+        (["Congo", "Congo"], ["origin", "destination"]),
+    ],
+    ids=["one", "two", "three", "two-written-alike"],
 )
-def test_entity_ambiguous_plan_marks_each_wording_as_a_slot_token(entity_terms):
+def test_entity_ambiguous_plan_marks_each_wording_as_a_slot_token(entity_terms, roles):
     """Each ambiguous wording is its own slot token, carrying the role the request gave
-    it, and the plan still joins to the phrase."""
+    it, and the plan joins to the phrase the message reads under the same roles."""
     candidates = ["International Bank for Reconstruction and Development", "IDA"]
     plan = no_data_sentence_plan(
         "entity_ambiguous",
         entity_terms=entity_terms,
         ambiguous_candidates=candidates,
-        ambiguous_roles={"World Bank": "origin", "IFC": "destination"},
+        ambiguous_roles=roles,
     )
 
     assert sentence_from_plan(plan) == no_data_phrase(
-        "entity_ambiguous", entity_terms=entity_terms, ambiguous_candidates=candidates
+        "entity_ambiguous",
+        entity_terms=entity_terms,
+        ambiguous_candidates=candidates,
+        ambiguous_roles=roles,
     )
     slots = [t for t in plan if t.kind == "slot"]
     assert [t.text for t in slots] == entity_terms
-    expected = {"World Bank": ("origin", None), "IFC": ("destination", "where")}
+    assert [t.role for t in slots] == roles
+    assert [t.entity_choice for t in slots] == list(range(len(entity_terms)))
     for token in slots:
-        assert (token.role, token.axis) == expected.get(token.text, (None, "where"))
+        assert token.axis == (None if token.role == "origin" else "where")
         assert token.entity_refs == []
         assert token.binding_ref is None

@@ -72,6 +72,14 @@ def _group_is_index_sourced(requests: Sequence[MaterialisationRequest]) -> bool:
     return all(request.index_sourced for request in requests)
 
 
+def _group_requires_provenance(requests: Sequence[MaterialisationRequest]) -> bool:
+    """Whether the group's product must cite a source. The requests share one definition,
+    so they agree (`pipeline.MaterialisationRequest.requires_provenance`)."""
+    flags = {request.requires_provenance for request in requests}
+    assert len(flags) == 1
+    return flags.pop()
+
+
 def _facet_id_key(candidate: Facet) -> object:
     return candidate.facet_id
 
@@ -230,8 +238,9 @@ def _resolve_group_axis_selections(
     For unbound axes, the policy in `policies` (`_group_declared_policies`) wins when its
     ref occurs in `shared_pool`: a declared default ignores the window, as it does in
     `select_facet`. Otherwise the selected candidate supplies the value. A missing value remains a `None` selection
-    so rows without that axis stay filtered. Provenance must resolve to a ref
-    or raises `DefaultFacetUndefinedError`.
+    so rows without that axis stay filtered. Provenance must resolve to a ref, or raises
+    `DefaultFacetUndefinedError`, when the requests require one
+    (`pipeline.MaterialisationRequest.requires_provenance`).
 
     Index-sourced groups omit unbound `measurementMethod` from selections so
     dispatch and row filtering allow members to use different methods. A bound
@@ -298,7 +307,7 @@ def _resolve_group_axis_selections(
                     _require_currency_native_unit(selections[axis].ref)
                 continue
         if value is None:
-            if axis == "provenance":
+            if axis == "provenance" and _group_requires_provenance(requests):
                 raise DefaultFacetUndefinedError(
                     "facet axis 'provenance' is unbound, no default policy is declared, and "
                     "the winning candidate carries no provenance",

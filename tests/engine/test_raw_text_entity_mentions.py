@@ -42,6 +42,7 @@ from search.models import RawTextInput
 from search.render.assumptions import NameCorrection
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine.test_choice_options import _FERTILITY, _fertility_client, _ShapeZeroLLM
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -460,13 +461,11 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
 
 
 @pytest.mark.parametrize(
-    ("query", "name", "span", "text", "answers", "expected"),
+    ("query", "name", "span", "answers", "expected"),
     [
         pytest.param(
             "aid to Congo",
             "Democratic Republic of the Congo",
-            "Congo",
-            # The span names two countries, so the entity reads as the span.
             "Congo",
             {
                 "Congo": Ambiguous(candidates=(_COD, _COG)),
@@ -479,7 +478,6 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "aid to DR Congo",
             "Democratic Republic of the Congo",
             "DR Congo",
-            "Democratic Republic of the Congo",
             {
                 "DR Congo": Resolved(entity=_COD),
                 "Democratic Republic of the Congo": Resolved(entity=_COD),
@@ -491,7 +489,6 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "aid to South Korea",
             "Republic of Korea",
             "South Korea",
-            "Republic of Korea",
             {"South Korea": Resolved(entity=_KOR), "Republic of Korea": Resolved(entity=_KOR)},
             Resolved(entity=_KOR),
             id="mention_names_one_korea",
@@ -500,7 +497,6 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "aid to Korea",
             "Democratic People's Republic of Korea",
             None,
-            "Democratic People's Republic of Korea",
             # The resolver reads "Korea" as South Korea.
             {
                 "Korea": Resolved(entity=_KOR),
@@ -513,7 +509,6 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "German aid to Kenya",
             "Germany",
             None,
-            "Germany",
             {"Germany": Resolved(entity=_DEU)},
             Resolved(entity=_DEU),
             id="demonym",
@@ -522,7 +517,6 @@ def test_a_surface_and_its_name_settle_on_one_resolution(
             "aid from the UK to Kenya",
             "United Kingdom",
             None,
-            "United Kingdom",
             {"United Kingdom": Resolved(entity=_GBR)},
             Resolved(entity=_GBR),
             id="abbreviation",
@@ -533,7 +527,6 @@ def test_a_name_the_query_does_not_write_resolves_through_the_query_words(
     query: str,
     name: str,
     span: str | None,
-    text: str,
     answers: dict[str, object],
     expected: Resolution,
 ) -> None:
@@ -541,15 +534,14 @@ def test_a_name_the_query_does_not_write_resolves_through_the_query_words(
     span, gets the query's own words for it as its span, which resolution reads: the words
     it shares with the query, grown to the widest stretch around them that resolves to the
     name's place ("DR Congo", "South Korea"). Words that resolve to another place, and a
-    name in other words, which shares none with the query, leave it to resolve as itself.
-    Words that leave the query's choice of place open become the entity's text ("Congo")."""
+    name in other words, which shares none with the query, leave it to resolve as itself."""
     resolver = _Resolver(answers)
 
     recovered = _recover([ExtractedEntity(text=name)], query=query, resolver=resolver)
     found = _lookup(recovered, query=query, resolver=resolver)
 
-    assert recovered == [ExtractedEntity(text=text, span=span)]
-    assert found == {text: expected}
+    assert recovered == [ExtractedEntity(text=name, span=span)]
+    assert found == {name: expected}
 
 
 _COD_NAME = "Democratic Republic of the Congo"
@@ -623,45 +615,6 @@ def test_a_recovered_span_takes_no_words_another_entity_names(
 
     assert [entity.span for entity in recovered] == spans
     assert found == {entity.text: Resolved(entity=places[entity.text]) for entity in entities}
-
-
-@pytest.mark.parametrize(
-    ("query", "entities", "texts"),
-    [
-        pytest.param(
-            "ODA disbursements from Germany to Congo",
-            [ExtractedEntity(text="Germany"), ExtractedEntity(text=_COD_NAME, span="Congo")],
-            ["Germany", "Congo"],
-            id="one_name_takes_the_words",
-        ),
-        pytest.param(
-            "aid from Congo to Congo",
-            [
-                ExtractedEntity(text=_COG_NAME, span="Congo", flow_role="origin"),
-                ExtractedEntity(text=_COD_NAME, span="Congo", flow_role="destination"),
-            ],
-            [_COG_NAME, _COD_NAME],
-            id="two_names_keep_their_own",
-        ),
-    ],
-)
-def test_words_that_leave_a_choice_open_become_one_name_s_text(
-    query: str, entities: list[ExtractedEntity], texts: list[str]
-) -> None:
-    """A name its words leave open reads as those words only when no other name would read
-    the same, since the parsed door reads one text as one place per part."""
-    resolver = _Resolver(
-        {
-            "Congo": Ambiguous(candidates=(_COD, _COG)),
-            "Germany": Resolved(entity=_DEU),
-            _COD_NAME: Resolved(entity=_COD),
-            _COG_NAME: Resolved(entity=_COG),
-        }
-    )
-
-    recovered = _recover(entities, query=query, resolver=resolver)
-
-    assert [entity.text for entity in recovered] == texts
 
 
 @pytest.mark.parametrize(
@@ -1058,3 +1011,44 @@ def test_a_name_corrects_typed_words_that_list_no_name_or_alias_of_its_entity(
         )
     )
     assert corrections == expected
+
+
+class _MeasuresFromKenia(_ShapeZeroLLM):
+    """Reads every query as `variables` from Kenya, written "Kenia" in the query, and elects
+    shape 0 with no bindings."""
+
+    def __init__(self, variables: list[str]) -> None:
+        self.variables = variables
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is Extraction:
+            kenya = ExtractedEntity(
+                text="Kenya", span="Kenia", flow_role="origin", role_span="from"
+            )
+            return Extraction(kind="resolution", variables=self.variables, entities=[kenya]), None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+@pytest.mark.parametrize(
+    "variables", [[_FERTILITY], [_FERTILITY, "population"]], ids=["one measure", "two measures"]
+)
+def test_a_dropped_direction_quotes_the_query_s_words(variables: list[str]) -> None:
+    """A subject-only shape drops the direction the query states for a place. Every
+    measure's warning and departure quote the query's words for it, which differ from the
+    extracted name."""
+    client = _fertility_client(_MeasuresFromKenia(variables))
+
+    response = client.post(
+        "/api/search/resolve",
+        json={"input": {"kind": "raw_text", "query": f"{' and '.join(variables)} from Kenia"}},
+    )
+
+    assert response.status_code == 200, response.text
+    parts = response.json()["parts"]
+    assert len(parts) == len(variables)
+    for part in parts:
+        assert [w["message"] for w in part["warnings"] if w["code"] == "direction_discarded"] == [
+            "Kenia was named as the provider; this shape reports the place as its own subject, "
+            "so the direction was dropped."
+        ]
+        assert [d["asked"] for d in part["departures"]] == ["Kenia"]

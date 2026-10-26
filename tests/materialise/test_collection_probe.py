@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -430,17 +431,28 @@ def test_members_binding_no_place_past_the_pair_cap_refuse_with_a_remedy_and_kee
     assert graph.calls["observation_facets_batch_many"] == 0
 
 
-def test_probe_collection_facets_member_with_no_bound_entities_probes_the_default_places():
+@pytest.mark.parametrize(
+    ("window", "dated"),
+    [
+        (RequestedWindow(kind="all"), False),
+        (RequestedWindow(kind="latest"), False),
+        (RequestedWindow(kind="range", start_year=2010, end_year=2020), True),
+    ],
+)
+def test_probe_collection_facets_member_with_no_bound_entities_probes_the_default_places(
+    window: RequestedWindow, dated: bool
+):
     """A subject-only member that binds no entity gets its facets at every place it holds data
-    at, as availability lists them, and the probe returns those places as its `places`.
+    at, as availability lists them, and the probe returns those places as its `places`. Both
+    groups' facet reads ask for dates under a range window alone.
     """
-    bound_request = _shared_scope_request(_member_stat_vars(1)[0])
+    bound_request = replace(_shared_scope_request(_member_stat_vars(1)[0]), window=window)
     unbound_request = MaterialisationRequest(
         stat_var="dcid:CollectionProbeUnbound",
         role_bindings={},
         declared_roles=("observationAbout",),
         facet_bindings={},
-        window=RequestedWindow(kind="all"),
+        window=window,
     )
     with_data, without_data = "country/AAA", "country/BBB"
     graph = FakeGraphReader(
@@ -465,6 +477,7 @@ def test_probe_collection_facets_member_with_no_bound_entities_probes_the_defaul
     assert [member.places for member in probe.members] == [(), (with_data,)]
     assert availability.reads == [("CollectionProbeUnbound",)]
     assert graph.calls["child_places_batch"] == 0
+    assert graph.facet_reads == [("observation_facets_batch_many", dated)] * 2
 
 
 def test_probe_collection_facets_empty_requests_returns_empty_probe_no_call():

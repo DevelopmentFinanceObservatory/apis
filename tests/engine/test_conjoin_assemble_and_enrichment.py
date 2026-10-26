@@ -32,12 +32,14 @@ from search.models import (
     ParsedEntity,
     ParsedPart,
     QueryEcho,
+    RoleAxis,
     SlotKey,
     SlotOptions,
     StatVar,
     TimeWindow,
     Warning,
 )
+from search.render.no_data import UnlistedPopulation
 from tests.engine._builders import conjoin_spec as _spec
 from tests.engine._builders import constraint_value_slot as _value_slot
 from tests.engine._builders import gref as _gr
@@ -304,6 +306,93 @@ def test_assemble_region_threads_every_ambiguous_entity_term():
     )
 
 
+_DRC_NAME = "Democratic Republic of the Congo"
+_ROC_NAME = "Republic of the Congo"
+
+
+def _congo_to_congo(roles: tuple[RoleAxis | None, RoleAxis | None]) -> RegionResult:
+    """An entity_ambiguous region of two names the request writes "Congo", the door giving
+    each name the axis in `roles`."""
+    return RegionResult(
+        variable_text="aid",
+        status="no_data",
+        specs=(),
+        no_data_reason="entity_ambiguous",
+        warnings=(),
+        timing_by_step={},
+        entity_surfaces={_DRC_NAME: "Congo", _ROC_NAME: "Congo"},
+        ambiguous_entities=tuple(
+            AmbiguousEntity(
+                text=name,
+                candidates=(
+                    AmbiguousEntityCandidate(dcid="country/COD", name=_DRC_NAME, kind="Country"),
+                    AmbiguousEntityCandidate(dcid="country/COG", name=_ROC_NAME, kind="Country"),
+                ),
+                role=role,
+            )
+            for name, role in zip((_DRC_NAME, _ROC_NAME), roles, strict=True)
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("roles", "wordings"),
+    [
+        (("origin", "destination"), '"Congo" (from) and "Congo" (to)'),
+        ((None, None), 'The first "Congo" and the second "Congo"'),
+        (("origin", "origin"), 'The first "Congo" and the second "Congo"'),
+    ],
+    ids=["axis-words", "no-roles-by-order", "equal-roles-by-order"],
+)
+def test_one_wording_naming_two_groups_is_told_apart_in_the_message(roles, wordings):
+    """Two groups both written "Congo" keep the one word in every term and slot, and the
+    message and sentence tell them apart outside the quotes."""
+    part = _entity_terms_part(_congo_to_congo(roles))
+
+    expected = (
+        f"{wordings} each match more than one entity: "
+        f'"{_DRC_NAME}" and "{_ROC_NAME}". Be more specific.'
+    )
+    assert part.no_data.entity_terms == ["Congo", "Congo"]
+    assert part.no_data.message == expected
+    assert part.rendered_sentence == expected
+    assert [
+        (token.text, token.entity_choice) for token in part.sentence_plan if token.kind == "slot"
+    ] == [("Congo", 0), ("Congo", 1)]
+
+
+def test_a_refused_role_quotes_the_requests_words_for_the_entity():
+    """A role-not-admitted entity is named by its identity, and the refusal quotes the
+    request's words for it, keying an unlisted population by those words too."""
+    population = UnlistedPopulation(axis="origin", left_out=("private",))
+    region = RegionResult(
+        variable_text="aid",
+        status="no_data",
+        specs=(),
+        no_data_reason="entity_role_not_admitted",
+        warnings=(),
+        timing_by_step={},
+        entity_words={"DACOfficialDonors": "official donors"},
+        role_not_admitted_entities=(
+            RoleNotAdmittedEntity(
+                text="DACOfficialDonors",
+                dcid="DACOfficialDonors",
+                graph_type=None,
+                unlisted=population,
+            ),
+        ),
+    )
+
+    part = _entity_terms_part(region)
+
+    assert part.no_data.entity_terms == ["official donors"]
+    assert part.no_data.message == (
+        '"official donors" cannot be listed donor by donor: every source of the "aid" data '
+        'also holds private donors, which "official donors" leaves out. Ask for its total, '
+        "or name the donors to list."
+    )
+
+
 _TWO_AMBIGUOUS = RegionResult(
     variable_text="ODA",
     status="no_data",
@@ -408,6 +497,41 @@ def test_a_group_candidate_on_a_members_row_posts_the_group_name_without_a_pin(
         [ParsedEntity(text="the Union", members=True, dcid="africa")],
     ]
     assert {tuple(o.mentions) for o in part.no_data.options} == {("the Union",)}
+
+
+def test_an_option_the_parsed_door_would_refuse_is_not_offered():
+    """The group candidate's option would post "Africa" asked for its members beside the
+    row "Africa" asked as a whole, which the parsed door refuses, so only the continent's
+    pin is offered."""
+    region = dataclasses.replace(
+        _TWO_AMBIGUOUS,
+        parsed_form=ParsedPart(
+            variable_text="ODA",
+            entities=[ParsedEntity(text="the Union", members=True), ParsedEntity(text="Africa")],
+        ),
+        resolved_entity_dcids={},
+        ambiguous_entities=(
+            AmbiguousEntity(
+                text="the Union",
+                candidates=(
+                    AmbiguousEntityCandidate(
+                        dcid="AfricanUnion",
+                        name="African Union",
+                        kind="continental_union",
+                        group_node=True,
+                        group_name="Africa",
+                    ),
+                    AmbiguousEntityCandidate(dcid="africa", name="Africa", kind="continent"),
+                ),
+            ),
+        ),
+    )
+
+    part = _entity_terms_part(region)
+
+    assert [o.data_query.parts[0].entities for o in part.no_data.options] == [
+        [ParsedEntity(text="the Union", members=True, dcid="africa"), ParsedEntity(text="Africa")]
+    ]
 
 
 def test_assemble_region_non_entity_reason_ignores_unresolved_entity_names():

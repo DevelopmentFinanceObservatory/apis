@@ -93,18 +93,22 @@ class _DeadlineExceededGraphReader:
     def node_label(self, dcid: str) -> str | None:
         return self._delegate.node_label(dcid)
 
-    def variable_facets_batch(self, *, stat_var, entities, deadline: float | None = None):
+    def variable_facets_batch(
+        self, *, stat_var, entities, needs_dates: bool = False, deadline: float | None = None
+    ):
         if deadline is not None:
             raise GraphDeadlineExceededError("simulated graph read past its absolute deadline")
         return self._delegate.variable_facets_batch(
-            stat_var=stat_var, entities=entities, deadline=deadline
+            stat_var=stat_var, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
-    def observation_facets_batch_many(self, *, stat_vars, entities, deadline: float | None = None):
+    def observation_facets_batch_many(
+        self, *, stat_vars, entities, needs_dates: bool = False, deadline: float | None = None
+    ):
         if deadline is not None:
             raise GraphDeadlineExceededError("simulated graph read past its absolute deadline")
         return self._delegate.observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     def generation_stamp(self):

@@ -182,17 +182,27 @@ class MemoGraphReader:
         return self._reader.node_labels_batch(dcids)
 
     def variable_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_var: str,
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, list[Facet]]:
         return self._reader.variable_facets_batch(
-            stat_var=stat_var, entities=entities, deadline=deadline
+            stat_var=stat_var, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
         return self._reader.observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     def child_places_batch(

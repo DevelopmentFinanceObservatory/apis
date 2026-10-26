@@ -720,6 +720,8 @@ def _flagged_member_constraint_properties(shape: ShapeDraft) -> list[list[str] |
         warnings=[],
         shape_draft=shape,
         coverage=empty_coverage_snapshot(),
+        # The pass judges coverage before it builds the refusal (`judge_coverage`).
+        coverage_judged=True,
     )
     with held_family_memo():
         spec = asyncio.run(_elected_flagged_match(state, members=[_IMF_GG]))
@@ -778,7 +780,7 @@ def _value_state(shape: ShapeDraft) -> ResolveState:
             shape_draft=shape,
             variable_spans_by_vocabulary={},
             variable_spans_in_every_system=[],
-            entities=[],
+            entity_texts=(),
             entity_roles={},
         ),
     )

@@ -1144,8 +1144,8 @@ def _unsourced_bulk() -> FakeSdmxClient:
 def test_a_facet_without_provenance_is_read_by_its_facet_id(
     monkeypatch, search_settings, discovered: bool, bulk: bool
 ) -> None:
-    """The per-pair read binds the provenance axis to the null ref and fetches `f1` by its id
-    at each pair, one request per pair; the bulk read fetches it by id in one request. Both
+    """The per-pair read, which does not require provenance, fetches `f1` by its id at each
+    pair, one request per pair; the bulk read fetches it by id in one request. Both
     deliver the same 22 points."""
     urls: list[str] = []
     sdmx = _unsourced_bulk()

@@ -386,7 +386,9 @@ def test_build_observations_non_materialisation_graph_error_now_propagates_uncau
     """
 
     class _CapExceededGraphReader(FakeGraphReader):
-        def variable_facets_batch(self, *, stat_var, entities, deadline: float | None = None):
+        def variable_facets_batch(
+            self, *, stat_var, entities, needs_dates: bool = False, deadline: float | None = None
+        ):
             raise GraphCapExceededError(
                 "too many bytes", cap_kind="bytes", cap=20_000_000, observed=50_000_000
             )
