@@ -205,6 +205,17 @@ def party_kind_of(
     return None if party is None else party.kind_over(datasets)
 
 
+def party_count(
+    dcids: Collection[str], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
+) -> int:
+    """How many of `dcids` the default download keeps as parties: those the code index's
+    `parties` declares no `total` in `datasets` (`party_kind_of`),
+    the test the Datasets cut of party totals applies (`datasets_api.party_totals`). When
+    every member is a total the cut keeps them all, and so does the count."""
+    kept = sum(party_kind_of(dcid, parties=parties, datasets=datasets) != "total" for dcid in dcids)
+    return kept or len(dcids)
+
+
 def is_whole_total(party: PartyRow, *, year: int | None, provenance: str | None) -> bool:
     """Whether `party` is a whole total on a row of `provenance` in `year`: a `total` with a
     marker for `provenance` (`PartyRow.marker`) that applies in `year`. A marker applies in
