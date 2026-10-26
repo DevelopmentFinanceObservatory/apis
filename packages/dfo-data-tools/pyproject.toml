@@ -13,7 +13,7 @@ dependencies = [
     # assembler.catalogue loads the description and step schemas the envelope references
     # by `$id`; datasets_api checks a publish's steps with `check_steps`.
     "dfo-spec-kit-descriptions",
-    # graph_generation's TLRU caches (wave 2) key their lifetime on the
+    # graph_generation's TLRU caches key their lifetime on the
     # captured GenerationStamp; cachetools.TLRUCache is the shared
     # implementation every generation-keyed cache in this repo builds on.
     "cachetools>=7.2",

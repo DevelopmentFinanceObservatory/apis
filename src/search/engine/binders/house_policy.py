@@ -8,8 +8,8 @@ entries and the declared conventions.
 
 A part that names a place, a sector or a restriction is counted on the measure basis the
 declared conventions give its shape and window (`scope.basis.elect_basis`), or the one an
-explicit or carried entry asks for: `Context.basis`. That basis, never the words that name
-the measure, decides the three policies it bears on. A part the conventions do not read
+explicit or carried entry asks for: `Context.basis`. That basis decides the three policies
+it bears on, whatever words name the measure. A part the conventions do not read
 falls back to the window and to gross.
 
 The six policies run in order, each over the survivors of the one before:
@@ -30,8 +30,8 @@ The six policies run in order, each over the survivors of the one before:
    (`Context.wanted_dataset`) publishes: the dataset the basis convention reads, else the
    house default for the kind of question. An opt-in table is its own dataset, so the
    imputed multilateral sectors family fits no house default. A basis the wanted dataset
-   does not publish has left none of its shapes standing, so the policy keeps the shapes of
-   the dataset that does: a recipient's grant equivalents are the CRS's.
+   does not publish leaves none of its shapes standing, so the policy keeps the shapes of
+   the dataset that does. A recipient's grant equivalents are the CRS's.
 6. `data_at_places`: a shape with data at the named places.
 
 The four convention policies (`CONVENTION_POLICIES`) run first, so a dataset default
@@ -263,9 +263,9 @@ def context_of(
     pool shape makes the part that kind of question (`sector` for a sector or purpose).
     Otherwise a place on the destination axis, on both axes or on none makes it a
     `recipient` question, and places that are all donors make it a `donor` question.
-    The part's shape, read from the same places and admitted codes
-    (`scope.basis.part_shape`), and its window elect its basis, `basis_entries`, the
-    part's measure-basis entries explicit first (`ScopeState.entries_on`), winning over the
+    The part's shape (read from the same places and admitted codes,
+    `scope.basis.part_shape`) and its window elect its basis. `basis_entries`, the part's
+    measure-basis entries with explicit first (`ScopeState.entries_on`), win over the
     convention.
     """
     window = frame.window.value

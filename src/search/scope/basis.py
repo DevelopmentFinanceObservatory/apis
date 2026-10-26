@@ -3,7 +3,7 @@ grant equivalents or commitments), and the bases its dataset could count them on
 
 The basis is a declared product default, after the OECD's own reporting
 (`code_index.scope_conventions.MEASURE_BASIS_CONVENTIONS`): it is read from the part's shape
-and the years it asks for, never from how the request words its measure. A donor's total is
+and the years it asks for. A donor's total is
 the OECD headline, grant equivalents for years from 2018 and net flows for years before it or
 on both sides of it (`HEADLINE_SERVED_AS`); a recipient's total over every sector is its net
 receipts; a part that binds a sector, an instrument or a modality is counted in gross CRS

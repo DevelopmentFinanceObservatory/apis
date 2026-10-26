@@ -559,15 +559,16 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     built from the axis records the pass's binders hold (`ResolveState.scope_selection`)
     over the answer's identity. Only the entries a binder applied compile
-    (`AxisRecord.entry`), so every choice states the option the answer serves; the other
+    (`AxisRecord.entry`), so every choice states the option the answer serves. The other
     entries that attach to the part (`ScopeState.attached`: those on an axis a binder
     settled, for the concept it was asked for, and the stated ones on an axis no rule
-    serves, `UNRULED_AXES`) are reported in `PartScope.dropped_entries`. A result that is not definite, or whose pass wrote no axis
-    record, states none, and so does one whose answer the recorded axes do not reach, as a
-    region read at its published total. In memory: the rules read the bound release's code
-    index, the request's coverage snapshot and the part's operations, groups and served
-    datasets (`scope_facts`). A fresh search never refuses its scope (`build_part_scope`
-    with `refuse` false); only a dataset_resubmit's posted `scope_entries` refuse 422."""
+    serves, `UNRULED_AXES`) are reported in `PartScope.dropped_entries`. A result that is
+    not definite, or whose pass wrote no axis record, states none, and so does one whose
+    answer the recorded axes do not reach, as a region read at its published total. The
+    scope is built in memory, and the rules read the bound release's code index, the
+    request's coverage snapshot and the part's operations, groups and served datasets
+    (`scope_facts`). A fresh search never refuses its scope (`build_part_scope` with
+    `refuse` false). Only a dataset_resubmit's posted `scope_entries` refuse 422."""
     selection = state.scope_selection
     if result.status != "definite" or not selection.records:
         return result
@@ -611,7 +612,7 @@ def merged_scope_choices(
     members' applied entries and the basis record its identity reads
     (`basis.identity_basis_record`). None when no member states a scope,
     or the merged identity settles no axis. An entry the merged identity cannot take is
-    reported in `PartScope.dropped_entries`, never refused."""
+    reported in `PartScope.dropped_entries`."""
     scopes = [region.scope_choices for region in group if region.scope_choices is not None]
     if not scopes:
         return None

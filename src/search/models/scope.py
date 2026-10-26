@@ -3,7 +3,7 @@
 `PartScope` is `ResolvedSpec.scope_choices`. Its `entries` are the explicit and carried
 entries a client posts back, beside `base.identity`, on a dataset_resubmit identity entry to
 switch an option. The server recompiles from them; the rest of the record is the server's
-output and is never posted.
+output only.
 """
 
 from __future__ import annotations
@@ -217,7 +217,10 @@ class CompiledScope(StrictModel):
 
 
 class LedgerStep(StrictModel):
-    """One switch, kept so it can be undone with its prior provenance."""
+    """One switch: the entry it replaced and the entry it applied.
+
+    Search answers with an empty ledger; a client that records its switches fills it.
+    """
 
     axis: ScopeAxis = Field(description="the axis switched")
     prior: Entry | None = Field(description="the entry the switch replaced; None for a default")

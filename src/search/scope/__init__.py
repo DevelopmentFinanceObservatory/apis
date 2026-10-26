@@ -10,7 +10,7 @@ option and the identity the selection compiles to. `build.build_part_scope` eval
 registered axis rules over explicit engine facts and wraps the result as the wire record,
 `models.scope.PartScope`, on `ResolvedSpec.scope_choices`.
 
-An axis goes live by adding values to these extension points, never fields:
+An axis goes live by adding values to these extension points:
 
 - `vocabulary`: the axis's option ids (`<axis>:<value>`, the same string on every part).
 - `models.scope.Entry` and `state.ScopeState`: binders read the entries on their axis from

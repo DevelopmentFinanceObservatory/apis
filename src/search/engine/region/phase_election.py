@@ -1494,8 +1494,8 @@ def _settle_role_bindings(
     slots the identity carries reads them so; the claims then return to the slots those
     steps leave open (`with_sampled_claims`).
 
-    In order: force the measure axes the bindings leave open (`elect_measure_family`), the
-    netting basis to `basis`'s first (`_basis_axes`), read an ODA flow binding as the flows
+    In order: force the measure axes the bindings leave open (`elect_measure_family`, with
+    the netting basis of `basis` first, `_basis_axes`), read an ODA flow binding as the flows
     the shape's basis counts (`_with_basis_flows`), bind
     the shape's slot defaults (`apply_shape_slot_defaults`), bind each open slot that
     partitions the served members to the value of the one member the variable phrase names

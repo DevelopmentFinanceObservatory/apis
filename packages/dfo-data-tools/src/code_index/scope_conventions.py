@@ -89,7 +89,7 @@ _DAC1 = "provenance/OECDDAC1"
 _DAC2A = "provenance/OECDDAC2A"
 
 # ONE's analytical groupings of CRS sectors. Health joins Health (120) and Population
-# policies and programmes and reproductive health (130); it is not an OECD definition.
+# policies and programmes and reproductive health (130).
 # Humanitarian joins emergency response (720), reconstruction relief and rehabilitation
 # (730) and disaster prevention and preparedness (740). The words are the phrases the
 # qualifier matcher reads each concept from: "health" is CRS 120's label, so "health aid"
@@ -223,7 +223,7 @@ class RegionReading:
 # Iran), North and East Africa (Sudan); Middle and West Africa and South America hold the same
 # members under a total keyed to the DAC's own group. A region whose DAC total is keyed to the
 # graph place itself (Africa, the Americas, Oceania, the Caribbean, Central America, Southern
-# Africa, the Pacific subregions) needs no row. East and South Asia are not the DAC's Far East
+# Africa, the Pacific subregions) needs no row. East and South Asia differ from the DAC's Far East
 # Asia and South and Central Asia, so no row reads them as those.
 REGION_READINGS: tuple[RegionReading, ...] = (
     RegionReading("SubSaharanAfrica", "DACSouthOfSahara", "sub-Saharan Africa"),
