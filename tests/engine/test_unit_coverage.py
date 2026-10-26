@@ -544,7 +544,7 @@ def test_an_answer_states_only_the_rows_left_once_unmapped_recipients_are_omitte
     assert answer.headline.observations == 1
     assert answer.plan is not None
     assert read_plan.unserved_entities(answer.plan) == {("destination", r) for r in _REGIONS}
-    assert plan_unit_evidence(answer.plan).covers([_SV])
+    assert plan_unit_evidence(answer.plan).serves_any([_SV])
 
 
 _DECLARED_ROLE_ARCS = {"observationProperties": {"nodes": [{"dcid": role} for role in _ROLES]}}

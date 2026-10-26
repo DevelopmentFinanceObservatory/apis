@@ -1540,7 +1540,8 @@ class _MemberFetchPlan:
 
     Group plans carry the group's shared selections and each member's own admission.
     `continuing_ids` holds the dispatch IDs of the method continuing the selected series
-    (`continuing_facet_ids`).
+    (`continuing_facet_ids`). `unserved` marks a group member the election leaves out
+    (`group_facets.GroupElection.unserved`): it dispatches no rows and plans no conversion.
     """
 
     selections: dict[str, FacetSelection]
@@ -1549,6 +1550,7 @@ class _MemberFetchPlan:
     conversion_plan: MemberConversionPlan | None
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     continuing_ids: tuple[str, ...] = ()
+    unserved: bool = False
 
 
 def request_batch_key(request: MaterialisationRequest) -> tuple[object, ...]:
@@ -2190,8 +2192,11 @@ def _plan_group_members(
     )
     election = group.election
     selections = election.selections
+    # A member the group leaves out dispatches no rows, so it has no conversion to plan.
     conversion_plans = [
-        _plan_conversion(
+        None
+        if index in group.unserved
+        else _plan_conversion(
             request=request,
             selections=selections,
             graph=graph,
@@ -2199,7 +2204,7 @@ def _plan_group_members(
             rate_cache=rate_cache,
             deadline=deadline,
         )
-        for request in requests
+        for index, request in enumerate(requests)
     ]
     plans = [
         _MemberFetchPlan(
@@ -2208,6 +2213,7 @@ def _plan_group_members(
             admission=probes[index].admission,
             conversion_plan=conversion_plans[index],
             continuing_ids=group.continuing_ids[index],
+            unserved=index in group.unserved,
         )
         for index in range(len(requests))
     ]
@@ -2569,6 +2575,11 @@ class _GroupRowStreamer:
                     pending_members[index] = (request, table)
                 while cursor < len(self._dcid_requests) and cursor in pending_members:
                     request, table = pending_members.pop(cursor)
+                    if self._dcid_plans[cursor].unserved:
+                        # Its table holds no row, and with no conversion planned its `unit`
+                        # column stays a string where converted members' hold the struct.
+                        cursor += 1
+                        continue
                     if accumulator and accumulator_rows + table.num_rows > _FRAME_CHUNK_TARGET_ROWS:
                         yield self._close_row_chunk(accumulator)
                         accumulator = []

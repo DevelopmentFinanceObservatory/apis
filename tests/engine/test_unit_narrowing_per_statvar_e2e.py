@@ -1,7 +1,8 @@
-"""End-to-end guard that unit narrowing uses each StatVar's own elected currency.
+"""End-to-end guard that unit narrowing admits only the units the Spec's one group elects.
 
-Two role-bearing StatVars share FRA and DEU. SV_A elects native USD at FRA; SV_B elects native GBP
-at DEU. Their 2020 and 2023 dates expose a pooled-scope regression.
+Two role-bearing StatVars share FRA and DEU. SV_A holds native USD at FRA and GBP at DEU; SV_B
+holds native GBP at DEU. A USD request serves SV_A's dollars alone, and the 2020 and 2023 dates
+show which facets the narrowed answer admits.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import convertibility as convertibility_module
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -259,27 +259,11 @@ def _date_range_ends(result) -> dict[str, str | None]:
     }
 
 
-def test_per_statvar_election_narrows_each_to_its_own_surviving_member(monkeypatch):
-    """Each StatVar's end date comes from its own elected member: 2020 for SV_A, 2023 for SV_B."""
+def test_a_dollar_request_serves_the_dollar_member_alone(monkeypatch):
+    """A dollar request elects one group across the two StatVars: SV_A's native dollar
+    facet, which ends in 2020. SV_B holds only pounds, so the group leaves it unserved and
+    it states no date range, and SV_A's pound facet at DEU, which holds later years, is not
+    admitted beside the elected dollars."""
     result = _run(monkeypatch)
     assert result.status == "definite", result
-    ends = _date_range_ends(result)
-    assert ends[_SV_A] == "2020", ends
-    assert ends[_SV_B] == "2023", ends
-
-
-def test_pooled_union_would_have_widened_both_statvars_the_same_way(monkeypatch):
-    """Pooling elected units widens both StatVars' end dates to 2023."""
-    real_elected_unit_refs = convertibility_module.elected_unit_refs
-
-    def _pooled(elected):
-        real = real_elected_unit_refs(elected)
-        union = frozenset().union(*real.values()) if real else frozenset()
-        return dict.fromkeys(real, union)
-
-    monkeypatch.setattr("search.engine.region.phase_answer.elected_unit_refs", _pooled)
-    result = _run(monkeypatch)
-    assert result.status == "definite", result
-    ends = _date_range_ends(result)
-    assert ends[_SV_A] == "2023", ends
-    assert ends[_SV_B] == "2023", ends
+    assert _date_range_ends(result) == {_SV_A: "2020", _SV_B: None}

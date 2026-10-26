@@ -83,7 +83,7 @@ def unit_request() -> IdentityUnitRequest:
 @pytest.fixture
 def captured(monkeypatch: pytest.MonkeyPatch) -> list[MaterialisationRequest]:
     """Capture requests reaching `decide_group_unit` from the one unit decision
-    (`convertibility.decide_part_unit`), which the candidate fan-out calls too."""
+    (`convertibility.decide_spec_unit`), which the candidate fan-out calls too."""
     requests: list[MaterialisationRequest] = []
 
     def _capture(group: Sequence[MaterialisationRequest], _probes: object, **_: object) -> None:
@@ -319,7 +319,7 @@ def _role_currency_decision(
             )
         }
         decide_member_conversion(request=request, selections=selections, graph=graph)
-        return selections
+        return (selections,)
 
     monkeypatch.setattr("search.engine.region.convertibility.decide_group_unit", _decide)
     twin_shape = _shape(_twin_nodes(), [_TOTAL, _BY_CREDITOR])

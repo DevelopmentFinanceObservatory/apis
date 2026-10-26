@@ -7,7 +7,7 @@ from typing import cast
 from materialise.recipes import RateCoverageGapError, cause_from_recipe_error
 from search.engine.departures import window_gap_fact
 from search.engine.envelope import now_ms
-from search.engine.region.bound_unit_gate import bound_unit_gate_reason
+from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.convertibility import option_pins
 from search.engine.region.facet_probe import FacetProbe, facet_probe
 from search.engine.region.observations.bulk_scope import bulk_scope_for
@@ -112,7 +112,9 @@ def _bound_unit_refusal(
     currency names adds `currency_unmapped_omitted` to the state's warnings, as a fresh
     request does."""
     gate_plan = state.unit_gate_plan if state.unit_gate_plan is not None else state.narrowed_plan
-    reason = bound_unit_gate_reason(gate_plan, state.obs_entities, mat_result.sv_dcids)
+    reason = bound_unit_gate_reason(
+        gate_plan, state.obs_entities, unit_served(state.elected_unit, mat_result.sv_dcids)
+    )
     if reason is not None:
         return _no_data_region(
             state.variable_text,

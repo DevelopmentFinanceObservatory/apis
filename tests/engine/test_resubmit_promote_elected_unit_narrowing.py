@@ -1,6 +1,9 @@
-"""A USD unit request elects each StatVar's native facet independently. The
-fixture covers native USD and EUR converted at a 0.9/1.0 exchange rate across
-buffered, streamed, and availability-check paths.
+"""A unit request elects one group across a Spec's two StatVars, as a mint of the Spec does.
+SourceA holds a US dollar facet and SourceB a euro one, under their own sources, so each
+key serves one member and the requested currency decides which: a dollar request serves
+SourceA natively and leaves SourceB unserved. A pound request, which neither holds, serves
+SourceA too: the members tie on every count and SourceA's provenance sorts first. The
+fixture covers buffered, streamed, and availability-check paths.
 """
 
 from __future__ import annotations
@@ -63,6 +66,7 @@ from tests.materialise._rate_table_support import (
 from tests.materialise.conftest import FakeGraphReader
 
 _ENTITY = "country/KEN"
+_UGANDA = "country/UGA"
 _SHAPE: dict = {
     "kind": "statvar_schema",
     # A population type the DAC recipe converts, which the materialise graph's arcs state.
@@ -111,13 +115,14 @@ _NODES: dict = {
         "arcs": _sv_arcs(_VAL_B),
     },
     _ENTITY: {"label": "Kenya", "type": "Country"},
+    _UGANDA: {"label": "Uganda", "type": "Country"},
 }
 
 _HOW_SET_SLOT = _binding_set_slot("how", _PROP, "financing source", [_VAL_A, _VAL_B])
 
 
 # Search coverage reads are separate from materialisation's conversion reads.
-def _obs(years: tuple[str, ...]) -> dict:
+def _obs(years: tuple[str, ...], places: tuple[str, ...] = (_ENTITY,)) -> dict:
     def facet(facet_id: str, provenance: str, unit: str) -> dict:
         return {
             "facetId": facet_id,
@@ -129,8 +134,12 @@ def _obs(years: tuple[str, ...]) -> dict:
         }
 
     return {
-        f"{_SV_A}|{_ENTITY}": [facet("f_a", _PROVENANCE_A, "CurrencyUSD")],
-        f"{_SV_B}|{_ENTITY}": [facet("f_b", _PROVENANCE_B, "CurrencyEUR")],
+        key: value
+        for place in places
+        for key, value in (
+            (f"{_SV_A}|{place}", [facet("f_a", _PROVENANCE_A, "CurrencyUSD")]),
+            (f"{_SV_B}|{place}", [facet("f_b", _PROVENANCE_B, "CurrencyEUR")]),
+        )
     }
 
 
@@ -164,11 +173,16 @@ def _sdmx_router(
 
 
 def _recipe_arcs() -> dict[str, dict[str, tuple[str, ...]]]:
-    """The DAC recipe on `_PROVENANCE_B`, a provenance in no dataset, and its two currencies."""
-    arcs = conversion_arcs(
-        recipe_id=_RECIPE, provenance_id=_PROVENANCE_B, currencies=["CurrencyUSD", "CurrencyEUR"]
-    )
-    arcs[_PROVENANCE_B]["isPartOf"] = ()
+    """The DAC recipe on `_PROVENANCE_A` and `_PROVENANCE_B`, provenances in no dataset, and
+    its three currencies."""
+    arcs: dict[str, dict[str, tuple[str, ...]]] = {}
+    for provenance in (_PROVENANCE_A, _PROVENANCE_B):
+        arcs |= conversion_arcs(
+            recipe_id=_RECIPE,
+            provenance_id=provenance,
+            currencies=["CurrencyUSD", "CurrencyEUR", "CurrencyGBP"],
+        )
+        arcs[provenance]["isPartOf"] = ()
     return arcs
 
 
@@ -178,8 +192,10 @@ def _run(
     include_observations: bool | None = None,
     rates: dict[str, dict[int, float]] = _RATES,
     years: tuple[str, ...] = (_YEAR,),
+    currency: str = "USD",
+    places: tuple[str, ...] = (_ENTITY,),
 ):
-    graph = FakeGraph(nodes=_NODES, obs=_obs(years))
+    graph = FakeGraph(nodes=_NODES, obs=_obs(years, places))
     materialise_graph = FakeGraphReader(
         arcs={
             _SV_A: dict(CONVERTIBLE_STAT_VAR_ARCS),
@@ -188,8 +204,8 @@ def _run(
             **_recipe_arcs(),
         },
         facets={
-            (_SV_A, _ENTITY): [_facet_from_fixture(_USD_FIXTURE)],
-            (_SV_B, _ENTITY): [_facet_from_fixture(_EUR_FIXTURE)],
+            **{(_SV_A, place): [_facet_from_fixture(_USD_FIXTURE)] for place in places},
+            **{(_SV_B, place): [_facet_from_fixture(_EUR_FIXTURE)] for place in places},
         },
     )
     materialise_sdmx = _sdmx_router(
@@ -198,29 +214,31 @@ def _run(
             + "".join(
                 _csv_row(
                     stat_var=_SV_A,
-                    role_dcids=[_ENTITY],
+                    role_dcids=[place],
                     fixture=_USD_FIXTURE,
                     date_str=year,
                     value=100.0,
                 )
+                for place in places
                 for year in years
             ),
             _SV_B: _csv_header(["observationAbout"])
             + "".join(
                 _csv_row(
                     stat_var=_SV_B,
-                    role_dcids=[_ENTITY],
+                    role_dcids=[place],
                     fixture=_EUR_FIXTURE,
                     date_str=year,
                     value=50.0,
                 )
+                for place in places
                 for year in years
             ),
         },
         rates=rates,
     )
-    entities = [subject_entity(_ENTITY)]
-    request = IdentityUnitRequest(currency="USD", prices="current")
+    entities = [subject_entity(place) for place in places]
+    request = IdentityUnitRequest(currency=currency, prices="current")
     base_identity = make_identity(_SHAPE, slots=[_HOW_SET_SLOT], entities=entities)
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(
@@ -306,8 +324,9 @@ def _run_relaunch(region):
     return asyncio.run(_await())
 
 
-def test_two_stat_vars_each_elect_their_own_native_currency():
-    """Each StatVar elects its native currency, converting only the EUR series to USD."""
+def test_a_dollar_request_serves_the_dollar_member_and_leaves_the_euro_one():
+    """A US dollar request elects SourceA's native dollar facet, the group's, and SourceB,
+    which holds only euros, is unserved: it has no elected unit and no series."""
     captured: list[object] = []
     real_build_observations = promote_finalize._build_observations
 
@@ -322,26 +341,24 @@ def test_two_stat_vars_each_elect_their_own_native_currency():
     assert captured, "expected the include_observations fetch to call _build_observations"
     elected = captured[0]
     assert elected is not None
-    assert elected_unit_refs(elected) == {
-        _SV_A: frozenset({"CurrencyUSD"}),
-        _SV_B: frozenset({"CurrencyEUR"}),
-    }
+    assert elected_unit_refs(elected) == {_SV_A: frozenset({"CurrencyUSD"})}
 
     spec = region.specs[0]
     assert spec.resolved.observations is not None
-    series_by_sv = {s.stat_var.ref: s for s in spec.resolved.observations.series}
-    assert set(series_by_sv) == {_SV_A, _SV_B}
-    # SV_A: native USD, no conversion.
-    assert series_by_sv[_SV_A].conversion is None
-    assert [p.value for p in series_by_sv[_SV_A].points] == [100.0]
-    # EUR converts to USD using the inverse of its 0.9 USD-per-EUR rate.
-    assert series_by_sv[_SV_B].conversion is not None
-    assert [p.value for p in series_by_sv[_SV_B].points] == [pytest.approx(50.0 * 1.0 / 0.9)]
+    (series,) = spec.resolved.observations.series
+    assert series.stat_var.ref == _SV_A
+    assert series.conversion is None
+    assert [p.value for p in series.points] == [100.0]
+
+
+_GBP_RATES = {**_RATES, "CurrencyGBP": {int(_YEAR): 0.8}}
 
 
 def test_streamed_relaunch_with_a_bound_request_unit_carries_converted_points():
-    """The streamed relaunch converts EUR with the same rate cache as the buffered path."""
-    region = _run(stream_observations=True)
+    """The streamed relaunch converts with the same rate cache as the buffered path. A pound
+    request serves SourceA (neither member holds pounds, and SourceA's provenance sorts first
+    on a tie), whose dollars convert at 0.8 pounds to the dollar."""
+    region = _run(stream_observations=True, currency="GBP", rates=_GBP_RATES)
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     assert region.specs[0].resolved.observations is None
     assert region.observations_relaunch is not None
@@ -349,18 +366,15 @@ def test_streamed_relaunch_with_a_bound_request_unit_carries_converted_points():
     events, warns = _run_relaunch(region)
     assert warns == ()
     assert events, "expected at least one streamed observations event"
-    series_by_sv = {s.stat_var.ref: s for s in events[0].observations.series}
-    assert set(series_by_sv) == {_SV_A, _SV_B}
-    # SV_A: native USD, no conversion.
-    assert series_by_sv[_SV_A].conversion is None
-    assert [p.value for p in series_by_sv[_SV_A].points] == [100.0]
-    # EUR converts to USD using the inverse of its 0.9 USD-per-EUR rate.
-    assert series_by_sv[_SV_B].conversion is not None
-    assert [p.value for p in series_by_sv[_SV_B].points] == [pytest.approx(50.0 * 1.0 / 0.9)]
+    (series,) = events[0].observations.series
+    assert series.stat_var.ref == _SV_A
+    assert series.conversion is not None
+    assert [p.value for p in series.points] == [pytest.approx(100.0 * 0.8)]
 
 
-def test_facet_refusal_receives_the_same_unpooled_elected_units():
-    """Facet refusal receives each resolved StatVar's elected native unit."""
+def test_facet_refusal_receives_the_served_members_elected_units():
+    """Facet refusal receives the elected unit of each member the group serves: SourceA's
+    dollars under a dollar request, and nothing for SourceB, which the group leaves out."""
     captured: list[object] = []
     import search.engine.facet_refusals as facet_refusals_module
 
@@ -378,11 +392,7 @@ def test_facet_refusal_receives_the_same_unpooled_elected_units():
 
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     assert captured, "expected the availability check to call facet_refusal"
-    elected_units = captured[0]
-    assert elected_units == {
-        _SV_A: frozenset({"CurrencyUSD"}),
-        _SV_B: frozenset({"CurrencyEUR"}),
-    }
+    assert captured[0] == {_SV_A: frozenset({"CurrencyUSD"})}
 
 
 _RECORDED_USD = ObsFacetFixture(
@@ -566,19 +576,17 @@ def test_the_provenance_offered_beside_a_converting_unit_request_serves_when_pin
 
 @pytest.mark.parametrize("include_observations", [True, False])
 def test_statvar_whose_conversion_fails_refuses_rate_coverage_gap(include_observations):
-    """With no EUR rate, SV_B's conversion to USD fails `rate_missing`. The resubmit's gate
-    finds the gap from its narrowed plan before any read and refuses as a fresh request
-    does, with the cause, with or without observations requested."""
-    region = _run(
-        include_observations=include_observations,
-        rates={"CurrencyUSD": {int(_YEAR): 1.0}},
-    )
+    """A pound request serves SourceA (neither member holds pounds, and SourceA's provenance
+    sorts first on a tie), and with no pound rate its conversion fails `rate_missing`. The
+    resubmit's gate finds the gap from its narrowed plan before any read and refuses as a
+    fresh request does, with the cause, with or without observations requested."""
+    region = _run(include_observations=include_observations, currency="GBP")
     assert region.status == "no_data", (
         f"expected no_data, got {region.status!r} (warnings={region.warnings!r})"
     )
     assert region.no_data_reason == "rate_coverage_gap"
     assert region.cause is not None
-    assert (region.cause.code, region.cause.entities) == ("rate_missing", [f"CurrencyEUR@{_YEAR}"])
+    assert (region.cause.code, region.cause.entities) == ("rate_missing", [f"CurrencyGBP@{_YEAR}"])
     # The refusal holds no Spec, so the fetch's spec-stamped warning stays off it, as on a
     # fresh request.
     assert _beside_membership(region) == ()
@@ -603,10 +611,11 @@ def test_the_resubmit_gate_fetches_nothing(include_observations, fetches):
 
 
 def test_an_oversized_preview_answers_definite_with_the_preview_omitted(search_settings):
-    """Two pairs over a cap of one: the narrowed plan confirms the unit, so the resubmit
-    answers definite and its preview is omitted as too large, as it is without a unit."""
+    """SourceA's two places, the pairs a dollar request serves, over a cap of one: the
+    narrowed plan confirms the unit, so the resubmit answers definite and its preview is
+    omitted as too large, as it is without a unit."""
     search_settings(obs_preview_max_pairs=1)
-    region = _run(include_observations=True)
+    region = _run(include_observations=True, places=(_ENTITY, _UGANDA))
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     observations = region.specs[0].resolved.observations
     assert observations is not None
@@ -629,13 +638,10 @@ def _beside_membership(region) -> tuple[Warning, ...]:
 
 @pytest.mark.parametrize("include_observations", [True, False])
 def test_bound_unit_no_data_refusal_carries_unstamped_ground_warnings(include_observations):
-    """The no_data refusal carries the ground warning without a spec id, as a fresh request
-    does for the same evidence."""
+    """The no_data refusal, a pound request with no pound rate, carries the ground warning
+    without a spec id, as a fresh request does for the same evidence."""
     with _grounding_warns():
-        region = _run(
-            include_observations=include_observations,
-            rates={"CurrencyUSD": {int(_YEAR): 1.0}},
-        )
+        region = _run(include_observations=include_observations, currency="GBP")
     assert region.status == "no_data"
     assert region.no_data_reason == "rate_coverage_gap"
     assert region.specs == ()
@@ -653,10 +659,10 @@ def test_definite_result_stamps_ground_warnings_with_its_spec():
 
 
 def test_bound_unit_no_data_refusal_orders_ground_warning_before_obs_entities_warning():
-    """The refusal carries the unstamped ground warning, then the observation-entities
-    warning, as a fresh request orders them."""
+    """The refusal, a pound request with no pound rate, carries the unstamped ground warning,
+    then the observation-entities warning, as a fresh request orders them."""
     with _grounding_warns(), _obs_entities_warns():
-        region = _run(include_observations=True, rates={"CurrencyUSD": {int(_YEAR): 1.0}})
+        region = _run(include_observations=True, currency="GBP")
     assert region.status == "no_data"
     assert region.no_data_reason == "rate_coverage_gap"
     assert _beside_membership(region) == (_GROUND_WARNING, _OBS_ENTITIES_WARNING)
@@ -674,9 +680,9 @@ def test_definite_result_carries_obs_entities_warning_once_in_definite_warnings_
 
 
 def _catalogue(rate_years: dict[str, frozenset[int]]) -> ConversionCatalogue:
-    """The DAC recipe on `_PROVENANCE_B`, with rates in `rate_years`."""
+    """The DAC recipe on `_PROVENANCE_A` and `_PROVENANCE_B`, with rates in `rate_years`."""
     return ConversionCatalogue(
-        recipes={_PROVENANCE_B: _RECIPE},
+        recipes={_PROVENANCE_A: _RECIPE, _PROVENANCE_B: _RECIPE},
         tables={
             _RECIPE: RecipeTables(
                 rate_years=rate_years,
@@ -691,15 +697,17 @@ def _catalogue(rate_years: dict[str, frozenset[int]]) -> ConversionCatalogue:
 
 
 def test_a_rate_gap_shortens_the_period_to_the_years_the_rates_cover():
-    """Both series run 2019 to 2020 and the euro has a rate in 2020 alone, so converting to
-    US dollars reads 2020. The identity's window, the served years and the departure all
-    say so, where without the loaded tables the answer refuses rate_coverage_gap."""
-    rates = {"CurrencyUSD": {2019: 1.0, 2020: 1.0}, "CurrencyEUR": {2020: 0.9}}
+    """Both series run 2019 to 2020. A pound request serves SourceA (neither member holds
+    pounds, and SourceA's provenance sorts first on a tie), and the pound has a rate in 2020
+    alone, so converting SourceA's dollars reads 2020. The identity's window, the served
+    years and the departure all say so, where without the loaded tables the answer refuses
+    rate_coverage_gap."""
+    rates = {"CurrencyUSD": {2019: 1.0, 2020: 1.0}, "CurrencyGBP": {2020: 0.8}}
     years = ("2019", "2020")
     with bound_conversion_catalogue(
-        _catalogue({"USD": frozenset({2019, 2020}), "EUR": frozenset({2020})})
+        _catalogue({"USD": frozenset({2019, 2020}), "GBP": frozenset({2020})})
     ):
-        region = _run(include_observations=True, rates=rates, years=years)
+        region = _run(include_observations=True, rates=rates, years=years, currency="GBP")
 
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     spec = region.specs[0]
@@ -707,10 +715,7 @@ def test_a_rate_gap_shortens_the_period_to_the_years_the_rates_cover():
     assert (window.kind, window.start_year, window.end_year) == ("range", 2020, 2020)
     assert {
         s.stat_var.ref: [p.date for p in s.points] for s in spec.resolved.observations.series
-    } == {
-        _SV_A: ["2020"],
-        _SV_B: ["2020"],
-    }
+    } == {_SV_A: ["2020"]}
     assert DATE_COVERAGE_PARTIAL in [w.code for w in region.warnings]
     (fact,) = [f for f in region.departure_facts.values() if f.code == "year_unavailable"]
     assert (fact.data_years, fact.converted_years, fact.limited_by, fact.shown) == (
@@ -720,5 +725,5 @@ def test_a_rate_gap_shortens_the_period_to_the_years_the_rates_cover():
         "2020",
     )
 
-    unbound = _run(include_observations=True, rates=rates, years=years)
+    unbound = _run(include_observations=True, rates=rates, years=years, currency="GBP")
     assert unbound.no_data_reason == "rate_coverage_gap"

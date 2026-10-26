@@ -748,7 +748,7 @@ class TestUnitCompletionFromDeclaredSources:
 
         materialise_graph, materialise_sdmx = materialise_double_from_obs(_fertility_ken_usd_obs())
         materialise_graph._arcs = _FERTILITY_MATERIALISE_ARCS
-        with patch("search.engine.region.phase_answer.decide_part_unit", _capture):
+        with patch("search.engine.region.phase_answer.decide_spec_unit", _capture):
             for unit_text in unit_texts:
                 _resolve_parsed(
                     [_fertility_kenya_part(unit_text=unit_text)],

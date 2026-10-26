@@ -32,7 +32,7 @@ from search.engine.region.convertibility import (
     bound_facet_refs,
     conversion_period_departure,
     convertible_answer,
-    decide_part_unit,
+    decide_spec_unit,
     deflator_omission_departure,
     elected_unit_refs,
     over_conversion_period,
@@ -170,7 +170,7 @@ def _decide_unit_convertibility(state: _PromoteState, mat_result: Materialised) 
     _bound_facets = bound_facet_refs(state.inp.identity.facets, state.source_dcids)
     _declared_roles = survivor_declared_roles(mat_result)
     try:
-        state.elected_unit = decide_part_unit(
+        state.elected_unit = decide_spec_unit(
             mat_result.sv_dcids,
             unit_request=_convertibility_request,
             role_bindings=_decision_role_bindings,
@@ -880,7 +880,7 @@ def _may_convert(
 
 def _unit_gate_passes(state: _PromoteState, mat_result: Materialised) -> bool:
     """Whether the bound-unit gate passes before the conversion runs: the narrowed plan
-    serves every StatVar under its elected unit (`convertibility.unit_gate`). The plan the
+    serves a StatVar the unit decision serves under its elected unit (`convertibility.unit_gate`). The plan the
     gate read is recorded for finalisation's gate (`_PromoteState.unit_gate_plan`)."""
     gate = unit_gate(
         mat_result,

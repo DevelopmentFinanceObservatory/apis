@@ -463,7 +463,7 @@ def test_precomputed_candidates_decide_a_request_binding_no_entity_without_a_pro
     request = _request(unit=FacetBinding(state="unbound"), role_bindings={})
 
     sdmx, sdmx_requests = _router_sdmx({})
-    selections = decide_group_unit(
+    (selections,) = decide_group_unit(
         [request],
         [MemberProbe(candidates=tuple(facets), admission=CoverageAdmission())],
         settle=True,

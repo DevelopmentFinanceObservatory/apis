@@ -1680,7 +1680,7 @@ def test_scope_unit_availability_confirms_only_the_elected_unit():
     window = TimeWindow(start_year=2021, end_year=2022)
     _preview, euro = _scope_check(facets, window=window, converted=False)
     assert euro.confirmed == frozenset()
-    assert euro.covers([_SV]) is False
+    assert euro.serves_any([_SV]) is False
 
     dollar = _facet_selection(
         axis="unit",

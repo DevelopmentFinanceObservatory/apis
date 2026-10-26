@@ -335,13 +335,13 @@ def test_the_unit_election_reads_the_plans_years_not_the_stated_window(
     served, 2018 to 2024. The unit election picks among the facets of the years the
     preview reads, so it takes the plan's years."""
     captured: list[object] = []
-    real = phase_answer.decide_part_unit
+    real = phase_answer.decide_spec_unit
 
     def _spy(*args, **kwargs):
         captured.append(kwargs["years"])
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(phase_answer, "decide_part_unit", _spy)
+    monkeypatch.setattr(phase_answer, "decide_spec_unit", _spy)
     since = DateRequest(window=TimeWindow(start_year=2018, end_year=None), latest=False)
     monkeypatch.setitem(_REQUESTS, "since_2018", since)
     monkeypatch.setattr(role_bearing, "_run", functools.partial(role_bearing._run, unit_text="EUR"))

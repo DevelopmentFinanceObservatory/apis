@@ -1818,4 +1818,4 @@ def test_unit_availability_confirms_only_the_elected_unit(monkeypatch):
         coverage=FakeCoverageService(index).snapshot(),
     )
     assert evidence.confirmed == frozenset()
-    assert evidence.covers([_SV]) is False
+    assert evidence.serves_any([_SV]) is False

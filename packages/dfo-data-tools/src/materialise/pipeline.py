@@ -440,8 +440,8 @@ def decide_member_unit(
     deadline: float | None = None,
 ) -> Mapping[str, FacetSelection]:
     """The single-member form of `decide_group_unit`: the facets and conversion decision a
-    mint of `request` alone would use, over its own probe."""
-    return decide_group_unit(
+    mint of `request` alone would use, over its own probe. One member always serves."""
+    (selections,) = decide_group_unit(
         [request],
         [None],
         graph=graph,
@@ -450,6 +450,8 @@ def decide_member_unit(
         settle=settle,
         deadline=deadline,
     )
+    assert selections is not None  # A member's own election serves it or refuses.
+    return selections
 
 
 def decide_group_unit(
@@ -461,10 +463,12 @@ def decide_group_unit(
     coverage: CoverageIndex,
     settle: bool,
     deadline: float | None = None,
-) -> Mapping[str, FacetSelection]:
-    """Return the facets every member of `requests` dispatches under and check each one's
-    conversion, as a mint of the group would decide them (`materialise_group`). The function
-    reads facet candidates but stops before observations and rate-table loading.
+) -> tuple[Mapping[str, FacetSelection] | None, ...]:
+    """Return the facets each member of `requests` dispatches under, in request order, and
+    check each served member's conversion, as a mint of the group would decide them
+    (`materialise_group`). A member the group leaves out (`GroupElection.unserved`) holds
+    None: it dispatches no rows, so it has no conversion to decide. The function reads facet
+    candidates but stops before observations and rate-table loading.
 
     `probes` holds each request's election input in request order, its candidates and
     their series counts (`facets.MemberProbe`), or None for a member the call probes itself
@@ -472,8 +476,8 @@ def decide_group_unit(
     mint's member path does (`generation._select_member_facets`), and several elect one group
     across every member (`group_facets.select_group_facets`), led by their summed series
     counts (`group_breadth`) with a tie broken on their whole variables
-    (`group_variable_breadth`), as `generation._plan_group_members` elects it. Each member's
-    conversion is then decided under the one selection (`decide_member_conversion`).
+    (`group_variable_breadth`), as `generation._plan_group_members` elects it. Each served
+    member's conversion is then decided under the one selection (`decide_member_conversion`).
 
     Role-bearing requests require `coverage` or raise `MaterialisationUsageError` before
     probing. Selection can raise `DefaultFacetUndefinedError` or `FacetNotAvailableError`.
@@ -504,6 +508,7 @@ def decide_group_unit(
     ]
     window = requests[0].window
     if len(requests) == 1:
+        served: tuple[int, ...] = (0,)
         selections = _select_member_facets(
             requests[0],
             candidates[0],
@@ -512,18 +517,20 @@ def decide_group_unit(
             variable_breadth=probed[0].variable_breadth,
         ).selections
     else:
-        selections = select_group_facets(
+        group = select_group_facets(
             requests,
             candidates,
             graph=graph,
             breadth=group_breadth(probed, window=window),
             variable_breadth=group_variable_breadth(probed),
-        ).election.selections
-    for request in requests:
-        decide_member_conversion(
-            request=request, selections=selections, graph=graph, deadline=deadline
         )
-    return selections
+        selections = group.election.selections
+        served = tuple(index for index in range(len(requests)) if index not in group.unserved)
+    for index in served:
+        decide_member_conversion(
+            request=requests[index], selections=selections, graph=graph, deadline=deadline
+        )
+    return tuple(selections if index in served else None for index in range(len(requests)))
 
 
 def prepare_materialise_preview(

@@ -28,7 +28,7 @@ covers, then by its count (`materialise.facets.rank_candidates`, the election a 
 the answer's Spec runs under
 the same window). A request's facet filter narrows a plan once (`narrowed`), and
 every consumer reads the narrowed plan. A unit request is decided over the same probes
-(`region.convertibility.decide_part_unit`), its elected units narrow the plan, and its
+(`region.convertibility.decide_spec_unit`), its elected units narrow the plan, and its
 conversion preview dispatches the narrowed plan's groups. A conversion into each entity's
 own currency then leaves out the rows of entities no currency names (`omitting`), so every
 count, date, member and source an answer states is one of the rows it serves.

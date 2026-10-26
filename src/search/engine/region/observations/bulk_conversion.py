@@ -90,7 +90,7 @@ class ServedFacet(Protocol):
 @dataclass(frozen=True)
 class BulkConversion:
     """A unit request a bulk read converts its points to: the request in materialise's
-    form, each StatVar's elected selections (`convertibility.decide_part_unit`), and the
+    form, each StatVar's elected selections (`convertibility.decide_spec_unit`), and the
     clients and rate cache the conversion reads through, under `deadline`."""
 
     unit_request: UnitRequest
