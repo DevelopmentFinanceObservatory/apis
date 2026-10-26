@@ -1095,7 +1095,7 @@ _AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
         ),
         (
             "health and education ODA",
-            ["CRSPurposeCode120", "CRSPurposeCode110"],
+            ["CRSPurposeCode110", "CRSPurposeCode120", "CRSPurposeCode130"],
             {
                 "health": ("bound", None, ("union", ["CRSPurposeCode120", "CRSPurposeCode110"])),
                 "education": (
@@ -1117,7 +1117,7 @@ _AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
         ),
         (
             "health excluding malaria control ODA",
-            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
             {
                 "health": ("bound", None, None),
                 "malaria control": ("unbound", None, None),
@@ -1163,7 +1163,7 @@ _AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
         ),
         (
             "health & education ODA",
-            ["CRSPurposeCode120", "CRSPurposeCode110"],
+            ["CRSPurposeCode110", "CRSPurposeCode120", "CRSPurposeCode130"],
             {
                 "health": ("bound", None, ("union", ["CRSPurposeCode120", "CRSPurposeCode110"])),
                 "education": (
@@ -1176,7 +1176,7 @@ _AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
         ),
         (
             "health including malaria control ODA",
-            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
             {
                 "health": ("bound", None, _INCLUDING),
                 "malaria control": ("bound", None, _INCLUDING),
@@ -1233,7 +1233,8 @@ def test_two_matches_on_one_code_system_bind_by_the_connective_between_them(
     model's empty draft leaves them unbound. An exclusion of a system's only code forces
     nothing on it. A comparison after an exclusion compares the code the exclusion kept.
     Repeating the variable's codes in the query text changes nothing, because the copies
-    do not combine."""
+    do not combine. "health" names CRS 120, and wherever 120 binds as its code it binds as
+    the declared health grouping, 120 and 130 (`scope.sector.read_sector`)."""
     search_settings(qualifier_coverage=mode)
     shape = _crs_amount_shape()
     vocabulary = shape_vocabulary(shape)
@@ -2212,14 +2213,14 @@ _P130_13030 = ("union", ["CRSPurposeCode13030", "CRSPurposeCode130"])
         (
             "infant health ODA",
             ["CRSPurposeCode120"],
-            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
             {"health": ("bound", None, None)},
             {"infant": ("unbound", "uncovered", None)},
         ),
         (
             "infant health ODA",
             ["CRSPurposeCode121"],
-            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
             {"health": ("bound", None, None)},
             {"infant": ("unbound", "uncovered", None)},
         ),
@@ -2314,7 +2315,7 @@ def test_a_code_chosen_from_a_phrases_menu_reads_the_phrase(
     refuse under `refuse`. The term's own code (120 for "infant health", whose menu's hit
     is 12240), its child (121) and a hit's ancestor (100 for "population") read nothing
     and force nothing, so the terms force as with no menu. 121 gives way to the 120
-    "health" names, and 100, which no term contests, stays the model's binding. A code on
+    "health" names, which binds as the health grouping with 130, and 100, which no term contests, stays the model's binding. A code on
     two phrases' menus (130, an ancestor of 13030 and a hit for "population policies") is
     no choice. The model's binding stays and reads neither phrase. No term names 130, so
     its name reads "policies" (`_unnamed_bound_code_words`), and the part refuses on the

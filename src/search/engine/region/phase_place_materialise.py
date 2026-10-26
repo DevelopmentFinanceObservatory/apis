@@ -2334,6 +2334,7 @@ async def _nearest_real_for(
         query_entity_text_by_dcid=state.entity_label_text_by_dcid,
         # Preserve qualifier, measure, and default provenance on untouched bindings.
         text_recognized_properties=state.text_recognized_properties,
+        grouped_properties=state.grouped_properties,
         measure_elected_properties=state.measure_elected_properties,
         defaulted_properties=state.defaulted_properties,
         named_groups=request_named_groups(state, state.place.roles),

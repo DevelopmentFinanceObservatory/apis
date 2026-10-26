@@ -124,6 +124,7 @@ from search.engine.retrieval.standard import (
 from search.engine.shape import ShapeDraft
 from search.engine.written_phrase import written_phrase
 from search.models import ResolvedQualifier, Warning
+from search.scope.sector import SECTOR_PROPERTIES, read_sector
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +402,7 @@ def _settle_bindings(
     admitted_qualifiers = _unchosen_matches(terms, choices)
     state.admitted_qualifiers = admitted_qualifiers
     state.text_recognized_properties = frozenset()
+    state.grouped_properties = frozenset()
     if admitted_qualifiers or choices:
         bindings, forced = _force_qualifier_bindings(
             bindings,
@@ -415,10 +417,55 @@ def _settle_bindings(
         # property forced only by a menu choice at `binder` provenance, since the model
         # chose its code.
         state.text_recognized_properties = forced & {m.code_system for m in admitted_qualifiers}
+        bindings = _settle_sector(state, bindings, admitted_qualifiers)
         _log_admitted_qualifiers(admitted_qualifiers)
     state.bind_result.bindings = with_sampled_claims(bindings, claims)
 
     return unresolved, readings
+
+
+def _settle_sector(
+    state: ResolveState,
+    bindings: list[SlotBindingDraft],
+    matches: tuple[QualifierMatch, ...],
+) -> list[SlotBindingDraft]:
+    """`bindings` with each text-recognised sector binding read as the sector axis reads it
+    (`scope.sector.read_sector`), and the axis recorded on `ResolveState.scope_selection`.
+
+    A sector concept the admitted `matches` name binds its declared grouping's codes, or
+    the option an explicit or carried entry made for it chose, and its property joins
+    `ResolveState.grouped_properties`: "health aid" binds CRS 120 and 130. A code the text
+    named, "basic health" or "purpose code 120", keeps its binding and is recorded as an
+    explicit entry of the words that named it."""
+    settled: list[SlotBindingDraft] = []
+    grouped: set[str] = set()
+    for draft in bindings:
+        prop = draft.property_dcid
+        if (
+            prop not in SECTOR_PROPERTIES
+            or prop not in state.text_recognized_properties
+            or not draft.value_dcids
+        ):
+            settled.append(draft)
+            continue
+        reading = read_sector(
+            codes=draft.value_dcids,
+            matches=[match for match in matches if match.code_system == prop],
+            variable=state.variable,
+            scope=state.scope_selection,
+        )
+        state.scope_selection.write(reading.record)
+        if reading.grouped:
+            grouped.add(prop)
+            draft = SlotBindingDraft(
+                axis=draft.axis,
+                property_dcid=prop,
+                kind="value" if len(reading.codes) == 1 else "set",
+                value_dcids=list(reading.codes),
+            )
+        settled.append(draft)
+    state.grouped_properties = frozenset(grouped)
+    return settled
 
 
 def _with_every_slot_drafted(

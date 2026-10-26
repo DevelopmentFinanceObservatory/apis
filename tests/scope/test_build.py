@@ -119,12 +119,17 @@ def test_a_refused_selection_passes_the_refusal_through():
     assert (refusal.code, refusal.entry, refusal.blocker) == ("conflicting_requested_options", 1, 0)
 
 
-def test_with_no_live_axis_a_scope_holds_no_choices_and_refuses_every_entry():
-    empty = build_part_scope(base=BASE, entries=[], records={}, facts=_FACTS)
-    refused = build_part_scope(base=BASE, entries=[explicit(SECTOR_SET)], records={}, facts=_FACTS)
+def test_a_base_settling_no_live_axis_holds_no_choices_and_refuses_an_entry_on_one():
+    unsectored = BASE.model_copy(
+        update={"slots": [slot for slot in BASE.slots if slot.property != "crsPurpose"]}
+    )
+    empty = build_part_scope(base=unsectored, entries=[], records={}, facts=_FACTS)
+    refused = build_part_scope(
+        base=unsectored, entries=[explicit(SECTOR_SET)], records={}, facts=_FACTS
+    )
 
     assert isinstance(empty, PartScope)
-    assert (empty.choices, empty.compiled.identity) == ([], BASE)
+    assert (empty.choices, empty.compiled.identity) == ([], unsectored)
     assert refused == Refusal(code="requested_option_unavailable", entry=0, cause="axis_absent")
 
 

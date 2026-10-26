@@ -36,8 +36,11 @@ def build_part_scope(
 
     Each rule (`rules.AXIS_RULES` unless `rules` is given) reads `base`, its axis's record
     and `facts`, in `SCOPE_AXES` order, and the axes whose rule returns a table are
-    compiled with `entries` under `conflicts` (`rules.CONFLICTS` unless given). The scope's
-    id is the base identity's spec_id. The server keeps no ledger, so the scope's is []."""
+    compiled with `entries` under `conflicts` (`rules.CONFLICTS` unless given). A record's
+    own entry (a code the request's words named) joins `entries` when it is not among them
+    and its axis's table holds the option the record settled; a record the base no longer
+    holds adds nothing. The scope's id is the base identity's spec_id. The server keeps no
+    ledger, so the scope's is []."""
     rules = scope_rules.AXIS_RULES if rules is None else rules
     conflicts = scope_rules.CONFLICTS if conflicts is None else conflicts
     tables = tuple(
@@ -46,6 +49,15 @@ def build_part_scope(
         if (rule := rules.get(axis)) is not None
         and (table := rule(base, records.get(axis), facts)) is not None
     )
+    held = {table.axis: table.held for table in tables}
+    recorded = [
+        record.entry
+        for record in records.values()
+        if record.entry is not None
+        and record.entry not in entries
+        and held.get(record.axis) == record.active
+    ]
+    entries = [*entries, *recorded]
     compiled = compile(base, entries, CompileFacts(axes=tables, conflicts=conflicts))
     if isinstance(compiled, Refusal):
         return compiled
