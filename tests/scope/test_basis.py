@@ -1,0 +1,591 @@
+"""The measure-basis axis: a part is counted on the basis the declared conventions give its shape
+and window, whatever its words call the measure and whichever menu shape the binder picks;
+an explicit basis wins and elects the dataset that publishes it; the axis's options are the
+bases the part's dataset publishes; and a switch through dataset_resubmit moves the basis and
+back.
+
+The parts resolve through the parsed door over a fixture graph holding OECD DAC1's donor
+totals of ODA (gross, net and grant equivalents), DAC2a's ODA receipts (gross and net) and CRS
+health members under CRS 120 and 130 (gross, net and grant equivalents of flows 10 and 60),
+each with a series from the United States, to Kenya where the table has recipients. The
+binder picks one menu shape and nominates every other, so the house policies, not the pick,
+elect the basis.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import NamedTuple
+
+import pytest
+
+from code_index.scope_conventions import BASIS_MEASURES
+from code_index.shared import get_index
+from search.engine.departures import served_datasets
+from search.engine.quantity_read import QuantityOutput
+from search.engine.spec_id import identity_spec_id
+from search.engine.stated_words_read import StatedWordsOutput
+from search.models import (
+    BaseIdentity,
+    ChoiceOrigin,
+    DatasetResubmitInput,
+    DefinitePart,
+    Entry,
+    IdentityBindingSet,
+    IdentityBindingValue,
+    IdentityShapeSchema,
+    ParsedEntity,
+    ParsedInput,
+    ParsedPart,
+    Resolution,
+    ResolveRequest,
+    ResubmitIdentityEntry,
+    Spec,
+)
+from search.scope.basis import basis_binding, window_class
+from search.scope.edits import apply_binding
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
+from tests.engine._binders import elected_reply
+from tests.engine._fake_coverage import patch_coverage
+from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import offline_resolve
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
+from tests.fixtures import FakeGraph
+
+_USA = "country/USA"
+_KEN = "country/KEN"
+_DAC1 = "provenance/OECDDAC1"
+_DAC2A = "provenance/OECDDAC2A"
+_CRS = "provenance/OECDCreditorReportingSystem"
+_ODA = "CRSTypeOfFlow10"
+
+_DAC1_MEMBERS = (
+    "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1010_Nominal",
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal",
+    "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal",
+)
+_DAC2A_MEMBERS = (
+    "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+    "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal",
+)
+
+
+def _crs_member(
+    code: str, *, measured_property: str, netting: str | None, flow: str, modality: str
+) -> str:
+    """A CRS member measuring `measured_property` at `netting` of type of flow `flow` and
+    co-operation modality `modality`, whose purpose is `code` or a code below it."""
+    index = get_index()
+    return next(
+        row.dcid
+        for row in index.statvars
+        if (row.population_type, row.measured_property, row.measurement_qualifier)
+        == ("FinancialFlow", measured_property, "Nominal")
+        and row.constraint_properties.get("nettingBasis") == netting
+        and row.constraint_properties.get("crsTypeOfFlow") == flow
+        and row.constraint_properties.get("crsCooperationModality") == modality
+        and row.constraint_properties.get("crsPurpose") in index.descendants(code)
+    )
+
+
+# Gross and net disbursements of budget support (A01) and grant equivalents of project-type
+# interventions (C01), the modalities the fixture index holds both health codes under; the
+# private sector instruments of flow 60 only under CRS 120.
+_CRS_MEMBERS = (
+    *(
+        _crs_member(
+            code,
+            measured_property="amount",
+            netting=netting,
+            flow=_ODA,
+            modality="CRSCooperationModalityA01",
+        )
+        for code in ("CRSPurposeCode120", "CRSPurposeCode130")
+        for netting in ("Gross", "Net")
+    ),
+    *(
+        _crs_member(
+            code,
+            measured_property="grantEquivalent",
+            netting=None,
+            flow=flow,
+            modality="CRSCooperationModalityC01",
+        )
+        for code, flow in (
+            ("CRSPurposeCode120", _ODA),
+            ("CRSPurposeCode130", _ODA),
+            ("CRSPurposeCode120", "CRSTypeOfFlow60"),
+        )
+    ),
+)
+_YEARS = list(range(2005, 2025))
+
+
+def _nodes(*dcids: str) -> dict:
+    return {"nodes": [{"dcid": dcid} for dcid in dcids]}
+
+
+def _member_node(dcid: str) -> dict:
+    row = get_index().statvar_by_dcid(dcid)
+    assert row is not None
+    return {
+        "label": dcid,
+        "type": "StatisticalVariable",
+        "arcs": {
+            "typeOf": _nodes("StatisticalVariable"),
+            "name": {"nodes": [{"value": dcid}]},
+            "populationType": _nodes(row.population_type),
+            "measuredProperty": _nodes(row.measured_property),
+            "statType": _nodes(row.stat_type),
+            "measurementQualifier": _nodes(row.measurement_qualifier),
+            "observationProperties": _nodes(*row.observation_properties),
+            "constraintProperties": _nodes(*row.constraint_properties),
+            **{p: _nodes(v) for p, v in row.constraint_properties.items()},
+        },
+    }
+
+
+def _graph(variable: str, members: tuple[str, ...]) -> FakeGraph:
+    """The United States, Kenya and `members`, which recall returns for `variable`."""
+    return FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            _KEN: {"label": "Kenya", "type": "Country"},
+            **{dcid: _member_node(dcid) for dcid in members},
+        },
+        detect={variable: {"svs": list(members), "cosine_scores": [0.9] * len(members)}},
+        resolve={"United States": _USA, "Kenya": _KEN},
+    )
+
+
+_MENU_SIZE = re.compile(r"CANDIDATE SHAPES \((\d+) total\)")
+
+
+class _PickingLLM:
+    """Picks menu shape `pick` (the last when the menu holds fewer) and nominates every other
+    shape, so the whole menu is the house policies' pool; reads no quantity and rates no
+    word."""
+
+    def __init__(self, pick: int = 0) -> None:
+        self.pick = pick
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
+        match = _MENU_SIZE.search(prompt)
+        assert match is not None, prompt[:400]
+        size = int(match.group(1))
+        pick = min(self.pick, size - 1)
+        return elected_reply(pick, also_plausible=[i for i in range(size) if i != pick]), None
+
+
+@pytest.fixture(autouse=True)
+def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    donor_only = RoleNames(donor="financingProvider", recipient=None)
+    flow = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [
+            *((dcid, "dac1", _USA, ABSENT_ENTITY, _YEARS) for dcid in _DAC1_MEMBERS),
+            *((dcid, "dac2a", _USA, _KEN, _YEARS) for dcid in _DAC2A_MEMBERS),
+            *((dcid, "crs", _USA, _KEN, _YEARS) for dcid in _CRS_MEMBERS),
+        ],
+        role_names={
+            **dict.fromkeys(_DAC1_MEMBERS, donor_only),
+            **dict.fromkeys((*_DAC2A_MEMBERS, *_CRS_MEMBERS), flow),
+        },
+        facet_metadata={
+            "dac1": FacetMetadata(provenance_id=_DAC1, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+            "crs": FacetMetadata(provenance_id=_CRS, unit="USD"),
+        },
+    )
+
+
+_ALL_MEMBERS = (*_DAC1_MEMBERS, *_DAC2A_MEMBERS, *_CRS_MEMBERS)
+
+
+def _resolve(request: ResolveRequest, variable: str, *, pick: int = 0) -> Spec:
+    response = offline_resolve(
+        request,
+        graph=_graph(variable, _ALL_MEMBERS),
+        llm=_PickingLLM(pick),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    return part.spec
+
+
+def _ask(
+    variable: str,
+    *,
+    time: str,
+    recipient: bool,
+    pick: int = 0,
+    message: str | None = None,
+    carried: list[Entry] | None = None,
+) -> Spec:
+    entities = [ParsedEntity(text="United States", role_text="from")]
+    if recipient:
+        entities.append(ParsedEntity(text="Kenya", role_text="to"))
+    return _resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[ParsedPart(variable_text=variable, entities=entities, time_text=time)],
+                user_message=message,
+                carried_entries=carried,
+            )
+        ),
+        variable,
+        pick=pick,
+    )
+
+
+class _Basis(NamedTuple):
+    measured_property: str
+    netting: str | None
+    dataset: str
+
+
+def _served_basis(spec: Spec) -> _Basis:
+    """The measured property, netting basis and dataset of the spec's identity."""
+    identity = spec.definition.identity
+    assert isinstance(identity.shape, IdentityShapeSchema)
+    netting = next(
+        (
+            slot.binding.ref
+            for slot in identity.slots
+            if slot.property == "nettingBasis" and isinstance(slot.binding, IdentityBindingValue)
+        ),
+        None,
+    )
+    (dataset,) = served_datasets(spec)
+    assert identity.shape.measured_property is not None
+    return _Basis(identity.shape.measured_property, netting, dataset)
+
+
+def _basis_choice(spec: Spec) -> tuple[str, str, str | None]:
+    """The spec's measure-basis choice: its active option, provenance and the text of the
+    entry that settled it, None for a default."""
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+    entry = next((e for e in scope.entries if e.axis == "measure_basis"), None)
+    text = getattr(entry.origin, "text", None) if entry is not None else None
+    return choice.active, choice.provenance, text
+
+
+_GE_DAC1 = _Basis("grantEquivalent", None, _DAC1)
+_NET_DAC1 = _Basis("amount", "Net", _DAC1)
+_NET_DAC2A = _Basis("amount", "Net", _DAC2A)
+_GROSS_CRS = _Basis("amount", "Gross", _CRS)
+
+
+class _Cell(NamedTuple):
+    variable: str
+    time: str
+    recipient: bool
+    basis: _Basis
+    option: str
+
+
+_CELLS = {
+    "donor-only-2019": _Cell("aid", "2019", False, _GE_DAC1, "measure_basis:grant_equivalent"),
+    "donor-only-2016": _Cell("aid", "2016", False, _NET_DAC1, "measure_basis:net"),
+    "donor-only-2010-2024": _Cell("aid", "2010-2024", False, _NET_DAC1, "measure_basis:net"),
+    "recipient-all-sectors": _Cell("aid", "2019", True, _NET_DAC2A, "measure_basis:net"),
+    "sector": _Cell("health aid", "2019", True, _GROSS_CRS, "measure_basis:gross"),
+}
+
+
+@pytest.mark.parametrize("cell", list(_CELLS))
+def test_the_conventions_elect_the_basis_by_shape_and_window(cell: str):
+    row = _CELLS[cell]
+
+    spec = _ask(row.variable, time=row.time, recipient=row.recipient)
+
+    assert _served_basis(spec) == row.basis
+    assert _basis_choice(spec) == (row.option, "default", None)
+
+
+# The phrasings of one measure that moved the basis before the conventions decided it.
+_DONOR_WORDINGS = ("aid", "ODA", "official development assistance", "assistance", "total aid")
+_SECTOR_WORDINGS = (
+    "health aid",
+    "ODA for health",
+    "health ODA",
+    "health assistance",
+    "health disbursements",
+    "total health aid",
+)
+
+
+@pytest.mark.parametrize(
+    ("cell", "wordings"),
+    [
+        pytest.param("donor-only-2019", _DONOR_WORDINGS, id="donor-only-2019"),
+        pytest.param("recipient-all-sectors", _DONOR_WORDINGS, id="recipient-all-sectors"),
+        pytest.param("sector", _SECTOR_WORDINGS, id="sector"),
+    ],
+)
+def test_neither_the_wording_nor_the_binders_pick_moves_the_basis(
+    cell: str, wordings: tuple[str, ...], search_settings
+):
+    row = _CELLS[cell]
+    # The scripted binder rates no word, so a word no code reads ("assistance") is only
+    # logged rather than refused.
+    search_settings(qualifier_coverage="log")
+
+    served = {
+        (variable, pick): _served_basis(
+            _ask(variable, time=row.time, recipient=row.recipient, pick=pick)
+        )
+        for variable in wordings
+        for pick in (0, 1, 2)
+    }
+
+    assert set(served.values()) == {row.basis}, served
+
+
+@pytest.mark.parametrize(
+    ("cell", "message", "basis", "option", "text"),
+    [
+        pytest.param(
+            "donor-only-2019",
+            "gross ODA from the United States in 2019",
+            _Basis("amount", "Gross", _DAC1),
+            "measure_basis:gross",
+            "gross",
+            id="gross-over-grant-equivalents",
+        ),
+        pytest.param(
+            "donor-only-2019",
+            "net ODA from the United States in 2019",
+            _NET_DAC1,
+            "measure_basis:net",
+            "net",
+            id="net-over-grant-equivalents",
+        ),
+        pytest.param(
+            "donor-only-2016",
+            "ODA grant equivalents from the United States in 2016",
+            _Basis("grantEquivalent", None, _DAC1),
+            "measure_basis:grant_equivalent",
+            "grant equivalents",
+            id="grant-equivalents-over-net",
+        ),
+        pytest.param(
+            "sector",
+            "net health aid from the United States to Kenya in 2019",
+            _Basis("amount", "Net", _CRS),
+            "measure_basis:net",
+            "net",
+            id="net-over-gross",
+        ),
+    ],
+)
+def test_an_explicit_basis_wins_over_the_convention(
+    cell: str, message: str, basis: _Basis, option: str, text: str
+):
+    row = _CELLS[cell]
+
+    spec = _ask(row.variable, time=row.time, recipient=row.recipient, message=message)
+
+    assert _served_basis(spec) == basis
+    assert _basis_choice(spec) == (option, "explicit", text)
+
+
+def test_a_stated_grant_equivalent_for_a_recipient_elects_the_crs_that_publishes_it():
+    """DAC2a, the recipient convention's dataset, publishes no grant equivalents, so the
+    stated basis elects the CRS's, ODA's flows 10 and 60 together."""
+    spec = _ask(
+        "aid",
+        time="2019",
+        recipient=True,
+        message="grant equivalent aid from the United States to Kenya in 2019",
+    )
+
+    assert _served_basis(spec) == _Basis("grantEquivalent", None, _CRS)
+    assert _basis_choice(spec) == (
+        "measure_basis:grant_equivalent",
+        "explicit",
+        "grant equivalent",
+    )
+    (flow,) = (s for s in spec.definition.identity.slots if s.property == "crsTypeOfFlow")
+    assert flow.binding == IdentityBindingSet(refs=["CRSTypeOfFlow10", "CRSTypeOfFlow60"])
+
+
+def test_a_carried_basis_wins_over_the_convention():
+    carried = Entry(
+        axis="measure_basis",
+        option_id="measure_basis:gross",
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id="earlier:measure_basis"),
+    )
+
+    spec = _ask("aid", time="2019", recipient=True, carried=[carried])
+
+    assert _served_basis(spec) == _Basis("amount", "Gross", _DAC2A)
+    assert _basis_choice(spec) == ("measure_basis:gross", "carried", None)
+
+
+def test_the_options_are_the_bases_the_parts_dataset_publishes():
+    scope = _ask("aid", time="2019", recipient=True).resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+
+    assert [
+        (o.option_id, o.label, o.availability.status, o.availability.code) for o in choice.options
+    ] == [
+        ("measure_basis:gross", "gross disbursements, current USD", "available", None),
+        ("measure_basis:net", "net disbursements, current USD", "available", None),
+        (
+            "measure_basis:grant_equivalent",
+            "grant equivalents (OECD headline), current USD",
+            "unavailable",
+            "basis_not_published",
+        ),
+        (
+            "measure_basis:commitments",
+            "commitments, current USD",
+            "unavailable",
+            "basis_not_published",
+        ),
+    ]
+    assert choice.options[2].availability.detail == {"dataset": _DAC2A}
+
+
+@pytest.mark.parametrize("cell", ["sector", "donor-only-2016"])
+def test_a_convention_settled_part_offers_no_basis_sibling_as_an_alternative_measure(cell: str):
+    """The netting basis and the measured property belong to the scope choice, so no
+    alternative measure differs from the answer on either."""
+    row = _CELLS[cell]
+
+    spec = _ask(row.variable, time=row.time, recipient=row.recipient)
+
+    for alternative in spec.resolved.alternative_measures or []:
+        assert _served_basis_of(alternative.definition.identity) == (
+            row.basis.measured_property,
+            row.basis.netting,
+        )
+
+
+def _served_basis_of(identity: BaseIdentity) -> tuple[str | None, str | None]:
+    assert isinstance(identity.shape, IdentityShapeSchema)
+    netting = next(
+        (
+            slot.binding.ref
+            for slot in identity.slots
+            if slot.property == "nettingBasis" and isinstance(slot.binding, IdentityBindingValue)
+        ),
+        None,
+    )
+    return identity.shape.measured_property, netting
+
+
+def _switch(identity: BaseIdentity, option_id: str, choice_id: str) -> Spec:
+    entry = Entry(
+        axis="measure_basis",
+        option_id=option_id,
+        provenance="explicit",
+        origin=ChoiceOrigin(choice_id=choice_id),
+    )
+    return _resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text="aid", identity=identity, scope_entries=[entry]
+                    )
+                ]
+            )
+        ),
+        "aid",
+    )
+
+
+@pytest.mark.parametrize(
+    ("cell", "option", "switched"),
+    [
+        pytest.param(
+            "donor-only-2019", "measure_basis:net", _NET_DAC1, id="grant-equivalents-to-net"
+        ),
+        pytest.param(
+            "sector",
+            "measure_basis:grant_equivalent",
+            _Basis("grantEquivalent", None, _CRS),
+            id="gross-to-grant-equivalents",
+        ),
+    ],
+)
+def test_a_switch_moves_the_basis_and_back_to_the_first_spec_id(
+    cell: str, option: str, switched: _Basis
+):
+    row = _CELLS[cell]
+    first = _ask(row.variable, time=row.time, recipient=row.recipient)
+    scope = first.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+
+    moved = _switch(scope.base.identity, option, choice.id)
+    restored = _switch(scope.base.identity, row.option, choice.id)
+
+    assert _served_basis(moved) == switched
+    assert _basis_choice(moved)[:2] == (option, "explicit")
+    assert moved.resolved.scope_choices is not None
+    assert moved.resolved.scope_choices.base.spec_id == first.spec_id
+    assert restored.spec_id == first.spec_id
+
+
+@pytest.mark.parametrize(
+    ("window", "expected"),
+    [
+        pytest.param("latest", "from_2018", id="latest"),
+        pytest.param("all", "crossing_2018", id="every-year"),
+    ],
+)
+def test_the_window_class_of_a_window_with_no_years(window, expected):
+    assert window_class(window) == expected
+
+
+def test_a_commitments_edit_moves_the_population_and_flow_type_and_back():
+    """The commitments option sets the obligation population and its commitment flow type in
+    place of the disbursed flow's netting basis and flow type, and gross disbursements set
+    them back."""
+    base = _ask("health aid", time="2019", recipient=True).definition.identity
+    bindings = [basis_binding(row) for row in BASIS_MEASURES]
+    commitments, gross = (
+        basis_binding(next(row for row in BASIS_MEASURES if row.basis == basis))
+        for basis in ("commitments", "gross")
+    )
+
+    committed = apply_binding(base, commitments, bindings)
+    restored = apply_binding(committed, gross, bindings)
+
+    assert isinstance(committed.shape, IdentityShapeSchema)
+    assert committed.shape.population_type == "FinancialObligation"
+    assert {s.property: s.binding for s in committed.slots}.get("financialObligationType") == (
+        IdentityBindingValue(ref="Commitment")
+    )
+    assert not {"nettingBasis", "financialFlowType"} & {s.property for s in committed.slots}
+    assert identity_spec_id(restored) == identity_spec_id(base)
+
+
+def test_a_stated_basis_the_dataset_does_not_publish_is_reported_as_not_applied():
+    """No series of the menu commits, so a recipient's stated commitments leave the answer
+    on the convention's net receipts and the entry is reported as not applied."""
+    spec = _ask(
+        "aid", time="2019", recipient=True, message="aid commitments from the US to Kenya in 2019"
+    )
+
+    assert _served_basis(spec) == _NET_DAC2A
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    assert [(d.entry.option_id, d.code, d.cause) for d in scope.dropped_entries] == [
+        ("measure_basis:commitments", "stated_choice_not_applied", "basis_not_published")
+    ]
+    assert _basis_choice(spec) == ("measure_basis:net", "default", None)

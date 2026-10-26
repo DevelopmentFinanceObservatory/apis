@@ -53,6 +53,8 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (code_index_declarations, "MEASURE_VALUE_TEXT"),
     (code_index_declarations, "MEASURE_WORD_SYNONYMS_KEPT"),
     (code_index_declarations, "SLOT_PLAIN_NAMES"),
+    (scope_conventions, "BASIS_MEASURES"),
+    (scope_conventions, "BASIS_RESTRICTIONS"),
     (scope_conventions, "MEASURE_BASIS_CONVENTIONS"),
     (scope_conventions, "SECTOR_GROUPINGS"),
 )

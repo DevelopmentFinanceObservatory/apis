@@ -197,6 +197,7 @@ from search.engine.source_scope import SourceScope
 from search.engine.time_bind import parse_time_text
 from search.heading.measure_noun import denominator_noun
 from search.models import (
+    Entry,
     GraphRef,
     Operation,
     ResolvedQualifier,
@@ -4352,15 +4353,17 @@ class _HousePolicyStep:
     binder's pool (`house_policy.apply_house_policies`), the pool's first index the binder's
     pick, read against the part's menu, frame, each shape's admitted qualifiers and
     availability, and the code index's house default datasets, with the binder's ratings of
-    the pool shapes and its report of the pool shapes that hold what it recognised on its
-    pick. `calls` counts the binder's calls. Each menu shape's facts are read once, and the
-    context once per pool, however often the binder asks `chooses_on`."""
+    the pool shapes, its report of the pool shapes that hold what it recognised on its
+    pick, and the part's measure-basis entries (`basis_entries`), which win over the basis
+    convention. `calls` counts the binder's calls. Each menu shape's facts are read once,
+    and the context once per pool, however often the binder asks `chooses_on`."""
 
     shapes: Sequence[ShapeDraft]
     frame: Frame
     admitted_qualifiers: Sequence[Sequence[QualifierMatch]]
     availability: Sequence[bool | None]
     code_index: CodeIndex
+    basis_entries: Sequence[Entry] = ()
     calls: int = 0
     _contexts: dict[frozenset[int], Context] = field(default_factory=dict, init=False, repr=False)
 
@@ -4408,6 +4411,7 @@ class _HousePolicyStep:
                 pool,
                 wanted_datasets=self.code_index.house_defaults(),
                 case_systems=self.code_index.house_case_systems(),
+                basis_entries=self.basis_entries,
             )
         return self._contexts[key]
 
@@ -4538,6 +4542,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         admitted_qualifiers=admitted_qualifiers,
         availability=availability,
         code_index=get_index(),
+        basis_entries=state.scope_selection.entries_on("measure_basis"),
     )
     request = BindRequest(
         variable=_bind_variable(state, state.capped_shapes),

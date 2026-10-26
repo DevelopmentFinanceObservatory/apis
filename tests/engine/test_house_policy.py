@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from code_index.scope_conventions import PartShape
 from code_index.shared import get_index
 from code_index.types import HouseDefaultCase
 from search.engine.binders.house_policy import (
@@ -27,6 +28,7 @@ from search.engine.qualifier_match import QualifierMatch
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import TimeWindow
+from search.scope.basis import elect_basis
 
 _AUDIT_CASES = Path(__file__).parents[1] / "fixtures" / "house_policy" / "policy_audit_cases.json"
 
@@ -35,6 +37,14 @@ _WANTED: Mapping[HouseDefaultCase, str] = {
     "sector": "provenance/Sector",
     "recipient": "provenance/Recipient",
     "donor": "provenance/Donor",
+}
+
+
+# The dataset each kind of question's measure basis convention reads.
+_CONVENTION_DATASETS: Mapping[HouseDefaultCase, str] = {
+    "sector": "provenance/OECDCreditorReportingSystem",
+    "recipient": "provenance/OECDDAC2A",
+    "donor": "provenance/OECDDAC1",
 }
 
 
@@ -501,7 +511,7 @@ def test_the_part_names_the_kind_of_question_its_default_dataset_answers(
     )
 
     assert context.dataset_case == expected
-    assert context.wanted_dataset == (_WANTED[expected] if expected else None)
+    assert context.wanted_dataset == (_CONVENTION_DATASETS[expected] if expected else None)
 
 
 def test_a_packaged_purpose_code_makes_a_sector_question():
@@ -532,6 +542,13 @@ def test_a_sector_admitted_outside_the_pool_names_no_sector():
     assert context.dataset_case is None
 
 
+_SHAPE_OF_CASE: Mapping[HouseDefaultCase, PartShape] = {
+    "sector": "sector_or_restriction",
+    "recipient": "recipient_all_sectors",
+    "donor": "donor_only",
+}
+
+
 def _audit_cases() -> list[dict]:
     return json.loads(_AUDIT_CASES.read_text())
 
@@ -541,14 +558,27 @@ def _audit_cases() -> list[dict]:
 )
 def test_each_policy_keeps_the_shapes_the_label_audit_kept(case: dict):
     """Policy steps the label audit recorded on dev, corpus, planner and synthetic items, each
-    with the facts of the shapes it saw and the shapes it kept. `data_at_places` keeps every
-    shape with data at the named places, as the engine's policy does."""
-    wanted = get_index().house_defaults()
+    with the facts of the shapes it saw and the shapes it kept, replayed under the measure
+    basis the conventions give the item's kind of question and window. A window the audit
+    recorded as starting before 2018 is replayed as lying before it, which elects the basis
+    a window crossing 2018 does on every shape. `data_at_places` keeps every shape with data
+    at the named places, as the engine's policy does."""
     dataset_case = case["context"]["dataset_case"]
+    pre_ge = case["context"]["pre_ge"]
+    basis = (
+        elect_basis(
+            shape=_SHAPE_OF_CASE[dataset_case],
+            window="before_2018" if pre_ge else "from_2018",
+            entries=(),
+        )
+        if dataset_case
+        else None
+    )
     context = Context(
-        pre_ge=case["context"]["pre_ge"],
+        pre_ge=pre_ge,
         dataset_case=dataset_case,
-        wanted_dataset=wanted[dataset_case] if dataset_case else None,
+        wanted_dataset=basis.convention.dataset if basis is not None else None,
+        basis=basis,
     )
     facts = [
         ShapeFacts(

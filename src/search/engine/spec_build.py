@@ -33,6 +33,7 @@ from search.engine.retrieval.bound_values import (
     measure_without_price_basis,
     mint_sibling_identity,
     price_basis_sibling,
+    sibling_partitions,
     stated_members,
 )
 from search.engine.retrieval.derive import upstream_source
@@ -114,6 +115,7 @@ from search.models import (
     TraceDefaultReading,
     served_date_range,
 )
+from search.scope.basis import BASIS_AXES, basis_dataset
 from search.scope.region import without_residuals
 from unit_words.price_basis import price_basis_option_label
 
@@ -773,7 +775,10 @@ def _measure_alternatives(
 
     ``partition`` is None when no single measure partition describes the served rows,
     and the result is then ``(None, NO_MEASURE_LABEL)``. Siblings without authored labels are
-    omitted. A sibling that differs only in price basis is published with axis "unit"
+    omitted, and so, on an identity the measure-basis axis applies to
+    (`scope.basis.basis_dataset`), are those of another basis (`scope.basis.BASIS_AXES`): the
+    axis's scope choice offers them, so a count stays on the basis the convention settled.
+    A sibling that differs only in price basis is published with axis "unit"
     and labelled by its prices; the rest are the measure menu, axis "what" (see
     ``_menu_siblings``). The main label is `measure_label_for_partition`'s. Each
     alternative carries its own identity definition so resubmission can recover that
@@ -790,6 +795,8 @@ def _measure_alternatives(
         return None, NO_MEASURE_LABEL
     measure_index = get_measure_index()
     axes, labels, values = measure_index.axes, measure_index.partition_labels, measure_index.values
+    if basis_dataset(identity, get_index()) is not None:
+        siblings = sibling_partitions(partition, siblings, axes, held=BASIS_AXES)
     menu, unit_options = _menu_siblings(partition, siblings)
     alternatives: list[SpecAlternativeMeasure] = []
     entries: list[tuple[MeasurePartition, Literal["what", "unit"], str | None]] = [

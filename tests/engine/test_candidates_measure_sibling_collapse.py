@@ -1,5 +1,6 @@
 """A role-bearing FinancialFlow/amount candidate that differs only in measured property folds into
-the elected grantEquivalent spec's `alternative_measures` list.
+the elected grantEquivalent spec. The two differ in measure basis, which the spec's
+measure-basis scope choice offers, so the folded sibling rides no `alternative_measures` entry.
 """
 
 from __future__ import annotations
@@ -211,21 +212,13 @@ def _bound_ref(identity, property_dcid: str) -> str | None:
     return None
 
 
-def test_the_folded_sibling_rides_alternative_measures_not_a_second_menu_entry(monkeypatch):
+def test_the_folded_basis_sibling_rides_no_alternative_and_no_second_menu_entry(monkeypatch):
     result = _run(monkeypatch, binder=ReplyBinder())
-    survivor = result.specs[0]
+    (survivor,) = result.specs
 
-    alternatives = survivor.resolved.alternative_measures
-    assert alternatives is not None
-    assert len(alternatives) > 0
-    alt_spec_ids = {a.definition.spec_id for a in alternatives}
-    assert survivor.spec_id not in alt_spec_ids
-    # The folded identity names the amount measure.
-    assert any(a.definition.identity.shape.measured_property == "amount" for a in alternatives)
-    # The folded entry keeps the survivor's crsPurpose binding.
+    alternatives = survivor.resolved.alternative_measures or []
+    assert not any(a.definition.identity.shape.measured_property == "amount" for a in alternatives)
     assert _bound_ref(survivor.definition.identity, _PROP_PURPOSE) == _EXTRA_PURPOSE
-    for alt in alternatives:
-        assert _bound_ref(alt.definition.identity, _PROP_PURPOSE) == _EXTRA_PURPOSE
 
 
 def test_no_stale_candidates_warning_survives_the_fold(monkeypatch):

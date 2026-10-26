@@ -295,10 +295,13 @@ def sibling_partitions(
     elected: MeasurePartition,
     partitions: Sequence[MeasurePartition],
     axes: Sequence[MeasureAxis],
+    *,
+    held: Collection[str] = (),
 ) -> tuple[MeasurePartition, ...]:
-    """Return other partitions that match `elected` on every basis axis."""
+    """Return other partitions that match `elected` on every basis axis, and on each axis
+    named in `held`."""
     elected_values = dict(elected.values)
-    basis_axes = tuple(axis.axis for axis in axes if axis.role == "basis")
+    basis_axes = (*(axis.axis for axis in axes if axis.role == "basis"), *held)
     return tuple(
         partition
         for partition in partitions

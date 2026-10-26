@@ -86,8 +86,26 @@ def _member_under(code: str) -> str:
     )
 
 
+def _net_twin(dcid: str) -> str:
+    """The member on `dcid`'s five-tuple and constraints whose netting basis is Net."""
+    index = get_index()
+    row = index.statvar_by_dcid(dcid)
+    assert row is not None
+    wanted = {**row.constraint_properties, "nettingBasis": "Net"}
+    return next(
+        twin.dcid
+        for twin in index.statvars
+        if twin.constraint_properties == wanted
+        and (twin.population_type, twin.measured_property, twin.measurement_qualifier)
+        == (row.population_type, row.measured_property, row.measurement_qualifier)
+    )
+
+
+# The education member's net twin serves a part that binds no sector, which a recipient's
+# measure basis convention counts net.
 _MEMBERS = (
     _EDUCATION_MEMBER,
+    _net_twin(_EDUCATION_MEMBER),
     *(
         _member_under(code)
         for code in ("CRSPurposeCode120", "CRSPurposeCode130", "CRSPurposeCode122")
@@ -196,12 +214,13 @@ def _purpose(spec: Spec) -> tuple[list[str], str]:
 
 def _choice(spec: Spec) -> tuple | None:
     """The spec's sector choice: its rule, provenance, active option and every option with
-    its status; None when the spec states no scope."""
+    its status; None when the spec states no sector choice."""
     scope = spec.resolved.scope_choices
     if scope is None:
         return None
-    (choice,) = scope.choices
-    assert choice.axis == "sector"
+    choice = next((c for c in scope.choices if c.axis == "sector"), None)
+    if choice is None:
+        return None
     return (
         choice.rule,
         choice.provenance,
@@ -560,12 +579,14 @@ def test_a_record_entry_joins_the_entries_only_while_the_base_holds_its_option()
         entries=[],
         records={"sector": record},
         facts=_facts(),
+        rules={"sector": sector_rule},
     )
     moved = build_part_scope(
         base=_base({"state": "value", "ref": "CRSPurposeCode110"}),
         entries=[],
         records={"sector": record},
         facts=_facts(),
+        rules={"sector": sector_rule},
     )
 
     assert isinstance(held, PartScope)

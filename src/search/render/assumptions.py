@@ -120,7 +120,7 @@ def assumptions_for(
     slots = (own_spec or spec).resolved.trace.slot_filters
     if echo is None:
         fixed = {
-            slot_filter.key.as_ref(): {value.ref for value in slot_filter.refs}
+            slot_filter.key.as_ref(): _defaulted_values(slot_filter)
             for slot_filter in slots
             if slot_filter.refs and slot_filter.provenance == "declared_default"
         }
@@ -209,6 +209,19 @@ def _name_corrected(entity: ResolvedEntity, *, asked: str) -> Assumption | None:
 def _entity_label(entity: ResolvedEntity) -> str:
     """The name the answer shows for `entity`: its label, else its dcid's readable tail."""
     return _humanize_ref(entity.ref, entity.label)
+
+
+def _defaulted_values(slot_filter: ResolvedFilter) -> set[str]:
+    """The values a declared-default slot's default fixed: its code system's declared code
+    (`CodeSystemDeclaration.default`) where the slot binds it beside the codes a measure
+    basis reads it as (ODA's flow 10 beside flow 60 on grant equivalents), else every value
+    the slot binds."""
+    refs = {value.ref for value in slot_filter.refs}
+    prop = slot_filter.key.property
+    declaration = get_index().declarations.get(prop.ref) if prop is not None else None
+    if declaration is None or declaration.default is None:
+        return refs
+    return refs & {declaration.default.code} or refs
 
 
 def _declared_default(slot_filter: ResolvedFilter, *, refs: set[str]) -> Assumption:

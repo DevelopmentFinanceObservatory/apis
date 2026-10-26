@@ -1,10 +1,12 @@
 """The declared conventions a part's scope choices default to.
 
-`SECTOR_GROUPINGS` names the sets of CRS purpose codes a sector concept word reads as, and
-`MEASURE_BASIS_CONVENTIONS` names the measure basis each part shape and window defaults to.
-`OPTION_LABELS` words the options the rules build from code and group labels.
-`search.scope` reads all three, and `graph_release.declarations` hashes them with the other
-declarations, so a change to either moves the declarations hash and the scope rule version.
+`SECTOR_GROUPINGS` names the sets of CRS purpose codes a sector concept word reads as.
+`MEASURE_BASIS_CONVENTIONS` names the measure basis each part shape and window defaults to,
+`BASIS_MEASURES` what each basis binds in an identity, and `BASIS_RESTRICTIONS` the code
+systems besides the sector whose admitted code makes a part a restricted one.
+`OPTION_LABELS` words the options the rules build from code and group labels. `search.scope`
+reads them all, and `graph_release.declarations` hashes the tables beside the other
+declarations, so a change to one moves the declarations hash and the scope rule version.
 """
 
 from __future__ import annotations
@@ -27,6 +29,25 @@ WindowClass = Literal["from_2018", "before_2018", "crossing_2018", "any"]
 """Where a part's window lies against 2018, the first year the OECD publishes grant
 equivalents as its headline: every year from 2018, every year before it, years on both
 sides, or any window."""
+
+
+@dataclass(frozen=True)
+class BasisMeasure:
+    """What an identity counted on `basis` binds.
+
+    `population_type` and `measured_property` are its shape's, and `netting_basis` the
+    value its `nettingBasis` slot binds, None for a measure that carries no netting.
+    `flow_type` is the constraint property and value that say a flow is disbursed or
+    committed. `oda_flows` are the CRS types of flow an ODA flow binding (`ODA_FLOW`) reads as
+    on this basis. `words` name the basis for a reader."""
+
+    basis: MeasureBasis
+    population_type: str
+    measured_property: str
+    netting_basis: str | None
+    flow_type: tuple[str, str]
+    oda_flows: tuple[str, ...]
+    words: str
 
 
 @dataclass(frozen=True)
@@ -100,12 +121,17 @@ class OptionLabels:
     `sector_code` names one CRS purpose code from its `label` and `code` number, and
     `sector_code_alone` one code of a grouping offered without the others.
     `region_with_residuals` and `region_members_only` name a region's two readings from its
-    `region` name and its possessive `region_of`."""
+    `region` name and its possessive `region_of`. `measure_basis` names a measure basis from
+    its `words` (`BasisMeasure.words`) and the `prices` of the identity's price basis
+    ("current", "constant"), and `measure_basis_unpriced` from its words alone, for an
+    identity whose measurement qualifier states no price basis."""
 
     sector_code: str
     sector_code_alone: str
     region_with_residuals: str
     region_members_only: str
+    measure_basis: str
+    measure_basis_unpriced: str
 
 
 OPTION_LABELS = OptionLabels(
@@ -113,6 +139,8 @@ OPTION_LABELS = OptionLabels(
     sector_code_alone="{label}, CRS {code} alone",
     region_with_residuals="{region} incl. regional and unspecified amounts",
     region_members_only="{region_of} countries only",
+    measure_basis="{words}, {prices} USD",
+    measure_basis_unpriced="{words}",
 )
 
 # The measure basis each part shape and window is counted on, after the OECD's own
@@ -155,3 +183,56 @@ MEASURE_BASIS_CONVENTIONS: tuple[BasisConvention, ...] = (
         note="CRS gross disbursements",
     ),
 )
+
+ODA_FLOW_SYSTEM = "crsTypeOfFlow"
+"""The code system an ODA flow binding binds."""
+ODA_FLOW = "CRSTypeOfFlow10"
+"""The CRS type of flow an ODA question binds (`ODA_FLOW_SYSTEM`)."""
+
+# What each basis binds. Every basis but commitments is a disbursed flow. Grant equivalents
+# count the private sector instruments the CRS records as flow 60 beside ODA's flow 10, as
+# the OECD's headline does, so an ODA flow binding reads as both on that basis.
+_DISBURSED = ("financialFlowType", "Disbursement")
+BASIS_MEASURES: tuple[BasisMeasure, ...] = (
+    BasisMeasure(
+        basis="gross",
+        population_type="FinancialFlow",
+        measured_property="amount",
+        netting_basis="Gross",
+        flow_type=_DISBURSED,
+        oda_flows=(ODA_FLOW,),
+        words="gross disbursements",
+    ),
+    BasisMeasure(
+        basis="net",
+        population_type="FinancialFlow",
+        measured_property="amount",
+        netting_basis="Net",
+        flow_type=_DISBURSED,
+        oda_flows=(ODA_FLOW,),
+        words="net disbursements",
+    ),
+    BasisMeasure(
+        basis="grant_equivalent",
+        population_type="FinancialFlow",
+        measured_property="grantEquivalent",
+        netting_basis=None,
+        flow_type=_DISBURSED,
+        oda_flows=(ODA_FLOW, "CRSTypeOfFlow60"),
+        words="grant equivalents (OECD headline)",
+    ),
+    BasisMeasure(
+        basis="commitments",
+        population_type="FinancialObligation",
+        measured_property="amount",
+        netting_basis=None,
+        flow_type=("financialObligationType", "Commitment"),
+        oda_flows=(ODA_FLOW,),
+        words="commitments",
+    ),
+)
+
+# The code systems besides the sector whose admitted code restricts a part to the CRS: the
+# instrument and the modality. A part restricted on one is counted as a sector part is. The
+# code index holds no channel system, so no channel code restricts a part.
+BASIS_RESTRICTIONS: tuple[str, ...] = ("crsTypeOfFinance", "crsCooperationModality")
