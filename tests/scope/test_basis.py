@@ -691,6 +691,22 @@ def test_a_donor_window_crossing_2018_is_counted_on_the_oecd_headline_per_year()
     assert back.spec_id == spec.spec_id
 
 
+def test_a_stated_bilateral_on_a_donor_total_with_no_provider_axis_is_reported():
+    """A donor's DAC1 total has no provider axis, so a typed "bilateral" is reported as not
+    applied."""
+    spec = _ask("aid", time="2019", recipient=False, message="bilateral aid from the US in 2019")
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+
+    assert all(choice.axis != "provider" for choice in scope.choices)
+    (dropped,) = (d for d in scope.dropped_entries if d.entry.axis == "provider")
+    assert (dropped.entry.option_id, dropped.code, dropped.cause) == (
+        "provider:bilateral",
+        "stated_choice_not_applied",
+        "axis_absent",
+    )
+
+
 @pytest.mark.parametrize(
     ("window", "expected"),
     [

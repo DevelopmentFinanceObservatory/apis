@@ -220,6 +220,14 @@ class Component(StrictModel):
         default=None,
         description="the content version of the component's frame; None until it is minted",
     )
+    stat_vars: int | None = Field(
+        default=None,
+        description=(
+            "how many StatVars a mint of the component serves, whose rows the composite sums "
+            "with the other components'; None for a plain Spec, or where the code index does "
+            "not settle the component's members"
+        ),
+    )
     identity: BaseIdentity = Field(description="the component's own identity")
 
 
@@ -234,7 +242,9 @@ class CompiledScope(StrictModel):
 
 
 class LedgerStep(StrictModel):
-    """One switch, kept so it can be undone with its prior provenance."""
+    """One switch a client made, with the entry it replaced. The server keeps no ledger and
+    always sends `PartScope.ledger` as []: a client that records its switches here can undo
+    one by posting the prior entry back."""
 
     axis: ScopeAxis = Field(description="the axis switched")
     prior: Entry | None = Field(description="the entry the switch replaced; None for a default")

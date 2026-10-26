@@ -252,6 +252,16 @@ def test_a_covered_total_answers_the_composite_with_its_components(monkeypatch):
         ("bilateral", _CRS, [(2015, 2020)]),
         ("imputed", _IMPUTED, [(2015, 2020)]),
     ]
+    # A mint serves every member of each component's family; two CRS and two imputed of
+    # them hold a series from the US to Kenya.
+    counts = [c.stat_vars for c in scope.compiled.components]
+    assert all(isinstance(count, int) and count >= 2 for count in counts)
+    assert spec.resolved.stat_vars.member_count == len(_CRS_MEMBERS) + len(_IMPUTED_MEMBERS)
+    assert spec.resolved.stat_vars.served_count == sum(counts)
+    headline = spec.resolved.headline
+    assert headline is not None
+    assert (headline.year, headline.series) == (2020, 4)
+    assert [year.year for year in headline.recent_years] == [2020, 2019, 2018]
     components = component_identities(
         get_index(), spec.definition.identity.model_dump(mode="json", exclude_none=True)
     )

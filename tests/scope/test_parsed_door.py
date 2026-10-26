@@ -228,6 +228,32 @@ def test_a_carried_entry_attaches_to_the_part_asking_for_its_concept(monkeypatch
     assert [(c.axis, c.provenance) for c in scope.choices] == [("sector", "carried")]
 
 
+def test_a_stated_word_on_an_axis_the_part_lacks_is_reported_not_applied(monkeypatch):
+    """The part has no provider axis, so "bilateral" applies nothing; the part reports it
+    rather than dropping it unseen. A carried entry there stays another part's."""
+    _write_a_record(monkeypatch)
+    carried = _carried("provider", "provider:inclusive")
+
+    scope = _answer(user_message="bilateral fertility in Kenya", carried=[carried]).spec
+    scope = scope.resolved.scope_choices
+
+    assert scope is not None
+    (dropped,) = scope.dropped_entries
+    assert (dropped.entry.option_id, dropped.entry.provenance, dropped.code, dropped.cause) == (
+        "provider:bilateral",
+        "explicit",
+        "stated_choice_not_applied",
+        "axis_absent",
+    )
+    assert dropped.entry.origin.model_dump() == {
+        "kind": "text",
+        "text": "bilateral",
+        "start": 0,
+        "end": 9,
+    }
+    assert scope.entries == []
+
+
 def test_an_unavailable_stated_option_is_dropped_and_the_default_derives(monkeypatch):
     """A fresh search never refuses its scope: the stated option the part cannot serve is
     reported with the reason it cannot apply, and the axis takes its default."""
