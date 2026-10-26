@@ -65,6 +65,7 @@ from materialise.facets import (
     admitted_candidates,
     cadences_by_member,
     continued_election,
+    continuing_facet_ids,
     dataset_candidates,
     declared_default_policies,
     default_scope_of,
@@ -323,24 +324,6 @@ def _omitted_rows(
     return tuple((role, entity) for entity in sorted({*currencies.unmapped, *also}))
 
 
-def _continuing_facet_ids(
-    candidates: Sequence[Facet], election: FacetElection, *, member: int
-) -> tuple[str, ...]:
-    """The dispatch IDs (`joint_dispatch_facet_ids`) of the method that continues the
-    selected series past its last year (`FacetSelection.continued_by`), none when nothing
-    continues it. A range window alone continues a series, and its rows serve only the
-    years after that series' last one (`columnar.continuation_mask`)."""
-    method = election.selections.get("measurementMethod")
-    if method is None or method.continued_by is None:
-        return ()
-    by_id = {c.facet_id: c for c in candidates}
-    return tuple(
-        facet_id
-        for facet_id in joint_dispatch_facet_ids(candidates, election, member=member)
-        if by_id[facet_id].measurement_method == method.continued_by
-    )
-
-
 def _read_series(
     dispatch_ids: Sequence[str], continuing_ids: Sequence[str], omitted: Sequence[tuple[str, str]]
 ) -> ReadSeries:
@@ -423,9 +406,10 @@ class _GroupOutcome:
     `None` when no arithmetic ran; recipe IDs are `None` for ref/unbound or
     native-satisfied units. `default_scope` is the group's default place
     scope, for members that bind no entity. `series_conversions` holds every
-    member's converted series' records (`_convert_by_series`). `off_cadence_members` and
-    `out_of_window_members` are `_GroupPlan`'s. `probe_empty` is true when no member's probe returned a
-    candidate, and the outcome then holds no row and no selection. `provenance_refresh` is
+    member's converted series' records (`_convert_by_series`). `off_cadence_members`,
+    `out_of_window_members` and `unserved_members` are `_GroupPlan`'s. `probe_empty` is true
+    when no member's probe returned a candidate, and the outcome then holds no row and no
+    selection. `provenance_refresh` is
     `_MemberOutcome.provenance_refresh` for the group's shared selection. `method_periods`
     maps each `measurementMethod` the rows name to the earliest and latest period its rows
     hold (`frame_build.fold_method_periods`). `latest_years` holds each member's year under
@@ -448,6 +432,7 @@ class _GroupOutcome:
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
     off_cadence_members: tuple[str, ...] = ()
     out_of_window_members: tuple[str, ...] = ()
+    unserved_members: tuple[str, ...] = ()
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
     method_periods: Mapping[str, tuple[str, str]] = field(default_factory=dict)
@@ -1423,7 +1408,7 @@ def _generate_member(
         default_scope=probe.scope,
     )
     read = _read_series(
-        dispatch_ids, _continuing_facet_ids(probe.candidates, election, member=0), omitted
+        dispatch_ids, continuing_facet_ids(probe.candidates, election, member=0), omitted
     )
     return replace(
         outcome,
@@ -1555,7 +1540,8 @@ class _MemberFetchPlan:
 
     Group plans carry the group's shared selections and each member's own admission.
     `continuing_ids` holds the dispatch IDs of the method continuing the selected series
-    (`_continuing_facet_ids`).
+    (`continuing_facet_ids`). `unserved` marks a group member the election leaves out
+    (`group_facets.GroupElection.unserved`): it dispatches no rows and plans no conversion.
     """
 
     selections: dict[str, FacetSelection]
@@ -1564,6 +1550,7 @@ class _MemberFetchPlan:
     conversion_plan: MemberConversionPlan | None
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     continuing_ids: tuple[str, ...] = ()
+    unserved: bool = False
 
 
 def request_batch_key(request: MaterialisationRequest) -> tuple[object, ...]:
@@ -2161,12 +2148,16 @@ class _GroupPlan:
     in the requested window (`facets.overlaps_window`, every facet under a window that is not
     a range): their observations in those years are at another observation period than the
     group's, so the frame leaves them out. `out_of_window_members` holds those with no such
-    facet: they hold observations only outside the requested years."""
+    facet: they hold observations only outside the requested years. `unserved_members` holds,
+    in request order, the populated members the elected group does not hold, with no facet
+    jointly matching its selections (`group_facets.GroupElection.unserved`): their
+    observations sit under another source, unit or method, so they serve nothing."""
 
     selections: dict[str, FacetSelection]
     plans: list[_MemberFetchPlan]
     off_cadence_members: tuple[str, ...] = ()
     out_of_window_members: tuple[str, ...] = ()
+    unserved_members: tuple[str, ...] = ()
 
 
 def _plan_group_members(
@@ -2187,20 +2178,25 @@ def _plan_group_members(
 
     Each member dispatches only its facets at the group's one cadence
     (`FacetElection.cadence`, the one serving the most members). A member the election did
-    not count serves nothing and is named in `off_cadence_members` or
-    `out_of_window_members` (`_GroupPlan`), for `finish._build_warnings` to report.
+    not count, or that holds no facet of the elected group, serves nothing and is named in
+    `off_cadence_members`, `out_of_window_members` or `unserved_members` (`_GroupPlan`), for
+    `finish._build_warnings` to report.
     """
     graph = _planning_graph(requests, graph=graph)
-    election = select_group_facets(
+    group = select_group_facets(
         requests,
         [probe.candidates for probe in probes],
         graph=graph,
         breadth=group_breadth(probes, window=requests[0].window),
         variable_breadth=group_variable_breadth(probes),
     )
+    election = group.election
     selections = election.selections
+    # A member the group leaves out dispatches no rows, so it has no conversion to plan.
     conversion_plans = [
-        _plan_conversion(
+        None
+        if index in group.unserved
+        else _plan_conversion(
             request=request,
             selections=selections,
             graph=graph,
@@ -2208,15 +2204,16 @@ def _plan_group_members(
             rate_cache=rate_cache,
             deadline=deadline,
         )
-        for request in requests
+        for index, request in enumerate(requests)
     ]
     plans = [
         _MemberFetchPlan(
             selections=selections,
-            dispatch_ids=joint_dispatch_facet_ids(probes[index].candidates, election, member=index),
+            dispatch_ids=group.dispatch_ids[index],
             admission=probes[index].admission,
             conversion_plan=conversion_plans[index],
-            continuing_ids=_continuing_facet_ids(probes[index].candidates, election, member=index),
+            continuing_ids=group.continuing_ids[index],
+            unserved=index in group.unserved,
         )
         for index in range(len(requests))
     ]
@@ -2233,6 +2230,7 @@ def _plan_group_members(
         plans=plans,
         off_cadence_members=tuple(ref for ref, in_window in uncounted if in_window),
         out_of_window_members=tuple(ref for ref, in_window in uncounted if not in_window),
+        unserved_members=tuple(requests[index].stat_var for index in group.unserved),
     )
 
 
@@ -2577,6 +2575,11 @@ class _GroupRowStreamer:
                     pending_members[index] = (request, table)
                 while cursor < len(self._dcid_requests) and cursor in pending_members:
                     request, table = pending_members.pop(cursor)
+                    if self._dcid_plans[cursor].unserved:
+                        # Its table holds no row, and with no conversion planned its `unit`
+                        # column stays a string where converted members' hold the struct.
+                        cursor += 1
+                        continue
                     if accumulator and accumulator_rows + table.num_rows > _FRAME_CHUNK_TARGET_ROWS:
                         yield self._close_row_chunk(accumulator)
                         accumulator = []
@@ -2599,6 +2602,7 @@ def _assemble_group_outcome(
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE,
     off_cadence_members: tuple[str, ...] = (),
     out_of_window_members: tuple[str, ...] = (),
+    unserved_members: tuple[str, ...] = (),
     probe_empty: bool = False,
 ) -> _GroupOutcome:
     """Drives `streamer`'s streaming fetch to completion, then assembles
@@ -2669,6 +2673,7 @@ def _assemble_group_outcome(
         series_conversions=streamer.series_conversions,
         off_cadence_members=off_cadence_members,
         out_of_window_members=out_of_window_members,
+        unserved_members=unserved_members,
         probe_empty=probe_empty,
         method_periods=streamer.method_periods,
         latest_years=streamer.latest_years,
@@ -2777,6 +2782,7 @@ def _generate_group(
         default_scope=default_scope_of(probed),
         off_cadence_members=group_plan.off_cadence_members,
         out_of_window_members=group_plan.out_of_window_members,
+        unserved_members=group_plan.unserved_members,
         probe_empty=probe_empty,
     )
     return replace(outcome, provenance_refresh=provenance_refresh)

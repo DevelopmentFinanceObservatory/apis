@@ -19,7 +19,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import PartyRow, label_for_pairs
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import party_kind_of
+from materialise.enrichment import party_count
 from origin_catalogue import ORIGINS, current_catalogue
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
@@ -45,6 +45,7 @@ from search.engine.retrieval.read_plan import (
     served_provenances,
     serves_continuation,
     unserved_entities,
+    unserved_members,
 )
 from search.engine.shape import (
     ShapeDraft,
@@ -962,17 +963,6 @@ def _role_axis_facts(
     ]
 
 
-def party_count(
-    dcids: Collection[str], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
-) -> int:
-    """How many of `dcids` the default download keeps as parties: those the code index's
-    `parties` declares no `total` in `datasets` (`materialise.enrichment.party_kind_of`),
-    the test the Datasets cut of party totals applies (`datasets_api.party_totals`). When
-    every member is a total the cut keeps them all, and so does the count."""
-    kept = sum(party_kind_of(dcid, parties=parties, datasets=datasets) != "total" for dcid in dcids)
-    return kept or len(dcids)
-
-
 def _compose_wire_shape_label(
     measure_label: str | None,
     measure_label_axes: Sequence[str],
@@ -1172,9 +1162,11 @@ def build_spec(
             ``entities`` that it was asked to read and serves no point at on their role
             (``read_plan.unserved_entities``) become ``ResolvedSpec.unserved_entities``,
             and the years its served series hold over every date
-            (``read_plan.data_years``) become ``ResolvedSpec.data_years``, and whether it
-            serves a continuation's points (``read_plan.serves_continuation``) becomes
-            ``ResolvedSpec.continued``. The part's departures state all three. They never
+            (``read_plan.data_years``) become ``ResolvedSpec.data_years``, the members
+            holding data that its one group leaves out (``read_plan.unserved_members``)
+            become ``ResolvedSpec.unserved_members``, and whether it serves a
+            continuation's points (``read_plan.serves_continuation``) becomes
+            ``ResolvedSpec.continued``. The part's departures state all four. They never
             feed identity.
         coverage_index: The request's coverage index, which ``ResolvedSpec.download``
             counts a role-bearing plan from (``download.download_facts``). Without it, or
@@ -1330,6 +1322,7 @@ def build_spec(
         else None
     )
     unserved = unserved_entities(plan)
+    left_out = set(unserved_members(plan))
     return Spec(
         spec_id=spec_id,
         definition=definition,
@@ -1377,6 +1370,9 @@ def build_spec(
                 for e in entities
                 if (entity_role_key(e), e.ref.ref) in unserved
             )
+        )
+        .stating_unserved_members(
+            tuple(member.ref for member in stat_vars if member.ref.ref in left_out)
         )
         .stating_named_sets(
             role_named_sets(named_groups, hashed_entities),

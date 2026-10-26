@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
-from search.engine.retrieval.read_plan import plan_standard
+from search.engine.retrieval.read_plan import plan_standard, served_provenances
 from search.models import (
     BreadthDim,
     CoverageExact,
@@ -63,24 +63,31 @@ def test_a_filtered_place_count_counts_the_places_the_narrowed_plan_serves():
     )
 
 
-def test_a_filtered_source_count_recounts_the_served_groups_sources():
-    """Three variables each serve one provenance. Once the filter drops the third, the two
-    served groups count as two sources and two variables."""
+def test_a_filtered_source_count_recounts_the_served_group():
+    """Unfiltered, the three variables serve `f3`, the facet every one of them holds. Once
+    the filter drops it, `sv-a` and `sv-b` serve `f1` from another source, and `sv-c`,
+    whose only facet it removes, serves nothing: the count reads the group served."""
+    unwanted = _entity_facet(
+        measurement_method="Unwanted", obs_count=3, provenance_id="prov-c", facet_id="f3"
+    )
+    wanted = _entity_facet(measurement_method="Wanted", provenance_id="prov-a")
     series = {
-        ("sv-a", "country/A"): [_entity_facet(measurement_method="Wanted", provenance_id="prov-a")],
-        ("sv-b", "country/A"): [
-            _entity_facet(measurement_method="Wanted", provenance_id="prov-b", facet_id="f2")
-        ],
-        ("sv-c", "country/A"): [
-            _entity_facet(measurement_method="Unwanted", provenance_id="prov-c", facet_id="f3")
-        ],
+        ("sv-a", "country/A"): [wanted, unwanted],
+        ("sv-b", "country/A"): [wanted, unwanted],
+        ("sv-c", "country/A"): [unwanted],
     }
     plan = plan_standard(series, members=["sv-a", "sv-b", "sv-c"], years=None)
+    narrowed = plan.narrowed(_wanted)
+    form = CoverageForm(variables=True)
 
-    narrowed = answer_coverage(plan.narrowed(_wanted), CoverageForm(variables=True))
-
-    assert dimensions_of(narrowed) == [
-        BreadthDim(label="sources", count=2),
+    assert (served_provenances(plan), served_provenances(narrowed)) == (("prov-c",), ("prov-a",))
+    assert dimensions_of(answer_coverage(plan, form)) == [
+        BreadthDim(label="sources", count=1),
+        BreadthDim(label="observations", count=1),
+        BreadthDim(label="variables", count=3),
+    ]
+    assert dimensions_of(answer_coverage(narrowed, form)) == [
+        BreadthDim(label="sources", count=1),
         BreadthDim(label="observations", count=1),
         BreadthDim(label="variables", count=2),
     ]

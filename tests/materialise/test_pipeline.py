@@ -1028,6 +1028,7 @@ def _coverage_warning(
     unserved: Sequence[str] = (),
     off_cadence: Sequence[str] = (),
     out_of_window: Sequence[str] = (),
+    unserved_members: Sequence[str] = (),
     years: tuple[YearRange, YearRange] | None = None,
 ) -> MaterialisationWarning:
     return finish_module._coverage_below_scope_warning(
@@ -1035,6 +1036,7 @@ def _coverage_warning(
         countries_fallback=False,
         off_cadence=off_cadence,
         out_of_window=out_of_window,
+        unserved_members=unserved_members,
         member_count=9,
         years=years,
     )
@@ -1046,6 +1048,7 @@ _COUNTED_FIELD_WRITERS: dict[str, Callable[[Sequence[str]], MaterialisationWarni
     "unserved_entities": lambda refs: _coverage_warning(unserved=refs),
     "off_cadence_members": lambda refs: _coverage_warning(off_cadence=refs),
     "out_of_window_members": lambda refs: _coverage_warning(out_of_window=refs),
+    "unserved_members": lambda refs: _coverage_warning(unserved_members=refs),
     "omitted_entities": finish_module.currency_unmapped_omitted_warning,
     "omitted_entity_years": lambda refs: finish_module.deflator_missing_omitted_warning(
         (entity, 2020) for entity in refs
@@ -1059,6 +1062,7 @@ _COUNTED_FIELDS = frozenset(
 _PIN_REFS = {
     "off_cadence_members": ["dcid:YouthRate", "dcid:AdultRate"],
     "out_of_window_members": ["dcid:YouthRate", "dcid:AdultRate"],
+    "unserved_members": ["dcid:YouthRate", "dcid:AdultRate"],
 }
 
 

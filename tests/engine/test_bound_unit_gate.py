@@ -36,11 +36,12 @@ def _plan(*, scope: bool = False) -> PairPlan:
     return PairPlan(members=("A", "B", "C"), years=None, series=series, scope=scope)
 
 
-def test_unit_evidence_covers_only_confirmed_statvars():
+def test_unit_evidence_serves_when_one_served_statvar_is_confirmed():
     evidence = UnitEvidence(confirmed=frozenset({"A"}))
-    assert evidence.covers(["A"]) is True
-    assert evidence.covers([]) is True
-    assert evidence.covers(["A", "B"]) is False
+    assert evidence.serves_any(["A"]) is True
+    assert evidence.serves_any(["A", "B"]) is True
+    assert evidence.serves_any(["B"]) is False
+    assert evidence.serves_any([]) is False
 
 
 @pytest.mark.parametrize("scope", [False, True], ids=["per-series", "scope"])
@@ -56,7 +57,9 @@ def test_an_answer_without_a_plan_confirms_nothing():
     ("plan", "entities", "stat_vars", "reason"),
     [
         pytest.param(_plan(), _KEN, ["A", "B"], None, id="every-statvar-served"),
-        pytest.param(_plan(), _KEN, ["A", "C"], "facet_not_available", id="one-statvar-unserved"),
+        # A group serves while one of its served members holds a point, as the mint serves it.
+        pytest.param(_plan(), _KEN, ["A", "C"], None, id="one-served-statvar-confirmed"),
+        pytest.param(_plan(), _KEN, ["C"], "facet_not_available", id="no-served-statvar-confirmed"),
         pytest.param(_plan(), {}, ["A"], "facet_not_available", id="no-entities"),
         pytest.param(None, _KEN, ["A"], "facet_not_available", id="no-plan"),
         # A plan the elected units narrowed to nothing holds no series in the requested unit.

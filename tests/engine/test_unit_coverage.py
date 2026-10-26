@@ -49,6 +49,7 @@ from search.models import CoverageBare, CoverageExact, TimeWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
+from tests.engine._harness import lead_selected
 from tests.materialise._rate_table_support import (
     CONVERTIBLE_STAT_VAR_ARCS,
     RateTableServer,
@@ -544,7 +545,7 @@ def test_an_answer_states_only_the_rows_left_once_unmapped_recipients_are_omitte
     assert answer.headline.observations == 1
     assert answer.plan is not None
     assert read_plan.unserved_entities(answer.plan) == {("destination", r) for r in _REGIONS}
-    assert plan_unit_evidence(answer.plan).covers([_SV])
+    assert plan_unit_evidence(answer.plan).serves_any([_SV])
 
 
 _DECLARED_ROLE_ARCS = {"observationProperties": {"nodes": [{"dcid": role} for role in _ROLES]}}
@@ -721,7 +722,14 @@ def _bulk_plan_of(
         provenance_id=_PROVENANCE,
         unit="CurrencyEUR",
     )
-    return BulkPlan(members=tuple(by_sv), years=years, facet_id="f1", candidates={"f1": bulk})
+    candidates = {"f1": bulk}
+    return BulkPlan(
+        members=tuple(by_sv),
+        years=years,
+        facet_id="f1",
+        selected=lead_selected(candidates, "f1"),
+        candidates=candidates,
+    )
 
 
 def _bulk_plan(span: tuple[int, int]) -> BulkPlan:

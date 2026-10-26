@@ -1823,6 +1823,11 @@ _LONG = {f"dcid:Long{i}": _long_label(i) for i in range(10)}
             "Short of scope. At a different frequency: Basic health, Water.",
             id="other-frequency",
         ),
+        pytest.param(
+            {"unserved_members": {"count": 1, "refs": ["dcid:Water"]}},
+            "Short of scope. Under another source, unit or method: Water.",
+            id="unserved-members",
+        ),
         # A member the labels hold no name for reads as its bare dcid, and the members the
         # field counts past its refs as a count.
         pytest.param(

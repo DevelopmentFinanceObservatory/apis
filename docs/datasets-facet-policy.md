@@ -330,7 +330,7 @@ covering more of the bound places leads one holding more points at fewer
 of them. Member selection and group selection return the period with the
 selections (`materialise.facets.FacetElection`), and the mint, a preview
 and Search's served facets
-(`materialise.facets.served_facets`) all read it.
+(`materialise.group_facets.group_served`) all read it.
 
 Each member judges the cadence of every facet id it holds
 (`materialise.facets.cadences_by_member`). A stated period is the id's own

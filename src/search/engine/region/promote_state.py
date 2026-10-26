@@ -286,7 +286,7 @@ class _PromoteState:
     # The IdentityUnitRequest basis derived from identity.facets, when a unit
     # request is bound.
     unit_request_basis: dict[str, RequestBasis] | None = None
-    # decide_part_unit's own per-stat_var selection map for a bound
+    # decide_spec_unit's own per-stat_var selection map for a bound
     # request-form unit (region/convertibility.py), kept so _phase_finalize
     # can pass it straight to _build_observations/_observations_relaunch_closure
     # as `elected=`, steering the preview onto the same facet(s)

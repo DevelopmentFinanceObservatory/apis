@@ -52,7 +52,6 @@ from materialise.facets import (
     probe_facets,
     rank_candidates,
     select_facet,
-    served_facets,
 )
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.pipeline import MaterialisationRequest
@@ -63,6 +62,7 @@ from series_coverage.facets import facet_candidates
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
+from ._group_support import served_alone
 from ._scope_availability import NO_SCOPE_READ
 from .conftest import FakeGraphReader
 
@@ -1430,7 +1430,7 @@ def test_a_series_and_the_estimates_continuing_it_rank_as_one_candidate(
 def test_a_dispatch_serves_the_series_and_estimates_the_ranking_credited(candidates, served):
     """The ranking credits a series with the estimates its dispatch serves, so the
     election is never won on estimates the version then leaves out."""
-    assert served_facets(candidates, stat_vars=[_STAT_VAR], window=_range(2016, 2030)) == served
+    assert served_alone(candidates, stat_var=_STAT_VAR, window=_range(2016, 2030)) == served
 
 
 def test_estimates_continuing_two_selections_leave_the_election_to_their_own_series():
@@ -1452,7 +1452,7 @@ def test_estimates_continuing_two_selections_leave_the_election_to_their_own_ser
     window = _range(2020, 2030)
 
     for order in itertools.permutations([longer, shorter, estimates]):
-        assert served_facets(order, stat_vars=[_STAT_VAR], window=window) == (
+        assert served_alone(order, stat_var=_STAT_VAR, window=window) == (
             longer,
             estimates,
         ), [f.facet_id for f in order]

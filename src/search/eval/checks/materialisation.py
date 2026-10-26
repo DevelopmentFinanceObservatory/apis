@@ -123,7 +123,7 @@ def _stated_groups(
 ) -> dict[_FacetGroup, list[Facet]]:
     """The facets of one series that `stated` admits on every axis (`_axis_admits`), by
     group. A group is one cadence of one provenance, measurement method and unit, since a
-    dispatch serves its series at one observation period (`materialise.facets.served_facets`).
+    dispatch serves its series at one observation period (`materialise.group_facets.group_served`).
     A series whose admitted facets form several groups is one the answer does not pin to a
     single group."""
     (cadence_of,) = cadences_by_member([facets])

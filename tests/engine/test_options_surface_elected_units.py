@@ -246,7 +246,7 @@ def test_a_method_set_pin_decides_the_unit_for_each_method_in_the_set():
 
 def test_request_form_unit_with_no_recipe_refuses_with_the_doors_own_code_and_cause():
     """{EUR, current} against the same native-USD-only stat_var, under a
-    provenance lacking a conversionRecipe: decide_part_unit raises
+    provenance lacking a conversionRecipe: decide_spec_unit raises
     RecipeNotDeclaredError, and the options surface raises the identical
     EngineInputError shape region/promote_ground.py's _phase_ground_build
     raises for it (code, cause.code, pointer)."""

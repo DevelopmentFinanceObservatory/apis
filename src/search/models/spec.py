@@ -931,6 +931,9 @@ class ResolvedSpec(StrictModel):
     # departures, so they reach the wire in `departures` alone, and a response read back
     # from the cache holds neither. Equality compares the wire state (`__eq__`).
     _unserved_entities: tuple[tuple[str, str], ...] = PrivateAttr(default=())
+    # The members holding data that the answer's one group leaves out
+    # (`ResolvedSpec.unserved_members`), which the part states in its departures alike.
+    _unserved_members: tuple[GraphRef, ...] = PrivateAttr(default=())
     _data_years: tuple[int, int] | None = PrivateAttr(default=None)
     # Whether the served series include points continuing a series past its last period
     # (`ResolvedSpec.continued`), which the part states in a `modelled_values` departure.
@@ -969,6 +972,14 @@ class ResolvedSpec(StrictModel):
         served on the other. The part names them in an `entity_unavailable` departure
         (`engine.departures.spec_departure_facts`)."""
         return self._unserved_entities
+
+    @property
+    def unserved_members(self) -> tuple[GraphRef, ...]:
+        """The members holding data that the one group the answer reads leaves out, each
+        with its label, in member order (`read_plan.unserved_members`), as a mint of the
+        Spec names them in `coverage_below_scope`'s `unserved_members`. The part names them
+        in a `member_unavailable` departure (`engine.departures.spec_departure_facts`)."""
+        return self._unserved_members
 
     @property
     def named_sets(self) -> tuple[tuple[str, EntityGroup, frozenset[str]], ...]:
@@ -1080,6 +1091,12 @@ class ResolvedSpec(StrictModel):
         """A copy whose `unserved_entities` are the `(role, dcid)` pairs `entities`."""
         stated = self.model_copy()
         stated._unserved_entities = entities
+        return stated
+
+    def stating_unserved_members(self, members: tuple[GraphRef, ...]) -> ResolvedSpec:
+        """A copy whose `unserved_members` are `members`."""
+        stated = self.model_copy()
+        stated._unserved_members = members
         return stated
 
     def stating_named_sets(

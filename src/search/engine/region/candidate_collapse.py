@@ -15,7 +15,7 @@ from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.reading_coverage import covers
-from search.engine.region.bound_unit_gate import bound_unit_gate_reason
+from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.candidate_admission import _AlternatesAdmission
 from search.engine.region.candidate_grounding import (
     _GroundedCandidates,
@@ -124,7 +124,7 @@ def _apply_bound_unit_filter(
     An empty input proceeds to the elected shape's no-data reason.
 
     Each candidate passes the single-shape gate over its own read plan, which fetches nothing:
-    the plan serves every StatVar under its elected unit (`bound_unit_gate.bound_unit_gate_reason`)
+    the plan serves a StatVar the unit decision serves under its elected unit (`bound_unit_gate.bound_unit_gate_reason`)
     and every row it serves converts, as grounding found it (`cand_unit_coverage`). A candidate
     whose rows do not convert is dropped, and its refusal is recorded beside its election's
     (`cand_unit_refusals`). A passing candidate whose conversion omits the rows of entities
@@ -142,7 +142,8 @@ def _apply_bound_unit_filter(
             continue
         _s_svs, _s_ents = grounded.cand_obs_entities.get(s.spec_id, ([], {}))
         _gate_plan = grounded.cand_gate_plans.get(s.spec_id, grounded.cand_plans.get(s.spec_id))
-        if bound_unit_gate_reason(_gate_plan, _s_ents, _s_svs) is None:
+        _s_served = unit_served(grounded.cand_elected.get(s.spec_id), _s_svs)
+        if bound_unit_gate_reason(_gate_plan, _s_ents, _s_served) is None:
             available.append(s)
     for s in available:
         coverage = grounded.cand_unit_coverage.get(s.spec_id, UnitCoverage())

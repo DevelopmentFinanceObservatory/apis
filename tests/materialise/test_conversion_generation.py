@@ -757,6 +757,79 @@ def test_group_converts_both_members_to_eur_current_with_one_concat_schema():
     }
 
 
+def test_group_plans_no_conversion_for_a_member_it_leaves_unserved():
+    """A holds a dollar facet over two years and B a pound facet over one, under one source,
+    so each key serves one member and A's, holding more years, leads a euro request. B
+    dispatches no rows, so the group plans no conversion for it: B declares no Nominal
+    qualifier, which refuses a conversion planned for it, yet the mint serves A converted
+    and names B unserved."""
+    arcs = _base_arcs(bare_stat_vars=(_BARE_STAT_VAR,))
+    arcs[_BARE_STAT_VAR_B] = {
+        "observationProperties": _ROLES,
+        "populationType": ("FinancialFlow",),
+    }
+    arcs["CurrencyGBP"] = {"typeOf": ("CurrencyUnit",)}
+    sdmx, _requests = _router_sdmx(
+        role_bodies={
+            _BARE_STAT_VAR: _ROLE_HEADER
+            + _role_row(year="2021", value="50")
+            + _role_row(year="2022", value="100"),
+            _BARE_STAT_VAR_B: _ROLE_HEADER
+            + _role_row(
+                stat_var=_BARE_STAT_VAR_B,
+                year="2022",
+                value="200",
+                unit="CurrencyGBP",
+                facet_id="f2",
+            ),
+        },
+        subject_bodies={
+            _EXCHANGE_VAR: _eur_exchange_rate_body(year="2021")
+            + _eur_exchange_rate_body().split("\r\n", 1)[1]
+        },
+    )
+    eur_request = FacetBinding(state="request", request=UnitRequest("EUR", "current"))
+    members = [
+        _request(stat_var=_STAT_VAR, unit=eur_request),
+        _request(stat_var=_STAT_VAR_B, unit=eur_request),
+    ]
+    coverage = build_coverage_index(
+        [
+            (_BARE_STAT_VAR, "f1", "country/FRA", "country/KEN", [2021, 2022]),
+            (_BARE_STAT_VAR_B, "f2", "country/FRA", "country/KEN", [2022]),
+        ],
+        role_names={
+            bare: RoleNames(donor="financingProvider", recipient="financingRecipient")
+            for bare in (_BARE_STAT_VAR, _BARE_STAT_VAR_B)
+        },
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id=_MEMBER_PROVENANCE, measurement_method="GrantEquivalent", unit=unit
+            )
+            for facet_id, unit in (("f1", "CurrencyUSD"), ("f2", "CurrencyGBP"))
+        },
+    )
+    graph = _graph(arcs)
+
+    result = materialise_group(
+        members,
+        sdmx=sdmx,
+        graph=graph,
+        materialiser_build="test-build",
+        capability_version="v1",
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        rate_cache=RateTableCache(),
+        coverage=coverage,
+    )
+
+    frame = only_chunk(result)
+    assert sorted(
+        zip(frame.table["stat_var"].to_pylist(), frame.table["value"].to_pylist(), strict=True)
+    ) == [(_STAT_VAR, pytest.approx(50.0 * 0.9)), (_STAT_VAR, pytest.approx(100.0 * 0.9))]
+    warning = {w["code"]: w for w in result.warnings}["coverage_below_scope"]
+    assert warning["unserved_members"] == {"count": 1, "refs": [_STAT_VAR_B]}
+
+
 def test_group_with_an_empty_member_keeps_the_struct_unit_type():
     # `_STAT_VAR_B`'s own row is real (its facet probe -- always a LATEST
     # read, regardless of the member's own requested window -- finds a
