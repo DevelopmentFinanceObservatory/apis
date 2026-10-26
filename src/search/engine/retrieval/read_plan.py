@@ -165,6 +165,13 @@ def plan_years(
     return years
 
 
+def reads_dates(date_request: DateRequest | None) -> bool:
+    """Whether a facet read that elects for `date_request` reads each facet's dates: under a
+    range alone, the one window an election judges by dates
+    (`materialise.facets.overlaps_window`), as a mint's probe does."""
+    return date_request is not None and not date_request.latest
+
+
 @dataclass(frozen=True)
 class RoleYears:
     """A role read's years for one request over a coverage horizon (`role_years`): the

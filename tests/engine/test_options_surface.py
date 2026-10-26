@@ -26,6 +26,7 @@ from search.engine.region.codes import UN_SYSTEM_UNAVAILABLE
 from search.models import (
     BaseIdentity,
     CoverageBreadth,
+    CoverageExact,
     IdentityBindingSet,
     IdentityBindingUnbound,
     IdentityBindingValue,
@@ -177,7 +178,9 @@ def _place_request(
 
 
 def _materialise_graph_for(graph: FakeGraph, *, arcs: dict) -> FakeGraphReader:
-    """Builds materialise facets from `graph._obs` so presence and facet reads share fixture data."""
+    """Builds materialise facets from `graph._obs` so presence and facet reads share fixture
+    data. A facet holds the fixture's dates, which a read returns only when it asks for them
+    (`FakeGraphReader`), short of its count when the fixture lists fewer than `obsCount`."""
     facets: dict[tuple[str, str], list[MaterialiseFacet]] = {}
     for key, raw_list in graph._obs.items():
         if "|" not in key:
@@ -194,6 +197,9 @@ def _materialise_graph_for(graph: FakeGraph, *, arcs: dict) -> FakeGraphReader:
                 obs_count=raw.get("obsCount", 0),
                 earliest_date=raw.get("earliestDate"),
                 latest_date=raw.get("latestDate"),
+                dates=tuple(raw.get("dates", ())),
+                values=tuple(raw.get("values", ())),
+                dates_complete=len(raw.get("dates", ())) >= raw.get("obsCount", 0),
             )
             for i, raw in enumerate(raw_list)
         ]
@@ -515,12 +521,14 @@ class TestObservationAboutChildrenScope:
 
 
 # ---------------------------------------------------------------------------
-# Facet summaries lack point dates, so windowed coverage is a breadth estimate.
+# A range probe reads dates: complete dates give an exact count, short ones breadth.
 # ---------------------------------------------------------------------------
 
 
 class TestObservationAboutWindowedCoverage:
     def test_windowed_request_demotes_to_breadth_not_an_exact_count(self):
+        """The fixture lists none of its facets' 65 dates, as a dated read short of a
+        facet's count returns, so the window's count is a breadth estimate."""
         req = _place_request(
             entities={"observationAbout": ["country/GTM"]},
             requested_window=IdentityWindowRange(start_year=2015, end_year=2019),
@@ -529,10 +537,37 @@ class TestObservationAboutWindowedCoverage:
         _target, resp = _options_response(req, graph=_place_graph())
         item = next(i for i in resp.options.items if i.value.ref.ref == "country/GTM")
         assert isinstance(item.coverage, CoverageBreadth), (
-            "a windowed coverage request over materialise's own dateless facet probe must "
+            "a windowed coverage request over facets short of their dates must "
             f"demote to CoverageBreadth; got {type(item.coverage).__name__}"
         )
         assert item.coverage.has_data is True
+
+    def test_windowed_request_counts_the_points_a_dated_probe_reads_in_the_window(self):
+        """A range request's coverage probe reads dates, so a facet listing every date
+        counts its points inside 2015 to 2019 exactly."""
+        years = [str(year) for year in range(2010, 2021)]
+        obs = {
+            **_PLACE_OBS,
+            f"{_LIFE_EXPECTANCY_SV}|country/GTM": [
+                {
+                    "earliestDate": years[0],
+                    "latestDate": years[-1],
+                    "obsCount": len(years),
+                    "provenanceId": _OBS_PROVENANCE,
+                    "dates": years,
+                    "values": [1.0] * len(years),
+                },
+            ],
+        }
+        req = _place_request(
+            entities={"observationAbout": ["country/GTM"]},
+            requested_window=IdentityWindowRange(start_year=2015, end_year=2019),
+            include_coverage=True,
+        )
+        _target, resp = _options_response(req, graph=_place_graph(obs))
+        item = next(i for i in resp.options.items if i.value.ref.ref == "country/GTM")
+        assert isinstance(item.coverage, CoverageExact)
+        assert item.coverage.observation_count == 5
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +608,7 @@ def _unit_bound_request(
     include_coverage: bool = False,
     shape: dict = _LIFE_EXPECTANCY_SHAPE,
     slots: list[IdentitySlot] | None = None,
+    requested_window=None,
 ) -> OptionsRequest:
     return _place_request(
         shape=shape,
@@ -580,6 +616,7 @@ def _unit_bound_request(
         entities={},
         facets={"unit": IdentityBindingValue(ref="USD")},
         include_coverage=include_coverage,
+        requested_window=requested_window,
     )
 
 
@@ -630,6 +667,37 @@ class TestObservationAboutFacetBoundMembership:
         _target, resp = _options_response(req, graph=_place_graph(obs=_UNIT_BOUND_OBS))
         dcids = {i.value.ref.ref for i in resp.options.items}
         assert dcids == {"country/GTM"}
+
+    @pytest.mark.parametrize(
+        ("include_coverage", "requested_window", "dated"),
+        [
+            pytest.param(
+                False,
+                IdentityWindowRange(start_year=2015, end_year=2019),
+                False,
+                id="membership-under-a-range",
+            ),
+            pytest.param(
+                True,
+                IdentityWindowRange(start_year=2015, end_year=2019),
+                True,
+                id="coverage-under-a-range",
+            ),
+            pytest.param(True, None, False, id="coverage-under-every-date"),
+        ],
+    )
+    def test_a_facet_bound_read_carries_dates_only_for_coverage_under_a_range(
+        self, include_coverage, requested_window, dated
+    ):
+        """Membership judges a facet by its axes, so a read for membership alone reads no
+        dates; a read that also states coverage under a range reads them."""
+        graph = _place_graph(obs=_UNIT_BOUND_OBS)
+        materialise_graph = _materialise_graph_for(graph, arcs=_LIFE_EXPECTANCY_ARCS)
+        req = _unit_bound_request(
+            include_coverage=include_coverage, requested_window=requested_window
+        )
+        _options_response(req, graph=graph, materialise_graph=materialise_graph)
+        assert materialise_graph.facet_reads == [("observation_facets_batch_many", dated)]
 
     def test_a_unit_request_on_a_cold_cache_answers_with_the_converted_options(self):
         """The route hands `compute_options` the materialise SDMX client, so a request-form
@@ -1251,7 +1319,9 @@ class _FailingFacetsGraphReader(FakeGraphReader):
     def observation_facets_batch(self, *, stat_var, entities, deadline: float | None = None):
         raise GraphReadError("simulated transport error during the coverage probe")
 
-    def observation_facets_batch_many(self, *, stat_vars, entities, deadline: float | None = None):
+    def observation_facets_batch_many(
+        self, *, stat_vars, entities, needs_dates: bool = False, deadline: float | None = None
+    ):
         raise GraphReadError("simulated transport error during the coverage probe")
 
 
@@ -1304,7 +1374,12 @@ class TestFacetBoundMembershipFetchFailsClosed:
                 raise ValueError("simulated bug, not a graph transport failure")
 
             def observation_facets_batch_many(
-                self, *, stat_vars, entities, deadline: float | None = None
+                self,
+                *,
+                stat_vars,
+                entities,
+                needs_dates: bool = False,
+                deadline: float | None = None,
             ):
                 raise ValueError("simulated bug, not a graph transport failure")
 
@@ -1490,10 +1565,15 @@ class TestFacetReadNoLongerBoundedByScopeMaxMembers:
                     stat_var=stat_var, entities=entities, deadline=deadline
                 )
 
-            def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+            def observation_facets_batch_many(
+                self, *, stat_vars, entities, needs_dates: bool = False, deadline=None
+            ):
                 self.deadlines.append(deadline)
                 return super().observation_facets_batch_many(
-                    stat_vars=stat_vars, entities=entities, deadline=deadline
+                    stat_vars=stat_vars,
+                    entities=entities,
+                    needs_dates=needs_dates,
+                    deadline=deadline,
                 )
 
         req = _unit_bound_request()

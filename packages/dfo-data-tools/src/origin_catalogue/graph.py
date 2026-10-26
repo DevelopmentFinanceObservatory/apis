@@ -748,6 +748,7 @@ class OriginGraphClient:
         *,
         stat_vars: Sequence[str],
         entities: Sequence[str],
+        needs_dates: bool = False,
         deadline: float | None = None,
         max_bytes: int | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
@@ -758,6 +759,7 @@ class OriginGraphClient:
             lambda backend, part, domains: backend.observation_facets_batch_many(
                 stat_vars=part,
                 entities=entities,
+                needs_dates=needs_dates,
                 deadline=deadline,
                 max_bytes=max_bytes,
                 domains=domains,
@@ -765,10 +767,15 @@ class OriginGraphClient:
         )
 
     def variable_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_var: str,
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, list[Facet]]:
         return self.observation_facets_batch_many(
-            stat_vars=[stat_var], entities=entities, deadline=deadline
+            stat_vars=[stat_var], entities=entities, needs_dates=needs_dates, deadline=deadline
         ).get(stat_var, {})
 
     def un_observation_reader(self) -> Self:

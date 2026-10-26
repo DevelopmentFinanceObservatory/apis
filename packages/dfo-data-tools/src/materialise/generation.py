@@ -1208,6 +1208,7 @@ def _probe_member(
         declared_roles=request.declared_roles,
         role_bindings=request.role_bindings,
         coverage=coverage,
+        window=request.window,
         deadline=deadline,
     )
 

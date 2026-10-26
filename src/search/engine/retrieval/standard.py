@@ -47,6 +47,7 @@ from search.engine.retrieval.read_plan import (
     in_elected_datasets,
     plan_standard,
     plan_years,
+    reads_dates,
     serves_nothing,
     window_gap,
 )
@@ -1741,7 +1742,8 @@ def standard_option_coverage(
     yet known. A missing ``materialise_graph`` is a no-op. Each option's coverage is
     stated from a plan over its matching facets (`plan_standard`) under the request's
     years: the group the plan elects for each StatVar across the probed places, as an
-    answer would serve it.
+    answer would serve it. Under a range the probe reads the facets' dates
+    (`read_plan.reads_dates`), so the plan judges each facet by its points in the window.
 
     A member counts only the facets its elected dataset publishes. With `query`, the
     answer's family query, the dataset is the one the code index elects once the option is
@@ -1777,7 +1779,7 @@ def standard_option_coverage(
     probe_key = _standard_probe_key(list(sv_arc_facts), place_dcid, date_request, place_dcids)
     if probe_key is None:
         return slot_options
-    _members, probe_entities, _needs_dates = probe_key
+    _members, probe_entities, _answer_reads_dates = probe_key
     is_plural = len(probe_entities) > 1
 
     # Union matching StatVars so a member serving several slots is probed once.
@@ -1820,6 +1822,7 @@ def standard_option_coverage(
             stat_vars=sorted(union_svs),
             entities=list(probe_entities),
             materialise_graph=materialise_graph,
+            needs_dates=reads_dates(date_request),
         )
 
     for i, so, prop_dcid, sv_by_option in pending:

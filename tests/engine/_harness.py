@@ -458,13 +458,16 @@ class ObsFacetFixture:
 
 
 def _facet_from_fixture(fixture: ObsFacetFixture) -> MaterialiseFacet:
+    """The facet a dated graph read returns for `fixture`: its points' dates and values, short
+    of its count (`dates_complete`) when `obs_count` names more points than it holds."""
     dates = [d for d, _ in fixture.points]
+    obs_count = fixture.obs_count if fixture.obs_count is not None else len(fixture.points)
     return MaterialiseFacet(
         facet_id=fixture.facet_id,
         provenance_id=fixture.provenance_id,
         measurement_method=fixture.measurement_method,
         unit=fixture.unit,
-        obs_count=fixture.obs_count if fixture.obs_count is not None else len(fixture.points),
+        obs_count=obs_count,
         earliest_date=fixture.earliest_date
         if fixture.earliest_date is not None
         else (min(dates) if dates else None),
@@ -472,6 +475,9 @@ def _facet_from_fixture(fixture: ObsFacetFixture) -> MaterialiseFacet:
         if fixture.latest_date is not None
         else (max(dates) if dates else None),
         scaling_factor=fixture.scaling_factor,
+        dates=tuple(dates),
+        values=tuple(value for _, value in fixture.points),
+        dates_complete=len(dates) >= obs_count,
     )
 
 
@@ -660,7 +666,12 @@ class _ProbeFailingGraphReader(FakeGraphReader):
         self._probe_failure_message = message
 
     def observation_facets_batch_many(
-        self, *, stat_vars: Sequence[str], entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_vars: Sequence[str],
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, list[MaterialiseFacet]]]:
         self._count("observation_facets_batch_many")
         raise GraphInfraError(self._probe_failure_message)
