@@ -3,8 +3,9 @@ axes, and the engine facts the axis rules build the tables from."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import cast
 
 from code_index.query import CodeIndex, IndexFamily
 from search.models import EntityGroup, Operation, Option, ScopeAxis
@@ -95,7 +96,8 @@ class ScopeFacts:
     """The engine state the axis rules read: the release's code index, the request's
     coverage snapshot and the part's own facts (`PartFacts`), all in memory. Passed
     explicitly, so a rule reads no global. One `ScopeFacts` serves one build of one part's
-    scope, and memoises the family scans its rules share (`family_values`)."""
+    scope, and memoises the family scans its rules share (`family_values`) and the years a
+    composite's components hold (`remembered`)."""
 
     index: CodeIndex
     coverage: CoverageSnapshot
@@ -103,6 +105,14 @@ class ScopeFacts:
     _scans: dict[tuple[int, tuple[str, ...]], tuple[IndexFamily, FamilyValues]] = field(
         default_factory=dict, init=False, compare=False, repr=False
     )
+    _years: dict[str, object] = field(default_factory=dict, init=False, compare=False, repr=False)
+
+    def remembered[T](self, key: str, read: Callable[[], T]) -> T:
+        """`read()`, read once per build for `key`, a canonical document of what it reads
+        (`composite.component_years` keys the years an identity's family holds on it)."""
+        if key not in self._years:
+            self._years[key] = read()
+        return cast(T, self._years[key])
 
     def family_values(self, family: IndexFamily, properties: tuple[str, ...]) -> FamilyValues:
         """What `family`'s rows hold on `properties` (`FamilyValues`), read in one scan of

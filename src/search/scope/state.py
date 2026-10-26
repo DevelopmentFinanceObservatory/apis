@@ -3,7 +3,6 @@ write back."""
 
 from __future__ import annotations
 
-from collections.abc import Collection
 from dataclasses import dataclass, field
 
 from search.models import ChoiceProvenance, Entry, ScopeAxis
@@ -85,22 +84,15 @@ class ScopeState:
             raise ValueError(f"the {record.axis!r} axis is already settled")
         self.records[record.axis] = record
 
-    def attached(self, *, unruled: Collection[ScopeAxis] = ()) -> tuple[Entry, ...]:
+    def attached(self) -> tuple[Entry, ...]:
         """The entries that attach to the part: those on an axis a binder settled, and of
-        those made for a concept, the ones whose concept is the one the axis was asked for,
-        then, on a part whose binders settled some axis, every explicit entry on an axis of
-        `unruled`, the axes no rule serves (`rules.AXIS_RULES`). An entry on another axis
-        the part does not have, or for another concept ("health" on an education part), is
-        not the part's, so it neither applies nor is reported as dropped. A stated word on
-        an unruled axis ("bilateral health aid") is the part's, which serves no option for
-        it, so it is reported."""
-        unruled_axes = frozenset(unruled) if self.records else frozenset()
+        those made for a concept, the ones whose concept is the one the axis was asked for.
+        An entry on another axis the part does not have, or for another concept ("health" on
+        an education part), is not the part's, so it neither applies nor is reported as
+        dropped."""
         return tuple(
             entry
             for entry in self.entries
-            if (
-                (record := self.records.get(entry.axis)) is not None
-                and entry.concept in (None, record.concept)
-            )
-            or (entry.axis in unruled_axes and entry.provenance == "explicit")
+            if (record := self.records.get(entry.axis)) is not None
+            and entry.concept in (None, record.concept)
         )

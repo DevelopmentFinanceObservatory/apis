@@ -4,7 +4,8 @@
 `MEASURE_BASIS_CONVENTIONS` names the measure basis each part shape and window defaults to,
 `BASIS_MEASURES` what each basis binds in an identity, and `BASIS_RESTRICTIONS` the code
 systems besides the sector whose admitted code makes a part a restricted one.
-`OPTION_LABELS` words the options the rules build from code and group labels. `search.scope`
+`PROVIDER_CONVENTIONS` names whose spending a part counts by default. `OPTION_LABELS` words the
+options the rules build from code and group labels. `search.scope`
 reads them all, and `graph_release.declarations` hashes the tables beside the other
 declarations, so a change to one moves the declarations hash and the scope rule version.
 """
@@ -19,6 +20,10 @@ MeasureBasis = Literal["gross", "net", "grant_equivalent", "commitments", "oecd_
 """Every measure basis a part can be counted on. `oecd_headline` is the OECD's headline
 basis per year: net flows to 2017 and grant equivalents from 2018, as two period
 components."""
+
+ProviderScope = Literal["bilateral", "inclusive"]
+"""Whose spending a part counts: the donor's bilateral flows, or those plus its imputed share
+of multilateral spending."""
 
 PartShape = Literal["donor_only", "recipient_all_sectors", "sector_or_restriction"]
 """The part shapes the basis conventions distinguish. `donor_only` names a donor and no
@@ -49,6 +54,24 @@ class BasisMeasure:
     flow_type: tuple[str, str]
     oda_flows: tuple[str, ...]
     words: str
+
+
+@dataclass(frozen=True)
+class ProviderConvention:
+    """Whose spending a part counts by default, and when.
+
+    A part takes `scope` when it names a donor (`names_donor`), its shape is one of `shapes`,
+    its dataset is `dataset` and its words ask for a total (`asks_total`), and the scope serves
+    every year it asks for. `rule` names the convention on the scope choice it settles, and
+    `note` says why it holds."""
+
+    rule: str
+    scope: ProviderScope
+    shapes: tuple[PartShape, ...]
+    dataset: str
+    names_donor: bool
+    asks_total: bool
+    note: str
 
 
 @dataclass(frozen=True)
@@ -140,7 +163,10 @@ class OptionLabels:
     its `words` (`BasisMeasure.words`), the `prices` of the identity's price basis
     ("current", "constant 2024") and its `currency` ("USD", "donor currency"), and
     `measure_basis_unpriced` from its words alone, for an identity that states no price
-    basis."""
+    basis. `oecd_headline` names the OECD's headline basis per year. `provider_bilateral` and
+    `provider_inclusive` name the two provider scopes, and `provider_inclusive_years` the
+    inclusive scope over the `years` both of its tables cover ("2011 to 2024", "2023"), when
+    they set the part's window."""
 
     sector_code: str
     sector_code_alone: str
@@ -148,6 +174,10 @@ class OptionLabels:
     region_members_only: str
     measure_basis: str
     measure_basis_unpriced: str
+    oecd_headline: str
+    provider_bilateral: str
+    provider_inclusive: str
+    provider_inclusive_years: str
 
 
 OPTION_LABELS = OptionLabels(
@@ -157,6 +187,10 @@ OPTION_LABELS = OptionLabels(
     region_members_only="{region_of} countries only",
     measure_basis="{words}, {prices} {currency}",
     measure_basis_unpriced="{words}",
+    oecd_headline="OECD headline (net flows to 2017, grant equivalents from 2018)",
+    provider_bilateral="bilateral flows only",
+    provider_inclusive="bilateral plus imputed multilateral",
+    provider_inclusive_years="bilateral plus imputed multilateral, {years}",
 )
 
 CONVENTION_CURRENCY = "USD"
@@ -231,6 +265,30 @@ MEASURE_BASIS_CONVENTIONS: tuple[BasisConvention, ...] = (
         note="CRS gross disbursements",
     ),
 )
+
+# A named donor's total of a CRS sector, or of a part the CRS serves for a recipient, counts
+# its bilateral flows plus its imputed share of multilateral spending, after ONE's method:
+# the multilateral organisations' own spending in the sector, attributed to the donors in
+# proportion to their core contributions. Every other part counts bilateral flows. DAC1 donor
+# totals already count core contributions to multilaterals, and DAC2a's imputed line is
+# netted differently, so neither takes the inclusive scope.
+PROVIDER_CONVENTIONS: tuple[ProviderConvention, ...] = (
+    ProviderConvention(
+        rule="named_donor_total",
+        scope="inclusive",
+        shapes=("sector_or_restriction", "recipient_all_sectors"),
+        dataset=_CRS,
+        names_donor=True,
+        asks_total=True,
+        note=(
+            "a named donor's total counts its bilateral flows plus its imputed share of "
+            "multilateral spending (ONE method)"
+        ),
+    ),
+)
+
+PROVIDER_DEFAULT_RULE = "bilateral_flows"
+"""The rule of a part no provider convention settles: it counts the donor's bilateral flows."""
 
 ODA_FLOW_SYSTEM = "crsTypeOfFlow"
 """The code system an ODA flow binding binds."""

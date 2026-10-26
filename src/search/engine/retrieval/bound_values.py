@@ -44,6 +44,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
+from code_index.composites import table_identity
 from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
 from code_index.members import (
     DatasetFamily,
@@ -1665,9 +1666,11 @@ def slot_expansions(bindings: Sequence[SlotBindingDraft]) -> dict[str, Expansion
     return expansions
 
 
-def _identity_document(identity: BaseIdentity) -> dict[str, object]:
-    """Return `identity` as the document the Datasets mint reads."""
-    return identity.model_dump(mode="json", exclude_none=True)
+def _identity_document(identity: BaseIdentity) -> Mapping[str, object]:
+    """Return `identity` as the document a reader of one table's family reads: the document
+    the Datasets mint reads, or for a composite the identity its option was set on
+    (`code_index.composites.table_identity`)."""
+    return table_identity(get_index(), identity.model_dump(mode="json", exclude_none=True))
 
 
 def identity_query(identity: BaseIdentity) -> FamilyQuery:
@@ -1675,7 +1678,8 @@ def identity_query(identity: BaseIdentity) -> FamilyQuery:
 
     The reader is the Datasets mint's, `code_index.members.identity_family_query`, over the
     document the mint reads: the identity's five-tuple, its slots widened to their
-    descendants, and the dataset its provenance facet names.
+    descendants, and the dataset its provenance facet names. A composite reads the family of
+    the identity its option was set on (`_identity_document`).
     """
     return identity_family_query(get_index(), _identity_document(identity))
 

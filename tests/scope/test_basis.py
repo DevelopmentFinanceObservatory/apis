@@ -57,6 +57,7 @@ _KEN = "country/KEN"
 _DAC1 = "provenance/OECDDAC1"
 _DAC2A = "provenance/OECDDAC2A"
 _CRS = "provenance/OECDCreditorReportingSystem"
+_HEADLINE = "provenance/ONEOECDHeadlineODA"
 _ODA = "CRSTypeOfFlow10"
 
 _DAC1_MEMBERS = (
@@ -304,7 +305,9 @@ class _Cell(NamedTuple):
 _CELLS = {
     "donor-only-2019": _Cell("aid", "2019", False, _GE_DAC1, "measure_basis:grant_equivalent"),
     "donor-only-2016": _Cell("aid", "2016", False, _NET_DAC1, "measure_basis:net"),
-    "donor-only-2010-2024": _Cell("aid", "2010-2024", False, _NET_DAC1, "measure_basis:net"),
+    "donor-only-2010-2024": _Cell(
+        "aid", "2010-2024", False, _NET_DAC1, "measure_basis:oecd_headline"
+    ),
     "recipient-all-sectors": _Cell("aid", "2019", True, _NET_DAC2A, "measure_basis:net"),
     "sector": _Cell("health aid", "2019", True, _GROSS_CRS, "measure_basis:gross"),
 }
@@ -651,6 +654,40 @@ def test_a_switch_moves_the_basis_and_back_to_the_first_spec_id(
     assert moved.resolved.scope_choices is not None
     assert moved.resolved.scope_choices.base.spec_id == first.spec_id
     assert restored.spec_id == first.spec_id
+
+
+def test_a_donor_window_crossing_2018_is_counted_on_the_oecd_headline_per_year():
+    """2015 to 2020 for a donor: net flows to 2017 and grant equivalents from 2018, one
+    composite of two disjoint periods, and a switch to net removes the composite."""
+    spec = _ask("aid", time="2015-2020", recipient=False)
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+
+    assert _basis_choice(spec) == ("measure_basis:oecd_headline", "default", None)
+    binding = (spec.definition.identity.facets or {})["provenance"]
+    assert binding == IdentityBindingValue(ref=_HEADLINE)
+    assert spec.resolved.facets["provenance"].ref == _HEADLINE
+    assert [(c.role, c.provenance, c.periods) for c in scope.compiled.components] == [
+        ("headline_net", _DAC1, [(2015, 2017)]),
+        ("headline_ge", _DAC1, [(2018, 2020)]),
+    ]
+    measures = [
+        (c.identity.shape.measured_property, c.identity.requested_window.model_dump())
+        for c in scope.compiled.components
+        if isinstance(c.identity.shape, IdentityShapeSchema)
+    ]
+    assert measures == [
+        ("amount", {"kind": "range", "start_year": 2015, "end_year": 2017}),
+        ("grantEquivalent", {"kind": "range", "start_year": 2018, "end_year": 2020}),
+    ]
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+
+    net = _switch(scope.base.identity, "measure_basis:net", choice.id)
+
+    assert "provenance" not in (net.definition.identity.facets or {})
+    assert _served_basis(net) == _NET_DAC1
+    back = _switch(scope.base.identity, "measure_basis:oecd_headline", choice.id)
+    assert back.spec_id == spec.spec_id
 
 
 @pytest.mark.parametrize(

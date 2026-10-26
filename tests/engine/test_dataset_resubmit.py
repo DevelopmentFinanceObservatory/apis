@@ -929,18 +929,19 @@ def test_an_identity_over_the_place_bound_refuses_request_invalid_on_the_wire(
     assert "parts" not in body
 
 
-def test_an_identity_binding_a_composite_provenance_refuses_request_invalid_on_the_wire():
-    """A composite provenance names no table, so a resubmit posting one refuses at the entry's
-    provenance facet before any read."""
-    identity = BaseIdentity.model_validate(
-        education_aid_identity(source="provenance/ONEBilateralAndImputedMultilateral")
-    )
+def test_a_composite_identity_its_components_cannot_serve_refuses_request_invalid_on_the_wire():
+    """A composite whose imputed component's rows declare no co-operation modality cannot
+    serve a bound modality, so a resubmit posting one refuses at the bound slot before any
+    read."""
+    document = education_aid_identity(source="provenance/ONEBilateralAndImputedMultilateral")
+    document["slots"][0]["binding"] = {"state": "value", "ref": "CRSCooperationModalityA01"}
+    identity = BaseIdentity.model_validate(document)
     entry = ResubmitIdentityEntry(variable_text="education aid", identity=identity)
     resp = _client().post("/api/search/resolve", json=_wire_request([entry]))
     assert resp.status_code == 400
     body = resp.json()
     assert body["code"] == "request_invalid"
-    assert body["pointer"] == "/input/entries/0/identity/facets/provenance"
+    assert body["pointer"] == "/input/entries/0/identity/slots/0"
     assert "parts" not in body
 
 

@@ -153,6 +153,21 @@ def component_identities(
     return tuple(components)
 
 
+def table_identity(index: CodeIndex, identity: Mapping[str, object]) -> Mapping[str, object]:
+    """The identity a reader of one table's family reads for `identity`: for a composite, the
+    identity its composite option was set on (`without_composite`), once its components derive
+    (`component_identities`); `identity` itself otherwise. That is the bilateral component of a
+    provider-inclusive composite, and the net identity over the whole window of the OECD
+    headline, whose shape the part elected. Search reads a composite's family, pins, dataset and
+    provenance scope here, so its readers elect over the same rows the composite's option
+    edits.
+
+    Raises `CompositeNotServable` as `component_identities` does."""
+    if component_identities(index, identity) is None:
+        return identity
+    return without_composite(identity)
+
+
 def component_of(composite: CompositeDeclaration, row: StatVarRow) -> ComponentRole | None:
     """The role of `composite`'s component that serves `row`: the first whose table publishes
     it (`StatVarRow.provenances`) and whose recipe sets no measure or the measure `row` has.

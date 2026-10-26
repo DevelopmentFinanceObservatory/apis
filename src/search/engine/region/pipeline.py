@@ -78,7 +78,11 @@ from search.engine.region.requirements import (
     unbinding_phrases,
     with_requirement_departures,
 )
-from search.engine.region.result import RegionResult, every_member_phrases
+from search.engine.region.result import (
+    RegionResult,
+    every_member_phrases,
+    with_composite_answer,
+)
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -97,8 +101,9 @@ from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
 from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Spec, Warning
 from search.scope.build import build_part_scope
-from search.scope.rules import UNRULED_AXES
-from search.scope.state import ScopeIntake
+from search.scope.composite import assemble_composite
+from search.scope.provider import settle_provider
+from search.scope.state import ScopeIntake, ScopeState
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
@@ -557,32 +562,51 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
 def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     built from the axis records the pass's binders hold (`ResolveState.scope_selection`)
-    over the answer's identity. Only the entries a binder applied compile
-    (`AxisRecord.entry`), so every choice states the option the answer serves; the other
-    entries that attach to the part (`ScopeState.attached`: those on an axis a binder
-    settled, for the concept it was asked for, and the stated ones on an axis no rule
-    serves, `UNRULED_AXES`) are reported in `PartScope.dropped_entries`. A result that is not definite, or whose pass wrote no axis
-    record, states none, and so does one whose answer the recorded axes do not reach, as a
-    region read at its published total. In memory: the rules read the bound release's code
-    index, the request's coverage snapshot and the part's operations, groups and served
-    datasets (`scope_facts`). A fresh search never refuses its scope (`build_part_scope`
-    with `refuse` false); only a dataset_resubmit's posted `scope_entries` refuse 422."""
+    and, on a part whose binders settled some axis, the provider scope settled over the
+    answer's identity (`provider.settle_provider`).
+    Only the entries a binder applied compile (`AxisRecord.entry`), so every choice states
+    the option the answer serves; the other entries that attach to the part
+    (`ScopeState.attached`: those on an axis a binder settled, for the concept it was asked
+    for) are reported in `PartScope.dropped_entries`. A result that is not definite, or
+    whose pass settled no axis, states none, and so does one whose answer the recorded axes
+    do not reach, as a region read at its published total. In memory: the rules read the
+    bound release's code index, the request's coverage snapshot and the part's operations,
+    groups and served datasets (`scope_facts`). A fresh search never refuses its scope
+    (`build_part_scope` with `refuse` false); only a dataset_resubmit's posted
+    `scope_entries` refuse 422.
+
+    When the binders settle a composite option (the inclusive provider scope, the OECD
+    headline per year), the scope's base is the composite, and the answer is restated as it
+    (`composite.assemble_composite`)."""
     selection = state.scope_selection
     if result.status != "definite" or not selection.records:
         return result
     spec = result.spec
+    facts = scope_facts(spec, operations=state.operations, coverage=state.coverage)
+    settled = ScopeState(entries=selection.entries, records=dict(selection.records))
+    provider = settle_provider(spec.definition.identity, selection, facts)
+    if provider is not None:
+        settled.write(provider)
     built = build_part_scope(
         base=spec.definition.identity,
         entries=[],
-        records=selection.records,
-        facts=scope_facts(spec, operations=state.operations, coverage=state.coverage),
-        read=selection.attached(unruled=UNRULED_AXES),
+        records=settled.records,
+        facts=facts,
+        read=settled.attached(),
         refuse=False,
     )
     assert isinstance(built, PartScope)
     if not built.choices:
         return result
-    return dataclasses.replace(result, scope_choices=built)
+    if built.compiled.spec_id == spec.spec_id:
+        return dataclasses.replace(result, scope_choices=built)
+    composite, _ = assemble_composite(
+        spec,
+        built.compiled.identity,
+        built.compiled.spec_id,
+        facts=facts,
+    )
+    return dataclasses.replace(with_composite_answer(result, composite), scope_choices=built)
 
 
 def scope_facts(

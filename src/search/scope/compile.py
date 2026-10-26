@@ -14,8 +14,11 @@ Pure: it reads only its arguments and does no I/O. The rules it holds to:
   `carried_choice_not_applied`. A switch that conflicts with an applied entry is refused,
   so a switch never moves an explicit or carried entry. Carried entries are weighed in
   axis order, then by option id, so the order they are posted in never matters.
+- A partial option (one serving fewer years than the part asks for, with its own shorter
+  window) applies only to a switch, since only a click may change the period asked for. A
+  stated or carried entry asking for it is refused or dropped with the option's reason.
 - Every other axis takes its derived default: the first option of its preference that is
-  not unavailable and that no entry, and no default derived before it, conflicts with.
+  available and that no entry, and no default derived before it, conflicts with.
 - An option that would conflict with an entry on another axis is unavailable, with
   `conflicts_with` naming the entry, which is the switch compile refuses. One that
   conflicts only with a default stays available, since the default moves.
@@ -97,6 +100,9 @@ def _unavailable(tables: Mapping[ScopeAxis, AxisTable], entry: Entry) -> str | N
         return "option_unknown"
     if option.availability.status == "unavailable":
         return option.availability.code or "option_unavailable"
+    switched = entry.provenance == "explicit" and entry.origin.kind == "choice"
+    if option.availability.status == "partial" and not switched:
+        return option.availability.code or "option_partial"
     return None
 
 
@@ -239,8 +245,8 @@ def _derived_default(
     derived: Mapping[ScopeAxis, _Settled],
     conflicts: Mapping[frozenset[str], str],
 ) -> _Settled | Refusal:
-    """The default of `table`'s axis: the first preferred option that is not unavailable
-    and that no settled option conflicts with. A default derived earlier yields to an entry
+    """The default of `table`'s axis: the first preferred option that is available and
+    that no settled option conflicts with. A default derived earlier yields to an entry
     but not to another default, so when only defaults block every option the first one an
     entry allows is taken. When entries block every option, the first blocking entry is
     refused. An axis whose every preferred option is unavailable keeps the option the base
@@ -249,7 +255,7 @@ def _derived_default(
         option_id
         for option_id in table.preference
         if (option := table.option(option_id)) is not None
-        and option.availability.status != "unavailable"
+        and option.availability.status == "available"
     ]
     if not servable:
         return _Settled(table.held, "default", None)

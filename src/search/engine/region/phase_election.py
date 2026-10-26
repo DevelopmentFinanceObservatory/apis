@@ -131,6 +131,7 @@ from search.models import ResolvedQualifier, Warning
 from search.scope.basis import (
     BASIS_RULE,
     CONVENTION_DATASETS,
+    HEADLINE_OPTION,
     SERVED_DIFFERS_RULE,
     BasisElection,
     elect_basis,
@@ -1708,7 +1709,9 @@ def _with_basis_flows(
 def _record_basis(state: ResolveState, settled: _SettledBindings, basis: BasisElection) -> None:
     """Record the measure basis the part's served bindings hold
     (`ResolveState.scope_selection`), with the entry that settled it when they hold the
-    option the entry asked for. A basis no entry settled that is not the convention's,
+    option the entry asked for. A part whose convention is the OECD headline per year and
+    which holds its net shape records the headline option, which the scope serves from the
+    headline composite. A basis no entry settled that is not the convention's,
     served because no shape of the pool measures the convention's, records
     `SERVED_DIFFERS_RULE` in place of the convention's rule and is logged with the part's
     shape, so the choice does not claim the convention settled it. A shape whose measure no
@@ -1728,6 +1731,10 @@ def _record_basis(state: ResolveState, settled: _SettledBindings, basis: BasisEl
     if held is None:
         return
     active = measure_basis_option_id(held.basis)
+    if basis.entry is None and basis.convention.basis == "oecd_headline" and held == basis.measure:
+        # The headline's net shape stands for the headline per year, which the scope serves
+        # from the headline composite (`scope.basis.HEADLINE_BINDING`).
+        active = HEADLINE_OPTION
     entry = basis.entry if basis.entry is not None and basis.entry.option_id == active else None
     rule = BASIS_RULE
     if entry is None and held != basis.by_convention().measure:

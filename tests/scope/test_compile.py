@@ -17,7 +17,6 @@ from search.models import (
     BaseIdentity,
     EntitiesBinding,
     Entry,
-    ProviderBinding,
     ScopeReasonCode,
 )
 from search.scope.compile import Compiled, Refusal, compile
@@ -358,11 +357,6 @@ def test_an_axis_table_refuses_what_compile_cannot_read(change):
 
     with pytest.raises(ScopeTableError):
         AxisTable(**{**fields, **change})
-
-
-def test_a_provider_binding_has_no_identity_edit():
-    with pytest.raises(ScopeTableError):
-        apply_binding(BASE, ProviderBinding(scope="inclusive"), [])
 
 
 def test_an_entities_edit_refuses_to_empty_a_role():

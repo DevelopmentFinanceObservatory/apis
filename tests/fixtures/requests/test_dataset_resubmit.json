@@ -75,7 +75,7 @@
     ["FakeGraph.node_labels_batch",{"dcids":["Country"]}],
     ["FakeGraph.observation_facets_batch",{"stat_vars":["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],"entities":["country/IND"],"needs_dates":true}]
   ],
-  "test_an_identity_binding_a_composite_provenance_refuses_request_invalid_on_the_wire": [],
+  "test_a_composite_identity_its_components_cannot_serve_refuses_request_invalid_on_the_wire": [],
   "test_an_identity_over_the_place_bound_refuses_request_invalid_on_the_wire[200-and-100-across-two-roles]": [],
   "test_an_identity_over_the_place_bound_refuses_request_invalid_on_the_wire[one-role-of-300]": [],
   "test_build_candidates_region_one_survivor_collapses_to_definite[one]": [

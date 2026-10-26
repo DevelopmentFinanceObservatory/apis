@@ -40,7 +40,9 @@ request deadline unless a promote ran the full read.
 
 An identity entry that posts `scope_entries` compiles them over its identity
 (`scope.build.build_part_scope`), resolves the identity they compile to, and carries the
-scope on its definite part (`_compiled_scope`, `_served_scope`).
+scope on its definite part (`_compiled_scope`, `_served_scope`). A composite identity, posted
+or compiled, resolves the identity its option was set on
+(`identity_edit.composite_table_identity`) and answers as the composite (`_as_composite`).
 
 A part whose answer stands on less than a later request may read
 (`RegionResult.leg_degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
@@ -87,16 +89,19 @@ from search.engine.entry.params import EntryParams
 from search.engine.envelope import _terminal_events, now_ms
 from search.engine.errors import EngineInputError
 from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
+from search.engine.identity_edit import composite_table_identity
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
-from search.engine.region.result import with_runnable_operations
+from search.engine.region.result import with_composite_answer, with_runnable_operations
 from search.engine.region.sentence_events import answer_events, response_sentence_events
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
 from search.engine.retrieval.bound_values import identity_dataset
+from search.engine.spec_id import identity_spec_id
 from search.models import (
+    BaseIdentity,
     DatasetResubmitInput,
     EntityGroup,
     PartScope,
@@ -111,6 +116,7 @@ from search.models import (
 )
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
+from search.scope.composite import assemble_composite
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
@@ -150,6 +156,22 @@ def _compiled_scope(
     if isinstance(built, Refusal):
         raise refusal_error(built, pointer=f"/input/entries/{index}/scope_entries/{built.entry}")
     return built
+
+
+def _as_composite(
+    region: RegionResult,
+    identity: BaseIdentity,
+    *,
+    scope: PartScope | None,
+    coverage: CoverageSnapshot,
+) -> RegionResult:
+    """`region`, resolved for composite `identity`'s table identity, answering the composite
+    (`scope.composite.assemble_composite`) under its own spec_id, which is the compiled
+    scope's when `scope` compiled it."""
+    spec_id = scope.compiled.spec_id if scope is not None else identity_spec_id(identity)
+    facts = ScopeFacts(index=get_index(), coverage=coverage)
+    spec, _ = assemble_composite(region.spec, identity, spec_id, facts=facts)
+    return with_composite_answer(region, spec)
 
 
 def _served_scope(scope: PartScope | None, region: RegionResult) -> PartScope | None:
@@ -323,17 +345,19 @@ async def handle(
     )
 
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
+        # A composite its components cannot serve refuses before its scope compiles.
+        composite_table_identity(entry.identity, pointer=f"/input/entries/{index}/identity")
         scope = (
             None
             if entry.scope_entries is None
             else _compiled_scope(entry, index=index, coverage=params.coverage)
         )
+        identity = entry.identity if scope is None else scope.compiled.identity
+        read = composite_table_identity(identity, pointer=f"/input/entries/{index}/identity")
         payload = (
             spec_resubmit_input_for_identity(entry)
-            if scope is None
-            else ResubmitIdentityPayload(
-                identity=scope.compiled.identity, entity_groups=entry.entity_groups
-            )
+            if scope is None and read is identity
+            else ResubmitIdentityPayload(identity=read, entity_groups=entry.entity_groups)
         )
         key = memo.key(payload, options) if memo is not None and memo.active else None
         stored = memo.lookup(key) if memo is not None and key is not None else None
@@ -356,6 +380,8 @@ async def handle(
             # Stored before any trailing task launches, without its closures.
             if memo is not None and key is not None:
                 memo.store(key, region)
+        if read is not identity and region.status == "definite":
+            region = _as_composite(region, identity, scope=scope, coverage=params.coverage)
         return dataclasses.replace(
             region,
             assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),

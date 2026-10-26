@@ -548,6 +548,26 @@ def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:
     return shape.declared_roles or ("observationAbout",)
 
 
+def with_composite_answer(region: RegionResult, spec: Spec) -> RegionResult:
+    """`region` answering `spec`, the composite its definite answer was restated as
+    (`scope.composite.assemble_composite`). Its trailing slot options, place options and
+    observation preview read the one table the region resolved, under that answer's spec_id,
+    so the composite carries none: a task already launched is cancelled and none relaunches."""
+    for task in (region.slot_options_task, region.place_options_task, region.observations_task):
+        if task is not None:
+            task.cancel()
+    return dataclasses.replace(
+        region,
+        specs=(spec, *region.specs[1:]),
+        slot_options_task=None,
+        slot_options_relaunch=None,
+        place_options_task=None,
+        place_options_relaunch=None,
+        observations_task=None,
+        observations_relaunch=None,
+    )
+
+
 def with_runnable_operations(region: RegionResult, operations: Sequence[Operation]) -> RegionResult:
     """Return `region` carrying the `operations` its data can run, and a warning for each
     one it cannot.

@@ -217,10 +217,16 @@ def with_skills(spec: Spec, *, index: SkillsIndex) -> Spec:
 def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
     """Attach how the part was counted under ``resolved.scope_choices``, its compiled record
     restated from ``spec``'s own definition: the identity the part serves, which the resolve
-    may have canonicalised after the scope compiled. Update ``resolved`` because
-    ``model_copy(update=...)`` skips validation and the field belongs to it."""
-    served = scope.model_copy(
-        update={"compiled": served_scope(spec.spec_id, spec.definition.identity)}
+    may have canonicalised after the scope compiled. A compiled record of ``spec`` itself
+    stands as it is, since a composite's states the years each component serves. Update
+    ``resolved`` because ``model_copy(update=...)`` skips validation and the field belongs
+    to it."""
+    served = (
+        scope
+        if scope.compiled.spec_id == spec.spec_id
+        else scope.model_copy(
+            update={"compiled": served_scope(spec.spec_id, spec.definition.identity)}
+        )
     )
     return spec.model_copy(
         update={"resolved": spec.resolved.model_copy(update={"scope_choices": served})}

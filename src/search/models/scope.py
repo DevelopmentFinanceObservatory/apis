@@ -111,6 +111,14 @@ class ShapeBinding(StrictModel):
     netting_basis: str | None = Field(
         description="the netting basis code dcid; None when the measure carries none"
     )
+    provenance: str | None = Field(
+        default=None,
+        description=(
+            "the composite provenance the option binds as the identity's source, which serves "
+            "the measure from its declared components (the OECD headline: net flows to 2017, "
+            "grant equivalents from 2018); None for a measure served from one table"
+        ),
+    )
 
 
 class ProviderBinding(StrictModel):
@@ -118,6 +126,15 @@ class ProviderBinding(StrictModel):
 
     kind: Literal["provider"] = "provider"
     scope: ProviderScope = Field(description="bilateral flows alone, or with imputed shares")
+    window: YearSpan | None = Field(
+        default=None,
+        description=(
+            "the years the option sets as the requested window, first and last: the latest "
+            "run of years both tables of the inclusive scope cover, when they cover fewer "
+            "than the part asks for, or the one latest year both cover for a part asking for "
+            "the latest year; None when the option keeps the part's window"
+        ),
+    )
 
 
 OptionBinding = Annotated[

@@ -14,7 +14,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from code_index.composites import DECLARED_COMPOSITES
+from code_index.declarations import COMPOSITES
 from code_index.measure_basis import edit_basis
+from code_index.types import CompositeKind
 from search.models import (
     BaseIdentity,
     EntitiesBinding,
@@ -22,14 +25,25 @@ from search.models import (
     IdentityBindingValue,
     IdentityShapeSchema,
     IdentitySlot,
+    IdentityWindowRange,
     OptionBinding,
+    ProviderBinding,
     ScopeAxis,
     ShapeBinding,
     SlotBinding,
 )
 
 BindingKind = Literal["slot", "entities", "shape", "provider"]
-IdentityMember = Literal["slots", "entities", "shape", "facets"]
+IdentityMember = Literal["slots", "entities", "shape", "facets", "requested_window"]
+
+INCLUSIVE_PROVENANCE: str = next(c.provenance for c in COMPOSITES if c.kind == "stacked")
+"""The composite of a donor's bilateral flows and its imputed multilateral share, which the
+inclusive provider scope binds as the identity's source."""
+HEADLINE_PROVENANCE: str = next(c.provenance for c in COMPOSITES if c.kind == "spliced")
+"""The OECD headline composite, net flows to 2017 and grant equivalents from 2018, which the
+`oecd_headline` measure basis binds as the identity's source."""
+
+_PROVENANCE = "provenance"
 
 
 class ScopeTableError(ValueError):
@@ -96,7 +110,9 @@ def _edit_shape(
     identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
 ) -> BaseIdentity:
     """Set the measured property, and bind the netting basis, or drop it for a measure
-    that carries none (`code_index.measure_basis.edit_basis`). Raises `ScopeTableError` for a
+    that carries none (`code_index.measure_basis.edit_basis`). Bind the option's composite
+    provenance as the identity's source (`ShapeBinding.provenance`, the OECD headline), or
+    remove a spliced composite another basis option bound. Raises `ScopeTableError` for a
     pinned shape."""
     assert isinstance(binding, ShapeBinding)
     if not isinstance(identity.shape, IdentityShapeSchema):
@@ -106,16 +122,56 @@ def _edit_shape(
         measured_property=binding.measured_property,
         netting_basis=binding.netting_basis,
     )
-    return BaseIdentity.model_validate(edited)
+    return _with_source(BaseIdentity.model_validate(edited), binding.provenance, kind="spliced")
+
+
+def _edit_provider(
+    identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
+) -> BaseIdentity:
+    """Bind the stacked composite of bilateral and imputed multilateral spending as the
+    identity's source for the inclusive scope, with the option's window when it sets one
+    (`ProviderBinding.window`), or remove that composite for the bilateral scope, leaving the
+    window as it is. The two are inverses on an identity that binds no other provenance."""
+    assert isinstance(binding, ProviderBinding)
+    if binding.scope == "bilateral":
+        return _with_source(identity, None, kind="stacked")
+    edited = _with_source(identity, INCLUSIVE_PROVENANCE, kind="stacked")
+    if binding.window is None:
+        return edited
+    first, last = binding.window
+    return edited.model_copy(
+        update={"requested_window": IdentityWindowRange(start_year=first, end_year=last)}
+    )
+
+
+def _with_source(
+    identity: BaseIdentity, provenance: str | None, *, kind: CompositeKind
+) -> BaseIdentity:
+    """`identity` binding `provenance` as its source, or, when it is None, without a source
+    that binds a declared composite of `kind`. Raises `ScopeTableError` where the identity's
+    source binds anything else, which no option replaces."""
+    facets = dict(identity.facets or {})
+    held = facets.get(_PROVENANCE)
+    held_ref = held.ref if isinstance(held, IdentityBindingValue) else None
+    held_composite = DECLARED_COMPOSITES.get(held_ref) if held_ref is not None else None
+    if held is not None and (held_composite is None or held_composite.kind != kind):
+        if provenance is None:
+            return identity
+        raise ScopeTableError(f"the identity's source binds {held_ref or 'a set'}")
+    if provenance is None:
+        facets.pop(_PROVENANCE, None)
+    else:
+        facets[_PROVENANCE] = IdentityBindingValue(ref=provenance)
+    return identity.model_copy(update={"facets": facets or None})
 
 
 EDITS: Mapping[BindingKind, Edit] = {
     "slot": Edit(members=frozenset({"slots"}), apply=_edit_slot),
     "entities": Edit(members=frozenset({"entities"}), apply=_edit_entities),
-    "shape": Edit(members=frozenset({"shape", "slots"}), apply=_edit_shape),
+    "shape": Edit(members=frozenset({"shape", "slots", "facets"}), apply=_edit_shape),
+    "provider": Edit(members=frozenset({"facets", "requested_window"}), apply=_edit_provider),
 }
-"""The edit of each binding kind. A provider binding has none until the composite of
-bilateral and imputed multilateral spending is declared as a provenance."""
+"""The edit of each binding kind."""
 
 
 def apply_binding(

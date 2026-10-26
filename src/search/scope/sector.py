@@ -37,6 +37,7 @@ from search.models import (
     SlotBinding,
     TextOrigin,
 )
+from search.scope.composite import table_document
 from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import AxisTable, ScopeFacts, allowed_values
 from search.scope.vocabulary import sector_option_id
@@ -244,8 +245,12 @@ def _grouping_holding(prop: str, codes: tuple[str, ...]) -> SectorGrouping | Non
 
 def _covered_values(base: BaseIdentity, prop: str, facts: ScopeFacts) -> frozenset[str]:
     """The `prop` values of the members of `base`'s family that hold every other binding of
-    `base` and a series in the coverage index."""
-    query = identity_family_query(facts.index, base.model_dump(mode="json", exclude_none=True))
+    `base` and a series in the coverage index. A composite base reads the family of the
+    identity its option was set on (`composite.table_document`)."""
+    document = table_document(base, facts.index)
+    if document is None:
+        return frozenset()
+    query = identity_family_query(facts.index, document)
     family = query_family(facts.index, query)
     if family is None:
         return frozenset()

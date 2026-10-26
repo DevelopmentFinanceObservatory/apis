@@ -4,8 +4,9 @@ grant equivalents or commitments), and the bases its dataset could count them on
 The basis is a declared product default, after the OECD's own reporting
 (`code_index.scope_conventions.MEASURE_BASIS_CONVENTIONS`): it is read from the part's shape
 and the years it asks for, never from how the request words its measure. A donor's total is
-the OECD headline, grant equivalents for years from 2018 and net flows for years before it or
-on both sides of it (`HEADLINE_SERVED_AS`); a recipient's total over every sector is its net
+the OECD headline, grant equivalents for years from 2018, net flows for years before it, and
+for a window on both sides of it the headline per year, net flows to 2017 and grant
+equivalents from 2018, served by the headline composite (`HEADLINE_BINDING`); a recipient's total over every sector is its net
 receipts; a part that binds a sector, an instrument or a modality is counted in gross CRS
 disbursements. An explicit or carried entry on the axis wins
 over the convention (`elect_basis`), and the house policies elect the shape and dataset that
@@ -49,12 +50,14 @@ from search.models import (
     IdentityCurrencyRole,
     IdentityFacetValueRequest,
     IdentityShapeSchema,
+    IdentityWindowRange,
     Option,
     OptionAvailability,
     ShapeBinding,
     TimeWindow,
 )
-from search.scope.edits import ScopeTableError, apply_binding
+from search.scope.composite import table_document
+from search.scope.edits import HEADLINE_PROVENANCE, ScopeTableError, apply_binding
 from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, ScopeFacts, allowed_values
 from search.scope.vocabulary import measure_basis_option_id
@@ -71,9 +74,19 @@ GRANT_EQUIVALENT_HEADLINE_FROM = 2018
 equivalents."""
 
 HEADLINE_SERVED_AS: MeasureBasis = "net"
-"""The basis a part whose convention is the OECD headline per year (`oecd_headline`) is
-counted on. One identity holds one basis, so a window crossing 2018 is counted on net flows
-throughout, the headline's basis for its earlier years."""
+"""The basis whose shape a part counted on the OECD headline per year (`oecd_headline`)
+elects. Its identity binds that shape and the headline composite as its source
+(`HEADLINE_BINDING`), which serves net flows to 2017 and grant equivalents from 2018 as two
+period components (`code_index.composites`)."""
+
+HEADLINE_OPTION = measure_basis_option_id("oecd_headline")
+"""The measure-basis option of the OECD headline per year."""
+
+HEADLINE_BINDING = ShapeBinding(
+    measured_property="amount", netting_basis="Net", provenance=HEADLINE_PROVENANCE
+)
+"""The binding of the OECD headline option: the net shape the part elects
+(`HEADLINE_SERVED_AS`) and the headline composite as its source."""
 
 BASIS_AXES: frozenset[str] = frozenset(
     {"populationType", "measuredProperty", "nettingBasis"}
@@ -261,6 +274,21 @@ def held_measure(identity: BaseIdentity) -> BasisMeasure | None:
     return measure_of(shape.population_type, shape.measured_property, netting)
 
 
+def held_option(identity: BaseIdentity) -> str | None:
+    """The measure-basis option `identity` holds: the OECD headline when its source binds the
+    headline composite, else its declared basis (`held_measure`), None when it holds none."""
+    if _source(identity) == HEADLINE_PROVENANCE:
+        return HEADLINE_OPTION
+    measure = held_measure(identity)
+    return measure_basis_option_id(measure.basis) if measure is not None else None
+
+
+def _source(identity: BaseIdentity) -> str | None:
+    """The provenance `identity`'s source binds as a value, None for none or a set."""
+    binding = (identity.facets or {}).get("provenance")
+    return binding.ref if isinstance(binding, IdentityBindingValue) else None
+
+
 def identity_part_shape(identity: BaseIdentity, index: CodeIndex) -> PartShape | None:
     """The shape the conventions read of `identity`: a sector or restriction part when it
     binds a slot of a sector system (`sector_systems`) or a restriction, a recipient part
@@ -285,9 +313,10 @@ def basis_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
     conventions read (`CONVENTION_DATASETS`)."""
     if held_measure(identity) is None or identity_part_shape(identity, index) is None:
         return None
-    family = query_family(
-        index, identity_family_query(index, identity.model_dump(mode="json", exclude_none=True))
-    )
+    document = table_document(identity, index)
+    if document is None:
+        return None
+    family = query_family(index, identity_family_query(index, document))
     if family is None:
         return None
     return next((dataset for dataset in family.datasets if dataset in CONVENTION_DATASETS), None)
@@ -313,40 +342,94 @@ def basis_rule(
     Read from `base` alone, whether a binder recorded the axis (`record`) or not, so a
     resubmit of a served identity offers what its search offered. The rule is the record's
     when a binder wrote one (`SERVED_DIFFERS_RULE` for a basis the convention did not
-    settle), else `BASIS_RULE`. Each declared basis is an option. The one `base` holds is available. Another is available when its identity
-    (`base` with the option's binding) reads a member of the dataset holding every other
-    binding of `base` with a series in the coverage index, `option_not_covered` when the
-    dataset publishes such a member with no series there, and `basis_not_published`
-    otherwise."""
+    settle), else `BASIS_RULE`. Each declared basis is an option, and so is the OECD
+    headline per year where `_offers_headline` holds. The one `base` holds (`held_option`) is
+    available. Another is available when its identity (`base` with the option's binding)
+    reads a member of the dataset holding every other binding of `base` with a series in the
+    coverage index, `option_not_covered` when the dataset publishes such a member with no
+    series there, and `basis_not_published` otherwise; the headline when both bases it splices
+    are (`_headline_availability`). A composite base is read through the identity its option
+    was set on (`table_document`)."""
     dataset = basis_dataset(base, facts.index)
-    held = held_measure(base)
-    if dataset is None or held is None:
+    held_id = held_option(base)
+    if dataset is None or held_id is None:
         return None
-    bindings = [basis_binding(row) for row in BASIS_MEASURES]
-    options = tuple(
+    headline = _offers_headline(base, dataset)
+    measures = [basis_binding(row) for row in BASIS_MEASURES]
+    bindings = [*measures, *((HEADLINE_BINDING,) if headline else ())]
+    options = [
         Option(
-            option_id=measure_basis_option_id(row.basis),
+            option_id=(option_id := measure_basis_option_id(row.basis)),
             label=basis_label(row, base),
             binding=binding,
             availability=(
                 OptionAvailability(status="available")
-                if row is held
+                if option_id == held_id
                 else _availability(base, binding, bindings, dataset=dataset, facts=facts)
             ),
         )
-        for row, binding in zip(BASIS_MEASURES, bindings, strict=True)
-    )
-    held_id = measure_basis_option_id(held.basis)
+        for row, binding in zip(BASIS_MEASURES, measures, strict=True)
+    ]
+    if headline:
+        options.append(
+            Option(
+                option_id=HEADLINE_OPTION,
+                label=OPTION_LABELS.oecd_headline,
+                binding=HEADLINE_BINDING,
+                availability=(
+                    OptionAvailability(status="available")
+                    if held_id == HEADLINE_OPTION
+                    else _headline_availability(base, bindings, dataset=dataset, facts=facts)
+                ),
+            )
+        )
     return AxisTable(
         axis="measure_basis",
         rule=BASIS_RULE if record is None else record.rule,
-        options=options,
+        options=tuple(options),
         preference=(
             held_id,
             *(option.option_id for option in options if option.option_id != held_id),
         ),
         held=held_id,
     )
+
+
+def _offers_headline(identity: BaseIdentity, dataset: str) -> bool:
+    """Whether the OECD headline per year is an option of a part served from `dataset` whose
+    identity is `identity`: a convention counts that dataset's parts on it, and the
+    identity's window crosses 2018 (`window_class`), where the headline changes basis."""
+    reads_headline = any(
+        row.basis == "oecd_headline" and row.dataset == dataset for row in MEASURE_BASIS_CONVENTIONS
+    )
+    return reads_headline and window_class(identity_window(identity)) == "crossing_2018"
+
+
+def identity_window(identity: BaseIdentity) -> TimeWindow | Literal["all", "latest"]:
+    """`identity`'s requested window in the form `window_class` reads."""
+    window = identity.requested_window
+    if isinstance(window, IdentityWindowRange):
+        return TimeWindow(start_year=window.start_year, end_year=window.end_year)
+    return window.kind
+
+
+def _headline_availability(
+    base: BaseIdentity,
+    bindings: Sequence[ShapeBinding],
+    *,
+    dataset: str,
+    facts: ScopeFacts,
+) -> OptionAvailability:
+    """Whether `dataset` publishes, for `base`, both bases the headline splices: net flows
+    and grant equivalents (`_availability`). Unavailable with the first missing basis's
+    reason otherwise, naming it."""
+    for basis in ("net", "grant_equivalent"):
+        found = _availability(
+            base, basis_binding(_MEASURES[basis]), bindings, dataset=dataset, facts=facts
+        )
+        if found.status != "available":
+            return found.model_copy(update={"detail": {**found.detail, "basis": basis}})
+    return OptionAvailability(status="available")
 
 
 def basis_label(row: BasisMeasure, identity: BaseIdentity) -> str:
@@ -403,7 +486,10 @@ def _availability(
     except ScopeTableError:
         return unpublished
     index = facts.index
-    query = identity_family_query(index, switched.model_dump(mode="json", exclude_none=True))
+    document = table_document(switched, index)
+    if document is None:
+        return unpublished
+    query = identity_family_query(index, document)
     family = query_family(index, query)
     if family is None or dataset not in family.datasets:
         return unpublished

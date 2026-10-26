@@ -15,12 +15,17 @@ from search.models import (
     Entry,
     EntryProvenance,
     IdentityBindingValue,
+    OptionBinding,
     PartScope,
+    ProviderBinding,
     ScopeAxis,
+    ShapeBinding,
     SpecDefinition,
 )
 from search.scope import rules as scope_rules
 from search.scope.compile import Compiled, Refusal, compile
+from search.scope.composite import composite_components
+from search.scope.edits import apply_binding
 from search.scope.rules import AxisRule
 from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, CompileFacts, Conflict, ScopeFacts
@@ -54,16 +59,18 @@ def build_part_scope(
     `carried_choice_not_applied`) with the cause `_not_served` gives. With
     `refuse` false an entry compile refuses is dropped and reported the same way with the
     refusal's cause, and the rest compile without it, so the result is always a
-    `PartScope`. The scope's id is the base identity's spec_id. The server keeps no ledger,
-    so the scope's is []."""
+    `PartScope`. A composite option a binder settled over the identity it resolved (the
+    inclusive provider scope, the OECD headline per year) is applied to `base` first
+    (`_with_recorded_composites`), so the scope's base is the composite the answer serves.
+    The scope's id is the base identity's spec_id. The server keeps no ledger, so the
+    scope's is []."""
     rules = scope_rules.AXIS_RULES if rules is None else rules
     conflicts = scope_rules.CONFLICTS if conflicts is None else conflicts
-    tables = {
-        table.axis: table
-        for axis in SCOPE_AXES
-        if (rule := rules.get(axis)) is not None
-        and (table := rule(base, records.get(axis), facts)) is not None
-    }
+    tables = _tables(base, records, facts, rules)
+    composed = _with_recorded_composites(base, records, tables)
+    if composed is not base:
+        base = composed
+        tables = _tables(base, records, facts, rules)
     applied = [
         record.entry
         for record in records.values()
@@ -91,7 +98,55 @@ def build_part_scope(
             DroppedEntry(entry=entry, code=_NOT_APPLIED[entry.provenance], cause=compiled.cause)
         )
     return _part_scope(
-        base, compiled, refused, rule_version=scope_rules.rule_version(rules, conflicts)
+        base,
+        compiled,
+        refused,
+        rule_version=scope_rules.rule_version(rules, conflicts),
+        facts=facts,
+    )
+
+
+def _tables(
+    base: BaseIdentity,
+    records: Mapping[ScopeAxis, AxisRecord],
+    facts: ScopeFacts,
+    rules: Mapping[ScopeAxis, AxisRule],
+) -> dict[ScopeAxis, AxisTable]:
+    """The table of every axis whose rule reads one off `base`, in `SCOPE_AXES` order."""
+    return {
+        table.axis: table
+        for axis in SCOPE_AXES
+        if (rule := rules.get(axis)) is not None
+        and (table := rule(base, records.get(axis), facts)) is not None
+    }
+
+
+def _with_recorded_composites(
+    base: BaseIdentity,
+    records: Mapping[ScopeAxis, AxisRecord],
+    tables: Mapping[ScopeAxis, AxisTable],
+) -> BaseIdentity:
+    """`base` holding each composite option a binder settled and `base` does not hold yet:
+    the inclusive provider scope (`provider.settle_provider`) or the OECD headline per year
+    (`phase_election._record_basis`), which the binders settle over the identity they
+    resolve and which bind a composite as its source. `base` itself when there is none, so
+    the scope's base is the composite identity the answer serves and a resubmit of it keeps
+    the option."""
+    for axis, table in tables.items():
+        record = records.get(axis)
+        if record is None or record.active == table.held:
+            continue
+        option = table.option(record.active)
+        if option is None or not _binds_composite(option.binding):
+            continue
+        base = apply_binding(base, option.binding, [o.binding for o in table.options])
+    return base
+
+
+def _binds_composite(binding: OptionBinding) -> bool:
+    """Whether `binding` binds a composite as the identity's source."""
+    return (isinstance(binding, ShapeBinding) and binding.provenance is not None) or (
+        isinstance(binding, ProviderBinding) and binding.scope == "inclusive"
     )
 
 
@@ -108,7 +163,7 @@ def _not_served(
 ) -> str:
     """Why the binders did not serve `entry`: another entry they applied settles its axis
     (`entry_on_axis`), the axis is absent, the option is unknown or unavailable (its
-    reason), or `not_served` when it is available."""
+    reason when it is partial or unavailable), or `not_served` when it is available."""
     if any(other.axis == entry.axis for other in applied):
         return "entry_on_axis"
     table = tables.get(entry.axis)
@@ -117,8 +172,8 @@ def _not_served(
     option = table.option(entry.option_id)
     if option is None:
         return "option_unknown"
-    if option.availability.status == "unavailable":
-        return option.availability.code or "option_unavailable"
+    if option.availability.status != "available":
+        return option.availability.code or f"option_{option.availability.status}"
     return "not_served"
 
 
@@ -128,7 +183,12 @@ _NOT_APPLIED: Mapping[
 
 
 def _part_scope(
-    base: BaseIdentity, compiled: Compiled, refused: Sequence[DroppedEntry], *, rule_version: str
+    base: BaseIdentity,
+    compiled: Compiled,
+    refused: Sequence[DroppedEntry],
+    *,
+    rule_version: str,
+    facts: ScopeFacts,
 ) -> PartScope:
     return PartScope(
         id=compiled.base_spec_id,
@@ -137,9 +197,19 @@ def _part_scope(
         entries=list(compiled.entries),
         dropped_entries=[*refused, *compiled.dropped],
         choices=list(compiled.choices),
-        compiled=served_scope(compiled.spec_id, compiled.identity),
+        compiled=compiled_scope(compiled.spec_id, compiled.identity, facts=facts),
         ledger=[],
     )
+
+
+def compiled_scope(spec_id: str, identity: BaseIdentity, *, facts: ScopeFacts) -> CompiledScope:
+    """The compiled record of `identity` under `spec_id`: one component per component of a
+    composite (`composite.composite_components`), with the years each serves in `facts`'
+    coverage snapshot, else the plain Spec's one (`served_scope`)."""
+    components = composite_components(identity, facts=facts)
+    if components is None:
+        return served_scope(spec_id, identity)
+    return CompiledScope(spec_id=spec_id, identity=identity, components=components)
 
 
 def served_scope(spec_id: str, identity: BaseIdentity) -> CompiledScope:

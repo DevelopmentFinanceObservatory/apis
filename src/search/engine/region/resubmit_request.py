@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 
+from code_index.composites import DECLARED_COMPOSITES
 from code_index.members import pinned_refs
 from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
@@ -159,7 +160,12 @@ def pinned_provenance_scope(
     """Bind the request's catalogue narrowed to the posted `facets.provenance` refs
     (`origin_catalogue.scoped_reads`), so a pinned source is admitted before DFO precedence
     and a base pin serves at a place where a DFO table also holds data. Binds nothing when
-    provenance is unbound."""
+    provenance is unbound, or binds a declared composite, whose reads are those of the
+    identity its option was set on (`code_index.composites.table_identity`), which pins no
+    provenance."""
+    binding = (facets or {}).get("provenance")
+    if isinstance(binding, IdentityBindingValue) and binding.ref in DECLARED_COMPOSITES:
+        return scoped_reads(None)
     return scoped_reads(frozenset(_source_dcids_from_facets_provenance(facets)) or None)
 
 
