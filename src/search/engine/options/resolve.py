@@ -101,6 +101,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.errors import EngineInputError
 from search.engine.identity_edit import (
     check_described_arm,
+    check_not_composite,
     open_requested_role,
     refuse_over_place_bound,
     validate_edited_identity,
@@ -278,7 +279,8 @@ def resolve_options_target(
 
     Raises:
         EngineInputError: `request_invalid` (400) for a pinned-ask shape
-            (`check_described_arm`) or an identity that fails the
+            (`check_described_arm`), a composite provenance (`check_not_composite`) or an
+            identity that fails the
             authoritative identity core (`validate_edited_identity`) --
             duplicate slot properties chief among what this catches that
             `BaseIdentity`'s own schema does not, or an identity binding more
@@ -316,6 +318,7 @@ def resolve_options_target(
     # validate_edited_identity's own pointer, /identity, not
     # /input/identity -- the same door-own-field reasoning.
     check_described_arm(identity.shape, pointer="/identity/shape")
+    check_not_composite(identity, pointer="/identity/facets/provenance")
     validate_edited_identity(identity, pointer="/identity")
     refuse_over_place_bound(identity.entities, pointer="/identity/entities")
     # A pin posted bound and one posted unbound denote one population.

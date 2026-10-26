@@ -1,8 +1,8 @@
 """Validate a resubmitted identity.
 
 A posted identity passes the identity core before any door reads it, and Search doors
-refuse the `exact` binding, the pinned-StatVar arm and an identity binding more places
-than a Spec holds. The resubmit and options doors share these checks.
+refuse the `exact` binding, the pinned-StatVar arm, a composite provenance and an identity
+binding more places than a Spec holds. The resubmit and options doors share these checks.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 
 from dfo_spec_kit import identity as _identity
 
+from code_index.composites import CompositeNotServable, composite_ref
 from dfo_platform.named import cut
 from dfo_platform.roles import role_key_axis
 from search.engine.config import settings
@@ -114,6 +115,26 @@ def refuse_over_place_bound(
         raise EngineInputError(
             f"{total} places across {len(counts)} roles exceed the {bound}-place limit a "
             "dataset binds; re-post with fewer places",
+            code="request_invalid",
+            pointer=pointer,
+        )
+
+
+def check_not_composite(identity: BaseIdentity, *, pointer: str) -> None:
+    """Refuse an identity whose `facets.provenance` names a declared composite
+    (`code_index.composites`), at `pointer`, the posted identity's provenance facet.
+
+    No table publishes a composite, so its pin scopes every read to nothing: a Search door
+    resolves each of its component identities (`code_index.composites.component_identities`)
+    in its place."""
+    try:
+        ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
+    except CompositeNotServable as exc:
+        raise EngineInputError(str(exc), code="request_invalid", pointer=pointer) from exc
+    if ref is not None:
+        raise EngineInputError(
+            f"provenance {ref!r} is a composite of other tables' series; post each of its "
+            "component identities instead",
             code="request_invalid",
             pointer=pointer,
         )

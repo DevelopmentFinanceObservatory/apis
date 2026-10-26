@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 from code_index.types import (
     BroadReading,
+    ComponentRecipe,
+    CompositeDeclaration,
     DatasetDeclaration,
     DeclaredDefault,
     HouseDefaultCase,
@@ -30,6 +32,7 @@ from code_index.types import (
     StatedWord,
     StatTypeWordDeclaration,
     WholeTotalSet,
+    YearPeriod,
 )
 from dfo_platform.roles import RoleAxis
 
@@ -322,6 +325,61 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
             ),
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
+    ),
+)
+
+
+# The provenances declared as composites of other tables' series (`CompositeDeclaration`). The
+# graph holds no node for either: the mint composes each from its components' frames
+# (`code_index.composites`, `materialise.composite`).
+#
+# A donor's spending including its imputed share of multilateral spending stacks the CRS's
+# bilateral flows and the imputed multilateral sectors table on the same years. The imputed
+# component binds its table, the one imputed multilateral aid type every imputed row holds, and
+# the measure the table publishes it under, and leaves out the modality and type-of-finance
+# slots its rows do not declare. The imputed table reads a missing row as zero, so inside the
+# years both tables cover a recipient the CRS serves and the imputed table does not gets an
+# imputed zero row. The CRS's absence is left unfilled: the composite then equals bilateral plus
+# imputed on every year it serves.
+#
+# The OECD headline ODA splices DAC1's net flows to 2017 and its grant equivalents from 2018,
+# the year the OECD made grant equivalents its headline measure.
+COMPOSITES: tuple[CompositeDeclaration, ...] = (
+    CompositeDeclaration(
+        provenance="provenance/ONEBilateralAndImputedMultilateral",
+        label="bilateral plus imputed multilateral (OECD CRS and ONE Imputed Multilateral Sectors)",
+        kind="stacked",
+        components=(
+            ComponentRecipe(role="bilateral", dataset=_CRS),
+            ComponentRecipe(
+                role="imputed",
+                dataset=_IMPUTED_MULTILATERAL_SECTORS,
+                provenance=_IMPUTED_MULTILATERAL_SECTORS,
+                measured_property="attributedAmount",
+                bind={"dac2aAidType": "DAC2aAidType106"},
+                drop_unbound=frozenset({"crsCooperationModality", "crsTypeOfFinance"}),
+                zero_absent=True,
+            ),
+        ),
+    ),
+    CompositeDeclaration(
+        provenance="provenance/ONEOECDHeadlineODA",
+        label="OECD headline ODA (net flows to 2017, grant equivalents from 2018)",
+        kind="spliced",
+        components=(
+            ComponentRecipe(
+                role="headline_net",
+                dataset=_DAC1,
+                periods=YearPeriod(first=None, last=2017),
+                basis=("amount", "Net"),
+            ),
+            ComponentRecipe(
+                role="headline_ge",
+                dataset=_DAC1,
+                periods=YearPeriod(first=2018, last=None),
+                basis=("grantEquivalent", None),
+            ),
+        ),
     ),
 )
 

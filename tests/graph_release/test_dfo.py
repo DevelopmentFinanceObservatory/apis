@@ -346,6 +346,10 @@ def test_dfo_inputs_refuse_empty_declarations(field: str, empty: object) -> None
             id="code-index-module-table",
         ),
         pytest.param(
+            lambda d, m: m.setattr(code_index_declarations, "COMPOSITES", ()) or d,
+            id="composites",
+        ),
+        pytest.param(
             lambda d, m: m.setattr(scope_conventions, "SECTOR_GROUPINGS", ()) or d,
             id="scope-conventions-table",
         ),

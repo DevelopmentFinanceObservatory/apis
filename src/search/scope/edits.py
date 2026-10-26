@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from code_index.scope_conventions import BASIS_MEASURES, ODA_FLOW, ODA_FLOW_SYSTEM, BasisMeasure
+from code_index.measure_basis import edit_basis
 from search.models import (
     BaseIdentity,
     EntitiesBinding,
@@ -30,10 +30,6 @@ from search.models import (
 
 BindingKind = Literal["slot", "entities", "shape", "provider"]
 IdentityMember = Literal["slots", "entities", "shape", "facets"]
-
-_NETTING_BASIS = "nettingBasis"
-_FLOW_TYPE_PROPERTIES = frozenset(row.flow_type[0] for row in BASIS_MEASURES)
-_BASIS_POPULATIONS = frozenset(row.population_type for row in BASIS_MEASURES)
 
 
 class ScopeTableError(ValueError):
@@ -100,77 +96,17 @@ def _edit_shape(
     identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
 ) -> BaseIdentity:
     """Set the measured property, and bind the netting basis, or drop it for a measure
-    that carries none. Raises `ScopeTableError` for a pinned shape.
-
-    On an identity whose population a declared basis measures
-    (`scope_conventions.BASIS_MEASURES`), the basis the binding names also sets the
-    population, the flow-type slot that says a flow is disbursed or committed, and the CRS
-    types of flow an ODA flow binding reads as (`BasisMeasure.oda_flows`)."""
+    that carries none (`code_index.measure_basis.edit_basis`). Raises `ScopeTableError` for a
+    pinned shape."""
     assert isinstance(binding, ShapeBinding)
     if not isinstance(identity.shape, IdentityShapeSchema):
         raise ScopeTableError("a pinned shape has no measure to set")
-    basis = _declared_basis(binding)
-    update: dict[str, str] = {"measured_property": binding.measured_property}
-    if basis is not None and identity.shape.population_type in _BASIS_POPULATIONS:
-        update["population_type"] = basis.population_type
-    else:
-        basis = None
-    shape = identity.shape.model_copy(update=update)
-    if binding.netting_basis is None:
-        slots = [s for s in identity.slots if s.property != _NETTING_BASIS]
-    else:
-        netting = IdentitySlot(
-            property=_NETTING_BASIS, binding=IdentityBindingValue(ref=binding.netting_basis)
-        )
-        slots = _with_slot(identity, netting)
-    if basis is not None:
-        slots = _basis_slots(slots, basis)
-    return identity.model_copy(update={"shape": shape, "slots": slots})
-
-
-def _declared_basis(binding: ShapeBinding) -> BasisMeasure | None:
-    """The declared basis whose measure and netting basis `binding` binds."""
-    return next(
-        (
-            row
-            for row in BASIS_MEASURES
-            if (row.measured_property, row.netting_basis)
-            == (binding.measured_property, binding.netting_basis)
-        ),
-        None,
+    edited = edit_basis(
+        identity.model_dump(mode="json"),
+        measured_property=binding.measured_property,
+        netting_basis=binding.netting_basis,
     )
-
-
-def _basis_slots(slots: Sequence[IdentitySlot], basis: BasisMeasure) -> list[IdentitySlot]:
-    """`slots` holding `basis`'s flow type in place of any other the slots bind, and its ODA
-    flows in place of an ODA flow binding: CRS flow 10, alone or beside the other flows a
-    basis reads it as."""
-    flow_type, flow_value = basis.flow_type
-    oda_readings = {frozenset(row.oda_flows) for row in BASIS_MEASURES}
-    edited: list[IdentitySlot] = []
-    for slot in slots:
-        if slot.property in _FLOW_TYPE_PROPERTIES:
-            slot = IdentitySlot(property=flow_type, binding=IdentityBindingValue(ref=flow_value))
-        elif slot.property == ODA_FLOW_SYSTEM and _bound_refs(slot) in oda_readings:
-            slot = IdentitySlot(
-                property=slot.property,
-                binding=(
-                    IdentityBindingValue(ref=ODA_FLOW)
-                    if basis.oda_flows == (ODA_FLOW,)
-                    else IdentityBindingSet(refs=list(basis.oda_flows))
-                ),
-            )
-        edited.append(slot)
-    return edited
-
-
-def _bound_refs(slot: IdentitySlot) -> frozenset[str]:
-    """The codes `slot` binds, empty for an open slot."""
-    if isinstance(slot.binding, IdentityBindingValue):
-        return frozenset((slot.binding.ref,))
-    if isinstance(slot.binding, IdentityBindingSet):
-        return frozenset(slot.binding.refs)
-    return frozenset()
+    return BaseIdentity.model_validate(edited)
 
 
 EDITS: Mapping[BindingKind, Edit] = {

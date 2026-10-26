@@ -70,6 +70,7 @@ from search.models import (
     SlotKey,
     SourceMention,
 )
+from search.observations import provenance_facet_ref
 from series_coverage.shared import CoverageSnapshot
 from tests.engine import test_pool_election as pools
 from tests.engine._binders import nominee_ratings
@@ -713,17 +714,35 @@ def test_the_options_door_reads_under_the_target_s_provenance_pin(monkeypatch):
 
 @pytest.mark.parametrize(
     ("provenance", "account"),
-    [("provenance/OECDCreditorReportingSystem", "provider"), (_WDI, None)],
-    ids=["declared-dataset", "base-provenance"],
+    [
+        ("provenance/OECDCreditorReportingSystem", "provider"),
+        ("provenance/ONEBilateralAndImputedMultilateral", "provider"),
+        (_WDI, None),
+    ],
+    ids=["declared-dataset", "composite", "base-provenance"],
 )
 def test_the_provenance_facet_states_the_account_of_a_declared_dataset(provenance, account):
     """A client reads whose account of a flow the answer gives from the served provenance:
-    the code index's declaration for a dataset it declares, none for any other."""
+    the code index's declaration for a dataset it declares, the one account a composite's
+    component tables share, none for any other."""
     facets = _resolved_facets(
         [{"provenance": SeriesFacetRef(ref=provenance, label=provenance)}], {}
     )
 
     assert facets["provenance"].account == account
+
+
+def test_a_composite_provenance_facet_takes_its_declared_label():
+    composite = get_index().composite("provenance/ONEBilateralAndImputedMultilateral")
+    assert composite is not None
+
+    facet = provenance_facet_ref(composite.provenance, {})
+
+    assert (facet.ref, facet.label, facet.documentation) == (
+        composite.provenance,
+        composite.label,
+        None,
+    )
 
 
 # ---------------------------------------------------------------------------

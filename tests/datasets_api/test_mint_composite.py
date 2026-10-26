@@ -1,0 +1,408 @@
+"""The spec door mints a composite definition as one frame of its components' rows.
+
+The identity binds `provenance/ONEBilateralAndImputedMultilateral`, which composes CRS
+bilateral education aid to Kenya with the ONE imputed multilateral sectors' share of it. The
+SDMX double serves rows written for these tests, so they prove the mint's rules over the
+fixture index's members, not recorded figures.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+from collections.abc import Mapping
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from artifact_store import Tier
+from code_index.composites import CompositeNotServable, component_identities
+from code_index.declarations import COMPOSITES
+from code_index.shared import get_index
+from datasets_api.adapter import resolve_definition_members
+from datasets_api.config import DatasetsBuildSettings
+from datasets_api.groupby import refuse_provenance_disagreement, refuse_stat_var_collision
+from datasets_api.version_store import LiveHeadStore
+from materialise.reshape import RollupNotSummableError, Table
+from series_coverage.schema import FacetMetadata, RoleNames
+from spec_registry import recompute_identity
+from statvar_members import MemberEnumerator
+from tests.code_index.aid_identity import (
+    CRS_MEMBER_COUNT,
+    CRS_PROVENANCE,
+    IMPUTED_MEMBER_COUNT,
+    IMPUTED_PROVENANCE,
+    education_aid_identity,
+)
+from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+
+from ._artifact_doubles import FakeArtifactStore
+from ._graph_doubles import FakeMintGraphReader
+from ._member_bounds import mint_bounds
+from ._version_record_store import FakeVersionRecordDatasetStore
+from .test_definition_door import _client
+
+_STACKED = COMPOSITES[0]
+_PROVIDER = "country/FRA"
+_RECIPIENT = "country/KEN"
+_CRS_FACET = "facet_crs"
+_IMPUTED_FACET = "facet_imputed"
+_CRS_YEARS = (2019, 2020, 2021)
+_IMPUTED_YEARS = (2020, 2021)
+
+_CSV_HEADER = (
+    "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,financingProvider,financingRecipient,unit,"
+    "measurementMethod,observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,scalingFactor,"
+    "facetId\r\n"
+)
+
+
+def _identity() -> dict:
+    return education_aid_identity(source=_STACKED.provenance)
+
+
+def _members() -> dict[str, list[str]]:
+    """The fixture index's members of each component, by role, as the mint resolves them."""
+    resolved = resolve_definition_members(
+        _identity(),
+        spec_id="spec_test",
+        graph=FakeMintGraphReader(),
+        enumerator=MemberEnumerator(),
+        code_index=get_index(),
+        bounds=mint_bounds(),
+    )
+    members: dict[str, list[str]] = {}
+    for shape in resolved.shapes:
+        assert shape.component is not None
+        members.setdefault(shape.component.role, []).append(shape.stat_var)
+    return members
+
+
+def _populated() -> dict[str, tuple[str, int, tuple[int, ...]]]:
+    """Two CRS members and one imputed member holding rows: each one's facet, value and
+    years, by bare dcid."""
+    members = _members()
+    crs = [member.removeprefix("dcid:") for member in members["bilateral"][:2]]
+    imputed = members["imputed"][0].removeprefix("dcid:")
+    return {
+        crs[0]: (_CRS_FACET, 100, _CRS_YEARS),
+        crs[1]: (_CRS_FACET, 50, _CRS_YEARS),
+        imputed: (_IMPUTED_FACET, 7, _IMPUTED_YEARS),
+    }
+
+
+def _sdmx_response(
+    populated: Mapping[str, tuple[str, int, tuple[int, ...]]], request: httpx.Request
+) -> httpx.Response:
+    """The rows `populated` holds for the members `request` names, as SDMX CSV."""
+    provenance = {_CRS_FACET: CRS_PROVENANCE, _IMPUTED_FACET: IMPUTED_PROVENANCE}
+    named = str(request.url.params.get("c[variableMeasured]", "")).split(",")
+    body = _CSV_HEADER + "".join(
+        f"dataflow,DC:DF_OBS(1.0.0),I,{dcid},{_PROVIDER},{_RECIPIENT},USD,GrantEquivalent,"
+        f"NotApplicable,{provenance[facet]},{year},{value},,{facet}\r\n"
+        for dcid, (facet, value, years) in populated.items()
+        if dcid in named
+        for year in years
+    )
+    return httpx.Response(
+        200, text=body, headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"}
+    )
+
+
+def _sdmx_transport(
+    populated: Mapping[str, tuple[str, int, tuple[int, ...]]],
+) -> httpx.MockTransport:
+    return httpx.MockTransport(lambda request: _sdmx_response(populated, request))
+
+
+def _coverage(populated: Mapping[str, tuple[str, int, tuple[int, ...]]]) -> FakeCoverageService:
+    index = build_coverage_index(
+        [
+            (dcid, facet, _PROVIDER, _RECIPIENT, list(years))
+            for dcid, (facet, _value, years) in populated.items()
+        ],
+        role_names={
+            dcid: RoleNames(donor="financingProvider", recipient="financingRecipient")
+            for dcid in populated
+        },
+        facet_metadata={
+            _CRS_FACET: FacetMetadata(
+                provenance_id=CRS_PROVENANCE, measurement_method="GrantEquivalent", unit="USD"
+            ),
+            _IMPUTED_FACET: FacetMetadata(
+                provenance_id=IMPUTED_PROVENANCE, measurement_method="GrantEquivalent", unit="USD"
+            ),
+        },
+    )
+    return FakeCoverageService(index)
+
+
+def _composite_client(
+    version_store: FakeVersionRecordDatasetStore | None = None,
+    *,
+    populated: Mapping[str, tuple[str, int, tuple[int, ...]]] | None = None,
+    settings: DatasetsBuildSettings | None = None,
+    transport: httpx.MockTransport | None = None,
+) -> tuple[FakeArtifactStore | None, TestClient]:
+    """A client over the composite's rows (`_populated` unless given), and the artifact store
+    its renderings are put in. With `version_store`, the client writes heads and records there
+    and builds its own artifact store."""
+    populated = _populated() if populated is None else populated
+    graph = FakeMintGraphReader(labels={_PROVIDER: "France", _RECIPIENT: "Kenya"})
+    transport = _sdmx_transport(populated) if transport is None else transport
+    if version_store is not None:
+        return None, _client(
+            graph=graph,
+            sdmx_transport=transport,
+            coverage=_coverage(populated),
+            version_store=version_store,
+            head_writer=LiveHeadStore(store=version_store),
+            settings=settings,
+        )
+    artifacts = FakeArtifactStore()
+    return artifacts, _client(
+        graph=graph,
+        sdmx_transport=transport,
+        coverage=_coverage(populated),
+        artifact_store=artifacts,
+        settings=settings,
+    )
+
+
+def _mint(client, *, options: Mapping[str, object] | None = None) -> httpx.Response:
+    identity = _identity()
+    spec_id = recompute_identity(identity).spec_id
+    return client.post(
+        "/api/datasets",
+        json={
+            "schema_version": 1,
+            "input": {
+                "kind": "spec_id",
+                "spec_id": spec_id,
+                "definition": {"schema_version": 1, "spec_id": spec_id, "identity": identity},
+            },
+            "options": {"bundle": False, **(options or {})},
+        },
+    )
+
+
+def _csv_rows(artifacts: FakeArtifactStore, manifest: dict) -> list[dict]:
+    """The rows of `manifest`'s CSV rendering."""
+    artifact = next(a for a in manifest["artifacts"] if a["rendering"].get("format") == "csv")
+    data = artifacts.get(artifact_digest=artifact["artifact_digest"], tier=Tier.working)
+    return list(csv.DictReader(io.StringIO(data.decode())))
+
+
+def test_the_mint_resolves_each_component_from_its_own_table():
+    members = _members()
+
+    assert {role: len(refs) for role, refs in members.items()} == {
+        "bilateral": CRS_MEMBER_COUNT,
+        "imputed": IMPUTED_MEMBER_COUNT,
+    }
+    assert not set(members["bilateral"]) & set(members["imputed"])
+
+
+def test_a_composite_mints_one_frame_over_the_years_both_components_hold():
+    _artifacts, client = _composite_client()
+
+    minted = _mint(client)
+
+    assert minted.status_code == 200, minted.text
+    manifest = minted.json()
+    by_role = {entry["role"]: entry for entry in manifest["trace"]["components"]}
+    assert set(by_role) == {"bilateral", "imputed"}
+    assert by_role["bilateral"]["provenance"] == CRS_PROVENANCE
+    assert by_role["imputed"]["provenance"] == IMPUTED_PROVENANCE
+    assert by_role["bilateral"]["dropped_years"] == [2019]
+    # Every imputed member but the one holding rows gets a zero row in each covered cell.
+    assert by_role["imputed"]["zero_rows"] == (IMPUTED_MEMBER_COUNT - 1) * len(_IMPUTED_YEARS)
+    crs_rows = 2 * len(_IMPUTED_YEARS)
+    assert manifest["coverage"]["rows"] == crs_rows + IMPUTED_MEMBER_COUNT * len(_IMPUTED_YEARS)
+    assert [source["ref"] for source in manifest["citation"]["sources"]] == [
+        CRS_PROVENANCE,
+        IMPUTED_PROVENANCE,
+    ]
+    provenance_facets = [f for f in manifest["trace"]["facets"] if f["axis"] == "provenance"]
+    assert [f["ref"] for f in provenance_facets] == [_STACKED.provenance]
+
+
+def test_a_groupby_collapse_of_a_composite_sums_both_components():
+    artifacts, client = _composite_client()
+    assert artifacts is not None
+
+    minted = _mint(client, options={"groupby": {"by": ["time_period"], "op": "sum"}})
+
+    assert minted.status_code == 200, minted.text
+    manifest = minted.json()
+    rows = _csv_rows(artifacts, manifest)
+    assert {row["time_period"]: float(row["value"]) for row in rows} == {
+        "2020": 100 + 50 + 7,
+        "2021": 100 + 50 + 7,
+    }
+
+
+def test_a_sector_code_and_its_own_purpose_codes_each_count_once_in_the_sum():
+    """The imputed table publishes spending imputed against a three-digit sector code (114)
+    beside spending imputed against its five-digit purpose codes (11420). `crsPurpose` declares
+    a code's rows disjoint from its children's, and the table's rows sum to its source total,
+    so a sum over both counts each dollar once: the total is every row's value added once."""
+    members = _members()
+    imputed = {member.removeprefix("dcid:") for member in members["imputed"]}
+    parent = next(dcid for dcid in imputed if dcid.endswith("_CRSPurposeCode114_Nominal"))
+    child = next(dcid for dcid in imputed if dcid.endswith("_CRSPurposeCode11420_Nominal"))
+    crs = members["bilateral"][0].removeprefix("dcid:")
+    populated = {
+        crs: (_CRS_FACET, 100, _IMPUTED_YEARS),
+        parent: (_IMPUTED_FACET, 7, _IMPUTED_YEARS),
+        child: (_IMPUTED_FACET, 3, _IMPUTED_YEARS),
+    }
+    artifacts, client = _composite_client(populated=populated)
+    assert artifacts is not None
+
+    minted = _mint(client, options={"groupby": {"by": ["time_period"], "op": "sum"}})
+
+    assert minted.status_code == 200, minted.text
+    rows = _csv_rows(artifacts, minted.json())
+    assert {row["time_period"]: float(row["value"]) for row in rows} == {
+        "2020": 100 + 7 + 3,
+        "2021": 100 + 7 + 3,
+    }
+
+
+def test_the_estimate_counts_the_zero_rows_and_refuses_before_any_read():
+    """The admission estimate counts every imputed member once per cell the composite's
+    series hold (`CoverageIndex.cell_count`), so the row ceiling bounds the composed frame and
+    a composite over it refuses before any SDMX request."""
+    populated = _populated()
+    read_rows = sum(len(years) for _facet, _value, years in populated.values())
+    cells = len({year for _facet, _value, years in populated.values() for year in years})
+    composed_bound = read_rows + IMPUTED_MEMBER_COUNT * cells
+    requests: list[httpx.Request] = []
+
+    def _counted(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _sdmx_response(populated, request)
+
+    _artifacts, client = _composite_client(
+        populated=populated,
+        settings=DatasetsBuildSettings(sync_budget_rows=1, async_max_rows=read_rows + 1),
+        transport=httpx.MockTransport(_counted),
+    )
+
+    refused = _mint(client)
+
+    assert refused.status_code == 422, refused.text
+    problem = refused.json()
+    assert problem["code"] == "over_ceiling"
+    assert problem["count"] == composed_bound
+    assert requests == []
+
+
+def test_the_stored_version_re_renders_the_composite_frame_and_its_citations():
+    version_store = FakeVersionRecordDatasetStore()
+    _artifacts, client = _composite_client(version_store)
+    minted = _mint(client)
+    assert minted.status_code == 200, minted.text
+    spec_id = minted.json()["definition"]["spec_id"]
+
+    served = client.get(f"/api/datasets/{spec_id}?bundle=false&format=parquet")
+
+    assert served.status_code == 200, served.text
+    manifest = served.json()
+    assert manifest["trace"]["served_from"] == "head"
+    assert manifest["content_version"] == minted.json()["content_version"]
+    assert manifest["trace"]["components"] == minted.json()["trace"]["components"]
+    assert manifest["citation"] == minted.json()["citation"]
+
+
+def _same_purpose_pair() -> tuple[str, str]:
+    """A CRS member and an imputed member of one purpose code."""
+    index = get_index()
+    rows = {row.dcid: row for row in index.statvars}
+    members = _members()
+    imputed = {
+        rows[member.removeprefix("dcid:")].constraint_properties.get("crsPurpose"): member
+        for member in members["imputed"]
+    }
+    for member in members["bilateral"]:
+        purpose = rows[member.removeprefix("dcid:")].constraint_properties.get("crsPurpose")
+        if purpose in imputed:
+            return member, imputed[purpose]
+    raise AssertionError("no CRS and imputed member share a purpose code")
+
+
+def test_two_tables_in_one_frame_still_refuse_a_collapse_outside_a_composite():
+    crs, imputed = _same_purpose_pair()
+    table = Table(
+        columns=("stat_var", "time_period", "value"),
+        rows=((crs, "2020", 1.0), (imputed, "2020", 2.0)),
+    )
+
+    with pytest.raises(RollupNotSummableError) as ambiguous:
+        refuse_stat_var_collision(table, index=get_index(), decoded_code_systems=["crsPurpose"])
+    with pytest.raises(RollupNotSummableError) as disagreeing:
+        refuse_provenance_disagreement(provenance_refs=[CRS_PROVENANCE, IMPUTED_PROVENANCE])
+
+    assert ambiguous.value.precondition == "stat_var_ambiguous"
+    assert disagreeing.value.precondition == "provenance_disagreement"
+    refuse_stat_var_collision(
+        table, index=get_index(), decoded_code_systems=["crsPurpose"], composite=_STACKED
+    )
+    refuse_provenance_disagreement(provenance_refs=[_STACKED.provenance])
+
+
+def test_a_composite_binding_a_slot_the_imputed_rows_do_not_declare_is_refused():
+    identity = _identity()
+    for slot in identity["slots"]:
+        if slot["property"] == "crsCooperationModality":
+            slot["binding"] = {"state": "value", "ref": "CRSCooperationModalityC01"}
+
+    with pytest.raises(CompositeNotServable) as refused:
+        component_identities(get_index(), identity)
+
+    assert refused.value.pointer == "/slots/0"
+
+
+@pytest.mark.parametrize(
+    ("edit", "detail"),
+    [
+        pytest.param(
+            lambda identity: identity.update(requested_window={"kind": "latest"}),
+            "latest window",
+            id="latest-window",
+        ),
+        pytest.param(
+            lambda identity: identity["slots"][0].update(
+                binding={"state": "value", "ref": "CRSCooperationModalityC01"}
+            ),
+            "crsCooperationModality",
+            id="bound-modality",
+        ),
+    ],
+)
+def test_the_door_refuses_a_composite_it_cannot_compose_before_any_read(edit, detail):
+    _artifacts, client = _composite_client()
+    identity = _identity()
+    edit(identity)
+    spec_id = recompute_identity(identity).spec_id
+
+    refused = client.post(
+        "/api/datasets",
+        json={
+            "schema_version": 1,
+            "input": {
+                "kind": "spec_id",
+                "spec_id": spec_id,
+                "definition": {"schema_version": 1, "spec_id": spec_id, "identity": identity},
+            },
+            "options": {"bundle": False},
+        },
+    )
+
+    assert refused.status_code == 400, refused.text
+    problem = refused.json()
+    assert problem["code"] == "request_invalid"
+    assert problem["pointer"] == "/input/spec_id"
+    assert detail in problem["detail"]

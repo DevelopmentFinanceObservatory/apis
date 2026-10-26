@@ -18,8 +18,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast
 
+from code_index.composites import component_of
 from code_index.query import CodeIndex
-from code_index.types import CodeSystemDeclaration, summable_axes
+from code_index.types import (
+    CodeSystemDeclaration,
+    CompositeDeclaration,
+    StatVarRow,
+    summable_axes,
+)
 from materialise.reshape import RollupNotSummableError, TableLike
 from materialise.roles import KNOWN_ROLE_NAMES
 
@@ -193,7 +199,11 @@ def contributing_dcids(table: TableLike) -> frozenset[str]:
 
 
 def refuse_stat_var_collision(
-    table: TableLike, *, index: CodeIndex, decoded_code_systems: Sequence[str]
+    table: TableLike,
+    *,
+    index: CodeIndex,
+    decoded_code_systems: Sequence[str],
+    composite: CompositeDeclaration | None = None,
 ) -> None:
     """Raise `RollupNotSummableError` (`rollup_not_summable`,
     `stat_var_ambiguous`) when distinct StatVars share values across all decoded axes.
@@ -202,6 +212,12 @@ def refuse_stat_var_collision(
     type, measured property, and related identity fields sit outside the frame,
     so matching axes can merge distinct measures. Check every StatVar before
     collapsing, even when rows differ elsewhere.
+
+    `composite` is the declared composite the frame's rows carry as their provenance, or
+    `None`. Its components' members are parts of one total, so a group of StatVars passes
+    when each is a member of a different component (`code_index.composites.component_of`):
+    the bilateral and imputed parts of one sector, or the net and grant-equivalent years of
+    one aid type, which never share a year.
     """
     if _STAT_VAR_COLUMN not in table.columns:
         return
@@ -220,7 +236,7 @@ def refuse_stat_var_collision(
         groups.setdefault(key, set()).add(row.dcid)
 
     for dcids in groups.values():
-        if len(dcids) > 1:
+        if len(dcids) > 1 and not _one_per_component(dcids, composite, statvar_by_dcid):
             named = ", ".join(sorted(dcids))
             raise RollupNotSummableError(
                 f"groupby axis 'stat_var' refused: StatVar(s) {named} decode to the same "
@@ -229,6 +245,18 @@ def refuse_stat_var_collision(
                 axis=_STAT_VAR_COLUMN,
                 precondition="stat_var_ambiguous",
             )
+
+
+def _one_per_component(
+    dcids: Iterable[str],
+    composite: CompositeDeclaration | None,
+    statvar_by_dcid: Mapping[str, StatVarRow],
+) -> bool:
+    """Whether each of `dcids` is a member of a different component of `composite`."""
+    if composite is None:
+        return False
+    roles = [component_of(composite, statvar_by_dcid[dcid]) for dcid in dcids]
+    return None not in roles and len(set(roles)) == len(roles)
 
 
 def refuse_unknown_by_axes(

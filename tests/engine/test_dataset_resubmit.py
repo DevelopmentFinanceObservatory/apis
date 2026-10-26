@@ -29,6 +29,7 @@ from search.engine.region.observations import dispatch as _observations_dispatch
 from search.engine.region.result import RegionResult
 from search.engine.spec_id import build_spec_identity
 from search.models import (
+    BaseIdentity,
     ChoiceOrigin,
     DatasetResubmitInput,
     EntityGroup,
@@ -55,6 +56,7 @@ from search.models import Entry as ScopeEntry
 from search.render.plan import render_sentence
 from search.scope import rules as scope_rules
 from search.scope.tables import AxisTable
+from tests.code_index.aid_identity import education_aid_identity
 from tests.engine._axis_doubles import (
     TOTAL_POPULATION_INDIA_FAMILY,
     axis_confirming_reader,
@@ -924,6 +926,21 @@ def test_an_identity_over_the_place_bound_refuses_request_invalid_on_the_wire(
     assert body["code"] == "request_invalid"
     assert body["pointer"] == pointer
     assert {int(number) for number in re.findall(r"\d+", body["detail"])} == named
+    assert "parts" not in body
+
+
+def test_an_identity_binding_a_composite_provenance_refuses_request_invalid_on_the_wire():
+    """A composite provenance names no table, so a resubmit posting one refuses at the entry's
+    provenance facet before any read."""
+    identity = BaseIdentity.model_validate(
+        education_aid_identity(source="provenance/ONEBilateralAndImputedMultilateral")
+    )
+    entry = ResubmitIdentityEntry(variable_text="education aid", identity=identity)
+    resp = _client().post("/api/search/resolve", json=_wire_request([entry]))
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "request_invalid"
+    assert body["pointer"] == "/input/entries/0/identity/facets/provenance"
     assert "parts" not in body
 
 

@@ -56,7 +56,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest import (
-    provenance_refs_of,
+    source_refs_of,
     stored_manifest,
     stored_manifest_facts,
     stored_output_profile,
@@ -119,9 +119,7 @@ def _stored_snapshot_manifest(
                 identity=cast("Mapping[str, object]", facts.definition.get("identity", {})),
                 capabilities=capabilities,
                 parties=get_index().parties,
-                datasets=provenance_refs_of(
-                    cast("list[dict[str, object]]", facts.trace.get("facets", []))
-                ),
+                datasets=source_refs_of(facts.trace),
             )
             if profile is not None
             else None

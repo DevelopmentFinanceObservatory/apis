@@ -22,6 +22,7 @@ from search.models import (
     OptionsFor,
     OptionsRequest,
 )
+from tests.code_index.aid_identity import education_aid_identity
 from tests.engine._index_slots import unbound_index_slots
 from tests.engine.test_options_population import (
     _IDS_BY_CREDITOR,
@@ -85,6 +86,23 @@ class TestPinnedAskRefusesBeforeDerivation:
         assert exc_info.value.code == "request_invalid"
         assert exc_info.value.status == 400
         assert exc_info.value.pointer == "/identity/shape"
+
+
+class TestCompositeProvenanceRefusesBeforeDerivation:
+    def test_a_composite_provenance_refuses_request_invalid(self):
+        identity = BaseIdentity.model_validate(
+            education_aid_identity(source="provenance/ONEBilateralAndImputedMultilateral")
+        )
+        req = OptionsRequest(identity=identity, **{"for": OptionsFor(role="financingProvider")})
+
+        with pytest.raises(EngineInputError) as exc_info:
+            resolve_options_target(
+                req, graph=FakeGraph(), materialise_graph=FakeGraphReader(arcs={}, subjects={})
+            )
+
+        assert exc_info.value.code == "request_invalid"
+        assert exc_info.value.status == 400
+        assert exc_info.value.pointer == "/identity/facets/provenance"
 
 
 # ---------------------------------------------------------------------------

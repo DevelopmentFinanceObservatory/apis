@@ -17,6 +17,8 @@ _STAT_VAR_COLUMN = "stat_var"
 off the frame's `stat_var` column, never a role column (a code system's
 value is a StatVar-level fact, not a role-level one)."""
 
+_PROVENANCE_COLUMN = "provenance"
+
 _STAT_VAR_REF_PREFIX = "dcid:"
 """Mirrors `materialise.frame_build._STAT_VAR_REF_PREFIX`: every frame's own
 `stat_var` column is canonicalised to this `dcid:`-prefixed spelling
@@ -42,6 +44,11 @@ def build_decode_plan(
     the same decode pass as table values. Code systems are the union of StatVar constraint keys
     intersected with `index.declarations`. Requests are sorted for deterministic column order.
 
+    A frame whose rows carry a composite provenance (`CodeIndex.composite`) leaves out the code
+    systems its components' recipes bind (`ComponentRecipe.bind`). Each holds one value per
+    component by declaration, so its column restates which component a row came from, which
+    `stat_var` already names, and a sum over the composite would split on it.
+
     For each `(ref, code_system)`, `lookup` contains the code label when the index resolves the
     declared value. A declared absence stores the system's `absent_reading`. Missing StatVars or
     unresolved declared codes omit the lookup entry, so `decode_columns` emits an empty cell and
@@ -56,6 +63,7 @@ def build_decode_plan(
                 refs.add(cell)
     if not refs:
         return None
+    marked = _component_marker_axes(table, index=index)
 
     bare_refs = {_bare_dcid(ref) for ref in refs}
     statvar_by_dcid = {row.dcid: row for row in index.statvars if row.dcid in bare_refs}
@@ -63,6 +71,7 @@ def build_decode_plan(
     code_systems: set[str] = set()
     for statvar in statvar_by_dcid.values():
         code_systems.update(statvar.constraint_properties.keys() & index.declarations.keys())
+    code_systems -= marked
     if not code_systems:
         return None
 
@@ -84,3 +93,19 @@ def build_decode_plan(
 
     requests = tuple((_STAT_VAR_COLUMN, code_system) for code_system in sorted(code_systems))
     return DecodePlan(requests=requests, lookup=lookup)
+
+
+def _component_marker_axes(table: TableLike, *, index: CodeIndex) -> frozenset[str]:
+    """The code systems the components of each composite `table`'s rows carry as their
+    provenance bind (`build_decode_plan`)."""
+    if _PROVENANCE_COLUMN not in table.columns:
+        return frozenset()
+    position = table.columns.index(_PROVENANCE_COLUMN)
+    provenances = {cell for row in table.rows if isinstance(cell := row[position], str)}
+    return frozenset(
+        code_system
+        for provenance in provenances
+        if (composite := index.composite(provenance)) is not None
+        for recipe in composite.components
+        for code_system in recipe.bind
+    )

@@ -48,6 +48,7 @@ from graph_release.authored import AUTHORED, Authored
 _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (code_index_declarations, "CODE_SHORT_NAMES"),
     (code_index_declarations, "CODE_SYNONYMS"),
+    (code_index_declarations, "COMPOSITES"),
     (code_index_declarations, "CONCEPT_GROUPS"),
     (code_index_declarations, "DECLARED_MEASURE_VALUES"),
     (code_index_declarations, "MEASURE_VALUE_TEXT"),
@@ -59,7 +60,8 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (scope_conventions, "SECTOR_GROUPINGS"),
 )
 """The tables read from their modules rather than passed as arguments, each with its module:
-the `code_index.declarations` tables `code_index.export` reads and the
+the `code_index.declarations` tables `code_index.export` reads, the composites
+`code_index.loader.parse_index` serves (`COMPOSITES`), and the
 `code_index.scope_conventions` tables `search.scope` reads. Every name is unique across
 modules, since `declarations_json` keys each table by its name alone."""
 

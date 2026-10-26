@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from code_index.types import ComponentRole
 from dc_sdmx import EntityFilter, SdmxClient
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
 from materialise.codes import MaterialisationWarning
@@ -106,6 +107,11 @@ class MaterialisationRequest:
     # resolves to the null ref as `measurementMethod` and `unit` do, and the answer states
     # no source.
     requires_provenance: bool = True
+    # The component of a composite definition the request reads
+    # (`code_index.composites.component_identities`), or None for a plain definition. The
+    # requests of one component materialise together, and a composite's components compose
+    # into one frame (`materialise.composite.compose_components`).
+    component: ComponentRole | None = None
 
     def __post_init__(self) -> None:
         for axis, binding in self.facet_bindings.items():
@@ -141,6 +147,8 @@ class MaterialisationResult:
     `read_series` maps each request's `stat_var` to the series its read holds under any
     window (`window.ReadSeries`): the facets it dispatched and the rows a conversion left
     out. No dependency fingerprint holds it outside a `latest` window's `latest_years`.
+    `countries_fallback` is true when a request binding no place was served the countries
+    with data in place of every place (`place_scope.DefaultPlaceScope`) and rows were served.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -161,6 +169,7 @@ class MaterialisationResult:
     probe_empty: bool = False
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
+    countries_fallback: bool = False
 
 
 @dataclass(frozen=True)

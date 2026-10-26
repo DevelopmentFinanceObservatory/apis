@@ -172,8 +172,14 @@ def _resolved_facets(
 
 def _declared_account(ref: str) -> FlowAccount | None:
     """The flow account of the dataset `ref` when the code index declares it
-    (`DatasetDeclaration.account`), else `None`."""
-    dataset = get_index().datasets.get(ref)
+    (`DatasetDeclaration.account`), the one account every component table of a composite it
+    serves gives (`CodeIndex.composite`), else `None`."""
+    index = get_index()
+    composite = index.composite(ref)
+    if composite is not None:
+        accounts = {index.datasets[recipe.dataset].account for recipe in composite.components}
+        return accounts.pop() if len(accounts) == 1 else None
+    dataset = index.datasets.get(ref)
     return dataset.account if dataset is not None else None
 
 
