@@ -19,7 +19,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import PartyRow, label_for_pairs
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import party_kind_of
+from materialise.enrichment import party_count
 from origin_catalogue import ORIGINS, current_catalogue
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
@@ -949,17 +949,6 @@ def _role_axis_facts(
         )
         for fact in facts
     ]
-
-
-def party_count(
-    dcids: Collection[str], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
-) -> int:
-    """How many of `dcids` the default download keeps as parties: those the code index's
-    `parties` declares no `total` in `datasets` (`materialise.enrichment.party_kind_of`),
-    the test the Datasets cut of party totals applies (`datasets_api.party_totals`). When
-    every member is a total the cut keeps them all, and so does the count."""
-    kept = sum(party_kind_of(dcid, parties=parties, datasets=datasets) != "total" for dcid in dcids)
-    return kept or len(dcids)
 
 
 def _compose_wire_shape_label(
