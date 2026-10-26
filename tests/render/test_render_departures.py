@@ -358,11 +358,11 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             asked="Aid flow B",
             shown="Source A",
             members=("Aid flow B",),
-            currency="USD",
+            unit="US dollars",
         ),
         None,
-        "You asked for Aid flow B. It holds no values under Source A, which this answer "
-        "reads because it holds values in US dollars, the currency you asked for.",
+        "You asked for Aid flow B. It holds no values under the source, unit and method this "
+        "answer reads (Source A, US dollars).",
     ),
     (
         DepartureFact(
@@ -373,15 +373,16 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             members=("Aid flow B", "Aid flow C"),
         ),
         None,
-        "You asked for Aid flow B and Aid flow C. They hold no values under Source A, the "
-        "source this answer reads.",
+        "You asked for Aid flow B and Aid flow C. They hold no values under the source, unit "
+        "and method this answer reads (Source A).",
     ),
     (
         DepartureFact(
             code="member_unavailable", binding_ref=None, asked="Aid flow B", members=("Aid flow B",)
         ),
         None,
-        "You asked for Aid flow B. It holds no values under the source this answer reads.",
+        "You asked for Aid flow B. It holds no values under the source, unit and method this "
+        "answer reads.",
     ),
     (
         DepartureFact(
@@ -862,8 +863,8 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
             members=("Aid flow B",),
         ),
         None,
-        "You asked for Aid flow B. It holds no values under Source A, the source this answer "
-        "reads.",
+        "You asked for Aid flow B. It holds no values under the source, unit and method this "
+        "answer reads (Source A).",
     ),
     (
         DepartureFact(

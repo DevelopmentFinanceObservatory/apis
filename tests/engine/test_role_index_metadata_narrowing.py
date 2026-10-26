@@ -18,6 +18,7 @@ from search.models import (
     IdentityFacetValueAbsent,
     TimeWindow,
 )
+from tests.engine._harness import lead_selected
 from tests.engine._role_candidates import role_candidate
 from tests.fixtures import FakeGraph
 
@@ -108,7 +109,13 @@ def _discovered_plan(years) -> BulkPlan:
     """The bulk plan discovery records over the unfiltered index: `F1` covers two pairs to
     `F2`'s one, so it is elected."""
     merged = merge_role_candidates(_role_index(), ["sv_a"])
-    return BulkPlan(members=("sv_a",), years=years, facet_id="F1", candidates=merged)
+    return BulkPlan(
+        members=("sv_a",),
+        years=years,
+        facet_id="F1",
+        selected=lead_selected(merged, "F1"),
+        candidates=merged,
+    )
 
 
 def _eur(_sv: str, candidate) -> bool:

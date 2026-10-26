@@ -15,13 +15,14 @@ from search.engine.retrieval.coverage import (
     citable_source_ids,
     headline_from_coverage_index,
 )
-from search.engine.retrieval.facet_election import merge_role_candidates, select_role_candidate
+from search.engine.retrieval.facet_election import merge_role_candidates
 from search.engine.retrieval.read_plan import (
     BulkPlan,
     PairPlan,
     PlanSeries,
     plan_standard,
     plan_years,
+    role_election,
 )
 from search.models import BreadthDim, CoverageBare, CoverageBreadth, CoverageExact, TimeWindow
 from series_coverage.schema import ABSENT_ENTITY, RoleNames
@@ -739,11 +740,14 @@ def test_windowed_duplicate_facet_id_with_undated_block_stays_breadth() -> None:
 
 def _bulk_plan(years, candidates: list[RoleFacetCandidate]) -> BulkPlan:
     merged = merge_role_candidates(_one_index(candidates), ["sv"])
-    best = select_role_candidate(merged, stat_vars=["sv"], time_period=None)
+    facet_id, selected, _unserved, _continuing = role_election(
+        merged, members=["sv"], read_years=None
+    )
     return BulkPlan(
         members=("sv",),
         years=years,
-        facet_id=best.facet_id if best is not None else None,
+        facet_id=facet_id,
+        selected=selected,
         candidates=merged,
     )
 

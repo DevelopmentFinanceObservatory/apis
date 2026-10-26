@@ -40,7 +40,7 @@ import math
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from code_index.shared import get_index
 from materialise.facets import (
@@ -49,7 +49,7 @@ from materialise.facets import (
     read_variable_breadths,
     subject_probe,
 )
-from materialise.group_facets import elect_probes
+from materialise.group_facets import elect_probes, is_populated
 from materialise.window import RequestedWindow, latest_period, latest_periods
 from search.engine import extract as _extract
 from search.engine.clients.graph import Facet
@@ -60,6 +60,7 @@ from search.engine.retrieval.facet_election import (
     merge_scope_candidates,
     rank_scope_candidates,
     role_continuation,
+    role_group_selection,
     scope_served,
     select_role_candidate,
     window_of,
@@ -732,14 +733,19 @@ class PairPlan:
 
 @dataclass(frozen=True)
 class BulkPlan:
-    """A bulk role read: one facet across every pair of `members`.
+    """A bulk role read: one group's facets across every pair of `members`.
 
     `candidates` are the facets merged over the role index the read builds for `members`
     inside `read_years`, the SDMX year list (None for `latest` and dateless reads, and for a
-    range too long to list, which no bulk read can serve). `facet_id` is the election over
-    them (`facet_election.select_role_candidate`), and `continuing` the facets continuing
-    it past its last year (`facet_election.role_continuation`), which the read dispatches
-    beside it, as a mint of the answer's Spec does (`_role_election`). `omitted` are the
+    range too long to list, which no bulk read can serve). `facet_id` leads the election
+    over them (`facet_election.select_role_candidate`), and `selected` holds each served
+    member's facet ids the group's selection serves, `facet_id` first where the member holds
+    it (`facet_election.role_group_selection`): under `index_sourced` a member holding the
+    group's provenance and unit under another method's facet serves that facet. `continuing`
+    holds the facets continuing the lead past its last year
+    (`facet_election.role_continuation`), which the read dispatches beside the selection, as
+    a mint of the answer's Spec does (`role_election`). `unserved` holds the populated
+    members the group leaves out (`GroupElection.unserved`), as `PairPlan.unserved` does. `omitted` are the
     rows a conversion leaves out (`omitting`), whose pairs the candidates no longer hold,
     and `omitted_served` the members one of whose omitted rows falls in their years
     (`member_years`). Under `latest` each member serves one year of its own
@@ -754,6 +760,8 @@ class BulkPlan:
     years: PlanYears
     read_years: tuple[str, ...] | None = None
     facet_id: str | None = None
+    selected: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    unserved: tuple[str, ...] = ()
     continuing: tuple[str, ...] = ()
     candidates: Mapping[str, RoleBulkCandidate] = field(default_factory=dict, compare=False)
     roles: PlanRoles | None = None
@@ -778,19 +786,43 @@ class BulkPlan:
 
     @property
     def elected(self) -> RoleBulkCandidate | None:
-        """The candidate the bulk read serves, or None with no candidate."""
+        """The candidate leading the group the bulk read serves, or None with no
+        candidate."""
         return self.candidates.get(self.facet_id) if self.facet_id is not None else None
 
     @property
+    def served_facet_ids(self) -> tuple[str, ...]:
+        """Every facet id the group's selection serves at some member (`selected`), the
+        lead first, then in member order."""
+        return tuple(
+            dict.fromkeys(facet_id for sv in self.members for facet_id in self.selected.get(sv, ()))
+        )
+
+    @property
+    def served_facets(self) -> tuple[RoleBulkCandidate, ...]:
+        """The candidates of `served_facet_ids`."""
+        return tuple(
+            self.candidates[facet_id]
+            for facet_id in self.served_facet_ids
+            if facet_id in self.candidates
+        )
+
+    def selected_candidates(self, sv: str) -> list[RoleFacetCandidate]:
+        """`sv`'s pairs under the facets the group's selection serves it (`selected`)."""
+        return [
+            c
+            for facet_id in self.selected.get(sv, ())
+            if (candidate := self.candidates.get(facet_id)) is not None
+            for c in candidate.by_sv.get(sv, ())
+        ]
+
+    @property
     def served_members(self) -> tuple[str, ...]:
-        """The members the read serves: those the elected facet holds pairs for
-        (`elected.by_sv`), in member order. A filter narrowing the plan per StatVar can drop
-        a member while its facet stays elected, so coverage, the headline and the bulk read
-        all take their members here."""
-        best = self.elected
-        if best is None:
-            return ()
-        return tuple(sv for sv in self.members if sv in best.by_sv)
+        """The members the read serves: those holding pairs under a facet the group's
+        selection serves them (`selected_candidates`), in member order. A filter narrowing
+        the plan per StatVar can drop a member while the group stays elected, so coverage,
+        the headline and the bulk read all take their members here."""
+        return tuple(sv for sv in self.members if self.selected_candidates(sv))
 
     def member_year(self, sv: str) -> int | None:
         """The year a `latest` read serves `sv` in: the year it elected (`elected_years`),
@@ -798,14 +830,13 @@ class BulkPlan:
         facet, the leading year of `materialise.window.latest_period` over its pairs'
         latest dates. Both are read after any omission (`omitting`). Coverage knows only
         years, so the plan fixes the year and the bulk read reduces `sv`'s points within it
-        by the same definition. None for a member the elected facet holds no dated pair
-        of."""
-        best = self.elected
-        if best is None:
+        by the same definition. None for a member the facets its group's selection serves
+        it hold no dated pair of."""
+        if self.elected is None:
             return None
         if (year := (self.elected_years or {}).get(sv)) is not None:
             return year
-        return year_of(latest_period(c.latest_date for c in best.by_sv.get(sv, ())))
+        return year_of(latest_period(c.latest_date for c in self.selected_candidates(sv)))
 
     def member_years(self, sv: str) -> YearBounds:
         """The years the read serves `sv` in: under `latest` its one year alone
@@ -819,16 +850,16 @@ class BulkPlan:
         return None, None
 
     def served_candidates(self, sv: str) -> list[RoleFacetCandidate]:
-        """`sv`'s candidates the read dispatches: the elected facet's, then those of the
-        facets continuing it (`continuing`)."""
-        best = self.elected
-        if best is None:
-            return []
+        """`sv`'s candidates the read dispatches: those of the facets the group's selection
+        serves it (`selected_candidates`), then those of the facets continuing the lead
+        (`continuing`) that the selection does not already serve."""
+        selected = self.selected.get(sv, ())
         return [
-            *best.by_sv.get(sv, ()),
+            *self.selected_candidates(sv),
             *(
                 c
                 for facet_id in self.continuing
+                if facet_id not in selected
                 for c in self.candidates[facet_id].by_sv.get(sv, ())
             ),
         ]
@@ -846,35 +877,32 @@ class BulkPlan:
 
     @cached_property
     def elected_pairs(self) -> Mapping[str, Mapping[RoleTuple, int]]:
-        """Each served member's role tuples with an observation under the elected facet in
-        its years, each with the observations it holds there. Empty with no election."""
-        best = self.elected
-        if best is None:
-            return {}
+        """Each served member's role tuples with an observation under the facets the group's
+        selection serves it (`selected_candidates`) in its years, each with the observations
+        it holds there. Empty with no election."""
         return {
-            sv: _tuple_counts(best.by_sv[sv], *self.member_years(sv)) for sv in self.served_members
+            sv: _tuple_counts(self.selected_candidates(sv), *self.member_years(sv))
+            for sv in self.served_members
         }
 
     @cached_property
     def continued_pairs(self) -> Mapping[str, Mapping[RoleTuple, int]]:
         """Each served member's role tuples with an observation the read serves in its
         years, each with the observations it serves there, under a plan with `continuing`
-        facets: the elected facet's (`elected_pairs`), then a continuing facet's in each
-        year after the tuple's last year under the elected facet in the member's years, as
+        facets: the selected facets' (`elected_pairs`), then a continuing facet's in each
+        year after the tuple's last year under the selected facets in the member's years, as
         `materialise.columnar.continuation_mask` keeps a continuation's rows. Coverage
-        counts by year, so a year the elected facet holds serves none of the continuation.
+        counts by year, so a year the selected facets hold serves none of the continuation.
         Each facet's tuples are read once with their observations by year
         (`RolePairs.year_counts`), as ranking the joined candidate decoded every tuple
         (`facet_election.rank_role_candidates`).
         Empty without `continuing`."""
         if not self.continuing:
             return {}
-        best = self.elected
-        assert best is not None  # `continuing` follows an election
         counted: dict[str, Mapping[RoleTuple, int]] = {}
         for sv in self.served_members:
             first, last = self.member_years(sv)
-            lead = best.by_sv[sv]
+            lead = self.selected_candidates(sv)
             ends: dict[RoleTuple, int] = {}
             for c in lead:
                 for role_tuple, by_year in c.pairs.year_counts(first_year=first, last_year=last):
@@ -956,13 +984,13 @@ class BulkPlan:
                         (c.latest_date for c in kept_all if c.latest_date), default=None
                     ),
                 )
-        facet_id, continuing = _role_election(
+        election = role_election(
             candidates,
             members=self.members,
             read_years=self.read_years,
             index_sourced=self.index_sourced,
         )
-        return replace(self, facet_id=facet_id, continuing=continuing, candidates=candidates)
+        return replace(self, **election._asdict(), candidates=candidates)
 
     def windowed(self, years: TimeWindow) -> BulkPlan:
         """This plan read over `years`, a range with both bounds inside the plan's own
@@ -970,15 +998,13 @@ class BulkPlan:
         plan built under that window elects from the same candidates."""
         assert years.start_year is not None and years.end_year is not None
         listed = tuple(str(year) for year in range(years.start_year, years.end_year + 1))
-        facet_id, continuing = _role_election(
+        election = role_election(
             self.candidates,
             members=self.members,
             read_years=listed,
             index_sourced=self.index_sourced,
         )
-        return replace(
-            self, years=years, read_years=listed, facet_id=facet_id, continuing=continuing
-        )
+        return replace(self, **election._asdict(), years=years, read_years=listed)
 
     def omitting(self, omitted: Omissions) -> BulkPlan:
         """This plan with each candidate's pairs leaving out the tuples that bind an entity
@@ -1026,23 +1052,45 @@ class BulkPlan:
         return stated
 
 
-def _role_election(
+class RoleElection(NamedTuple):
+    """A bulk read's election (`role_election`), as the `BulkPlan` fields it sets."""
+
+    facet_id: str | None
+    selected: dict[str, tuple[str, ...]]
+    unserved: tuple[str, ...]
+    continuing: tuple[str, ...]
+
+
+def role_election(
     candidates: Mapping[str, RoleBulkCandidate],
     *,
     members: Sequence[str],
     read_years: Sequence[str] | None,
     index_sourced: bool = False,
-) -> tuple[str | None, tuple[str, ...]]:
-    """The facet a bulk read of `members` serves from `candidates` inside `read_years`, the
-    lead of the members' one group (`facet_election.select_role_candidate`), and the facets
-    continuing it there (`facet_election.role_continuation`), or None and nothing with no
-    candidate."""
+) -> RoleElection:
+    """The election a bulk read of `members` serves from `candidates` inside `read_years`:
+    the lead of the members' one group (`facet_election.select_role_candidate`), each
+    member's facet ids its selection serves and the members it leaves out
+    (`facet_election.role_group_selection`), and the facets continuing the lead there
+    (`facet_election.role_continuation`), or None and nothing with no candidate."""
     best = select_role_candidate(
         candidates, stat_vars=members, time_period=read_years, index_sourced=index_sourced
     )
     if best is None:
-        return None, ()
-    return best.facet_id, role_continuation(best, candidates, window=window_of(read_years))
+        return RoleElection(None, {}, (), ())
+    selected, unserved = role_group_selection(
+        candidates,
+        stat_vars=members,
+        time_period=read_years,
+        lead=best.facet_id,
+        index_sourced=index_sourced,
+    )
+    return RoleElection(
+        best.facet_id,
+        selected,
+        unserved,
+        role_continuation(best, candidates, window=window_of(read_years)),
+    )
 
 
 def _tuple_counts(
@@ -1092,22 +1140,22 @@ type ReadPlan = PairPlan | BulkPlan
 
 def served_units(plan: ReadPlan) -> frozenset[str | None]:
     """The native unit of each facet `plan` serves, None for a facet with no unit: the
-    group of each served series, whose facets share one unit, or in bulk the elected facet
-    while it serves any pair."""
+    group of each served series, whose facets share one unit, or in bulk the facets the
+    group's selection serves (`BulkPlan.served_facets`) while they serve any pair."""
     if isinstance(plan, PairPlan):
         return frozenset(s.group[0].unit for s in plan.served if s.group)
-    best = plan.elected
-    return frozenset({best.unit}) if best is not None and plan.population > 0 else frozenset()
+    if plan.population == 0:
+        return frozenset()
+    return frozenset(facet.unit for facet in plan.served_facets)
 
 
 def served_facet_keys(plan: ReadPlan) -> frozenset[tuple[str | None, str | None]]:
     """The native unit and provenance of each facet `plan` serves (`served_units`)."""
     if isinstance(plan, PairPlan):
         return frozenset((f.unit, f.provenance_id) for s in plan.served for f in s.group)
-    best = plan.elected
-    if best is None or plan.population == 0:
+    if plan.population == 0:
         return frozenset()
-    return frozenset({(best.unit, best.provenance_id)})
+    return frozenset((facet.unit, facet.provenance_id) for facet in plan.served_facets)
 
 
 def plan_roles(plan: ReadPlan) -> tuple[str, ...]:
@@ -1122,7 +1170,7 @@ def plan_roles(plan: ReadPlan) -> tuple[str, ...]:
 
 def served_role_entities(plan: ReadPlan, role: str) -> frozenset[str]:
     """The entities `plan` serves on graph role `role`: those its served series bind there,
-    or in bulk those the elected facet's pairs hold data for there in each member's years.
+    or in bulk those the served facets' pairs hold data for there in each member's years.
     Both read the plan and the coverage index in memory."""
     if isinstance(plan, PairPlan):
         return frozenset(dcid for s in plan.served for r, dcid in s.role_tuple if r == role)
@@ -1151,8 +1199,9 @@ def series_points(series: PlanSeries, read: TimeWindow | None) -> int:
 
 
 def facets_served(plan: ReadPlan) -> list[Facet]:
-    """The facets `plan` serves: each served series' group, or in bulk the elected facet and
-    the facets continuing it (`BulkPlan.continuing`), each as one facet carrying its
+    """The facets `plan` serves: each served series' group, or in bulk the facets the
+    group's selection serves (`BulkPlan.served_facets`) and those continuing the lead
+    (`BulkPlan.continuing`), each as one facet carrying its
     provenance. Coverage counts its sources from them and every
     answer cites them (`region.facets.cited_facets`), so the count, the sentence and
     `resolved_sources` state the sources the preview reads.
@@ -1175,9 +1224,9 @@ def facets_served(plan: ReadPlan) -> list[Facet]:
             facets,
             key=lambda f: (-points[f.provenance_id], f.provenance_id or "", f.facet_id or ""),
         )
-    best = plan.elected
-    if best is None:
+    if plan.elected is None:
         return []
+    served = plan.served_facet_ids
     return [
         Facet(
             obs_count=c.pair_count,
@@ -1186,7 +1235,10 @@ def facets_served(plan: ReadPlan) -> list[Facet]:
             facet_id=c.facet_id,
             provenance_id=c.provenance_id,
         )
-        for c in (best, *(plan.candidates[facet_id] for facet_id in plan.continuing))
+        for c in (
+            *plan.served_facets,
+            *(plan.candidates[facet_id] for facet_id in plan.continuing if facet_id not in served),
+        )
     ]
 
 
@@ -1219,15 +1271,15 @@ def served_dates(plan: ReadPlan) -> dict[str, ServedDates]:
             if (dates := plan.series_dates(s)) is not None:
                 by_sv.setdefault(s.stat_var, []).append(dates)
         return {sv: hull for sv, spans in by_sv.items() if (hull := _hull(spans)) is not None}
-    best = plan.elected
-    if best is None:
+    if plan.elected is None:
         return {}
     served: dict[str, ServedDates] = {}
     for sv in plan.served_members:
         first, last = plan.member_years(sv)
         if plan.years == "latest":
             if first is not None and any(
-                c.pairs.n_with_data(first_year=first, last_year=last) for c in best.by_sv[sv]
+                c.pairs.n_with_data(first_year=first, last_year=last)
+                for c in plan.selected_candidates(sv)
             ):
                 served[sv] = (str(first), str(first))
             continue
@@ -1248,12 +1300,11 @@ def series_facets(plan: ReadPlan | None) -> list[Facet | RoleBulkCandidate]:
     """One facet per series `plan` serves, carrying the provenance, method and unit its
     preview dispatches: the elected facet that leads a served series' group, whose facets
     share all three save the estimated method continuing it past its last year, or in bulk
-    the elected facet."""
+    each facet the group's selection serves (`BulkPlan.served_facets`), the lead first."""
     if plan is None:
         return []
     if isinstance(plan, BulkPlan):
-        best = plan.elected
-        return [best] if best is not None and plan.population > 0 else []
+        return list(plan.served_facets) if plan.population > 0 else []
     return [s.group[0] for s in plan.served]
 
 
@@ -1342,7 +1393,7 @@ def plan_coverage(plan: ReadPlan) -> ReadingCoverage | None:
 
 def serves_nothing(plan: ReadPlan) -> bool:
     """Whether `plan`'s preview reads no point, so the answer is `no_observations`: no
-    series served, or a bulk read whose elected facet holds no pair with data in its years.
+    series served, or a bulk read whose served facets hold no pair with data in its years.
     A series holding a point in the plan's years that no facet can dispatch
     (`PairPlan.unservable`) keeps the answer, whose preview says why it serves nothing."""
     if isinstance(plan, BulkPlan):
@@ -1351,31 +1402,32 @@ def serves_nothing(plan: ReadPlan) -> bool:
 
 
 def populated_members(plan: ReadPlan) -> frozenset[str]:
-    """The members of `plan` holding a candidate facet: a per-series plan's members whose
-    probe or series holds one, a bulk plan's those a candidate holds pairs for."""
+    """The members of `plan` a mint counts as populated (`materialise.group_facets.is_populated`):
+    a per-series plan's members whose probe or series holds a candidate carrying a facet id,
+    a bulk plan's those a candidate holds pairs for."""
     if isinstance(plan, BulkPlan):
-        return frozenset(sv for candidate in plan.candidates.values() for sv in candidate.by_sv)
-    return frozenset(sv for sv, probe in plan.probes.items() if probe.candidates) | frozenset(
-        s.stat_var for s in plan.series if s.candidates
-    )
+        return frozenset(
+            sv
+            for sv in plan.members
+            if is_populated(c for c in plan.candidates.values() if sv in c.by_sv)
+        )
+    return frozenset(
+        sv for sv, probe in plan.probes.items() if is_populated(probe.candidates)
+    ) | frozenset(s.stat_var for s in plan.series if is_populated(s.candidates))
 
 
 def unserved_members(plan: ReadPlan | None) -> tuple[str, ...]:
     """The members of `plan` holding data that the answer's one group leaves out, in member
     order, as a mint of the answer's Spec names them in `coverage_below_scope`'s
-    `unserved_members`: those the plan's election leaves out (`PairPlan.unserved`, or a bulk
-    plan's members a candidate holds pairs for that the elected facet does not serve), and
+    `unserved_members`: those the plan's election leaves out (`PairPlan.unserved`,
+    `BulkPlan.unserved`), and
     those the answer's unit decision leaves out (`left_out`). A member holding no candidate
     is not named, as the mint names no unpopulated member. Empty for no plan and for a plan
     serving nothing, whose answer holds no data at all. The answer names them in a
     `member_unavailable` departure (`engine.departures.spec_departure_facts`)."""
     if plan is None or serves_nothing(plan):
         return ()
-    if isinstance(plan, BulkPlan):
-        served = set(plan.served_members)
-        named = {sv for sv in populated_members(plan) if sv not in served} | plan.left_out
-    else:
-        named = {*plan.unserved, *plan.left_out}
+    named = {*plan.unserved, *plan.left_out}
     return tuple(sv for sv in plan.members if sv in named)
 
 
@@ -1399,7 +1451,7 @@ def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
     A per-series plan was asked for its `places` as subjects and the entities its roles
     bind, and serves those a served series binds on the same role. Under `latest` an entity
     whose series end before their StatVar's latest period is unserved. A bulk plan was asked
-    for the entities its roles bind, and serves on each role those the elected facet holds
+    for the entities its roles bind, and serves on each role those its served facets hold
     a pair with data for in the member's years (`BulkPlan.member_pairs`). Empty for no plan,
     for a scope read, whose places the answer does not name, and for a plan serving nothing,
     whose answer holds no data at all. An entity whose rows a conversion left out of every
@@ -1575,13 +1627,11 @@ def plan_role_read(
         )
     merged = candidates(members)
     listed = tuple(read_years) if read_years is not None else None
-    facet_id, continuing = _role_election(merged, members=members, read_years=listed)
     return BulkPlan(
         members=members,
         years=years,
         read_years=listed,
-        facet_id=facet_id,
-        continuing=continuing,
+        **role_election(merged, members=members, read_years=listed)._asdict(),
         candidates=merged,
         roles=roles,
         elect=elect,

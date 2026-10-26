@@ -17,6 +17,7 @@ from search.models import IdentityBindingValue, ResubmitIdentityPayload
 from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import binding_set_slot as _binding_set_slot
 from tests.engine._builders import value_slot as _value_slot
+from tests.engine._conjoin_fixtures import member_departures
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, walk_options
@@ -140,20 +141,30 @@ def test_binding_satisfied_by_only_one_stat_var_refuses_through_resubmit():
     assert exc_info.value.pointer == "/input/identity/facets/measurementMethod"
 
 
-def test_binding_satisfied_by_every_stat_var_answers_definite_with_all_series():
-    """Both StatVars satisfy the binding under one source and contribute a series, since
-    the members of one Spec serve one group."""
+@pytest.mark.parametrize(
+    ("provenance_b", "series", "left_out"),
+    [
+        pytest.param("dc/base/SourceB", {_SV_A}, ["Test Expenditure SourceB"], id="two-sources"),
+        pytest.param("dc/base/SourceA", {_SV_A, _SV_B}, [], id="one-source"),
+    ],
+)
+def test_binding_satisfied_by_every_stat_var_serves_the_one_group(
+    provenance_b: str, series: set[str], left_out: list[str]
+):
+    """Both StatVars satisfy the bound method, so the resubmit answers definite with both
+    members. Under two sources the members of one Spec serve one group: SourceA's, which
+    holds more observations, so SV_A alone contributes a series and the part names SV_B in a
+    `member_unavailable` departure. Under one source both serve and none departs."""
     obs = _obs(
-        method_a="GrossDisbursement",
-        method_b="GrossDisbursement",
-        provenance_b="dc/base/SourceA",
+        method_a="GrossDisbursement", method_b="GrossDisbursement", provenance_b=provenance_b
     )
     region = _resubmit(obs, {"measurementMethod": IdentityBindingValue(ref="GrossDisbursement")})
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     spec = region.specs[0]
     assert {sv.ref.ref for sv in spec.resolved.members} == {_SV_A, _SV_B}
     assert spec.resolved.observations is not None
-    assert {s.stat_var.ref for s in spec.resolved.observations.series} == {_SV_A, _SV_B}
+    assert {s.stat_var.ref for s in spec.resolved.observations.series} == series
+    assert [asked for _ref, asked, _shown in member_departures(region)] == left_out
 
 
 def test_lifetime_source_does_not_mask_windowed_method_missing_from_one_stat_var():

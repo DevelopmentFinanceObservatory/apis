@@ -136,19 +136,20 @@ def _points_from_facets(facets: list[Facet]) -> list[tuple[str, float | None]]:
 
 
 def _served_points(
-    facets: list[Facet], *, lead: str, estimated: frozenset[str]
+    facets: list[Facet], *, lead: frozenset[str], estimated: frozenset[str]
 ) -> tuple[list[tuple[str, float | None]], bool]:
     """One pair's points from the facets the read returned for it, each holding an
-    observation (`_points_from_facets`): those of the elected facet `lead`, then those of
-    the facets continuing it dated after the last of them, or all of theirs where `lead`
-    holds none, as `materialise.columnar.continuation_mask` keeps a mint's rows. Also
-    whether a served point comes from one of the `estimated` facet ids."""
-    led = [f for f in facets if f.facet_id == lead]
+    observation (`_points_from_facets`): those of the facets `lead` the group's selection
+    serves the pair's StatVar (`BulkPlan.selected`), then those of the facets continuing it
+    dated after the last of them, or all of theirs where `lead` holds none, as
+    `materialise.columnar.continuation_mask` keeps a mint's rows. Also whether a served
+    point comes from one of the `estimated` facet ids."""
+    led = [f for f in facets if f.facet_id in lead]
     points = _points_from_facets(led)
     last = max((date for date, _value in points), default=None)
-    held = {lead} if points else set()
+    held = {f.facet_id for f in led} if points else set()
     for f in facets:
-        if f.facet_id == lead:
+        if f.facet_id in lead:
             continue
         kept = [(d, v) for d, v in _points_from_facets([f]) if last is None or d > last]
         if kept:
@@ -332,7 +333,7 @@ _TRUNCATED_ORDER = {
 
 
 def _assemble_role_bulk_series(
-    best: RoleBulkCandidate,
+    leads: Mapping[str, RoleBulkCandidate],
     plan: _RoleBulkFetchPlan,
     pair_points: Mapping[tuple[str, RoleTuple], list[tuple[str, float | None]]],
     *,
@@ -352,7 +353,8 @@ def _assemble_role_bulk_series(
     No returned pairs yields `OBSERVATIONS_NO_POINTS` without a warning, or, when `converted`
     left out StatVars or pairs (`ConvertedPairs.leaves_out`), an
     `OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED` omission naming them. Otherwise each pair
-    is a series of `best`'s facet, assembled by `search.observations.assemble_role_bulk`,
+    is a series of its StatVar's facet in `leads` (`_member_leads`), assembled by
+    `search.observations.assemble_role_bulk`,
     which shows at most `role_bulk_series_max` of them under `plan.order`. A population
     larger than the shown series warns, its `params.order` naming the order, and StatVars
     and pairs the conversion left out warn under
@@ -375,13 +377,13 @@ def _assemble_role_bulk_series(
             None,
         )
 
-    facets = candidate_facet_refs(best)
+    facets = {sv: candidate_facet_refs(lead) for sv, lead in leads.items()}
     conversions = converted.conversions if converted is not None else {}
     reads = {
         pair: SeriesRead(
             points=sorted(points, key=lambda p: p[0]),
             total_rows=len(points),
-            facets=facets,
+            facets=facets[pair[0]],
             conversion=conversions.get(pair),
             holds_estimates=pair in estimated,
         )
@@ -482,7 +484,11 @@ def _bulk_role_series(
         if not fetch_plan.to_fetch:
             # No pair to read, and SDMX refuses a read with no entity filter.
             return _assemble_role_bulk_series(
-                best, fetch_plan, {}, member_constraints=member_constraints, graph=graph
+                _member_leads(plan),
+                fetch_plan,
+                {},
+                member_constraints=member_constraints,
+                graph=graph,
             )
         return _read_and_assemble(
             plan,
@@ -532,7 +538,7 @@ def _read_and_assemble(
         return sdmx.role_series(
             variables=variables,
             entities=fetch_plan.entities_for_series,
-            facet_ids={best.facet_id, *plan.continuing},
+            facet_ids={*plan.served_facet_ids, *plan.continuing},
             time_period=time_period,
             max_rows=settings().sdmx_max_rows,
             max_bytes=settings().sdmx_max_bytes,
@@ -541,7 +547,7 @@ def _read_and_assemble(
 
     estimated_ids = frozenset(
         c.facet_id
-        for c in (best, *(plan.candidates[facet_id] for facet_id in plan.continuing))
+        for c in (*plan.served_facets, *(plan.candidates[facet_id] for facet_id in plan.continuing))
         if status_of(c.measurement_method, c.provenance_id) == "estimated"
     )
 
@@ -562,7 +568,7 @@ def _read_and_assemble(
                 ):
                     continue
                 points, holds_estimates = _served_points(
-                    facets, lead=best.facet_id, estimated=estimated_ids
+                    facets, lead=frozenset(plan.selected.get(sv, ())), estimated=estimated_ids
                 )
                 if points:
                     pair_points[(sv, role_tuple)] = points
@@ -639,7 +645,7 @@ def _read_and_assemble(
             return conversion_failed_omission(exc)
         pair_points = converted.points
     return _assemble_role_bulk_series(
-        best,
+        _member_leads(plan),
         fetch_plan,
         pair_points,
         member_constraints=member_constraints,
@@ -648,6 +654,16 @@ def _read_and_assemble(
         target_unit_ref=conversion.target_unit_ref if conversion is not None else None,
         estimated=frozenset(estimated),
     )
+
+
+def _member_leads(plan: BulkPlan) -> dict[str, RoleBulkCandidate]:
+    """The facet each served member's series state (`candidate_facet_refs`): the first the
+    group's selection serves it (`BulkPlan.selected`), the lead where the member holds it."""
+    return {
+        sv: plan.candidates[ids[0]]
+        for sv, ids in plan.selected.items()
+        if ids and ids[0] in plan.candidates
+    }
 
 
 def _ending_after_elected(

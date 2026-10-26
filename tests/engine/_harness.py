@@ -50,7 +50,7 @@ from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_memo import PartMemo
-from search.engine.retrieval.facet_election import merge_role_candidates, select_role_candidate
+from search.engine.retrieval.facet_election import merge_role_candidates
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -62,6 +62,7 @@ from search.engine.retrieval.read_plan import (
     minimal_constraint_svs,
     plan_pairs,
     plan_standard,
+    role_election,
     role_years,
 )
 from search.engine.retrieval.role_scope import role_index_for_named_entities
@@ -300,12 +301,17 @@ def bulk_plan(
         )
     )
     merged = merge_role_candidates(index, members)
-    best = select_role_candidate(merged, stat_vars=members, time_period=read_years)
+    listed = tuple(read_years) if read_years is not None else None
+    facet_id, selected, unserved, _continuing = role_election(
+        merged, members=members, read_years=listed
+    )
     return BulkPlan(
         members=tuple(members),
         years=window,
-        read_years=tuple(read_years) if read_years is not None else None,
-        facet_id=best.facet_id if best is not None else None,
+        read_years=listed,
+        facet_id=facet_id,
+        selected=selected,
+        unserved=unserved,
         candidates=merged,
     )
 
@@ -320,11 +326,13 @@ def bulk_role_series_planned(
     time_period: Sequence[str] | None = None,
     latest: bool = False,
     roles: PlanRoles | None = None,
+    index_sourced: bool = False,
     **kwargs,
 ) -> tuple[SpecObservations, Warning | None]:
     """`_bulk_role_series` over the bulk plan a resolver records for these inputs
     (`bulk_plan`): `latest`, a range over `time_period`, or every year, narrowed by
-    `facet_filter`, with the plan's bound `roles` when given."""
+    `facet_filter`, with the plan's bound `roles` when given, and elected as an
+    index-resolved family's under `index_sourced`."""
     window: PlanYears = (
         "latest"
         if latest
@@ -342,6 +350,8 @@ def bulk_role_series_planned(
     )
     if roles is not None:
         plan = replace(plan, roles=roles)
+    if index_sourced:
+        plan = replace(plan, index_sourced=True).narrowed(lambda _sv, _candidate: True)
     if facet_filter:
         plan = plan.narrowed(lambda _sv, candidate: facet_admitted(facet_filter, candidate))
     return _bulk_role_series(plan, sv_dcids, facet_filter=facet_filter, **kwargs)
@@ -1108,3 +1118,9 @@ def _offline(pac: bool | None) -> Iterator[None]:
         overridden = config.SearchSettings.model_validate({**base, "seam_default": pac})
         with patch.object(config, "_SETTINGS", overridden):
             yield
+
+
+def lead_selected(candidates, facet_id: str) -> dict[str, tuple[str, ...]]:
+    """The `BulkPlan.selected` of a hand-built bulk plan serving the one facet `facet_id` at
+    each StatVar it holds pairs for."""
+    return dict.fromkeys(candidates[facet_id].by_sv, (facet_id,))

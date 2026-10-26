@@ -58,6 +58,7 @@ from series_coverage.coverage_types import BoundRoles
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames, YearHorizon
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import CountingSdmxClient, FakeSdmxClient, plan_observations
+from tests.engine._harness import lead_selected
 from tests.fixtures import FakeGraph
 
 _TOTAL = "TEST/PreviewRoute_Total"
@@ -1044,6 +1045,86 @@ def test_a_plan_of_several_members_serves_the_group_a_mint_elects(
     assert read_plan.unserved_members(plan) == (_FLOW_C,)
 
 
+def test_a_member_whose_candidates_carry_no_facet_id_is_not_populated() -> None:
+    """A member is populated by the test its mint applies (`group_facets.is_populated`): a
+    candidate carrying a facet id. `_FLOW_B`'s one candidate carries none, so the mint
+    dispatches it no rows and names it nowhere, and the plan names it in no unit
+    departure."""
+    series = tuple(
+        PlanSeries(
+            stat_var=sv,
+            role_tuple=(("observationAbout", _AAA),),
+            candidates=(
+                Facet(obs_count=2, earliest_date="2019", latest_date="2020", facet_id=facet_id),
+            ),
+        )
+        for sv, facet_id in ((_FLOW, "f1"), (_FLOW_B, None))
+    )
+    plan = PairPlan(members=(_FLOW, _FLOW_B), years=None, series=series)
+
+    assert read_plan.populated_members(plan) == {_FLOW}
+
+
+_METHOD_ROWS = [
+    *(
+        (_FLOW, "fM1", ABSENT_ENTITY, recipient, list(range(2015, 2021)))
+        for recipient in (_AAA, _BBB)
+    ),
+    (_FLOW_B, "fM2", ABSENT_ENTITY, _AAA, list(range(2015, 2021))),
+]
+
+
+@pytest.mark.parametrize(
+    ("index_sourced", "served", "unserved"),
+    [
+        pytest.param(True, (_FLOW, _FLOW_B), (), id="index-sourced"),
+        pytest.param(False, (_FLOW,), (_FLOW_B,), id="by-facet-id"),
+    ],
+)
+def test_a_bulk_plan_serves_every_member_holding_the_group_s_source_and_unit(
+    search_settings, index_sourced: bool, served: tuple[str, ...], unserved: tuple[str, ...]
+) -> None:
+    """`_FLOW` holds `fM1` and `_FLOW_B` `fM2`, one source, unit and annual cadence under
+    two methods. An
+    index-resolved family's group is that source and unit, so its bulk read serves each
+    member the facet it holds them under, as its mint dispatches, in its one read, and
+    names no member left out. A family grouped by facet id serves `fM1`'s holder alone and
+    names `_FLOW_B`."""
+    search_settings(obs_preview_max_pairs=1)
+    members = [_FLOW, _FLOW_B]
+    index = build_coverage_index(
+        _METHOD_ROWS,
+        role_names={sv: RoleNames(donor=None, recipient="debtor") for sv in members},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fM2", "Disbursement"))
+        },
+    )
+    plan = _role_plan(
+        members,
+        member_facts=dict.fromkeys(members, _Constraints()),
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB})},
+        years=read_plan.role_years(_WINDOW, index.horizon),
+        coverage_index=index,
+    )
+    assert isinstance(plan, BulkPlan)
+    plan = replace(plan, index_sourced=index_sourced).narrowed(lambda _sv, _candidate: True)
+
+    assert plan.served_members == served
+    assert {f.facet_id for f in read_plan.facets_served(plan)} == {
+        plan.selected[sv][0] for sv in served
+    }
+    assert read_plan.unserved_members(plan) == unserved
+
+
 def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
     search_settings,
 ) -> None:
@@ -1853,6 +1934,7 @@ def test_a_one_role_continuation_counts_the_observations_of_every_row_of_a_membe
         members=(sv,),
         years=TimeWindow(start_year=first, end_year=last),
         facet_id="rec",
+        selected=lead_selected(candidates, "rec"),
         continuing=("est",),
         candidates=candidates,
     )

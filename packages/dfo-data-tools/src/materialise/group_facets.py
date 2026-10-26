@@ -9,9 +9,9 @@ contribute zero rows. The members the group serves must pass joint checks.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from materialise.errors import (
     DefaultFacetUndefinedError,
@@ -95,15 +95,24 @@ def _agreement_key(candidate: Facet) -> object:
     return (candidate.provenance_id, candidate.unit)
 
 
-def _populated_mask(candidates: Sequence[Sequence[Facet]]) -> list[bool]:
-    """Marks members with a candidate `facet_id`, in request order.
+class _Identified(Protocol):
+    @property
+    def facet_id(self) -> str | None: ...
 
-    Unpopulated members dispatch no rows and are not named unserved. The shared mask keeps
-    policy agreement and the unserved members aligned.
+
+def is_populated(candidates: Iterable[_Identified]) -> bool:
+    """Whether a member holding `candidates` is populated: one carries a `facet_id`. An
+    unpopulated member dispatches no rows and is not named unserved (`GroupElection`), and
+    Search names a member it leaves out by the same test (`read_plan.populated_members`)."""
+    return any(c.facet_id is not None for c in candidates)
+
+
+def _populated_mask(candidates: Sequence[Sequence[Facet]]) -> list[bool]:
+    """Marks members with a candidate `facet_id` (`is_populated`), in request order.
+
+    The shared mask keeps policy agreement and the unserved members aligned.
     """
-    return [
-        any(c.facet_id is not None for c in member_candidates) for member_candidates in candidates
-    ]
+    return [is_populated(member_candidates) for member_candidates in candidates]
 
 
 def _check_bound_axes(

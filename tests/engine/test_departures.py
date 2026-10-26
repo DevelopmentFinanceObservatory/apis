@@ -32,8 +32,6 @@ from search.models import (
     DateRange,
     EntityGroup,
     GraphRef,
-    IdentityFacetValueRequest,
-    IdentityUnitRequest,
     IdentityWindowAll,
     IdentityWindowLatest,
     IdentityWindowRange,
@@ -540,83 +538,69 @@ _SET_SLOT = Slot(
 _FLOW_B = GraphRef(ref="Flow_B", label="Aid flow B")
 
 
+_USD = ResolvedFacet(basis="fallback", ref="CurrencyUSD", label="US Dollar", currency="USD")
+_PERCENT = ResolvedFacet(basis="fallback", ref="Percent", label="Percent")
+_SOURCE_A = ResolvedFacet(basis="fallback", ref="dc/base/SrcA", label="Source A")
+
+
 @pytest.mark.parametrize(
-    ("slots", "unserved", "currency", "served_unit", "fact"),
+    ("slots", "unserved", "facets", "fact"),
     [
         pytest.param(
             [_SOURCE_SLOT, _SET_SLOT],
             (_FLOW_B,),
-            "USD",
-            "CurrencyUSD",
+            {"provenance": _SOURCE_A, "unit": _USD},
             DepartureFact(
                 code="member_unavailable",
                 binding_ref="source:",
                 asked="Aid flow B",
+                shown="Source A",
                 members=("Aid flow B",),
-                currency="USD",
+                unit="US dollars",
             ),
-            id="bound-source-in-the-requested-currency",
+            id="bound-source-currency-unit",
         ),
         pytest.param(
             [_SET_SLOT],
             (_FLOW_B, GraphRef(ref="Flow_C", label="")),
-            "GBP",
-            "CurrencyUSD",
+            {"unit": _PERCENT},
             DepartureFact(
                 code="member_unavailable",
                 binding_ref="how:financingSource",
                 asked="Aid flow B, Flow_C",
                 members=("Aid flow B", "Flow_C"),
+                unit="Percent",
             ),
-            id="set-binding-converted",
+            id="set-binding-unit-by-label",
         ),
         pytest.param(
             [],
             (_FLOW_B,),
-            None,
-            None,
+            {},
             DepartureFact(
                 code="member_unavailable",
                 binding_ref=None,
                 asked="Aid flow B",
                 members=("Aid flow B",),
             ),
-            id="no-slot",
+            id="no-slot-no-facets",
         ),
-        pytest.param([_SET_SLOT], (), "USD", "CurrencyUSD", None, id="every-member-served"),
+        pytest.param([_SET_SLOT], (), {"unit": _USD}, None, id="every-member-served"),
     ],
 )
 def test_member_unavailable_names_the_members_the_group_leaves_out(
     slots: list[Slot],
     unserved: tuple[GraphRef, ...],
-    currency: str | None,
-    served_unit: str | None,
+    facets: dict[str, ResolvedFacet],
     fact: DepartureFact | None,
 ):
     """The members holding data that the answer's one group leaves out, by label, else by
     dcid, on the source slot where the answer binds one, else on the set binding naming
-    them. Where the answer's unit is the currency the request named held natively, the fact
-    names it; a converted unit names none. A group serving every member departs nothing."""
+    them, with the source and the unit the answer's served series carry: a currency by its
+    plural noun, another unit by label. A group serving every member departs nothing."""
     spec = _spec()
-    identity = spec.definition.identity
-    if currency is not None:
-        identity = identity.model_copy(
-            update={
-                "facets": {
-                    "unit": IdentityFacetValueRequest(
-                        request=IdentityUnitRequest(currency=currency, prices="current")
-                    )
-                }
-            }
-        )
-    facets = (
-        {"unit": ResolvedFacet(basis="fallback", ref=served_unit, label=served_unit)}
-        if served_unit is not None
-        else {}
-    )
     spec = spec.model_copy(
         update={
-            "definition": spec.definition.model_copy(update={"identity": identity}),
             "resolved": spec.resolved.model_copy(
                 update={"slots": slots, "facets": facets}
             ).stating_unserved_members(unserved),

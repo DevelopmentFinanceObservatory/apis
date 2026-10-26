@@ -601,7 +601,8 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
     A per-series read keys each served series' group facets, and under `latest` reads each
     series in the year of its StatVar's one period alone (`PairPlan.series_dates`), the
     period a latest read serves and every served series holds (`PairPlan.served`). A bulk
-    read keys its served members under the elected facet, which the facets continuing it
+    read keys its served members under the lead's unit and provenance, which every facet
+    its group's selection serves (`BulkPlan.selected`) and every facet continuing the lead
     share."""
     if isinstance(plan, BulkPlan):
         best = plan.elected
@@ -956,8 +957,9 @@ def _fetched_entities(
 ) -> dict[str, dict[_FacetKey, Callable[[str], frozenset[str]]]]:
     """Each StatVar's facet keys among the rows `plan`'s read fetches before it omits any,
     each with the entities those rows bind on a graph role. A bulk read fetches its served
-    members' pairs under the elected facet and the facets continuing it
-    (`BulkPlan.served_candidates`), over every year under `latest`, the pairs each
+    members' pairs under the facets its group's selection serves and the facets continuing
+    the lead (`BulkPlan.served_candidates`), keyed by the unit and provenance they share,
+    over every year under `latest`, the pairs each
     member's year is elected or dated from before the read reduces it to that year, and
     the member's years (`BulkPlan.member_years`) otherwise. A per-series read fetches its
     held series (`PairPlan.held`), every series with data under `latest`, under their group

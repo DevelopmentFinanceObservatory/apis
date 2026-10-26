@@ -69,6 +69,7 @@ from tests.engine._harness import (
     bulk_plan,
     bulk_role_series_planned,
     door_roles_for_test_query,
+    lead_selected,
     sdmx_double,
     unit_check_planned,
 )
@@ -79,6 +80,7 @@ from tests.materialise.conftest import FakeGraphReader
 from tests.series_coverage.support import BUILD_EPOCH_YEAR
 
 _SV = "TEST/BulkRoleObs_Flow"
+_SV_B = "TEST/BulkRoleObs_FlowB"
 _DONOR = "country/BRDonor"
 # One recipient over the cap reproduces a large region-bound destination set.
 _RECIPIENTS = [f"country/BR{i}" for i in range(1, observation_settings().obs_preview_max_pairs + 2)]
@@ -531,11 +533,16 @@ def test_facet_ranked_by_role_tuple_coverage_not_facet_id(monkeypatch):
     # ZZZLow covers 5/5 role tuples, AAAHigh only 3/5 -- coverage (the count
     # of role tuples a facet_id's own coverage rows name) must win the
     # ranking over facet_id ordering and over recency (AAAHigh's own facet
-    # is more recent, per its own SDMX points below).
+    # is more recent, per its own SDMX points below). The two hold different
+    # sources, so the group ZZZLow leads holds it alone.
     coverage = _patch_role_coverage(
         monkeypatch,
         [("ZZZLow", _DONOR, r, [2019]) for r in recipients]
         + [("AAAHigh", _DONOR, r, [2020]) for r in recipients[:3]],
+        facet_metadata={
+            "ZZZLow": FacetMetadata(provenance_id="dc/base/CoverageFixture"),
+            "AAAHigh": FacetMetadata(provenance_id="dc/base/OtherFixture"),
+        },
     )
     obs: dict[tuple[tuple[str, str], ...], list[Facet]] = {}
     for i, r in enumerate(recipients):
@@ -556,6 +563,59 @@ def test_facet_ranked_by_role_tuple_coverage_not_facet_id(monkeypatch):
     assert observations is not None
     assert sdmx.series_calls[0]["facet_ids"] == {"ZZZLow"}
     assert len(observations.series) == 5
+
+
+@pytest.mark.parametrize(
+    ("index_sourced", "served"),
+    [
+        pytest.param(True, {_SV, _SV_B}, id="index-sourced"),
+        pytest.param(False, {_SV}, id="by-facet-id"),
+    ],
+)
+def test_an_index_sourced_bulk_read_serves_each_member_its_own_method_s_facet(
+    monkeypatch, index_sourced: bool, served: set[str]
+):
+    """`_SV` holds `FM1` and `_SV_B` `FM2`, one source, unit and cadence under two methods.
+    An index-resolved family's group is that source and unit, so its one bulk read asks for
+    both facets and serves each member its own, as its mint dispatches, and names no member
+    left out. Grouped by facet id, the read asks for the lead's facet alone and serves its
+    holder."""
+    recipients = ["country/BRMethod1", "country/BRMethod2"]
+    index = patch_coverage(
+        monkeypatch,
+        [
+            *((_SV, "FM1", _DONOR, r, [2020]) for r in recipients),
+            (_SV_B, "FM2", _DONOR, recipients[0], [2020]),
+        ],
+        role_names={sv: RoleNames(donor="provider", recipient="recipient") for sv in (_SV, _SV_B)},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("FM1", "Commitment"), ("FM2", "Disbursement"))
+        },
+    )
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {_role_tuple(r): [_facet(dates=["2020"], facet_id="FM1")] for r in recipients},
+            _SV_B: {_role_tuple(recipients[0]): [_facet(dates=["2020"], facet_id="FM2")]},
+        }
+    )
+    observations, _warn = bulk_role_series_planned(
+        [_SV, _SV_B],
+        _obs_entities(recipients),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        coverage=FakeCoverageService(index).snapshot(),
+        index_sourced=index_sourced,
+    )
+    assert len(sdmx.series_calls) == 1
+    assert sdmx.series_calls[0]["facet_ids"] == ({"FM1", "FM2"} if index_sourced else {"FM1"})
+    assert observations is not None
+    assert {s.stat_var.ref for s in observations.series} == served
 
 
 def test_merged_candidates_keep_or_drop_whole_and_preview_pairs_in_sorted_order():
@@ -593,7 +653,13 @@ def test_merged_candidates_keep_or_drop_whole_and_preview_pairs_in_sorted_order(
     )
     merged = merge_role_candidates({_SV: [usd_narrow, eur, usd_wide]}, [_SV])
     preview = _preview_pairs(
-        BulkPlan(members=(_SV,), years=None, facet_id="F-A", candidates=merged),
+        BulkPlan(
+            members=(_SV,),
+            years=None,
+            facet_id="F-A",
+            selected=lead_selected(merged, "F-A"),
+            candidates=merged,
+        ),
         10,
         member_year=lambda _sv: 2020,
     )
@@ -1181,7 +1247,15 @@ def test_unshipped_pair_total_obs_selects_the_same_facet_as_the_shipped_ones(
     rows = [("F1", _DONOR, r, [2020]) for r in recipients if r != "country/BRTrunc7"]
     rows.append(("F1", _DONOR, "country/BRTrunc7", [2020, 2021]))
     rows.append(("F2", _DONOR, "country/BRTrunc7", [2020, 2021, 2022, 2023, 2024]))
-    coverage = _patch_role_coverage(monkeypatch, rows)
+    # F2 holds another source, so the group F1 leads holds F1 alone.
+    coverage = _patch_role_coverage(
+        monkeypatch,
+        rows,
+        facet_metadata={
+            "F1": FacetMetadata(provenance_id="dc/base/CoverageFixture"),
+            "F2": FacetMetadata(provenance_id="dc/base/OtherFixture"),
+        },
+    )
     obs = {
         _role_tuple(r): [_facet(dates=["2020"], value=float(i))] for i, r in enumerate(recipients)
     }
@@ -1333,7 +1407,13 @@ def test_preview_pairs_takes_stat_vars_newest_year_first_round_robin_up_to_the_l
 
     member_years = {sv_b: 2022, sv_a: 2021, sv_c: 2019}
     preview = _preview_pairs(
-        BulkPlan(members=(sv_b, sv_c, sv_a), years=None, facet_id="F1", candidates=merged),
+        BulkPlan(
+            members=(sv_b, sv_c, sv_a),
+            years=None,
+            facet_id="F1",
+            selected=lead_selected(merged, "F1"),
+            candidates=merged,
+        ),
         2,
         member_year=member_years.get,
     )

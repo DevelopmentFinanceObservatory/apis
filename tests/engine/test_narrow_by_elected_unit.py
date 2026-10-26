@@ -15,6 +15,7 @@ from search.engine.region.facets import (
 )
 from search.engine.retrieval.facet_election import merge_role_candidates
 from search.engine.retrieval.read_plan import BulkPlan
+from tests.engine._harness import lead_selected
 from tests.engine._role_candidates import role_candidate
 
 _KEN = (("recipient", "country/KEN"),)
@@ -92,6 +93,7 @@ def test_role_candidates_narrow_per_stat_var():
         members=("sv_a", "sv_b"),
         years=None,
         facet_id="F1",
+        selected=lead_selected(merge_role_candidates(index, ["sv_a", "sv_b"]), "F1"),
         candidates=merge_role_candidates(index, ["sv_a", "sv_b"]),
     )
     admission = FacetAdmission(
@@ -112,6 +114,7 @@ def test_a_role_candidate_whose_unit_no_stat_var_elects_is_dropped():
         members=("sv_a",),
         years=None,
         facet_id="F1",
+        selected=lead_selected(merge_role_candidates(index, ["sv_a"]), "F1"),
         candidates=merge_role_candidates(index, ["sv_a"]),
     )
 

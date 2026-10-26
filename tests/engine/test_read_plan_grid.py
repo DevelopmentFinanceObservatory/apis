@@ -501,8 +501,13 @@ def test_a_role_answer_counts_the_points_its_preview_serves(
 
     _assert_agreement(spec.resolved.coverage, spec.resolved.observations, _served_destinations)
     assert all(dispatched <= planned for planned, dispatched in dispatches)
-    assert all(len(call["facet_ids"]) == 1 for call in fixture.sdmx.series_calls)
-    if not bulk:
+    if bulk:
+        # A bulk read asks for the facets of the variable's one group its selection serves
+        # in the years read, as its mint dispatches them, in each call.
+        group = _group(fixture.holdings, request_kind)
+        assert all(set(call["facet_ids"]) <= group for call in fixture.sdmx.series_calls)
+    else:
+        assert all(len(call["facet_ids"]) == 1 for call in fixture.sdmx.series_calls)
         # Every per-series read plans facets of the variable's one group alone, and the
         # preview serves each place holding a point on it in the years read.
         group = _group(fixture.holdings, request_kind)

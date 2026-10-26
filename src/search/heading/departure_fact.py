@@ -83,8 +83,8 @@ class DepartureFact:
     - `members` (`member_unavailable`): the labels of the variables the answer's one group
       leaves out, in member order; `asked` joins them and `shown` names the source the
       answer reads.
-    - `currency` (`member_unavailable`): the ISO code of the currency the request named,
-      when the source the answer reads holds it natively.
+    - `unit` (`member_unavailable`): the name of the unit the answer reads, as its served
+      series carry it, when they carry one.
     - `sources` (`entity_unavailable`): the names of sources that hold values for the
       entities but that Search does not read, because the origin registry withholds them.
     - `latest_years` (`entity_unavailable`): on a `latest` request, the first and last
@@ -123,7 +123,7 @@ class DepartureFact:
     entities: tuple[str, ...] = ()
     sets: tuple[UnservedMembers, ...] = ()
     members: tuple[str, ...] = ()
-    currency: str | None = None
+    unit: str | None = None
     group: str | None = None
     group_size: int | None = None
     group_dcid: str | None = None

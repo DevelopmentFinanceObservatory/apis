@@ -38,7 +38,6 @@ from search.models import (
     RoleAxis,
     SentenceToken,
 )
-from unit_words.currency_nouns import currency_noun
 
 from .labels import _join_labels, group_members_text, group_text
 
@@ -226,22 +225,18 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
 
 
 def _member_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
-    """The variables the answer's one group leaves out, by name, and the source the answer
-    reads (`shown`), which holds no values for them. Where that source holds the currency
-    the request named (`DepartureFact.currency`), which led the answer to it, the text says
-    so."""
+    """The variables the answer's one group leaves out, by name. A group is one source, unit
+    and method, so the text says they hold no values under the three this answer reads, and
+    names the source (`shown`) and the unit (`DepartureFact.unit`) where the fact holds them.
+    It names what the answer reads and gives no reason for the choice."""
     if not fact.members:
         raise ValueError("member_unavailable needs the variables the answer leaves out")
-    lead = f"You asked for {_join_labels(list(fact.members))}. "
     holds = "It holds" if len(fact.members) == 1 else "They hold"
-    if fact.shown is None:
-        return f"{lead}{holds} no values under the source this answer reads."
-    if fact.currency is None:
-        return f"{lead}{holds} no values under {fact.shown}, the source this answer reads."
-    currency = currency_noun(fact.currency, label=None)
+    named = [text for text in (fact.shown, fact.unit) if text]
+    read = f" ({', '.join(named)})" if named else ""
     return (
-        f"{lead}{holds} no values under {fact.shown}, which this answer reads because it holds "
-        f"values in {currency}, the currency you asked for."
+        f"You asked for {_join_labels(list(fact.members))}. {holds} no values under the "
+        f"source, unit and method this answer reads{read}."
     )
 
 

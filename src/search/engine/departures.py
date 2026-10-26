@@ -47,7 +47,6 @@ from search.models import (
     BindingProvenance,
     EntityGroup,
     GraphRef,
-    IdentityFacetValueRequest,
     IdentityWindowRange,
     ObservationSeries,
     Operation,
@@ -58,6 +57,7 @@ from search.models import (
     Warning,
     role_ref,
 )
+from unit_words.currency_nouns import currency_noun
 
 if TYPE_CHECKING:
     from code_index.types import PartyRow
@@ -455,13 +455,11 @@ def scope_limited_fact(spec: Spec) -> DepartureFact | None:
 def member_unavailable_fact(spec: Spec) -> DepartureFact | None:
     """`member_unavailable` for the members holding data that the one group `spec`'s answer
     reads leaves out (`ResolvedSpec.unserved_members`), by label, else by dcid, or `None`
-    when the group serves every member holding data. `shown` names the source the answer
-    reads, the provenance its served series carry (`ResolvedSpec.facets`), by label, else by
-    dcid, `None` when they carry several. `currency` is the currency the
-    request named when the answer's unit is that currency held natively, which led the
-    group's election to the source read (`materialise.group_facets`). Editing the source
-    slot clears it where the answer binds one, else editing the set binding a how slot
-    holds, whose values name the members."""
+    when the group serves every member holding data. A group is one source, unit and
+    method, so the fact states the source the answer reads as `shown` and its unit as
+    `unit`, each from the facets its served series carry (`ResolvedSpec.facets`), and
+    nothing of why the group won. Editing the source slot clears it where the answer binds
+    one, else editing the set binding a how slot holds, whose values name the members."""
     left_out = spec.resolved.unserved_members
     if not left_out:
         return None
@@ -472,7 +470,7 @@ def member_unavailable_fact(spec: Spec) -> DepartureFact | None:
         asked=", ".join(labels),
         shown=_served_source(spec),
         members=labels,
-        currency=_native_requested_currency(spec),
+        unit=_served_unit(spec),
     )
 
 
@@ -498,19 +496,16 @@ def _member_binding_ref(slots: Sequence[Slot]) -> str | None:
     return None
 
 
-def _native_requested_currency(spec: Spec) -> str | None:
-    """The ISO code of the currency `spec`'s identity requests at current prices, when the
-    unit its answer serves is that currency (`Currency<code>`), else `None`."""
-    binding = (spec.definition.identity.facets or {}).get("unit")
-    if not isinstance(binding, IdentityFacetValueRequest):
-        return None
-    request = binding.request
-    if not isinstance(request.currency, str) or request.prices != "current":
-        return None
+def _served_unit(spec: Spec) -> str | None:
+    """The name of the one unit `spec`'s served series carry: a currency by its plural noun
+    (`currency_noun`), any other unit by label, else by dcid, or `None` when they carry
+    several or none."""
     unit = spec.resolved.facets.get("unit")
-    return (
-        request.currency if unit is not None and unit.ref == f"Currency{request.currency}" else None
-    )
+    if unit is None or unit.ref is None:
+        return None
+    if unit.currency is not None:
+        return currency_noun(unit.currency, label=unit.label)
+    return unit.label or unit.ref
 
 
 def _unavailable_entity_facts(

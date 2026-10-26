@@ -25,7 +25,7 @@ from materialise.facets import (
     overlaps_window,
     rank_pool,
 )
-from materialise.group_facets import rank_group
+from materialise.group_facets import elect_group, rank_group
 from materialise.window import RequestedWindow
 from search.engine.clients.graph import Facet
 from search.engine.clients.sdmx import RoleFacetCandidate, RoleFacetIndex, RoleTuple
@@ -384,6 +384,40 @@ def select_role_candidate(
         index_sourced=index_sourced,
     )
     return ranked[0] if ranked else None
+
+
+def role_group_selection(
+    candidates: Mapping[str, RoleBulkCandidate],
+    *,
+    stat_vars: Sequence[str],
+    time_period: Sequence[str] | None,
+    lead: str | None,
+    index_sourced: bool = False,
+) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+    """The one group a mint of `stat_vars` elects from `candidates`
+    (`materialise.group_facets.elect_group`), over `time_period`'s window and ranked as
+    `rank_role_candidates` ranks them: each StatVar's facet ids its selection serves
+    (`GroupElection.selected`), the facet `lead` first where the StatVar holds it, and the
+    populated StatVars it leaves out (`GroupElection.unserved`), in `stat_vars` order. Under
+    `index_sourced` the group is a provenance and unit, so a StatVar holding them under
+    another method's facet id serves that facet, as its mint dispatches it. A StatVar the
+    group serves no facet of is absent from the first."""
+    window = window_of(time_period)
+    group = elect_group(
+        _member_facets(candidates, stat_vars, window=window),
+        stat_vars=stat_vars,
+        window=window,
+        index_sourced=index_sourced,
+        requires_provenance=False,
+        breadth=_pair_breadth(candidates, window=window),
+    )
+    if group is None:
+        return {}, ()
+    selected: dict[str, tuple[str, ...]] = {}
+    for member, sv in enumerate(stat_vars):
+        if ids := group.selected(member):
+            selected[sv] = tuple(sorted(ids, key=lambda facet_id: (facet_id != lead, facet_id)))
+    return selected, tuple(stat_vars[member] for member in group.unserved)
 
 
 def _member_facets(
