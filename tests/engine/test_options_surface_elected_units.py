@@ -283,10 +283,10 @@ def test_deadline_is_threaded_into_the_request_form_unit_decision():
     deadlines: list[float | None] = []
     original_variable_facets_batch = materialise_graph.variable_facets_batch
 
-    def _capturing_variable_facets_batch(*, stat_var, entities, deadline=None):
+    def _capturing_variable_facets_batch(*, stat_var, entities, needs_dates=False, deadline=None):
         deadlines.append(deadline)
         return original_variable_facets_batch(
-            stat_var=stat_var, entities=entities, deadline=deadline
+            stat_var=stat_var, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     materialise_graph.variable_facets_batch = _capturing_variable_facets_batch

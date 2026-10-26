@@ -492,6 +492,7 @@ def decide_group_unit(
             declared_roles=request.declared_roles,
             role_bindings=request.role_bindings,
             coverage=coverage,
+            window=request.window,
             deadline=deadline,
         )
         for request, probe in zip(requests, probes, strict=True)

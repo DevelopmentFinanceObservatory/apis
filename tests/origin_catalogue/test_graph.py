@@ -24,6 +24,8 @@ from dc_graph import (
 )
 from graph_generation import FakeGeneration
 from graph_release.context import bound_release
+from materialise.arc_memo import MemoGraphReader
+from materialise.graph import GraphReader
 from origin_catalogue import (
     BASE,
     DFO,
@@ -44,6 +46,7 @@ from origin_catalogue.graph import (
     is_un_dcid,
 )
 from origin_catalogue.topic_walk import walk_topics
+from search.engine.clients.graph_client import LiveGraphClient
 from statvar_members.enumerate import _candidate_properties
 from tests.graph_release.support import origin_release
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue, un_mirror, un_variable
@@ -1465,3 +1468,52 @@ def test_a_refused_place_the_catalogue_found_is_noted_once_a_read_names_it(
     assert record.places() == ("country/USA",)
     client.observation_facets_batch([_UN_MORTALITY], ["country/USA"])
     assert record.places() == ("country/USA",)
+
+
+# -- dated facet reads through the wrappers --
+
+
+def _wrapped(
+    wrapper: str, graph: _Graph, client: OriginGraphClient, monkeypatch: pytest.MonkeyPatch
+) -> GraphReader:
+    """The reader `wrapper` names over `graph`: the origin client, the memo a mint reads
+    through over it, or Search's live client, whose own transport `graph` answers."""
+    if wrapper == "origin":
+        return client
+    if wrapper == "memo":
+        return MemoGraphReader(client, properties=())
+
+    def send(_client: httpx.Client, request: httpx.Request, **_kwargs: object) -> httpx.Response:
+        return graph.handler(request)
+
+    monkeypatch.setattr(httpx.Client, "send", send)
+    return LiveGraphClient(base=f"https://{_OURS_HOST}", un_base_url=f"https://{_UN_HOST}/core/api")
+
+
+@pytest.mark.parametrize("needs_dates", [False, True])
+@pytest.mark.parametrize("method", ["variable_facets_batch", "observation_facets_batch_many"])
+@pytest.mark.parametrize("wrapper", ["origin", "memo", "live"])
+def test_a_wrapped_facet_read_selects_dates_only_when_asked(
+    graph: _Graph,
+    client: OriginGraphClient,
+    bind_catalogue,
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper: str,
+    method: str,
+    needs_dates: bool,
+) -> None:
+    bind_catalogue(_catalogue())
+    reader = _wrapped(wrapper, graph, client, monkeypatch)
+
+    if method == "variable_facets_batch":
+        reader.variable_facets_batch(
+            stat_var=_POPULATION, entities=["country/USA"], needs_dates=needs_dates
+        )
+    else:
+        reader.observation_facets_batch_many(
+            stat_vars=[_POPULATION], entities=["country/USA"], needs_dates=needs_dates
+        )
+
+    (request,) = graph.observation_requests(_OURS_HOST)
+    select = set(json.loads(request.content)["select"])
+    assert ({"date", "value"} <= select) is needs_dates
