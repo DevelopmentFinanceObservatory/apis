@@ -12,6 +12,7 @@ from dfo_platform.roles import FlowFamily
 from search.engine.closest_match import spec_closest_match_fact, substituted_readings_fact
 from search.engine.departures import (
     NO_ENTITY_WORDS,
+    member_unavailable_fact,
     merged_entity_facts,
     scope_limited_fact,
     spec_departure_facts,
@@ -862,6 +863,7 @@ def build_candidates_part(
                 raised=[
                     *departure_facts,
                     *(fact for spec in clamped for fact in reading_facts.get(spec.spec_id, ())),
+                    *(fact for spec in clamped if (fact := member_unavailable_fact(spec))),
                 ],
                 operations=operations,
             ),

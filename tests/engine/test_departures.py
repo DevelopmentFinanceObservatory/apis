@@ -27,9 +27,13 @@ from search.engine.retrieval.read_plan import WindowGap, data_years, plan_standa
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
+    BindingSet,
+    BindingValue,
     DateRange,
     EntityGroup,
     GraphRef,
+    IdentityFacetValueRequest,
+    IdentityUnitRequest,
     IdentityWindowAll,
     IdentityWindowLatest,
     IdentityWindowRange,
@@ -42,7 +46,9 @@ from search.models import (
     SeriesEntityRef,
     SeriesFacetRef,
     SeriesStatVarRef,
+    Slot,
     SlotKey,
+    SlotValue,
     Spec,
     SpecObservations,
     TimeWindow,
@@ -510,6 +516,116 @@ def test_a_group_read_as_its_total_departs_nothing():
     spec = _served_from(_spec(groups={"destination": group}), "provenance/OECDDAC2A")
 
     assert spec_departure_facts(spec, operations=()) == []
+
+
+_SOURCE_SLOT = Slot(
+    key=SlotKey(axis="source", label="source"),
+    binding=BindingValue(
+        value=SlotValue(ref=GraphRef(ref="dc/base/SrcA", label="Source A"), value_kind="source")
+    ),
+)
+_SET_SLOT = Slot(
+    key=SlotKey(
+        axis="how",
+        property=GraphRef(ref="financingSource", label="financing source"),
+        label="source",
+    ),
+    binding=BindingSet(
+        values=[
+            SlotValue(ref=GraphRef(ref=ref, label=ref), value_kind="enum_value")
+            for ref in ("SourceA", "SourceB")
+        ]
+    ),
+)
+_FLOW_B = GraphRef(ref="Flow_B", label="Aid flow B")
+
+
+@pytest.mark.parametrize(
+    ("slots", "unserved", "currency", "served_unit", "fact"),
+    [
+        pytest.param(
+            [_SOURCE_SLOT, _SET_SLOT],
+            (_FLOW_B,),
+            "USD",
+            "CurrencyUSD",
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                members=("Aid flow B",),
+                currency="USD",
+            ),
+            id="bound-source-in-the-requested-currency",
+        ),
+        pytest.param(
+            [_SET_SLOT],
+            (_FLOW_B, GraphRef(ref="Flow_C", label="")),
+            "GBP",
+            "CurrencyUSD",
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="how:financingSource",
+                asked="Aid flow B, Flow_C",
+                members=("Aid flow B", "Flow_C"),
+            ),
+            id="set-binding-converted",
+        ),
+        pytest.param(
+            [],
+            (_FLOW_B,),
+            None,
+            None,
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref=None,
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            id="no-slot",
+        ),
+        pytest.param([_SET_SLOT], (), "USD", "CurrencyUSD", None, id="every-member-served"),
+    ],
+)
+def test_member_unavailable_names_the_members_the_group_leaves_out(
+    slots: list[Slot],
+    unserved: tuple[GraphRef, ...],
+    currency: str | None,
+    served_unit: str | None,
+    fact: DepartureFact | None,
+):
+    """The members holding data that the answer's one group leaves out, by label, else by
+    dcid, on the source slot where the answer binds one, else on the set binding naming
+    them. Where the answer's unit is the currency the request named held natively, the fact
+    names it; a converted unit names none. A group serving every member departs nothing."""
+    spec = _spec()
+    identity = spec.definition.identity
+    if currency is not None:
+        identity = identity.model_copy(
+            update={
+                "facets": {
+                    "unit": IdentityFacetValueRequest(
+                        request=IdentityUnitRequest(currency=currency, prices="current")
+                    )
+                }
+            }
+        )
+    facets = (
+        {"unit": ResolvedFacet(basis="fallback", ref=served_unit, label=served_unit)}
+        if served_unit is not None
+        else {}
+    )
+    spec = spec.model_copy(
+        update={
+            "definition": spec.definition.model_copy(update={"identity": identity}),
+            "resolved": spec.resolved.model_copy(
+                update={"slots": slots, "facets": facets}
+            ).stating_unserved_members(unserved),
+        }
+    )
+
+    facts = [f for f in spec_departure_facts(spec, operations=()) if f.code == "member_unavailable"]
+
+    assert facts == ([fact] if fact is not None else [])
 
 
 def test_entity_unavailable_names_each_role_s_unserved_entities_on_its_token():

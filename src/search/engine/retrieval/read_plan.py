@@ -37,7 +37,7 @@ count, date, member and source an answer states is one of the rows it serves.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING
@@ -481,7 +481,7 @@ def series_probes(
 
 def _member_groups(
     probes: Mapping[str, MemberProbe], *, years: PlanYears, index_sourced: bool
-) -> tuple[dict[str, tuple[Facet, ...]], dict[str, frozenset[str]]]:
+) -> tuple[dict[str, tuple[Facet, ...]], dict[str, frozenset[str]], tuple[str, ...]]:
     """The facets of the one group every member's preview dispatches at every series, in
     serving order, and each member's selection (`PairPlan.selections`): one election over
     every member's probe under `years` (`materialise.group_facets.elect_probes`), led by the
@@ -489,18 +489,20 @@ def _member_groups(
     facets' places across the whole variables. The elected facets come first and the facets
     continuing them past their last year after (`materialise.facets.continuation`), which a
     mint of the answer's Spec dispatches too. A member the group does not serve holds no
-    facet and no selection. `index_sourced` lets an index-resolved family's members agree on
+    facet and no selection, and the populated ones among them are returned last, in member
+    order (`GroupElection.unserved`). `index_sourced` lets an index-resolved family's members agree on
     provenance and unit alone, as its mint does (`MaterialisationRequest.index_sourced`)."""
     group = elect_probes(probes, window=plan_window(years), index_sourced=index_sourced)
     if group is None:
-        return dict.fromkeys(probes, ()), {}
+        return dict.fromkeys(probes, ()), {}, ()
     groups: dict[str, tuple[Facet, ...]] = {}
     selections: dict[str, frozenset[str]] = {}
     for member, (sv, probe) in enumerate(probes.items()):
         groups[sv] = group.served(member, probe.candidates)
         if selected := group.selected(member):
             selections[sv] = selected
-    return groups, selections
+    stat_vars = list(probes)
+    return groups, selections, tuple(stat_vars[member] for member in group.unserved)
 
 
 def _elect_groups(
@@ -511,9 +513,10 @@ def _elect_groups(
     scope: bool,
     probes: Mapping[str, MemberProbe],
     index_sourced: bool,
-) -> tuple[tuple[PlanSeries, ...], str | None, dict[str, frozenset[str]]]:
-    """Each series with the group its preview dispatches, a scope read's one facet, and each
-    member's selection (`PairPlan.selections`). A series holds its member's group where it
+) -> tuple[tuple[PlanSeries, ...], str | None, dict[str, frozenset[str]], tuple[str, ...]]:
+    """Each series with the group its preview dispatches, a scope read's one facet, each
+    member's selection (`PairPlan.selections`), and the members the group leaves out
+    (`PairPlan.unserved`), none on a scope read. A series holds its member's group where it
     has those facets, and no group elsewhere."""
     if scope:
         group, selection = _scope_group(series, members=members, years=years)
@@ -521,8 +524,9 @@ def _elect_groups(
             tuple(replace(s, group=_group_of(s.candidates, group)) for s in series),
             group[0] if group else None,
             dict.fromkeys(members, selection),
+            (),
         )
-    groups, selections = _member_groups(probes, years=years, index_sourced=index_sourced)
+    groups, selections, unserved = _member_groups(probes, years=years, index_sourced=index_sourced)
     ids = {
         sv: tuple(f.facet_id for f in group if f.facet_id is not None)
         for sv, group in groups.items()
@@ -531,6 +535,7 @@ def _elect_groups(
         tuple(replace(s, group=_group_of(s.candidates, ids.get(s.stat_var, ()))) for s in series),
         None,
         selections,
+        unserved,
     )
 
 
@@ -574,8 +579,11 @@ class PairPlan:
     `selections` holds each member's facet ids a mint of the answer's Spec serves before any
     continuation: those matching the one group's selections at its cadence, absent for a
     member the group does not serve. A series' group holds all of them, a scope read's only
-    `scope_facet_id`. `index_sourced` marks an index-resolved family, whose group agrees on
-    provenance and unit alone (`in_elected_datasets`).
+    `scope_facet_id`. `unserved` holds the populated members the one group leaves out, in
+    member order (`GroupElection.unserved`), and `left_out` the members a unit decision
+    leaves out (`leaving_out`), whose candidates the filter then removed: both serve nothing,
+    and the answer names them (`unserved_members`). `index_sourced` marks an index-resolved
+    family, whose group agrees on provenance and unit alone (`in_elected_datasets`).
     `roles` is set for a role-bearing read. `probes` holds each member's election input
     (`plan_pairs`): its candidates merged across every place and role tuple the answer
     names, and each facet's series count. A unit decision reads the same probes. `places`
@@ -591,6 +599,8 @@ class PairPlan:
     scope: bool = False
     scope_facet_id: str | None = None
     selections: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    unserved: tuple[str, ...] = ()
+    left_out: frozenset[str] = frozenset()
     roles: PlanRoles | None = None
     places: tuple[str, ...] = ()
     omitted: Omissions = frozenset()
@@ -721,7 +731,7 @@ class PairPlan:
             index_sourced=self.index_sourced,
             elect=self.elect,
         )
-        return replace(narrowed, omitted=self.omitted)
+        return replace(narrowed, omitted=self.omitted, left_out=self.left_out)
 
     def every_date(self) -> PairPlan:
         """This plan's series and probes read over every date: the plan the same answer
@@ -743,7 +753,12 @@ class PairPlan:
             index_sourced=self.index_sourced,
             elect=self.elect,
         )
-        return replace(dated, omitted=self.omitted)
+        return replace(dated, omitted=self.omitted, left_out=self.left_out)
+
+    def leaving_out(self, members: Collection[str]) -> PairPlan:
+        """This plan naming `members` as left out by the answer's unit decision
+        (`left_out`)."""
+        return replace(self, left_out=self.left_out | frozenset(members))
 
 
 @dataclass(frozen=True)
@@ -762,7 +777,8 @@ class BulkPlan:
     (`member_year`), as a mint reduces each StatVar to its own period. `elect` is the
     election the plan was built with, which every plan derived from it runs over its own
     rows (`elected_years`). `index_sourced` marks an index-resolved family, whose members
-    agree on provenance and unit alone (`in_elected_datasets`).
+    agree on provenance and unit alone (`in_elected_datasets`). `left_out` holds the members
+    a unit decision leaves out (`leaving_out`), as `PairPlan.left_out` does.
     """
 
     members: tuple[str, ...]
@@ -775,7 +791,13 @@ class BulkPlan:
     omitted: Omissions = frozenset()
     omitted_served: frozenset[str] = frozenset()
     index_sourced: bool = False
+    left_out: frozenset[str] = frozenset()
     elect: Election | None = field(default=None, compare=False, repr=False)
+
+    def leaving_out(self, members: Collection[str]) -> BulkPlan:
+        """This plan naming `members` as left out by the answer's unit decision
+        (`left_out`)."""
+        return replace(self, left_out=self.left_out | frozenset(members))
 
     @cached_property
     def elected_years(self) -> Mapping[str, int] | None:
@@ -1359,6 +1381,35 @@ def serves_nothing(plan: ReadPlan) -> bool:
     return not plan.served and not plan.unservable
 
 
+def populated_members(plan: ReadPlan) -> frozenset[str]:
+    """The members of `plan` holding a candidate facet: a per-series plan's members whose
+    probe or series holds one, a bulk plan's those a candidate holds pairs for."""
+    if isinstance(plan, BulkPlan):
+        return frozenset(sv for candidate in plan.candidates.values() for sv in candidate.by_sv)
+    return frozenset(sv for sv, probe in plan.probes.items() if probe.candidates) | frozenset(
+        s.stat_var for s in plan.series if s.candidates
+    )
+
+
+def unserved_members(plan: ReadPlan | None) -> tuple[str, ...]:
+    """The members of `plan` holding data that the answer's one group leaves out, in member
+    order, as a mint of the answer's Spec names them in `coverage_below_scope`'s
+    `unserved_members`: those the plan's election leaves out (`PairPlan.unserved`, or a bulk
+    plan's members a candidate holds pairs for that the elected facet does not serve), and
+    those the answer's unit decision leaves out (`left_out`). A member holding no candidate
+    is not named, as the mint names no unpopulated member. Empty for no plan and for a plan
+    serving nothing, whose answer holds no data at all. The answer names them in a
+    `member_unavailable` departure (`engine.departures.spec_departure_facts`)."""
+    if plan is None or serves_nothing(plan):
+        return ()
+    if isinstance(plan, BulkPlan):
+        served = set(plan.served_members)
+        named = {sv for sv in populated_members(plan) if sv not in served} | plan.left_out
+    else:
+        named = {*plan.unserved, *plan.left_out}
+    return tuple(sv for sv in plan.members if sv in named)
+
+
 type RoleEntity = tuple[str, str]
 """An entity on one role: its role key as an identity keys it (`spec_id.entity_role_key`:
 `observationAbout`, `origin` or `destination`) and its dcid."""
@@ -1483,7 +1534,7 @@ def plan_pairs(
             places=() if scope else places,
             deadline=deadline,
         )
-    elected, facet_id, selections = _elect_groups(
+    elected, facet_id, selections, unserved = _elect_groups(
         series,
         members=members,
         years=years,
@@ -1498,6 +1549,7 @@ def plan_pairs(
         scope=scope,
         scope_facet_id=facet_id,
         selections=selections,
+        unserved=unserved,
         roles=roles,
         probes=probes,
         places=tuple(places),

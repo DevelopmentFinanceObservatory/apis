@@ -37,6 +37,7 @@ from search.observations import OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import elected_reply
+from tests.engine._conjoin_fixtures import member_departures
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -317,7 +318,8 @@ def test_single_shape_rate_gap_refuses_rate_coverage_gap():
 def test_a_covered_conversion_answers_definite_without_an_observation_read(monkeypatch):
     """A dollar request serves SV_A's native dollar facet and leaves SV_B, which holds only
     euros, unserved, so the gate passes from the plan and the rate table alone; an answer
-    without a preview reads no observation. The Spec still lists both members."""
+    without a preview reads no observation. The Spec still lists both members, and the part
+    names SV_B as left out of the source it reads, on the set binding naming the members."""
 
     def _no_read(*args, **kwargs):
         raise AssertionError("the bound-unit gate must not read observations")
@@ -335,6 +337,7 @@ def test_a_covered_conversion_answers_definite_without_an_observation_read(monke
     )
     assert result.status == "definite", result
     assert {sv.ref.ref for sv in result.specs[0].resolved.members} == {_SV_A, _SV_B}
+    assert member_departures(result) == [(f"how:{_PROP}", "Unit gate SourceB", _SOURCE_PROVENANCE)]
 
 
 def test_a_unit_gate_refusal_never_probes_coverage(monkeypatch):
@@ -368,7 +371,8 @@ def test_a_unit_gate_refusal_never_probes_coverage(monkeypatch):
 
 
 def test_single_shape_full_coverage_answers_definite_with_all_series():
-    """Both StatVars satisfy the USD request and contribute a series."""
+    """Both StatVars satisfy the USD request and contribute a series, so the part names no
+    member left out."""
     obs = {
         f"{_SV_A}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=10.0)],
         f"{_SV_B}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=20.0)],
@@ -379,6 +383,7 @@ def test_single_shape_full_coverage_answers_definite_with_all_series():
     assert {sv.ref.ref for sv in spec.resolved.members} == {_SV_A, _SV_B}
     assert spec.resolved.observations is not None
     assert {s.stat_var.ref for s in spec.resolved.observations.series} == {_SV_A, _SV_B}
+    assert member_departures(result) == []
 
 
 def test_single_shape_empty_read_answers_from_the_plan():
@@ -431,7 +436,8 @@ class _SetPlusAltBindLLM:
 def test_a_partly_served_candidate_stays_beside_the_full_alternate():
     """A dollar request serves the SET candidate's SV_A, its native dollar facet, and leaves
     SV_B, which holds only euros, unserved. The candidate stays beside the SV_C alternate,
-    which serves in full, so the answer offers both."""
+    which serves in full, so the answer offers both, and the part names SV_B as left out of
+    the SET reading's source."""
     obs = {
         f"{_SV_A}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=10.0)],
         f"{_SV_B}|country/KEN": [_obs_facet(unit="CurrencyEUR", value=5.0)],
@@ -448,6 +454,7 @@ def test_a_partly_served_candidate_stays_beside_the_full_alternate():
         {_SV_A, _SV_B},
         {_SV_C},
     ]
+    assert member_departures(result) == [(f"how:{_PROP}", "Unit gate SourceB", _SOURCE_PROVENANCE)]
 
 
 # A role-bearing bulk scope: the role-pair product exceeds `obs_preview_max_pairs`, so the
@@ -498,11 +505,13 @@ _ROLE_NODES = {
 
 @dataclass(frozen=True)
 class _RoleFacet:
-    """A USD facet holding one point a year in `years` at every recipient."""
+    """A facet in `unit`, by default USD, holding one point a year in `years` at every
+    recipient."""
 
     facet_id: str = _ROLE_FACET
     provenance_id: str = _ROLE_PROVENANCE
     years: tuple[int, ...] = (2020,)
+    unit: str = "CurrencyUSD"
 
 
 type _RoleFacets = Mapping[str, Sequence[_RoleFacet]]
@@ -531,7 +540,7 @@ def _role_coverage(
             for sv in (_ROLE_SV_A, _ROLE_SV_B)
         },
         facet_metadata={
-            f.facet_id: FacetMetadata(provenance_id=f.provenance_id, unit="CurrencyUSD")
+            f.facet_id: FacetMetadata(provenance_id=f.provenance_id, unit=f.unit)
             for per_sv in facets.values()
             for f in per_sv
         },
@@ -561,7 +570,7 @@ def _role_sdmx(
                         values=(1.0,) * len(f.years),
                         facet_id=f.facet_id,
                         provenance_id=f.provenance_id,
-                        unit="CurrencyUSD",
+                        unit=f.unit,
                     )
                     for f in facets[sv]
                 ]
@@ -598,7 +607,7 @@ def _run_role_bulk(
                 facet_id=f.facet_id,
                 points=tuple((str(year), 1.0) for year in f.years),
                 provenance_id=f.provenance_id,
-                unit="CurrencyUSD",
+                unit=f.unit,
             ),
             date_str=str(year),
             value=1.0,
@@ -678,6 +687,36 @@ def test_role_bulk_scope_answers_definite_when_every_statvar_is_confirmed(
     assert observations is not None
     assert {s.stat_var.ref for s in observations.series} == {_ROLE_SV_A}
     assert any(w.code == OBSERVATIONS_SERIES_TRUNCATED for w in result.warnings)
+    assert member_departures(result) == []
+
+
+def test_a_role_bulk_dollar_request_names_the_euro_member_it_leaves_out(
+    monkeypatch, search_settings
+):
+    """SV_A holds dollars and SV_B euros under another source, at every pair. A dollar
+    request elects SV_A's native dollars, so the bulk read serves SV_A alone and the part
+    names SV_B as left out of the source it reads, on the set binding naming the members.
+    Every member serving names none
+    (`test_role_bulk_scope_answers_definite_when_every_statvar_is_confirmed`)."""
+    search_settings(obs_preview_max_pairs=1, role_bulk_series_max=4)
+    facets = {
+        _ROLE_SV_A: (_RoleFacet(),),
+        _ROLE_SV_B: (
+            _RoleFacet(
+                facet_id="FRoleEUR", provenance_id="dc/base/UnitGateRoleSrcB", unit="CurrencyEUR"
+            ),
+        ),
+    }
+    result = _run_role_bulk(monkeypatch, unit_text="US dollars", rates=_EUR_RATES, facets=facets)
+    assert result.status == "definite", (
+        f"expected definite, got {result.status!r} (no_data_reason={result.no_data_reason!r})"
+    )
+    observations = result.specs[0].resolved.observations
+    assert observations is not None
+    assert {s.stat_var.ref for s in observations.series} == {_ROLE_SV_A}
+    assert member_departures(result) == [
+        (f"how:{_PROP}", "Unit gate role SourceB", _ROLE_PROVENANCE)
+    ]
 
 
 def test_role_bulk_display_read_failure_answers_from_coverage(monkeypatch, search_settings):

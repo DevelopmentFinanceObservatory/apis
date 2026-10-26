@@ -80,6 +80,11 @@ class DepartureFact:
     - `sum_differs` (`group_read_as_members`): a dataset the answer serves publishes, on the
       role's flow axis, its own figure for the group, which can differ from one built from its
       members (`PartyRow.sums_members` false).
+    - `members` (`member_unavailable`): the labels of the variables the answer's one group
+      leaves out, in member order; `asked` joins them and `shown` names the source the
+      answer reads.
+    - `currency` (`member_unavailable`): the ISO code of the currency the request named,
+      when the source the answer reads holds it natively.
     - `sources` (`entity_unavailable`): the names of sources that hold values for the
       entities but that Search does not read, because the origin registry withholds them.
     - `latest_years` (`entity_unavailable`): on a `latest` request, the first and last
@@ -117,6 +122,8 @@ class DepartureFact:
     over: RoleAxis | None = None
     entities: tuple[str, ...] = ()
     sets: tuple[UnservedMembers, ...] = ()
+    members: tuple[str, ...] = ()
+    currency: str | None = None
     group: str | None = None
     group_size: int | None = None
     group_dcid: str | None = None

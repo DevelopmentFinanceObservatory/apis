@@ -38,6 +38,7 @@ from search.models import (
     RoleAxis,
     SentenceToken,
 )
+from unit_words.currency_nouns import currency_noun
 
 from .labels import _join_labels, group_members_text, group_text
 
@@ -221,6 +222,26 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
     return (
         f"{text} Search does not read {_join_labels(list(fact.sources))}, "
         f"which {holds} values for {pronoun}."
+    )
+
+
+def _member_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
+    """The variables the answer's one group leaves out, by name, and the source the answer
+    reads (`shown`), which holds no values for them. Where that source holds the currency
+    the request named (`DepartureFact.currency`), which led the answer to it, the text says
+    so."""
+    if not fact.members:
+        raise ValueError("member_unavailable needs the variables the answer leaves out")
+    lead = f"You asked for {_join_labels(list(fact.members))}. "
+    holds = "It holds" if len(fact.members) == 1 else "They hold"
+    if fact.shown is None:
+        return f"{lead}{holds} no values under the source this answer reads."
+    if fact.currency is None:
+        return f"{lead}{holds} no values under {fact.shown}, the source this answer reads."
+    currency = currency_noun(fact.currency, label=None)
+    return (
+        f"{lead}{holds} no values under {fact.shown}, which this answer reads because it holds "
+        f"values in {currency}, the currency you asked for."
     )
 
 
@@ -543,6 +564,7 @@ _TEXT_BY_CODE: Final[Mapping[DepartureCode, _TextWriter]] = MappingProxyType(
         "operation_not_applied": _operation_not_applied,
         "breakdown_not_applied": _breakdown_not_applied,
         "entity_unavailable": _entity_unavailable,
+        "member_unavailable": _member_unavailable,
         "year_unavailable": _year_unavailable,
         "modelled_values": _modelled_values,
         "group_read_as_members": _group_read_as_members,

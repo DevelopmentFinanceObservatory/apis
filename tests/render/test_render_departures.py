@@ -353,6 +353,38 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
     ),
     (
         DepartureFact(
+            code="member_unavailable",
+            binding_ref="source:",
+            asked="Aid flow B",
+            shown="Source A",
+            members=("Aid flow B",),
+            currency="USD",
+        ),
+        None,
+        "You asked for Aid flow B. It holds no values under Source A, which this answer "
+        "reads because it holds values in US dollars, the currency you asked for.",
+    ),
+    (
+        DepartureFact(
+            code="member_unavailable",
+            binding_ref="how:financingSource",
+            asked="Aid flow B, Aid flow C",
+            shown="Source A",
+            members=("Aid flow B", "Aid flow C"),
+        ),
+        None,
+        "You asked for Aid flow B and Aid flow C. They hold no values under Source A, the "
+        "source this answer reads.",
+    ),
+    (
+        DepartureFact(
+            code="member_unavailable", binding_ref=None, asked="Aid flow B", members=("Aid flow B",)
+        ),
+        None,
+        "You asked for Aid flow B. It holds no values under the source this answer reads.",
+    ),
+    (
+        DepartureFact(
             code="entity_unavailable",
             binding_ref="where:",
             asked="Somaliland",
@@ -823,6 +855,18 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
     ),
     (
         DepartureFact(
+            code="member_unavailable",
+            binding_ref="source:",
+            asked="Aid flow B",
+            shown="Source A",
+            members=("Aid flow B",),
+        ),
+        None,
+        "You asked for Aid flow B. It holds no values under Source A, the source this answer "
+        "reads.",
+    ),
+    (
+        DepartureFact(
             code="entity_unavailable",
             binding_ref="where:",
             asked="Somaliland",
@@ -1043,6 +1087,7 @@ def test_departures_follow_precedence_and_carry_the_fact():
         ),
         # With nothing asked, the text has only the measure shown to state.
         (DepartureFact(code="closest_match", binding_ref=None), "measure shown"),
+        (DepartureFact(code="member_unavailable", binding_ref=None), "variables"),
     ],
 )
 def test_a_fact_missing_its_value_raises(fact, missing):

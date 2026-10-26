@@ -114,6 +114,7 @@ DepartureCode = Literal[
     "operation_not_applied",
     "breakdown_not_applied",
     "entity_unavailable",
+    "member_unavailable",
     "year_unavailable",
     "modelled_values",
     "group_read_as_members",

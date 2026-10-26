@@ -169,7 +169,7 @@ class _PartBase(StrictModel):
             "every way this part's answer differs from what its request asked, "
             "ordered by how much each changes the number: closest_match, "
             "measure_not_applied, operation_not_applied, breakdown_not_applied, "
-            "entity_unavailable, year_unavailable, modelled_values, "
+            "entity_unavailable, member_unavailable, year_unavailable, modelled_values, "
             "group_read_as_members, whole_total_read, whole_total_unpublished, "
             "direction_discarded, "
             "direction_inferred, scope_limited. [] when the answer is what was asked. A "

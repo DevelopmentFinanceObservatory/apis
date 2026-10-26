@@ -19,6 +19,7 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._binders import elected_reply
+from tests.engine._conjoin_fixtures import member_departures
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -263,7 +264,9 @@ def test_a_dollar_request_serves_the_dollar_member_alone(monkeypatch):
     """A dollar request elects one group across the two StatVars: SV_A's native dollar
     facet, which ends in 2020. SV_B holds only pounds, so the group leaves it unserved and
     it states no date range, and SV_A's pound facet at DEU, which holds later years, is not
-    admitted beside the elected dollars."""
+    admitted beside the elected dollars. The part names SV_B as left out of SV_A's source;
+    no slot binds the source or a set of the members, so no binding edit clears it."""
     result = _run(monkeypatch)
     assert result.status == "definite", result
     assert _date_range_ends(result) == {_SV_A: "2020", _SV_B: None}
+    assert member_departures(result) == [(None, "Flow B", _PROV_A)]

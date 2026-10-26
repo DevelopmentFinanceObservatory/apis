@@ -993,7 +993,8 @@ def test_a_plan_of_several_members_serves_the_group_a_mint_elects(
     `_FLOW_B`, and `fOwn` one of `_FLOW_C`'s. The members serve one group, the facet held
     by the most of them, `fShared`, as the mint's election over the same probes does,
     though `fWide` holds the most pairs. `_FLOW_C` holds none of it and serves nothing, so
-    its series and the debtors only it and `fWide` hold go unserved."""
+    its series and the debtors only it and `fWide` hold go unserved, and the plan names it as
+    a member the group leaves out (`unserved_members`)."""
     search_settings(obs_preview_max_pairs=max_pairs)
     members = [_FLOW, _FLOW_B, _FLOW_C]
     index = build_coverage_index(
@@ -1038,6 +1039,8 @@ def test_a_plan_of_several_members_serves_the_group_a_mint_elects(
             (_FLOW_C, _BBB),
         }
     assert read_plan.unserved_entities(plan) == {("destination", _BBB), ("destination", _CCC)}
+    # The mint names `_FLOW_C` in `coverage_below_scope`'s `unserved_members`, on both routes.
+    assert read_plan.unserved_members(plan) == (_FLOW_C,)
 
 
 def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(

@@ -9,6 +9,7 @@ fixture covers buffered, streamed, and availability-check paths.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from search.engine.region.codes import (
     DATE_COVERAGE_PARTIAL,
     ENTITY_LABEL_UNRESOLVED,
     MEMBERSHIP_UNVERIFIED,
+    OBSERVATIONS_NO_MATCHING_SOURCE,
     OBSERVATIONS_PROBE_FAILED,
 )
 from search.engine.region.convertibility import elected_unit_refs
@@ -45,6 +47,7 @@ from search.observations import OBSERVATIONS_PREVIEW_TOO_LARGE
 from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import binding_set_slot as _binding_set_slot
 from tests.engine._builders import value_slot
+from tests.engine._conjoin_fixtures import member_departures
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -313,6 +316,22 @@ def _obs_entities_warns() -> Iterator[None]:
         yield
 
 
+def _left_out_of_requested(warning: Warning) -> tuple[int, int]:
+    """The series counts an `observations_no_matching_source` warning states: those the
+    served source holds nothing for, and those requested."""
+    counts = re.match(r"(\d+) of (\d+) ", warning.message)
+    assert counts is not None, warning
+    return int(counts[1]), int(counts[2])
+
+
+def _names_the_left_out_series(warnings: tuple[Warning, ...]) -> None:
+    """The one warning naming SourceB's series: the resubmit's source slot carries the served
+    provenance, SourceA's, under which SourceB holds nothing, so 1 of the 2 requested series
+    has no observations."""
+    (warning,) = (w for w in warnings if w.code == OBSERVATIONS_NO_MATCHING_SOURCE)
+    assert _left_out_of_requested(warning) == (1, 2)
+
+
 def _run_relaunch(region):
     """Run the streamed observations relaunch closure for a resubmit result."""
 
@@ -326,7 +345,8 @@ def _run_relaunch(region):
 
 def test_a_dollar_request_serves_the_dollar_member_and_leaves_the_euro_one():
     """A US dollar request elects SourceA's native dollar facet, the group's, and SourceB,
-    which holds only euros, is unserved: it has no elected unit and no series."""
+    which holds only euros, is unserved: it has no elected unit and no series, and the part
+    names it as left out of SourceA's provenance, on the set binding naming the members."""
     captured: list[object] = []
     real_build_observations = promote_finalize._build_observations
 
@@ -349,6 +369,7 @@ def test_a_dollar_request_serves_the_dollar_member_and_leaves_the_euro_one():
     assert series.stat_var.ref == _SV_A
     assert series.conversion is None
     assert [p.value for p in series.points] == [100.0]
+    assert member_departures(region) == [(f"how:{_PROP}", "Convert multi SourceB", _PROVENANCE_A)]
 
 
 _GBP_RATES = {**_RATES, "CurrencyGBP": {int(_YEAR): 0.8}}
@@ -364,7 +385,8 @@ def test_streamed_relaunch_with_a_bound_request_unit_carries_converted_points():
     assert region.observations_relaunch is not None
 
     events, warns = _run_relaunch(region)
-    assert warns == ()
+    _names_the_left_out_series(warns)
+    assert {w.code for w in warns} == {OBSERVATIONS_NO_MATCHING_SOURCE}
     assert events, "expected at least one streamed observations event"
     (series,) = events[0].observations.series
     assert series.stat_var.ref == _SV_A
@@ -676,7 +698,10 @@ def test_definite_result_carries_obs_entities_warning_once_in_definite_warnings_
     assert region.status == "definite"
     stamped = _GROUND_WARNING.model_copy(update={"spec_id": region.specs[0].spec_id})
     assert region.warnings.count(_OBS_ENTITIES_WARNING) == 1
-    assert _beside_membership(region) == (_OBS_ENTITIES_WARNING, stamped)
+    _names_the_left_out_series(region.warnings)
+    assert tuple(
+        w for w in _beside_membership(region) if w.code != OBSERVATIONS_NO_MATCHING_SOURCE
+    ) == (_OBS_ENTITIES_WARNING, stamped)
 
 
 def _catalogue(rate_years: dict[str, frozenset[int]]) -> ConversionCatalogue:
