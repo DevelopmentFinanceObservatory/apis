@@ -185,12 +185,18 @@ class _PickingLLM:
 
 @pytest.fixture(autouse=True)
 def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    _cover(monkeypatch, _DAC1_MEMBERS)
+
+
+def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...]) -> None:
+    """Series for the United States over 2005 to 2024 in every DAC2a and CRS member and in
+    the DAC1 members `dac1`."""
     donor_only = RoleNames(donor="financingProvider", recipient=None)
     flow = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
         [
-            *((dcid, "dac1", _USA, ABSENT_ENTITY, _YEARS) for dcid in _DAC1_MEMBERS),
+            *((dcid, "dac1", _USA, ABSENT_ENTITY, _YEARS) for dcid in dac1),
             *((dcid, "dac2a", _USA, _KEN, _YEARS) for dcid in _DAC2A_MEMBERS),
             *((dcid, "crs", _USA, _KEN, _YEARS) for dcid in _CRS_MEMBERS),
         ],
@@ -689,6 +695,27 @@ def test_a_donor_window_crossing_2018_is_counted_on_the_oecd_headline_per_year()
     assert _served_basis(net) == _NET_DAC1
     back = _switch(scope.base.identity, "measure_basis:oecd_headline", choice.id)
     assert back.spec_id == spec.spec_id
+
+
+def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
+    """The headline splices grant equivalents from 2018, so a donor whose DAC1 rows hold no
+    grant-equivalent series is served net flows over 2015 to 2020 under the rule that says
+    the served basis differs from the convention, and the headline is offered unavailable
+    with the basis it lacks."""
+    _cover(monkeypatch, tuple(m for m in _DAC1_MEMBERS if not m.startswith("GrantEquivalent")))
+
+    spec = _ask("aid", time="2015-2020", recipient=False)
+
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+    assert (choice.active, choice.rule) == ("measure_basis:net", "served_differs_from_convention")
+    (headline,) = (o for o in choice.options if o.option_id == "measure_basis:oecd_headline")
+    assert headline.availability.status == "unavailable"
+    assert headline.availability.detail["basis"] == "grant_equivalent"
+    assert "provenance" not in (spec.definition.identity.facets or {})
+    assert _served_basis(spec) == _NET_DAC1
+    assert scope.compiled.spec_id == spec.spec_id == scope.base.spec_id
 
 
 def test_a_stated_bilateral_on_a_donor_total_with_no_provider_axis_is_reported():

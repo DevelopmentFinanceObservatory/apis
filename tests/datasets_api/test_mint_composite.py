@@ -241,6 +241,7 @@ def test_a_groupby_collapse_of_a_composite_sums_both_components():
         "2020": 100 + 50 + 7,
         "2021": 100 + 50 + 7,
     }
+    assert all(_STACKED.label in row["stat_var_label"] for row in rows)
 
 
 def test_a_sector_code_and_its_own_purpose_codes_each_count_once_in_the_sum():

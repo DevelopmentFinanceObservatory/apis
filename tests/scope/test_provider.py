@@ -327,21 +327,33 @@ def test_a_stated_inclusive_scope_over_a_part_covered_window_is_reported_not_app
     )
 
 
-def test_a_latest_window_elects_the_latest_year_both_tables_cover(monkeypatch):
+def test_a_latest_window_elects_the_latest_year_both_tables_cover_and_switches_back(
+    monkeypatch,
+):
+    """CRS series through 2024 and imputed ones through 2023: the inclusive answer reads 2023,
+    the base keeps the `latest` window, a switch to bilateral answers the bilateral search's
+    own latest year, and the switch back returns the inclusive spec_id."""
     _cover(monkeypatch, tuple(range(2011, 2024)))
+    bilateral = _ask("health aid from the United States to Kenya, latest year", time="latest")
+    latest_year = IdentityWindowRange(start_year=2023, end_year=2023)
 
     spec = _ask("total health aid from the United States to Kenya, latest year", time="latest")
 
     scope = _scope(spec)
-    assert _provider(spec).active == "provider:inclusive"
+    choice = _provider(spec)
+    assert choice.active == "provider:inclusive"
     assert _source(spec) == _INCLUSIVE_SOURCE
-    assert spec.definition.identity.requested_window == IdentityWindowRange(
-        start_year=2023, end_year=2023
-    )
-    assert scope.base.identity.requested_window == IdentityWindowRange(
-        start_year=2023, end_year=2023
-    )
+    assert spec.definition.identity.requested_window == latest_year
+    assert scope.base.identity.requested_window.kind == "latest"
     assert [c.periods for c in scope.compiled.components] == [[(2023, 2023)], [(2023, 2023)]]
+
+    to_bilateral = _resubmit(scope.base.identity, [_switch("provider:bilateral", choice)])
+    assert _source(to_bilateral) is None
+    assert to_bilateral.spec_id == bilateral.spec_id
+
+    back = _resubmit(scope.base.identity, [_switch("provider:inclusive", choice)])
+    assert back.spec_id == spec.spec_id
+    assert _resubmit(scope.base.identity, []).spec_id == spec.spec_id
 
 
 def test_a_resubmit_of_a_composite_with_its_own_entries_returns_its_spec_id(monkeypatch):

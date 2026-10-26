@@ -12,6 +12,7 @@ from contextlib import ExitStack
 from typing import Final
 
 import dc_graph
+from code_index.composites import composite_ref
 from code_index.shared import get_index
 from code_index.types import PartyWord
 from dc_sdmx import SdmxCapExceededError
@@ -599,7 +600,7 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     assert isinstance(built, PartScope)
     if not built.choices:
         return result
-    if built.compiled.spec_id == spec.spec_id:
+    if composite_ref(built.compiled.identity.model_dump(mode="json", include={"facets"})) is None:
         return dataclasses.replace(result, scope_choices=built)
     composite, _ = assemble_composite(
         spec,

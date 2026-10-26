@@ -345,7 +345,7 @@ def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_in
         return stub_manifest
 
     def _stub_resolve(*, spec_id, deps):
-        return object(), []
+        return _STUB_STORED, []
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
@@ -459,7 +459,7 @@ def test_a_definition_whose_members_changed_since_submission_fails_retryable_at_
     served: list[object] = []
 
     def _resolve(*, spec_id, deps):
-        return object(), [SimpleNamespace(stat_var=f"dcid:{dcid}") for dcid in resolved]
+        return _STUB_STORED, [SimpleNamespace(stat_var=f"dcid:{dcid}") for dcid in resolved]
 
     def _serve(stored, **kwargs):
         served.append(kwargs["resolve_requests"]())
@@ -577,7 +577,7 @@ def test_complete_returning_none_logs_an_error_naming_the_operation(
     stub_manifest = _stub_manifest("cv_stub_orphaned")
 
     def _stub_resolve(*, spec_id, deps):
-        return object(), []
+        return _STUB_STORED, []
 
     def _serve_and_expire_out_from_under(
         stored,
@@ -626,8 +626,13 @@ def test_complete_returning_none_logs_an_error_naming_the_operation(
     assert stored_op.content_version is None
 
 
+_STUB_STORED = SimpleNamespace(identity={})
+_INCLUSIVE = "provenance/ONEBilateralAndImputedMultilateral"
+"""A stored definition of a plain identity, which binds no composite."""
+
+
 def _stub_resolve(*, spec_id, deps):
-    return object(), []
+    return _STUB_STORED, []
 
 
 def _stub_manifest(content_version: str = "cv_stub") -> SimpleNamespace:
@@ -712,7 +717,7 @@ def test_a_run_whose_attempt_was_reclaimed_before_it_started_writes_nothing(
         assert operation_store.claim(
             operation.id, submission_count=0, lease_seconds=1_500, final_delivery=False
         )
-        return object(), []
+        return _STUB_STORED, []
 
     def _must_not_serve(*_, **__):
         raise AssertionError("a superseded attempt must not materialise")
@@ -842,7 +847,7 @@ def test_run_re_estimates_at_execution_and_sizes_the_fetch_guard_from_it(
     estimated_against: list[object] = []
     captured: dict[str, object] = {}
 
-    def _fresh_estimate(requests, *, index, member_concurrency):
+    def _fresh_estimate(requests, *, index, member_concurrency, composite):
         estimated_against.append(index)
         return fresh
 
@@ -881,6 +886,32 @@ def test_run_re_estimates_at_execution_and_sizes_the_fetch_guard_from_it(
     assert recorded.coverage_stamp == operation.coverage_stamp
 
 
+def test_a_composite_run_estimates_the_composed_frame(monkeypatch: pytest.MonkeyPatch):
+    """The worker admits a composite against its composed frame, zero rows included, as the
+    sync door does: its estimate reads the stored identity's composite declaration."""
+    operation_store = _operation_store()
+    operation = _claimed_operation(operation_store)
+    stored = SimpleNamespace(
+        identity={"facets": {"provenance": {"state": "value", "ref": _INCLUSIVE}}}
+    )
+    composites: list[object] = []
+
+    def _estimate(requests, *, index, member_concurrency, composite):
+        composites.append(composite)
+        return Estimate(rows=1, requests=1)
+
+    monkeypatch.setattr(
+        worker_module, "_resolve_spec_requests", lambda *, spec_id, deps: (stored, [])
+    )
+    monkeypatch.setattr(worker_module, "sync_estimate", _estimate)
+    monkeypatch.setattr(worker_module, "serve_current", lambda *_, **__: _stub_manifest())
+
+    run_operation(operation=operation, deps=_deps(), operation_store=operation_store)
+
+    assert composites == [get_index().composite(_INCLUSIVE)]
+    assert composites[0] is not None
+
+
 def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fetching(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -893,7 +924,9 @@ def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fe
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
     monkeypatch.setattr(
-        worker_module, "sync_estimate", lambda requests, *, index, member_concurrency: over
+        worker_module,
+        "sync_estimate",
+        lambda requests, *, index, member_concurrency, composite: over,
     )
     monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
@@ -1029,7 +1062,7 @@ def test_a_worker_run_at_one_place_reads_the_breadth_a_sync_mint_reads():
     probed: dict[str, object] = {}
 
     def _resolve_served(*, spec_id, deps):
-        return SimpleNamespace(spec_id=spec_id), []
+        return SimpleNamespace(spec_id=spec_id, identity={}), []
 
     def _probing_serve_definition(**_kwargs):
         # What `facets.probe_facets` reads for a subject-only request binding one place.

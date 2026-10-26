@@ -37,6 +37,7 @@ from search.models import (
     BaseIdentity,
     IdentityFacetValueRequest,
     IdentityShapeSchema,
+    IdentityWindowRange,
     Option,
     OptionAvailability,
     ProviderBinding,
@@ -170,11 +171,13 @@ def _dataset(identity: BaseIdentity, facts: ScopeFacts) -> str | None:
 
 
 def _inclusive_option(bilateral: BaseIdentity, facts: ScopeFacts, *, held: bool) -> Option:
-    """The inclusive option over `bilateral`, the part's identity without the composite:
-    available, with a window of its own for a part asking for the latest year; partial over
-    the latest run of years both tables cover, with that run as its window, when they cover
-    fewer years than the bilateral answer holds; unavailable when they cover none. The option
-    a part holds is available over its own window."""
+    """The inclusive option over `bilateral`, the part's identity without the composite.
+    For a part asking for the latest year it is available over the latest year both tables
+    cover, which its window states (`elect_latest_window`). Otherwise it is available when
+    both tables cover every year the bilateral answer holds; partial over the latest run of
+    years they cover, with that run as its window, when they cover fewer; and unavailable
+    when they cover none. The option a part holds over a range or every year is available
+    over its own window."""
     why = _not_offered(bilateral)
     if why is not None:
         return _option(
@@ -182,7 +185,8 @@ def _inclusive_option(bilateral: BaseIdentity, facts: ScopeFacts, *, held: bool)
                 status="unavailable", code="provider_not_offered", detail={"why": why}
             )
         )
-    if held:
+    latest = bilateral.requested_window.kind == "latest"
+    if held and not latest:
         return _option(OptionAvailability(status="available"))
     try:
         reach = inclusive_reach(bilateral, facts)
@@ -195,7 +199,7 @@ def _inclusive_option(bilateral: BaseIdentity, facts: ScopeFacts, *, held: bool)
                 detail={"why": _SLOT_WHY.get(prop, prop)},
             )
         )
-    if bilateral.requested_window.kind == "latest":
+    if latest:
         if reach.latest is None:
             return _option(OptionAvailability(status="unavailable", code="imputed_coverage"))
         return _option(OptionAvailability(status="available"), window=(reach.latest, reach.latest))
@@ -207,6 +211,38 @@ def _inclusive_option(bilateral: BaseIdentity, facts: ScopeFacts, *, held: bool)
     return _option(
         OptionAvailability(status="partial", years=runs, code="imputed_coverage"),
         window=runs[-1],
+    )
+
+
+def elect_latest_window(identity: BaseIdentity, facts: ScopeFacts) -> BaseIdentity:
+    """`identity`, served as it reads: a provider-inclusive composite asking for the latest
+    year is read over the latest year both its tables cover (`inclusive_reach`), a one-year
+    range, since its tables can elect different latest years and the Datasets mint refuses a
+    composite's `latest` window. Any other identity, or one whose tables elect no year, is
+    `identity` itself.
+
+    A part's base keeps its `latest` window, so the bilateral option, which removes the
+    composite, compiles to the bilateral answer's own latest year; the inclusive compiles
+    here to the one year both cover."""
+    if identity.requested_window.kind != "latest":
+        return identity
+    try:
+        ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
+    except CompositeNotServable:
+        return identity
+    if ref != INCLUSIVE_PROVENANCE:
+        return identity
+    bilateral = BaseIdentity.model_validate(
+        without_composite(identity.model_dump(mode="json", exclude_none=True))
+    )
+    try:
+        year = inclusive_reach(bilateral, facts).latest
+    except CompositeNotServable:
+        return identity
+    if year is None:
+        return identity
+    return identity.model_copy(
+        update={"requested_window": IdentityWindowRange(start_year=year, end_year=year)}
     )
 
 
