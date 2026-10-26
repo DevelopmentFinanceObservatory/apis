@@ -1392,11 +1392,19 @@ def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> d
     return {_PAIR_READ: count} if count else {}
 
 
-def _held_grants(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
-    """The reads a door may make beyond a recorded door with its answer: batched reads in
-    place of per-node reads (`_batched_type_read`) and pair reads in place of bulk reads
-    (`_pair_read_in_place_of_bulk`)."""
-    return _batched_type_read(now, limit) | _pair_read_in_place_of_bulk(now, limit)
+def _held_grants(
+    door: str, now: dict[str, Any], limit: dict[str, Any]
+) -> tuple[dict[str, int], int]:
+    """The reads and serial steps `door` may make beyond a recorded door with its answer:
+    batched reads in place of per-node reads (`_batched_type_read`), pair reads in place of
+    bulk reads (`_pair_read_in_place_of_bulk`), and a resubmit's role-kind read with its one
+    step (`_role_kind_read`). `i9_latency` and the record's rewrite both hold a door by
+    these."""
+    role_kind_read = _role_kind_read(door, now, limit)
+    granted = (
+        _batched_type_read(now, limit) | _pair_read_in_place_of_bulk(now, limit) | role_kind_read
+    )
+    return granted, len(role_kind_read)
 
 
 def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
@@ -1542,16 +1550,12 @@ def i9_latency(run: Doors) -> list[str]:
         for path, source in ((_BASE_PATH, "at c669cc874"), (_BRANCH_PATH, "as recorded")):
             limit = _measurement(path, cell, door, index)
             if limit is not None and _same_answer(limit, now):
-                granted = _held_grants(now, limit)
-                role_kind_read = _role_kind_read(door, now, limit)
-                granted |= role_kind_read
+                granted, steps = _held_grants(door, now, limit)
                 if path == _BASE_PATH:
                     granted |= _rate_table_reads(now)
                 found += [
                     f"{door} ({_status(answer)}) {line}"
-                    for line in _beyond(
-                        now, limit, source, granted=granted, granted_steps=len(role_kind_read)
-                    )
+                    for line in _beyond(now, limit, source, granted=granted, granted_steps=steps)
                 ]
                 bounded = True
                 break
@@ -1927,6 +1931,14 @@ _HELD = {
             id="fewer",
         ),
         pytest.param(_HELD, _HELD, None, "old", False, id="identical"),
+        pytest.param(
+            _HELD,
+            {**_HELD, "requests": {**_HELD["requests"], _ROLE_KIND_READ: 1}, "depth": 3},
+            None,
+            "old",
+            False,
+            id="role_kind_read_within_bound",
+        ),
         pytest.param(_HELD, _HELD, "off", "old", False, id="preview_off_now_matches"),
         pytest.param(
             _HELD,

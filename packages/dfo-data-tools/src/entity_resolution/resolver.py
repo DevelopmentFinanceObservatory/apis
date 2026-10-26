@@ -22,7 +22,8 @@ node and members routes. Every candidate takes its kind by the rule the node rou
 by (`kinds.classify`), over the code index the resolver was built with and the membership
 policy: a confirmed candidate by its `typeOf` values, and one the graph does not hold by no
 types, falling back to its resolvekit kind (`_unconfirmed_kind`). A `kinds` filter then
-keeps the candidates of the requested kinds; one left resolves, and none left returns
+keeps the candidates of the requested kinds, and a code system keeps only its own codes, on
+every path a candidate comes from (`_Admission`); one left resolves, and none left returns
 `NotFound` naming the removed candidates.
 Results are `Resolved`, `Group`, `Ambiguous`, `NotHeld`, or `NotFound`. `NotFound` includes up
 to three rejected candidates as `near_matches`, unconfirmed by the graph.
@@ -432,20 +433,38 @@ def _fallback_name(*, dcid: str, arcs: dict[str, tuple[str, ...]], text: str) ->
     return label_or_self_name(arcs.get("name", ()), dcid) or text
 
 
-def _admits(kinds: frozenset[EntityKind] | None, entity: Entity) -> bool:
-    return kinds is None or entity.kind in kinds
+@dataclass(frozen=True, slots=True)
+class _Admission:
+    """The filter every candidate passes, whichever path found it: one of `kinds` (every kind
+    when `None`), and, when `code_system` is set, a code only of that system, by the system
+    `code_index` gives the code. `resolve` refuses a code system on a resolver built without a
+    code index."""
+
+    kinds: frozenset[EntityKind] | None
+    code_system: str | None
+    code_index: KindIndex | None
+
+    def admits(self, entity: Entity) -> bool:
+        if self.kinds is not None and entity.kind not in self.kinds:
+            return False
+        if self.code_system is None or entity.kind != _CODE_KIND:
+            return True
+        return (
+            self.code_index is not None
+            and self.code_index.system_of_code(entity.dcid) == self.code_system
+        )
 
 
 def _choose(
     candidates: Sequence[_Candidate],
     *,
-    kinds: frozenset[EntityKind] | None,
+    admission: _Admission,
     near_matches: tuple[Entity, ...],
     reading: Reading,
 ) -> Resolution:
-    """Keep the candidates of the requested kinds, in order. One left resolves; several are
+    """Keep the candidates `admission` admits, in order. One left resolves; several are
     ambiguous; none left is `NotFound`, which names the candidates the filter removed."""
-    admitted = [pair for pair in candidates if _admits(kinds, pair[0])]
+    admitted = [pair for pair in candidates if admission.admits(pair[0])]
     if not admitted:
         return NotFound(near_matches=near_matches, removed=tuple(e for e, _ in candidates))
     if len(admitted) == 1:
@@ -455,9 +474,10 @@ def _choose(
 
 
 def _with_shared_names(result: Resolution, shared: Sequence[_Candidate]) -> Resolution:
-    """A hit's result with the confirmed nodes `shared` that share its text, of the requested
-    kinds. A `Resolved` carries the first `_MAX_NEAR_MATCHES` of them as `near_matches`. When
-    the kinds filter removed every hit (`NotFound`), one node resolves and several are
+    """A hit's result with the confirmed nodes `shared` that share its text and the call's
+    `_Admission` admits (`_sharing_matches`). A `Resolved` carries the first
+    `_MAX_NEAR_MATCHES` of them as `near_matches`. When the admission removed every hit
+    (`NotFound`), one node resolves and several are
     ambiguous, every one of them, sorted by dcid as fallback candidates are; either keeps the
     removed hits as `near_matches`."""
     if not shared:
@@ -582,8 +602,8 @@ class EntityResolver:
         this call use the same generation.
 
         Raises:
-            ValueError: `code_system` without the `code` kind, or the `code` kind on a resolver
-                built without `codes`.
+            ValueError: `code_system` without the `code` kind or on a resolver built without
+                `code_index`, or the `code` kind on a resolver built without `codes`.
         """
         kind_filter = None if kinds is None else frozenset(kinds)
         wants_codes = kind_filter is not None and _CODE_KIND in kind_filter
@@ -591,6 +611,8 @@ class EntityResolver:
             raise ValueError("code_system narrows the code kind, which kinds does not include")
         if wants_codes and self._codes is None:
             raise ValueError("the code kind needs a code lookup, and this resolver has none")
+        if code_system is not None and self._code_index is None:
+            raise ValueError("code_system needs the code index, and this resolver has none")
         stamp = self._generation.stamp()
         code_index = self._code_index() if self._code_index is not None else None
         index_key = code_index.stamp.content_hash if code_index is not None else None
@@ -665,6 +687,7 @@ class EntityResolver:
             index: self._code_candidates(keys[index], kinds=kinds, code_system=code_system)
             for index in pending_texts
         }
+        admission = _Admission(kinds=kinds, code_system=code_system, code_index=code_index)
         outcomes: dict[int, _GateOutcome] = {}
         # A request for codes alone runs no resolvekit job and no fallback ladder.
         if kinds is None or kinds - {_CODE_KIND}:
@@ -739,20 +762,26 @@ class EntityResolver:
             codes = [pair for pair in code_hits[index] if confirmed.get(pair[0].dcid) is not None]
             outcome = outcomes.get(index)
             if outcome is None:
-                result = _choose(codes, kinds=kinds, near_matches=(), reading="entity")
+                result = _choose(codes, admission=admission, near_matches=(), reading="entity")
             elif outcome.group is not None and index in hits and group_admitted:
                 result = self._assemble_group(
-                    outcome.group, hits[index], outcome, confirmed, codes, code_index=code_index
+                    outcome.group,
+                    hits[index],
+                    outcome,
+                    confirmed,
+                    codes,
+                    admission=admission,
+                    code_index=code_index,
                 )
             elif index in hits:
                 result = self._assemble_hit(
-                    hits[index], outcome, confirmed, kinds, codes, code_index=code_index
+                    hits[index], outcome, confirmed, admission, codes, code_index=code_index
                 )
                 shared = self._sharing_matches(
                     sharing_dcids.get(index, ()),
                     pending_texts[index],
                     confirmed,
-                    kinds,
+                    admission,
                     code_index=code_index,
                 )
                 result = _with_shared_names(result, shared)
@@ -762,14 +791,14 @@ class EntityResolver:
                     pending_texts[index],
                     confirmed,
                     outcome.near_matches,
-                    kinds,
+                    admission,
                     codes,
                     code_index=code_index,
                 )
             else:
                 result = _choose(
                     codes,
-                    kinds=kinds,
+                    admission=admission,
                     near_matches=outcome.near_matches,
                     reading="entity",
                 )
@@ -817,12 +846,12 @@ class EntityResolver:
         candidate_hits: list[tuple[CandidateSummary, str]],
         outcome: _GateOutcome,
         confirmed: dict[str, dict[str, tuple[str, ...]] | None],
-        kinds: frozenset[EntityKind] | None,
+        admission: _Admission,
         codes: list[_Candidate],
         *,
         code_index: KindIndex | None,
     ) -> Resolution:
-        """Choose among the confirmed hits and codes by `kinds`. A group or region the
+        """Choose among the confirmed hits and codes by `admission`. A group or region the
         membership policy holds counts as a candidate classed over no graph types when the
         graph holds no node for it, at any rank, so a filter that removes it says so.
 
@@ -861,9 +890,11 @@ class EntityResolver:
             ranked.append(entity)
             candidates.append((entity, outcome.matched.get(candidate.entity_id)))
         candidates.extend(codes)
-        if any(_admits(kinds, entity) for entity, _ in candidates):
-            return _choose(candidates, kinds=kinds, near_matches=(), reading=outcome.reading)
-        if first_unheld := next((e for e in unheld if _admits(kinds, e)), None):
+        if any(admission.admits(entity) for entity, _ in candidates):
+            return _choose(
+                candidates, admission=admission, near_matches=(), reading=outcome.reading
+            )
+        if first_unheld := next((e for e in unheld if admission.admits(e)), None):
             return NotHeld(dcid=first_unheld.dcid, name=first_unheld.name)
         return NotFound(removed=(*ranked, *(entity for entity, _ in codes)))
 
@@ -875,14 +906,15 @@ class EntityResolver:
         confirmed: dict[str, dict[str, tuple[str, ...]] | None],
         codes: list[_Candidate],
         *,
+        admission: _Admission,
         code_index: KindIndex | None,
     ) -> Resolution:
         """`candidate_hits` holds the group and the survivors beside it. The registry confirms
         the group and its members, so the result stands whether or not the graph holds them.
 
         Prefer the confirmed group node for `entity`, then the first confirmed organisation
-        survivor. A code that also lists the text makes the result ambiguous between the group
-        and the code."""
+        survivor. A code of `admission`'s code system that also lists the text makes the result
+        ambiguous between the group and the code, whatever `admission`'s kinds."""
         matched = next(
             (
                 outcome.matched.get(candidate.entity_id)
@@ -918,7 +950,10 @@ class EntityResolver:
                 graph_type=_UNTYPED_GRAPH_TYPE if entity is None else entity.graph_type,
             )
             return _choose(
-                [(node, matched), *codes], kinds=None, near_matches=(), reading=outcome.reading
+                [(node, matched), *codes],
+                admission=replace(admission, kinds=None),
+                near_matches=(),
+                reading=outcome.reading,
             )
         return Group(
             members=group.members,
@@ -934,11 +969,11 @@ class EntityResolver:
         dcids: tuple[str, ...],
         text: str,
         confirmed: dict[str, dict[str, tuple[str, ...]] | None],
-        kinds: frozenset[EntityKind] | None,
+        admission: _Admission,
         *,
         code_index: KindIndex | None,
     ) -> list[_Candidate]:
-        """The confirmed nodes sharing a hit's text, of the requested kinds, in the graph's
+        """The confirmed nodes sharing a hit's text that `admission` admits, in the graph's
         order."""
         matches: list[_Candidate] = []
         for dcid in dcids:
@@ -946,7 +981,7 @@ class EntityResolver:
             if arcs is None:
                 continue
             candidate = self._listed_candidate(dcid, arcs, text, code_index=code_index)
-            if _admits(kinds, candidate[0]):
+            if admission.admits(candidate[0]):
                 matches.append(candidate)
         return matches
 
@@ -979,12 +1014,12 @@ class EntityResolver:
         text: str,
         confirmed: dict[str, dict[str, tuple[str, ...]] | None],
         near_matches: tuple[Entity, ...],
-        kinds: frozenset[EntityKind] | None,
+        admission: _Admission,
         codes: list[_Candidate],
         *,
         code_index: KindIndex | None,
     ) -> Resolution:
-        """Choose among the confirmed fallback candidates and codes by `kinds`.
+        """Choose among the confirmed fallback candidates and codes by `admission`.
 
         Sort fallback candidates by dcid. Each is a graph node listing the input text, as its
         `name` or else as an alternate name (`alias`) (`_listed_candidate`)."""
@@ -994,4 +1029,4 @@ class EntityResolver:
             if (arcs := confirmed.get(dcid)) is not None
         ]
         candidates.extend(codes)
-        return _choose(candidates, kinds=kinds, near_matches=near_matches, reading="entity")
+        return _choose(candidates, admission=admission, near_matches=near_matches, reading="entity")

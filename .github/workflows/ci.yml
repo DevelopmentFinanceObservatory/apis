@@ -361,6 +361,8 @@ jobs:
     # `graph` both pull in transitively, so this job installs without the
     # `engine` extra and still imports every door those two extras ship,
     # including datasets_api and graph_api's own fastapi-backed modules.
+    # It first syncs `datasets` alone and runs the independence tests, whose
+    # role-bearing mint check needs every package `datasets` must declare.
     needs: passed-tree
     if: >-
       !cancelled() &&
@@ -374,7 +376,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
 
-      - name: Install dependencies (datasets only -- no engine extra)
+      - name: Install dependencies (datasets alone)
+        run: uv sync --frozen --no-default-groups --extra datasets --group test
+
+      - name: Run the datasets independence tests on the datasets extra alone
+        run: uv run pytest -q tests/datasets_api/test_independence.py
+
+      - name: Install dependencies (datasets and graph -- no engine extra)
         run: uv sync --frozen --no-default-groups --extra datasets --extra graph
 
       - name: Smoke-check materialise, dfo_platform, dataset_store, datasets_api, and graph_api import

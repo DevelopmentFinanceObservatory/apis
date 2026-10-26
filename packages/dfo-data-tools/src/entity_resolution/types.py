@@ -265,6 +265,10 @@ class KindIndex(Protocol):
         """The code row for `dcid`, or `None`."""
         ...
 
+    def system_of_code(self, dcid: str) -> str | None:
+        """The graph id of the system the code `dcid` belongs to, or `None`."""
+        ...
+
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> str | None:
         """The party kind of `dcid` whose graph types are `types`: its party row's kind, else
         the kind its types give, else `None`."""

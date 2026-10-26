@@ -16,8 +16,9 @@ Datasets mint both run `check_role_kinds` on the entities a role-bearing request
 anything is built, and both refuse a `RoleKindRefused` as `invalid_role_ref`. An entity neither
 the graph nor the membership policy holds refuses too.
 
-`entity_resolution` is imported where it is used: importing it loads resolvekit, which
-`datasets_api` imports without (`tests/datasets_api/test_independence.py`).
+The membership policy is built from resolvekit's stores, so the `datasets` extra installs
+dfo-data-tools's `resolve` extra (`tests/datasets_api/test_independence.py`). `entity_resolution`
+is imported where it is used, so importing `datasets_api` loads no resolvekit.
 """
 
 from __future__ import annotations

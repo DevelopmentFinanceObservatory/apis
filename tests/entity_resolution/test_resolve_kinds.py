@@ -15,6 +15,7 @@ import pytest
 
 import entity_resolution.resolver as resolver_module
 import entity_resolution.shared as shared_module
+from code_index.shared import get_index
 from dc_graph.errors import GraphDeadlineExceededError
 from entity_resolution import (
     Ambiguous,
@@ -421,7 +422,9 @@ def test_the_code_kind_alone_confirms_codes_in_one_read_and_runs_no_resolvekit_j
     monkeypatch.setattr(resolver_module, "_resolve_batch_job", lambda *a: batch_jobs.append(a))
     codes = _FakeCodes({"basic health care": [_CODE_HIT]})
     graph = FakeGraphLookup(nodes={_CODE.dcid: _node("CRSPurposeCodeEnum")})
-    resolver = EntityResolver(graph=graph, shared=shared_resolver, codes=codes)
+    resolver = EntityResolver(
+        graph=graph, shared=shared_resolver, codes=codes, code_index=get_index
+    )
 
     (hit,) = _run(resolver.resolve(["basic health care"], kinds=["code"]))
     (narrowed,) = _run(
@@ -461,11 +464,52 @@ def test_a_code_and_an_entity_listing_one_text_are_ambiguous_after_one_read(shar
 
 
 @pytest.mark.parametrize(
+    ("code_system", "expected"),
+    [
+        ("CRSPurposeCodeEnum", None),
+        ("DAC1AidTypeEnum", "DAC1AidType2102"),
+        (None, "DAC1AidType2102"),
+    ],
+)
+def test_a_code_system_narrows_the_codes_sharing_a_hits_name(
+    shared_resolver, code_system, expected
+):
+    """A code another path finds, here a graph node sharing the hit's text, is admitted under
+    `code_system` only when the code index places it in that system, as a code-index hit is."""
+    code = "DAC1AidType2102"
+    graph = FakeGraphLookup(
+        nodes={**_NODES, code: _node("DAC1AidTypeEnum", "European Union")},
+        arcs={(_LAST_RUNG_ARC, "European Union"): ["EuropeanUnion", code]},
+    )
+    resolver = EntityResolver(
+        graph=graph, shared=shared_resolver, codes=_FakeCodes({}), code_index=get_index
+    )
+
+    (result,) = _run(
+        resolver.resolve(
+            ["European Union"],
+            kinds=["country", "code"],
+            code_system=code_system,
+            near_matches=True,
+        )
+    )
+
+    if expected is None:
+        assert isinstance(result, NotFound), result
+    else:
+        assert isinstance(result, Resolved), result
+        assert result.entity.dcid == expected
+
+
+@pytest.mark.parametrize(
     ("kinds", "code_system", "codes"),
     [
         pytest.param(["country"], "CRSPurposeCodeEnum", _FakeCodes({}), id="system-without-code"),
         pytest.param(None, "CRSPurposeCodeEnum", _FakeCodes({}), id="system-unfiltered"),
         pytest.param(["code"], None, None, id="code-without-lookup"),
+        pytest.param(
+            ["code"], "CRSPurposeCodeEnum", _FakeCodes({}), id="system-without-code-index"
+        ),
     ],
 )
 def test_a_code_request_the_resolver_cannot_answer_is_refused(

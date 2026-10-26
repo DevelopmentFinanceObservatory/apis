@@ -347,6 +347,9 @@ class _IndexWithoutParties:
     def code_by_dcid(self, dcid: str) -> object | None:
         return self._index.code_by_dcid(dcid)
 
+    def system_of_code(self, dcid: str) -> str | None:
+        return self._index.system_of_code(dcid)
+
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> str | None:
         return None
 
