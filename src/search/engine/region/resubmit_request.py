@@ -70,6 +70,7 @@ from search.models import (
     TimeWindow,
     ValueKind,
 )
+from search.scope.region import without_residuals
 
 logger = logging.getLogger(__name__)
 
@@ -499,6 +500,9 @@ def resubmit_named_groups(
             )
             continue
         role_entities = frozenset(entities[role])
+        # A summed region binds its residual buckets beside its members; the group stands
+        # for the members (`scope.region.is_residual`).
+        role_members = frozenset(without_residuals(role_entities, get_index())) or role_entities
         total = _bound_total(group, role, role_entities)
         if group.total is not None and total is None:
             logger.info(
@@ -521,7 +525,7 @@ def resubmit_named_groups(
                     )
                 )
             elif registry_group is not None:
-                if restored := _registry_named_group(group, registry_group, role, role_entities):
+                if restored := _registry_named_group(group, registry_group, role, role_members):
                     named.append(restored)
             else:
                 logger.info(
@@ -530,7 +534,7 @@ def resubmit_named_groups(
                     role,
                 )
             continue
-        kept.append((group.ref, group, role_entities, total))
+        kept.append((group.ref, group, role_entities if total is not None else role_members, total))
     if not kept:
         return tuple(named)
     dcids = sorted({dcid for dcid, _, _, _ in kept})

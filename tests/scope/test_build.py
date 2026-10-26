@@ -120,8 +120,10 @@ def test_a_refused_selection_passes_the_refusal_through():
 
 
 def test_with_no_live_axis_a_scope_holds_no_choices_and_refuses_every_entry():
-    empty = build_part_scope(base=BASE, entries=[], records={}, facts=_FACTS)
-    refused = build_part_scope(base=BASE, entries=[explicit(SECTOR_SET)], records={}, facts=_FACTS)
+    empty = build_part_scope(base=BASE, entries=[], records={}, facts=_FACTS, rules={})
+    refused = build_part_scope(
+        base=BASE, entries=[explicit(SECTOR_SET)], records={}, facts=_FACTS, rules={}
+    )
 
     assert isinstance(empty, PartScope)
     assert (empty.choices, empty.compiled.identity) == ([], BASE)

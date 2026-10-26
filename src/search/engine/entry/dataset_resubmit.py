@@ -95,8 +95,10 @@ from search.engine.region.result import with_runnable_operations
 from search.engine.region.sentence_events import answer_events, response_sentence_events
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
+from search.engine.retrieval.bound_values import identity_dataset
 from search.models import (
     DatasetResubmitInput,
+    EntityGroup,
     PartScope,
     QueryEcho,
     ResubmitCandidatesEntry,
@@ -109,7 +111,7 @@ from search.models import (
 )
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
-from search.scope.tables import ScopeFacts
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 
@@ -126,11 +128,24 @@ def _compiled_scope(
     """The scope `entry`'s scope entries compile to over its identity. Refuses the
     compile's own refusal (422), pointed at the scope entry it refuses."""
     assert entry.scope_entries is not None
+    dataset = identity_dataset(entry.identity)
+    # The comprehension widens the posted role keys to `str`, which `dict()` cannot.
+    groups: dict[str, EntityGroup] = {  # noqa: C416
+        role: group for role, group in (entry.entity_groups or {}).items()
+    }
     built = build_part_scope(
         base=entry.identity,
         entries=entry.scope_entries,
         records={},
-        facts=ScopeFacts(index=get_index(), coverage=coverage),
+        facts=ScopeFacts(
+            index=get_index(),
+            coverage=coverage,
+            part=PartFacts(
+                operations=tuple(entry.operations),
+                entity_groups=groups,
+                datasets=() if dataset is None else (dataset,),
+            ),
+        ),
     )
     if isinstance(built, Refusal):
         raise refusal_error(built, pointer=f"/input/entries/{index}/scope_entries/{built.entry}")

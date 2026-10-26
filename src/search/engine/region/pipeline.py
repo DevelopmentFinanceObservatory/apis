@@ -29,6 +29,7 @@ from search.engine.degraded_reads import (
     note_degraded_read,
     recording_degraded_reads,
 )
+from search.engine.departures import served_datasets
 from search.engine.envelope import _sum_usage, now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
@@ -97,7 +98,7 @@ from search.engine.source_scope import SourceScope
 from search.models import EntryPath, Operation, RoleAxis, Warning
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
-from search.scope.tables import ScopeFacts
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -552,20 +553,33 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     built from the scope entries and axis records the pass's binders hold
     (`ResolveState.scope_selection`) over the answer's identity. A result that is not
-    definite, or whose pass wrote no axis record, states none. In memory: the rules read the
-    bound release's code index and the request's coverage snapshot. Entries that cannot hold
-    together refuse 422 (`scope.build.refusal_error`)."""
+    definite, or whose pass wrote no axis record, states none, and so does one whose
+    answer the recorded axes do not reach, as a region read at its published total. In
+    memory: the rules read the bound release's code index, the request's coverage
+    snapshot and the part's operations, groups and served datasets (`PartFacts`). Entries
+    that cannot hold together refuse 422 (`scope.build.refusal_error`)."""
     selection = state.scope_selection
     if result.status != "definite" or not selection.records:
         return result
+    spec = result.spec
     built = build_part_scope(
-        base=result.spec.definition.identity,
+        base=spec.definition.identity,
         entries=selection.entries,
         records=selection.records,
-        facts=ScopeFacts(index=get_index(), coverage=state.coverage),
+        facts=ScopeFacts(
+            index=get_index(),
+            coverage=state.coverage,
+            part=PartFacts(
+                operations=state.operations,
+                entity_groups=spec.resolved.entity_groups or {},
+                datasets=tuple(sorted(served_datasets(spec))),
+            ),
+        ),
     )
     if isinstance(built, Refusal):
         raise refusal_error(built, pointer=None)
+    if not built.choices:
+        return result
     return dataclasses.replace(result, scope_choices=built)
 
 
