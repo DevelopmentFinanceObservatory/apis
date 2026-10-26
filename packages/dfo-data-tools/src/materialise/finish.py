@@ -20,6 +20,7 @@ from materialise.codes import (
     CountedEntityYears,
     CountedRefs,
     MaterialisationWarning,
+    YearRange,
 )
 from materialise.content_version import mint_version_from_digest
 from materialise.convert import ConversionRecord
@@ -40,7 +41,12 @@ from materialise.generation import (
 from materialise.profile import compute_output_profile, compute_output_profile_from_chunks
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace, ResolvedStatVar
-from materialise.window import coverage_below_scope, unserved_entities
+from materialise.window import (
+    AppliedWindow,
+    RequestedWindow,
+    coverage_below_scope,
+    unserved_entities,
+)
 
 if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
@@ -466,6 +472,7 @@ def _build_warnings(
                 off_cadence=off_cadence,
                 out_of_window=out_of_window,
                 member_count=member_count,
+                years=_clamped_years(request.window, outcome.applied_window),
             )
         )
 
@@ -516,6 +523,38 @@ _MAX_COUNTED_REFS = 5
 _DCID_REF_PREFIX = "dcid:"
 
 
+def _clamped_years(
+    requested: RequestedWindow, applied: AppliedWindow | None
+) -> tuple[YearRange, YearRange] | None:
+    """The years a range asked for and the years its data covers, when the data covers fewer
+    (`AppliedWindow.origin` is `coverage_clamp`). An end the definition left unstated
+    (`RequestedWindow.end_unstated`) reads as open, and an open bound is left out. None for
+    any other window."""
+    if applied is None or applied.origin != "coverage_clamp":
+        return None
+    asked: YearRange = {}
+    if requested.start_year is not None:
+        asked["start"] = requested.start_year
+    if requested.end_year is not None and not requested.end_unstated:
+        asked["end"] = requested.end_year
+    served: YearRange = {}
+    if applied.start_year is not None:
+        served["start"] = applied.start_year
+    if applied.end_year is not None:
+        served["end"] = applied.end_year
+    return asked, served
+
+
+def _year_range_text(years: YearRange) -> str:
+    """`2020 to 2030`, `2020 onward` for an open end, or `up to 2030` for an open start."""
+    start, end = years.get("start"), years.get("end")
+    if start is None:
+        return f"up to {end}"
+    if end is None:
+        return f"{start} onward"
+    return f"{start} to {end}"
+
+
 def _coverage_below_scope_warning(
     unserved: Sequence[str],
     *,
@@ -523,9 +562,12 @@ def _coverage_below_scope_warning(
     off_cadence: Sequence[str],
     out_of_window: Sequence[str],
     member_count: int,
+    years: tuple[YearRange, YearRange] | None = None,
 ) -> MaterialisationWarning:
-    """Counts the `unserved` entity dcids after the catalogue detail. Then, of the group's
-    `member_count` series, it counts those in `off_cadence`, which report the requested years
+    """With `years`, the requested range and the years its data covers (`_clamped_years`),
+    it states both after the catalogue detail, as "Requested 2020 to 2030; the data covers
+    2020 to 2024.", and carries them as `requested_years` and `served_years`. Then it counts
+    the `unserved` entity dcids. Then, of the group's `member_count` series, it counts those in `off_cadence`, which report the requested years
     at another frequency than the group serves and are left out, and those in
     `out_of_window`, which hold no observation in the requested years. The message names no
     entity or member, so a stored version holds no name that can go stale. The warning's
@@ -533,10 +575,16 @@ def _coverage_below_scope_warning(
     and the first five refs (`CountedRefs`), beside `member_count` for the members, for a
     reader to name them. Then, with `countries_fallback`, it says a request binding no place
     was served the countries with data because the full list of places with data was too
-    large or unavailable (`place_scope.DefaultPlaceScope`). Without any the detail stands for a
-    pure window clamp."""
+    large or unavailable (`place_scope.DefaultPlaceScope`). Without any the detail stands
+    alone."""
     _title, detail = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"]
     message = detail
+    if years is not None:
+        requested, served = years
+        message = (
+            f"{message} Requested {_year_range_text(requested)}; "
+            f"the data covers {_year_range_text(served)}."
+        )
     if unserved:
         message = (
             f"{message} No observations were served for {len(unserved)} requested "
@@ -562,6 +610,8 @@ def _coverage_below_scope_warning(
         "severity": "warn",
         "message": message,
     }
+    if years is not None:
+        warning["requested_years"], warning["served_years"] = years
     if unserved:
         warning["unserved_entities"] = _counted_entities(unserved)
     if off_cadence or out_of_window:

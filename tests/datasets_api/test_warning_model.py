@@ -72,6 +72,16 @@ def test_a_stored_stat_vars_summed_warning_without_a_label_omits_the_label_key()
         ),
         pytest.param(
             {
+                "code": "coverage_below_scope",
+                "severity": "warn",
+                "message": "Requested up to 2030; the data covers 2020 to 2024.",
+                "requested_years": {"end": 2030},
+                "served_years": {"start": 2020, "end": 2024},
+            },
+            id="window-clamp-years",
+        ),
+        pytest.param(
+            {
                 "code": "currency_unmapped_omitted",
                 "severity": "warn",
                 "message": "It left out 1 entity.",

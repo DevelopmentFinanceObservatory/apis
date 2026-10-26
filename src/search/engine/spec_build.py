@@ -16,9 +16,10 @@ from code_index.labels import (
     compose_measure_label,
 )
 from code_index.shared import get_index, get_measure_index
-from code_index.types import label_for_pairs
+from code_index.types import PartyRow, label_for_pairs
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
+from materialise.enrichment import party_kind_of
 from origin_catalogue import ORIGINS, current_catalogue
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
@@ -924,22 +925,41 @@ class RoleAxisFactInput:
 
 def _role_axis_facts(
     facts: Sequence[RoleAxisFactInput],
+    *,
+    parties: Mapping[str, PartyRow],
+    datasets: Collection[str],
 ) -> list[RoleAxisFact] | None:
     """Project open role axes, returning None when no facts were supplied.
 
-    A missing member population yields ``member_count=None`` and
-    ``members_available=False``.
+    Each count is `party_count` of the population, read in `datasets`, the provenances
+    of the served StatVars. A missing member population yields ``member_count=None``
+    and ``members_available=False``.
     """
     if not facts:
         return None
     return [
         RoleAxisFact(
             role=fact.role,
-            member_count=len(fact.member_dcids) if fact.member_dcids is not None else None,
+            member_count=(
+                party_count(fact.member_dcids, parties=parties, datasets=datasets)
+                if fact.member_dcids is not None
+                else None
+            ),
             members_available=fact.member_dcids is not None,
         )
         for fact in facts
     ]
+
+
+def party_count(
+    dcids: Collection[str], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
+) -> int:
+    """How many of `dcids` the default download keeps as parties: those the code index's
+    `parties` declares no `total` in `datasets` (`materialise.enrichment.party_kind_of`),
+    the test the Datasets cut of party totals applies (`datasets_api.party_totals`). When
+    every member is a total the cut keeps them all, and so does the count."""
+    kept = sum(party_kind_of(dcid, parties=parties, datasets=datasets) != "total" for dcid in dcids)
+    return kept or len(dcids)
 
 
 def _compose_wire_shape_label(
@@ -1231,7 +1251,12 @@ def build_spec(
         else []
     )
     resolved_open_axis_facts = _open_axis_facts(open_axis_facts)
-    resolved_role_axis_facts = _role_axis_facts(role_axis_facts)
+    index = get_index()
+    resolved_role_axis_facts = _role_axis_facts(
+        role_axis_facts,
+        parties=index.parties,
+        datasets=index.statvar_provenances(sv.ref.ref for sv in stat_vars),
+    )
 
     # Identity is minted before the display label is composed. See _wire_shape_label.
     wire_shape = _wire_shape_label(

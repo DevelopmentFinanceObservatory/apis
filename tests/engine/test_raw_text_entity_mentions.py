@@ -27,6 +27,7 @@ from search.engine.entry.params import EntryParams
 from search.engine.entry.raw_text import (
     _entity_surfaces,
     _ExtractionPrep,
+    _name_corrections,
     _prepare_extraction,
     _recover_entity_surfaces,
 )
@@ -38,6 +39,7 @@ from search.engine.extract import (
 )
 from search.engine.surface_resolution import resolve_names
 from search.models import RawTextInput
+from search.render.assumptions import NameCorrection
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine.test_choice_options import _FERTILITY, _fertility_client, _ShapeZeroLLM
@@ -921,6 +923,94 @@ def test_raw_pipeline_keeps_a_members_reading() -> None:
     )
 
     assert prep.member_entities == frozenset({"Africa"})
+
+
+_KEN = Entity(dcid="country/KEN", name="Kenya", kind="country", graph_type="Country")
+_FRA = Entity(dcid="country/FRA", name="France", kind="country", graph_type="Country")
+
+
+@pytest.mark.parametrize(
+    ("entity", "query", "answers", "expected"),
+    [
+        # The typed words name no entity, so the extraction's name corrected them.
+        pytest.param(
+            ExtractedEntity(text="Germany", span="Germny"),
+            "ODA from Germny",
+            {"Germany": Resolved(_DEU)},
+            (NameCorrection(asked="Germny", ref="country/DEU"),),
+            id="misspelling",
+        ),
+        # A listed alias of the entity names it: a translation, no correction.
+        pytest.param(
+            ExtractedEntity(text="Kenya", span="Kenia"),
+            "ayuda a Kenia",
+            {"Kenya": Resolved(_KEN), "Kenia": Resolved(_KEN)},
+            (),
+            id="alias",
+        ),
+        # A translation the query writes no words of carries a null span.
+        pytest.param(
+            ExtractedEntity(text="Germany", span=None),
+            "Hilfe aus Deutschland",
+            {"Germany": Resolved(_DEU)},
+            (),
+            id="null-span translation",
+        ),
+        # The typed words are the name, whatever their case.
+        pytest.param(
+            ExtractedEntity(text="Kenya", span="kenya"),
+            "aid to kenya",
+            {"Kenya": Resolved(_KEN)},
+            (),
+            id="same words",
+        ),
+        # A national adjective, whose cue is its own span, names its country.
+        pytest.param(
+            ExtractedEntity(text="France", span="French", flow_role="origin", role_span="French"),
+            "French aid",
+            {"France": Resolved(_FRA)},
+            (),
+            id="national adjective",
+        ),
+        # The words leave a choice the name settles: the entity is one of their candidates.
+        pytest.param(
+            ExtractedEntity(text="Trinidad and Tobago", span="Trinidad"),
+            "aid to Trinidad",
+            {
+                "Trinidad": Ambiguous((_TTO, _TRINIDAD_TOWN)),
+                "Trinidad and Tobago": Resolved(_TTO),
+            },
+            (),
+            id="settled choice",
+        ),
+        # The words name another entity than the one the name settles on.
+        pytest.param(
+            ExtractedEntity(text="Kenya", span="Kenyan Republic"),
+            "aid to the Kenyan Republic",
+            {"Kenya": Resolved(_KEN), "Kenyan Republic": Resolved(_DEU)},
+            (NameCorrection(asked="Kenyan Republic", ref="country/KEN"),),
+            id="another entity",
+        ),
+    ],
+)
+def test_a_name_corrects_typed_words_that_list_no_name_or_alias_of_its_entity(
+    entity: ExtractedEntity,
+    query: str,
+    answers: dict[str, object],
+    expected: tuple[NameCorrection, ...],
+) -> None:
+    """The extraction's name corrects the query's words for it when those words resolve to
+    no listed name or alias of the entity the name settles on."""
+    resolver = _Resolver(answers)
+    corrections = asyncio.run(
+        _name_corrections(
+            [entity],
+            query=query,
+            resolver=cast(EntityResolver, resolver),
+            deadline=time.monotonic() + 30,
+        )
+    )
+    assert corrections == expected
 
 
 class _MeasuresFromKenia(_ShapeZeroLLM):

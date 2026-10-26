@@ -48,10 +48,9 @@ from materialise.facets import (
     served_facets,
     subject_probe,
 )
-from materialise.window import RequestedWindow, election_window, latest_period, latest_periods
+from materialise.window import RequestedWindow, latest_period, latest_periods
 from search.engine import extract as _extract
 from search.engine.clients.graph import Facet
-from search.engine.config import settings
 from search.engine.reading_coverage import CoverageYears, ReadingCoverage, observed_years
 from search.engine.retrieval.elected_dataset import elected_datasets, publishes
 from search.engine.retrieval.facet_election import (
@@ -65,6 +64,8 @@ from search.engine.retrieval.facet_election import (
 )
 from search.models import TimeWindow, in_window
 from search.observations import PreviewMode, preview_mode
+from search.scope_window import read_range as _read_range
+from search.scope_window import role_read_years
 from statvar_members import AbsentReading, antichain_minimal_ids
 
 if TYPE_CHECKING:
@@ -120,29 +121,12 @@ class NoYearsToRead(Exception):
 def read_range(
     window: TimeWindow, *, first_year: int | None = None, last_year: int | None = None
 ) -> TimeWindow | None:
-    """The years a range read covers for `window`, on every route, or None when none fits.
-
-    `first_year` floors the start (an open start reads from it) and `last_year`, the
-    coverage horizon's last year, caps the end. An explicit end is kept, so a window past
-    today reads projection years. An open end takes the end a datasets read of the same
-    identity takes (`materialise.window.election_window`, at this module's clock): the
-    current year, or for a window starting after it `last_year`, and every later year
-    without a horizon. A plan's years are therefore the years a mint of the answer's Spec
-    elects and reads under.
-    """
-    start = window.start_year
-    if first_year is not None:
-        start = first_year if start is None else max(start, first_year)
-    end = election_window(
-        RequestedWindow(kind="range", start_year=start, end_year=window.end_year),
-        clock_year=current_year(),
-        last_year=last_year,
-    ).end_year
-    if last_year is not None and end is not None:
-        end = min(end, last_year)
-    if start is not None and end is not None and start > end:
-        return None
-    return TimeWindow(start_year=start, end_year=end)
+    """The years a range read covers for `window`, on every route, at this module's clock
+    (`search.scope_window.read_range`). A plan's years are therefore the years a mint of the
+    answer's Spec elects and reads under."""
+    return _read_range(
+        window, clock_year=current_year(), first_year=first_year, last_year=last_year
+    )
 
 
 def plan_years(
@@ -189,34 +173,19 @@ class RoleYears:
         return None, None
 
 
-class WindowTooLong(Exception):
-    """A range whose year list passes `scope_max_window_years`, the longest an SDMX year
-    filter carries. Every role route refuses it as `scope_too_broad` before any read."""
-
-    def __init__(self, *, years: int, cap: int) -> None:
-        self.years = years
-        self.cap = cap
-        super().__init__(f"the requested window spans {years} years, over the {cap}-year cap")
-
-
 def role_years(date_request: DateRequest | None, horizon: YearHorizon) -> RoleYears:
     """The years a role read confirms on, plans and lists for `date_request`, on every
-    role route: `plan_years` floored at `max(scope_min_year, horizon.epoch_year)` and capped
-    at the horizon's last year, which carries projection years. Raise `NoYearsToRead` when
-    the range holds no year, and `WindowTooLong` when it holds more than
-    `scope_max_window_years`."""
-    years = plan_years(
-        date_request,
-        first_year=max(settings().scope_min_year, horizon.epoch_year),
-        last_year=horizon.max_year,
-    )
-    listed: tuple[str, ...] | None = None
-    if isinstance(years, TimeWindow):
-        assert years.start_year is not None and years.end_year is not None  # both bounds set
-        listed = tuple(str(y) for y in range(years.start_year, years.end_year + 1))
-        cap = settings().scope_max_window_years
-        if len(listed) > cap:
-            raise WindowTooLong(years=len(listed), cap=cap)
+    role route: for a range, `search.scope_window.role_read_years`, the rule the Datasets
+    mint admits a window by. Raise `NoYearsToRead` when the range holds no year, and
+    `search.scope_window.WindowTooLong` when it holds more than `scope_max_window_years`."""
+    if date_request is None or date_request.latest:
+        return RoleYears(years=plan_years(date_request), listed=None)
+    assert date_request.window is not None  # DateRequest's own either/or invariant
+    years = role_read_years(date_request.window, horizon=horizon, clock_year=current_year())
+    if years is None:
+        raise NoYearsToRead
+    assert years.start_year is not None and years.end_year is not None  # both bounds set
+    listed = tuple(str(y) for y in range(years.start_year, years.end_year + 1))
     return RoleYears(years=years, listed=listed)
 
 

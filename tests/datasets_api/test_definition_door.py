@@ -1098,3 +1098,43 @@ def test_no_drift_register_then_get_round_trip_serves_200():
     resp = client.get(f"/api/datasets/{spec_id}")
 
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.parametrize(
+    ("route", "pointer"),
+    [
+        ("mint", "/input/definition/identity/requested_window"),
+        ("options", "/definition/identity/requested_window"),
+    ],
+)
+def test_a_sidecar_window_a_role_read_cannot_list_is_refused_before_registration(
+    search_settings, route: str, pointer: str
+) -> None:
+    """A posted definition's own role-bearing window is admitted by the rule Search's role
+    routes read years by (`search.scope_window.role_read_years`), on the mint and the
+    options route alike, before the registry write: the refused id stays unregistered."""
+    search_settings(scope_max_window_years=5)
+    client = _client(graph=_graph())
+    template = _mint_one_spec(client)
+    identity = {
+        **client.get(f"/api/datasets/{template}").json()["definition"]["identity"],
+        "requested_window": {"kind": "range", "start_year": 2000, "end_year": 2020},
+    }
+    spec_id = recompute_identity(identity).spec_id
+    definition = wire_definition_for(spec_id=spec_id, identity=identity)
+
+    if route == "mint":
+        resp = client.post(
+            "/api/datasets",
+            json={
+                "schema_version": 1,
+                "input": {"kind": "spec_id", "spec_id": spec_id, "definition": definition},
+                "options": {"bundle": False},
+            },
+        )
+    else:
+        resp = client.post(f"/api/datasets/{spec_id}/options", json={"definition": definition})
+
+    assert resp.status_code == 400, resp.text
+    assert (resp.json()["code"], resp.json()["pointer"]) == ("request_invalid", pointer)
+    assert client.get(f"/api/datasets/{spec_id}").json()["code"] == "spec_not_found"

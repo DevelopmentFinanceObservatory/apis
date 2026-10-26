@@ -22,6 +22,7 @@ from resolvekit.core.model.result import CandidateSummary
 from code_index.shared import get_index
 from entity_resolution import (
     ADMITTED_TYPES,
+    DEFAULT_KINDS,
     Ambiguous,
     EntityResolver,
     Group,
@@ -345,6 +346,9 @@ class _IndexWithoutParties:
 
     def code_by_dcid(self, dcid: str) -> object | None:
         return self._index.code_by_dcid(dcid)
+
+    def system_of_code(self, dcid: str) -> str | None:
+        return self._index.system_of_code(dcid)
 
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> str | None:
         return None
@@ -974,7 +978,11 @@ def test_ambiguous_candidates_ordered_by_dcid_not_entity_id(shared_resolver, mon
     assert [c.dcid for c in result.candidates] == ["ZZZOrg", "country/AAA"]
 
 
-def test_batch_of_five_hits_makes_one_confirmation_call_and_no_fallback_calls(shared_resolver):
+def test_batch_of_five_hits_makes_one_shared_name_read_and_one_confirmation_call(
+    shared_resolver,
+):
+    """Asked for near matches, five hits whose names nothing else lists cost one last-rung
+    read for all five, no name read, and one confirmation read; unasked, no last-rung read."""
     graph = FakeGraphLookup(
         nodes={
             "country/KEN": {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME},
@@ -989,11 +997,19 @@ def test_batch_of_five_hits_makes_one_confirmation_call_and_no_fallback_calls(sh
     )
     resolver = EntityResolver(graph=graph, shared=shared_resolver)
 
-    results = _run(resolver.resolve(["Kenya", "France", "Africa", "AfDB", "IDA"]))
+    texts = ["Kenya", "France", "Africa", "AfDB", "IDA"]
+    unasked_graph = FakeGraphLookup(nodes=graph.nodes)
 
-    assert all(isinstance(r, Resolved) for r in results)
+    results = _run(resolver.resolve(texts, near_matches=True))
+    _run(EntityResolver(graph=unasked_graph, shared=shared_resolver).resolve(texts))
+
+    assert unasked_graph.resolve_by_arc_calls == []
+    assert all(isinstance(r, Resolved) and r.near_matches == () for r in results)
     assert len(graph.node_arcs_many_calls) == 1
-    assert graph.resolve_by_arc_calls == []
+    assert graph.resolve_by_arc_calls == [
+        (("Kenya", "France", "Africa", "AfDB", "IDA"), "<-description->dcid")
+    ]
+    assert graph.node_names_many_calls == []
 
 
 def test_batch_with_two_misses_makes_at_most_four_fallback_calls(shared_resolver):
@@ -1004,6 +1020,115 @@ def test_batch_with_two_misses_makes_at_most_four_fallback_calls(shared_resolver
 
     assert all(isinstance(r, NotFound) for r in results)
     assert len(graph.resolve_by_arc_calls) <= 4
+
+
+@pytest.mark.parametrize(
+    ("kinds", "near"),
+    [
+        (DEFAULT_KINDS, ("geoId/13", "wikidataId/Q1", "wikidataId/Q3")),
+        (None, ("geoId/13", "wikidataId/Q1", "GeorgiaEnum")),
+    ],
+)
+def test_a_hit_carries_the_other_nodes_listing_its_name_as_near_matches(
+    shared_resolver, kinds, near
+):
+    """Resolvekit's packs hold no US state, so "Georgia" resolves to the country and the last
+    rung's other confirmed nodes listing the name follow as near matches, in the graph's order,
+    by the requested kinds, at most three. A node whose names do not list the text is left
+    out. The batch
+    costs one last-rung read and one name read beside the one confirmation read."""
+    graph = FakeGraphLookup(
+        nodes={
+            "country/GEO": {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME},
+            "geoId/13": {"typeOf": ("State",), "name": ("Georgia",)},
+            "wikidataId/Q1": {"typeOf": ("City",), "name": ("Georgia",)},
+            "wikidataId/Q2": {"typeOf": ("City",), "name": ("Georgetown",)},
+            "GeorgiaEnum": {"typeOf": ("SomeEnum",), "name": ("Georgia",)},
+            "wikidataId/Q3": {"typeOf": ("City",), "name": ("Georgia",)},
+        },
+        arcs={
+            ("<-description->dcid", "Georgia"): [
+                "country/GEO",
+                "geoId/13",
+                "wikidataId/Q2",
+                "wikidataId/Q1",
+                "GeorgiaEnum",
+                "wikidataId/Q3",
+            ]
+        },
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve(["Georgia"], kinds=kinds, near_matches=True))
+
+    assert isinstance(result, Resolved)
+    assert result.entity.dcid == "country/GEO"
+    assert tuple(e.dcid for e in result.near_matches) == near
+    assert result.near_matches[0].kind == "place_other"
+    assert [arc for _, arc in graph.resolve_by_arc_calls] == ["<-description->dcid"]
+    assert graph.node_names_many_calls == [
+        ("geoId/13", "wikidataId/Q2", "wikidataId/Q1", "GeorgiaEnum", "wikidataId/Q3")
+    ]
+    assert len(graph.node_arcs_many_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("last_rung", "asked", "expected"),
+    [
+        (["country/GEO", "geoId/13"], True, ("resolved", ("geoId/13",))),
+        (["geoId/13", "wikidataId/Q1"], True, ("ambiguous", ("geoId/13", "wikidataId/Q1"))),
+        (
+            ["wikidataId/Q4", "geoId/13", "wikidataId/Q3", "wikidataId/Q1", "wikidataId/Q2"],
+            True,
+            (
+                "ambiguous",
+                ("geoId/13", "wikidataId/Q1", "wikidataId/Q2", "wikidataId/Q3", "wikidataId/Q4"),
+            ),
+        ),
+        (["country/GEO", "geoId/13"], False, ("not_found", ())),
+    ],
+)
+def test_a_kinds_filter_that_removes_the_hit_answers_with_the_nodes_sharing_its_name(
+    shared_resolver, last_rung, asked, expected
+):
+    """Asked for near matches, "Georgia" under `kinds=["place_other"]` answers with the
+    confirmed place_other nodes listing the name: one resolves, several are ambiguous with
+    every one as a candidate, and either keeps the removed country as a near match. The call costs the same one last-rung
+    read, one name read and one confirmation read. Unasked, it stays `NotFound` with no
+    last-rung read."""
+    graph = FakeGraphLookup(
+        nodes={
+            "country/GEO": {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME},
+            "geoId/13": {"typeOf": ("State",), "name": ("Georgia",)},
+            "wikidataId/Q1": {"typeOf": ("City",), "name": ("Georgia",)},
+            "wikidataId/Q2": {"typeOf": ("City",), "name": ("Georgia",)},
+            "wikidataId/Q3": {"typeOf": ("City",), "name": ("Georgia",)},
+            "wikidataId/Q4": {"typeOf": ("City",), "name": ("Georgia",)},
+        },
+        arcs={("<-description->dcid", "Georgia"): last_rung},
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve(["Georgia"], kinds={"place_other"}, near_matches=asked))
+
+    status, refs = expected
+    if status == "not_found":
+        assert isinstance(result, NotFound)
+        assert [e.dcid for e in result.removed] == ["country/GEO"]
+        assert graph.resolve_by_arc_calls == []
+        return
+    if status == "resolved":
+        assert isinstance(result, Resolved)
+        assert (result.entity.dcid,) == refs
+        assert result.entity.kind == "place_other"
+        assert result.matched is not None and result.matched.matched_as == "name"
+    else:
+        assert isinstance(result, Ambiguous)
+        assert tuple(c.dcid for c in result.candidates) == refs
+    assert [(e.dcid, e.kind) for e in result.near_matches] == [("country/GEO", "country")]
+    assert [arc for _, arc in graph.resolve_by_arc_calls] == ["<-description->dcid"]
+    assert len(graph.node_names_many_calls) == 1
+    assert len(graph.node_arcs_many_calls) == 1
 
 
 def test_fallback_ambiguous_when_the_answering_arc_names_two_held_dcids(shared_resolver):

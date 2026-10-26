@@ -89,6 +89,7 @@ from search.engine.spec_build import (
     build_stat_vars,
     inapplicable_property_dcid,
     pair_slot_drafts,
+    party_count,
 )
 from search.engine.unit.refs import unit_currency
 from search.models import (
@@ -279,9 +280,15 @@ def bound_opposite_role_dcids(discovered: DiscoveredScope, roles: EntityRoles) -
     return list(dict.fromkeys(dcid for dcid, role in role_bindings(roles) if role == opposite_role))
 
 
+def _role_scope_axis_clause(axis: EntityRoleKey) -> str:
+    """The clause opening every `role_scope_defaulted` warning on `axis`, which
+    `restate_role_scope_warnings` matches a warning by."""
+    return f"No {axis_noun(axis)} was named"
+
+
 def _role_scope_defaulted_base(axis: EntityRoleKey) -> str:
     noun = axis_noun(axis)
-    return f"no {noun} was named; the answer was resolved across every {noun} with data"
+    return f"{_role_scope_axis_clause(axis)}, so the answer covers every {noun} with data"
 
 
 def role_scope_defaulted_message(
@@ -293,9 +300,10 @@ def role_scope_defaulted_message(
 ) -> str:
     """Build the defaulted-scope warning with member count and any bound opposite-role entities.
 
-    `member_count` is how many members of the open axis the materialised read plan serves
-    (`Materialised.scope_member_dcids`), or None for a response whose answers serve different
-    members, which the warning then counts as every member with data. Use `from` when
+    `member_count` is how many parties of the open axis the materialised read plan serves
+    (`Materialised.scope_member_dcids`, counted by `spec_build.party_count`), or None for a
+    response whose answers serve different members, which the warning then counts as every
+    member with data. Use `from` when
     destination is discovered, otherwise `to`. Spell out up to three labels; for four or
     more, report the count and opposite-axis noun without label lookup. `label_of` returns
     labels in the input order.
@@ -304,10 +312,11 @@ def role_scope_defaulted_message(
     if member_count is None:
         base = _role_scope_defaulted_base(discovered.axis)
     else:
-        noun_phrase = noun if member_count == 1 else f"{noun}s"
+        counted = {1: f"the one {noun}", 2: f"both {noun}s"}.get(
+            member_count, f"all {member_count} {noun}s"
+        )
         base = (
-            f"no {noun} was named; the answer was resolved across the {member_count} "
-            f"{noun_phrase} with data"
+            f"{_role_scope_axis_clause(discovered.axis)}, so the answer covers {counted} with data"
         )
     if not bound_dcids:
         return f"{base}."
@@ -361,8 +370,10 @@ def role_scope_defaulted_warnings(
 ) -> list[Warning]:
     """Build warnings for each open role axis in `mat`.
 
-    A discovered scope reports how many members the answer serves (`members`, by default
-    `mat.scope_member_dcids`, those of the materialised read plan), or with `state_count`
+    A discovered scope reports how many parties the answer serves (`members`, by default
+    `mat.scope_member_dcids`, those of the materialised read plan), leaving out the totals
+    the code index declares in the datasets of `mat.sv_dcids` as the role's
+    `RoleAxisFact.member_count` does (`spec_build.party_count`), or with `state_count`
     false every member with data, and any bound opposite-role entities. A second open axis
     adds an unqualified warning. A bound
     destination with an open origin also warns, even when `open_origin_dcids` is empty.
@@ -381,8 +392,8 @@ def role_scope_defaulted_warnings(
                     severity="warn",
                     message=role_scope_defaulted_message(
                         discovered,
-                        member_count=len(
-                            members if members is not None else mat.scope_member_dcids or ()
+                        member_count=_scope_party_count(
+                            mat, members if members is not None else mat.scope_member_dcids
                         )
                         if state_count
                         else None,
@@ -413,6 +424,17 @@ def role_scope_defaulted_warnings(
     return warnings
 
 
+def _scope_party_count(mat: Materialised, members: Collection[str] | None) -> int:
+    """How many of `members` the warning counts: the parties `spec_build.party_count`
+    keeps, read in the datasets that publish `mat`'s StatVars."""
+    index = get_index()
+    return party_count(
+        frozenset(members or ()),
+        parties=index.parties,
+        datasets=index.statvar_provenances(mat.sv_dcids),
+    )
+
+
 def restate_role_scope_warnings(
     warnings: list[Warning],
     mat: Materialised,
@@ -427,13 +449,13 @@ def restate_role_scope_warnings(
     `mat` so it counts `members`, the scope the answer lists under the request's facet
     filter (`scope.stated_scope_members`), or with `state_count` false names every member
     with data, for a response whose answers list different scopes. The warning is the
-    `role_scope_defaulted` one opening with the same axis clause ("no recipient was named"),
+    `role_scope_defaulted` one opening with the same axis clause ("No recipient was named"),
     whatever count it states, so a response restates it once its candidates are grounded
     and again once they are filtered. It keeps its position, and `label_of`, the memoised
     lookup that built it (`memoised_labels`), makes no new request.
 
-    An empty `members` is an answer that lists no member on the axis: it resolved across
-    none, so the warning is removed. An axis in `unnamed_wholes` built no warning
+    An empty `members` is an answer that lists no member on the axis: it covers none, so
+    the warning is removed. An axis in `unnamed_wholes` built no warning
     (`role_scope_defaulted_warnings`), so there is none to restate."""
     if (
         mat.discovered_scope is None
@@ -452,9 +474,9 @@ def restate_role_scope_warnings(
     # The discovered axis's warning leads. A companion axis's warning states no count, so it
     # stands as built.
     restated: Warning | None = fresh[0] if members or not state_count else None
-    axis_clause = fresh[0].message.split(";", 1)[0]
+    axis_clause = f"{_role_scope_axis_clause(mat.discovered_scope.axis)},"
     for index, old in enumerate(warnings):
-        if old.code == ROLE_SCOPE_DEFAULTED and old.message.split(";", 1)[0] == axis_clause:
+        if old.code == ROLE_SCOPE_DEFAULTED and old.message.startswith(axis_clause):
             if restated is None:
                 del warnings[index]
             else:

@@ -52,6 +52,7 @@ from search.engine.retrieval.role_resolve import _elect_role_class, _role_plan
 from search.engine.retrieval.role_scope import discover_role_scope, pair_series
 from search.models import CoverageBreadth, CoverageExact, TimeWindow
 from search.observations import observation_settings
+from search.scope_window import WindowTooLong
 from series_coverage.coverage_types import BoundRoles
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames, YearHorizon
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -1215,7 +1216,7 @@ def test_role_years_refuse_a_range_longer_than_the_cap(search_settings) -> None:
     """A range whose year list passes `scope_max_window_years` raises `WindowTooLong`, which
     every role route refuses as `scope_too_broad`."""
     search_settings(scope_max_window_years=5)
-    with pytest.raises(read_plan.WindowTooLong):
+    with pytest.raises(WindowTooLong):
         _role_years(TimeWindow(start_year=2000, end_year=2020))
     assert _role_years(TimeWindow(start_year=2016, end_year=2020)).listed == tuple(
         str(y) for y in range(2016, 2021)

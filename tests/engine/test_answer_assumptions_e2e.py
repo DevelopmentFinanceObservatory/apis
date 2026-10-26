@@ -63,21 +63,20 @@ _ASSUMED_CLAUSE = " Assumed: official development assistance; every provider."
 _FIRST = "first"
 
 
-def _first_answer() -> DefinitePart:
-    response = offline_resolve(
-        ResolveRequest(
-            input=RawTextInput(query="aid flows to Kenya"), response_options=ResolveOptions()
-        ),
+def _raw_text_answer(query: str, entity: ExtractedEntity) -> ResolveResponse:
+    """The raw-text answer to `query`, whose extraction names `entity` beside "aid flows"."""
+    return offline_resolve(
+        ResolveRequest(input=RawTextInput(query=query), response_options=ResolveOptions()),
         graph=_e2e_graph_for("aid flows"),
         llm=_OpenFlowAndSectorBindLLM(
-            Extraction(
-                kind="resolution",
-                variables=["aid flows"],
-                entities=[ExtractedEntity(text="Kenya")],
-            )
+            Extraction(kind="resolution", variables=["aid flows"], entities=[entity])
         ),
         sdmx=_EMPTY_SDMX,
     )
+
+
+def _first_answer() -> DefinitePart:
+    response = _raw_text_answer("aid flows to Kenya", ExtractedEntity(text="Kenya"))
     assert response.rendered_sentence is not None
     assert response.rendered_sentence.startswith(
         "Test grant equivalent flow to Kenya from all providers in 2020."
@@ -159,6 +158,49 @@ def test_a_first_answer_lists_its_declared_default_and_every_open_role():
     in clause order, and the envelope sentence closes with them. The recipient the request
     named is no assumption."""
     assert _first_answer().assumptions == [_ASSUMED_ODA, *_ASSUMED_ROLES]
+
+
+_KENYA_CORRECTED = Assumption(
+    kind="name_corrected",
+    binding_ref="where:",
+    text='"Kenyaa" read as Kenya',
+    refs=["country/KEN"],
+    asked="Kenyaa",
+)
+
+
+@pytest.mark.parametrize(
+    ("query", "span", "expected"),
+    [
+        pytest.param("aid flows to Kenyaa", "Kenyaa", [_KENYA_CORRECTED], id="misspelling"),
+        # "Kenia" is a listed alias of Kenya: a translation, no correction.
+        pytest.param("aid flows to Kenia", "Kenia", [], id="alias"),
+        # A translation the query writes no words of carries a null span.
+        pytest.param("aid flows to the Kenyan state", None, [], id="null-span translation"),
+    ],
+)
+def test_a_misspelt_place_is_assumed_read_as_the_entity(
+    query: str, span: str | None, expected: list[Assumption]
+):
+    """The extraction names Kenya. Typed words that list no name or alias of it lead the
+    assumptions and the clause; an alias or a translation with no words of its own does
+    not."""
+    response = _raw_text_answer(query, ExtractedEntity(text="Kenya", span=span))
+    part = response.parts[0]
+    assert isinstance(part, DefinitePart)
+    assert part.assumptions == [*expected, _ASSUMED_ODA, *_ASSUMED_ROLES]
+    clause = "; ".join(item.text for item in part.assumptions)
+    assert response.rendered_sentence is not None
+    assert response.rendered_sentence.endswith(f" Assumed: {clause}.")
+
+
+def test_a_resubmit_echoing_a_name_correction_keeps_it():
+    """A resubmit posts no typed words; the echoed correction holds while Kenya is bound."""
+    response = _raw_text_answer("aid flows to Kenyaa", ExtractedEntity(text="Kenya", span="Kenyaa"))
+    first = response.parts[0]
+    assert isinstance(first, DefinitePart)
+    part = _resubmit(first.spec.definition.identity, echo=first.assumptions)
+    assert part.assumptions == first.assumptions
 
 
 class _PsiFlowBindLLM(_OpenFlowAndSectorBindLLM):

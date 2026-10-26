@@ -32,7 +32,7 @@ from search.models import (
     SlotValue,
     Spec,
 )
-from search.render.assumptions import assumptions_for, common_assumptions
+from search.render.assumptions import NameCorrection, assumptions_for, common_assumptions
 from search.render.candidates import candidates_sentence_plan
 from search.render.heading import heading_for
 from search.render.tokens import sentence_from_plan
@@ -103,6 +103,76 @@ def test_aid_to_a_named_recipient_assumes_the_default_flow_and_every_provider(
         ),
         _EVERY_PROVIDER,
     ]
+
+
+_BANGLADESH_CORRECTED = Assumption(
+    kind="name_corrected",
+    binding_ref="where:",
+    text='"Bangladsh" read as Bangladesh',
+    refs=["country/BGD"],
+    asked="Bangladsh",
+)
+
+
+@pytest.mark.parametrize(
+    ("corrections", "expected"),
+    [
+        pytest.param(
+            [NameCorrection(asked="Bangladsh", ref="country/BGD")],
+            [_BANGLADESH_CORRECTED],
+            id="bound entity",
+        ),
+        # A correction another part's entity reads states nothing here.
+        pytest.param([NameCorrection(asked="Germny", ref="country/DEU")], [], id="unbound"),
+        # Words past the text bound are the request's own, and state nothing.
+        pytest.param([NameCorrection(asked="x" * 190, ref="country/BGD")], [], id="too long"),
+    ],
+)
+def test_a_corrected_name_the_spec_binds_leads_the_assumptions(
+    corrections: list[NameCorrection], expected: list[Assumption]
+):
+    """crs-002, "aid to Bangladesh", typed "Bangladsh": the correction leads the clause,
+    bound on the recipient's where slot, named by the Spec's label."""
+    items = assumptions_for(_panel_spec("crs-002"), corrections=corrections)
+    assert [item for item in items if item.kind == "name_corrected"] == expected
+    assert items[len(expected)].kind == "declared_default"
+
+
+@pytest.mark.parametrize(
+    ("echoed", "expected"),
+    [
+        pytest.param(_BANGLADESH_CORRECTED, [_BANGLADESH_CORRECTED], id="as stated"),
+        pytest.param(
+            _BANGLADESH_CORRECTED.model_copy(update={"refs": ["country/DEU"]}),
+            [],
+            id="entity no longer bound",
+        ),
+        pytest.param(
+            _BANGLADESH_CORRECTED.model_copy(update={"binding_ref": "origin:"}),
+            [],
+            id="other role",
+        ),
+        # The echoed text was worded from a label the index has since renamed.
+        pytest.param(
+            _BANGLADESH_CORRECTED.model_copy(update={"text": '"Bangladsh" read as East Pakistan'}),
+            [_BANGLADESH_CORRECTED],
+            id="label changed",
+        ),
+        pytest.param(
+            _BANGLADESH_CORRECTED.model_copy(update={"asked": None}),
+            [],
+            id="no typed words",
+        ),
+    ],
+)
+def test_an_echoed_name_correction_holds_while_its_entity_is_bound(
+    echoed: Assumption, expected: list[Assumption]
+):
+    """A resubmit posts the typed words only in the echo's `asked`, so an echoed correction
+    states them while the Spec binds its entity on the echoed role, reworded from the
+    Spec's label whatever the echoed text says."""
+    items = assumptions_for(_panel_spec("crs-002"), echo=[echoed])
+    assert items == expected
 
 
 def test_a_declared_default_the_heading_states_takes_the_code_label():

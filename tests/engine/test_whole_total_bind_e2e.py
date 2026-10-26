@@ -660,7 +660,7 @@ def _no_donor_named_warnings(answer: Any) -> list[Any]:
         warning
         for warning in answer.warnings
         if warning.code == "role_scope_defaulted"
-        and warning.message.startswith("no provider was named")
+        and warning.message.startswith("No provider was named")
     ]
 
 

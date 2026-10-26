@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dfo_platform import WarningSeverity
 
-from .assumption import Assumption
+from .assumption import MAX_ASSUMPTION_TEXT_CHARS, Assumption
 from .coverage import (
     BreadthDim,
     Coverage,
@@ -260,6 +260,7 @@ from .vocab import (
 
 __all__ = [
     "DEPARTURE_ORDER",
+    "MAX_ASSUMPTION_TEXT_CHARS",
     "MAX_FORECAST_TARGET_YEAR",
     "METHOD_REF",
     "NO_DATA_RESOLUTION_ORDER",

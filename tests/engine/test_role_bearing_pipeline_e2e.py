@@ -1167,7 +1167,7 @@ def test_bound_destination_open_origin_warns_about_the_open_origin_axis(monkeypa
     assert result.status == "definite", result
     defaulted = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in defaulted] == [
-        "no provider was named; the answer was resolved across every provider with data."
+        "No provider was named, so the answer covers every provider with data."
     ]
     facts = result.specs[0].resolved.role_axis_facts
     assert facts is not None
@@ -1277,7 +1277,7 @@ def test_an_alt_shape_with_an_open_origin_warns_on_candidates(monkeypatch):
     result = _candidates_with_flagged_alt(monkeypatch, unverified=False, open_origin=True)
     defaulted = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in defaulted] == [
-        "no provider was named; the answer was resolved across every provider with data."
+        "No provider was named, so the answer covers every provider with data."
     ]
 
 
@@ -1326,7 +1326,7 @@ def test_zero_observation_bound_destination_open_origin_still_warns(monkeypatch)
     assert result.gate == NO_MEMBER_HAS_DATA_AT_PLACE
     defaulted = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in defaulted] == [
-        "no provider was named; the answer was resolved across every provider with data."
+        "No provider was named, so the answer covers every provider with data."
     ]
 
 

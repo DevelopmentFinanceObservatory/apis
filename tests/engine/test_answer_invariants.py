@@ -1249,6 +1249,8 @@ _TYPE_READ = "graph.node_type"
 _TYPE_LABEL_READ = "graph.node_label"
 _TYPE_BATCH_READ = "graph.node_types_batch"
 _BULK_READ = "sdmx.role_series"
+_ROLE_KIND_READ = "graph.node_arcs_many"
+_RESUBMIT_DOORS = frozenset({PINNED, RESUBMIT, WINDOWED})
 
 
 def measured(answer: Answer) -> dict[str, Any]:
@@ -1305,14 +1307,15 @@ def _beyond(
     source: str,
     *,
     granted: Mapping[str, int] | None = None,
+    granted_steps: int = 0,
 ) -> Iterator[str]:
     """Each way `now` requests more or runs deeper than `limit`, past the reads of the
     member walks its nearest-real relaxations, alternates and re-election siblings ran
     beyond those `limit` records, the reads of its facet-option builds beyond those
     `limit` records, the serial steps by which its deepest relaxation walk and its deepest
-    facet-option build exceed `limit`'s (`measured`), and the reads `granted` adds. The
-    walks of alternates and siblings run beside the elected shape's, so they earn no serial
-    step."""
+    facet-option build exceed `limit`'s (`measured`), and the reads `granted` and the serial
+    steps `granted_steps` add. The walks of alternates and siblings run beside the elected
+    shape's, so they earn no serial step."""
     none = {"requests": {}, "depth": 0}
     walk, held = now.get("relaxation_walk", none), limit.get("relaxation_walk", none)
     facets = now.get("facet_options", none)
@@ -1332,7 +1335,7 @@ def _beyond(
         yield f"makes more requests than {source}: {over}"
     deeper = max(0, walk["depth"] - held["depth"])
     built = max(0, facets["depth"] - held_facets["depth"])
-    if now["depth"] > limit["depth"] + deeper + built:
+    if now["depth"] > limit["depth"] + deeper + built + granted_steps:
         yield (
             f"runs {now['depth']} serial steps against {limit['depth']} {source}, "
             f"{deeper} for its relaxations' walks and {built} for its facet options"
@@ -1366,6 +1369,16 @@ def _batched_type_read(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, 
     return {batch: count for batch, count in granted.items() if count > 0}
 
 
+def _role_kind_read(door: str, now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
+    """The read a resubmit makes after its label read to type the flow-role entities the code
+    index lists on no axis they are posted on (`search.role_kinds.check_role_kinds`), one
+    request and one serial step. The grid's places are no party of the fixture index, so a
+    resubmit door makes it, and no other door does. Empty for a door that made no such read
+    beyond `limit`."""
+    read = now["requests"].get(_ROLE_KIND_READ, 0) - limit["requests"].get(_ROLE_KIND_READ, 0)
+    return {_ROLE_KIND_READ: 1} if door in _RESUBMIT_DOORS and read > 0 else {}
+
+
 def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
     """Grant a pair read only when a narrowed discovered scope drops a bulk read.
 
@@ -1379,11 +1392,19 @@ def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> d
     return {_PAIR_READ: count} if count else {}
 
 
-def _held_grants(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
-    """The reads a door may make beyond a recorded door with its answer: batched reads in
-    place of per-node reads (`_batched_type_read`) and pair reads in place of bulk reads
-    (`_pair_read_in_place_of_bulk`)."""
-    return _batched_type_read(now, limit) | _pair_read_in_place_of_bulk(now, limit)
+def _held_grants(
+    door: str, now: dict[str, Any], limit: dict[str, Any]
+) -> tuple[dict[str, int], int]:
+    """The reads and serial steps `door` may make beyond a recorded door with its answer:
+    batched reads in place of per-node reads (`_batched_type_read`), pair reads in place of
+    bulk reads (`_pair_read_in_place_of_bulk`), and a resubmit's role-kind read with its one
+    step (`_role_kind_read`). `i9_latency` and the record's rewrite both hold a door by
+    these."""
+    role_kind_read = _role_kind_read(door, now, limit)
+    granted = (
+        _batched_type_read(now, limit) | _pair_read_in_place_of_bulk(now, limit) | role_kind_read
+    )
+    return granted, len(role_kind_read)
 
 
 def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
@@ -1499,7 +1520,8 @@ def i9_latency(run: Doors) -> list[str]:
     (`_window_answer_reads`).
 
     A door may make a batched read in place of each per-node type or type-label read its
-    bound holds (`_batched_type_read`).
+    bound holds (`_batched_type_read`), and a resubmit one read and one serial step typing its
+    flow-role entities for their roles' kinds (`_role_kind_read`).
 
     A discovered bulk source pin may narrow the scope below the bulk cap, replacing each
     removed bulk read with at most one pair read (`_pair_read_in_place_of_bulk`).
@@ -1528,12 +1550,12 @@ def i9_latency(run: Doors) -> list[str]:
         for path, source in ((_BASE_PATH, "at c669cc874"), (_BRANCH_PATH, "as recorded")):
             limit = _measurement(path, cell, door, index)
             if limit is not None and _same_answer(limit, now):
-                granted = _held_grants(now, limit)
+                granted, steps = _held_grants(door, now, limit)
                 if path == _BASE_PATH:
                     granted |= _rate_table_reads(now)
                 found += [
                     f"{door} ({_status(answer)}) {line}"
-                    for line in _beyond(now, limit, source, granted=granted)
+                    for line in _beyond(now, limit, source, granted=granted, granted_steps=steps)
                 ]
                 bounded = True
                 break
@@ -1909,6 +1931,14 @@ _HELD = {
             id="fewer",
         ),
         pytest.param(_HELD, _HELD, None, "old", False, id="identical"),
+        pytest.param(
+            _HELD,
+            {**_HELD, "requests": {**_HELD["requests"], _ROLE_KIND_READ: 1}, "depth": 3},
+            None,
+            "old",
+            False,
+            id="role_kind_read_within_bound",
+        ),
         pytest.param(_HELD, _HELD, "off", "old", False, id="preview_off_now_matches"),
         pytest.param(
             _HELD,

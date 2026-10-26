@@ -21,6 +21,11 @@ and settles between the surface's answer and the name's own:
   settles "Trinidad" against a town of that name, and "Federated States of Micronesia"
   settles "Micronesia" against the region, while "Congo" names two countries and the
   query does not choose between them.
+
+A name corrects its surface when it settles on an entity the surface lists under no name or
+alias (`corrected_surfaces`): "Germany" for "Germny", which names nothing. A surface that is
+a listed alias of the entity ("Kenia" for Kenya), or a choice the name settles ("Congo"),
+names it, so no correction is read.
 """
 
 from __future__ import annotations
@@ -111,3 +116,37 @@ async def resolve_names(
     texts = list(dict.fromkeys(text for name in names for text in _texts(name, surfaces.get(name))))
     by_text = dict(zip(texts, await resolver.resolve(texts), strict=True))
     return [_settle(name, surfaces.get(name), by_text) for name in names]
+
+
+async def corrected_surfaces(
+    surfaces: Mapping[str, str], *, resolver: EntityResolver
+) -> dict[str, str]:
+    """The names in `surfaces` that correct their surface, each with the dcid it settles on,
+    read in one resolver call. A name corrects its surface when it settles on one entity
+    (`Resolved`) that the surface's own answer does not name: the surface matches no listed
+    name or alias of it, since the resolver admits a candidate only through one
+    (`gate.filter_listed_candidates`). "Germany" corrects "Germny", which resolves to
+    nothing. "Kenya" does not correct "Kenia", a listed alias, nor "Democratic Republic of
+    the Congo" "Congo", whose candidates it is among. A qualified surface is the only text
+    resolved, so it corrects nothing."""
+    if not surfaces:
+        return {}
+    texts = list(dict.fromkeys(t for name, s in surfaces.items() for t in _texts(name, s)))
+    by_text = dict(zip(texts, await resolver.resolve(texts), strict=True))
+    corrected: dict[str, str] = {}
+    for name, surface in surfaces.items():
+        settled = _settle(name, surface, by_text)
+        if isinstance(settled, Resolved) and settled.entity.dcid not in named_dcids(
+            by_text[surface]
+        ):
+            corrected[name] = settled.entity.dcid
+    return corrected
+
+
+def named_dcids(resolution: Resolution) -> frozenset[str]:
+    """The dcids `resolution` names: its entity, or each candidate of an ambiguity."""
+    if isinstance(resolution, Resolved):
+        return frozenset({resolution.entity.dcid})
+    if isinstance(resolution, Ambiguous):
+        return frozenset(candidate.dcid for candidate in resolution.candidates)
+    return frozenset()

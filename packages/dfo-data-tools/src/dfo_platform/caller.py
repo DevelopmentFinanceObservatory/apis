@@ -14,6 +14,13 @@ claims and a presence flag do.
 entry. While the service is open to every caller, filtering these lines for a
 missing token or an unexpected `email` lists the callers an invoker-only service
 would turn away.
+
+The same line carries the SDK's `X-DFO-Client` header, which names the client
+as `<name>/<version> (<runtime>)`, for example `dfo-python/0.1.0 (CPython 3.14)`.
+The caller writes the value, so it is logged with non-printable characters removed
+and clipped, as `client_header`, and split into `client_name`, `client_version` and
+`client_runtime` when it has that shape. A request without the header logs none of
+these fields.
 """
 
 from __future__ import annotations
@@ -21,6 +28,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -28,6 +36,12 @@ from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 
 SERVERLESS_AUTHORIZATION_HEADER = "x-serverless-authorization"
 AUTHORIZATION_HEADER = "authorization"
+CLIENT_HEADER = "X-DFO-Client"
+"""Request header naming the SDK client, which browsers may send cross-origin."""
+
+_CLIENT_FORMAT = re.compile(
+    r"(?P<name>[^/\s()]+)/(?P<version>[^\s()]+)(?: \((?P<runtime>[^()]+)\))?"
+)
 
 _MAX_FIELD_LENGTH = 256
 """Longest caller-controlled string logged. A junk token costs one short line."""
@@ -54,6 +68,12 @@ class CallerIdentity:
 
 def _clip(value: str) -> str:
     return value[:_MAX_FIELD_LENGTH]
+
+
+def _clean(value: str) -> str:
+    """Drop non-printable characters (C0 and C1 controls, tabs, the soft hyphen) and
+    surrounding space, then clip."""
+    return _clip("".join(ch for ch in value if ch.isprintable()).strip())
 
 
 def _claim(claims: Mapping[str, object], name: str) -> str | None:
@@ -96,8 +116,28 @@ def caller_identity_from_headers(headers: Mapping[str, str]) -> CallerIdentity:
     )
 
 
+def client_fields_from_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Return the `X-DFO-Client` log fields, or none when the header is absent or blank.
+
+    `client_header` is the cleaned value. The parsed fields appear only when the value
+    has the `<name>/<version> (<runtime>)` shape, `client_runtime` only when it names one.
+    """
+    raw = headers.get(CLIENT_HEADER)
+    value = _clean(raw) if raw is not None else ""
+    if not value:
+        return {}
+    fields = {"client_header": value}
+    if match := _CLIENT_FORMAT.fullmatch(value):
+        fields["client_name"] = match["name"]
+        fields["client_version"] = match["version"]
+        if match["runtime"] is not None:
+            fields["client_runtime"] = match["runtime"]
+    return fields
+
+
 def log_request(*, method: str, path: str, status: int | None, headers: Mapping[str, str]) -> None:
-    """Log one line for a finished request with the caller's claimed identity.
+    """Log one line for a finished request with the caller's claimed identity and the
+    SDK client its `X-DFO-Client` header names.
 
     `status` is `None` when the request ended without a response.
     """
@@ -114,6 +154,7 @@ def log_request(*, method: str, path: str, status: int | None, headers: Mapping[
                 "caller_token_present": caller.token_present,
                 "caller_email": caller.email,
                 "caller_aud": caller.aud,
+                **client_fields_from_headers(headers),
             }
         },
     )
