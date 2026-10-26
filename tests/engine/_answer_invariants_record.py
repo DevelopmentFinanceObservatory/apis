@@ -216,7 +216,14 @@ def rerecord(
     Any other such door grows the list: a door not measured, a door added, a door answering
     differently, or a door requesting more or running deeper than its held record allows.
     A door that grows takes its measurement."""
-    from tests.engine.test_answer_invariants import _beyond, _held_grants, _same_answer
+    from tests.engine.test_answer_invariants import (
+        _DOOR_KEYS,
+        _beyond,
+        _held_grants,
+        _same_answer,
+    )
+
+    door_by_key = {key: door for door, key in _DOOR_KEYS.items()}
 
     doors: Doors = {}
     grown: list[str] = []
@@ -235,11 +242,13 @@ def rerecord(
             grown.append(f"{name}: added")
         elif not _same_answer(old, now):
             grown.append(f"{name}: answers {now['outcome']} against {old['outcome']}")
-        elif over := list(_beyond(now, old, "held", granted=_held_grants(now, old))):
-            grown += [f"{name}: {line}" for line in over]
         else:
-            doors[key] = old
-            continue
+            granted, steps = _held_grants(door_by_key[key[1]], now, old)
+            if over := list(_beyond(now, old, "held", granted=granted, granted_steps=steps)):
+                grown += [f"{name}: {line}" for line in over]
+            else:
+                doors[key] = old
+                continue
         doors[key] = now
     return doors, grown
 

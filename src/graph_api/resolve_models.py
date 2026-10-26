@@ -109,8 +109,15 @@ class ResolveResult(ResponseModel):
     - `resolved`: `entity`, `matched` and `reading`. A group or region adds `projection`,
       `member_count` and `members`: the list route's link, or the members inline (at most
       256) when the request expanded them. The three are `null` for a region the membership
-      policy does not hold.
-    - `ambiguous`: `candidates`, in the resolver's order.
+      policy does not hold. `near_matches` lists up to 3 other places or organisations of the
+      requested kinds that share the name ("Georgia" resolves to the country, with the US
+      state `geoId/13` here), else `null`. When `kinds` removed the first match, a node of a
+      requested kind sharing the name resolves in its place and `near_matches` lists the
+      removed match ("Georgia" with `kinds: ["place_other"]` resolves to `geoId/13`, with
+      the country here).
+    - `ambiguous`: `candidates`, in the resolver's order. When `kinds` removed the first
+      match and up to 3 nodes of a requested kind share the name, `near_matches` lists the
+      removed match, else `null`.
     - `not_found`: `near_matches`, hints for a person; a program should pick none by id.
     - `not_held`: `entity`, the id the resolver named, which does not open on the node route.
 

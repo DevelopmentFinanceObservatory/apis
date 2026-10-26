@@ -99,11 +99,20 @@ class Entity:
 class Resolved:
     """One graph-confirmed entity, or a confirmed code. `matched` is the listed text the
     entity matched; `reading` is `members` when the text resolved through a query alias that
-    declares it names the entity's members."""
+    declares it names the entity's members.
+
+    `near_matches` holds up to 3 other graph-confirmed nodes that list a resolvekit hit's text
+    as a name, of the requested kinds, in the graph's order: the US state `geoId/13` beside the
+    country Georgia. It is empty unless the caller asked for near matches, and for a result
+    the fallback ladder or a code produced. When a `kinds` filter removed every resolvekit hit
+    and one such node answers in its place, `near_matches` holds the removed hits instead
+    (`resolve("Georgia", kinds=["place_other"])` resolves to `geoId/13` beside the
+    country)."""
 
     entity: Entity
     matched: Matched | None = None
     reading: Reading = "entity"
+    near_matches: tuple[Entity, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,9 +145,12 @@ class Group:
 class Ambiguous:
     """Multiple listed entities match the text.
 
-    Resolvekit candidates sort by confidence then dcid. Fallback candidates sort by dcid."""
+    Resolvekit candidates sort by confidence then dcid. Fallback candidates sort by dcid, as
+    do the graph nodes that answer when a `kinds` filter removed every resolvekit hit;
+    `near_matches` then holds the removed hits, and is empty otherwise."""
 
     candidates: tuple[Entity, ...]
+    near_matches: tuple[Entity, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +263,10 @@ class KindIndex(Protocol):
 
     def code_by_dcid(self, dcid: str) -> object | None:
         """The code row for `dcid`, or `None`."""
+        ...
+
+    def system_of_code(self, dcid: str) -> str | None:
+        """The graph id of the system the code `dcid` belongs to, or `None`."""
         ...
 
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> str | None:

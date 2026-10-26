@@ -2873,7 +2873,7 @@ coverage = [
 ]
 datasets = [
     { name = "cloud-sql-python-connector", extra = ["pg8000"] },
-    { name = "dfo-data-tools", extra = ["coverage", "formats", "graph-release", "sdmx"] },
+    { name = "dfo-data-tools", extra = ["coverage", "formats", "graph-release", "resolve", "sdmx"] },
     { name = "fastapi" },
     { name = "google-auth" },
     { name = "google-cloud-storage" },
@@ -2934,7 +2934,7 @@ requires-dist = [
     { name = "cloud-sql-python-connector", extras = ["pg8000"], marker = "extra == 'datasets'", specifier = ">=1.15" },
     { name = "dfo-data-tools", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["coverage"], marker = "extra == 'coverage'", editable = "packages/dfo-data-tools" },
-    { name = "dfo-data-tools", extras = ["formats", "coverage", "sdmx", "graph-release"], marker = "extra == 'datasets'", editable = "packages/dfo-data-tools" },
+    { name = "dfo-data-tools", extras = ["formats", "coverage", "sdmx", "graph-release", "resolve"], marker = "extra == 'datasets'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["resolve", "sdmx", "coverage"], marker = "extra == 'graph'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["sdmx"], marker = "extra == 'sdmx'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["surface", "resolve", "coverage", "sdmx"], marker = "extra == 'engine'", editable = "packages/dfo-data-tools" },

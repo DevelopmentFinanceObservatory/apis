@@ -742,6 +742,14 @@ class CodeIndex:
         """Whether `dcid` is a code system's graph id (`CodeSystemDeclaration.enum_dcid`)."""
         return any(d.enum_dcid == dcid for d in self.declarations.values())
 
+    def system_of_code(self, dcid: str) -> str | None:
+        """The graph id of the system the code `dcid` belongs to (its declaration's
+        `enum_dcid`), or `None` when this index holds no such code or its system declares no
+        graph id."""
+        row = self._codes_by_dcid.get(dcid)
+        declaration = self.declarations.get(row.code_system) if row is not None else None
+        return declaration.enum_dcid if declaration is not None else None
+
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> PartyKind | None:
         """The kind of the party `dcid` whose graph types are `types`, read for no dataset: its
         row's kind in every dataset that publishes it when `parties` lists it

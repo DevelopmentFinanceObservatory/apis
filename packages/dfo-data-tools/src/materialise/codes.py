@@ -33,6 +33,14 @@ class CountedEntityYears(TypedDict):
     entities: list[EntityYears]
 
 
+class YearRange(TypedDict):
+    """A run of years from `start` to `end`, both included. A requested range leaves out the
+    bound its definition left open."""
+
+    start: NotRequired[int]
+    end: NotRequired[int]
+
+
 class MaterialisationWarning(TypedDict):
     """One `{code, severity, message}` warning entry, as carried on
     `MaterialisationResult.warnings` (pipeline.py). `severity` is always one
@@ -49,7 +57,10 @@ class MaterialisationWarning(TypedDict):
     `currency_unmapped_omitted` `omitted_entities`, the entities whose rows the conversion
     left out, and `deflator_missing_omitted` `omitted_entity_years`, those entities with the
     years of their rows. Each message counts what these fields hold
-    and names none of it, so a stored version holds no name that can go stale.
+    and names none of it, so a stored version holds no name that can go stale. A
+    `coverage_below_scope` whose data covers fewer years than its range asked carries
+    `requested_years`, the range asked, and `served_years`, the years served, and its message
+    states both.
 
     This is a `TypedDict`. No shared platform pydantic warning model
     exists yet to alias.
@@ -65,6 +76,8 @@ class MaterialisationWarning(TypedDict):
     unserved_entities: NotRequired[CountedRefs]
     omitted_entities: NotRequired[CountedRefs]
     omitted_entity_years: NotRequired[CountedEntityYears]
+    requested_years: NotRequired[YearRange]
+    served_years: NotRequired[YearRange]
 
 
 MATERIALISE_CODE_CATALOGUE: CodeCatalogue = {

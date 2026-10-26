@@ -91,6 +91,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
+from code_index.flow_family import flow_family
+from code_index.shared import get_index
 from dfo_platform import Alternative
 from dfo_platform.named import cut, named_capped
 from materialise import GraphReader
@@ -105,7 +107,7 @@ from search.engine.identity_edit import (
 )
 from search.engine.options.population import OptionsPopulation, options_population
 from search.engine.options.population_memo import OptionsPopulationMemo
-from search.engine.region.refs import confirm_dcids_present
+from search.engine.region.refs import confirm_dcids_present, refuse_wrong_kind
 from search.engine.region.resubmit_request import _requested_window_from_identity
 from search.engine.retrieval.bound_values import (
     canonicalise_identity,
@@ -115,10 +117,12 @@ from search.models import (
     BaseIdentity,
     EntityRoleKey,
     IdentityFacetBinding,
+    IdentityShapeSchema,
     OptionsRequest,
     RequestedWindow,
     ResolvedEntity,
 )
+from search.role_kinds import graph_types
 
 
 def _typed_anchors(
@@ -293,7 +297,9 @@ def resolve_options_target(
             for a population whose declared roles conflict on one flow axis
             (`_declared_axis_roles`); `role_incompatible` (422) for an
             entity bound to an axis the resolved population does not serve
-            (`_check_entity_role_admission`); `option_target_invalid` (422)
+            (`_check_entity_role_admission`); `invalid_role_ref` (422) for a
+            flow-role entity whose kind the role does not take
+            (`region.refs.refuse_wrong_kind`); `option_target_invalid` (422)
             when `req.for_.role` names a role the population does not
             accept (`_check_role_target`).
         options.population_memo.PopulationInFlight: only when
@@ -341,6 +347,22 @@ def resolve_options_target(
     )
     role_names_by_axis = _declared_axis_roles(population)
     _check_entity_role_admission(identity, role_names_by_axis)
+    if role_names_by_axis:
+        refuse_wrong_kind(
+            identity.entities,
+            read_types=graph_types(graph),
+            family=flow_family(
+                index=get_index(),
+                population_type=(
+                    identity.shape.population_type
+                    if isinstance(identity.shape, IdentityShapeSchema)
+                    else None
+                ),
+                stat_vars=population.stat_var_dcids,
+                members=(),
+            ),
+            pointer_prefix="/identity",
+        )
     _check_role_target(req, role_names_by_axis)
 
     return ResolvedOptionsTarget(

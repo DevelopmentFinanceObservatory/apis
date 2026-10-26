@@ -81,7 +81,9 @@ datasets = [
     # datasets_api. `sdmx` is materialise's and dc_sdmx's own dependency
     # (httpx, pyarrow): datasets_api imports both directly. `graph-release`
     # is the Spanner client of graph_release.job, which runs from this image.
-    "dfo-data-tools[formats,coverage,sdmx,graph-release]",
+    # `resolve` is resolvekit, whose stores build the membership policy that
+    # search.role_kinds classes a role-bearing mint's entities by.
+    "dfo-data-tools[formats,coverage,sdmx,graph-release,resolve]",
     # dataset_store's Postgres persistence layer: Cloud SQL Python Connector (PSC
     # addressing, TLS, IAM/password auth) + pg8000, its pure-Python sync
     # driver -- plain parameterized SQL, no ORM. >=1.15 is the floor for

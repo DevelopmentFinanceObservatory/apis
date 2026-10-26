@@ -58,6 +58,7 @@ from search.models import (
     Unsupported,
     Warning,
 )
+from search.render.assumptions import NameCorrection
 from search.render.no_data import UnlistedPopulation
 
 if TYPE_CHECKING:
@@ -240,6 +241,12 @@ class RegionResult:
     # which the part's assumptions read as asked (`render.assumptions.assumptions_for`).
     # Outside the identity and its hash. Same-shape merges union the sets.
     every_member_axes: frozenset[RoleAxis] = frozenset()
+    # The entity names the raw-text door read in place of the words the request typed for
+    # them (`raw_text._name_corrections`), request-wide; the part states those its Spec
+    # binds (`render.assumptions.assumptions_for`). Outside the identity and its hash. A
+    # same-shape merge keeps the first member's, which every member shares. Empty on every
+    # other door.
+    name_corrections: tuple[NameCorrection, ...] = ()
     # Why a no_data outcome fired (models.NoData's own `cause`), populated
     # only for no_data_reason=="rate_coverage_gap".
     cause: Cause | None = None

@@ -5,10 +5,12 @@ The published mint schema and runtime validation use these same model definition
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Discriminator,
@@ -21,6 +23,7 @@ from pydantic import (
 
 from datasets_api.models import CanonicalDefinition, _require_schema_version_int
 from dfo_platform.named import cut, named_capped
+from dfo_platform.validation import refusal_with_alternatives
 
 FACET_AXES: tuple[str, ...] = ("provenance", "measurementMethod", "unit")
 NULL_REF_FACET_AXES: tuple[str, ...] = ("measurementMethod", "unit")
@@ -162,6 +165,28 @@ FacetBinding = Annotated[
 ]
 
 
+def _known_facet_axis(axis: str) -> str:
+    """`axis` when it is one of `FACET_AXES`, else a refusal listing them.
+
+    The nearest axis leads the alternatives and the message when the posted name is close to
+    it, as `units` is to `unit`."""
+    if axis in FACET_AXES:
+        return axis
+    nearest = difflib.get_close_matches(axis, FACET_AXES, n=1)
+    alternatives = nearest + [known for known in FACET_AXES if known not in nearest]
+    hint = f" Did you mean {nearest[0]!r}?" if nearest else ""
+    raise refusal_with_alternatives(
+        "facet_axis_unknown",
+        f"unknown facet axis {cut(axis)!r}.{hint} The facet axes are {', '.join(FACET_AXES)}.",
+        alternatives=alternatives,
+        axis=cut(axis),
+    )
+
+
+FacetAxis = Annotated[str, AfterValidator(_known_facet_axis)]
+"""A `scope.facets` key. An unknown one is refused at its own key, listing `FACET_AXES`."""
+
+
 class Scope(BaseModel):
     """The `scope` block a mint request may carry. On a `spec_id` input each
     supplied member replaces the stored spec's value for that member whole,
@@ -192,7 +217,7 @@ class Scope(BaseModel):
             "and {} unbinds every bound role. An open role the map binds is no longer open"
         ),
     )
-    facets: dict[str, FacetBinding] | None = Field(
+    facets: dict[FacetAxis, FacetBinding] | None = Field(
         default=None, description="axis to binding. Replaces the spec's whole facet binding"
     )
 
@@ -213,14 +238,6 @@ class Scope(BaseModel):
                         raise ValueError(
                             f"entity role {cut(role)!r} has a value containing {char!r}: {cut(ref)!r}"
                         )
-        return self
-
-    @model_validator(mode="after")
-    def _facets_axes_known(self) -> Scope:
-        if self.facets is not None:
-            unknown = set(self.facets) - set(FACET_AXES)
-            if unknown:
-                raise ValueError(f"unknown facet axis/axes: {named_capped(sorted(unknown))}")
         return self
 
     @model_validator(mode="after")

@@ -9,13 +9,14 @@ import pytest
 from fastapi import APIRouter, Body
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from datasets_api.mint_models import MintRequest
 from dfo_platform.app import Surface, create_app
 from dfo_platform.named import MAX_VALUE_CHARS
 from dfo_platform.validation import (
     pointer_for_error,
+    refusal_with_alternatives,
     reset_request_body_model,
     set_request_body_model,
     validation_problem,
@@ -300,6 +301,33 @@ def test_validation_problem_reads_the_model_from_request_body_model():
     finally:
         reset_request_body_model(token)
     assert spec.pointer == "/facets/provenance/bogus"
+
+
+def _known_colour(value: str) -> str:
+    if value in ("red", "blue"):
+        return value
+    raise refusal_with_alternatives(
+        "colour_unknown", f"unknown colour {value!r}", alternatives=["red", "blue"], axis=value
+    )
+
+
+class _ColourBody(BaseModel):
+    colours: dict[Annotated[str, AfterValidator(_known_colour)], int]
+
+
+def test_a_refusal_with_alternatives_maps_to_one_issue_at_the_key():
+    # The posted key names a context key, which must reach the detail unsubstituted.
+    body = {"colours": {"{alternatives}": 1}}
+    exc = RequestValidationError(_errors_for(_ColourBody, body), body=body)
+
+    spec = validation_problem(exc, model=_ColourBody)
+
+    assert (spec.code, spec.pointer) == ("request_invalid", "/colours/{alternatives}")
+    assert spec.detail == "unknown colour '{alternatives}'"
+    (issue,) = spec.issues
+    assert (issue.pointer, issue.axis) == ("/colours/{alternatives}", "{alternatives}")
+    assert [a.ref for a in issue.alternatives] == ["red", "blue"]
+    assert issue.truncated is False
 
 
 def test_pointer_is_none_for_non_body_location():

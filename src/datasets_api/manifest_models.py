@@ -293,12 +293,29 @@ class CountedEntityYearsModel(BaseModel):
     entities: list[EntityYearsModel] = Field(description="the first ten of them, sorted")
 
 
+class YearRangeModel(BaseModel):
+    """A run of years, both bounds included (`materialise.codes.YearRange`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    start: int | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="the first year; absent when the request left it open",
+    )
+    end: int | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="the last year; absent when the request left it open",
+    )
+
+
 class WarningModel(BaseModel):
     """One manifest warning. Only `stat_vars_summed` sets its three structured fields, a
     group's `coverage_below_scope` its four member fields, `coverage_below_scope`
-    `unserved_entities`, `currency_unmapped_omitted` `omitted_entities`, and
-    `deflator_missing_omitted` `omitted_entity_years`. A `None` field is left out of every dump, so other codes' warnings, on
-    the wire and in stored version bodies, stay exactly `{code, severity, message}`.
+    `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
+    `omitted_entities`, and `deflator_missing_omitted` `omitted_entity_years`. A `None` field
+    is left out of every dump, so other codes' warnings, on the wire and in stored version
+    bodies, stay exactly `{code, severity, message}`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -372,6 +389,22 @@ class WarningModel(BaseModel):
         description=(
             "coverage_below_scope only: the entities the request binds that served no "
             "observation, sorted; absent when there are none"
+        ),
+    )
+    requested_years: YearRangeModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only: the year range the request asked for, when the data "
+            "covers fewer of its years; absent otherwise"
+        ),
+    )
+    served_years: YearRangeModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "coverage_below_scope only: the years the data covers, both bounds set, beside "
+            "requested_years; absent otherwise"
         ),
     )
     omitted_entities: CountedRefsModel | None = Field(
