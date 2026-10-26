@@ -20,6 +20,7 @@ import pyarrow.compute as pc
 import pytest
 
 from code_index import declarations as code_index_declarations
+from code_index import scope_conventions
 from code_index.export import content_hash
 from code_index.loader import parse_index
 from dc_graph import GraphClient, parse_arcs
@@ -343,6 +344,10 @@ def test_dfo_inputs_refuse_empty_declarations(field: str, empty: object) -> None
         pytest.param(
             lambda d, m: m.setattr(code_index_declarations, "CODE_SYNONYMS", {}) or d,
             id="code-index-module-table",
+        ),
+        pytest.param(
+            lambda d, m: m.setattr(scope_conventions, "SECTOR_GROUPINGS", ()) or d,
+            id="scope-conventions-table",
         ),
         pytest.param(
             lambda d, m: (

@@ -12,6 +12,7 @@ from contextlib import ExitStack
 from typing import Final
 
 import dc_graph
+from code_index.shared import get_index
 from code_index.types import PartyWord
 from dc_sdmx import SdmxCapExceededError
 from entity_resolution import Admission, EntityResolver, Resolution
@@ -94,6 +95,9 @@ from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
 from search.models import EntryPath, Operation, RoleAxis, Warning
+from search.scope.build import build_part_scope, refusal_error
+from search.scope.compile import Refusal
+from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -544,6 +548,27 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
     return dataclasses.replace(result, unpublished_whole_facts=facts) if facts else result
 
 
+def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
+    """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
+    built from the scope entries and axis records the pass's binders hold
+    (`ResolveState.scope_selection`) over the answer's identity. A result that is not
+    definite, or whose pass wrote no axis record, states none. In memory: the rules read the
+    bound release's code index and the request's coverage snapshot. Entries that cannot hold
+    together refuse 422 (`scope.build.refusal_error`)."""
+    selection = state.scope_selection
+    if result.status != "definite" or not selection.records:
+        return result
+    built = build_part_scope(
+        base=result.spec.definition.identity,
+        entries=selection.entries,
+        records=selection.records,
+        facts=ScopeFacts(index=get_index(), coverage=state.coverage),
+    )
+    if isinstance(built, Refusal):
+        raise refusal_error(built, pointer=None)
+    return dataclasses.replace(result, scope_choices=built)
+
+
 def _stating_unevaluated(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result`, stating `alternates_unevaluated` when the pass left an alternate
     unevaluated, on every path that reached admission, a capped alternate's refusal
@@ -905,7 +930,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         ),
                         state,
                     )
-                    return _stating_unpublished_wholes(result, state)
+                    return _with_scope_choices(_stating_unpublished_wholes(result, state), state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))
                     scoped = True

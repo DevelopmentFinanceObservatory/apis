@@ -130,6 +130,43 @@ departure code is a `Warning.code` or a refusal code, so the platform
 code registry does not list them."""
 DEPARTURE_ORDER: tuple[DepartureCode, ...] = get_args(DepartureCode)
 """`DepartureCode` in precedence order. `_PartBase.departures` follows it."""
+ScopeAxis = Literal["sector", "region", "measure_basis", "provider"]
+"""Every axis a scope choice settles (see `models.scope.ScopeChoice`), in the order its
+default is derived: a provider scope fixes the basis a measure basis default follows."""
+SCOPE_AXES: tuple[ScopeAxis, ...] = get_args(ScopeAxis)
+"""`ScopeAxis` in derivation order."""
+EntryProvenance = Literal["explicit", "carried"]
+"""Where a scope entry comes from: the request's own words or switch (`explicit`), or a
+choice the conversation settled earlier (`carried`)."""
+ChoiceProvenance = Literal["explicit", "carried", "default"]
+"""What settled a scope choice, in precedence order: an explicit entry, a carried entry,
+or the declared default derived after both."""
+OptionStatus = Literal["available", "partial", "unavailable"]
+"""Whether a scope option can be served: in full, for some of the years asked, or not."""
+ScopeReasonCode = Literal[
+    "provider_not_offered",
+    "imputed_coverage",
+    "basis_not_published",
+    "residuals_need_summed_region",
+    "conflicts_with",
+    "carried_choice_not_applied",
+]
+"""Every reason a scope option is partial or unavailable, or a carried entry is not
+applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary
+of its own, like `DepartureCode`: no reason code is a `Warning.code` or a refusal code. The
+two refusals a scope entry can draw, `requested_option_unavailable` and
+`conflicting_requested_options`, are registry codes in `engine.codes`."""
+ComponentRole = Literal["whole", "bilateral", "imputed", "headline_net", "headline_ge"]
+"""What one component of a compiled scope holds: the whole answer of a plain Spec, the
+bilateral or imputed multilateral part of a composite, or the net or grant-equivalent
+years of the OECD headline basis."""
+ProviderScope = Literal["bilateral", "inclusive"]
+"""Whose spending a provider scope counts: the donor's bilateral flows, or those plus its
+imputed share of multilateral spending."""
+SCOPE_OPTION_ID_PATTERN = r"^(sector|region|measure_basis|provider):[A-Za-z0-9_+]+$"
+"""An option id: its axis, a colon and the option's declared value (`sector:120+130`,
+`region:members_and_residuals`, `measure_basis:gross`, `provider:inclusive`). One option
+has one id on every part, so carried entries and calculations compare ids."""
 AssumptionKind = Literal["name_corrected", "declared_default", "open_role", "place_scope"]
 """Every kind of value an answer fills that its request did not ask for (see
 `models.assumption.Assumption`), in the order a part's `assumptions` lists them. A closed

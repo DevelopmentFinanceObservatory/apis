@@ -2,10 +2,11 @@
 
 `Declarations` holds what `graph_release.dfo` and `graph_release.platform` pass on: the
 code-index declarations `code_index.export` takes as arguments, `ROLE_AXES` and the authored
-rows. `declarations_json` serialises them with the tables `code_index.export` and
-`dc_graph.visible_arcs` read from their own modules (the synonym tables, short names, concept
-groups, measure value texts, slot plain names and `IMPORT_ADDED_CONSTRAINT_PROPERTIES`), so
-the declarations hash moves when any input of the DFO layer does.
+rows. `declarations_json` serialises them with the tables `code_index.export`,
+`dc_graph.visible_arcs` and `search.scope` read from their own modules (the synonym tables,
+short names, concept groups, measure value texts, slot plain names, the scope conventions and
+`IMPORT_ADDED_CONSTRAINT_PROPERTIES`), so the declarations hash moves when any input of the
+DFO layer does.
 """
 
 from __future__ import annotations
@@ -16,9 +17,11 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Final, cast
 
 from code_index import declarations as code_index_declarations
+from code_index import scope_conventions
 from code_index.declarations import (
     CodeSystemConfig,
     KindOverride,
@@ -42,17 +45,21 @@ from dc_graph.visible_arcs import IMPORT_ADDED_CONSTRAINT_PROPERTIES
 from dfo_platform.roles import ROLE_AXES, RoleAxis
 from graph_release.authored import AUTHORED, Authored
 
-_MODULE_TABLES: Final[tuple[str, ...]] = (
-    "CODE_SHORT_NAMES",
-    "CODE_SYNONYMS",
-    "CONCEPT_GROUPS",
-    "DECLARED_MEASURE_VALUES",
-    "MEASURE_VALUE_TEXT",
-    "MEASURE_WORD_SYNONYMS_KEPT",
-    "SLOT_PLAIN_NAMES",
+_MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
+    (code_index_declarations, "CODE_SHORT_NAMES"),
+    (code_index_declarations, "CODE_SYNONYMS"),
+    (code_index_declarations, "CONCEPT_GROUPS"),
+    (code_index_declarations, "DECLARED_MEASURE_VALUES"),
+    (code_index_declarations, "MEASURE_VALUE_TEXT"),
+    (code_index_declarations, "MEASURE_WORD_SYNONYMS_KEPT"),
+    (code_index_declarations, "SLOT_PLAIN_NAMES"),
+    (scope_conventions, "MEASURE_BASIS_CONVENTIONS"),
+    (scope_conventions, "SECTOR_GROUPINGS"),
 )
-"""The `code_index.declarations` tables `code_index.export` reads from the module rather than
-from its arguments."""
+"""The tables read from their modules rather than passed as arguments, each with its module:
+the `code_index.declarations` tables `code_index.export` reads and the
+`code_index.scope_conventions` tables `search.scope` reads. Every name is unique across
+modules, since `declarations_json` keys each table by its name alone."""
 
 
 @dataclass(frozen=True)
@@ -91,9 +98,7 @@ class Declarations:
             for field in dataclasses.fields(self)
             if field.name not in {"role_axes", "authored"}
         }
-        code_index.update(
-            {name.lower(): getattr(code_index_declarations, name) for name in _MODULE_TABLES}
-        )
+        code_index.update({name.lower(): getattr(module, name) for module, name in _MODULE_TABLES})
         document = {
             "code_index": code_index,
             "role_axes": self.role_axes,

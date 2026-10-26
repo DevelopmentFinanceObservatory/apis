@@ -144,6 +144,7 @@ from search.models import (
     UnitAlternative,
     Warning,
 )
+from search.scope.state import ScopeState
 from series_coverage.shared import CoverageSnapshot
 
 if TYPE_CHECKING:
@@ -733,6 +734,10 @@ class ResolveState:
 
     # --- (b) evolving pipeline state ------------------------------------------
     timing: dict[str, int]
+    # The part's explicit and carried scope entries, which binders read on their axis, and
+    # the record of each axis they settle, from which the pass's definite answer states its
+    # scope choices (`pipeline._with_scope_choices`).
+    scope_selection: ScopeState = field(default_factory=ScopeState)
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]
     # The departure facts raised beside warnings, each under its warning's key

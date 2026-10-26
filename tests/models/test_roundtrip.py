@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from search import (
+    RESOLVE_RESPONSE_ADAPTER,
     CandidatesPart,
     DatasetResubmitInput,
     DefinitePart,
@@ -16,7 +17,10 @@ from search import (
     Spec,
 )
 from search.models import BaseIdentity, IdentityBindingExact, IdentityBindingValue
+from search.scope.build import served_scope
+from search.scope.compile import Compiled, compile
 from tests.conftest import base_response, minimal_spec
+from tests.scope import _axes
 
 
 class TestSlotExpansionRoundtrip:
@@ -305,3 +309,63 @@ class TestIdentityBindingExactRoundtrip:
     def test_exact_binding_missing_ref_rejected(self):
         with pytest.raises(ValidationError):
             BaseIdentity.model_validate(self._identity_with_binding({"state": "exact"}))
+
+
+def _scoped_spec(scope: dict | None) -> dict:
+    payload = minimal_spec()
+    if scope is not None:
+        payload["resolved"]["scope_choices"] = scope
+    return payload
+
+
+def _part_scope() -> dict:
+    """A scope over the synthetic tables of `tests.scope._axes`, one axis asked for and a carried entry dropped."""
+    compiled = compile(
+        _axes.BASE,
+        (_axes.explicit(_axes.GRANT_EQUIVALENT), _axes.carried(_axes.REGION_ALL)),
+        _axes.facts(),
+    )
+    assert isinstance(compiled, Compiled)
+    return {
+        "id": compiled.base_spec_id,
+        "base": {
+            "spec_id": compiled.base_spec_id,
+            "identity": _axes.BASE.model_dump(mode="json", exclude_none=True),
+        },
+        "rule_version": "scope1:test",
+        "entries": [e.model_dump(mode="json") for e in compiled.entries],
+        "dropped_entries": [d.model_dump(mode="json") for d in compiled.dropped],
+        "choices": [c.model_dump(mode="json") for c in compiled.choices],
+        "compiled": served_scope(compiled.spec_id, compiled.identity).model_dump(mode="json"),
+    }
+
+
+class TestScopeChoicesRoundtrip:
+    """`resolved.scope_choices` round-trips through the wire form and the response cache's
+    stored JSON, and is absent from the wire when the part settled no scope."""
+
+    def test_a_spec_with_scope_choices_round_trips(self):
+        scope = _part_scope()
+        resp = Resolution.model_validate(
+            base_response(parts=[{"status": "definite", "spec": _scoped_spec(scope)}])
+        )
+
+        stored = RESOLVE_RESPONSE_ADAPTER.validate_json(resp.model_dump_json())
+        wire = resp.model_dump(mode="json", exclude_none=True)
+
+        assert stored == resp
+        assert Resolution.model_validate(wire) == resp
+        restored = stored.parts[0].spec.resolved.scope_choices
+        assert restored is not None
+        assert [c.axis for c in restored.choices] == ["sector", "region", "measure_basis"]
+        assert [d.cause for d in restored.dropped_entries] == ["conflicts_with_entry"]
+
+    def test_a_spec_without_scope_choices_leaves_the_member_off_the_wire(self):
+        resp = Resolution.model_validate(
+            base_response(parts=[{"status": "definite", "spec": _scoped_spec(None)}])
+        )
+
+        wire = resp.model_dump(mode="json", exclude_none=True)
+
+        assert "scope_choices" not in wire["parts"][0]["spec"]["resolved"]
+        assert RESOLVE_RESPONSE_ADAPTER.validate_json(resp.model_dump_json()) == resp

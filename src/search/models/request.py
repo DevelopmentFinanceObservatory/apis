@@ -15,6 +15,7 @@ from .assumption import Assumption
 from .base import StrictModel
 from .entity import EntityGroup
 from .identity import BaseIdentity
+from .scope import Entry
 from .vocab import (
     SCHEMA_VERSION,
     EntityRoleKey,
@@ -74,6 +75,9 @@ _PARSED_MAX_PART_OPERATIONS = 8
 # One declared default per identity slot (BaseIdentity.slots holds at most 64), two flow
 # roles and the place scope: the most assumptions one part carries.
 _RESUBMIT_MAX_ASSUMPTIONS = 67
+# Four scope axes, each with one explicit entry and the carried entries of earlier parts:
+# a bound well past the four entries one part applies.
+_RESUBMIT_MAX_SCOPE_ENTRIES = 16
 # Equal to config's max_dropped_qualifier_length, the length a dropped qualifier keeps;
 # extract discards an operation whose phrase is longer. A test pins the relation.
 _PARSED_MAX_OPERATION_PHRASE_CHARS = 200
@@ -646,6 +650,22 @@ class ResubmitIdentityEntry(StrictModel):
             "echoed default from one the caller writes for a slot it chose itself, and "
             "states such an item while the slot binds its refs. An echo shapes only the "
             "caller's own response"
+        ),
+    )
+
+    scope_entries: list[Entry] | None = Field(
+        default=None,
+        max_length=_RESUBMIT_MAX_SCOPE_ENTRIES,
+        description=(
+            "the part's explicit and carried scope entries: the entries of its "
+            "resolved.scope_choices, plus a new explicit entry to switch an axis, posted "
+            "with that scope's base.identity as identity. The engine compiles them over "
+            "identity and resolves the result, whose "
+            "resolved.scope_choices states every choice, the entries applied and the "
+            "carried entries left out. Refuses requested_option_unavailable (422) for an "
+            "explicit entry this part cannot serve and conflicting_requested_options (422) "
+            "for two that cannot hold together. None, the default, resolves identity as "
+            "posted"
         ),
     )
 

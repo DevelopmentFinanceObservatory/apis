@@ -38,6 +38,10 @@ reads end at `params.deadline` (45 s) unless its walk ran the full read. The tra
 stream runs to the latest `RegionResult.reads_deadline` among the parts, so it keeps the
 request deadline unless a promote ran the full read.
 
+An identity entry that posts `scope_entries` compiles them over its identity
+(`scope.build.build_part_scope`), resolves the identity they compile to, and carries the
+scope on its definite part (`_compiled_scope`, `_served_scope`).
+
 A part whose answer stands on less than a later request may read
 (`RegionResult.leg_degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
 
@@ -54,6 +58,7 @@ import dataclasses
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.named import cut
@@ -92,14 +97,20 @@ from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
 from search.models import (
     DatasetResubmitInput,
+    PartScope,
     QueryEcho,
     ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
+    ResubmitIdentityPayload,
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
     Unsupported,
     Warning,
 )
+from search.scope.build import build_part_scope, refusal_error
+from search.scope.compile import Refusal
+from search.scope.tables import ScopeFacts
+from series_coverage.shared import CoverageSnapshot
 
 
 def full_read_deadline_for(deadline: float) -> float:
@@ -107,6 +118,28 @@ def full_read_deadline_for(deadline: float) -> float:
     request whose own deadline is `deadline`: `resubmit_full_read_timeout_s` from request
     start where `deadline` is `request_timeout_s` from it."""
     return deadline + settings().resubmit_full_read_timeout_s - settings().request_timeout_s
+
+
+def _compiled_scope(
+    entry: ResubmitIdentityEntry, *, index: int, coverage: CoverageSnapshot
+) -> PartScope:
+    """The scope `entry`'s scope entries compile to over its identity. Refuses the
+    compile's own refusal (422), pointed at the scope entry it refuses."""
+    assert entry.scope_entries is not None
+    built = build_part_scope(
+        base=entry.identity,
+        entries=entry.scope_entries,
+        records={},
+        facts=ScopeFacts(index=get_index(), coverage=coverage),
+    )
+    if isinstance(built, Refusal):
+        raise refusal_error(built, pointer=f"/input/entries/{index}/scope_entries/{built.entry}")
+    return built
+
+
+def _served_scope(scope: PartScope | None, region: RegionResult) -> PartScope | None:
+    """`scope`, for a region answering a Spec; None when it answers none."""
+    return scope if region.status == "definite" else None
 
 
 def _rewrite_pointer(exc: EngineInputError, index: int) -> EngineInputError:
@@ -275,7 +308,18 @@ async def handle(
     )
 
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
-        payload = spec_resubmit_input_for_identity(entry)
+        scope = (
+            None
+            if entry.scope_entries is None
+            else _compiled_scope(entry, index=index, coverage=params.coverage)
+        )
+        payload = (
+            spec_resubmit_input_for_identity(entry)
+            if scope is None
+            else ResubmitIdentityPayload(
+                identity=scope.compiled.identity, entity_groups=entry.entity_groups
+            )
+        )
         key = memo.key(payload, options) if memo is not None and memo.active else None
         stored = memo.lookup(key) if memo is not None and key is not None else None
         if stored is not None:
@@ -303,6 +347,7 @@ async def handle(
             variable_text=entry.variable_text,
             earliest_index=index,
             separate=entry.separate,
+            scope_choices=_served_scope(scope, region),
         )
 
     def _memo_hit(stored: RegionResult) -> RegionResult:

@@ -49,6 +49,7 @@ from search.models import (
     Operation,
     Ordering,
     ParsedPart,
+    PartScope,
     ResolvedQualifier,
     RoleAxis,
     SlotOptions,
@@ -289,6 +290,10 @@ class RegionResult:
     # (`render.assumptions.assumptions_for`). None when the entry echoes none and on every
     # other door.
     assumption_echo: tuple[Assumption, ...] | None = None
+    # How the part was counted (`ResolvedSpec.scope_choices`), set on a definite result
+    # whose request posted scope entries or whose binders settled a scope axis. Its definite
+    # part attaches it to its own Spec; a part folded into a same-shape merge does not.
+    scope_choices: PartScope | None = None
     # The assumptions each reading of a dataset resubmit candidates entry echoed back
     # (`ResubmitCandidate.assumptions`), keyed by the rebuilt reading's spec_id. Its
     # candidates part reads each reading with its echo (`render.assumptions.assumptions_for`);
