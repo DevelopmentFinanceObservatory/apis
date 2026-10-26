@@ -1,11 +1,15 @@
 """End-to-end tests for a recipient region read as one sum.
 
-France's aid to Africa goes through the parsed door, elects the CRS's member, and finds no
-Africa total there (DAC2a publishes it), so Africa binds its members. Read as one sum it
-binds the seven residual buckets DAC's Africa total counts beside them, which the CRS
-publishes as recipients, and states the region choice. A ranking and a request for
-"African countries" bind the members alone. The graph holds Africa, its members and its
-residuals, as the dev graph does; coverage holds France's series to every member.
+France's education aid to Africa goes through the parsed door. Bound to a sector, it is
+counted in gross CRS disbursements (`code_index.scope_conventions`), elects the CRS's
+member, and finds no Africa total there (DAC2a publishes it), so Africa binds its members.
+Read as one sum it binds the seven residual buckets DAC's Africa total counts beside them,
+which the CRS publishes as recipients, and states the region choice. A ranking and a
+request for "African countries" bind the members alone. France's ODA to Africa with no
+sector is a recipient's total, counted on net DAC2a receipts, which publish Africa's
+total, so it reads that total and settles no region axis. The graph holds Africa, its
+members and its residuals, as the dev graph does; coverage holds France's CRS series to
+every member and its DAC2a net series to Africa's total.
 """
 
 from __future__ import annotations
@@ -32,10 +36,23 @@ from tests.code_index.aid_identity import CRS_PROVENANCE
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
-from tests.engine.test_aid_dataset_bind_e2e import _CRS_MEMBER, _ScriptedLLM
+from tests.engine.test_aid_dataset_bind_e2e import _CRS_MEMBER, _DAC2A, _ScriptedLLM
 from tests.engine.test_whole_total_bind_e2e import _FRA, _VARIABLE, _graph, _parsed
 from tests.fixtures import FakeGraph
 
+# The CRS member binds CRS 11330, under education (110), which "education" names.
+_SECTOR_VARIABLE = "education aid"
+# DAC2a's net ODA receipts, the convention's basis for a recipient's total.
+_DAC2A_NET = next(
+    row.dcid
+    for row in get_index().statvars
+    if row.provenances == (_DAC2A,)
+    and (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
+    and row.measurement_denominator is None
+    and row.constraint_properties.get("dac2aAidType") == "DAC2aAidType206"
+    and row.constraint_properties.get("nettingBasis") == "Net"
+)
+_DAC_AFRICA = get_index().totals_by_group["africa"].dcid
 _AFRICA_MEMBERS = shared_membership_policy().members("africa").members
 _AFRICA_RESIDUALS = get_index().totals_by_group["africa"].residuals
 _ALL = "region:members_and_residuals"
@@ -45,18 +62,26 @@ _FROM_FRANCE = {"role": "from", "text": "France"}
 
 @pytest.fixture(autouse=True)
 def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    years = [2019, 2020, 2021]
     patch_coverage(
         monkeypatch,
-        [(_CRS_MEMBER, "crs", _FRA, member, [2019, 2020, 2021]) for member in _AFRICA_MEMBERS],
-        role_names={
-            _CRS_MEMBER: RoleNames(donor="financingProvider", recipient="financingRecipient")
+        [
+            *((_CRS_MEMBER, "crs", _FRA, member, years) for member in _AFRICA_MEMBERS),
+            (_DAC2A_NET, "dac2a", _FRA, _DAC_AFRICA, years),
+        ],
+        role_names=dict.fromkeys(
+            (_CRS_MEMBER, _DAC2A_NET),
+            RoleNames(donor="financingProvider", recipient="financingRecipient"),
+        ),
+        facet_metadata={
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
         },
-        facet_metadata={"crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD")},
     )
 
 
-def _africa_graph() -> FakeGraph:
-    graph = _graph(members=(_CRS_MEMBER,))
+def _africa_graph(variable: str = _SECTOR_VARIABLE, member: str = _CRS_MEMBER) -> FakeGraph:
+    graph = _graph(variable=variable, members=(member,))
     nodes = graph._nodes
     nodes["africa"] = {"label": "Africa", "type": "Continent"}
     for member in _AFRICA_MEMBERS:
@@ -67,11 +92,13 @@ def _africa_graph() -> FakeGraph:
     return graph
 
 
-def _run(request: ResolveRequest) -> DefinitePart:
+def _run(
+    request: ResolveRequest, variable: str = _SECTOR_VARIABLE, member: str = _CRS_MEMBER
+) -> DefinitePart:
     response = offline_resolve(
         request,
-        graph=_africa_graph(),
-        llm=_ScriptedLLM(_VARIABLE),
+        graph=_africa_graph(variable, member),
+        llm=_ScriptedLLM(variable),
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     (part,) = response.parts
@@ -83,7 +110,7 @@ def _ask(africa: dict[str, Any], *operations: dict[str, str]) -> DefinitePart:
     return _run(
         _parsed(
             {
-                "variable": _VARIABLE,
+                "variable": _SECTOR_VARIABLE,
                 "entities": [_FROM_FRANCE, {"role": "to", "text": "Africa", **africa}],
                 "operations": list(operations),
                 "time": "2021",
@@ -160,7 +187,7 @@ def test_a_ranking_or_a_members_ask_binds_the_members_alone(africa, operation, r
     assert _destination(spec) == sorted(_AFRICA_MEMBERS)
     assert _region(spec) == region
     entries = spec.resolved.scope_choices.entries if spec.resolved.scope_choices else []
-    assert [(e.option_id, e.origin.kind) for e in entries] == (
+    assert [(e.option_id, e.origin.kind) for e in entries if e.axis == "region"] == (
         [(_MEMBERS, "text")] if region[1] == "explicit" else []
     )
 
@@ -175,7 +202,10 @@ def test_a_carried_members_only_entry_reaches_the_region_binder():
         origin=ChoiceOrigin(choice_id="earlier:region"),
     )
     request = _parsed(
-        {"variable": _VARIABLE, "entities": [_FROM_FRANCE, {"role": "to", "text": "Africa"}]}
+        {
+            "variable": _SECTOR_VARIABLE,
+            "entities": [_FROM_FRANCE, {"role": "to", "text": "Africa"}],
+        }
     )
     assert isinstance(request.input, ParsedInput)
     request.input.carried_entries = [carried]
@@ -185,7 +215,7 @@ def test_a_carried_members_only_entry_reaches_the_region_binder():
     assert _destination(spec) == sorted(_AFRICA_MEMBERS)
     assert _region(spec) == (_MEMBERS, "carried", None)
     assert spec.resolved.scope_choices is not None
-    assert spec.resolved.scope_choices.entries == [carried]
+    assert [e for e in spec.resolved.scope_choices.entries if e.axis == "region"] == [carried]
 
 
 def test_a_switch_round_trips_through_dataset_resubmit():
@@ -203,10 +233,10 @@ def test_a_switch_round_trips_through_dataset_resubmit():
             origin=ChoiceOrigin(choice_id=f"{scope.id}:region"),
         )
         entry = ResubmitIdentityEntry(
-            variable_text=_VARIABLE,
+            variable_text=_SECTOR_VARIABLE,
             identity=scope.base.identity,
             entity_groups=first.resolved.entity_groups,
-            scope_entries=[*scope.entries, switch],
+            scope_entries=[*(e for e in scope.entries if e.axis != "region"), switch],
         )
         return _run(ResolveRequest(input=DatasetResubmitInput(entries=[entry]))).spec
 
@@ -220,3 +250,30 @@ def test_a_switch_round_trips_through_dataset_resubmit():
     assert back.resolved.entity_groups == members.resolved.entity_groups
     assert back.resolved.entity_groups == first.resolved.entity_groups
     assert _region(back)[:2] == (_ALL, "explicit")
+
+
+def test_oda_to_africa_with_no_sector_reads_the_dac2a_total_on_net():
+    """A recipient's total over every sector is counted on net DAC2a receipts, which
+    publish Africa's total, so the part reads the total itself and settles no region
+    axis."""
+    part = _run(
+        _parsed(
+            {
+                "variable": _VARIABLE,
+                "entities": [_FROM_FRANCE, {"role": "to", "text": "Africa"}],
+                "time": "2021",
+            }
+        ),
+        variable=_VARIABLE,
+        member=_DAC2A_NET,
+    )
+
+    spec = part.spec
+    assert _destination(spec) == [_DAC_AFRICA]
+    netting = {s.property: s.binding for s in spec.definition.identity.slots}["nettingBasis"]
+    assert netting.model_dump() == {"state": "value", "ref": "Net"}
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    assert "region" not in [c.axis for c in scope.choices]
+    (basis,) = (c for c in scope.choices if c.axis == "measure_basis")
+    assert (basis.active, basis.provenance) == ("measure_basis:net", "default")

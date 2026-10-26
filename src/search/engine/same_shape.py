@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         Entity,
         FacetOptions,
         GraphRef,
+        PartScope,
         ResolvedFacet,
         ResolvedQualifier,
         RoleAxis,
@@ -65,6 +66,10 @@ if TYPE_CHECKING:
         Spec,
         Warning,
     )
+
+ScopeReader = Callable[["RegionResult", "Sequence[RegionResult]"], "PartScope | None"]
+"""Build the scope of a merged region from it and the group it folds
+(`region.pipeline.merged_scope_choices` bound to the request's coverage snapshot)."""
 
 FacetOptionsReader = Callable[[FacetProbe], "tuple[list[FacetOptions], Warning | None]"]
 """Build facet options over a probe, with a warning when the read fails
@@ -577,6 +582,7 @@ def collapse_same_shape(
     *,
     set_ref_for: Callable[[list[str]], GraphRef | None] | None = None,
     facet_options_for: FacetOptionsReader | None = None,
+    scope_for: ScopeReader | None = None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
     """Merge definite regions with the same fold key (`fold_key`) when their identities
     align.
@@ -603,7 +609,8 @@ def collapse_same_shape(
 
     Merges rebuild the spec id and slot filters, union slot and entity options, judge
     facet options over the merged spec (`_merge_facet_options`), preserve shared
-    identity facets, and set ``earliest_index`` to the group's minimum. Returns
+    identity facets, and set ``earliest_index`` to the group's minimum. A merged region
+    states the scope ``scope_for`` builds over the merged identity, none without it. Returns
     effective regions and residual ``(variable_text, earliest_index)`` pairs;
     ``variable_text`` may be ``None`` for dataset-resubmit entries.
     """
@@ -617,7 +624,9 @@ def collapse_same_shape(
     effective: list[RegionResult] = []
     residual_texts: list[tuple[str | None, int]] = []
     for group in groups.values():
-        group_effective, group_residual = _collapse_group(group, set_ref_for, facet_options_for)
+        group_effective, group_residual = _collapse_group(
+            group, set_ref_for, facet_options_for, scope_for
+        )
         effective.extend(group_effective)
         residual_texts.extend(group_residual)
     return effective, residual_texts
@@ -631,8 +640,10 @@ def _collapse_group(
     group: list[RegionResult],
     set_ref_for: Callable[[list[str]], GraphRef | None] | None,
     facet_options_for: FacetOptionsReader | None,
+    scope_for: ScopeReader | None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
-    """Merge one group; keep the first member and residualise the rest on refusal."""
+    """Merge one group; keep the first member and residualise the rest on refusal. The
+    merged region states the scope `scope_for` builds over its identity, none without it."""
     if len(group) == 1:
         return [group[0]], []
     try:
@@ -640,7 +651,8 @@ def _collapse_group(
     except _RefuseMerge:
         residual = [(r.variable_text, r.earliest_index) for r in group[1:]]
         return [group[0]], residual
-    return [merged_region], []
+    scope = scope_for(merged_region, group) if scope_for is not None else None
+    return [dataclasses.replace(merged_region, scope_choices=scope)], []
 
 
 def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:

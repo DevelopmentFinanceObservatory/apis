@@ -578,8 +578,17 @@ async def handle(
 
     A fresh run reports its health to `scope` so the caller stores only a complete
     answer. Direct callers may omit `scope`."""
+    parts_with_indices = _dedupe_parts_with_indices(inp.parts)
+    original_indices = [i for i, _ in parts_with_indices]
+    parts = [p for _, p in parts_with_indices]
+    scope_intakes = part_scope_intakes(
+        message=inp.user_message,
+        part_texts=[part.variable_text for part in parts],
+        carried=inp.carried_entries or (),
+    )
+
     if scope is not None:
-        cached = await scope.lookup_parsed_input(inp)
+        cached = await scope.lookup_parsed_input(inp, stated_scopes=scope_intakes)
         if cached is not None:
             async with aclosing(
                 scope.hit_events(
@@ -601,10 +610,6 @@ async def handle(
                     yield ev
             return
 
-    parts_with_indices = _dedupe_parts_with_indices(inp.parts)
-    original_indices = [i for i, _ in parts_with_indices]
-    parts = [p for _, p in parts_with_indices]
-
     # Confirm pins before fan-out, preserving original indices for refusal pointers.
     pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
     pins = await confirm_part_pins(
@@ -613,11 +618,6 @@ async def handle(
 
     interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
     variable_texts = interpretation.variable_texts
-    scope_intakes = part_scope_intakes(
-        message=inp.user_message,
-        part_texts=[part.variable_text for part in parts],
-        carried=inp.carried_entries or (),
-    )
     all_dates = [d for dates in interpretation.dates for d in dates]
 
     entities_flat = list(

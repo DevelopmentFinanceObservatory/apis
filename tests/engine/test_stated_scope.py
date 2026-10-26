@@ -86,6 +86,8 @@ _INCLUSIVE = "provider:inclusive"
         # "net" as a verb, or heading another measure.
         ("Did you net the two together rather than showing two separate lines?", [], False),
         ("what is the net debt of kenya", [], False),
+        # The singular "commitment" is a pledge, not a basis.
+        ("Has the US kept its commitment on health aid", [], False),
         # Written cases.
         (
             "health ODA to Kenya including multilateral",

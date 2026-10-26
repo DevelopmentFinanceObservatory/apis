@@ -12,8 +12,9 @@ Two axes are read:
   mention of "multilateral" ("multilateral development banks", "bilateral/multilateral")
   names a kind of provider, not a scope, and beside a "bilateral" it leaves the axis
   unstated.
-- Measure basis. "net", "gross", "grant equivalent(s)" and "commitment(s)" state their
-  basis. A word that heads another measure ("net worth", "gross national income", "ODA net
+- Measure basis. "net", "gross", "grant equivalent(s)" and "commitments" state their
+  basis. The singular "commitment" is a pledge ("has the US kept its commitment") and
+  states none. A word that heads another measure ("net worth", "gross national income", "ODA net
   of debt relief") states none.
 
 A negated or excluded occurrence ("not just gross disbursements", "non-bilateral") states
@@ -84,7 +85,7 @@ _BASIS_WORDS: tuple[tuple[re.Pattern[str], MeasureBasis], ...] = (
     (re.compile(r"\bgrant[\s-]+equivalents?\b", re.IGNORECASE), "grant_equivalent"),
     (re.compile(r"\bnet\b" + _heads(_NET_HEADS), re.IGNORECASE), "net"),
     (re.compile(r"\bgross\b" + _heads(_GROSS_HEADS), re.IGNORECASE), "gross"),
-    (re.compile(r"\bcommitments?\b", re.IGNORECASE), "commitments"),
+    (re.compile(r"\bcommitments\b", re.IGNORECASE), "commitments"),
 )
 _BILATERAL = re.compile(r"\bbilateral\b", re.IGNORECASE)
 _MULTILATERAL = re.compile(r"\bmultilaterals?\b", re.IGNORECASE)

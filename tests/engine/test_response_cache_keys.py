@@ -726,10 +726,10 @@ def test_the_scope_a_query_states_changes_layer2_key() -> None:
     assert _layer2_key(stated_scopes=[stated("ODA to Kenya")]) == _layer2_key()
 
 
-def test_user_message_and_carried_entries_change_the_parsed_key() -> None:
-    """The parsed door keys the whole input, so the user's message and the carried entries
-    each key apart."""
-    part = ParsedPart(variable_text="health ODA")
+def test_the_parsed_key_states_the_scope_the_message_and_carried_entries_post() -> None:
+    """The parsed door keys the scope each part is posted with, not the message's words:
+    two messages that state no scope share a key, and a stated or carried entry keys apart."""
+    part = ParsedPart(variable_text="health aid")
     carried = Entry(
         axis="measure_basis",
         option_id="measure_basis:net",
@@ -739,15 +739,23 @@ def test_user_message_and_carried_entries_change_the_parsed_key() -> None:
 
     def key(*, user_message: str | None = None, carried: list[Entry] | None = None) -> str:
         parsed = ParsedInput(parts=[part], user_message=user_message, carried_entries=carried)
-        return parsed_key(parsed=parsed, scope=_scope())
+        intakes = part_scope_intakes(
+            message=user_message, part_texts=[part.variable_text], carried=carried or ()
+        )
+        return parsed_key(
+            parsed=parsed,
+            scope=_scope(),
+            stated_scopes=[intake_key_document(intake) for intake in intakes],
+        )
 
+    plain = key(user_message="health aid to Kenya in 2023?")
+    assert plain == key(user_message="what about health aid to Kenya in 2023") == key()
     keys = {
-        key(),
-        key(user_message="health ODA to Kenya"),
-        key(user_message="bilateral health ODA to Kenya"),
+        plain,
+        key(user_message="bilateral health aid to Kenya in 2023"),
         key(carried=[carried]),
     }
-    assert len(keys) == 4
+    assert len(keys) == 3
 
 
 def test_both_spellings_of_a_series_code_share_the_parsed_key() -> None:

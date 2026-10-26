@@ -70,7 +70,10 @@ def test_every_option_a_rule_emits_has_a_label_other_than_its_id(case):
                 "region:members_only": "Africa's countries only",
             },
         ),
-        ("africa-no-group", {"region:members_only": "Africa (DAC)'s countries only"}),
+        # The region is named by its total's declared name whatever group is posted, so a
+        # search and its switch name it alike.
+        ("africa-no-group", {"region:members_only": "Africa's countries only"}),
+        ("asia-registry-group", {"region:members_only": "Asia's countries only"}),
     ],
 )
 def test_a_label_names_the_codes_or_the_region_it_counts(case, expected):

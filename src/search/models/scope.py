@@ -180,11 +180,11 @@ class DroppedEntry(StrictModel):
     )
     cause: str = Field(
         description=(
-            "axis_absent, option_unknown, option_unavailable, entry_on_axis (an explicit or "
-            "earlier carried entry settles the axis) or conflicts_with_entry for a carried "
-            "entry; for a stated one, why the option cannot apply: axis_absent, "
-            "option_unknown, the option's unavailability reason (a ScopeReasonCode) or the "
-            "conflict that blocks it"
+            "why the entry cannot apply: entry_on_axis (another entry settles the axis), "
+            "axis_absent, option_unknown, the option's unavailability reason (a "
+            "ScopeReasonCode), not_served when the option is available but the answer "
+            "serves another, or, where compile weighs the entry, option_unavailable, "
+            "conflicts_with_entry or the conflict that blocks it"
         )
     )
 

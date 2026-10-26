@@ -919,7 +919,9 @@ class ResolvedSpec(StrictModel):
             "scope), with its options and their availability, the explicit and carried "
             "entries applied, and the identity they compile to (see PartScope). To switch "
             "an option, post base.identity as identity on a dataset_resubmit identity "
-            "entry, with entries plus the new explicit entry as scope_entries. None when no axis was settled and no scope entries were "
+            "entry, with entries as scope_entries, the entry on the switched axis "
+            "replaced by the switch: one entry per axis. None when no axis was settled "
+            "and no scope entries were "
             "posted. Never a member of BaseIdentity, never hashed."
         ),
     )

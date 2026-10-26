@@ -20,7 +20,7 @@ derived default is the codes it resolved, and a switch is the only thing that mo
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -38,7 +38,7 @@ from search.models import (
     TextOrigin,
 )
 from search.scope.state import AxisRecord, ScopeState
-from search.scope.tables import AxisTable, ScopeFacts
+from search.scope.tables import AxisTable, ScopeFacts, allowed_values
 from search.scope.vocabulary import sector_option_id
 
 if TYPE_CHECKING:
@@ -249,29 +249,15 @@ def _covered_values(base: BaseIdentity, prop: str, facts: ScopeFacts) -> frozens
     family = query_family(facts.index, query)
     if family is None:
         return frozenset()
-    others = _allowed(query.slots, skip=prop)
-    coverage = facts.coverage.index
+    others = allowed_values(query.slots, skip=prop)
+    properties = tuple(sorted({*others, prop}))
+    at = properties.index(prop)
     return frozenset(
         value
-        for row in family.rows
-        if (value := row.constraint_properties.get(prop)) is not None
-        and all(row.constraint_properties.get(p) in refs for p, refs in others.items())
-        and coverage.covers(row.dcid)
+        for values in facts.family_values(family, properties).covered
+        if (value := values[at]) is not None
+        and all(values[i] in others[p] for i, p in enumerate(properties) if p != prop)
     )
-
-
-def _allowed(slots: Mapping[str, tuple], *, skip: str) -> dict[str, frozenset[str]]:
-    """The values each value or set binding of `slots` but `skip`'s allows, by property."""
-    allowed: dict[str, frozenset[str]] = {}
-    for prop, binding in slots.items():
-        if prop == skip:
-            continue
-        match binding:
-            case ("value", ref):
-                allowed[prop] = frozenset((ref,))
-            case ("set", refs):
-                allowed[prop] = frozenset(refs)
-    return allowed
 
 
 def _serves(codes: Sequence[str], covered: frozenset[str], index: CodeIndex) -> bool:

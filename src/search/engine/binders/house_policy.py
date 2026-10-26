@@ -233,14 +233,15 @@ def _facts(
         measured_property=stated.measured_property,
         stat_type=stated.stat_type,
         qualifier=stated.qualifier,
-        netting=_slot_values(taxonomy, "nettingBasis"),
-        flow_types=_slot_values(taxonomy, "financialFlowType"),
+        netting=slot_values(taxonomy, "nettingBasis"),
+        flow_types=slot_values(taxonomy, "financialFlowType"),
         datasets=shape_part_datasets(shape, code_index),
         available=available,
     )
 
 
-def _slot_values(taxonomy: Mapping[str, list[str]], prop: str) -> tuple[str, ...] | None:
+def slot_values(taxonomy: Mapping[str, list[str]], prop: str) -> tuple[str, ...] | None:
+    """The values a shape's slot taxonomy offers on `prop`, None when it has no such slot."""
     return next((tuple(v) for k, v in taxonomy.items() if k.endswith(f":{prop}")), None)
 
 

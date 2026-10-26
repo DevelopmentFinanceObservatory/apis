@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Sequence
 
 from code_index.query import CodeIndex
-from code_index.scope_conventions import OPTION_LABELS
+from code_index.scope_conventions import OPTION_LABELS, REGION_NAMES
 from code_index.types import PartyRow
 from search.models import (
     BaseIdentity,
@@ -35,6 +35,7 @@ REGION_ROLE = "destination"
 """The role key a region on the recipient side binds under."""
 
 _AXIS: RoleAxis = "destination"
+_REGION_NAMES = dict(REGION_NAMES)
 
 
 def is_residual(dcid: str, index: CodeIndex) -> bool:
@@ -114,11 +115,15 @@ def region_rule(
     sums them with residuals (`region_total`), and binds neither the total itself nor
     nothing. `region:members_and_residuals` adds the residuals the role holds, else those
     the served datasets publish there (`published_residuals`); `region:members_only` adds
-    none. A part that does not sum the region (`sums_recipients`) offers the residuals as
-    unavailable, `residuals_need_summed_region`, and takes the members alone. `record`,
+    none. The option the identity holds comes first in the preference, so a part's derived
+    default is the reading it resolved and a switch is the only thing that moves it. A part
+    that does not sum the region (`sums_recipients`) offers the residuals as unavailable,
+    `residuals_need_summed_region`, and takes the members alone. `record`,
     the binder's, adds nothing the identity and `facts.part` do not state, so a
     dataset_resubmit, where no binder runs, builds the same table. The labels name the
-    region by the group the role stands for, else by its total ("Africa (DAC)")."""
+    region by its total's declared name (`REGION_NAMES`, "Africa"), else by the total's
+    graph label, whatever groups the request posts, so a search and its switch name it
+    alike."""
     held = base.entities.get(REGION_ROLE)
     if not held:
         return None
@@ -136,7 +141,7 @@ def region_rule(
     if not residuals or not without_residuals(held, index):
         return None
     summed = sums_recipients(part.operations)
-    region = (total.label or total.dcid) if group is None else group.label
+    region = _REGION_NAMES.get(total.dcid) or total.label or total.dcid
     with_residuals = Option(
         option_id=REGION_MEMBERS_AND_RESIDUALS,
         label=OPTION_LABELS.region_with_residuals.format(region=region),
@@ -153,16 +158,20 @@ def region_rule(
         binding=EntitiesBinding(role=REGION_ROLE, add=[]),
         availability=OptionAvailability(status="available"),
     )
+    held_id = REGION_MEMBERS_AND_RESIDUALS if bound else REGION_MEMBERS_ONLY
     return AxisTable(
         axis="region",
         rule=REGION_RULE,
         options=(with_residuals, members_only),
         preference=(
-            (REGION_MEMBERS_AND_RESIDUALS, REGION_MEMBERS_ONLY)
+            (
+                held_id,
+                *(o for o in (REGION_MEMBERS_AND_RESIDUALS, REGION_MEMBERS_ONLY) if o != held_id),
+            )
             if summed
             else (REGION_MEMBERS_ONLY,)
         ),
-        held=REGION_MEMBERS_AND_RESIDUALS if bound else REGION_MEMBERS_ONLY,
+        held=held_id,
     )
 
 

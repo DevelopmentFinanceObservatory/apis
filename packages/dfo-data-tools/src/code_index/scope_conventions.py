@@ -143,6 +143,34 @@ OPTION_LABELS = OptionLabels(
     measure_basis_unpriced="{words}",
 )
 
+REGION_NAMES: tuple[tuple[str, str], ...] = (
+    ("DACAfrica", "Africa"),
+    ("DACAmerica", "America"),
+    ("DACAsia", "Asia"),
+    ("DACCaribbean", "the Caribbean"),
+    ("DACCaribbeanAndCentralAmerica", "the Caribbean and Central America"),
+    ("DACCentralAmerica", "Central America"),
+    ("DACEasternAfrica", "Eastern Africa"),
+    ("DACEurope", "Europe"),
+    ("DACFarEastAsia", "Far East Asia"),
+    ("DACMelanesia", "Melanesia"),
+    ("DACMicronesia", "Micronesia"),
+    ("DACMiddleAfrica", "Middle Africa"),
+    ("DACMiddleEast", "the Middle East"),
+    ("DACNorthOfSahara", "North of Sahara"),
+    ("DACOceania", "Oceania"),
+    ("DACPolynesia", "Polynesia"),
+    ("DACSouthAmerica", "South America"),
+    ("DACSouthAndCentralAsia", "South and Central Asia"),
+    ("DACSouthOfSahara", "South of Sahara"),
+    ("DACSouthernAfrica", "Southern Africa"),
+    ("DACWesternAfrica", "Western Africa"),
+)
+"""The reader's name of each regional total whose region a scope option names, by the
+total's dcid: "Africa" for `DACAfrica`, whose graph label is "Africa (DAC)". The region
+option labels read it on every door alike, so a search and its switch name the region the
+same way. A total named here by no row is named by its graph label (`PartyRow.label`)."""
+
 # The measure basis each part shape and window is counted on, after the OECD's own
 # reporting: the DAC1 headline for a donor's total, DAC2a receipts for a recipient's,
 # gross CRS disbursements wherever a sector, channel, instrument or modality is bound.

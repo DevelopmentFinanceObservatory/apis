@@ -470,8 +470,11 @@ class CacheScope:
             return None
         return self._hit_layer2(value, query=query, llm_usage=llm_usage)
 
-    async def lookup_parsed_input(self, parsed: ParsedInput) -> ResolveResponse | None:
-        """Look up layer 2 by a parsed request's whole input (`parsed_key`).
+    async def lookup_parsed_input(
+        self, parsed: ParsedInput, *, stated_scopes: Sequence[ScopeIntake] = ()
+    ) -> ResolveResponse | None:
+        """Look up layer 2 by a parsed request's input (`parsed_key`) and the scope each
+        part is posted with, `stated_scopes`, in part order (`stated_scope.part_scope_intakes`).
 
         A hit skips binding, keeps the stored echo and spends no
         tokens. The first miss owns the layer-2 lease (`_acquire`).
@@ -480,7 +483,11 @@ class CacheScope:
             return None
         assert self._scope is not None
         value, self._layer2_lease = await self._acquire(
-            parsed_key(parsed=parsed, scope=self._scope)
+            parsed_key(
+                parsed=parsed,
+                scope=self._scope,
+                stated_scopes=[intake_key_document(intake) for intake in stated_scopes],
+            )
         )
         if value is None:
             return None

@@ -7,7 +7,7 @@ import dataclasses
 import functools
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
 from typing import Final
 
@@ -95,7 +95,7 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
-from search.models import EntryPath, Operation, PartScope, RoleAxis, Warning
+from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Spec, Warning
 from search.scope.build import build_part_scope
 from search.scope.state import ScopeIntake
 from search.scope.tables import PartFacts, ScopeFacts
@@ -555,40 +555,82 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
 
 def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
-    built from the scope entries and axis records the pass's binders hold
-    (`ResolveState.scope_selection`) over the answer's identity. Only the entries that attach
-    to the part compile (`ScopeState.attached`): those on an axis a binder settled, for the
-    concept it was asked for. A result that is not definite, or whose pass wrote no axis
+    built from the axis records the pass's binders hold (`ResolveState.scope_selection`)
+    over the answer's identity. Only the entries a binder applied compile
+    (`AxisRecord.entry`), so every choice states the option the answer serves; the other
+    entries that attach to the part (`ScopeState.attached`: those on an axis a binder
+    settled, for the concept it was asked for) are reported in
+    `PartScope.dropped_entries`. A result that is not definite, or whose pass wrote no axis
     record, states none, and so does one whose answer the recorded axes do not reach, as a
     region read at its published total. In memory: the rules read the bound release's code
     index, the request's coverage snapshot and the part's operations, groups and served
-    datasets (`PartFacts`). A fresh search never refuses its scope: an entry that cannot
-    apply is dropped and reported in `PartScope.dropped_entries`, and the rest compile
-    without it (`build_part_scope` with `refuse` false). Only a dataset_resubmit's posted
-    `scope_entries` refuse 422."""
+    datasets (`scope_facts`). A fresh search never refuses its scope (`build_part_scope`
+    with `refuse` false); only a dataset_resubmit's posted `scope_entries` refuse 422."""
     selection = state.scope_selection
     if result.status != "definite" or not selection.records:
         return result
     spec = result.spec
     built = build_part_scope(
         base=spec.definition.identity,
-        entries=list(selection.attached()),
+        entries=[],
         records=selection.records,
-        facts=ScopeFacts(
-            index=get_index(),
-            coverage=state.coverage,
-            part=PartFacts(
-                operations=state.operations,
-                entity_groups=spec.resolved.entity_groups or {},
-                datasets=tuple(sorted(served_datasets(spec))),
-            ),
-        ),
+        facts=scope_facts(spec, operations=state.operations, coverage=state.coverage),
+        read=selection.attached(),
         refuse=False,
     )
     assert isinstance(built, PartScope)
     if not built.choices:
         return result
     return dataclasses.replace(result, scope_choices=built)
+
+
+def scope_facts(
+    spec: Spec, *, operations: Sequence[Operation], coverage: CoverageSnapshot
+) -> ScopeFacts:
+    """What the axis rules read of the part `spec` answers: the bound release's code index,
+    `coverage`, the part's `operations`, the groups its roles stand for and the datasets it
+    is served from."""
+    return ScopeFacts(
+        index=get_index(),
+        coverage=coverage,
+        part=PartFacts(
+            operations=tuple(operations),
+            entity_groups=spec.resolved.entity_groups or {},
+            datasets=tuple(sorted(served_datasets(spec))),
+        ),
+    )
+
+
+def merged_scope_choices(
+    merged: RegionResult, group: Sequence[RegionResult], *, coverage: CoverageSnapshot
+) -> PartScope | None:
+    """The scope of `merged`, the region a same-shape merge folded `group` into, built as a
+    resubmit of its identity builds it: over the merged identity, with the union of the
+    members' applied entries and no binder record. None when no member states a scope,
+    or the merged identity settles no axis. An entry the merged identity cannot take is
+    reported in `PartScope.dropped_entries`, never refused."""
+    scopes = [region.scope_choices for region in group if region.scope_choices is not None]
+    if not scopes:
+        return None
+    spec = merged.spec
+    built = build_part_scope(
+        base=spec.definition.identity,
+        entries=_union(entry for scope in scopes for entry in scope.entries),
+        records={},
+        facts=scope_facts(spec, operations=merged.operations, coverage=coverage),
+        refuse=False,
+    )
+    assert isinstance(built, PartScope)
+    return built if built.choices else None
+
+
+def _union(entries: Iterable[Entry]) -> list[Entry]:
+    """`entries` in order, each once."""
+    union: list[Entry] = []
+    for entry in entries:
+        if entry not in union:
+            union.append(entry)
+    return union
 
 
 def _stating_unevaluated(result: RegionResult, state: ResolveState) -> RegionResult:

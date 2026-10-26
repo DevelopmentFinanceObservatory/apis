@@ -207,10 +207,16 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
 _ALL_MEMBERS = (*_DAC1_MEMBERS, *_DAC2A_MEMBERS, *_CRS_MEMBERS)
 
 
-def _resolve(request: ResolveRequest, variable: str, *, pick: int = 0) -> Spec:
+def _resolve(
+    request: ResolveRequest,
+    variable: str,
+    *,
+    pick: int = 0,
+    members: tuple[str, ...] = _ALL_MEMBERS,
+) -> Spec:
     response = offline_resolve(
         request,
-        graph=_graph(variable, _ALL_MEMBERS),
+        graph=_graph(variable, members),
         llm=_PickingLLM(pick),
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
@@ -228,6 +234,7 @@ def _ask(
     pick: int = 0,
     message: str | None = None,
     carried: list[Entry] | None = None,
+    members: tuple[str, ...] = _ALL_MEMBERS,
 ) -> Spec:
     entities = [ParsedEntity(text="United States", role_text="from")]
     if recipient:
@@ -242,6 +249,7 @@ def _ask(
         ),
         variable,
         pick=pick,
+        members=members,
     )
 
 
@@ -487,7 +495,13 @@ def _served_basis_of(identity: BaseIdentity) -> tuple[str | None, str | None]:
     return identity.shape.measured_property, netting
 
 
-def _switch(identity: BaseIdentity, option_id: str, choice_id: str) -> Spec:
+def _switch(
+    identity: BaseIdentity,
+    option_id: str,
+    choice_id: str,
+    *,
+    members: tuple[str, ...] = _ALL_MEMBERS,
+) -> Spec:
     entry = Entry(
         axis="measure_basis",
         option_id=option_id,
@@ -505,6 +519,7 @@ def _switch(identity: BaseIdentity, option_id: str, choice_id: str) -> Spec:
             )
         ),
         "aid",
+        members=members,
     )
 
 
@@ -589,3 +604,60 @@ def test_a_stated_basis_the_dataset_does_not_publish_is_reported_as_not_applied(
         ("measure_basis:commitments", "stated_choice_not_applied", "basis_not_published")
     ]
     assert _basis_choice(spec) == ("measure_basis:net", "default", None)
+
+
+_CRS_GROSS_AND_NET = _CRS_MEMBERS[:4]
+_CRS_GRANT_EQUIVALENTS = _CRS_MEMBERS[4:]
+
+
+def _flows(spec: Spec) -> object:
+    (flow,) = (s for s in spec.definition.identity.slots if s.property == "crsTypeOfFlow")
+    return flow.binding
+
+
+def test_a_part_served_on_grant_equivalents_unelected_binds_what_a_switch_binds():
+    """A pool holding only the CRS's grant equivalents serves a health part, whose
+    convention is gross disbursements, on grant equivalents. The answer reads ODA as flows
+    10 and 60, as a switch to grant equivalents does, so gross and back, twice, returns the
+    same two spec_ids; its choice states that the convention did not settle the basis."""
+    first = _ask("health aid", time="2019", recipient=True, members=_CRS_GRANT_EQUIVALENTS)
+    scope = first.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+    assert (choice.active, choice.provenance, choice.rule) == (
+        "measure_basis:grant_equivalent",
+        "default",
+        "served_differs_from_convention",
+    )
+    assert _flows(first) == IdentityBindingSet(refs=["CRSTypeOfFlow10", "CRSTypeOfFlow60"])
+
+    ids = []
+    identity = first.definition.identity
+    for option in ("measure_basis:gross", "measure_basis:grant_equivalent") * 2:
+        spec = _switch(identity, option, choice.id, members=_CRS_MEMBERS)
+        ids.append(spec.spec_id)
+        identity = spec.definition.identity
+
+    assert ids[1] == ids[3] == first.spec_id
+    assert ids[0] == ids[2] != first.spec_id
+
+
+def test_a_stated_basis_the_pool_cannot_serve_is_reported_and_not_stated_as_served():
+    """The CRS publishes covered grant equivalents for health, but the pool holds only gross
+    and net disbursements, so the stated basis is served on the convention's gross: the
+    choice states gross and the entry is reported as not applied."""
+    spec = _ask(
+        "health aid",
+        time="2019",
+        recipient=True,
+        message="grant equivalent health aid from the US to Kenya in 2019",
+        members=_CRS_GROSS_AND_NET,
+    )
+
+    assert _served_basis(spec) == _GROSS_CRS
+    assert _basis_choice(spec) == ("measure_basis:gross", "default", None)
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    assert [(d.entry.option_id, d.code, d.cause) for d in scope.dropped_entries] == [
+        ("measure_basis:grant_equivalent", "stated_choice_not_applied", "not_served")
+    ]

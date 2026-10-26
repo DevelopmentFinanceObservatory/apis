@@ -94,7 +94,8 @@ def _write_a_record(monkeypatch, *, concept: str | None = None) -> None:
 def _write_records(
     monkeypatch, *, sector_concept: str | None = None, basis: bool = False
 ) -> list[ScopeState]:
-    """Have the definite answer's binders record the synthetic sector axis and, with
+    """Have the definite answer's binders record the synthetic sector axis, applying the
+    first entry on it for `sector_concept` when it names the held option, and, with
     `basis`, the measure basis as a binder applying precedence would: the first entry on
     the axis, else net by default. Returns the states the binders saw."""
     assemble = phase_answer._assemble_definite_answer
@@ -103,12 +104,21 @@ def _write_records(
     async def recording(state):
         selection = state.scope_selection
         seen.append(selection)
+        sector = next(
+            (
+                e
+                for e in selection.entries_on("sector", concept=sector_concept)
+                if e.option_id == _HELD
+            ),
+            None,
+        )
         selection.write(
             AxisRecord(
                 axis="sector",
                 rule="test_rule",
                 active=_HELD,
-                provenance="default",
+                provenance="default" if sector is None else sector.provenance,
+                entry=sector,
                 concept=sector_concept,
             )
         )

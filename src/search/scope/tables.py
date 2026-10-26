@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from code_index.query import CodeIndex
+from code_index.query import CodeIndex, IndexFamily
 from search.models import EntityGroup, Operation, Option, ScopeAxis
 from search.scope.edits import AXIS_BINDING, ScopeTableError
 from series_coverage.shared import CoverageSnapshot
@@ -81,12 +81,61 @@ class PartFacts:
     datasets: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class FamilyValues:
+    """The value tuples a family's rows hold on some properties, in their order: `published`
+    those of every row, `covered` those of the rows with a series in the coverage index."""
+
+    published: frozenset[tuple[str | None, ...]]
+    covered: frozenset[tuple[str | None, ...]]
+
+
 @dataclass(frozen=True, kw_only=True)
 class ScopeFacts:
     """The engine state the axis rules read: the release's code index, the request's
     coverage snapshot and the part's own facts (`PartFacts`), all in memory. Passed
-    explicitly, so a rule reads no global."""
+    explicitly, so a rule reads no global. One `ScopeFacts` serves one build of one part's
+    scope, and memoises the family scans its rules share (`family_values`)."""
 
     index: CodeIndex
     coverage: CoverageSnapshot
     part: PartFacts = field(default_factory=PartFacts)
+    _scans: dict[tuple[int, tuple[str, ...]], tuple[IndexFamily, FamilyValues]] = field(
+        default_factory=dict, init=False, compare=False, repr=False
+    )
+
+    def family_values(self, family: IndexFamily, properties: tuple[str, ...]) -> FamilyValues:
+        """What `family`'s rows hold on `properties` (`FamilyValues`), read in one scan of
+        its rows per build however many rules and options ask. The memo holds `family`, so
+        its id names no other family while the memo lives."""
+        key = (id(family), properties)
+        if (held := self._scans.get(key)) is not None:
+            return held[1]
+        coverage = self.coverage.index
+        published: set[tuple[str | None, ...]] = set()
+        covered: set[tuple[str | None, ...]] = set()
+        for row in family.rows:
+            values = tuple(row.constraint_properties.get(p) for p in properties)
+            published.add(values)
+            if values not in covered and coverage.covers(row.dcid):
+                covered.add(values)
+        scanned = FamilyValues(published=frozenset(published), covered=frozenset(covered))
+        self._scans[key] = (family, scanned)
+        return scanned
+
+
+def allowed_values(
+    slots: Mapping[str, tuple], *, skip: str | None = None
+) -> dict[str, frozenset[str]]:
+    """The values each value or set binding of a family query's `slots` allows, by
+    property, leaving out `skip`'s."""
+    allowed: dict[str, frozenset[str]] = {}
+    for prop, binding in slots.items():
+        if prop == skip:
+            continue
+        match binding:
+            case ("value", ref):
+                allowed[prop] = frozenset((ref,))
+            case ("set", refs):
+                allowed[prop] = frozenset(refs)
+    return allowed

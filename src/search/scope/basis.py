@@ -20,6 +20,7 @@ the basis it resolved and a switch is the only thing that moves it.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -38,6 +39,7 @@ from code_index.scope_conventions import (
     PartShape,
     WindowClass,
 )
+from code_index.shared import per_index
 from search.models import (
     BaseIdentity,
     Entry,
@@ -51,11 +53,15 @@ from search.models import (
 )
 from search.scope.edits import ScopeTableError, apply_binding
 from search.scope.state import AxisRecord
-from search.scope.tables import AxisTable, ScopeFacts
+from search.scope.tables import AxisTable, ScopeFacts, allowed_values
 from search.scope.vocabulary import measure_basis_option_id
 
 BASIS_RULE = "measure_basis_convention"
 """The declared rule the measure-basis axis applies."""
+
+SERVED_DIFFERS_RULE = "served_differs_from_convention"
+"""The rule of a part whose answer holds another basis than its convention's, which no
+entry asked for: no shape of its pool measures the convention's basis."""
 
 GRANT_EQUIVALENT_HEADLINE_FROM = 2018
 """The first year the OECD's headline counts official development assistance in grant
@@ -119,9 +125,10 @@ def part_shape(
     return "donor_only" if directions else None
 
 
+@per_index
 def sector_systems(index: CodeIndex) -> frozenset[str]:
     """The code systems `index` declares sector questions of (`CodeIndex.house_case_systems`):
-    an admitted code of one makes a part a sector part."""
+    an admitted code of one makes a part a sector part. Built once per index."""
     return frozenset(
         system for system, case in index.house_case_systems().items() if case == "sector"
     )
@@ -289,8 +296,9 @@ def basis_rule(
     not apply to it (`basis_dataset`).
 
     Read from `base` alone, whether a binder recorded the axis (`record`) or not, so a
-    resubmit of a served identity offers what its search offered. Each declared basis is an
-    option. The one `base` holds is available. Another is available when its identity
+    resubmit of a served identity offers what its search offered. The rule is the record's
+    when a binder wrote one (`SERVED_DIFFERS_RULE` for a basis the convention did not
+    settle), else `BASIS_RULE`. Each declared basis is an option. The one `base` holds is available. Another is available when its identity
     (`base` with the option's binding) reads a member of the dataset holding every other
     binding of `base` with a series in the coverage index, `option_not_covered` when the
     dataset publishes such a member with no series there, and `basis_not_published`
@@ -316,7 +324,7 @@ def basis_rule(
     held_id = measure_basis_option_id(held.basis)
     return AxisTable(
         axis="measure_basis",
-        rule=BASIS_RULE,
+        rule=BASIS_RULE if record is None else record.rule,
         options=options,
         preference=(
             held_id,
@@ -360,27 +368,12 @@ def _availability(
     family = query_family(index, query)
     if family is None or dataset not in family.datasets:
         return unpublished
-    allowed = _allowed(query.slots)
-    rows = [
-        row
-        for row in family.rows
-        if all(row.constraint_properties.get(p) in refs for p, refs in allowed.items())
-    ]
-    if not rows:
+    allowed = allowed_values(query.slots)
+    properties = tuple(sorted(allowed))
+    values = facts.family_values(family, properties)
+    wanted = set(itertools.product(*(allowed[p] for p in properties)))
+    if wanted.isdisjoint(values.published):
         return unpublished
-    coverage = facts.coverage.index
-    if not any(coverage.covers(row.dcid) for row in rows):
+    if wanted.isdisjoint(values.covered):
         return OptionAvailability(status="unavailable", code="option_not_covered")
     return OptionAvailability(status="available")
-
-
-def _allowed(slots: Mapping[str, tuple]) -> dict[str, frozenset[str]]:
-    """The values each value or set binding of `slots` allows, by property."""
-    allowed: dict[str, frozenset[str]] = {}
-    for prop, binding in slots.items():
-        match binding:
-            case ("value", ref):
-                allowed[prop] = frozenset((ref,))
-            case ("set", refs):
-                allowed[prop] = frozenset(refs)
-    return allowed

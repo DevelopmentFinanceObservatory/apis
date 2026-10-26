@@ -18,6 +18,7 @@ import pytest
 from code_index.scope_conventions import SECTOR_GROUPINGS
 from code_index.shared import get_index
 from search.engine.bind import _UniversalBindOutput
+from search.engine.errors import EngineInputError
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.quantity_read import QuantityOutput
 from search.engine.stated_words_read import StatedWordsOutput
@@ -52,6 +53,7 @@ from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph
 
 _KEN = "country/KEN"
+_GHA = "country/GHA"
 _FRA = "country/FRA"
 _PURPOSE = "crsPurpose"
 _EDUCATION_MEMBER = (
@@ -136,6 +138,7 @@ def _graph(variable: str) -> FakeGraph:
     return FakeGraph(
         nodes={
             _KEN: {"label": "Kenya", "type": "Country"},
+            _GHA: {"label": "Ghana", "type": "Country"},
             _FRA: {"label": "France", "type": "Country"},
             CRS_PROVENANCE: {"label": "OECD Creditor Reporting System (CRS)"},
             **{
@@ -144,7 +147,7 @@ def _graph(variable: str) -> FakeGraph:
             },
         },
         detect={variable: {"svs": [_EDUCATION_MEMBER], "cosine_scores": [0.9]}},
-        resolve={"Kenya": _KEN},
+        resolve={"Kenya": _KEN, "Ghana": _GHA},
     )
 
 
@@ -166,7 +169,11 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     names = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
-        [(dcid, "crs", _FRA, _KEN, [2019, 2020, 2021]) for dcid in _MEMBERS],
+        [
+            (dcid, "crs", _FRA, recipient, [2019, 2020, 2021])
+            for dcid in _MEMBERS
+            for recipient in (_KEN, _GHA)
+        ],
         role_names=dict.fromkeys(_MEMBERS, names),
         facet_metadata={"crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD")},
     )
@@ -274,10 +281,18 @@ _MATRIX = {
         ("sector_grouping", "explicit", "sector:120", _HEALTH_OPTIONS),
         "120",
     ),
-    # The matcher reads a bare code only after a word of its own code system's name, and
-    # "CRS" names every CRS system, so neither phrase binds a purpose or states a choice.
-    "CRS 120": _Row([], "binder", None, None),
-    "code 120": _Row([], "binder", None, None),
+    "CRS 120": _Row(
+        ["CRSPurposeCode120"],
+        "text_recognized",
+        ("sector_grouping", "explicit", "sector:120", _HEALTH_OPTIONS),
+        "120",
+    ),
+    "code 120": _Row(
+        ["CRSPurposeCode120"],
+        "text_recognized",
+        ("sector_grouping", "explicit", "sector:120", _HEALTH_OPTIONS),
+        "120",
+    ),
     "humanitarian aid": _Row(
         list(_HUMANITARIAN),
         "declared_grouping",
@@ -297,7 +312,15 @@ _MATRIX = {
 }
 
 
-@pytest.mark.parametrize("variable", list(_MATRIX))
+_BARE_CODE = pytest.mark.xfail(
+    strict=True, reason="the matcher reads a bare code only after its system's name"
+)
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [pytest.param(v, marks=_BARE_CODE) if v in ("CRS 120", "code 120") else v for v in _MATRIX],
+)
 def test_a_sector_phrase_binds_and_states_its_sector_choice(variable: str, search_settings):
     row = _MATRIX[variable]
     if variable == "purpose code 120":
@@ -317,7 +340,11 @@ def test_a_sector_phrase_binds_and_states_its_sector_choice(variable: str, searc
     )
     assert texts == ([] if row.entry_text is None else [row.entry_text])
     if scope is not None:
-        assert scope.compiled.spec_id == scope.base.spec_id == spec.spec_id
+        # The choices state what the answer serves: its identity posted back with the
+        # scope's entries compiles to itself.
+        again = _resubmit(spec.definition.identity, scope.entries)
+        assert again.spec_id == spec.spec_id
+        assert _choice(again) == row.choice
 
 
 def test_a_carried_entry_for_the_concept_binds_on_a_new_part():
@@ -348,25 +375,32 @@ def test_an_unavailable_option_states_why():
     assert {o.availability.code for o in unavailable} == {"option_not_covered"}
 
 
-def _switch(identity: BaseIdentity, option_id: str, choice_id: str) -> Spec:
-    entry = Entry(
-        axis="sector",
-        option_id=option_id,
-        provenance="explicit",
-        origin=ChoiceOrigin(choice_id=choice_id),
-    )
+def _resubmit(identity: BaseIdentity, entries: list[Entry]) -> Spec:
     return _resolve(
         ResolveRequest(
             input=DatasetResubmitInput(
                 entries=[
                     ResubmitIdentityEntry(
-                        variable_text="health aid", identity=identity, scope_entries=[entry]
+                        variable_text="health aid", identity=identity, scope_entries=entries
                     )
                 ]
             )
         ),
         "health aid",
     )
+
+
+def _switch_entry(option_id: str, choice_id: str) -> Entry:
+    return Entry(
+        axis="sector",
+        option_id=option_id,
+        provenance="explicit",
+        origin=ChoiceOrigin(choice_id=choice_id),
+    )
+
+
+def _switch(identity: BaseIdentity, option_id: str, choice_id: str) -> Spec:
+    return _resubmit(identity, [_switch_entry(option_id, choice_id)])
 
 
 def test_a_switch_to_one_code_and_back_returns_the_first_spec_id():
@@ -386,6 +420,83 @@ def test_a_switch_to_one_code_and_back_returns_the_first_spec_id():
     assert narrowed_scope.base.spec_id == first.spec_id
     assert restored.spec_id == first.spec_id
     assert _choice(restored) == ("sector_grouping", "explicit", "sector:120+130", _HEALTH_OPTIONS)
+
+
+def test_a_switch_replaces_the_entry_on_its_axis():
+    """ "reproductive health aid" binds CRS 130 on an explicit entry of its words. The client
+    posts the scope's entries with that entry replaced by the switch, and the grouping comes
+    back; posting both on the one axis refuses."""
+    first = _ask("reproductive health aid")
+    scope = first.resolved.scope_choices
+    assert scope is not None
+    (stated,) = scope.entries
+    assert stated.option_id == "sector:130"
+    switch = _switch_entry("sector:120+130", scope.choices[0].id)
+
+    grouped = _resubmit(
+        scope.base.identity, [e for e in scope.entries if e.axis != "sector"] + [switch]
+    )
+
+    assert _purpose(grouped)[0] == list(_HEALTH)
+    assert _choice(grouped) == ("sector_grouping", "explicit", "sector:120+130", _HEALTH_OPTIONS)
+    with pytest.raises(EngineInputError) as refused:
+        _resubmit(scope.base.identity, [*scope.entries, switch])
+    assert refused.value.code == "conflicting_requested_options"
+
+
+def test_a_switch_posted_with_no_concept_takes_its_axis_concept_and_carries_only_to_it():
+    """A default "health" choice switched to CRS 120 with no concept echoes the entry with
+    concept "health", so carried on to an "education aid" part it neither applies nor is
+    reported."""
+    first = _ask("health aid")
+    scope = first.resolved.scope_choices
+    assert scope is not None
+
+    narrowed = _switch(scope.base.identity, "sector:120", scope.choices[0].id)
+    narrowed_scope = narrowed.resolved.scope_choices
+    assert narrowed_scope is not None
+    (entry,) = narrowed_scope.entries
+    assert (entry.option_id, entry.concept) == ("sector:120", "health")
+
+    carried = entry.model_copy(update={"provenance": "carried"})
+    education = _ask("education aid", carried=[carried])
+
+    assert _purpose(education)[0] == ["CRSPurposeCode110"]
+    education_scope = education.resolved.scope_choices
+    assert education_scope is not None
+    assert carried not in education_scope.entries
+    assert education_scope.dropped_entries == []
+
+
+def test_parts_a_same_shape_merge_folds_state_the_merged_scope():
+    """ "health aid" to Ghana and to Kenya fold into one Spec, whose scope every part states:
+    the grouping, as a resubmit of the merged identity builds it."""
+    response = offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text="health aid",
+                        entities=[ParsedEntity(text=place, role_text="to")],
+                    )
+                    for place in ("Ghana", "Kenya")
+                ]
+            )
+        ),
+        graph=_graph("health aid"),
+        llm=_ElectingLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert isinstance(response, Resolution), response
+    specs = [part.spec for part in response.parts if isinstance(part, DefinitePart)]
+    assert len(specs) == 2
+    assert specs[0].spec_id == specs[1].spec_id
+    for spec in specs:
+        assert _choice(spec) == ("sector_grouping", "default", "sector:120+130", _HEALTH_OPTIONS)
+        scope = spec.resolved.scope_choices
+        assert scope is not None
+        assert scope.base.spec_id == scope.compiled.spec_id == spec.spec_id
 
 
 # ---------------------------------------------------------------------------

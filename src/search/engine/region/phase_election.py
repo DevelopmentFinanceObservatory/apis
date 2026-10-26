@@ -23,6 +23,7 @@ from search.engine.bind_repair import (
     defaulted_slots_named,
 )
 from search.engine.binders import StatedWordsRequest
+from search.engine.binders.house_policy import slot_values
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.envelope import _sum_usage
@@ -130,6 +131,7 @@ from search.models import ResolvedQualifier, Warning
 from search.scope.basis import (
     BASIS_RULE,
     CONVENTION_DATASETS,
+    SERVED_DIFFERS_RULE,
     BasisElection,
     elect_basis,
     measure_of,
@@ -1536,8 +1538,7 @@ def _settle_role_bindings(
     bindings, shape_defaulted, relaxed = apply_shape_slot_defaults(
         bindings, shape, index=get_index()
     )
-    if basis is not None:
-        bindings = _with_basis_flows(shape, bindings, basis)
+    bindings = _with_basis_flows(shape, bindings)
     warnings: list[Warning] = []
     for default in relaxed:
         value = (shape.value_labels or {}).get(default.value_dcid, default.value_dcid)
@@ -1649,14 +1650,7 @@ def _part_basis(state: ResolveState, shape: ShapeDraft) -> BasisElection | None:
         window=window_class(state.frame.window.value),
         entries=state.scope_selection.entries_on("measure_basis"),
     )
-    netting = next(
-        (
-            codes
-            for key, codes in (shape.slot_taxonomy or {}).items()
-            if key.endswith(":nettingBasis")
-        ),
-        None,
-    )
+    netting = slot_values(shape.slot_taxonomy or {}, "nettingBasis")
     if election.entry is None or election.measured_by(
         shape.pop_type_dcid, shape.meas_prop_dcid, netting
     ):
@@ -1682,15 +1676,15 @@ def _basis_axes(
 
 
 def _with_basis_flows(
-    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], basis: BasisElection
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> list[SlotBindingDraft]:
-    """`bindings` with an ODA flow binding (CRS flow 10) read as the flows the elected
-    `basis` counts (`BasisMeasure.oda_flows`) that `shape`'s flow slot offers, when `shape`
-    measures that basis: grant equivalents count the private sector instruments of flow 60
-    beside it. A shape that measures another basis than the one elected, the one the menu
-    offered in its place, keeps its bindings."""
-    measure = basis.measure
-    if measure_of(shape.pop_type_dcid, shape.meas_prop_dcid, None) is not measure:
+    """`bindings` with an ODA flow binding (CRS flow 10) read as the flows the basis
+    `shape` measures counts (`BasisMeasure.oda_flows`) that its flow slot offers: grant
+    equivalents count the private sector instruments of flow 60 beside it. Keyed on the
+    served shape alone, however its basis was elected, so a part served on grant
+    equivalents binds what a switch to them binds (`scope.edits`)."""
+    measure = measure_of(shape.pop_type_dcid, shape.meas_prop_dcid, None)
+    if measure is None:
         return list(bindings)
     offered = {
         code
@@ -1714,8 +1708,11 @@ def _with_basis_flows(
 def _record_basis(state: ResolveState, settled: _SettledBindings, basis: BasisElection) -> None:
     """Record the measure basis the part's served bindings hold
     (`ResolveState.scope_selection`), with the entry that settled it when they hold the
-    option the entry asked for. A shape whose measure no declared basis names records
-    none."""
+    option the entry asked for. A basis no entry settled that is not the convention's,
+    served because no shape of the pool measures the convention's, records
+    `SERVED_DIFFERS_RULE` in place of the convention's rule and is logged with the part's
+    shape, so the choice does not claim the convention settled it. A shape whose measure no
+    declared basis names records none."""
     shape = settled.shape
     netting = next(
         (
@@ -1732,10 +1729,28 @@ def _record_basis(state: ResolveState, settled: _SettledBindings, basis: BasisEl
         return
     active = measure_basis_option_id(held.basis)
     entry = basis.entry if basis.entry is not None and basis.entry.option_id == active else None
+    rule = BASIS_RULE
+    if entry is None and held != basis.by_convention().measure:
+        rule = SERVED_DIFFERS_RULE
+        logger.info(
+            "measure basis served differs from convention: %s",
+            json.dumps(
+                {
+                    "part_shape": basis.convention.shape,
+                    "window": basis.convention.window,
+                    "convention": basis.by_convention().basis,
+                    "served": held.basis,
+                    "population_type": shape.pop_type_dcid,
+                    "measured_property": shape.meas_prop_dcid,
+                    "netting": netting,
+                },
+                separators=(",", ":"),
+            ),
+        )
     state.scope_selection.write(
         AxisRecord(
             axis="measure_basis",
-            rule=BASIS_RULE,
+            rule=rule,
             active=active,
             provenance="default" if entry is None else entry.provenance,
             entry=entry,

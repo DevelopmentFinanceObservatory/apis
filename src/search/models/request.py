@@ -695,9 +695,11 @@ class ResubmitIdentityEntry(StrictModel):
         default=None,
         max_length=_RESUBMIT_MAX_SCOPE_ENTRIES,
         description=(
-            "the part's explicit and carried scope entries: the entries of its "
-            "resolved.scope_choices, plus a new explicit entry to switch an axis, posted "
-            "with that scope's base.identity as identity. The engine compiles them over "
+            "the part's explicit and carried scope entries, one per axis: the entries of its "
+            "resolved.scope_choices, with the entry on a switched axis replaced by the "
+            "switch, an explicit entry whose origin names the choice, posted with that "
+            "scope's base.identity as identity. An entry posted with no concept on an axis "
+            "asked for a concept takes that concept, which the response's entries echo. The engine compiles them over "
             "identity and resolves the result, whose "
             "resolved.scope_choices states every choice, the entries applied and the "
             "carried entries left out. Refuses requested_option_unavailable (422) for an "

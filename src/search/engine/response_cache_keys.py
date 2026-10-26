@@ -371,12 +371,27 @@ def layer2_key(
     return _digest("l2", document)
 
 
-def parsed_key(*, parsed: ParsedInput, scope: dict) -> str:
-    """Key a parsed request's whole input over the shared scope, on layer 2.
+def parsed_key(
+    *,
+    parsed: ParsedInput,
+    scope: dict,
+    stated_scopes: Sequence[Mapping[str, object] | None] = (),
+) -> str:
+    """Key a parsed request's input over the shared scope, on layer 2.
 
     The posted parts are the extraction a raw-text request derives, and every field of
-    them, and the raw query its echo carries, reaches the answer."""
-    document = {"scope": scope, "parsed": parsed.model_dump(mode="json")}
+    them, and the raw query its echo carries, reaches the answer. The user's message and
+    the carried entries reach it only through the scope entries each part is posted with,
+    so they enter as `stated_scopes`, parallel to the deduplicated parts
+    (`stated_scope.intake_key_document`, None for a part posted with none), as the raw-text
+    door keys them (`layer2_key`): two messages worded apart that state the same scope
+    share an entry. The key states them and adds nothing when no part is posted any."""
+    document: dict[str, object] = {
+        "scope": scope,
+        "parsed": parsed.model_dump(mode="json", exclude={"user_message", "carried_entries"}),
+    }
+    if any(stated is not None for stated in stated_scopes):
+        document["stated_scopes"] = list(stated_scopes)
     return _digest("l2", document)
 
 
