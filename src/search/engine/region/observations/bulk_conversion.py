@@ -87,6 +87,34 @@ class ServedFacet(Protocol):
     def unit(self) -> str | None: ...
 
 
+NATIVE_CURRENCY_SELECTION_REASON = "native_currency_preferred"
+"""`FacetSelection.selection_reason`'s own literal on the unit axis
+(`materialise.facets._preferred_native_unit_selection`) when a request-form
+unit binding's elected facet already carries the requested `{currency,
+prices: "current"}` natively -- the same condition `materialise.
+member_conversion.decide_member_conversion` calls `natively_satisfied` and
+runs no recipe/table/arithmetic for. `_preferred_native_unit_selection` is
+tried first, over the same narrowed candidate pool `decide_member_conversion`
+later re-checks: it finds a candidate carrying this reason if and only if
+that pool holds one whose own unit ref already equals the requested native
+currency, which is exactly `natively_satisfied`'s own test -- so this
+selection_reason is read directly here rather than re-deriving the currency
+comparison a second time."""
+
+
+def converts(combinations: Iterable[Mapping[str, FacetSelection]]) -> bool:
+    """Whether a member whose unit decision elected `combinations` converts its points by
+    arithmetic: one of them selects a unit other than the native currency the request named
+    (`NATIVE_CURRENCY_SELECTION_REASON`). A member all of whose combinations select it
+    natively, or none of which selects a unit, is natively satisfied
+    (`materialise.member_conversion.MemberConversionPlan.natively_satisfied`)."""
+    return any(
+        (unit := combo.get("unit")) is not None
+        and unit.selection_reason != NATIVE_CURRENCY_SELECTION_REASON
+        for combo in combinations
+    )
+
+
 @dataclass(frozen=True)
 class BulkConversion:
     """A unit request a bulk read converts its points to: the request in materialise's
@@ -99,6 +127,11 @@ class BulkConversion:
     sdmx: MaterialiseSdmxClient
     rate_cache: RateTableCache
     deadline: float | None = None
+
+    def converts(self, stat_var: str) -> bool:
+        """Whether `stat_var` converts its points by arithmetic (`converts`), which ranks
+        its facets within each series, as a mint does (`generation._convert_by_series`)."""
+        return converts(self.elected.get(stat_var, ()))
 
     @property
     def target_unit_ref(self) -> str | None:

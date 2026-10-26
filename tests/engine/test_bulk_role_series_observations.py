@@ -8,12 +8,16 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from dc_graph import GraphReadError
 from dc_sdmx import SdmxCapExceededError
+from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from materialise import GraphReader
 from materialise.facets import FacetSelection, UnitRequest
+from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
@@ -32,7 +36,11 @@ from search.engine.region.codes import (
 from search.engine.region.facets import facet_admitted
 from search.engine.region.observations import bulk_role_series
 from search.engine.region.observations import fetch as region_fetch
-from search.engine.region.observations.bulk_conversion import ConvertedPairs
+from search.engine.region.observations.bulk_conversion import (
+    NATIVE_CURRENCY_SELECTION_REASON,
+    BulkConversion,
+    ConvertedPairs,
+)
 from search.engine.region.observations.bulk_role_series import (
     _narrowest_common_role,
     _pair_rows,
@@ -707,9 +715,9 @@ def test_an_index_sourced_bulk_read_serves_each_member_its_own_method_s_facet(
                 (_SV, _R1): ("Commitment", [("2019", 3.0), ("2020", r1_2020)]),
                 (_SV, _R2): ("Commitment", [(str(y), 1.0) for y in range(2017, 2021)]),
             },
-            id=f"{read}-one-identity-contested",
+            id="range-one-identity-contested",
         )
-        for read, r1_2020 in (("range", 1.0), ("converted", 3.0))
+        for read, r1_2020 in (("range", 1.0),)
     ],
 )
 def test_a_bulk_read_labels_and_ranks_the_points_a_mint_keeps(
@@ -726,22 +734,80 @@ def test_a_bulk_read_labels_and_ranks_the_points_a_mint_keeps(
 
     `FM1` and `FM3`, one identity, contest 2020 at `_R1`. A mint with no conversion ranks
     each facet over the member's whole table (`member_conversion.apply_member_conversion`),
-    where `FM1`'s five points outrank `FM3`'s two, so `_R1` keeps `FM1`'s 2020 value. A
-    conversion ranks within each series (`generation._convert_by_series`), where `FM3`'s
-    two points at `_R1` outrank `FM1`'s one, so it keeps `FM3`'s."""
-    if read == "converted":
-        monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
+    where `FM1`'s five points outrank `FM3`'s two, so `_R1` keeps `FM1`'s 2020 value."""
     sdmx, observations = _read_holdings(
-        monkeypatch,
-        holdings,
-        index_sourced=True,
-        latest=read == "latest",
-        conversion=(
-            SimpleNamespace(target_unit_ref="CurrencyUSD") if read == "converted" else None
-        ),
+        monkeypatch, holdings, index_sourced=True, latest=read == "latest"
     )
     assert {frozenset(call["facet_ids"]) for call in sdmx.series_calls} == {frozenset(facet_ids)}
     _assert_serves(observations, series)
+
+
+_CONTESTED = [
+    ("FM1", _R1, [2020]),
+    ("FM1", _R2, [2019, 2020]),
+    ("FM3", _R1, [2018, 2020]),
+]
+"""`FM1` and `FM3`, one identity, contest 2020 at `_R1`: `FM1`'s three points across the
+member outrank `FM3`'s two, though `FM3` spans more years, while at `_R1` alone `FM3`'s
+two outrank `FM1`'s one."""
+
+
+@pytest.mark.parametrize("series_max", [1, 50])
+def test_a_fixed_read_of_some_pairs_ranks_facets_over_the_member_s_table(
+    monkeypatch, search_settings, series_max: int
+):
+    """Over the row gate a read fetches at most `role_bulk_series_max` pairs. With one, it
+    reads `_R1` alone, where `FM3` holds more points than `FM1`; the mint ranks over the
+    member's whole table, where `FM1` holds more, so `_R1` keeps `FM1`'s 2020 value
+    whichever pairs the read fetched."""
+    search_settings(role_bulk_rank_max_rows=0, role_bulk_series_max=series_max)
+    sdmx, observations = _read_holdings(
+        monkeypatch, [(_SV, *holding) for holding in _CONTESTED], index_sourced=True
+    )
+    read = {r for call in sdmx.series_calls for r in call["entities"]["recipient"]}
+    assert read == ({_R1} if series_max == 1 else {_R1, _R2})
+    served = {
+        next(e.ref for e in s.entities if e.role == "destination"): sorted(
+            (p.date, p.value) for p in s.points
+        )
+        for s in observations.series
+    }
+    assert served[_R1] == [("2018", 3.0), ("2020", 1.0)]
+
+
+def test_a_converting_read_ranks_by_series_only_the_members_it_converts(monkeypatch):
+    """One USD request reads `_SV`, whose elected unit is USD natively, and `_SV_B`, whose
+    unit converts, each holding `_CONTESTED`. A mint ranks within each series only for a
+    member whose conversion runs arithmetic (`generation._convert_by_series`), so `_SV`
+    ranks over its whole table and keeps `FM1`'s 2020 value at `_R1`, and `_SV_B` ranks at
+    `_R1` alone and keeps `FM3`'s."""
+    monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
+
+    def unit(reason: str) -> dict[str, FacetSelection]:
+        return {"unit": _facet_selection(axis="unit", ref="CurrencyUSD", selection_reason=reason)}
+
+    conversion = BulkConversion(
+        unit_request=UnitRequest(currency="USD", prices="current"),
+        elected={
+            _SV: (unit(NATIVE_CURRENCY_SELECTION_REASON),),
+            _SV_B: (unit("converted_from_native"),),
+        },
+        graph=cast("GraphReader", None),
+        sdmx=cast("MaterialiseSdmxClient", None),
+        rate_cache=cast("RateTableCache", None),
+    )
+    _sdmx, observations = _read_holdings(
+        monkeypatch,
+        [(sv, *holding) for sv in (_SV, _SV_B) for holding in _CONTESTED],
+        index_sourced=True,
+        conversion=conversion,
+    )
+    at_r1 = {
+        s.stat_var.ref: {p.date: p.value for p in s.points}["2020"]
+        for s in observations.series
+        if any(e.ref == _R1 for e in s.entities)
+    }
+    assert at_r1 == {_SV: 1.0, _SV_B: 3.0}
 
 
 @pytest.mark.parametrize(
@@ -963,9 +1029,7 @@ def test_a_pair_serves_no_point_of_a_facet_another_member_selects() -> None:
         [_facet(dates=["2020"], facet_id="FM1"), _facet(dates=["2021"], value=2.0, facet_id="FM2")],
         plan=plan,
     )
-    served = _served_pairs(
-        plan, {(_SV, pair): rows}, rank_within_series=False, estimated=frozenset()
-    )
+    served = _served_pairs(plan, {(_SV, pair): rows}, ranked_by_series=(), estimated=frozenset())
 
     assert served.points == {(_SV, pair): [("2020", 0.0)]}
     assert served.stated[(_SV, pair)]["measurementMethod"] == "Commitment"
@@ -1005,7 +1069,7 @@ def test_a_pair_a_continuation_extends_states_the_selection_s_method() -> None:
         plan=plan,
     )
     served = _served_pairs(
-        plan, {(_SV, pair): rows}, rank_within_series=False, estimated=frozenset({"FM4"})
+        plan, {(_SV, pair): rows}, ranked_by_series=(), estimated=frozenset({"FM4"})
     )
 
     assert served.points == {(_SV, pair): [("2020", 1.0), ("2021", 4.0)]}
@@ -1335,7 +1399,7 @@ def test_a_converted_role_read_whose_conversion_read_fails_omits_the_preview(
         facet_filter=None,
         coverage=coverage,
         # The conversion itself never runs: `convert_pairs` fails first.
-        conversion=SimpleNamespace(target_unit_ref="CurrencyUSD"),
+        conversion=SimpleNamespace(target_unit_ref="CurrencyUSD", converts=lambda _sv: True),
     )
 
     assert observations.series == []
@@ -1374,7 +1438,7 @@ def test_a_role_conversion_names_the_pairs_whose_deflator_it_lacks(monkeypatch, 
         graph=_GRAPH,
         facet_filter=None,
         coverage=coverage,
-        conversion=SimpleNamespace(target_unit_ref=None),
+        conversion=SimpleNamespace(target_unit_ref=None, converts=lambda _sv: True),
     )
 
     assert len(observations.series) == len(recipients) - omitted_count
@@ -1510,7 +1574,7 @@ def test_series_truncated_to_the_order_the_row_gate_chooses(
     conversion = None
     if target_unit != "absent":
         monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
-        conversion = SimpleNamespace(target_unit_ref=target_unit)
+        conversion = SimpleNamespace(target_unit_ref=target_unit, converts=lambda _sv: True)
     observations, warn = bulk_role_series_planned(
         [_SV],
         _obs_entities(recipients),

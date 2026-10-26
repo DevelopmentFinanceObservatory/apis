@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -35,7 +35,13 @@ from typing import NamedTuple
 from code_index.shared import get_index
 from dc_sdmx import SdmxCapExceededError, is_observed
 from dfo_platform.executor import submit_with_context
-from materialise.facet_collapse import CollapseCell, keep_mask
+from materialise.facet_collapse import (
+    CollapseCell,
+    FacetRank,
+    FacetRankStats,
+    facet_rank,
+    keep_mask,
+)
 from materialise.method_status import status_of
 from materialise.window import latest_periods
 from search.engine.clients.graph import EngineGraphClient, Facet
@@ -171,20 +177,26 @@ def _served_pairs(
     plan: BulkPlan,
     rows: Mapping[tuple[str, RoleTuple], list[_Point]],
     *,
-    rank_within_series: bool,
+    ranked_by_series: Collection[str],
     estimated: frozenset[str],
 ) -> _Served:
-    """The points each pair of `rows` serves, as a mint of its member keeps its rows once
-    it has reduced them to their period: `rows` arrive cut to it (`_at_member_latest`).
+    """The points each pair of `rows` serves, as a mint of its member keeps its rows. Under
+    `latest` `rows` arrive cut to each member's period (`_at_member_latest`), as a mint cuts
+    its rows before it masks or collapses them.
 
     Each pair keeps its selected facets' points, then those of the facets continuing the
     lead dated after the last of them, or all of theirs where the selection holds none
     (`materialise.columnar.continuation_mask`). Each member's kept points then collapse
-    across every pair it serves at once (`materialise.facet_collapse.keep_mask`): on a date
-    two facets contest at one pair under one unit, method and provenance, the facet ranked
-    best over the member's whole table keeps it, or over the pair alone under
-    `rank_within_series`, as a mint ranks when a conversion plan runs arithmetic
-    (`materialise.generation._convert_by_series`). Points of different methods both stay.
+    across every pair the read holds at once (`materialise.facet_collapse.keep_mask`): on a
+    date two facets contest at one pair under one unit, method and provenance, the
+    best-ranked facet keeps it, and points of different methods both stay.
+
+    A member in `ranked_by_series`, whose conversion runs arithmetic
+    (`BulkConversion.converts`), ranks each facet over its points at the pair alone, as a
+    mint ranks within each series then (`materialise.generation._convert_by_series`); the
+    read holds every point of a pair it reads. Any other member ranks each facet over its
+    whole table, as the mint does, from coverage (`_member_ranks`), so the winner does not
+    depend on which pairs the read fetched.
 
     A series states the refs its pair's served facets share (`_series_refs`): the selected
     facets holding a served point, else the continuing ones. A pair holds estimates when a
@@ -202,12 +214,14 @@ def _served_pairs(
         kept_by_sv.setdefault(sv, []).extend((role_tuple, point) for point in kept)
     served: dict[tuple[str, RoleTuple], list[_Point]] = {}
     for sv, entries in kept_by_sv.items():
+        by_series = sv in ranked_by_series
         mask = keep_mask(
             [
                 _collapse_cell(sv, role_tuple, point, plan.candidates)
                 for role_tuple, point in entries
             ],
-            rank_within_series=rank_within_series,
+            rank_within_series=by_series,
+            ranks=None if by_series else _member_ranks(plan, sv, {p[2] for _rt, p in entries}),
         )
         for (role_tuple, point), keep in zip(entries, mask, strict=True):
             if keep:
@@ -226,6 +240,38 @@ def _served_pairs(
             pair for pair, points in served.items() if any(p[2] in estimated for p in points)
         ),
     )
+
+
+def _member_ranks(plan: BulkPlan, sv: str, facet_ids: Iterable[str]) -> dict[str | None, FacetRank]:
+    """Each of `facet_ids`' collapse rank (`materialise.facet_collapse.facet_rank`) over
+    `sv`'s whole table, as a mint ranks it: from coverage, over every pair of `sv` the plan
+    holds inside the member's years (`BulkPlan.member_years`), its rows the observations
+    coverage counts there and its span the years between the first and last of them.
+    Inside a window coverage counts a sub-annual facet's years, not its observations, so
+    its rows are low there (#161)."""
+    first, last = plan.member_years(sv)
+    ranks: dict[str | None, FacetRank] = {}
+    for facet_id in facet_ids:
+        candidate = plan.candidates[facet_id]
+        held = candidate.by_sv.get(sv, ())
+        spans = [
+            span
+            for c in held
+            if (span := c.pairs.year_span(first_year=first, last_year=last)) is not None
+        ]
+        ranks[facet_id] = facet_rank(
+            FacetRankStats(
+                facet_id=facet_id,
+                has_period=candidate.observation_period is not None,
+                rows=sum(c.pairs.n_obs(first_year=first, last_year=last) for c in held),
+                span_years=(
+                    max(end for _start, end in spans) - min(start for start, _end in spans)
+                    if spans
+                    else -1
+                ),
+            )
+        )
+    return ranks
 
 
 def _collapse_cell(
@@ -727,7 +773,12 @@ def _read_and_assemble(
             )
         pair_points = at_latest
     served = _served_pairs(
-        plan, pair_points, rank_within_series=conversion is not None, estimated=estimated_ids
+        plan,
+        pair_points,
+        ranked_by_series=(
+            {sv for sv in plan.members if conversion.converts(sv)} if conversion is not None else ()
+        ),
+        estimated=estimated_ids,
     )
     converted = None
     if conversion is not None:
