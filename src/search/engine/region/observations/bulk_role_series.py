@@ -18,9 +18,12 @@ elected (`_ending_after_elected`), one read per year they elected naming that ye
 (`_by_elected_year`), as a mint reads a member again at its elected year. Those reads run
 together, at most `sdmx_chunk_concurrency` at once (`_read_each_year`). A member that elected no year serves its own latest period
 (`materialise.window.latest_period`). A member whose elected year the reads return no
-point in serves the newest period among the `LATEST` rows of every pair the read returned
-for it (`_without_elected_points`), as a mint falls back
-(`materialise.columnar.elected_rows`).
+point in (`_without_elected_points`) falls back under `ranked`, which reads every pair of
+the member: it serves the newest period among the `LATEST` rows of every pair the read
+returned for it, as a mint falls back (`materialise.columnar.elected_rows`). Under `fixed`
+the read holds only some of the member's pairs, and the newest period can sit at one it did
+not read, so the member serves no series. The truncation warning counts them as not shown,
+or with no series left the preview is omitted as `OBSERVATIONS_NO_POINTS`.
 """
 
 from __future__ import annotations
@@ -612,8 +615,11 @@ def _bulk_role_series(
     one read per year they elected naming that year alone (`_by_elected_year`), and keeps
     each member's points at its one period alone
     (`_at_member_latest`). A member that elected a year the reads return no point in
-    (`_without_elected_points`) costs no further read and serves the newest period among
-    the `LATEST` rows of every pair returned for it. A dateless read takes every year.
+    (`_without_elected_points`) costs no further read. Under `ranked` it serves the newest
+    period among the `LATEST` rows of every pair returned for it, as a mint falls back.
+    Under `fixed`, which reads only some of its pairs, it serves no series, which the
+    truncation warning counts as not shown, or `OBSERVATIONS_NO_POINTS` when no series is
+    left. A dateless read takes every year.
 
     A plan that dispatches no pair reads nothing and returns `OBSERVATIONS_NO_POINTS`.
     Read failures in `_FETCH_FAILURE_EXCEPTIONS` return `OBSERVATIONS_BULK_FETCH_FAILED`
@@ -744,15 +750,27 @@ def _read_and_assemble(
             if lagging := _ending_after_elected(plan, pair_points):
                 rows.update(_read_each_year(read, _by_elected_year(plan, lagging)))
                 pair_points = pair_rows(rows)
-            fell_back = _without_elected_points(plan, fetch_plan.facet_svs, pair_points)
-            if fell_back:
+            without = _without_elected_points(plan, fetch_plan.facet_svs, pair_points)
+            if without and fetch_plan.order == "ranked":
                 logger.warning(
                     "coverage index and the bulk role read disagree: %r returned no point "
                     "in the year coverage elects; serving their newest period",
-                    fell_back,
+                    without,
                 )
+                fell_back = without
                 rows.update({sv: newest.get(sv, {}) for sv in fell_back})
                 pair_points = pair_rows(rows, every_pair_of=fell_back)
+            elif without:
+                # A `fixed` read holds some of a member's pairs, and the newest period a
+                # mint falls back to can sit at one it did not read, so it serves none.
+                logger.warning(
+                    "coverage index and the bulk role read disagree: %r returned no point "
+                    "in the year coverage elects; omitting their series",
+                    without,
+                )
+                pair_points = {
+                    pair: points for pair, points in pair_points.items() if pair[0] not in without
+                }
         else:
             pair_points = pair_rows(
                 read(

@@ -977,6 +977,68 @@ def test_a_latest_member_falling_back_reads_a_selected_facet_without_its_elected
     } == {_R1: [("2021", 2.0)]}
 
 
+@pytest.mark.parametrize(
+    ("order", "served"),
+    [("ranked", {_R2: [("2021", 2.0)]}), ("fixed", {})],
+)
+def test_a_latest_member_falls_back_only_when_the_read_holds_every_pair(
+    monkeypatch, search_settings, order: str, served: dict[str, list[tuple[str, float]]]
+):
+    """Coverage holds `FM1` at `_R1` in 2019 and 2021 and at `_R2` in 2021, so the member
+    elects 2021. SDMX holds `_R1` in 2019 alone and `_R2` in 2021. A mint holds 2021 at
+    `_R2` and serves it. A `ranked` read holds both pairs and serves the same. A `fixed`
+    read of one pair holds `_R1` alone, with no 2021 point, and cannot tell which period a
+    mint serves, so it serves no series, and its preview says none was read."""
+    if order == "fixed":
+        search_settings(role_bulk_rank_max_rows=0, role_bulk_series_max=1)
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV, "FM1", _DONOR, _R1, [2019, 2021]), (_SV, "FM1", _DONOR, _R2, [2021])],
+        role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
+        facet_metadata={
+            "FM1": FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=_METHODS["FM1"],
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+        },
+    )
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(_R1): [_facet(dates=["2019"], value=1.0, facet_id="FM1")],
+                _role_tuple(_R2): [_facet(dates=["2021"], value=2.0, facet_id="FM1")],
+            }
+        }
+    )
+    observations, _warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities([_R1, _R2]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        coverage=FakeCoverageService(index).snapshot(),
+        index_sourced=True,
+        latest=True,
+        roles=PlanRoles(
+            bound={"donor": frozenset({_DONOR}), "recipient": frozenset({_R1, _R2})},
+            role_names={"recipient": "recipient", "donor": "provider"},
+        ),
+        elect=lambda _plan: {_SV: 2021},
+    )
+
+    assert observations is not None
+    assert {
+        next(e.ref for e in s.entities if e.role == "destination"): [
+            (p.date, p.value) for p in s.points
+        ]
+        for s in observations.series
+    } == served
+    if not served:
+        assert observations.omitted is not None
+        assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+
+
 def test_a_latest_member_falling_back_ranks_facets_in_the_year_it_serves(monkeypatch):
     """Coverage holds `FM1` at both pairs in 2021, so the member elects 2021, and `FM1` at
     `_R1` and `FM3`, one identity, at both pairs in 2019. SDMX holds no 2021 row, so the
