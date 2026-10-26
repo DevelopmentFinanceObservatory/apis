@@ -17,6 +17,7 @@ composition it counts.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 
@@ -103,9 +104,11 @@ def oecd_region_reading(region: str) -> RegionReading | None:
     return _READINGS_BY_REGION.get(region)
 
 
+@functools.cache
 def _policy_members(ref: str) -> frozenset[str]:
     """The members the membership policy holds for group or region `ref`, empty when it
-    holds none."""
+    holds none. Cached by ref, since the policy is the process's
+    (`shared_membership_policy`)."""
     policy = shared_membership_policy()
     if ref not in policy:
         return frozenset()
@@ -130,25 +133,23 @@ def region_total(
     members, or whose graph region's (`REGION_READINGS`), are the members the role holds;
     else the total counting the most of the residuals the role holds, the one counting the
     fewest residuals among equals, so a subregion's total wins over its continent's, then
-    the first by dcid. None for a role reading no summed region."""
+    the first by dcid. A role holding fewer than two members matches no region by its
+    members. None for a role reading no summed region."""
     for ref in group_refs:
         row = oecd_region_reading(ref)
         total = index.parties.get(row.total) if row is not None else index.totals_by_group.get(ref)
         if total is not None and total.sums_members and total.residuals:
             return total
     members = frozenset(without_residuals(held, index))
-    for row in REGION_READINGS:
-        total = index.parties.get(row.total)
-        if (
-            total is not None
-            and total.totals is not None
-            and members
-            in (
-                _policy_members(row.region),
-                _policy_members(total.totals),
-            )
-        ):
-            return total
+    if len(members) > 1:
+        for row in REGION_READINGS:
+            total = index.parties.get(row.total)
+            if (
+                total is not None
+                and total.totals is not None
+                and members in (_policy_members(row.region), _policy_members(total.totals))
+            ):
+                return total
     held_set = set(held)
     counted = [
         (len(held_set.intersection(total.residuals)), total)

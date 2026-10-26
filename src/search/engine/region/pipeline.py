@@ -96,6 +96,7 @@ from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
 from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Spec, Warning
+from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope
 from search.scope.rules import UNRULED_AXES
 from search.scope.state import ScopeIntake
@@ -607,17 +608,21 @@ def merged_scope_choices(
 ) -> PartScope | None:
     """The scope of `merged`, the region a same-shape merge folded `group` into, built as a
     resubmit of its identity builds it: over the merged identity, with the union of the
-    members' applied entries and no binder record. None when no member states a scope,
+    members' applied entries and the basis record its identity reads
+    (`basis.identity_basis_record`). None when no member states a scope,
     or the merged identity settles no axis. An entry the merged identity cannot take is
     reported in `PartScope.dropped_entries`, never refused."""
     scopes = [region.scope_choices for region in group if region.scope_choices is not None]
     if not scopes:
         return None
     spec = merged.spec
+    identity = spec.definition.identity
+    entries = _union(entry for scope in scopes for entry in scope.entries)
+    basis = identity_basis_record(identity, get_index(), entries)
     built = build_part_scope(
-        base=spec.definition.identity,
-        entries=_union(entry for scope in scopes for entry in scope.entries),
-        records={},
+        base=identity,
+        entries=entries,
+        records={} if basis is None else {"measure_basis": basis},
         facts=scope_facts(spec, operations=merged.operations, coverage=coverage),
         refuse=False,
     )

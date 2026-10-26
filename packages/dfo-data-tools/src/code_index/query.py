@@ -852,6 +852,12 @@ class CodeIndex:
                 menu.setdefault(child)
         return CandidateCodes(hits=tuple(hits), codes=tuple(menu)[:CANDIDATE_LIMIT])
 
+    def names_word(self, word: str) -> bool:
+        """Whether the label or a synonym of some code holds `word`, compared as
+        `candidate_codes` compares it (`fold_word`): "malaria" (CRS 12262, "Malaria
+        control"), not "Gates"."""
+        return fold_word(word) in self._codes_by_word
+
     def words_shared(self, dcid: str, words: Iterable[str]) -> frozenset[str]:
         """The words of `words` the label or a synonym of the code `dcid` holds, compared
         as `candidate_codes` compares them: casefolded, less one trailing "s" on a word

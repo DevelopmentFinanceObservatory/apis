@@ -19,7 +19,14 @@ from code_index.members import ProvenanceScope, is_opt_in
 from code_index.query import CodeIndex, fold_word
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, text_matches, tokenize, word_tokens
-from code_index.types import CodeRow, DatasetDeclaration, MeasureAxis, MeasureValueRow, StatedWord
+from code_index.types import (
+    CodeRow,
+    DatasetDeclaration,
+    MeasureAxis,
+    MeasureIndex,
+    MeasureValueRow,
+    StatedWord,
+)
 from origin_catalogue import current_catalogue
 from search.engine.bind import (
     CandidateMenu,
@@ -3180,21 +3187,61 @@ def _occurrences(tokens: Sequence[Token], texts: Iterable[str | None]) -> list[t
     return [occurrence for text in texts if text for occurrence in _token_occurrences(tokens, text)]
 
 
-def _resolved_name_words(state: ResolveState) -> tuple[str, ...]:
+def _resolved_name_words(state: ResolveState, index: CodeIndex) -> tuple[str, ...]:
     """The content words, less `FUNCTION_WORDS`, of each text naming an entity the part
-    resolved (`ResolveState.place_sets`) and of the request's words for it. The variable
-    can name the entity by one of them ("Gates funding" beside "Bill & Melinda Gates
-    Foundation"), which then reads as the entity, and no rating asks whether the series
-    states it."""
+    resolved (`ResolveState.place_sets`) and of the request's words for it, that no
+    qualifier or measure vocabulary reads (`_vocabulary_reads`). The variable can name the
+    entity by one of them ("Gates funding" beside "Bill & Melinda Gates Foundation"), which
+    then reads as the entity, and no rating asks whether the series states it. A word a
+    vocabulary reads can state a restriction of its own wherever it stands ("women" beside
+    "UN Women", "malaria" beside the Global Fund, "climate" beside the Green Climate Fund),
+    so it stays rated outside the entity's own text."""
     texts = (*state.place_sets, *(state.entity_words.get(name, "") for name in state.place_sets))
+    reads = _vocabulary_reads(index, get_measure_index())
     return tuple(
         dict.fromkeys(
             word.text
             for text in texts
             for word in word_tokens(text)
-            if word.text.casefold() not in FUNCTION_WORDS
+            if word.text.casefold() not in FUNCTION_WORDS and not reads(word.text)
         )
     )
+
+
+def _vocabulary_reads(index: CodeIndex, measure_index: MeasureIndex) -> Callable[[str], bool]:
+    """Whether a word is one a qualifier or measure vocabulary reads: a word of the label or
+    a synonym of a code (`CodeIndex.names_word`), or of a matchable measure value's label,
+    synonyms or short name, or of a measure partition label or noun, folded alike
+    (`fold_word`)."""
+    words = _measure_words(measure_index)
+    return lambda word: index.names_word(word) or fold_word(word) in words
+
+
+# The last measure index `_measure_words` read and its words, one entry, replaced when a
+# request reads another release's index. `MeasureIndex` is a slotted dataclass, so
+# `per_index`'s weak finalizer cannot key on it.
+_MEASURE_WORDS: dict[str, tuple[MeasureIndex, frozenset[str]]] = {}
+
+
+def _measure_words(measure_index: MeasureIndex) -> frozenset[str]:
+    """The folded words of each matchable measure value's label, synonyms and short name,
+    and of each partition label and noun of `measure_index`, built once per index."""
+    cached = _MEASURE_WORDS.get("last")
+    if cached is not None and cached[0] is measure_index:
+        return cached[1]
+    texts = [
+        *(
+            text
+            for row in measure_index.values
+            if row.matchable
+            for text in (row.label, *row.synonyms, row.short_name)
+            if text
+        ),
+        *(label.label for label in (*measure_index.partition_labels, *measure_index.nouns)),
+    ]
+    words = frozenset(fold_word(word.text) for text in texts for word in word_tokens(text))
+    _MEASURE_WORDS["last"] = (measure_index, words)
+    return words
 
 
 class _FreeReaders(NamedTuple):
@@ -3247,7 +3294,7 @@ def _free_readers(
                 [
                     *state.entity_texts,
                     *(role.span for roles in state.entity_roles.values() for role in roles),
-                    *_resolved_name_words(state),
+                    *_resolved_name_words(state, index),
                 ],
             ),
         ),
