@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 import pytest
+from resolvekit.core.model.result import CandidateSummary
 
 import entity_resolution.resolver as resolver_module
 import entity_resolution.shared as shared_module
@@ -463,23 +464,37 @@ def test_a_code_and_an_entity_listing_one_text_are_ambiguous_after_one_read(shar
     assert len(graph.node_arcs_many_calls) == 1
 
 
+_AID_CODE = "DAC1AidType2102"
+
+
+@pytest.mark.parametrize("path", ["shared_name", "resolvekit_hit", "fallback"])
 @pytest.mark.parametrize(
-    ("code_system", "expected"),
-    [
-        ("CRSPurposeCodeEnum", None),
-        ("DAC1AidTypeEnum", "DAC1AidType2102"),
-        (None, "DAC1AidType2102"),
-    ],
+    ("code_system", "admitted"),
+    [("CRSPurposeCodeEnum", False), ("DAC1AidTypeEnum", True), (None, True)],
 )
-def test_a_code_system_narrows_the_codes_sharing_a_hits_name(
-    shared_resolver, code_system, expected
+def test_a_code_system_narrows_the_codes_every_path_finds(
+    shared_resolver, monkeypatch, path, code_system, admitted
 ):
-    """A code another path finds, here a graph node sharing the hit's text, is admitted under
-    `code_system` only when the code index places it in that system, as a code-index hit is."""
-    code = "DAC1AidType2102"
+    """A code a path other than the code index finds is admitted under `code_system` only
+    when the code index places it in that system, as a code-index hit is: a graph node
+    sharing a hit's text ("European Union" beside the EU), a resolvekit survivor, and a
+    node the miss ladder's last rung answers."""
+    text = {"shared_name": "European Union", "resolvekit_hit": "Kenya", "fallback": "Qqqaid"}[path]
+    if path == "resolvekit_hit":
+        survivor = CandidateSummary(
+            entity_id=f"dfo_graph/{_AID_CODE}",
+            confidence=0.9,
+            canonical_name="Multilateral contribution to EU institutions",
+            pack_id="org",
+        )
+        monkeypatch.setattr(
+            resolver_module,
+            "_resolve_batch_job",
+            lambda *_: [resolver_module._GateOutcome(survivors=(survivor,), near_matches=())],
+        )
     graph = FakeGraphLookup(
-        nodes={**_NODES, code: _node("DAC1AidTypeEnum", "European Union")},
-        arcs={(_LAST_RUNG_ARC, "European Union"): ["EuropeanUnion", code]},
+        nodes={**_NODES, _AID_CODE: _node("DAC1AidTypeEnum", text)},
+        arcs={(_LAST_RUNG_ARC, text): ["EuropeanUnion", _AID_CODE]},
     )
     resolver = EntityResolver(
         graph=graph, shared=shared_resolver, codes=_FakeCodes({}), code_index=get_index
@@ -487,18 +502,15 @@ def test_a_code_system_narrows_the_codes_sharing_a_hits_name(
 
     (result,) = _run(
         resolver.resolve(
-            ["European Union"],
-            kinds=["country", "code"],
-            code_system=code_system,
-            near_matches=True,
+            [text], kinds=["country", "code"], code_system=code_system, near_matches=True
         )
     )
 
-    if expected is None:
-        assert isinstance(result, NotFound), result
-    else:
+    if admitted:
         assert isinstance(result, Resolved), result
-        assert result.entity.dcid == expected
+        assert result.entity.dcid == _AID_CODE
+    else:
+        assert isinstance(result, NotFound), result
 
 
 @pytest.mark.parametrize(
