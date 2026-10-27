@@ -2466,12 +2466,14 @@ class _GroupRowStreamer:
         """Dispatches `self._chunks` (already `dcid:`-sorted) on a pool kept
         full: at most `member_concurrency` chunks' own fetches in flight,
         and a new chunk submitted, in chunk order, whenever any in-flight
-        chunk completes. A slow chunk therefore holds one worker.
-        Completed chunks wait in `ready` until every chunk
-        before them has been consumed, so results are consumed in chunk
-        order whatever order the fetches finish in, and the first failed
-        chunk in that order is what raises. Once any chunk has failed, no
-        further chunk is submitted.
+        chunk completes. A slow chunk therefore holds one worker. Dispatch
+        stays within `2 * member_concurrency` chunks of the oldest chunk
+        not yet consumed, so a stalled chunk lets the pool run that far
+        ahead and no further. Completed chunks wait in `ready` until every
+        chunk before them has been consumed, so results are consumed in
+        chunk order whatever order the fetches finish in, and the first
+        failed chunk in that order is what raises. Once any chunk has
+        failed, no further chunk is submitted.
 
         Each consumed chunk's own member outcomes are recorded into
         `pending_members`, keyed by dcid position, and `cursor` then walks
@@ -2489,10 +2491,10 @@ class _GroupRowStreamer:
         positions across chunks.
 
         `ready` and `pending_members` together hold the chunks completed
-        ahead of the slowest one in flight. Every fetched row draws on the
-        group's shared `raw_budget`, so that buffer never outgrows the
-        group's raw row guard; peak memory is bounded by it plus the one
-        row chunk currently being assembled.
+        ahead of the oldest one not yet consumed, never more than
+        `2 * member_concurrency - 1` of them. Peak memory during this whole
+        pass is bounded by that window plus the one row chunk currently
+        being assembled, never by the group's own total row count.
 
         `finally: pool.shutdown(wait=True, cancel_futures=True)` blocks for
         every already-submitted chunk's own fetch to finish, past whichever
@@ -2505,6 +2507,7 @@ class _GroupRowStreamer:
         cursor = 0
 
         max_workers = max(1, min(self._member_concurrency, len(chunks)))
+        look_ahead = 2 * max_workers
         pool = ThreadPoolExecutor(max_workers=max_workers)
         in_flight: dict[Future[dict[int, _ConvertedMember]], int] = {}
         ready: dict[int, Future[dict[int, _ConvertedMember]]] = {}
@@ -2513,7 +2516,8 @@ class _GroupRowStreamer:
         try:
             for head in range(len(chunks)):
                 while True:
-                    while not failed and next_chunk < len(chunks) and len(in_flight) < max_workers:
+                    dispatch_end = min(len(chunks), head + look_ahead)
+                    while not failed and next_chunk < dispatch_end and len(in_flight) < max_workers:
                         future = submit_with_context(
                             pool, self._generate_one_chunk, chunks[next_chunk]
                         )

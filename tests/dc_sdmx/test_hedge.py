@@ -1,16 +1,18 @@
-"""Hedged `/data` reads. The first answer wins and each request gets at most one duplicate."""
+"""Hedged `/data` reads. The first success wins and each request gets at most one duplicate."""
 
 from __future__ import annotations
 
 import threading
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
+import pytest
 
-from dc_sdmx.client import _HEDGE_SLOTS, SdmxClient
+from dc_sdmx import SdmxHttpError
+from dc_sdmx.client import _HEDGE_LOSER_CAP, _HEDGE_SLOTS, SdmxClient
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _CONTENT_TYPE = "application/vnd.sdmx.data+csv;version=2.0.0"
@@ -30,9 +32,8 @@ def _body(variable: str, value: str) -> bytes:
 
 
 class _ClosingStream(httpx.SyncByteStream):
-    def __init__(self, body: bytes, *, close_raises: bool = False) -> None:
+    def __init__(self, body: bytes) -> None:
         self._body = body
-        self._close_raises = close_raises
         self.closed = threading.Event()
 
     def __iter__(self) -> Iterator[bytes]:
@@ -40,67 +41,114 @@ class _ClosingStream(httpx.SyncByteStream):
 
     def close(self) -> None:
         self.closed.set()
-        if self._close_raises:
-            raise OSError("connection reset while closing")
 
 
 class _StalledFirstRequest(httpx.BaseTransport):
     """The first request for each variable waits for `release` and answers 1; every later
-    one answers 2 at once."""
+    one answers 2 at once. Variables in `stall_every` stall on every request, and a variable
+    in `gates` waits for its own event in place of `release`."""
 
-    def __init__(self, *, close_raises: bool = False) -> None:
-        self.close_raises = close_raises
+    def __init__(self, *, stall_every: frozenset[str] = frozenset()) -> None:
+        self.stall_every = stall_every
         self.release = threading.Event()
         self.lock = threading.Lock()
         self.requests: Counter[str] = Counter()
         self.stalled_streams: list[_ClosingStream] = []
+        self.closed = threading.Event()
+        self.gates: dict[str, threading.Event] = {}
+        self.streams: dict[str, _ClosingStream] = {}
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         variable = str(request.url.params["c[variableMeasured]"])
         with self.lock:
             self.requests[variable] += 1
             first = self.requests[variable] == 1
-        if first:
-            assert self.release.wait(timeout=5)
-        stream = _ClosingStream(
-            _body(variable, "1" if first else "2"), close_raises=first and self.close_raises
-        )
-        if first:
+        stalls = first or variable in self.stall_every
+        if stalls:
+            assert self.gates.get(variable, self.release).wait(timeout=5)
+        stream = _ClosingStream(_body(variable, "1" if first else "2"))
+        if stalls:
             self.stalled_streams.append(stream)
+            self.streams[variable] = stream
         return httpx.Response(200, headers={"content-type": _CONTENT_TYPE}, stream=stream)
 
+    def close(self) -> None:
+        self.closed.set()
 
-def _value(client: SdmxClient, variable: str) -> str | None:
-    rows = client.data(variables=[variable], entities=_ENTITIES).rows
+
+def _value(client: SdmxClient, variable: str, *, deadline: float | None = None) -> str | None:
+    rows = client.data(variables=[variable], entities=_ENTITIES, deadline=deadline).rows
     assert len(rows) == 1
     return rows[0].value
 
 
-def test_a_stalled_request_is_answered_by_its_one_duplicate_while_hedge_slots_last():
+def _wait_until(condition: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 5
+    while not condition():
+        assert time.monotonic() < deadline
+        time.sleep(_HEDGE_AFTER / 5)
+
+
+def test_a_stalled_request_is_answered_by_its_duplicate_and_the_loser_frees_its_slot_at_once():
     transport = _StalledFirstRequest()
     client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
-    hedged = [f"V{i}" for i in range(_HEDGE_SLOTS)]
+    hedged = [f"V{i}" for i in range(_HEDGE_SLOTS + 1)]
 
-    # Each read returns its duplicate's answer while its first request is still stalled.
-    assert [_value(client, variable) for variable in hedged] == ["2"] * _HEDGE_SLOTS
+    # Each read returns its duplicate's answer while its first request is still stalled. The
+    # stalled losers hold no slot, so more reads hedge than there are slots.
+    assert [_value(client, variable) for variable in hedged] == ["2"] * len(hedged)
     assert transport.requests == Counter(dict.fromkeys(hedged, 2))
 
-    # Every hedge slot is held by a stalled loser, so the next read waits for its own answer.
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    # The losers' responses are closed unread once they arrive.
+    transport.release.set()
+    for stream in transport.stalled_streams:
+        assert stream.closed.wait(timeout=5)
+
+
+def test_a_read_waits_for_its_own_answer_while_every_hedge_slot_is_taken():
+    holders = [f"H{i}" for i in range(_HEDGE_SLOTS)]
+    transport = _StalledFirstRequest(stall_every=frozenset(holders))
+    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
+
+    with ThreadPoolExecutor(max_workers=_HEDGE_SLOTS + 1) as pool:
+        # Both sends of each holder stall, so the holders keep every slot.
+        held = [pool.submit(_value, client, variable) for variable in holders]
+        _wait_until(lambda: all(transport.requests[variable] == 2 for variable in holders))
         unhedged = pool.submit(_value, client, "V_unhedged")
         time.sleep(4 * _HEDGE_AFTER)
         assert not unhedged.done()
         assert transport.requests["V_unhedged"] == 1
         transport.release.set()
         assert unhedged.result(timeout=5) == "1"
+        assert all(future.result(timeout=5) in {"1", "2"} for future in held)
 
-    # The losers' responses are closed unread, and their slots serve the next stalled read.
-    for stream in transport.stalled_streams[:_HEDGE_SLOTS]:
-        assert stream.closed.wait(timeout=5)
-    transport.release.clear()
+
+def test_hedging_pauses_while_the_losers_still_running_reach_the_cap_and_resumes_after_one_ends():
+    transport = _StalledFirstRequest()
+    losers = [f"L{i}" for i in range(_HEDGE_LOSER_CAP)]
+    transport.gates = {variable: threading.Event() for variable in [*losers, "V_unhedged"]}
+    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
+
+    # Each read is answered by its duplicate and leaves its first request running as a loser.
+    assert [_value(client, variable) for variable in losers] == ["2"] * len(losers)
+
+    # With the cap reached, a slow read sends no duplicate and waits for its own answer.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        unhedged = pool.submit(_value, client, "V_unhedged")
+        time.sleep(4 * _HEDGE_AFTER)
+        assert transport.requests["V_unhedged"] == 1
+        transport.gates["V_unhedged"].set()
+        assert unhedged.result(timeout=5) == "1"
+
+    # Once one loser settles, the next slow read hedges again.
+    transport.gates[losers[0]].set()
+    _wait_until(lambda: losers[0] in transport.streams)
+    assert transport.streams[losers[0]].closed.wait(timeout=5)
     assert _value(client, "V_after") == "2"
     assert transport.requests["V_after"] == 2
     transport.release.set()
+    for gate in transport.gates.values():
+        gate.set()
 
 
 def test_a_chunked_read_sends_each_slow_chunk_at_most_twice():
@@ -134,7 +182,18 @@ def test_a_chunked_read_sends_each_slow_chunk_at_most_twice():
     assert sum(requests.values()) <= len(variables) + _HEDGE_SLOTS
 
 
-def test_a_duplicate_that_fails_at_once_loses_to_a_primary_that_answers_late():
+def _reset(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("connection reset", request=request)
+
+
+@pytest.mark.parametrize(
+    "fail",
+    [
+        pytest.param(_reset, id="transport error"),
+        pytest.param(lambda _request: httpx.Response(503, text="unavailable"), id="503"),
+    ],
+)
+def test_a_duplicate_that_fails_at_once_loses_to_a_primary_that_answers_late(fail):
     lock = threading.Lock()
     requests: Counter[str] = Counter()
 
@@ -143,7 +202,7 @@ def test_a_duplicate_that_fails_at_once_loses_to_a_primary_that_answers_late():
             requests["sent"] += 1
             first = requests["sent"] == 1
         if not first:
-            raise httpx.ConnectError("connection reset", request=request)
+            return fail(request)
         time.sleep(4 * _HEDGE_AFTER)
         return httpx.Response(
             200, headers={"content-type": _CONTENT_TYPE}, content=_body("V0", "1")
@@ -157,19 +216,92 @@ def test_a_duplicate_that_fails_at_once_loses_to_a_primary_that_answers_late():
     assert requests["sent"] == 2
 
 
-def test_a_loser_whose_close_raises_still_returns_its_hedge_slot():
-    transport = _StalledFirstRequest(close_raises=True)
+def test_a_read_whose_two_sends_fail_raises_the_first_requests_error():
+    lock = threading.Lock()
+    requests: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with lock:
+            requests["sent"] += 1
+            first = requests["sent"] == 1
+        if first:
+            time.sleep(4 * _HEDGE_AFTER)
+            return httpx.Response(500, text="primary failed")
+        return httpx.Response(503, text="duplicate failed")
+
+    client = SdmxClient(
+        base_url=_BASE_URL, transport=httpx.MockTransport(handler), hedge_after=_HEDGE_AFTER
+    )
+
+    with pytest.raises(SdmxHttpError) as excinfo:
+        _value(client, "V0")
+    assert excinfo.value.upstream_status == 500
+    assert requests["sent"] == 2
+
+
+def test_the_duplicate_times_out_with_what_remains_of_the_read_deadline():
+    lock = threading.Lock()
+    read_timeouts: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with lock:
+            read_timeouts.append(request.extensions["timeout"]["read"])
+            first = len(read_timeouts) == 1
+        if first:
+            time.sleep(4 * _HEDGE_AFTER)
+        return httpx.Response(
+            200, headers={"content-type": _CONTENT_TYPE}, content=_body("V0", "1")
+        )
+
+    client = SdmxClient(
+        base_url=_BASE_URL,
+        transport=httpx.MockTransport(handler),
+        timeout=90,
+        hedge_after=_HEDGE_AFTER,
+    )
+
+    _value(client, "V0", deadline=time.monotonic() + 10)
+
+    primary, duplicate = read_timeouts
+    assert primary <= 10
+    assert duplicate <= primary - _HEDGE_AFTER
+
+
+def test_closing_the_client_waits_for_a_losing_send_to_settle():
+    transport = _StalledFirstRequest()
     client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
-    first_round = [f"V{i}" for i in range(_HEDGE_SLOTS)]
-    assert [_value(client, variable) for variable in first_round] == ["2"] * _HEDGE_SLOTS
+
+    assert _value(client, "V0") == "2"
+    client.close()
+    assert not transport.closed.is_set()
 
     transport.release.set()
-    for stream in transport.stalled_streams:
-        assert stream.closed.wait(timeout=5)
-    transport.release.clear()
+    assert transport.closed.wait(timeout=5)
+    assert transport.stalled_streams[0].closed.is_set()
 
-    # Every slot came back, so each stalled read hedges again.
-    second_round = [f"W{i}" for i in range(_HEDGE_SLOTS)]
-    assert [_value(client, variable) for variable in second_round] == ["2"] * _HEDGE_SLOTS
-    assert transport.requests == Counter(dict.fromkeys(first_round + second_round, 2))
+
+def test_a_duplicate_whose_thread_fails_to_start_frees_its_slot_and_closes_the_first_request(
+    monkeypatch,
+):
+    transport = _StalledFirstRequest()
+    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
+    real_start = threading.Thread.start
+    starts = 0
+
+    def start(thread: threading.Thread) -> None:
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        _value(client, "V0")
+    monkeypatch.undo()
+
     transport.release.set()
+    _wait_until(lambda: bool(transport.stalled_streams))
+    assert transport.stalled_streams[0].closed.wait(timeout=5)
+    slots = [client._hedge_slots.acquire(blocking=False) for _ in range(_HEDGE_SLOTS)]
+    assert slots == [True] * _HEDGE_SLOTS

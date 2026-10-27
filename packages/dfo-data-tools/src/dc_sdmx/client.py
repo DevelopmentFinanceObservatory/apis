@@ -125,13 +125,17 @@ _DEFAULT_TOTAL_CONCURRENCY = 8
 
 DATA_HEDGE_AFTER_SECONDS = 0.5
 """When a `/data` request still has no response headers, the client sends it once more and takes
-whichever answers first (`SdmxClient(hedge_after=...)`). Dev's mixer answers `/data` in 0.09 s
+whichever answers 2xx first (`SdmxClient(hedge_after=...)`). Dev's mixer answers `/data` in 0.09 s
 at p50 and 0.39 s at p95 server-side, and 2.8% of requests take over 1 s, so half a second
 hedges about one request in twenty and cuts the tail beyond it."""
 
-# A mixer slow on every request would see each one sent twice. Two duplicates in flight per
-# client cover the 3% tail across a mint's four fetch workers and cap the extra load.
+# A mixer slow on every request would see each one sent twice. Two undecided races per client
+# cover the 3% tail across a mint's four fetch workers and cap the extra load.
 _HEDGE_SLOTS = 2
+
+# Losers run on after their race until their own timeout. While this many are still running the
+# mixer is answering slowly, so the client sends no new duplicate until one of them settles.
+_HEDGE_LOSER_CAP = 4
 
 # Poll every 20 ms so coordinators notice completed siblings while waiting
 # for a contended slot, including when `total_concurrency < chunk_concurrency`.
@@ -524,11 +528,14 @@ class SdmxClient:
     (`dfo_platform.cloud_run_auth`).
 
     With `hedge_after`, a `/data` request that has no response headers after that many seconds
-    is sent once more and the first response wins (`DATA_HEDGE_AFTER_SECONDS` is the mint's
+    is sent once more and the first 2xx response wins (`DATA_HEDGE_AFTER_SECONDS` is the mint's
     value). Both requests run on their own threads, so a slow loser holds no caller's thread or
-    total-concurrency slot; it ends at its httpx timeout and its response is closed unread. At
-    most `_HEDGE_SLOTS` duplicates are in flight per instance, and a request that finds none free
-    waits for its own answer. `/availability` requests are sent once.
+    total-concurrency slot. A loser ends at its httpx timeout, which a guarded read caps at the
+    time its deadline left when the request was sent, and its response is closed unread. Each
+    send counts as an active request, so `close()` waits for a loser to settle. At most
+    `_HEDGE_SLOTS` races are undecided per instance, and no duplicate is sent while
+    `_HEDGE_LOSER_CAP` losers are still running; a request that cannot hedge waits for its own
+    answer. `/availability` requests are sent once.
     """
 
     def __init__(
@@ -565,6 +572,8 @@ class SdmxClient:
         )
         self._hedge_after = hedge_after
         self._hedge_slots = threading.BoundedSemaphore(_HEDGE_SLOTS)
+        self._hedge_lock = threading.Lock()
+        self._running_losers = 0
         self._lifecycle_lock = threading.Lock()
         self._close_started = False
         self._client_closed = False
@@ -1460,7 +1469,7 @@ class SdmxClient:
                 request_timeout = (
                     self._timeout if guard is None else min(self._timeout, guard.remaining())
                 )
-                with self._data_response(params, timeout=request_timeout) as response:
+                with self._data_response(params, timeout=request_timeout, guard=guard) as response:
                     if guard is not None:
                         guard.arm(response)
                     try:
@@ -1489,12 +1498,12 @@ class SdmxClient:
 
     @contextmanager
     def _data_response(
-        self, params: Mapping[str, str], *, timeout: float
+        self, params: Mapping[str, str], *, timeout: float, guard: _DeadlineGuard | None
     ) -> Iterator[httpx.Response]:
         """Send one `/data` GET, hedged when the client has `hedge_after`, and close its
         response on exit."""
 
-        def send() -> httpx.Response:
+        def send(timeout: float) -> httpx.Response:
             request = self._client.build_request(
                 "GET",
                 _DATA_PATH,
@@ -1504,45 +1513,104 @@ class SdmxClient:
             )
             return self._client.send(request, stream=True)
 
-        response = send() if self._hedge_after is None else self._hedged_send(send)
+        response = (
+            send(timeout)
+            if self._hedge_after is None
+            else self._hedged_send(send, timeout=timeout, guard=guard)
+        )
         try:
             yield response
         finally:
             response.close()
 
-    def _hedged_send(self, send: Callable[[], httpx.Response]) -> httpx.Response:
-        """`send()`'s first response: the request alone, or the request and one duplicate when
-        it has no response after `self._hedge_after` seconds and a hedge slot is free.
+    def _hedged_send(
+        self,
+        send: Callable[[float], httpx.Response],
+        *,
+        timeout: float,
+        guard: _DeadlineGuard | None,
+    ) -> httpx.Response:
+        """`send()`'s first 2xx response: the request alone, or the request and one duplicate
+        when it has no response after `self._hedge_after` seconds, the read's deadline has time
+        left, fewer than `_HEDGE_LOSER_CAP` losers are running, and a hedge slot is free. The
+        duplicate's timeout is the time left.
 
-        A send that raises loses to the other one; only when both raise does the primary's
-        error reach the caller. The loser keeps the hedge slot until it settles; its response,
-        if any, is closed then.
+        A send that raises or answers non-2xx loses to the other one; only when both fail does
+        the request's own outcome reach the caller. The slot is released as soon as the race is
+        decided. The loser's response, if any, is closed when it arrives.
         """
-        primary = _send_on_own_thread(send)
+        primary = self._send_on_own_thread(lambda: send(timeout))
         if wait((primary,), timeout=self._hedge_after).done:
             return primary.result()
-        if not self._hedge_slots.acquire(blocking=False):
+        hedge_timeout = self._hedge_timeout(guard)
+        with self._hedge_lock:
+            losers_at_cap = self._running_losers >= _HEDGE_LOSER_CAP
+        if hedge_timeout is None or losers_at_cap or not self._hedge_slots.acquire(blocking=False):
             return primary.result()
-        hedge = _send_on_own_thread(send)
+        try:
+            hedge = self._send_on_own_thread(lambda: send(hedge_timeout))
+        except BaseException:
+            self._hedge_slots.release()
+            primary.add_done_callback(_close_sent_response)
+            raise
         pending = {primary, hedge}
         while pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
-            answered = [future for future in (primary, hedge) if future in done]
-            winner = next((future for future in answered if future.exception() is None), None)
+            winner = next(
+                (sent for sent in (primary, hedge) if sent in done and _answered(sent)), None
+            )
             if winner is not None:
-                loser = hedge if winner is primary else primary
-                loser.add_done_callback(self._settle_hedge_loser)
+                self._hedge_slots.release()
+                with self._hedge_lock:
+                    self._running_losers += 1
+                (hedge if winner is primary else primary).add_done_callback(self._settle_loser)
                 return winner.result()
-        # Both sends raised, so nothing is left to close.
         self._hedge_slots.release()
+        _close_sent_response(hedge)
         return primary.result()
 
-    def _settle_hedge_loser(self, loser: Future[httpx.Response]) -> None:
+    def _settle_loser(self, loser: Future[httpx.Response]) -> None:
         try:
-            if loser.exception() is None:
-                loser.result().close()
+            _close_sent_response(loser)
         finally:
-            self._hedge_slots.release()
+            with self._hedge_lock:
+                self._running_losers -= 1
+
+    def _hedge_timeout(self, guard: _DeadlineGuard | None) -> float | None:
+        """The duplicate's timeout, or None when the read is stopped or out of time."""
+        if guard is None:
+            return self._timeout
+        if guard.stopped.is_set():
+            return None
+        try:
+            return min(self._timeout, guard.remaining())
+        except TimeoutError:
+            return None
+
+    def _send_on_own_thread(self, send: Callable[[], httpx.Response]) -> Future[httpx.Response]:
+        """`send()` on a new daemon thread under the caller's context, so a request that loses a
+        hedge occupies no pool worker while it runs out its timeout. The send counts as an
+        active request until it settles."""
+        future: Future[httpx.Response] = Future()
+        context = contextvars.copy_context()
+
+        def run() -> None:
+            try:
+                future.set_running_or_notify_cancel()
+                try:
+                    future.set_result(context.run(send))
+                except BaseException as exc:
+                    future.set_exception(exc)
+            finally:
+                self._end_request()
+
+        self._retain_request()
+        try:
+            threading.Thread(target=run, name="sdmx-send", daemon=True).start()
+        except BaseException:
+            self._end_request()
+            raise
+        return future
 
     def availability(
         self,
@@ -1896,21 +1964,16 @@ class SdmxClient:
         )
 
 
-def _send_on_own_thread(send: Callable[[], httpx.Response]) -> Future[httpx.Response]:
-    """`send()` on a new daemon thread under the caller's context, so a request that loses a
-    hedge occupies no pool worker while it runs out its timeout."""
-    future: Future[httpx.Response] = Future()
-    context = contextvars.copy_context()
+def _answered(sent: Future[httpx.Response]) -> bool:
+    """Whether a settled send holds a 2xx response."""
+    return sent.exception() is None and sent.result().is_success
 
-    def run() -> None:
-        future.set_running_or_notify_cancel()
-        try:
-            future.set_result(context.run(send))
-        except BaseException as exc:
-            future.set_exception(exc)
 
-    threading.Thread(target=run, name="sdmx-hedge", daemon=True).start()
-    return future
+def _close_sent_response(sent: Future[httpx.Response]) -> None:
+    """Close a settled send's response, if it has one."""
+    if sent.exception() is None:
+        with suppress(OSError, httpx.HTTPError):
+            sent.result().close()
 
 
 def _raise_for_non_success(

@@ -385,3 +385,86 @@ def test_a_slow_chunk_leaves_every_other_worker_fetching_and_the_rows_in_dcid_or
     assert pooled_rows == serial_rows
     assert [row["stat_var"] for row in pooled_rows] == [f"dcid:{bare}" for bare, _entity in members]
     assert pooled.content_version == serial.content_version
+
+
+# ---------------------------------------------------------------------------
+# A stalled head chunk bounds how far dispatch runs ahead of it
+# ---------------------------------------------------------------------------
+
+
+def test_a_stalled_first_chunk_lets_dispatch_run_at_most_two_pools_ahead():
+    """Twelve members land in twelve chunks on two workers. The first chunk stalls until the
+    others stop arriving: three answered, then 0.2 s with no fourth. Only chunks within two
+    pools of the first one (`2 * member_concurrency`) are sent while it is pending, so the
+    completed chunks waiting on it stay bounded. The frame matches a serial read's."""
+    members = [(f"Stat_{index:02d}", f"country/M{index:02d}") for index in range(12)]
+    slow_bare = members[0][0]
+    workers = 2
+    bodies = {
+        bare: _CSV_HEADER
+        + _csv_row(
+            stat_var=bare,
+            year="2015",
+            value=str(index + 1),
+            unit="UNIT1",
+            method="METH1",
+            provenance="PROV1",
+            facet_id="facet1",
+        )
+        for index, (bare, _entity) in enumerate(members)
+    }
+    changed = threading.Condition()
+    answered_before_head: list[int] = []
+    answered = 0
+
+    def respond(bare: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=bodies[bare],
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+
+    def stalling(request: httpx.Request) -> httpx.Response:
+        nonlocal answered
+        bare = str(request.url.params.get("c[variableMeasured]"))
+        if not _is_data_fetch(request):
+            return respond(bare)
+        with changed:
+            if bare == slow_bare:
+                changed.wait_for(lambda: answered >= 2 * workers - 1, timeout=2.0)
+                changed.wait_for(lambda: answered >= 2 * workers, timeout=0.2)
+                answered_before_head.append(answered)
+            else:
+                answered += 1
+                changed.notify_all()
+        return respond(bare)
+
+    def read(handler, member_concurrency: int):
+        sdmx = SdmxClient(
+            base_url="https://datacommons.one.org/core/api", transport=httpx.MockTransport(handler)
+        )
+        graph = FakeGraphReader(
+            facets={(bare, entity): [_SHARED_FACET] for bare, entity in members}
+        )
+        return materialise_group(
+            [
+                _request(stat_var=f"dcid:{bare}", facet_bindings=_BOUND_FACETS, entity=entity)
+                for bare, entity in members
+            ],
+            sdmx=sdmx,
+            graph=graph,
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+            materialiser_build="build-123",
+            capability_version="cap-v1",
+            member_concurrency=member_concurrency,
+            coverage=_coverage_for([(bare, "facet1", entity) for bare, entity in members]),
+        )
+
+    pooled = read(stalling, workers)
+    serial = read(lambda request: respond(str(request.url.params.get("c[variableMeasured]"))), 1)
+
+    assert answered_before_head == [2 * workers - 1]
+    pooled_rows = [row for frame in pooled.frame_chunks() for row in frame.table.to_pylist()]
+    serial_rows = [row for frame in serial.frame_chunks() for row in frame.table.to_pylist()]
+    assert pooled_rows == serial_rows
+    assert pooled.content_version == serial.content_version
