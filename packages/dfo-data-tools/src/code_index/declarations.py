@@ -348,6 +348,7 @@ COMPOSITES: tuple[CompositeDeclaration, ...] = (
     CompositeDeclaration(
         provenance="provenance/ONEBilateralAndImputedMultilateral",
         label="bilateral plus imputed multilateral (OECD CRS and ONE Imputed Multilateral Sectors)",
+        measure_noun="including imputed multilateral spending",
         kind="stacked",
         components=(
             ComponentRecipe(role="bilateral", dataset=_CRS),
@@ -365,6 +366,7 @@ COMPOSITES: tuple[CompositeDeclaration, ...] = (
     CompositeDeclaration(
         provenance="provenance/ONEOECDHeadlineODA",
         label="OECD headline ODA (net flows to 2017, grant equivalents from 2018)",
+        measure_noun="OECD headline ODA",
         kind="spliced",
         components=(
             ComponentRecipe(

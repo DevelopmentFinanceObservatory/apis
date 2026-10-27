@@ -674,6 +674,10 @@ def test_a_donor_window_crossing_2018_is_counted_on_the_oecd_headline_per_year()
     binding = (spec.definition.identity.facets or {})["provenance"]
     assert binding == IdentityBindingValue(ref=_HEADLINE)
     assert spec.resolved.facets["provenance"].ref == _HEADLINE
+    declaration = get_index().composite(_HEADLINE)
+    assert declaration is not None
+    assert spec.resolved.measure_label == declaration.measure_noun
+    assert [source.ref for source in spec.resolved.trace.resolved_sources] == [_DAC1]
     assert [(c.role, c.provenance, c.periods) for c in scope.compiled.components] == [
         ("headline_net", _DAC1, [(2015, 2017)]),
         ("headline_ge", _DAC1, [(2018, 2020)]),

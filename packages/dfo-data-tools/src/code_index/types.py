@@ -487,11 +487,15 @@ class CompositeDeclaration:
     An identity whose `facets.provenance` binds `provenance` as a value is served as one frame
     composed from one materialisation per component (`code_index.composites`), every row
     carrying `provenance`. The graph holds no node for it: every graph or catalogue read uses
-    the component provenances. `label` names the composite for a reader. Each component table
-    gives a provider's account of a flow, and so does the composite."""
+    the component provenances. `label` names the composite for a reader. `measure_noun` is
+    the words a sentence names its measure by: after the measure label of a stacked
+    composite, whose components share the measure, and in its place for a spliced one, whose
+    measure changes between its periods. Each component table gives a provider's account of
+    a flow, and so does the composite."""
 
     provenance: str
     label: str
+    measure_noun: str
     kind: CompositeKind
     components: tuple[ComponentRecipe, ...]
 

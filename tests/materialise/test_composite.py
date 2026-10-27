@@ -20,6 +20,7 @@ from materialise.content_version import mint_version_from_chunks
 from materialise.dependencies import Dependencies
 from materialise.enrichment import EnrichmentLookup
 from materialise.errors import MaterialisationUsageError
+from materialise.finish import _coverage_below_scope_warning
 from materialise.frame_build import build_frame
 from materialise.profile import compute_output_profile
 from materialise.statistics import SeriesStatisticsSink
@@ -59,8 +60,10 @@ def _component(
     recipients: Sequence[str] = ("country/KEN", "country/GHA", "country/NGA"),
     method: str | None = None,
     years: tuple[int, int] = (2005, 2024),
+    unserved: Sequence[str] = (),
 ) -> ComponentResult:
-    """One component's result over `rows`, as `pipeline.materialise_group` returns it."""
+    """One component's result over `rows`, as `pipeline.materialise_group` returns it, with
+    `unserved` the members its facet group election left out and its warning counting them."""
     frame = build_frame(
         role_keys=_ROLES,
         rows=[
@@ -128,7 +131,21 @@ def _component(
             capability_version="cap-1",
         ),
         coverage=Coverage(rows=frame.num_rows, dimensions=(), window=None),
-        warnings=(),
+        warnings=(
+            (
+                _coverage_below_scope_warning(
+                    (),
+                    countries_fallback=False,
+                    off_cadence=(),
+                    out_of_window=(),
+                    unserved_members=unserved,
+                    member_count=len(members),
+                ),
+            )
+            if unserved
+            else ()
+        ),
+        unserved_members=tuple(unserved),
         series_statistics=statistics.finish(),
         output_profile=compute_output_profile(frame, role_columns=_ROLES, enrichment=_ENRICHMENT),
         conversion_record=None,
@@ -357,6 +374,31 @@ def test_a_member_holding_no_row_copies_its_components_unit_and_method():
 
     zero = [row for row in _rows(result) if row[0] == other]
     assert zero == [(other, "country/KEN", "2012", 0.0, _STACKED.provenance)]
+
+
+def test_a_member_its_facet_group_left_out_gets_no_zero_row_and_is_counted():
+    """A member the component's facet group election leaves out holds its series under
+    another source, unit or method, so its absence from the frame is not a zero."""
+    bilateral = _component(
+        _STACKED, "bilateral", [(_B, "country/KEN", 2012, 10.0)], provenance=_CRS, members=[_B]
+    )
+    other = "dcid:AttributedAmount_Other"
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(_I, "country/KEN", 2012, 1.0)],
+        provenance=_IMPUTED,
+        members=[_I, other],
+        unserved=[other],
+    )
+
+    result = _compose([bilateral, imputed])
+
+    assert not [row for row in _rows(result) if row[0] == other]
+    assert _summary(result, "imputed")["zero_rows"] == 0
+    warning = next(w for w in result.warnings if w["code"] == "coverage_below_scope")
+    assert warning["unserved_members"] == {"count": 1, "refs": [other]}
+    assert warning["member_count"] == 2
 
 
 def test_the_merge_rests_on_stat_var_leading_the_sort_key_and_refuses_a_shared_member():

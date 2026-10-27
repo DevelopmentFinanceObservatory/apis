@@ -41,6 +41,7 @@ from search.models import (
     DateRange,
     Headline,
     HeadlineYear,
+    ProvenanceRef,
     ResolvedFacet,
     ResolvedStatVars,
     SlotValue,
@@ -49,6 +50,7 @@ from search.models import (
     TimeWindow,
     YearSpan,
 )
+from search.observations import provenance_refs
 from search.scope.tables import ScopeFacts
 from series_coverage.coverage_types import BoundRoles, Role
 from series_coverage.index import CoverageIndex, elected_year
@@ -209,7 +211,10 @@ def assemble_composite(
     headline counts the latest of those years over every component serving it
     (`_headline`); its StatVar counts are the components' summed (`_stat_vars`); its
     provenance facet names the composite, with the composite's label and the account its
-    component tables give; and it carries no observation preview, which reads one table.
+    component tables give; its sources are its component tables and its measure label reads
+    the declaration's `measure_noun` (`_measure_label`), so its sentence cites both tables
+    and names the composite's measure; and it carries no observation preview, which reads
+    one table.
     Each component names its role, the table it reads, the years it serves, how many
     StatVars it serves and its own identity. Raises
     `code_index.composites.CompositeNotServable` as `component_identities` does."""
@@ -246,6 +251,10 @@ def assemble_composite(
                 for slot in spec.resolved.slots
             ],
             "download": None,
+            "measure_label": _measure_label(declaration, spec.resolved.measure_label),
+            "trace": spec.resolved.trace.model_copy(
+                update={"resolved_sources": _component_sources(index, declaration)}
+            ),
         }
     ).stating_data_years((years[0], years[-1]) if years else None)
     restated = spec.model_copy(
@@ -256,6 +265,25 @@ def assemble_composite(
         }
     )
     return restated, _components(served)
+
+
+def _measure_label(declaration: CompositeDeclaration, measure: str | None) -> str | None:
+    """The measure label a composite answer's sentence names: a stacked composite's
+    `measure_noun` after `measure`, the label of the measure its components share, and a
+    spliced one's in its place. A stacked composite with no measure label keeps none, so the
+    sentence names its members' measure as the table identity's would."""
+    if declaration.kind == "spliced":
+        return declaration.measure_noun
+    return f"{measure} {declaration.measure_noun}" if measure is not None else None
+
+
+def _component_sources(index: CodeIndex, declaration: CompositeDeclaration) -> list[ProvenanceRef]:
+    """The tables a composite is served from, in component order, once each, as the
+    provenance refs a sentence's byline and a citation name (`observations.provenance_refs`)."""
+    datasets = [recipe.dataset for recipe in declaration.components]
+    return provenance_refs(
+        datasets, {dataset: index.datasets[dataset].label for dataset in datasets}
+    )
 
 
 def _window_binding(window: TimeWindow) -> BindingValue:

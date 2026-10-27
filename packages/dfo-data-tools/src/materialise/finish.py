@@ -393,6 +393,7 @@ def _finish_group(
         latest_years=outcome.latest_years,
         read_series=outcome.read_series,
         countries_fallback=_countries_fallback(outcome.row_count, outcome),
+        unserved_members=outcome.unserved_members,
     )
 
 

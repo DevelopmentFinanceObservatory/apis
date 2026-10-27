@@ -285,6 +285,26 @@ def test_a_covered_total_answers_the_composite_with_its_components(monkeypatch):
     ] == [dict(c.identity) for c in components]
 
 
+def test_a_composite_answer_cites_both_tables_and_names_its_measure_by_the_declaration(
+    monkeypatch,
+):
+    _cover(monkeypatch, _ALL_YEARS)
+    bilateral = _ask("health aid from the United States to Kenya, 2015 to 2020", time="2015-2020")
+    declaration = get_index().composite(_INCLUSIVE_SOURCE)
+    assert declaration is not None and bilateral.resolved.measure_label is not None
+
+    spec = _ask("total health aid from the United States to Kenya, 2015 to 2020", time="2015-2020")
+
+    sources = spec.resolved.trace.resolved_sources
+    assert [source.ref for source in sources] == [_CRS, _IMPUTED]
+    assert spec.resolved.measure_label == (
+        f"{bilateral.resolved.measure_label} {declaration.measure_noun}"
+    )
+    sentence = spec.resolved.rendered_sentence or ""
+    assert declaration.measure_noun in sentence
+    assert all(source.label.split(" (")[0] in sentence for source in sources)
+
+
 def test_a_window_the_imputed_table_covers_in_part_is_offered_shortened_and_switched_back(
     monkeypatch,
 ):

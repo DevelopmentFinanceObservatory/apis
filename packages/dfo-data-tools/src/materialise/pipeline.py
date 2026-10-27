@@ -150,6 +150,9 @@ class MaterialisationResult:
     out. No dependency fingerprint holds it outside a `latest` window's `latest_years`.
     `countries_fallback` is true when a request binding no place was served the countries
     with data in place of every place (`place_scope.DefaultPlaceScope`) and rows were served.
+    `unserved_members` are the `stat_var`s of a group's requests that hold no facet of the
+    one group the election chose (`group_facets.GroupElection.unserved`): they dispatch no
+    rows. Every one is listed, where `coverage_below_scope` names only the first five.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -171,6 +174,7 @@ class MaterialisationResult:
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
     countries_fallback: bool = False
+    unserved_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,9 @@ served from. Each component materialises through `pipeline.materialise_group` al
   (`ComponentRecipe.zero_absent`) gets a row of value 0 in every cell, a role tuple and
   period, that another component fills and it does not. Outside them no zero row is
   written, so a year a component does not cover is missing, never zero. A component without
-  the flag contributes nothing where it holds no row.
+  the flag contributes nothing where it holds no row, and neither does a member its facet
+  group election left out (`MaterialisationResult.unserved_members`), whose series sit under
+  another source, unit or method.
 - Every row carries the composite provenance. `stat_var` keeps naming the component's member,
   so the rows of two components never share a grain and no row is a total.
 
@@ -369,7 +371,14 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
     for component in components:
         if not component.recipe.zero_absent:
             continue
-        members = tuple(sorted(request.stat_var for request in component.requests))
+        left_out = frozenset(component.result.unserved_members)
+        members = tuple(
+            sorted(
+                request.stat_var
+                for request in component.requests
+                if request.stat_var not in left_out
+            )
+        )
         zero_members[component.role] = members
         pairs = component_templates.get(component.role, {})
         for member in members:
@@ -732,17 +741,25 @@ def _warnings(
             }
         )
     unserved = sorted({entity for entities in unserved_by_role.values() for entity in entities})
-    off_cadence, out_of_window, member_count = _member_warnings(components)
+    off_cadence, out_of_window, unserved_members, member_count = _member_warnings(components)
     clamped = _clamped_years(window, applied)
     countries_fallback = fold.rows > 0 and any(
         component.result.countries_fallback for component in components
     )
-    if fold.rows and (unserved or off_cadence or out_of_window or clamped or countries_fallback):
+    if fold.rows and (
+        unserved
+        or off_cadence
+        or out_of_window
+        or unserved_members
+        or clamped
+        or countries_fallback
+    ):
         warning = _coverage_below_scope_warning(
             unserved,
             countries_fallback=countries_fallback,
             off_cadence=off_cadence,
             out_of_window=out_of_window,
+            unserved_members=unserved_members,
             member_count=member_count,
             years=clamped,
         )
@@ -788,26 +805,34 @@ def _warnings(
 
 def _member_warnings(
     components: Sequence[ComponentResult],
-) -> tuple[list[str], list[str], int]:
-    """The members any component's `coverage_below_scope` counts as off cadence or out of the
-    requested years, from the refs each names, and the members those counts are out of."""
-    off_cadence: list[str] = []
-    out_of_window: list[str] = []
+) -> tuple[list[str], list[str], list[str], int]:
+    """The members any component's `coverage_below_scope` counts as off cadence, out of the
+    requested years, or left out of its elected facet group, from the refs each names, and
+    the members those counts are out of."""
+    counted: dict[str, list[str]] = {
+        "off_cadence_members": [],
+        "out_of_window_members": [],
+        "unserved_members": [],
+    }
     member_count = 0
     for component in components:
         for warning in component.result.warnings:
             if warning["code"] != "coverage_below_scope":
                 continue
             fields = cast("Mapping[str, object]", warning)
-            off = cast("Mapping[str, object] | None", fields.get("off_cadence_members"))
-            out = cast("Mapping[str, object] | None", fields.get("out_of_window_members"))
-            if off is not None or out is not None:
+            found = {
+                key: cast("Mapping[str, object]", fields[key]) for key in counted if key in fields
+            }
+            if found:
                 member_count += cast(int, fields.get("member_count", 0))
-            if off is not None:
-                off_cadence.extend(_counted_refs(off))
-            if out is not None:
-                out_of_window.extend(_counted_refs(out))
-    return off_cadence, out_of_window, member_count
+            for key, refs in found.items():
+                counted[key].extend(_counted_refs(refs))
+    return (
+        counted["off_cadence_members"],
+        counted["out_of_window_members"],
+        counted["unserved_members"],
+        member_count,
+    )
 
 
 def _counted_refs(counted: Mapping[str, object]) -> list[str]:
