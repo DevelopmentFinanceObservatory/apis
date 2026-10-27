@@ -7,6 +7,7 @@ mixer treats them as filter syntax.
 
 from __future__ import annotations
 
+import contextvars
 import io
 import json
 import math
@@ -14,7 +15,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Self
@@ -121,6 +122,16 @@ _DEFAULT_CHUNK_CONCURRENCY = 8
 # Per-instance GET cap, shared by all methods and concurrent calls. A shared
 # semaphore can coordinate several clients. Each instance owns its own by default.
 _DEFAULT_TOTAL_CONCURRENCY = 8
+
+DATA_HEDGE_AFTER_SECONDS = 0.5
+"""When a `/data` request still has no response headers, the client sends it once more and takes
+whichever answers first (`SdmxClient(hedge_after=...)`). Dev's mixer answers `/data` in 0.09 s
+at p50 and 0.39 s at p95 server-side, and 2.8% of requests take over 1 s, so half a second
+hedges about one request in twenty and cuts the tail beyond it."""
+
+# A mixer slow on every request would see each one sent twice. Two duplicates in flight per
+# client cover the 3% tail across a mint's four fetch workers and cap the extra load.
+_HEDGE_SLOTS = 2
 
 # Poll every 20 ms so coordinators notice completed siblings while waiting
 # for a contended slot, including when `total_concurrency < chunk_concurrency`.
@@ -511,6 +522,13 @@ class SdmxClient:
 
     A request to a `*.run.app` host carries a Cloud Run ID token
     (`dfo_platform.cloud_run_auth`).
+
+    With `hedge_after`, a `/data` request that has no response headers after that many seconds
+    is sent once more and the first response wins (`DATA_HEDGE_AFTER_SECONDS` is the mint's
+    value). Both requests run on their own threads, so a slow loser holds no caller's thread or
+    total-concurrency slot; it ends at its httpx timeout and its response is closed unread. At
+    most `_HEDGE_SLOTS` duplicates are in flight per instance, and a request that finds none free
+    waits for its own answer. `/availability` requests are never hedged.
     """
 
     def __init__(
@@ -524,6 +542,7 @@ class SdmxClient:
         url_budget_bytes: int = _DEFAULT_URL_BUDGET_BYTES,
         chunk_concurrency: int = _DEFAULT_CHUNK_CONCURRENCY,
         total_concurrency: int | threading.BoundedSemaphore = _DEFAULT_TOTAL_CONCURRENCY,
+        hedge_after: float | None = None,
     ) -> None:
         headers = {"User-Agent": user_agent}
         if token:
@@ -544,6 +563,8 @@ class SdmxClient:
             if isinstance(total_concurrency, threading.BoundedSemaphore)
             else threading.BoundedSemaphore(total_concurrency)
         )
+        self._hedge_after = hedge_after
+        self._hedge_slots = threading.BoundedSemaphore(_HEDGE_SLOTS)
         self._lifecycle_lock = threading.Lock()
         self._close_started = False
         self._client_closed = False
@@ -1439,13 +1460,7 @@ class SdmxClient:
                 request_timeout = (
                     self._timeout if guard is None else min(self._timeout, guard.remaining())
                 )
-                with self._client.stream(
-                    "GET",
-                    _DATA_PATH,
-                    params=params,
-                    headers={"Accept": _ACCEPT_DATA_CSV},
-                    timeout=request_timeout,
-                ) as response:
+                with self._data_response(params, timeout=request_timeout) as response:
                     if guard is not None:
                         guard.arm(response)
                     try:
@@ -1471,6 +1486,52 @@ class SdmxClient:
         finally:
             if not slot_preacquired:
                 self._total_semaphore.release()
+
+    @contextmanager
+    def _data_response(
+        self, params: Mapping[str, str], *, timeout: float
+    ) -> Iterator[httpx.Response]:
+        """Send one `/data` GET, hedged when the client has `hedge_after`, and close its
+        response on exit."""
+
+        def send() -> httpx.Response:
+            request = self._client.build_request(
+                "GET",
+                _DATA_PATH,
+                params=params,
+                headers={"Accept": _ACCEPT_DATA_CSV},
+                timeout=timeout,
+            )
+            return self._client.send(request, stream=True)
+
+        response = send() if self._hedge_after is None else self._hedged_send(send)
+        try:
+            yield response
+        finally:
+            response.close()
+
+    def _hedged_send(self, send: Callable[[], httpx.Response]) -> httpx.Response:
+        """`send()`'s first answer: the request alone, or the request and one duplicate when
+        it has no answer after `self._hedge_after` seconds and a hedge slot is free.
+
+        The loser keeps the hedge slot until it settles; its response, if any, is closed then.
+        The winner's error, if it failed, is the caller's.
+        """
+        primary = _send_on_own_thread(send)
+        if wait((primary,), timeout=self._hedge_after).done:
+            return primary.result()
+        if not self._hedge_slots.acquire(blocking=False):
+            return primary.result()
+        hedge = _send_on_own_thread(send)
+        done, _ = wait((primary, hedge), return_when=FIRST_COMPLETED)
+        winner, loser = (primary, hedge) if primary in done else (hedge, primary)
+        loser.add_done_callback(self._settle_hedge_loser)
+        return winner.result()
+
+    def _settle_hedge_loser(self, loser: Future[httpx.Response]) -> None:
+        if loser.exception() is None:
+            loser.result().close()
+        self._hedge_slots.release()
 
     def availability(
         self,
@@ -1822,6 +1883,23 @@ class SdmxClient:
             components={comp_id: tuple(values) for comp_id, values in union.items()},
             raw={},
         )
+
+
+def _send_on_own_thread(send: Callable[[], httpx.Response]) -> Future[httpx.Response]:
+    """`send()` on a new daemon thread under the caller's context, so a request that loses a
+    hedge occupies no pool worker while it runs out its timeout."""
+    future: Future[httpx.Response] = Future()
+    context = contextvars.copy_context()
+
+    def run() -> None:
+        future.set_running_or_notify_cancel()
+        try:
+            future.set_result(context.run(send))
+        except BaseException as exc:
+            future.set_exception(exc)
+
+    threading.Thread(target=run, name="sdmx-hedge", daemon=True).start()
+    return future
 
 
 def _raise_for_non_success(

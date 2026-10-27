@@ -290,3 +290,98 @@ def test_group_member_concurrency_one_reproduces_serial_behaviour_exactly():
     # Member B's own fetch is skipped entirely under member_concurrency=1:
     # only A's aborted fetch reaches the transport.
     assert fetch_requests_by_member == [_BARE_A]
+
+
+# ---------------------------------------------------------------------------
+# A slow chunk holds one worker; the rest of the pool keeps fetching
+# ---------------------------------------------------------------------------
+
+
+def test_a_slow_chunk_leaves_every_other_worker_fetching_and_the_rows_in_dcid_order():
+    """Six members land in six chunks on four workers. Each fast fetch answers only once the
+    pool is full, or holds every chunk not yet answered, and the first chunk answers only once
+    the other five have. That can happen only if chunks five and six are submitted while the
+    first is still pending. The frame matches a serial read's, row for row."""
+    members = [(f"Stat_{letter}", f"country/{letter}") for letter in "ABCDEF"]
+    slow_bare = members[0][0]
+    workers = 4
+    bodies = {
+        bare: _CSV_HEADER
+        + _csv_row(
+            stat_var=bare,
+            year="2015",
+            value=str(index + 1),
+            unit="UNIT1",
+            method="METH1",
+            provenance="PROV1",
+            facet_id="facet1",
+        )
+        for index, (bare, _entity) in enumerate(members)
+    }
+    changed = threading.Condition()
+    in_flight = 0
+    answered = 0
+    pool_full: list[bool] = []
+    slow_released: list[bool] = []
+
+    def respond(bare: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=bodies[bare],
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+
+    def stalling(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, answered
+        bare = str(request.url.params.get("c[variableMeasured]"))
+        if not _is_data_fetch(request):
+            return respond(bare)
+        with changed:
+            in_flight += 1
+            changed.notify_all()
+            if bare == slow_bare:
+                slow_released.append(
+                    changed.wait_for(lambda: answered == len(members) - 1, timeout=2.0)
+                )
+            else:
+                pool_full.append(
+                    changed.wait_for(
+                        lambda: in_flight == min(workers, len(members) - answered), timeout=2.0
+                    )
+                )
+            in_flight -= 1
+            answered += 1
+            changed.notify_all()
+        return respond(bare)
+
+    def read(handler, member_concurrency: int):
+        sdmx = SdmxClient(
+            base_url="https://datacommons.one.org/core/api", transport=httpx.MockTransport(handler)
+        )
+        graph = FakeGraphReader(
+            facets={(bare, entity): [_SHARED_FACET] for bare, entity in members}
+        )
+        return materialise_group(
+            [
+                _request(stat_var=f"dcid:{bare}", facet_bindings=_BOUND_FACETS, entity=entity)
+                for bare, entity in members
+            ],
+            sdmx=sdmx,
+            graph=graph,
+            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+            materialiser_build="build-123",
+            capability_version="cap-v1",
+            member_concurrency=member_concurrency,
+            coverage=_coverage_for([(bare, "facet1", entity) for bare, entity in members]),
+        )
+
+    pooled = read(stalling, workers)
+    serial = read(lambda request: respond(str(request.url.params.get("c[variableMeasured]"))), 1)
+
+    assert slow_released == [True]
+    assert pool_full == [True] * (len(members) - 1)
+    pooled_rows = [row for frame in pooled.frame_chunks() for row in frame.table.to_pylist()]
+    serial_rows = [row for frame in serial.frame_chunks() for row in frame.table.to_pylist()]
+    assert pooled_rows == serial_rows
+    assert [row["stat_var"] for row in pooled_rows] == [f"dcid:{bare}" for bare, _entity in members]
+    assert pooled.content_version == serial.content_version
