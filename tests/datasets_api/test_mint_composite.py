@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import csv
 import io
+import threading
+import time
+from collections import Counter
 from collections.abc import Mapping
 
 import httpx
@@ -147,6 +150,7 @@ def _composite_client(
     populated: Mapping[str, tuple[str, int, tuple[int, ...]]] | None = None,
     settings: DatasetsBuildSettings | None = None,
     transport: httpx.MockTransport | None = None,
+    sdmx_hedge_after: float | None = None,
 ) -> tuple[FakeArtifactStore | None, TestClient]:
     """A client over the composite's rows (`_populated` unless given), and the artifact store
     its renderings are put in. With `version_store`, the client writes heads and records there
@@ -170,6 +174,7 @@ def _composite_client(
         coverage=_coverage(populated),
         artifact_store=artifacts,
         settings=settings,
+        sdmx_hedge_after=sdmx_hedge_after,
     )
 
 
@@ -229,6 +234,45 @@ def test_a_composite_mints_one_frame_over_the_years_both_components_hold():
     ]
     provenance_facets = [f for f in manifest["trace"]["facets"] if f["axis"] == "provenance"]
     assert [f["ref"] for f in provenance_facets] == [_STACKED.provenance]
+
+
+def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
+    """The first SDMX request stalls past the hedge, so the pooled mint's chunks finish out of
+    order and that chunk is answered by its duplicate. Its frame, CSV and content version
+    match a mint that reads one chunk at a time."""
+    populated = _populated()
+    stalled = threading.Event()
+    lock = threading.Lock()
+    sent: Counter[str] = Counter()
+
+    def stall_first(request: httpx.Request) -> httpx.Response:
+        with lock:
+            sent[str(request.url)] += 1
+        if not stalled.is_set():
+            stalled.set()
+            time.sleep(0.3)
+        return _sdmx_response(populated, request)
+
+    def mint(concurrency: int, transport: httpx.MockTransport, hedge_after: float | None):
+        artifacts, client = _composite_client(
+            settings=DatasetsBuildSettings.from_env().model_copy(
+                update={"mint_member_max_concurrency": concurrency}
+            ),
+            transport=transport,
+            sdmx_hedge_after=hedge_after,
+        )
+        assert artifacts is not None
+        minted = _mint(client)
+        assert minted.status_code == 200, minted.text
+        manifest = minted.json()
+        return manifest["content_version"], _csv_rows(artifacts, manifest)
+
+    pooled = mint(4, httpx.MockTransport(stall_first), 0.05)
+    serial = mint(1, _sdmx_transport(populated), None)
+
+    assert max(sent.values()) == 2
+    assert pooled[1]
+    assert pooled == serial
 
 
 def test_a_groupby_collapse_of_a_composite_sums_both_components():

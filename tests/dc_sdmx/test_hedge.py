@@ -30,8 +30,9 @@ def _body(variable: str, value: str) -> bytes:
 
 
 class _ClosingStream(httpx.SyncByteStream):
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, *, close_raises: bool = False) -> None:
         self._body = body
+        self._close_raises = close_raises
         self.closed = threading.Event()
 
     def __iter__(self) -> Iterator[bytes]:
@@ -39,13 +40,16 @@ class _ClosingStream(httpx.SyncByteStream):
 
     def close(self) -> None:
         self.closed.set()
+        if self._close_raises:
+            raise OSError("connection reset while closing")
 
 
 class _StalledFirstRequest(httpx.BaseTransport):
     """The first request for each variable waits for `release` and answers 1; every later
     one answers 2 at once."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, close_raises: bool = False) -> None:
+        self.close_raises = close_raises
         self.release = threading.Event()
         self.lock = threading.Lock()
         self.requests: Counter[str] = Counter()
@@ -58,7 +62,9 @@ class _StalledFirstRequest(httpx.BaseTransport):
             first = self.requests[variable] == 1
         if first:
             assert self.release.wait(timeout=5)
-        stream = _ClosingStream(_body(variable, "1" if first else "2"))
+        stream = _ClosingStream(
+            _body(variable, "1" if first else "2"), close_raises=first and self.close_raises
+        )
         if first:
             self.stalled_streams.append(stream)
         return httpx.Response(200, headers={"content-type": _CONTENT_TYPE}, stream=stream)
@@ -126,3 +132,44 @@ def test_a_chunked_read_sends_each_slow_chunk_at_most_twice():
     assert set(requests) == set(variables)
     assert max(requests.values()) == 2
     assert sum(requests.values()) <= len(variables) + _HEDGE_SLOTS
+
+
+def test_a_duplicate_that_fails_at_once_loses_to_a_primary_that_answers_late():
+    lock = threading.Lock()
+    requests: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with lock:
+            requests["sent"] += 1
+            first = requests["sent"] == 1
+        if not first:
+            raise httpx.ConnectError("connection reset", request=request)
+        time.sleep(4 * _HEDGE_AFTER)
+        return httpx.Response(
+            200, headers={"content-type": _CONTENT_TYPE}, content=_body("V0", "1")
+        )
+
+    client = SdmxClient(
+        base_url=_BASE_URL, transport=httpx.MockTransport(handler), hedge_after=_HEDGE_AFTER
+    )
+
+    assert _value(client, "V0") == "1"
+    assert requests["sent"] == 2
+
+
+def test_a_loser_whose_close_raises_still_returns_its_hedge_slot():
+    transport = _StalledFirstRequest(close_raises=True)
+    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
+    first_round = [f"V{i}" for i in range(_HEDGE_SLOTS)]
+    assert [_value(client, variable) for variable in first_round] == ["2"] * _HEDGE_SLOTS
+
+    transport.release.set()
+    for stream in transport.stalled_streams:
+        assert stream.closed.wait(timeout=5)
+    transport.release.clear()
+
+    # Every slot came back, so each stalled read hedges again.
+    second_round = [f"W{i}" for i in range(_HEDGE_SLOTS)]
+    assert [_value(client, variable) for variable in second_round] == ["2"] * _HEDGE_SLOTS
+    assert transport.requests == Counter(dict.fromkeys(first_round + second_round, 2))
+    transport.release.set()

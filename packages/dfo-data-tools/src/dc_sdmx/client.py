@@ -1511,11 +1511,12 @@ class SdmxClient:
             response.close()
 
     def _hedged_send(self, send: Callable[[], httpx.Response]) -> httpx.Response:
-        """`send()`'s first answer: the request alone, or the request and one duplicate when
-        it has no answer after `self._hedge_after` seconds and a hedge slot is free.
+        """`send()`'s first response: the request alone, or the request and one duplicate when
+        it has no response after `self._hedge_after` seconds and a hedge slot is free.
 
-        The loser keeps the hedge slot until it settles; its response, if any, is closed then.
-        The winner's error, if it failed, is the caller's.
+        A send that raises loses to the other one; only when both raise does the primary's
+        error reach the caller. The loser keeps the hedge slot until it settles; its response,
+        if any, is closed then.
         """
         primary = _send_on_own_thread(send)
         if wait((primary,), timeout=self._hedge_after).done:
@@ -1523,15 +1524,25 @@ class SdmxClient:
         if not self._hedge_slots.acquire(blocking=False):
             return primary.result()
         hedge = _send_on_own_thread(send)
-        done, _ = wait((primary, hedge), return_when=FIRST_COMPLETED)
-        winner, loser = (primary, hedge) if primary in done else (hedge, primary)
-        loser.add_done_callback(self._settle_hedge_loser)
-        return winner.result()
+        pending = {primary, hedge}
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            answered = [future for future in (primary, hedge) if future in done]
+            winner = next((future for future in answered if future.exception() is None), None)
+            if winner is not None:
+                loser = hedge if winner is primary else primary
+                loser.add_done_callback(self._settle_hedge_loser)
+                return winner.result()
+        # Both sends raised; nothing is left to close.
+        self._hedge_slots.release()
+        return primary.result()
 
     def _settle_hedge_loser(self, loser: Future[httpx.Response]) -> None:
-        if loser.exception() is None:
-            loser.result().close()
-        self._hedge_slots.release()
+        try:
+            if loser.exception() is None:
+                loser.result().close()
+        finally:
+            self._hedge_slots.release()
 
     def availability(
         self,
