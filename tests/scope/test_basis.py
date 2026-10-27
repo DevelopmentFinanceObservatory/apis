@@ -196,7 +196,7 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...]) -> None:
     """Series for the United States over 2005 to 2024 in every DAC2a and CRS member and in
-    the DAC1 members `dac1`."""
+    the DAC1 members `dac1`, which may hold members of other DAC1 aid types."""
     donor_only = RoleNames(donor="financingProvider", recipient=None)
     flow = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
@@ -207,7 +207,7 @@ def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...]) -> None:
             *((dcid, "crs", _USA, _KEN, _YEARS) for dcid in _CRS_MEMBERS),
         ],
         role_names={
-            **dict.fromkeys(_DAC1_MEMBERS, donor_only),
+            **dict.fromkeys((*_DAC1_MEMBERS, *dac1), donor_only),
             **dict.fromkeys((*_DAC2A_MEMBERS, *_CRS_MEMBERS), flow),
         },
         facet_metadata={

@@ -5,6 +5,7 @@
 `BASIS_MEASURES` what each basis binds in an identity, and `BASIS_RESTRICTIONS` the code
 systems besides the sector whose admitted code makes a part a restricted one.
 `PROVIDER_CONVENTIONS` names whose spending a part counts by default,
+`PROVIDER_SCOPE_RULES` the rule each provider scope names where no convention settles it,
 `REDISTRIBUTED_PROVIDERS` the providers no pool takes a scope counting multilateral aid with,
 `PUBLISHED_PROVIDER_SCOPES` the provider scope a published donor total counts, and
 `DONOR_ORGANISATIONS` the organisations a published donor total counts as donors. `OPTION_LABELS`
@@ -104,6 +105,17 @@ class PublishedProviderScope:
     dataset: str
     code_system: str
     code: str
+    scope: ProviderScope
+    rule: str
+    note: str
+
+
+@dataclass(frozen=True)
+class ProviderScopeRule:
+    """The rule a provider option of `scope` names where no convention
+    (`PROVIDER_CONVENTIONS`) or published total (`PUBLISHED_PROVIDER_SCOPES`) settles it.
+    `note` says what the scope counts."""
+
     scope: ProviderScope
     rule: str
     note: str
@@ -385,8 +397,20 @@ _EU_INSTITUTIONS = "EuropeanUnionInstitutions"
 # code index marks none, so this table is the only record of the grouping.
 REDISTRIBUTED_PROVIDERS: tuple[str, ...] = (_EU_INSTITUTIONS,)
 
-PROVIDER_DEFAULT_RULE = "bilateral_flows"
-"""The rule of a part no provider convention settles. It counts the donor's bilateral flows."""
+# The rule each provider scope names on a part no convention or published row settles: the
+# bilateral default, or a scope an entry or a posted identity chose.
+PROVIDER_SCOPE_RULES: tuple[ProviderScopeRule, ...] = (
+    ProviderScopeRule(
+        scope="bilateral",
+        rule="bilateral_flows",
+        note="the donor's bilateral flows alone",
+    ),
+    ProviderScopeRule(
+        scope="inclusive",
+        rule="bilateral_plus_imputed",
+        note="the donor's bilateral flows plus its imputed share of multilateral spending",
+    ),
+)
 
 # The provider scope each DAC1 aid type counts for a bilateral donor. Total ODA counts the
 # donor's bilateral flows and its core contributions to the multilateral organisations, in the

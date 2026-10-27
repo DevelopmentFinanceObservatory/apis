@@ -21,12 +21,13 @@ class AxisTable:
     intrinsic availability (what the part's own data and constraints allow, before any
     other entry is weighed). `preference` is the order a default is derived in: the first
     option no entry blocks. `held` is the option the base identity holds. `rule` names the
-    declared rule, and `rules` the rule an option names when the part holds it, where the
-    rule depends on the option (`rule_of`). `concept` is the concept the axis was asked
-    for, None when it has none.
+    declared rule of the option `held`, and `rules` the rule an option names when the part
+    holds it, where the rule depends on the option (`rule_of`). `concept` is the concept the
+    axis was asked for, None when it has none.
 
     Raises `ScopeTableError` for an empty table, a repeated option, an option of another
-    axis or binding kind, or a `preference`, `held` or `rules` naming no option."""
+    axis or binding kind, a `preference`, `held` or `rules` naming no option, or a `rule`
+    other than the one `rules` names for `held`."""
 
     axis: ScopeAxis
     rule: str
@@ -51,6 +52,11 @@ class AxisTable:
             raise ScopeTableError(f"{self.axis!r} holds {self.held!r}, which it does not offer")
         if not set(self.rules) <= set(ids):
             raise ScopeTableError(f"{self.axis!r} rules {sorted(self.rules)} name no option")
+        if self.rules.get(self.held, self.rule) != self.rule:
+            raise ScopeTableError(
+                f"{self.axis!r} names {self.rule!r} for {self.held!r}, whose rule is "
+                f"{self.rules[self.held]!r}"
+            )
 
     def rule_of(self, option_id: str) -> str:
         """The rule the axis names when the part holds `option_id`: its entry in `rules`,

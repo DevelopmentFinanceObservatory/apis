@@ -65,7 +65,7 @@ AXIS_BINDING: Mapping[ScopeAxis, frozenset[BindingKind]] = {
     "provider": frozenset({"provider", "slot"}),
 }
 """The binding kinds the options of an axis carry. A provider option on a published donor
-total binds the code of the total that counts its scope (`provider._published_reading`)."""
+total binds the code of the total that counts its scope (`provider._published_table`)."""
 
 
 def _with_slot(identity: BaseIdentity, slot: IdentitySlot) -> list[IdentitySlot]:

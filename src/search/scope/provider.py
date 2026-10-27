@@ -7,7 +7,8 @@ The axis is present on a part the CRS serves and on a donor's published total
 (`provider_rule`). A published total holds the scope its declared row names
 (`code_index.scope_conventions.PUBLISHED_PROVIDER_SCOPES`): DAC1's total ODA the
 contributions scope, and DAC1's bilateral ODA the bilateral scope. Each offers the other's
-scope as an option binding the other's aid type (`_published_table`). On a part the CRS
+scope as an option binding the other's aid type, available where that aid type holds a
+series for the part (`_published_table`). On a part the CRS
 serves, the inclusive option serves the years both tables cover for the part
 (`inclusive_reach`): available when they cover every year the bilateral answer holds,
 partial with a shorter window of its own when they cover fewer, and, for a part asking for
@@ -20,12 +21,15 @@ outflows the table attributes to its funders.
 The default is declared (`code_index.scope_conventions.PROVIDER_CONVENTIONS`): a named donor's
 total of a CRS sector or recipient part counts both, when they cover every year asked for.
 `settle_provider` applies it, or the part's explicit or carried entry, on the parsed door,
-where the answer can serve it (`_served_in_pass`). The rule a part's choice names is the one
-the option it holds names (`AxisTable.rules`), on a fresh search and a resubmit alike.
+where the answer can serve it (`_served_in_pass`). A choice names the convention's rule only
+where the request matched the convention and the part holds its scope; otherwise it names
+the rule of the option it holds, its own scope's (`AxisTable.rules`), as every resubmit
+does.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import get_args
@@ -44,7 +48,7 @@ from code_index.scope_conventions import (
     DONOR_ORGANISATIONS,
     OPTION_LABELS,
     PROVIDER_CONVENTIONS,
-    PROVIDER_DEFAULT_RULE,
+    PROVIDER_SCOPE_RULES,
     PUBLISHED_PROVIDER_SCOPES,
     REDISTRIBUTED_PROVIDERS,
     ProviderConvention,
@@ -68,7 +72,7 @@ from search.models import (
 )
 from search.scope.basis import held_measure, identity_part_shape
 from search.scope.composite import component_years, served_components
-from search.scope.edits import INCLUSIVE_PROVENANCE
+from search.scope.edits import INCLUSIVE_PROVENANCE, apply_binding
 from search.scope.region import policy_members
 from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import AxisTable, ScopeFacts
@@ -88,10 +92,11 @@ _SCOPE_LABELS: Mapping[ProviderScope, str] = {
 _STACKED = DECLARED_COMPOSITES[INCLUSIVE_PROVENANCE]
 _BILATERAL_TABLE = next(r.dataset for r in _STACKED.components if r.role == "bilateral")
 _REDISTRIBUTED = frozenset(REDISTRIBUTED_PROVIDERS)
+_SCOPE_RULES: Mapping[ProviderScope, str] = {row.scope: row.rule for row in PROVIDER_SCOPE_RULES}
+"""The rule each provider scope names where no convention or published row settles it."""
 _DONOR_ORGANISATIONS = frozenset(DONOR_ORGANISATIONS)
 _COUNTRY = "country/"
 """The dcid namespace of the graph's countries."""
-_AVAILABLE = OptionAvailability(status="available")
 _GROSS = "gross"
 _CONSTANT = "RealValue"
 _SLOT_WHY: Mapping[str, str] = {
@@ -148,52 +153,41 @@ def provider_rule(
     composite than the inclusive one or, without the inclusive composite, is an identity the
     CRS does not serve.
 
-    Read from `base` alone, so a resubmit of a served identity offers what its search
-    offered. A published total offers what `_published_table` states. On a part the CRS
-    serves, the option `base` holds leads the preference, so a part's default is the scope it
-    resolved; the bilateral option is always available, and the inclusive option is
-    available, partial or unavailable by `inclusive_reach`, or not offered (`_not_offered`).
-    Each option names its own rule when the part holds it (`AxisTable.rules`), so a fresh
-    search's record (`settle_provider`), its choice and a resubmit's choice all name the rule
-    of the option the part holds. The table is read once per scope build for `base`, so
-    `record`, whose option the table offers and whose rule the table names, adds nothing."""
-    del record
+    Read from `base`, so a resubmit of a served identity offers what its search offered. A
+    published total offers what `_published_table` states. On a part the CRS serves, the
+    option `base` holds leads the preference, so a part's default is the scope it resolved;
+    the bilateral option is always available, and the inclusive option is available, partial
+    or unavailable by `inclusive_reach`, or not offered (`_not_offered`). Each option names
+    its own rule (`AxisTable.rules`): its row's on a published total, and its scope's
+    (`PROVIDER_SCOPE_RULES`) on the CRS or where no row declares the scope. A fresh search's `record` names the rule that settled its option
+    (`settle_provider`), which the table names for that option, so a resubmit, which settles
+    no convention, names the option's own rule. The table of `base` is read once per scope
+    build."""
     key = "provider_table:" + base.model_dump_json(exclude_none=True)
-    return facts.remembered(key, lambda: _table(base, facts))
+    table = facts.remembered(key, lambda: _table(base, facts))
+    if table is None or record is None or table.option(record.active) is None:
+        return table
+    rules = {**table.rules, record.active: record.rule}
+    return dataclasses.replace(table, rules=rules, rule=rules[table.held])
 
 
 def _table(base: BaseIdentity, facts: ScopeFacts) -> AxisTable | None:
     """The provider table of `base` (`provider_rule`), None where the axis does not apply."""
     published = _published_row(base, facts)
     if published is not None:
-        return _published_table(published)
+        return _published_table(*published, facts=facts)
     try:
         ref = composite_ref(base.model_dump(mode="json", include={"facets"}))
     except CompositeNotServable:
         return None
     if ref is not None and ref != INCLUSIVE_PROVENANCE:
         return None
-    bilateral = (
-        base
-        if ref is None
-        else BaseIdentity.model_validate(
-            without_composite(base.model_dump(mode="json", exclude_none=True))
-        )
-    )
+    bilateral = _without_inclusive(base, ref)
     if _dataset(bilateral, facts) != _BILATERAL_TABLE:
         return None
     held = BILATERAL if ref is None else INCLUSIVE
     options = (_option("bilateral"), _inclusive_option(bilateral, facts, held=held == INCLUSIVE))
-    convention = provider_convention(bilateral, facts, asks_total=True)
-    convention_option = provider_option_id(convention.scope) if convention is not None else None
-    rules = {
-        option.option_id: (
-            convention.rule
-            if convention is not None and option.option_id == convention_option
-            else PROVIDER_DEFAULT_RULE
-        )
-        for option in options
-    }
+    rules = {BILATERAL: _SCOPE_RULES["bilateral"], INCLUSIVE: _SCOPE_RULES["inclusive"]}
     return AxisTable(
         axis="provider",
         rule=rules[held],
@@ -204,18 +198,32 @@ def _table(base: BaseIdentity, facts: ScopeFacts) -> AxisTable | None:
     )
 
 
-def _published_table(row: PublishedProviderScope) -> AxisTable:
-    """The provider table of a part counting the published total `row` declares.
+def _without_inclusive(identity: BaseIdentity, ref: str | None) -> BaseIdentity:
+    """`identity`, whose composite is `ref`, without the inclusive composite: the identity
+    the CRS serves its bilateral flows on. `identity` itself when `ref` is another one."""
+    if ref != INCLUSIVE_PROVENANCE:
+        return identity
+    return BaseIdentity.model_validate(
+        without_composite(identity.model_dump(mode="json", exclude_none=True))
+    )
+
+
+def _published_table(
+    row: PublishedProviderScope, document: BaseIdentity, *, facts: ScopeFacts
+) -> AxisTable:
+    """The provider table of a part counting the published total `row` declares, whose
+    table identity is `document` (`_published_row`).
 
     The part holds `row`'s scope. Every other row of its dataset and code system
     (`PUBLISHED_PROVIDER_SCOPES`) is an option binding that row's code, so a switch to it
     reads the total that counts its scope: on DAC1's total ODA, bilateral flows bind
-    bilateral ODA, and on bilateral ODA, core contributions bind total ODA. The inclusive scope is unavailable with the
-    total's dataset: `contributions_counted` on a total counting core contributions, since it
-    counts them in place of an imputed share of the multilaterals' spending, and
-    `provider_not_offered` (why `dataset`) on any other, since the imputed table stacks on
-    the CRS alone. Each option names its row's rule. No preference but the held scope leads,
-    so no default moves the part to another total."""
+    bilateral ODA, and on bilateral ODA, core contributions bind total ODA. Such an option is
+    available where its total holds a series for the part (`_sibling_availability`). The
+    inclusive scope is unavailable with the total's dataset: `contributions_counted` on a
+    total counting core contributions, since it counts them in place of an imputed share of
+    the multilaterals' spending, and `provider_not_offered` (why `dataset`) on any other,
+    since the imputed table stacks on the CRS alone. Each option names its row's rule. No
+    preference but the held scope leads, so no default moves the part to another total."""
     rows = {
         sibling.scope: sibling
         for sibling in PUBLISHED_PROVIDER_SCOPES
@@ -228,7 +236,7 @@ def _published_table(row: PublishedProviderScope) -> AxisTable:
         if sibling is None and scope != "inclusive":
             continue
         option_id = provider_option_id(scope)
-        rules[option_id] = sibling.rule if sibling is not None else PROVIDER_DEFAULT_RULE
+        rules[option_id] = sibling.rule if sibling is not None else _SCOPE_RULES[scope]
         if sibling is None:
             counted = row.scope == "contributions"
             options.append(
@@ -241,12 +249,13 @@ def _published_table(row: PublishedProviderScope) -> AxisTable:
                 )
             )
             continue
-        binding = (
-            ProviderBinding(scope=scope)
-            if sibling is row
-            else SlotBinding(slot=sibling.code_system, state="value", refs=[sibling.code])
+        if sibling is row:
+            options.append(_option(scope, binding=ProviderBinding(scope=scope)))
+            continue
+        binding = SlotBinding(slot=sibling.code_system, state="value", refs=[sibling.code])
+        options.append(
+            _option(scope, _sibling_availability(document, binding, facts), binding=binding)
         )
-        options.append(_option(scope, binding=binding))
     held = provider_option_id(row.scope)
     return AxisTable(
         axis="provider",
@@ -258,16 +267,29 @@ def _published_table(row: PublishedProviderScope) -> AxisTable:
     )
 
 
+def _sibling_availability(
+    document: BaseIdentity, binding: SlotBinding, facts: ScopeFacts
+) -> OptionAvailability:
+    """Whether the total `binding` reads holds a series for the part whose table identity is
+    `document`: from its providers, on its basis, in its window, in the coverage snapshot
+    (`composite.component_years`). Unavailable with `option_not_covered` otherwise."""
+    switched = apply_binding(document, binding, [])
+    held = component_years(switched.model_dump(mode="json", exclude_none=True), facts=facts).held
+    if not held:
+        return _unavailable("option_not_covered")
+    return OptionAvailability(status="available")
+
+
 def _option(
     scope: ProviderScope,
-    availability: OptionAvailability = _AVAILABLE,
+    availability: OptionAvailability | None = None,
     *,
     binding: OptionBinding | None = None,
     window: YearSpan | None = None,
 ) -> Option:
-    """The option of `scope`, with `availability`, binding `binding` or else the scope itself
-    over `window` when it sets one, as the inclusive scope over the years both its tables
-    cover (`OPTION_LABELS.provider_inclusive_years`)."""
+    """The option of `scope`, with `availability`, available when None, binding `binding` or
+    else the scope itself over `window` when it sets one, as the inclusive scope over the
+    years both its tables cover (`OPTION_LABELS.provider_inclusive_years`)."""
     label = (
         _SCOPE_LABELS[scope]
         if window is None
@@ -277,7 +299,7 @@ def _option(
         option_id=provider_option_id(scope),
         label=label,
         binding=binding if binding is not None else ProviderBinding(scope=scope, window=window),
-        availability=availability,
+        availability=availability or OptionAvailability(status="available"),
     )
 
 
@@ -288,10 +310,13 @@ def _unavailable(
     return OptionAvailability(status="unavailable", code=code, detail=dict(detail or {}))
 
 
-def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProviderScope | None:
-    """The declared row (`PUBLISHED_PROVIDER_SCOPES`) of the total `identity` counts: one
-    whose code `identity` binds as a value and whose dataset the index elects for the table
-    identity `identity` reads (`table_identity`, the net identity of the OECD headline), when
+def _published_row(
+    identity: BaseIdentity, facts: ScopeFacts
+) -> tuple[PublishedProviderScope, BaseIdentity] | None:
+    """The declared row (`PUBLISHED_PROVIDER_SCOPES`) of the total `identity` counts, with
+    the table identity `identity` reads (`table_identity`, the net identity of the OECD
+    headline): a row whose code `identity` binds as a value and whose dataset the index
+    elects for that table identity, when
     every provider `identity` names counts as a donor (`_counts_as_donor`) and they do not
     pool a redistributed provider (`_pools_redistributed`). None otherwise, or when the
     composite `identity` binds cannot derive its components. The bound codes and the
@@ -319,8 +344,10 @@ def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProvid
         document = table_identity(facts.index, identity.model_dump(mode="json", exclude_none=True))
     except CompositeNotServable:
         return None
-    dataset = _dataset(BaseIdentity.model_validate(document), facts)
-    return next((row for row in rows if row.dataset == dataset), None)
+    table = BaseIdentity.model_validate(document)
+    dataset = _dataset(table, facts)
+    row = next((row for row in rows if row.dataset == dataset), None)
+    return None if row is None else (row, table)
 
 
 def _counts_as_donor(party: str, index: CodeIndex) -> bool:
@@ -412,11 +439,8 @@ def elect_latest_window(identity: BaseIdentity, facts: ScopeFacts) -> BaseIdenti
         return identity
     if ref != INCLUSIVE_PROVENANCE:
         return identity
-    bilateral = BaseIdentity.model_validate(
-        without_composite(identity.model_dump(mode="json", exclude_none=True))
-    )
     try:
-        year = inclusive_reach(bilateral, facts).latest
+        year = inclusive_reach(_without_inclusive(identity, ref), facts).latest
     except CompositeNotServable:
         return identity
     if year is None:
@@ -499,7 +523,15 @@ def provider_convention(
 ) -> ProviderConvention | None:
     """The declared convention (`PROVIDER_CONVENTIONS`) that matches the part whose bilateral
     identity is `identity` and whose words ask for a total when `asks_total`, None when none
-    does."""
+    does. Read once per scope build for `identity` and `asks_total`."""
+    key = f"provider_convention:{asks_total}:" + identity.model_dump_json(exclude_none=True)
+    return facts.remembered(key, lambda: _convention(identity, facts, asks_total=asks_total))
+
+
+def _convention(
+    identity: BaseIdentity, facts: ScopeFacts, *, asks_total: bool
+) -> ProviderConvention | None:
+    """The convention `provider_convention` reads."""
     shape = identity_part_shape(identity, facts.index)
     names_donor = bool(identity.entities.get("origin"))
     dataset = _dataset(identity, facts)
@@ -527,35 +559,48 @@ def settle_provider(
     applied from words or a carried entry, since only a switch shortens the years asked for.
     Otherwise the declared convention matching the part (`provider_convention`, with the
     request's total intent) settles its scope where the pass can serve it, else the
-    bilateral scope, else the scope `identity` holds. A published total matches no
-    convention, so it holds the scope its row declares. The record names the rule of the
-    option it settles (`AxisTable.rule_of`), which a resubmit of the identity the scope
-    compiles to names too."""
+    bilateral scope, else the scope `identity` holds, else the first available option
+    (`_settled`). A published total matches no convention, so it holds the scope its row
+    declares. The record names the matched convention's rule when it holds the convention's
+    scope, and otherwise the rule of the option it holds (`AxisTable.rule_of`)."""
     table = provider_rule(identity, None, facts)
     if table is None:
         return None
-    convention = provider_convention(identity, facts, asks_total=state.total)
-    wanted = provider_option_id(convention.scope) if convention is not None else table.held
-    return _settled(table, state, wanted=wanted)
+    ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
+    bilateral = _without_inclusive(identity, ref)
+    convention = provider_convention(bilateral, facts, asks_total=state.total)
+    return _settled(table, state, convention)
 
 
-def _settled(table: AxisTable, state: ScopeState, *, wanted: str) -> AxisRecord:
-    """The record of `table`: the first option an entry on the axis asks for that the pass
-    serves, else the first of `wanted` and the bilateral option that it serves, else the
-    option the part holds, under the rule that option names."""
+def _settled(
+    table: AxisTable, state: ScopeState, convention: ProviderConvention | None
+) -> AxisRecord:
+    """The record of `table` under the matched `convention`: the first option an entry on
+    the axis asks for that the pass serves, else the first of the convention's option (or
+    the held one) and the bilateral option that it serves, else the first option `table`
+    marks available, the bilateral one on a part the CRS serves. The record never holds an
+    option `table` marks unavailable."""
+    matched = provider_option_id(convention.scope) if convention is not None else None
+
+    def rule(active: str) -> str:
+        if convention is not None and active == matched:
+            return convention.rule
+        return table.rule_of(active)
+
     for entry in state.entries_on("provider"):
         if _served_in_pass(table, entry.option_id):
             return AxisRecord(
                 axis="provider",
-                rule=table.rule_of(entry.option_id),
+                rule=rule(entry.option_id),
                 active=entry.option_id,
                 provenance=entry.provenance,
                 entry=entry,
             )
-    active = next((o for o in (wanted, BILATERAL) if _served_in_pass(table, o)), table.held)
-    return AxisRecord(
-        axis="provider", rule=table.rule_of(active), active=active, provenance="default"
-    )
+    wanted = matched or table.held
+    active = next((o for o in (wanted, BILATERAL) if _served_in_pass(table, o)), None)
+    if active is None:
+        active = next(o.option_id for o in table.options if o.availability.status == "available")
+    return AxisRecord(axis="provider", rule=rule(active), active=active, provenance="default")
 
 
 def _served_in_pass(table: AxisTable, option_id: str) -> bool:
