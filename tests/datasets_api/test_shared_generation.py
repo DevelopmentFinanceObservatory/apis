@@ -23,6 +23,7 @@ from datasets_api.operation_store import OperationStore
 from datasets_api.operations import worker_app as worker_module
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import WORKER_PLACE_SCOPE_MEMO_NAME, build_worker_app
+from dc_sdmx import DATA_HEDGE_AFTER_SECONDS
 from graph_generation import GraphGeneration
 from graph_generation.fake import FakeGeneration
 from graph_release.service import get_release_service
@@ -49,6 +50,7 @@ class _Events:
         self.generation = FakeGeneration()
         self.acquire_kwargs: dict[str, Any] = {}
         self.graph_kwargs: dict[str, Any] = {}
+        self.sdmx_clients: list[_RecordingClient] = []
 
 
 class _RecordingClient:
@@ -92,9 +94,20 @@ def _graph_builder(events: _Events) -> Callable[..., _RecordingClient]:
 
 def _sdmx_builder(events: _Events) -> Callable[..., _RecordingClient]:
     def _build(**kwargs: Any) -> _RecordingClient:
-        return _RecordingClient(events, f"sdmx {kwargs['base_url']}", **kwargs)
+        client = _RecordingClient(events, f"sdmx {kwargs['base_url']}", **kwargs)
+        events.sdmx_clients.append(client)
+        return client
 
     return _build
+
+
+def _hedging(events: _Events) -> dict[str, float | None]:
+    """Each SDMX client's `hedge_after`, by base URL; only the mint's client on our mixer
+    hedges."""
+    return {
+        client.kwargs["base_url"]: client.kwargs.get("hedge_after")
+        for client in events.sdmx_clients
+    }
 
 
 _STORES = (
@@ -149,6 +162,10 @@ def test_the_graph_client_is_built_on_the_shared_generation(events: _Events) -> 
     un_availability = events.graph_kwargs["un_availability"]
     assert un_availability.kwargs["base_url"] == events.graph_kwargs["un_base_url"]
     assert un_availability.kwargs["timeout"] == DatasetsBuildSettings().sdmx_timeout_seconds
+    assert _hedging(events) == {
+        _SETTINGS_ENV["DATASETS_SDMX_BASE_URL"]: DATA_HEDGE_AFTER_SECONDS,
+        events.graph_kwargs["un_base_url"]: None,
+    }
 
 
 @pytest.mark.usefixtures("live_clients")
@@ -223,6 +240,10 @@ def test_the_worker_builds_its_graph_client_on_the_shared_generation(
 
     assert events.graph_kwargs["generation"] is events.generation
     assert events.graph_kwargs["un_availability"] is not None
+    assert _hedging(events) == {
+        _SETTINGS_ENV["DATASETS_SDMX_BASE_URL"]: DATA_HEDGE_AFTER_SECONDS,
+        events.graph_kwargs["un_base_url"]: None,
+    }
     assert registered == [(WORKER_PLACE_SCOPE_MEMO_NAME,)]
     assert index_reads == [None]  # the startup read that fails a missing export
     assert events.generation.registered_names() == ()

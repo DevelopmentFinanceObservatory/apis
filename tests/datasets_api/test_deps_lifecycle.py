@@ -20,6 +20,7 @@ from datasets_api.deps import Deps, DepsOverrides, open_deps
 from datasets_api.door_executor import DoorExecutor
 from datasets_api.operations.task_client import FakeTaskClient, LiveTaskClient
 from datasets_api.shutdown import ShutdownBudget
+from dc_sdmx import DATA_HEDGE_AFTER_SECONDS
 from graph_generation.fake import FakeGeneration
 from graph_release.service import get_release_service
 from materialise.rate_tables import RateTableCache
@@ -49,16 +50,23 @@ _SETTINGS_ENV = {
 
 
 class _RecordingClient:
-    """Recording stand-in for the SDMX client. Accepts `timeout` as `SdmxClient` does."""
+    """Recording stand-in for the SDMX client. Accepts `timeout` and `hedge_after` as
+    `SdmxClient` does."""
 
     created: ClassVar[list[_RecordingClient]] = []
 
     def __init__(
-        self, *, base_url: str, token: str | None = None, timeout: float | None = None
+        self,
+        *,
+        base_url: str,
+        token: str | None = None,
+        timeout: float | None = None,
+        hedge_after: float | None = None,
     ) -> None:
         self.base_url = base_url
         self.token = token
         self.timeout = timeout
+        self.hedge_after = hedge_after
         self.closed = False
         self.closed_at: float | None = None
         type(self).created.append(self)
@@ -242,6 +250,11 @@ def test_live_clients_take_the_sdmx_timeout_and_searchs_graph_cache_sizes(
     )
 
     assert [client.timeout for client in _RecordingSdmxClient.created] == [42, 42]
+    # Only the mint's client on our mixer hedges its data reads.
+    assert {client.base_url: client.hedge_after for client in _RecordingSdmxClient.created} == {
+        _SETTINGS_ENV["DATASETS_SDMX_BASE_URL"]: DATA_HEDGE_AFTER_SECONDS,
+        UN_BASE_URL: None,
+    }
     (graph,) = _RecordingGraphReader.created
     assert graph.cache_sizes == {
         "label_cache_size": LABEL_TYPE_CACHE_SIZE,
