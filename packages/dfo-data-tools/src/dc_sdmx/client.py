@@ -14,7 +14,7 @@ import math
 import socket
 import threading
 import time
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -187,6 +187,9 @@ class _DeadlineGuard:
         self._window_opened = False
         self.expired = threading.Event()
         self.stopped = threading.Event()
+        # Settles when the read is stopped or expires, so a wait on a read's sends can include
+        # it and wake at once (`_wait_for_sends`).
+        self.ended: Future[None] = Future()
         self._lock = threading.Lock()
         # Serialise worker admission with failure registration so a landed failure
         # prevents later workers from starting GETs.
@@ -279,6 +282,7 @@ class _DeadlineGuard:
             if not self._active:
                 return
             self.stopped.set()
+            self._end()
             responses = list(self._responses)
         for response in responses:
             self._abort(response)
@@ -302,9 +306,15 @@ class _DeadlineGuard:
             if not self._active:
                 return
             self.expired.set()
+            self._end()
             responses = list(self._responses)
         for response in responses:
             self._abort(response)
+
+    def _end(self) -> None:
+        """Settle `ended`, once. Callers hold `_lock`."""
+        if not self.ended.done():
+            self.ended.set_result(None)
 
     @staticmethod
     def _abort(response: httpx.Response) -> None:
@@ -346,26 +356,46 @@ def _on_chunk_future_done(future: Future[Any], *, plan_index: int, guard: _Deadl
         guard.abort()
 
 
-class _TotalSlotLease:
+class _TotalSlot:
     """One acquired total-concurrency slot, shared by the read that acquired it and each send
-    that read launches on its own thread. The slot is freed when the last holder releases."""
+    that read launches on its own thread. Each holder takes a lease, and the slot is freed when
+    the last lease is released."""
 
     def __init__(self, semaphore: threading.BoundedSemaphore) -> None:
         self._semaphore = semaphore
-        self._holders = 1
+        self._leases = 0
         self._lock = threading.Lock()
 
-    def retain(self) -> None:
-        """Add a holder, such as a send that may outlast its read."""
+    def lease(self) -> _TotalSlotLease:
         with self._lock:
-            self._holders += 1
+            self._leases += 1
+        return _TotalSlotLease(self)
 
-    def release(self) -> None:
+    def _release(self, lease: _TotalSlotLease) -> None:
         with self._lock:
-            self._holders -= 1
-            freed = self._holders == 0
+            if lease.released:
+                return
+            lease.released = True
+            self._leases -= 1
+            freed = self._leases == 0
         if freed:
             self._semaphore.release()
+
+
+class _TotalSlotLease:
+    """One holder's lease on a `_TotalSlot`. Releasing it a second time does nothing, so a
+    holder cannot free a slot another holder still uses."""
+
+    def __init__(self, slot: _TotalSlot) -> None:
+        self._slot = slot
+        self.released = False
+
+    def retain(self) -> _TotalSlotLease:
+        """A new lease on the same slot, for a holder such as a send that may outlast its read."""
+        return self._slot.lease()
+
+    def release(self) -> None:
+        self._slot._release(self)
 
 
 class _ConcurrentChunkRead:
@@ -398,7 +428,7 @@ class _ConcurrentChunkRead:
     ) -> Future[Any] | None:
         """Submit an already-slot-backed worker while the read is active. The worker receives
         the slot's lease, so a send it launches can hold the slot past the worker."""
-        lease = _TotalSlotLease(self._client._total_semaphore)
+        lease = _TotalSlot(self._client._total_semaphore).lease()
         with self.guard._admission_lock:
             if self.guard.stopped.is_set() or (wake_when is not None and wake_when()):
                 lease.release()
@@ -549,10 +579,11 @@ class SdmxClient:
     its httpx timeout, which a guarded read caps at the time its deadline left when the request
     was sent, and its response is closed unread. Each send counts as an active request, so
     `close()` waits for a loser to settle. At most `_HEDGE_SLOTS` races are undecided per
-    instance, and no duplicate is sent while `_HEDGE_LOSER_CAP` sends are still running after
-    their reads returned or raised; a request that cannot hedge waits for its own answer. Either
-    wait ends when its read's deadline passes or the read is stopped. A read counts the
-    duplicates it sends as `sdmx_hedges` and those that win as `sdmx_hedge_wins`
+    instance, no duplicate is sent while `_HEDGE_LOSER_CAP` sends are still running after
+    their reads returned or raised, and none is sent when the read's deadline has less than
+    `hedge_after` left; a request that cannot hedge waits for its own answer. Every wait ends
+    when its read's deadline passes or the read is stopped. A read counts the duplicates it
+    sends as `sdmx_hedges` and those whose 2xx SDMX-CSV response wins as `sdmx_hedge_wins`
     (`dfo_platform.timings.count`). `/availability` requests are sent once.
     """
 
@@ -589,8 +620,9 @@ class SdmxClient:
             else threading.BoundedSemaphore(total_concurrency)
         )
         self._hedge_after = hedge_after
-        self._hedge_slots = threading.BoundedSemaphore(_HEDGE_SLOTS)
+        # Undecided races and running losers, each bounded by its cap under `_hedge_lock`.
         self._hedge_lock = threading.Lock()
+        self._undecided_races = 0
         self._running_losers = 0
         self._lifecycle_lock = threading.Lock()
         self._close_started = False
@@ -1450,6 +1482,24 @@ class SdmxClient:
                 return True
 
     @contextmanager
+    def _slot_lease(
+        self, guard: _DeadlineGuard | None, slot: _TotalSlotLease | None
+    ) -> Iterator[_TotalSlotLease]:
+        """`slot`, a coordinator's lease released when its worker settles, or else a lease on a
+        slot acquired here (`_acquire_total_slot`) and released on exit. A read stopped while
+        waiting for the slot raises `_ReadStoppedError`."""
+        if slot is not None:
+            yield slot
+            return
+        if not self._acquire_total_slot(guard):
+            raise _ReadStoppedError()
+        lease = _TotalSlot(self._total_semaphore).lease()
+        try:
+            yield lease
+        finally:
+            lease.release()
+
+    @contextmanager
     def _open_data_response(
         self,
         *,
@@ -1478,12 +1528,7 @@ class SdmxClient:
             params["c[facetId]"] = _or_list("facetId", facet_ids)
         if time_period is not None:
             params["c[TIME_PERIOD]"] = _time_period_param(time_period)
-        lease = slot
-        if lease is None:
-            if not self._acquire_total_slot(guard):
-                raise _ReadStoppedError()
-            lease = _TotalSlotLease(self._total_semaphore)
-        try:
+        with self._slot_lease(guard, slot) as lease:
             try:
                 if guard is not None:
                     guard.preflight()
@@ -1513,9 +1558,6 @@ class SdmxClient:
                 raise SdmxTransportError(
                     f"SDMX transport error calling {_DATA_PATH!r}: {exc}"
                 ) from exc
-        finally:
-            if slot is None:
-                lease.release()
 
     @contextmanager
     def _data_response(
@@ -1559,34 +1601,48 @@ class SdmxClient:
         slot: _TotalSlotLease,
     ) -> Iterator[httpx.Response]:
         """`send()`'s deciding response: the request alone, or the request and one duplicate
-        when it has no response after `self._hedge_after` seconds, the read's deadline has time
-        left, fewer than `_HEDGE_LOSER_CAP` losers are running, and a hedge slot is free. The
-        duplicate's timeout is the time left.
+        when it has no response after `self._hedge_after` seconds, the read's deadline has at
+        least that long left, fewer than `_HEDGE_LOSER_CAP` losers are running, and fewer than
+        `_HEDGE_SLOTS` races are undecided. The duplicate's timeout is the time left.
 
         A 2xx SDMX-CSV response decides the race, and so does a client error other than 408
         and 429, which the other send would repeat. A send that raises, answers 408, 429 or
         5xx, or answers 2xx with another content type loses to the other one; only when both
-        fail does the request's own outcome reach the caller. Once the request has outlasted
-        `self._hedge_after`, the wait for it, with or without a duplicate, ends with
-        `TimeoutError` when the read's deadline passes and with `_ReadStoppedError` when the
-        read is stopped. The hedge slot is released as soon as the race ends.
+        fail does the request's own outcome reach the caller. Every wait for the request, with
+        or without a duplicate, ends with `TimeoutError` when the read's deadline passes and
+        with `_ReadStoppedError` when the read is stopped. The race leaves the undecided count
+        as soon as it ends.
 
         Each send runs on its own thread and holds a place until it settles: the request holds
-        the read's total-concurrency slot (`slot`), and the duplicate a loser place reserved
-        when it launches. A send still running when this block exits, because it lost or its
-        read gave up on it, also takes a loser place. A send settles when it fails, when its
-        response arrives after it lost or was abandoned (the response is closed unread), or,
+        a lease on the read's total-concurrency slot (`slot`), and the duplicate a loser place
+        reserved when it launches. A send still running when this block exits, because it lost
+        or its read gave up on it, also takes a loser place. A send settles when it fails, when
+        its response arrives after it lost or was abandoned (the response is closed unread), or,
         for the winner, when this block exits. So the sends running against the mixer never
         exceed the total-concurrency slots plus `_HEDGE_LOSER_CAP`.
+
+        When no thread can be started for the request, it is sent on the caller's thread and
+        not hedged. When none can be started for the duplicate, the read waits on the request.
         """
-        # Each launched send, with the slot lease and whether a loser place it holds.
-        holds: dict[Future[httpx.Response], tuple[_TotalSlotLease | None, bool]] = {}
-        winner: Future[httpx.Response] | None = None
         try:
             primary = self._send_on_own_thread(partial(send, timeout))
-            slot.retain()
-            holds[primary] = (slot, False)
-            if wait((primary,), timeout=self._hedge_after).done:
+        except RuntimeError:
+            primary = None
+        if primary is None:
+            response = send(timeout)
+            try:
+                yield response
+            finally:
+                response.close()
+            return
+
+        # Each launched send, with its slot lease and whether it holds a loser place.
+        holds: dict[Future[httpx.Response], tuple[_TotalSlotLease | None, bool]] = {
+            primary: (slot.retain(), False)
+        }
+        winner: Future[httpx.Response] | None = None
+        try:
+            if _wait_for_sends((primary,), guard=guard, timeout=self._hedge_after):
                 winner = primary
             else:
                 winner = self._hedge(primary, send, holds=holds, guard=guard)
@@ -1613,40 +1669,52 @@ class SdmxClient:
         if hedge_timeout is None or not self._reserve_hedge(primary):
             _race((primary,), guard=guard)
             return primary
+        hedge: Future[httpx.Response] | None = None
         try:
             try:
                 hedge = self._send_on_own_thread(partial(send, hedge_timeout))
+            except RuntimeError:
+                # No thread for the duplicate: the read waits on its request alone.
+                self._free_loser_place()
             except BaseException:
                 self._free_loser_place()
                 raise
-            holds[hedge] = (None, True)
-            count("sdmx_hedges")
-            winner = _race((primary, hedge), guard=guard)
+            if hedge is None:
+                winner = _race((primary,), guard=guard)
+            else:
+                holds[hedge] = (None, True)
+                count("sdmx_hedges")
+                winner = _race((primary, hedge), guard=guard)
         finally:
-            self._hedge_slots.release()
-        if winner is hedge:
+            self._end_race()
+        if winner is not None and winner is hedge and winner.result().is_success:
             count("sdmx_hedge_wins")
         return primary if winner is None else winner
 
     def _reserve_hedge(self, primary: Future[httpx.Response]) -> bool:
-        """Take a hedge slot and a loser place for a duplicate of `primary`, unless `primary`
-        has settled, the losers still running reach `_HEDGE_LOSER_CAP`, or no slot is free.
-        The place is taken under the lock that checks the cap, so concurrent races never run
-        more duplicates than the cap."""
+        """Count an undecided race and take a loser place for a duplicate of `primary`, unless
+        `primary` has settled, the losers still running reach `_HEDGE_LOSER_CAP`, or
+        `_HEDGE_SLOTS` races are undecided. Both are taken under the lock that checks them, so
+        concurrent races never exceed either cap."""
         with self._hedge_lock:
             if (
                 primary.done()
                 or self._running_losers >= _HEDGE_LOSER_CAP
-                or not self._hedge_slots.acquire(blocking=False)
+                or self._undecided_races >= _HEDGE_SLOTS
             ):
                 return False
+            self._undecided_races += 1
             self._running_losers += 1
             return True
+
+    def _end_race(self) -> None:
+        with self._hedge_lock:
+            self._undecided_races -= 1
 
     def _settle_send(
         self, sent: Future[httpx.Response], *, lease: _TotalSlotLease | None, place: bool
     ) -> None:
-        """Close a settled send's response and free the slot hold and loser place it held."""
+        """Close a settled send's response and free the slot lease and loser place it held."""
         try:
             _close_sent_response(sent)
         finally:
@@ -1664,15 +1732,19 @@ class SdmxClient:
             self._running_losers -= 1
 
     def _hedge_timeout(self, guard: _DeadlineGuard | None) -> float | None:
-        """The duplicate's timeout, or None when the read is stopped or out of time."""
+        """The duplicate's timeout, or None when the read is stopped or has less than
+        `self._hedge_after` left."""
         if guard is None:
             return self._timeout
         if guard.stopped.is_set():
             return None
         try:
-            return min(self._timeout, guard.remaining())
+            remaining = guard.remaining()
         except TimeoutError:
             return None
+        if self._hedge_after is not None and remaining < self._hedge_after:
+            return None
+        return min(self._timeout, remaining)
 
     def _send_on_own_thread(self, send: Callable[[], httpx.Response]) -> Future[httpx.Response]:
         """`send()` on a new daemon thread under the caller's context, so a request that loses a
@@ -1843,12 +1915,7 @@ class SdmxClient:
             params["c[TIME_PERIOD]"] = _availability_time_period_param(time_period)
         path = f"{_AVAILABILITY_PATH_PREFIX}/{component}"
 
-        lease = slot
-        if lease is None:
-            if not self._acquire_total_slot(guard):
-                raise _ReadStoppedError()
-            lease = _TotalSlotLease(self._total_semaphore)
-        try:
+        with self._slot_lease(guard, slot):
             try:
                 if guard is not None:
                     guard.open_window()
@@ -1894,9 +1961,6 @@ class SdmxClient:
                 if guard is not None:
                     guard.raise_if_expired(exc)
                 raise SdmxTransportError(f"SDMX transport error calling {path!r}: {exc}") from exc
-        finally:
-            if slot is None:
-                lease.release()
 
     def _chunked_availability(
         self,
@@ -2055,25 +2119,49 @@ def _race(
     sends: tuple[Future[httpx.Response], ...], *, guard: _DeadlineGuard | None
 ) -> Future[httpx.Response] | None:
     """The first of `sends` to settle with a deciding response, or None when every one fails.
-
-    With a guard, wait in `_SLOT_POLL_INTERVAL` slices and raise `TimeoutError` once the
-    deadline passes or `_ReadStoppedError` once the read is stopped.
-    """
+    With a guard, the wait ends as `_wait_for_sends` describes."""
     pending = set(sends)
     while pending:
-        if guard is not None:
-            guard.check()
-            if guard.stopped.is_set():
-                raise _ReadStoppedError()
-        done, pending = wait(
-            pending,
-            timeout=None if guard is None else _SLOT_POLL_INTERVAL,
-            return_when=FIRST_COMPLETED,
-        )
+        done = _wait_for_sends(pending, guard=guard, timeout=None)
+        pending -= done
         winner = next((sent for sent in sends if sent in done and _decides(sent)), None)
         if winner is not None:
             return winner
     return None
+
+
+def _wait_for_sends(
+    sends: Iterable[Future[httpx.Response]],
+    *,
+    guard: _DeadlineGuard | None,
+    timeout: float | None,
+) -> set[Future[httpx.Response]]:
+    """The sends that have settled once one settles or `timeout` seconds pass (`None` waits
+    for one).
+
+    With a guard, the wait also wakes the moment the read is stopped, raising
+    `_ReadStoppedError`, and lasts no longer than the read's deadline, raising `TimeoutError`
+    once it passes.
+    """
+    sends = set(sends)
+    if guard is None:
+        return wait(sends, timeout=timeout, return_when=FIRST_COMPLETED).done
+    _raise_if_read_ended(guard)
+    remaining = guard.remaining()
+    if remaining != math.inf:
+        timeout = remaining if timeout is None else min(timeout, remaining)
+    waited: set[Future[Any]] = {*sends, guard.ended}
+    done = wait(waited, timeout=timeout, return_when=FIRST_COMPLETED).done
+    settled = {sent for sent in sends if sent in done}
+    if not settled:
+        _raise_if_read_ended(guard)
+    return settled
+
+
+def _raise_if_read_ended(guard: _DeadlineGuard) -> None:
+    guard.check()
+    if guard.stopped.is_set():
+        raise _ReadStoppedError()
 
 
 def _decides(sent: Future[httpx.Response]) -> bool:

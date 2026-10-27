@@ -7,13 +7,21 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import httpx
 import pytest
 
+import dc_sdmx.client
 from dc_sdmx import SdmxHttpError
-from dc_sdmx.client import _HEDGE_LOSER_CAP, _HEDGE_SLOTS, SdmxClient
+from dc_sdmx.client import (
+    _HEDGE_LOSER_CAP,
+    _HEDGE_SLOTS,
+    SdmxClient,
+    _DeadlineGuard,
+    _race,
+    _ReadStoppedError,
+)
 from dfo_platform.timings import PhaseTimings, collecting
 
 _BASE_URL = "https://datacommons.one.org/core/api"
@@ -303,31 +311,68 @@ def test_closing_the_client_waits_for_a_losing_send_to_settle():
     assert transport.stalled_streams[0].closed.is_set()
 
 
-def test_a_duplicate_whose_thread_fails_to_start_frees_its_slot_and_closes_the_first_request(
-    monkeypatch,
-):
-    transport = _StalledFirstRequest()
-    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
+def _failing_thread_start(monkeypatch, *, failing_start: int) -> list[threading.Thread]:
+    """Make the `failing_start`-th `Thread.start` raise as when no thread can be created, and
+    return every thread that started."""
     real_start = threading.Thread.start
+    started: list[threading.Thread] = []
     starts = 0
 
     def start(thread: threading.Thread) -> None:
         nonlocal starts
         starts += 1
-        if starts == 2:
+        if starts == failing_start:
             raise RuntimeError("can't start new thread")
+        started.append(thread)
         real_start(thread)
 
     monkeypatch.setattr(threading.Thread, "start", start)
-    with pytest.raises(RuntimeError, match="can't start new thread"):
-        _value(client, "V0")
+    return started
+
+
+def test_a_duplicate_whose_thread_fails_to_start_leaves_the_read_waiting_on_its_request(
+    monkeypatch,
+):
+    transport = _StalledFirstRequest()
+    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
+    _failing_thread_start(monkeypatch, failing_start=2)
+    timings = PhaseTimings()
+
+    def read_counted() -> str | None:
+        with collecting(timings):
+            return _value(client, "V0")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        read = pool.submit(read_counted)
+        time.sleep(4 * _HEDGE_AFTER)
+        assert not read.done()
+        transport.release.set()
+        assert read.result(timeout=5) == "1"
     monkeypatch.undo()
 
-    transport.release.set()
-    _wait_until(lambda: bool(transport.stalled_streams))
+    assert transport.requests["V0"] == 1
+    assert timings.count_snapshot().get("sdmx_hedges", 0) == 0
+    assert (client._undecided_races, client._running_losers) == (0, 0)
     assert transport.stalled_streams[0].closed.wait(timeout=5)
-    slots = [client._hedge_slots.acquire(blocking=False) for _ in range(_HEDGE_SLOTS)]
-    assert slots == [True] * _HEDGE_SLOTS
+
+
+def test_a_request_whose_thread_fails_to_start_is_sent_on_the_callers_thread(monkeypatch):
+    sent_on: list[threading.Thread] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent_on.append(threading.current_thread())
+        return httpx.Response(
+            200, headers={"content-type": _CONTENT_TYPE}, content=_body("V0", "1")
+        )
+
+    client = SdmxClient(
+        base_url=_BASE_URL, transport=httpx.MockTransport(handler), hedge_after=_HEDGE_AFTER
+    )
+    started = _failing_thread_start(monkeypatch, failing_start=1)
+
+    assert _value(client, "V0") == "1"
+    assert sent_on == [threading.current_thread()]
+    assert started == []
 
 
 @pytest.mark.parametrize("failing_send", ["primary", "duplicate"])
@@ -354,12 +399,17 @@ def test_a_client_error_from_either_send_raises_without_waiting_for_the_other(fa
         base_url=_BASE_URL, transport=httpx.MockTransport(handler), hedge_after=_HEDGE_AFTER
     )
 
+    timings = PhaseTimings()
+
     started = time.monotonic()
-    with pytest.raises(SdmxHttpError) as excinfo:
+    with collecting(timings), pytest.raises(SdmxHttpError) as excinfo:
         _value(client, "V0")
     assert time.monotonic() - started < 1
     assert excinfo.value.upstream_status == 404
     assert requests["sent"] == 2
+    # Only a duplicate's 2xx SDMX-CSV response counts as a hedge win.
+    counts = timings.count_snapshot()
+    assert (counts["sdmx_hedges"], counts.get("sdmx_hedge_wins", 0)) == (1, 0)
     release.set()
 
 
@@ -377,6 +427,28 @@ def test_a_race_ends_when_the_read_deadline_passes():
     transport.release.set()
     _wait_until(lambda: len(transport.stalled_streams) == 2)
     assert all(stream.closed.wait(timeout=5) for stream in transport.stalled_streams)
+
+
+def test_the_wait_before_a_duplicate_ends_when_the_read_deadline_passes():
+    transport = _StalledFirstRequest()
+    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=10)
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        _value(client, "V0", deadline=time.monotonic() + 4 * _HEDGE_AFTER)
+    assert time.monotonic() - started < 1
+    assert transport.requests["V0"] == 1
+    transport.release.set()
+
+
+def test_a_read_with_less_than_the_hedge_interval_left_sends_no_duplicate():
+    transport = _StalledFirstRequest()
+    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
+
+    with pytest.raises(TimeoutError):
+        _value(client, "V0", deadline=time.monotonic() + 1.5 * _HEDGE_AFTER)
+    assert transport.requests["V0"] == 1
+    transport.release.set()
 
 
 def test_a_race_ends_when_a_sibling_chunk_fails():
@@ -490,7 +562,7 @@ def test_a_wait_on_an_unhedged_request_ends_when_a_sibling_chunk_fails():
         total_concurrency=len(variables),
         hedge_after=_HEDGE_AFTER,
     )
-    assert all(client._hedge_slots.acquire(blocking=False) for _ in range(_HEDGE_SLOTS))
+    client._undecided_races = _HEDGE_SLOTS
 
     started = time.monotonic()
     with pytest.raises(SdmxHttpError) as excinfo:
@@ -549,3 +621,21 @@ def test_reads_abandoned_at_their_deadline_never_run_more_sends_than_the_slots_a
         assert total < peak <= total + _HEDGE_LOSER_CAP
     finally:
         release.set()
+
+
+@pytest.mark.parametrize("ending", ["stopped", "deadline"])
+def test_a_guarded_race_wakes_when_its_read_ends_without_polling(monkeypatch, ending):
+    """With the slot poll interval far beyond the test, the race still ends at once when the
+    read is stopped or its deadline passes."""
+    monkeypatch.setattr(dc_sdmx.client, "_SLOT_POLL_INTERVAL", 30)
+    guard = _DeadlineGuard(time.monotonic() + 0.1 if ending == "deadline" else None)
+    unanswered: Future[httpx.Response] = Future()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        race = pool.submit(_race, (unanswered,), guard=guard)
+        if ending == "stopped":
+            time.sleep(_HEDGE_AFTER)
+            guard.abort()
+        error = race.exception(timeout=1)
+    assert isinstance(error, _ReadStoppedError if ending == "stopped" else TimeoutError)
+    guard.cancel()
