@@ -112,9 +112,9 @@ def _bilateral_whole(monkeypatch: pytest.MonkeyPatch) -> tuple[Spec, Spec]:
 
 
 def test_a_bilateral_crs_sector_parts_whole_is_the_crs_bilateral_total(monkeypatch):
-    """US bilateral health aid in 2023, CRS 120 + 130 gross: its whole is the CRS's gross
-    bilateral total over every purpose code, never DAC1's donor total, with the part's donor,
-    window, basis and provider scope, under a spec_id of its own."""
+    """US bilateral health aid in 2023, CRS 120 + 130 gross. Its whole is the CRS's gross
+    bilateral total over every purpose code, with the part's donor, window, basis and
+    provider scope, under a spec_id of its own."""
     part, whole = _bilateral_whole(monkeypatch)
 
     purpose = next(s for s in part.definition.identity.slots if s.property == "crsPurpose")
@@ -137,8 +137,8 @@ def test_a_bilateral_crs_sector_parts_whole_is_the_crs_bilateral_total(monkeypat
 
 
 def test_a_whole_posted_again_answers_its_own_spec_id(monkeypatch):
-    """The whole's own scope, posted back with its entries, compiles to the whole: the
-    resubmit a later switch of it makes."""
+    """The whole's own scope, posted back with its entries, compiles to the whole. A
+    later switch of it makes the same resubmit."""
     _, whole = _bilateral_whole(monkeypatch)
     scope = _scope(whole)
 

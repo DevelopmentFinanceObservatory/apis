@@ -293,7 +293,7 @@ def test_group_member_concurrency_one_reproduces_serial_behaviour_exactly():
 
 
 # ---------------------------------------------------------------------------
-# A slow chunk holds one worker; the rest of the pool keeps fetching
+# A slow chunk holds one worker and the rest of the pool keeps fetching
 # ---------------------------------------------------------------------------
 
 

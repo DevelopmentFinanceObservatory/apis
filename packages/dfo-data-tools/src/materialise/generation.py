@@ -2466,8 +2466,8 @@ class _GroupRowStreamer:
         """Dispatches `self._chunks` (already `dcid:`-sorted) on a pool kept
         full: at most `member_concurrency` chunks' own fetches in flight,
         and a new chunk submitted, in chunk order, whenever any in-flight
-        chunk completes. A slow chunk therefore holds one worker, never the
-        whole pool. Completed chunks wait in `ready` until every chunk
+        chunk completes. A slow chunk therefore holds one worker.
+        Completed chunks wait in `ready` until every chunk
         before them has been consumed, so results are consumed in chunk
         order whatever order the fetches finish in, and the first failed
         chunk in that order is what raises. Once any chunk has failed, no

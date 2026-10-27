@@ -528,7 +528,7 @@ class SdmxClient:
     value). Both requests run on their own threads, so a slow loser holds no caller's thread or
     total-concurrency slot; it ends at its httpx timeout and its response is closed unread. At
     most `_HEDGE_SLOTS` duplicates are in flight per instance, and a request that finds none free
-    waits for its own answer. `/availability` requests are never hedged.
+    waits for its own answer. `/availability` requests are sent once.
     """
 
     def __init__(
@@ -1533,7 +1533,7 @@ class SdmxClient:
                 loser = hedge if winner is primary else primary
                 loser.add_done_callback(self._settle_hedge_loser)
                 return winner.result()
-        # Both sends raised; nothing is left to close.
+        # Both sends raised, so nothing is left to close.
         self._hedge_slots.release()
         return primary.result()
 

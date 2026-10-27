@@ -1,4 +1,4 @@
-"""Test hedged `/data` reads: the first answer wins and each request gets one duplicate at most."""
+"""Hedged `/data` reads. The first answer wins and each request gets at most one duplicate."""
 
 from __future__ import annotations
 
@@ -104,8 +104,8 @@ def test_a_stalled_request_is_answered_by_its_one_duplicate_while_hedge_slots_la
 
 
 def test_a_chunked_read_sends_each_slow_chunk_at_most_twice():
-    """Every request takes four hedge intervals. Each chunk's request is sent once more, and
-    never a third time, while a hedge slot is free."""
+    """Every request takes four hedge intervals. Each chunk's request is sent at most
+    twice, and the extra sends total no more than the hedge slots."""
     variables = [f"V{i:09d}" for i in range(4)]
     lock = threading.Lock()
     requests: Counter[str] = Counter()
