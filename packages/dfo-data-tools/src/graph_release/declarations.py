@@ -58,6 +58,7 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (scope_conventions, "BASIS_RESTRICTIONS"),
     (scope_conventions, "MEASURE_BASIS_CONVENTIONS"),
     (scope_conventions, "PROVIDER_CONVENTIONS"),
+    (scope_conventions, "REDISTRIBUTED_PROVIDERS"),
     (scope_conventions, "REGION_READINGS"),
     (scope_conventions, "SECTOR_GROUPINGS"),
 )

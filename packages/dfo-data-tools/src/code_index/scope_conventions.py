@@ -4,7 +4,8 @@
 `MEASURE_BASIS_CONVENTIONS` names the measure basis each part shape and window defaults to,
 `BASIS_MEASURES` what each basis binds in an identity, and `BASIS_RESTRICTIONS` the code
 systems besides the sector whose admitted code makes a part a restricted one.
-`PROVIDER_CONVENTIONS` names whose spending a part counts by default. `OPTION_LABELS`
+`PROVIDER_CONVENTIONS` names whose spending a part counts by default, and
+`REDISTRIBUTED_PROVIDERS` the providers no pool takes the inclusive scope with. `OPTION_LABELS`
 words the options the rules build from code and group labels, and `REGION_READINGS` names
 the graph regions a DAC dataset counts as the OECD's region. `search.scope`
 reads them all, and `graph_release.declarations` hashes the tables beside the other
@@ -345,6 +346,16 @@ PROVIDER_CONVENTIONS: tuple[ProviderConvention, ...] = (
         ),
     ),
 )
+
+# The providers the imputed multilateral table carries rows for that are themselves
+# multilaterals whose own outflows its rows attribute to other providers. The EU institutions
+# report to the CRS as a provider and hold an imputed share of the multilaterals they fund, and
+# ONE's method attributes their own spending to the EU member states that fund them. A pool
+# naming one of them beside another provider counts those outflows twice, as the multilateral's
+# own flows and inside its funders' imputed shares, so it takes no inclusive scope. The graph
+# types every multilateral an `Organization`, as it types a private foundation, and the code
+# index marks none, so this table is the only record of the grouping.
+REDISTRIBUTED_PROVIDERS: tuple[str, ...] = ("EuropeanUnionInstitutions",)
 
 PROVIDER_DEFAULT_RULE = "bilateral_flows"
 """The rule of a part no provider convention settles. It counts the donor's bilateral flows."""

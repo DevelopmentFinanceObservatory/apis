@@ -38,14 +38,17 @@ from search.models import (
     ScopeChoice,
     Spec,
 )
+from search.scope.build import build_part_scope
+from search.scope.compile import Refusal
 from search.scope.edits import apply_binding
-from search.scope.provider import provider_rule, settle_provider
+from search.scope.provider import inclusive_reach, provider_rule, settle_provider
 from search.scope.state import ScopeState
 from search.scope.tables import ScopeFacts
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
+from tests.scope._axes import explicit, switch
 from tests.scope.test_basis import _crs_member, _graph, _PickingLLM
 
 _USA = "country/USA"
@@ -430,7 +433,9 @@ def test_a_resubmit_of_a_composite_identity_answers_the_composite(monkeypatch):
     assert again.resolved.facets["provenance"].ref == _INCLUSIVE_SOURCE
 
 
-def _bilateral_identity(**slots: str) -> BaseIdentity:
+def _bilateral_identity(
+    *, origin: Sequence[str] = (_USA,), latest: bool = False, **slots: str
+) -> BaseIdentity:
     document = {
         "identity_version": "spec1",
         "shape": {
@@ -464,15 +469,23 @@ def _bilateral_identity(**slots: str) -> BaseIdentity:
             ],
             key=lambda slot: slot["property"],
         ),
-        "entities": {"origin": [_USA], "destination": [_KEN]},
-        "requested_window": {"kind": "range", "start_year": 2015, "end_year": 2020},
+        "entities": {"origin": list(origin), "destination": [_KEN]},
+        "requested_window": (
+            {"kind": "latest"}
+            if latest
+            else {"kind": "range", "start_year": 2015, "end_year": 2020}
+        ),
     }
+    if not origin:
+        del document["entities"]["origin"]
     return BaseIdentity.model_validate(document)
 
 
-def _facts() -> ScopeFacts:
-    rows, extra = _coverage_rows(_ALL_YEARS)
-    index = build_coverage_index(rows, **extra)
+def _facts(rows: Sequence[tuple] | None = None) -> ScopeFacts:
+    """The fixture code index and a coverage snapshot of `rows`, by default
+    `_coverage_rows(_ALL_YEARS)`'s."""
+    default, extra = _coverage_rows(_ALL_YEARS)
+    index = build_coverage_index(list(rows) if rows is not None else default, **extra)
     return ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
 
 
@@ -521,3 +534,125 @@ def test_the_bilateral_and_inclusive_edits_are_inverses():
     assert identity_spec_id(back) == identity_spec_id(base)
     windowed = apply_binding(base, ProviderBinding(scope="inclusive", window=(2011, 2024)), [])
     assert windowed.requested_window == IdentityWindowRange(start_year=2011, end_year=2024)
+
+
+_GBR = "country/GBR"
+_IDA = "InternationalDevelopmentAssociation"
+_EU = "EuropeanUnionInstitutions"
+_FRA = "country/FRA"
+
+
+def _rows_for(donors: Sequence[str], *, imputed: Sequence[str]) -> list[tuple]:
+    """CRS health series to Kenya from each of `donors` in every year from 2005 to 2024, and
+    imputed ones from each of `imputed`, the providers the imputed table carries rows for."""
+    return [
+        *(
+            (dcid, "crs", donor, _KEN, list(_ALL_YEARS))
+            for donor in donors
+            for dcid in _CRS_MEMBERS
+        ),
+        *(
+            (dcid, "imputed", donor, _KEN, list(_ALL_YEARS))
+            for donor in imputed
+            for dcid in _IMPUTED_MEMBERS
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("origin", "carried", "active", "inclusive", "why"),
+    [
+        pytest.param((_USA,), (_USA,), "provider:inclusive", "available", None, id="us-alone"),
+        # The imputed table attributes each multilateral's spending to each bilateral
+        # provider by that provider's own share of its core resources, so two providers'
+        # imputed shares are disjoint and add.
+        pytest.param(
+            (_USA, _GBR), (_USA, _GBR), "provider:inclusive", "available", None, id="two-donors"
+        ),
+        # IDA's own outflows are what the imputed rows attribute to the US, so the pool
+        # would count them twice. The imputed table carries no rows for IDA.
+        pytest.param(
+            (_USA, _IDA),
+            (_USA,),
+            "provider:bilateral",
+            "unavailable",
+            "pooled_providers",
+            id="us-and-ida",
+        ),
+        # EU institutions are a provider the imputed table carries, and a multilateral
+        # whose own outflows its rows attribute to the EU members.
+        pytest.param(
+            (_FRA, _EU),
+            (_FRA, _EU),
+            "provider:bilateral",
+            "unavailable",
+            "pooled_providers",
+            id="france-and-eu-institutions",
+        ),
+        pytest.param(
+            (_IDA,), (_USA,), "provider:bilateral", "unavailable", "provider", id="ida-alone"
+        ),
+        pytest.param(
+            (), (_USA,), "provider:bilateral", "unavailable", "all_providers", id="all-providers"
+        ),
+    ],
+)
+def test_the_inclusive_scope_is_offered_only_for_providers_the_imputed_table_allocates_to(
+    origin, carried, active, inclusive, why
+):
+    """The inclusive scope adds each named provider's imputed share of multilateral
+    spending. It is offered when the imputed table carries rows for every named provider
+    and none of them is a multilateral whose outflows its rows redistribute; otherwise it is
+    unavailable, `provider_not_offered`, with the reason, and neither the default, a typed
+    "including multilateral" nor a switch applies it."""
+    facts = _facts(_rows_for((_USA, _GBR, _IDA, _FRA, _EU), imputed=carried))
+    identity = _bilateral_identity(origin=origin)
+
+    table = provider_rule(identity, None, facts)
+    record = settle_provider(identity, _total(), facts)
+    typed = settle_provider(
+        identity,
+        ScopeState(entries=(explicit("provider:inclusive"),), total=True),
+        facts,
+    )
+    switched = build_part_scope(
+        base=identity, entries=[switch("provider:inclusive")], records={}, facts=facts
+    )
+
+    assert table is not None and record is not None and typed is not None
+    (option,) = (o for o in table.options if o.option_id == "provider:inclusive")
+    assert option.availability.status == inclusive
+    assert record.active == active
+    if why is None:
+        assert option.availability.code is None
+        assert typed.active == "provider:inclusive"
+        assert isinstance(switched, PartScope)
+        assert (switched.compiled.identity.facets or {}).get("provenance") == (
+            IdentityBindingValue(ref=_INCLUSIVE_SOURCE)
+        )
+    else:
+        assert option.availability.code == "provider_not_offered"
+        assert option.availability.detail == {"why": why}
+        assert typed.active == "provider:bilateral"
+        assert switched == Refusal(
+            code="requested_option_unavailable", entry=0, cause="provider_not_offered"
+        )
+
+
+def test_a_latest_window_elects_the_latest_year_both_tables_hold():
+    """Bilateral series in 2022 and 2024 and imputed ones in 2022 and 2023: the only year
+    both hold is 2022, so the inclusive scope reads 2022."""
+    rows = [
+        *((dcid, "crs", _USA, _KEN, [2022, 2024]) for dcid in _CRS_MEMBERS),
+        *((dcid, "imputed", _USA, _KEN, [2022, 2023]) for dcid in _IMPUTED_MEMBERS),
+    ]
+    facts = _facts(rows)
+    identity = _bilateral_identity(latest=True)
+
+    reach = inclusive_reach(identity, facts)
+    table = provider_rule(identity, None, facts)
+
+    assert reach.latest == 2022
+    assert table is not None
+    (option,) = (o for o in table.options if o.option_id == "provider:inclusive")
+    assert option.binding.model_dump()["window"] == (2022, 2022)

@@ -10,7 +10,11 @@ served from. Each component materialises through `pipeline.materialise_group` al
 - Inside those years, each member of a component whose absence reads as zero
   (`ComponentRecipe.zero_absent`) gets a row of value 0 in every cell, a role tuple and
   period, that another component fills and it does not. Outside them no zero row is
-  written, so a year a component does not cover is missing. A component without
+  written, so a year a component does not cover is missing. A zero row states the unit its
+  cell's rows state, its own component's where that component holds the cell, and the
+  member's measurement method, so a cell's rows share one unit when the components'
+  conversions agree on it. Each component is converted before it is composed, and a
+  converted zero is a zero in its cell's unit. A component without
   the flag contributes nothing where it holds no row, and neither does a member its facet
   group election left out (`MaterialisationResult.unserved_members`), whose series sit under
   another source, unit or method.
@@ -74,6 +78,8 @@ _PROVENANCE_AXIS = "provenance"
 PROVENANCE_COLUMN = "provenance"
 _UNIT_AXIS = "unit"
 _METHOD_AXIS = "measurementMethod"
+_UNIT_COLUMN = "unit"
+_METHOD_COLUMN = "measurementMethod"
 _YEARS_LABEL = "years"
 # The codes `compose_components` states anew over the composed frame. Every other component
 # warning passes through once per distinct code and message.
@@ -140,8 +146,9 @@ class ComponentSummary:
 @dataclass
 class _Plan:
     """What the first pass over the components settles: the years each component's rows are
-    kept in, the cells of those years, and each zero-filling member's own cells and the row
-    its zero rows copy their unit and method from."""
+    kept in, the cells of those years, each zero-filling member's own cells and the row its
+    zero rows copy their measurement method from, and the unit of each covered cell's zero
+    rows for each zero-filling component (`_zero_units`)."""
 
     kept_years: dict[ComponentRole, frozenset[int]]
     held_years: dict[ComponentRole, frozenset[int]]
@@ -149,6 +156,7 @@ class _Plan:
     member_cells: dict[str, set[_Cell]] = field(default_factory=dict)
     templates: dict[str, pa.Table] = field(default_factory=dict)
     zero_members: dict[ComponentRole, tuple[str, ...]] = field(default_factory=dict)
+    zero_units: dict[ComponentRole, dict[_Cell, object]] = field(default_factory=dict)
 
 
 @dataclass
@@ -184,8 +192,9 @@ def compose_components(
     out; `empty_result` stands for a composed frame with no row.
 
     Raises `MaterialisationUsageError` for no components, two components sharing a member,
-    components with different role columns, or a zero-filling member that needs zero rows
-    and whose unit and method no row of its component states."""
+    components with different role columns, a zero-filling member that needs zero rows and
+    whose method neither its own rows nor its component's one method states, or a cell
+    needing zero rows whose rows state more than one unit (`_zero_units`)."""
     if not components:
         raise MaterialisationUsageError("compose_components requires at least one component")
     role_columns = tuple(role_columns)
@@ -321,12 +330,14 @@ def _check_components(
 
 def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclaration) -> _Plan:
     """The first pass: each component's years, the composite's years, the cells of those
-    years and each zero-filling member's cells and template row."""
+    years, each zero-filling member's cells and template row, and the units of its zero
+    rows."""
     held: dict[ComponentRole, set[int]] = {component.role: set() for component in components}
     cells_by_year: dict[int, set[_Cell]] = {}
+    cell_units: dict[_Cell, dict[ComponentRole, list[object]]] = {}
     member_cells: dict[str, set[_Cell]] = {}
     templates: dict[str, pa.Table] = {}
-    component_templates: dict[ComponentRole, dict[tuple[object, object], pa.Table]] = {}
+    component_templates: dict[ComponentRole, dict[object, pa.Table]] = {}
     roles = _role_columns(components)
     for component in components:
         zero_fill = component.recipe.zero_absent
@@ -337,11 +348,15 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
             years = _years(table)
             role_values = [_strings(table, role) for role in roles]
             periods = _strings(table, TIME_PERIOD_COLUMN)
+            units = table[_UNIT_COLUMN].to_pylist()
             stat_vars = _strings(table, STAT_VAR_COLUMN) if zero_fill else ()
             for position, (year, period) in enumerate(zip(years, periods, strict=True)):
                 held[component.role].add(year)
                 cell = (tuple(column[position] for column in role_values), period)
                 cells_by_year.setdefault(year, set()).add(cell)
+                stated = cell_units.setdefault(cell, {}).setdefault(component.role, [])
+                if units[position] not in stated:
+                    stated.append(units[position])
                 if zero_fill:
                     member = stat_vars[position]
                     member_cells.setdefault(member, set()).add(cell)
@@ -380,17 +395,17 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
             )
         )
         zero_members[component.role] = members
-        pairs = component_templates.get(component.role, {})
+        by_method = component_templates.get(component.role, {})
         for member in members:
             if member in templates or not covered:
                 continue
-            if len(pairs) != 1:
+            if len(by_method) != 1:
                 raise MaterialisationUsageError(
                     f"component {component.role!r} member {member!r} holds no row, and its "
-                    f"rows state {len(pairs)} unit and method pairs, so its zero rows have "
-                    "no unit"
+                    f"rows state {len(by_method)} measurement methods, so its zero rows have "
+                    "no method"
                 )
-            templates[member] = next(iter(pairs.values()))
+            templates[member] = next(iter(by_method.values()))
     return _Plan(
         kept_years=kept,
         held_years={role: frozenset(years) for role, years in held.items()},
@@ -398,26 +413,70 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
         member_cells=member_cells,
         templates=templates,
         zero_members=zero_members,
+        zero_units={
+            role: _zero_units(
+                role,
+                _zero_cells(covered, members, member_cells=member_cells),
+                cell_units,
+            )
+            for role, members in zero_members.items()
+        },
     )
+
+
+def _zero_cells(
+    covered: frozenset[_Cell], members: Sequence[str], *, member_cells: Mapping[str, set[_Cell]]
+) -> set[_Cell]:
+    """The cells of `covered` some one of `members` holds no row in, so a zero row fills."""
+    holders: dict[_Cell, int] = {}
+    for member in members:
+        for cell in member_cells.get(member, ()):
+            holders[cell] = holders.get(cell, 0) + 1
+    return {cell for cell in covered if holders.get(cell, 0) < len(members)}
+
+
+def _zero_units(
+    role: ComponentRole,
+    cells: Iterable[_Cell],
+    cell_units: Mapping[_Cell, Mapping[ComponentRole, Sequence[object]]],
+) -> dict[_Cell, object]:
+    """The unit of component `role`'s zero rows in each of `cells`: the unit its own rows
+    state in the cell, else the unit every other component's rows state there. Every covered
+    cell holds a row of some component, and each component is converted to the unit its
+    request settles for the cell before it is composed, so a zero converts to that unit.
+    Raises `MaterialisationUsageError` for a cell whose rows state more than one unit."""
+    units: dict[_Cell, object] = {}
+    for cell in cells:
+        by_role = cell_units[cell]
+        stated = by_role.get(role)
+        if stated is None:
+            stated = []
+            for other in by_role.values():
+                stated.extend(unit for unit in other if unit not in stated)
+        if len(stated) != 1:
+            raise MaterialisationUsageError(
+                f"the cell {cell!r} states {len(stated)} units, so component {role!r}'s zero "
+                "rows there have no unit"
+            )
+        units[cell] = stated[0]
+    return units
 
 
 def _note_templates(
     table: pa.Table,
     templates: dict[str, pa.Table],
-    pairs: dict[tuple[object, object], pa.Table],
+    by_method: dict[object, pa.Table],
 ) -> None:
-    """Record each member's last row in `table` as its template, and each distinct unit and
-    method pair of the component."""
+    """Record each member's last row in `table` as its template, and a row of each distinct
+    measurement method of the component."""
     stat_vars = _strings(table, STAT_VAR_COLUMN)
-    units = table["unit"].to_pylist()
-    methods = table["measurementMethod"].to_pylist()
+    methods = table[_METHOD_COLUMN].to_pylist()
     for position, member in enumerate(stat_vars):
         is_last = position + 1 == len(stat_vars) or stat_vars[position + 1] != member
         if is_last:
             templates[member] = table.take([position])
-        key = (repr(units[position]), methods[position])
-        if key not in pairs:
-            pairs[key] = table.take([position])
+        if methods[position] not in by_method:
+            by_method[methods[position]] = table.take([position])
 
 
 def _composed_chunks(
@@ -465,10 +524,28 @@ def _component_runs(
     ):
         if table is None:
             if not real.get(stat_var, False):
-                yield stat_var, _zero_rows(stat_var, None, plan=plan, role_columns=role_columns)
+                yield (
+                    stat_var,
+                    _zero_rows(
+                        stat_var,
+                        None,
+                        plan=plan,
+                        units=plan.zero_units[component.role],
+                        role_columns=role_columns,
+                    ),
+                )
             continue
         real[stat_var] = True
-        yield stat_var, _zero_rows(stat_var, table, plan=plan, role_columns=role_columns)
+        yield (
+            stat_var,
+            _zero_rows(
+                stat_var,
+                table,
+                plan=plan,
+                units=plan.zero_units[component.role],
+                role_columns=role_columns,
+            ),
+        )
 
 
 def _member_runs(
@@ -505,12 +582,18 @@ def _stat_var_slices(table: pa.Table) -> Iterator[tuple[str, pa.Table]]:
 
 
 def _zero_rows(
-    stat_var: str, table: pa.Table | None, *, plan: _Plan, role_columns: tuple[str, ...]
+    stat_var: str,
+    table: pa.Table | None,
+    *,
+    plan: _Plan,
+    units: Mapping[_Cell, object],
+    role_columns: tuple[str, ...],
 ) -> pa.Table:
     """`table`, the member's rows in its kept years, with a zero row for every covered cell
-    the member holds no row in, in row sort order. Each zero row copies the member's template
-    row's unit and method. Zero cells differ from the member's own cells in their roles or
-    period, so a stable sort on those keeps the order of the member's own rows."""
+    the member holds no row in, in row sort order. Each zero row states its cell's unit in
+    `units` and copies the member's template row's method. Zero cells differ from the
+    member's own cells in their roles or period, so a stable sort on those keeps the order
+    of the member's own rows."""
     held = plan.member_cells.get(stat_var, set())
     missing = sorted(plan.covered_cells - held)
     if not missing:
@@ -537,6 +620,12 @@ def _zero_rows(
         zeros.schema.get_field_index(VALUE_COLUMN),
         VALUE_COLUMN,
         pa.array([0.0] * len(missing), type=pa.float64()),
+    )
+    unit_index = zeros.schema.get_field_index(_UNIT_COLUMN)
+    zeros = zeros.set_column(
+        unit_index,
+        _UNIT_COLUMN,
+        pa.array([units[cell] for cell in missing], type=zeros.schema.field(unit_index).type),
     )
     if table is None:
         return zeros

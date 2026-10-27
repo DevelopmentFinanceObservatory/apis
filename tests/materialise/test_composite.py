@@ -6,7 +6,7 @@ tests prove the composition rules over years and cells, not any recorded figure.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 import pytest
@@ -61,9 +61,11 @@ def _component(
     method: str | None = None,
     years: tuple[int, int] = (2005, 2024),
     unserved: Sequence[str] = (),
+    units: Mapping[str, object] | None = None,
 ) -> ComponentResult:
     """One component's result over `rows`, as `pipeline.materialise_group` returns it, with
-    `unserved` the members its facet group election left out and its warning counting them."""
+    `unserved` the members its facet group election left out and its warning counting them.
+    Each row's unit is its recipient's in `units`, USD when `units` is None."""
     frame = build_frame(
         role_keys=_ROLES,
         rows=[
@@ -73,7 +75,7 @@ def _component(
                 "financingRecipient": recipient,
                 "time_period": str(year),
                 "value": value,
-                "unit": "USD",
+                "unit": "USD" if units is None else units[recipient],
                 "measurementMethod": method,
                 "provenance": provenance,
             }
@@ -545,3 +547,88 @@ def test_zero_rows_take_their_place_in_the_members_row_order():
         ("country/KEN", "2012"),
     ]
     assert _summary(result, "imputed")["zero_rows"] == 2
+
+
+# Each recipient's national currency, the unit a mint binding national currencies serves.
+_NATIONAL = {
+    "country/KEN": {"currency": "KES", "prices": "current"},
+    "country/GHA": {"currency": "GHS", "prices": "current"},
+}
+
+
+def _units_by_cell(result: MaterialisationResult) -> dict[tuple[str, str], set[str]]:
+    """The currencies each recipient and period's rows state, over every member: one per cell
+    is what a read summing the members of a cell needs."""
+    cells: dict[tuple[str, str], set[str]] = {}
+    for frame in result.frame_chunks():
+        for row in frame.table.to_pylist():
+            key = (row["financingRecipient"], row["time_period"])
+            cells.setdefault(key, set()).add(row["unit"]["request"]["currency"])
+    return cells
+
+
+def test_a_zero_row_states_its_own_cells_unit():
+    """The imputed member holds Ghana alone, in cedis. Its Kenya zero is in shillings, the
+    unit of the Kenyan cell, so every cell states one unit."""
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [(_B, "country/KEN", 2012, 10.0), (_B, "country/GHA", 2012, 20.0)],
+        provenance=_CRS,
+        members=[_B],
+        units=_NATIONAL,
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(_I, "country/GHA", 2012, 2.0)],
+        provenance=_IMPUTED,
+        members=[_I],
+        units=_NATIONAL,
+    )
+
+    result = _compose([bilateral, imputed])
+
+    (zero,) = (
+        row
+        for frame in result.frame_chunks()
+        for row in frame.table.to_pylist()
+        if row["stat_var"] == _I and row["financingRecipient"] == "country/KEN"
+    )
+    assert (zero["value"], zero["unit"]["request"]["currency"]) == (0.0, "KES")
+    assert _units_by_cell(result) == {
+        ("country/KEN", "2012"): {"KES"},
+        ("country/GHA", "2012"): {"GHS"},
+    }
+
+
+def test_a_member_holding_no_row_in_a_frame_of_several_currencies_takes_each_cells_unit():
+    other = "dcid:AttributedAmount_Other"
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [(_B, "country/KEN", 2012, 10.0), (_B, "country/GHA", 2012, 20.0)],
+        provenance=_CRS,
+        members=[_B],
+        units=_NATIONAL,
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(_I, "country/KEN", 2012, 1.0), (_I, "country/GHA", 2012, 2.0)],
+        provenance=_IMPUTED,
+        members=[_I, other],
+        method="ONEImputed",
+        units=_NATIONAL,
+    )
+
+    result = _compose([bilateral, imputed])
+
+    zeros = sorted(
+        (row["financingRecipient"], row["unit"]["request"]["currency"], row["measurementMethod"])
+        for frame in result.frame_chunks()
+        for row in frame.table.to_pylist()
+        if row["stat_var"] == other
+    )
+    assert zeros == [("country/GHA", "GHS", "ONEImputed"), ("country/KEN", "KES", "ONEImputed")]
+    assert all(len(units) == 1 for units in _units_by_cell(result).values())
