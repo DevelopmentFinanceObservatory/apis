@@ -93,6 +93,15 @@ class SlotBinding(StrictModel):
     slot: str = Field(description="the slot's constraint property dcid")
     state: Literal["value", "set"] = Field(description="one code, or a set of codes")
     refs: list[str] = Field(min_length=1, description="the bound code dcids, sorted")
+    window: YearSpan | None = Field(
+        default=None,
+        description=(
+            "the years the option sets as the requested window, first and last: on a "
+            "published donor total, the latest run of years every donor holds the other "
+            "total in, when they hold fewer than the part asks for; None when the option "
+            "keeps the part's window"
+        ),
+    )
 
 
 class EntitiesBinding(StrictModel):

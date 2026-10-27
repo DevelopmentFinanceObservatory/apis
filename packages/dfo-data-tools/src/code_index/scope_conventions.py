@@ -7,6 +7,7 @@ systems besides the sector whose admitted code makes a part a restricted one.
 `PROVIDER_CONVENTIONS` names whose spending a part counts by default,
 `PROVIDER_SCOPE_RULES` the rule each provider scope names where no convention settles it,
 `REDISTRIBUTED_PROVIDERS` the providers no pool takes a scope counting multilateral aid with,
+and the group whose members fund each,
 `PUBLISHED_PROVIDER_SCOPES` the provider scope a published donor total counts, and
 `DONOR_ORGANISATIONS` the organisations a published donor total counts as donors. `OPTION_LABELS`
 words the options the rules build from code and group labels, and `REGION_READINGS` names
@@ -119,6 +120,17 @@ class ProviderScopeRule:
     scope: ProviderScope
     rule: str
     note: str
+
+
+@dataclass(frozen=True)
+class RedistributedProvider:
+    """A multilateral that reports as a provider and whose own outflows a scope counting
+    multilateral aid also counts inside its funders' shares. `provider` is its dcid, and
+    `funders` the group (a membership policy ref) whose members fund it with core
+    contributions."""
+
+    provider: str
+    funders: str
 
 
 @dataclass(frozen=True)
@@ -384,6 +396,7 @@ PROVIDER_CONVENTIONS: tuple[ProviderConvention, ...] = (
 )
 
 _EU_INSTITUTIONS = "EuropeanUnionInstitutions"
+_EUROPEAN_UNION = "EuropeanUnion"
 
 # The providers the imputed multilateral table carries rows for that are themselves
 # multilaterals whose own outflows its rows attribute to other providers. The EU institutions
@@ -391,11 +404,15 @@ _EU_INSTITUTIONS = "EuropeanUnionInstitutions"
 # ONE's method attributes their own spending to the EU member states that fund them. A pool
 # naming one of them beside another provider counts those outflows twice, as the multilateral's
 # own flows and inside its funders' imputed shares, so it takes no inclusive scope. DAC1's
-# total ODA counts the same outflows twice for such a pool, as the EU institutions' own aid
-# and inside each member's core contributions to them, so it has no provider record there. The
-# graph types every multilateral an `Organization`, as it types a private foundation, and the
-# code index marks none, so this table is the only record of the grouping.
-REDISTRIBUTED_PROVIDERS: tuple[str, ...] = (_EU_INSTITUTIONS,)
+# total ODA counts the same outflows twice for a pool of the EU institutions and an EU member
+# state, as the EU institutions' own aid and inside the member's core contributions to them,
+# so such a pool has no provider record there; a donor outside the European Union funds the
+# institutions with no core contribution. The graph types every multilateral an
+# `Organization`, as it types a private foundation, and the code index marks none, so this
+# table is the only record of the grouping.
+REDISTRIBUTED_PROVIDERS: tuple[RedistributedProvider, ...] = (
+    RedistributedProvider(provider=_EU_INSTITUTIONS, funders=_EUROPEAN_UNION),
+)
 
 # The rule each provider scope names on a part no convention or published row settles: the
 # bilateral default, or a scope an entry or a posted identity chose.

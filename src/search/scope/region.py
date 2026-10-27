@@ -294,7 +294,6 @@ def region_rule(
     held_id = readings.held
     return AxisTable(
         axis="region",
-        rule=REGION_RULE,
         options=(with_residuals, members_only),
         preference=(
             (
@@ -305,6 +304,7 @@ def region_rule(
             else (REGION_MEMBERS_ONLY,)
         ),
         held=held_id,
+        rules={held_id: REGION_RULE},
     )
 
 

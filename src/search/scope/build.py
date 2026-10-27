@@ -26,7 +26,7 @@ from search.scope import rules as scope_rules
 from search.scope.basis import SERVED_DIFFERS_RULE
 from search.scope.compile import Compiled, Refusal, compile
 from search.scope.composite import composite_components
-from search.scope.edits import apply_binding, binds_composite
+from search.scope.edits import applies_in_pass, apply_binding
 from search.scope.provider import elect_latest_window
 from search.scope.rules import AxisRule
 from search.scope.state import AxisRecord
@@ -61,9 +61,10 @@ def build_part_scope(
     `carried_choice_not_applied`) with the cause `_not_served` gives. With
     `refuse` false an entry compile refuses is dropped and reported the same way with the
     refusal's cause, and the rest compile without it, so the result is always a
-    `PartScope`. A composite option a binder settled over the identity it resolved (the
-    inclusive provider scope, the OECD headline per year) is applied to `base` first
-    (`_with_recorded_composites`), so the scope's base is the composite the answer serves.
+    `PartScope`. An option a binder settled over the identity it resolved that sets its
+    source (the inclusive or bilateral provider scope, the OECD headline per year) is
+    applied to `base` first (`_with_recorded_composites`), so the scope's base is the
+    identity the answer serves.
     A composite asking for the latest year compiles to the one year its tables both cover
     (`provider.elect_latest_window`), while the base keeps the `latest` window. The scope's
     id is the base identity's spec_id. The server keeps no ledger, so the scope's is []."""
@@ -132,27 +133,29 @@ def _with_recorded_composites(
     records: Mapping[ScopeAxis, AxisRecord],
     tables: Mapping[ScopeAxis, AxisTable],
 ) -> tuple[BaseIdentity, dict[ScopeAxis, AxisRecord]]:
-    """`base` binding the source of each composite option a binder settled over it and
-    `base` does not hold yet (the inclusive provider scope, `provider.settle_provider`, or
-    the OECD headline per year, `phase_election._record_basis`), with the records it then
-    holds. The base keeps its own window: an option's window is applied when the scope
-    compiles (`provider.elect_latest_window`). An option the part cannot serve
+    """`base` with the source each option a binder settled over it and `base` does not
+    hold yet sets (`edits.applies_in_pass`): the inclusive or bilateral provider scope
+    (`provider.settle_provider`), or the OECD headline per year
+    (`phase_election._record_basis`), with the records it then holds. The base keeps its
+    own window: an option's window is applied when the scope compiles
+    (`provider.elect_latest_window`). An option the part cannot serve
     (`OptionAvailability.status` not `available`) is not applied. Its axis keeps the option
-    the base holds, settled by default, under `SERVED_DIFFERS_RULE` on the measure basis,
-    since the served basis is then not the convention's. The scope's base is then the
-    identity whose options the answer serves, so a resubmit of it keeps them."""
+    the base holds, settled by default, under that option's own rule (`AxisTable.rule_of`),
+    or `SERVED_DIFFERS_RULE` on the measure basis, since the served basis is then not the
+    convention's. The scope's base is then the identity whose options the answer serves, so
+    a resubmit of it keeps them."""
     settled = dict(records)
     for axis, table in tables.items():
         record = records.get(axis)
         if record is None or record.active == table.held:
             continue
         option = table.option(record.active)
-        if option is None or not binds_composite(option.binding):
+        if option is None or not applies_in_pass(option.binding):
             continue
         if option.availability.status != "available":
             settled[axis] = AxisRecord(
                 axis=axis,
-                rule=SERVED_DIFFERS_RULE if axis == "measure_basis" else record.rule,
+                rule=SERVED_DIFFERS_RULE if axis == "measure_basis" else table.rule_of(table.held),
                 active=table.held,
                 provenance="default",
             )

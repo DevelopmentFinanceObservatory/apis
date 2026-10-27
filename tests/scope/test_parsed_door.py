@@ -39,7 +39,6 @@ def _rule(base, record, facts) -> AxisTable | None:
         return None
     return AxisTable(
         axis="sector",
-        rule="test_rule",
         options=tuple(
             Option(
                 option_id=option_id,
@@ -51,6 +50,7 @@ def _rule(base, record, facts) -> AxisTable | None:
         ),
         preference=(record.active,),
         held=record.active,
+        rules={record.active: "test_rule"},
     )
 
 
@@ -62,7 +62,6 @@ def _basis_rule(base, record, facts) -> AxisTable | None:
     unpublished = OptionAvailability(status="unavailable", code="basis_not_published")
     return AxisTable(
         axis="measure_basis",
-        rule="test_basis",
         options=tuple(
             Option(
                 option_id=option_id,
@@ -78,6 +77,7 @@ def _basis_rule(base, record, facts) -> AxisTable | None:
         ),
         preference=(record.active,),
         held=record.active,
+        rules={record.active: "test_basis"},
     )
 
 

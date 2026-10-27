@@ -51,7 +51,7 @@ from search.scope.compile import Refusal
 from search.scope.edits import ScopeTableError, apply_binding
 from search.scope.provider import _settled, inclusive_reach, provider_rule, settle_provider
 from search.scope.rules import AXIS_RULES
-from search.scope.state import ScopeState
+from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import ScopeFacts
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import (
@@ -1052,9 +1052,22 @@ def _dac1_facts(*codes: str, extra: Sequence[tuple] = ()) -> ScopeFacts:
         ),
         # A pool of an EU member and the EU institutions counts the member's core
         # contributions to the institutions twice in total ODA, which a switch from
-        # bilateral ODA would reach.
+        # bilateral ODA would reach. A total of a group holding an EU member pools one.
         pytest.param(
             _DAC1_TOTAL_ODA, (_DEU, _EU_INSTITUTIONS), None, id="pool-with-eu-institutions"
+        ),
+        pytest.param(
+            _DAC1_TOTAL_ODA,
+            (_GROUP_OF_SEVEN, _EU_INSTITUTIONS),
+            None,
+            id="pool-of-a-group-with-an-eu-member-and-eu-institutions",
+        ),
+        # The EU institutions' aid holds no core contribution of a donor outside the EU.
+        pytest.param(
+            _DAC1_TOTAL_ODA,
+            (_USA, _EU_INSTITUTIONS),
+            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            id="pool-of-a-non-member-and-eu-institutions",
         ),
         pytest.param(
             _DAC1_BILATERAL_ODA,
@@ -1171,6 +1184,14 @@ def _partial(*years: tuple[int, int]) -> tuple[str, str, list[tuple[int, int]]]:
         pytest.param((_USA, _DEU), {_USA: (2015, 2020)}, False, _NOT_COVERED, id="pool-one-donor"),
         pytest.param((_USA,), {_USA: (2018, 2020)}, True, _COVERED, id="latest"),
         pytest.param((_USA, _DEU), {_USA: (2018, 2020)}, True, _NOT_COVERED, id="latest-pool"),
+        # Each donor's read elects its own latest year, so the years need not meet.
+        pytest.param(
+            (_USA, _DEU),
+            {_USA: (2015, 2016), _DEU: (2019, 2020)},
+            True,
+            _COVERED,
+            id="latest-pool-in-different-years",
+        ),
     ],
 )
 def test_a_dac1_sibling_option_serves_the_years_every_donor_holds(
@@ -1229,6 +1250,36 @@ def test_a_dac1_sibling_option_on_the_headline_reads_each_basis_it_splices(
     assert option is not None
     availability = option.availability
     assert (availability.status, availability.code, availability.years) == expected
+
+
+@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+def test_a_partial_dac1_sibling_option_serves_the_years_the_part_holds_over_their_run(row):
+    """A 2015 to 2020 total the United States holds from 2015 to 2017, whose other DAC1 aid
+    type it holds from 2016 to 2020: the option serves 2016 and 2017, the years both hold,
+    and a switch reads that run."""
+    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
+    extra = [
+        *((member, _USA, range(2015, 2018)) for member in _members_on(row.code, _GE)),
+        *((member, _USA, range(2016, 2021)) for member in _members_on(sibling.code, _GE)),
+    ]
+    facts = _dac1_facts(extra=extra)
+    identity = _dac1_identity(row.code, (_USA,), window=(2015, 2020))
+
+    table = provider_rule(identity, None, facts)
+    assert table is not None
+    option = table.option(f"provider:{sibling.scope}")
+    assert option is not None
+    switched = build_part_scope(
+        base=identity, entries=[switch(option.option_id)], records={}, facts=facts
+    )
+
+    availability = option.availability
+    assert (availability.status, availability.code, availability.years) == _partial((2016, 2017))
+    assert isinstance(switched, PartScope)
+    assert _slot_ref(switched.compiled.identity, "dac1AidType") == sibling.code
+    assert switched.compiled.identity.requested_window == IdentityWindowRange(
+        start_year=2016, end_year=2017
+    )
 
 
 def test_a_convention_the_pass_cannot_serve_leaves_the_part_on_the_option_it_holds():
@@ -1477,3 +1528,46 @@ def test_a_crs_record_never_holds_an_option_it_marks_unavailable(inclusive, late
     if inclusive:
         identity = apply_binding(identity, ProviderBinding(scope="inclusive"), [])
     _assert_holds_available(identity, _facts(rows))
+
+
+def test_a_crs_record_the_answer_cannot_serve_names_the_rule_of_the_option_it_holds():
+    """A record holding the inclusive scope where its option is partial leaves the part on
+    the bilateral scope it holds, under the bilateral scope's own rule."""
+    facts = _facts(_coverage_rows(_FROM_2011)[0])
+    identity = _bilateral_identity(origin=(_USA,)).model_copy(
+        update={"requested_window": IdentityWindowRange(start_year=2005, end_year=2024)}
+    )
+    record = AxisRecord(
+        axis="provider", rule="named_donor_total", active="provider:inclusive", provenance="default"
+    )
+
+    built = build_part_scope(base=identity, entries=[], records={"provider": record}, facts=facts)
+
+    assert isinstance(built, PartScope)
+    (choice,) = (c for c in built.choices if c.axis == "provider")
+    assert (choice.active, choice.rule) == ("provider:bilateral", "bilateral_flows")
+    assert (built.compiled.identity.facets or {}).get("provenance") is None
+
+
+def test_a_record_of_the_bilateral_scope_strips_the_composite_the_part_holds():
+    """A part bound to the inclusive composite over the latest year, whose tables hold no
+    common year, is recorded on the bilateral scope, and its answer reads the bilateral
+    flows alone over their own latest year."""
+    rows = [
+        *((dcid, "crs", _USA, _KEN, [2024]) for dcid in _CRS_MEMBERS),
+        *((dcid, "imputed", _USA, _KEN, [2010]) for dcid in _IMPUTED_MEMBERS),
+    ]
+    facts = _facts(rows)
+    bilateral = _bilateral_identity(latest=True)
+    identity = apply_binding(bilateral, ProviderBinding(scope="inclusive"), [])
+
+    record = settle_provider(identity, ScopeState(), facts)
+    assert record is not None
+    built = build_part_scope(base=identity, entries=[], records={"provider": record}, facts=facts)
+
+    assert (record.active, record.rule) == ("provider:bilateral", "bilateral_flows")
+    assert isinstance(built, PartScope)
+    (choice,) = (c for c in built.choices if c.axis == "provider")
+    assert (choice.active, choice.rule) == ("provider:bilateral", "bilateral_flows")
+    assert built.compiled.identity == bilateral
+    assert built.base.identity == bilateral

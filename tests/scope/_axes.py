@@ -64,7 +64,6 @@ def tables(*, grant_equivalent_published: bool = True) -> tuple[AxisTable, ...]:
     """The three axis tables, grant equivalents unpublished when asked."""
     sector = AxisTable(
         axis="sector",
-        rule="test_sector_grouping",
         options=(
             _option(
                 SECTOR_SET,
@@ -81,17 +80,18 @@ def tables(*, grant_equivalent_published: bool = True) -> tuple[AxisTable, ...]:
         ),
         preference=(SECTOR_SET, SECTOR_ONE),
         held=SECTOR_SET,
+        rules={SECTOR_SET: "test_sector_grouping"},
         concept="health",
     )
     region = AxisTable(
         axis="region",
-        rule="test_summed_region",
         options=(
             _option(REGION_ALL, EntitiesBinding(role="destination", add=[RESIDUAL])),
             _option(REGION_MEMBERS, EntitiesBinding(role="destination", add=[])),
         ),
         preference=(REGION_ALL, REGION_MEMBERS),
         held=REGION_ALL,
+        rules={REGION_ALL: "test_summed_region"},
     )
     grant_equivalent = (
         _AVAILABLE
@@ -102,7 +102,6 @@ def tables(*, grant_equivalent_published: bool = True) -> tuple[AxisTable, ...]:
     )
     basis = AxisTable(
         axis="measure_basis",
-        rule="test_basis_convention",
         options=(
             _option(GROSS, ShapeBinding(measured_property="amount", netting_basis="Gross")),
             _option(NET, ShapeBinding(measured_property="amount", netting_basis="Net")),
@@ -114,6 +113,7 @@ def tables(*, grant_equivalent_published: bool = True) -> tuple[AxisTable, ...]:
         ),
         preference=(GROSS, NET, GRANT_EQUIVALENT),
         held=GROSS,
+        rules={GROSS: "test_basis_convention"},
     )
     return sector, region, basis
 

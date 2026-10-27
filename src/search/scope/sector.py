@@ -230,10 +230,10 @@ def sector_rule(
     )
     return AxisTable(
         axis="sector",
-        rule=GROUPING_RULE if grouping is not None else CODE_RULE,
         options=table_options,
         preference=(held, *(option_id for option_id in options if option_id != held)),
         held=held,
+        rules={held: GROUPING_RULE if grouping is not None else CODE_RULE},
         concept=grouping.concept if grouping is not None else None,
     )
 

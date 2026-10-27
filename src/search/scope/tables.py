@@ -20,23 +20,22 @@ class AxisTable:
     `options` are the axis's options in declared order, each with its binding and its
     intrinsic availability (what the part's own data and constraints allow, before any
     other entry is weighed). `preference` is the order a default is derived in: the first
-    option no entry blocks. `held` is the option the base identity holds. `rule` names the
-    declared rule of the option `held`, and `rules` the rule an option names when the part
-    holds it, where the rule depends on the option (`rule_of`). `concept` is the concept the
-    axis was asked for, None when it has none. `published` says the part counts a published
-    total, whose options may also bind the code of another total (`PUBLISHED_BINDING`).
+    option no entry blocks. `held` is the option the base identity holds. `rules` names the
+    declared rule an option names when the part holds it, `held`'s among them (`rule`,
+    `rule_of`). `concept` is the concept the axis was asked for, None when it has none.
+    `published` says the part counts a published total, whose options may also bind the code
+    of another total (`PUBLISHED_BINDING`).
 
     Raises `ScopeTableError` for an empty table, a repeated option, an option of another
-    axis or binding kind, a `preference`, `held` or `rules` naming no option, or a `rule`
-    other than the one `rules` names for `held`."""
+    axis or binding kind, a `preference`, `held` or `rules` naming no option, or `rules`
+    naming no rule for `held`."""
 
     axis: ScopeAxis
-    rule: str
     options: tuple[Option, ...]
     preference: tuple[str, ...]
     held: str
+    rules: Mapping[str, str]
     concept: str | None = None
-    rules: Mapping[str, str] = field(default_factory=dict)
     published: bool = False
 
     def __post_init__(self) -> None:
@@ -57,11 +56,13 @@ class AxisTable:
             raise ScopeTableError(f"{self.axis!r} holds {self.held!r}, which it does not offer")
         if not set(self.rules) <= set(ids):
             raise ScopeTableError(f"{self.axis!r} rules {sorted(self.rules)} name no option")
-        if self.rules.get(self.held, self.rule) != self.rule:
-            raise ScopeTableError(
-                f"{self.axis!r} names {self.rule!r} for {self.held!r}, whose rule is "
-                f"{self.rules[self.held]!r}"
-            )
+        if self.held not in self.rules:
+            raise ScopeTableError(f"{self.axis!r} names no rule for {self.held!r}")
+
+    @property
+    def rule(self) -> str:
+        """The declared rule of the option the part holds."""
+        return self.rules[self.held]
 
     def rule_of(self, option_id: str) -> str:
         """The rule the axis names when the part holds `option_id`: its entry in `rules`,
