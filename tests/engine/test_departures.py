@@ -487,6 +487,57 @@ def test_a_group_read_as_members_names_the_residuals_its_total_counts(role, prov
     )
 
 
+def test_a_summed_group_counts_its_members_alone_and_names_the_residuals_it_binds():
+    """Africa summed binds two of its residual buckets beside Ghana and Kenya. The group's
+    size counts the two members, the bound residuals are named as counted, the rest of its
+    total's residuals as left out, and an unserved residual departs as no member."""
+    entities = [
+        ResolvedEntity(ref="country/GHA", label="Ghana", role="destination"),
+        ResolvedEntity(ref="country/KEN", label="Kenya", role="destination"),
+        ResolvedEntity(
+            ref="DACAfricaUnallocated",
+            label="Africa, unallocated by country (DAC)",
+            role="destination",
+        ),
+        ResolvedEntity(
+            ref="DACEasternAfricaUnallocated",
+            label="Eastern Africa, unallocated by country (DAC)",
+            role="destination",
+        ),
+    ]
+    spec = _served_from(
+        _spec(groups={"destination": _AFRICA_GROUP}), "provenance/OECDCreditorReportingSystem"
+    )
+    resolved = spec.resolved.model_copy(update={"entities": entities}).stating_unserved(
+        (("destination", "DACAfricaUnallocated"), ("destination", "country/KEN"))
+    )
+
+    unavailable, members = spec_departure_facts(
+        spec.model_copy(update={"resolved": resolved}), operations=()
+    )
+
+    assert (unavailable.code, unavailable.entities, unavailable.group_size) == (
+        "entity_unavailable",
+        ("Kenya",),
+        2,
+    )
+    assert (members.code, members.group_size, members.included, members.excluded) == (
+        "group_read_as_members",
+        2,
+        (
+            "Africa, unallocated by country (DAC)",
+            "Eastern Africa, unallocated by country (DAC)",
+        ),
+        (
+            "Middle Africa, unallocated by country (DAC)",
+            "North of Sahara, unallocated by country (DAC)",
+            "South of Sahara, unallocated by country (DAC)",
+            "Southern Africa, unallocated by country (DAC)",
+            "Western Africa, unallocated by country (DAC)",
+        ),
+    )
+
+
 def test_a_group_with_no_node_names_the_residuals_of_the_total_its_role_keeps():
     """A resolver group ("Asia (DAC)") has no node to find its total by, so the role reading
     it as members keeps the total aside (`ResolvedSpec.group_totals`). CRS publishes every

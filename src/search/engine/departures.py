@@ -36,6 +36,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
+from code_index.composites import provenance_datasets
 from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
@@ -57,6 +58,7 @@ from search.models import (
     Warning,
     role_ref,
 )
+from search.scope.region import is_residual
 from unit_words.currency_nouns import currency_noun
 
 if TYPE_CHECKING:
@@ -241,8 +243,9 @@ def spec_departure_facts(
     not run, entities the data holds no values for, members the one group the answer reads
     leaves out (`member_unavailable_fact`), years outside the served span,
     modelled values, groups read as members, and sides read as their whole population. On a
-    flow role a group read as members names the residuals its total counts that the members
-    leave out and the served dataset publishes on that role. A group read as its total
+    flow role a group read as members names the residuals the role binds beside them, and
+    those its total counts that the role leaves out and the served dataset publishes on
+    that role. Its size counts the members alone. A group read as its total
     departs nothing. A side read whole (`EntityGroup.whole_of`) departs as
     `whole_total_read`, which names the population and the way back to its members, in the
     question's words where the part's door asks for members in them (`members_in_words`). An
@@ -298,9 +301,10 @@ def spec_departure_facts(
                 binding_ref=role_ref(role),
                 asked=words.get(group.label, group.label),
                 group=group.label,
-                group_size=sum(1 for entity in spec.resolved.entities if entity.role == role),
+                group_size=len(_role_members(spec, role)),
                 group_dcid=group.ref,
                 excluded=excluded,
+                included=_residuals_bound(spec, role),
                 sum_differs=sum_differs,
             )
         )
@@ -346,12 +350,46 @@ def _whole_total_fact(
     )
 
 
+def _role_members(spec: Spec, role: str) -> list[str]:
+    """The entities `spec` binds on `role`, less the residual buckets a summed region binds
+    beside its members (`scope.region.is_residual`), which no member count holds."""
+    index = get_index()
+    return [
+        entity.ref
+        for entity in spec.resolved.entities
+        if entity.role == role and not is_residual(entity.ref, index)
+    ]
+
+
+def _residuals_bound(spec: Spec, role: str) -> tuple[str, ...]:
+    """The labels of the residual buckets `spec` binds on `role` beside a group's members
+    (`scope.region.is_residual`), each by the code index's label, as `_members_left_out`
+    names them, else its dcid."""
+    index = get_index()
+    return tuple(
+        index.parties[entity.ref].label or entity.ref
+        for entity in spec.resolved.entities
+        if entity.role == role and is_residual(entity.ref, index)
+    )
+
+
+def served_datasets(spec: Spec) -> frozenset[str]:
+    """The datasets `spec` is served from: the provenance its facets bind, the tables of its
+    components for a composite (`code_index.composites`), else every source its trace
+    resolved."""
+    provenance = spec.resolved.facets.get("provenance")
+    if provenance is not None and provenance.ref is not None:
+        return frozenset(provenance_datasets(provenance.ref))
+    return frozenset(source.ref for source in spec.resolved.trace.resolved_sources)
+
+
 def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
     """What the members of `group`, read on `role`, leave out of the group's total, by the
     code index: the labels of the residuals the total counts beside them
-    (`PartyRow.residuals`), and whether the total is a figure that can differ from their sum
-    (`PartyRow.sums_members` false). Each counts only where a dataset `spec` serves publishes
-    the party (`PartyRow.datasets`) on the flow axis of `role` (`PartyRow.axes`).
+    (`PartyRow.residuals`) that the role does not bind beside them, and whether the total is
+    a figure that can differ from their sum (`PartyRow.sums_members` false). Each counts only
+    where a dataset `spec` serves publishes the party (`PartyRow.datasets`) on the flow axis
+    of `role` (`PartyRow.axes`).
 
     The total is the one the role keeps for the group it reads as members
     (`ResolvedSpec.group_totals`), which a group with no node of its own, such as a resolver
@@ -366,17 +404,13 @@ def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[s
     axis = role_key_axis(role)
     if total is None or axis is None:
         return (), False
-    provenance = spec.resolved.facets.get("provenance")
-    served = (
-        {provenance.ref}
-        if provenance is not None and provenance.ref is not None
-        else {source.ref for source in spec.resolved.trace.resolved_sources}
-    )
+    served = served_datasets(spec)
+    bound = {entity.ref for entity in spec.resolved.entities if entity.role == role}
 
     def published(party: PartyRow) -> bool:
         return axis in party.axes and bool(served.intersection(party.datasets))
 
-    residuals = (index.parties.get(dcid) for dcid in total.residuals)
+    residuals = (index.parties.get(dcid) for dcid in total.residuals if dcid not in bound)
     excluded = tuple(
         party.label or party.dcid for party in residuals if party is not None and published(party)
     )
@@ -537,8 +571,10 @@ def unavailable_entity_facts(
     member of a set the request named (`ResolvedSpec.named_sets`) counts that set's members
     under the set (`DepartureFact.sets`) and names only the places the request named one by
     one, a member the request named alone on this role (`ResolvedSpec.named_alone`)
-    included. A role whose group holds such a member is read the same way. On a `latest`
-    request each names the latest period the answer serves."""
+    included. A role whose group holds such a member is read the same way. A residual
+    bucket a role read as a group binds beside its members (`scope.region.is_residual`) is
+    no member, so it neither counts toward the group nor departs. On a `latest` request each
+    names the latest period the answer serves."""
     window = spec.resolved.coverage.window
     latest_years = (
         (window.start_year, window.end_year)
@@ -550,9 +586,14 @@ def unavailable_entity_facts(
     )
     groups = spec.resolved.entity_groups or {}
     alone = spec.resolved.named_alone
+    index = get_index()
     names_by_role: dict[str, dict[str, str]] = {}
     size_by_role: dict[str, int] = {}
     for entity in spec.resolved.entities:
+        # A residual bucket a summed region binds beside its members is no member, so it
+        # neither counts toward the group's size nor departs as a member without values.
+        if entity.role in groups and is_residual(entity.ref, index):
+            continue
         size_by_role[entity.role] = size_by_role.get(entity.role, 0) + 1
         if (entity.role, entity.ref) in unserved:
             names_by_role.setdefault(entity.role, {})[entity.ref] = entity.label or entity.ref

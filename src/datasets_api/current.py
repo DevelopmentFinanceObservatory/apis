@@ -58,7 +58,7 @@ from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from code_index.query import CodeIndex
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import SnapshotReader, StoredArtifactLocation, StoredVersion
-from datasets_api.adapter import pinned_provenance_scope
+from datasets_api.adapter import definition_read_scope, identity_composite
 from datasets_api.admission import (
     MaterialisePermits,
     RebuildFlights,
@@ -81,6 +81,7 @@ from datasets_api.manifest import (
     provenance_refs_of,
     record_collapsed_head_version,
     reshape_warning_models,
+    source_refs_of,
     stored_manifest_facts,
     stored_output_profile,
 )
@@ -441,9 +442,7 @@ def _record_head_hit_derived(
             identity=manifest.definition.identity,
             capabilities=capabilities,
             parties=deps.code_index.parties,
-            datasets=provenance_refs_of(
-                cast("list[dict[str, object]]", manifest.trace.get("facets", []))
-            ),
+            datasets=source_refs_of(manifest.trace),
         ),
         extra_warnings=call_warnings,
     )
@@ -615,9 +614,7 @@ def _stored_xlsx_splits_totals(
         identity=identity,
         role_columns=role_columns,
         parties=deps.code_index.parties,
-        datasets=provenance_refs_of(
-            cast("list[dict[str, object]]", manifest.trace.get("facets", []))
-        ),
+        datasets=source_refs_of(manifest.trace),
     )
 
 
@@ -699,6 +696,7 @@ def _render_frame(
         options=options,
         spec=spec_dict,
         provenance_refs=provenance_refs,
+        citation_refs=source_refs_of(manifest.trace),
         citations=citations,
         reproducing_call=(
             ReproducingCall(
@@ -1073,7 +1071,7 @@ def _judge_head(
     fingerprint matches is confirmed, and the verdict serves the head the confirmation wrote,
     or the head a concurrent update left. The fingerprint read and its election from
     `coverage` run under the definition's pinned provenances
-    (`adapter.pinned_provenance_scope`), as its materialisation does."""
+    (`adapter.definition_read_scope`), as its materialisation does."""
     subject_id = stored.spec_id
     if head is None:
         return _Freshness(head=None, rebuild_reason=_NO_HEAD)
@@ -1081,7 +1079,10 @@ def _judge_head(
         return _Freshness(head=head)
     if now - head.materialised_at >= deps.head_max_age:
         return _Freshness(head=None, rebuild_reason=_MAX_AGE)
-    with pinned_provenance_scope(stored.identity), phase("fingerprint"):
+    with (
+        definition_read_scope(stored.identity, code_index=deps.code_index),
+        phase("fingerprint"),
+    ):
         changes = _fingerprint_changes(head, requests(), graph=deps.graph, coverage=coverage)
     if changes:
         return _Freshness(head=None, rebuild_reason=",".join(changes))
@@ -1473,7 +1474,10 @@ def _admitted_ceiling(
     if admitted is not None:
         return raw_fetch_guard(admitted, floor=deps.ceiling)
     estimate = sync_estimate(
-        requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
+        requests,
+        index=coverage_snapshot.index,
+        member_concurrency=deps.member_concurrency,
+        composite=identity_composite(stored.identity, code_index=deps.code_index),
     )
     if options is None:
         refuse_inline_over_ceiling(estimate, ceiling=deps.ceiling)

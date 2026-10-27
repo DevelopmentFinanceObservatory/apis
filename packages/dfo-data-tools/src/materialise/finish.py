@@ -275,7 +275,14 @@ def _finish_member(
         probe_empty=outcome.probe_empty,
         latest_years=outcome.latest_years,
         read_series=outcome.read_series,
+        countries_fallback=_countries_fallback(outcome.coverage.rows, outcome),
     )
+
+
+def _countries_fallback(row_count: int, outcome: _MemberOutcome | _GroupOutcome) -> bool:
+    """Whether rows were served and a request binding no place was served the countries with
+    data in place of every place (`place_scope.DefaultPlaceScope`)."""
+    return row_count > 0 and not outcome.default_scope.every_place
 
 
 def _sorted_converted_members(
@@ -385,6 +392,8 @@ def _finish_group(
         probe_empty=outcome.probe_empty,
         latest_years=outcome.latest_years,
         read_series=outcome.read_series,
+        countries_fallback=_countries_fallback(outcome.row_count, outcome),
+        unserved_members=outcome.unserved_members,
     )
 
 
@@ -450,7 +459,11 @@ def _build_warnings(
         for entity in unserved_entities(_plain_role_bindings(request.role_bindings), served)
         if entity not in omitted
     ]
-    countries_fallback = row_count > 0 and not outcome.default_scope.every_place
+    countries_fallback = (
+        row_count > 0 and not outcome.default_scope.every_place
+        if isinstance(outcome, _PreviewOutcome)
+        else _countries_fallback(row_count, outcome)
+    )
     off_cadence: Sequence[str] = ()
     out_of_window: Sequence[str] = ()
     unserved_members: Sequence[str] = ()

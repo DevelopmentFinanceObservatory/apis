@@ -28,6 +28,7 @@ from typing import Protocol
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from code_index.composites import DECLARED_COMPOSITES
 from code_index.query import CodeIndex
 from description.blocks import documentation_link
 from materialise.enrichment import read_party_kinds
@@ -161,7 +162,11 @@ def provenance_refs(dcids: Sequence[str], labels: Mapping[str, str]) -> list[Pro
 def provenance_facet_ref(dcid: str, labels: Mapping[str, str]) -> SeriesFacetRef:
     """A series' provenance-axis facet ref for `dcid`, with the catalogue row's members and the
     route of its document. A provenance the catalogue does not list takes its graph label from
-    `labels`, if any."""
+    `labels`, if any. A declared composite (`code_index.composites`), which neither the graph
+    nor the catalogue holds, takes its declared label and no document route."""
+    composite = DECLARED_COMPOSITES.get(dcid)
+    if composite is not None:
+        return SeriesFacetRef(ref=dcid, label=composite.label)
     row = current_catalogue().provenance(dcid)
     documentation = documentation_link(dcid)
     if row is None:

@@ -1016,6 +1016,7 @@ class _RelaxationProbeContext:
     materialise_graph: GraphReader | None
     role_class_walks: RoleClassWalks | None
     text_recognized_properties: frozenset[str]
+    grouped_properties: frozenset[str]
     measure_elected_properties: frozenset[str]
     defaulted_properties: frozenset[str]
     # The groups the request named, kept because a relaxation keeps their entities.
@@ -1392,6 +1393,7 @@ def _relaxed_binding_suggestion(
             inapplicable_slots=inapplicable_slots,
             unresolved_slots=unresolved_slots,
             text_recognized_properties=ctx.text_recognized_properties,
+            grouped_properties=ctx.grouped_properties,
             measure_elected_properties=ctx.measure_elected_properties,
             defaulted_properties=ctx.defaulted_properties,
             named_groups=ctx.named_groups,
@@ -1442,6 +1444,7 @@ def _suggest_nearest_real(
     role_class_walks: RoleClassWalks | None = None,
     query_entity_text_by_dcid: Mapping[str, str] | None = None,
     text_recognized_properties: frozenset[str] = frozenset(),
+    grouped_properties: frozenset[str] = frozenset(),
     measure_elected_properties: frozenset[str] = frozenset(),
     defaulted_properties: frozenset[str] = frozenset(),
     named_groups: tuple[NamedGroup, ...] = (),
@@ -1478,8 +1481,8 @@ def _suggest_nearest_real(
     A value bound as its slot's sole option (`bind.sole_option_properties`) is not relaxed:
     the request did not name it, and every member of the family asserts it, so the
     relaxed query reads the same members as the answer that had no data.
-    `text_recognized_properties`, `measure_elected_properties`, and `defaulted_properties`
-    preserve the original query's slot provenance after relaxation, and `named_groups` the
+    `text_recognized_properties`, `grouped_properties`, `measure_elected_properties`, and
+    `defaulted_properties` preserve the original query's slot provenance after relaxation, and `named_groups` the
     groups the request named, which a suggestion states for the roles that still bind
     exactly their members. With `pin_served_provenance` each suggestion's identity binds
     the provenances that serve it, as the part's answer would.
@@ -1503,6 +1506,7 @@ def _suggest_nearest_real(
         materialise_graph=materialise_graph,
         role_class_walks=role_class_walks,
         text_recognized_properties=text_recognized_properties,
+        grouped_properties=grouped_properties,
         measure_elected_properties=measure_elected_properties,
         defaulted_properties=defaulted_properties,
         named_groups=named_groups,

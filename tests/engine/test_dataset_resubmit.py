@@ -14,6 +14,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from code_index.scope_conventions import REGION_READINGS
+from code_index.shared import get_index
+from entity_resolution.shared import shared_membership_policy
 from search.engine.concurrency import create_owned_task
 from search.engine.core import resolve_events
 from search.engine.enrichment import _launch_trailing_tasks
@@ -29,9 +32,13 @@ from search.engine.region.observations import dispatch as _observations_dispatch
 from search.engine.region.result import RegionResult
 from search.engine.spec_id import build_spec_identity
 from search.models import (
+    BaseIdentity,
+    ChoiceOrigin,
     DatasetResubmitInput,
     EntityGroup,
     Operation,
+    Option,
+    OptionAvailability,
     ParsedEntity,
     ParsedInput,
     ParsedPart,
@@ -44,10 +51,15 @@ from search.models import (
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
     Slot,
+    SlotBinding,
     TimeWindow,
     Unsupported,
 )
+from search.models import Entry as ScopeEntry
 from search.render.plan import render_sentence
+from search.scope import rules as scope_rules
+from search.scope.tables import AxisTable
+from tests.code_index.aid_identity import education_aid_identity
 from tests.engine._axis_doubles import (
     TOTAL_POPULATION_INDIA_FAMILY,
     axis_confirming_reader,
@@ -920,6 +932,22 @@ def test_an_identity_over_the_place_bound_refuses_request_invalid_on_the_wire(
     assert "parts" not in body
 
 
+def test_a_composite_identity_its_components_cannot_serve_refuses_request_invalid_on_the_wire():
+    """A composite whose imputed component's rows declare no co-operation modality cannot
+    serve a bound modality, so a resubmit posting one refuses at the bound slot before any
+    read."""
+    document = education_aid_identity(source="provenance/ONEBilateralAndImputedMultilateral")
+    document["slots"][0]["binding"] = {"state": "value", "ref": "CRSCooperationModalityA01"}
+    identity = BaseIdentity.model_validate(document)
+    entry = ResubmitIdentityEntry(variable_text="education aid", identity=identity)
+    resp = _client().post("/api/search/resolve", json=_wire_request([entry]))
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "request_invalid"
+    assert body["pointer"] == "/input/entries/0/identity/slots/0"
+    assert "parts" not in body
+
+
 def test_candidates_entry_beyond_search_max_candidates_refuses_request_invalid():
     """A candidates entry posting more candidates than this deployment's own
     SEARCH_MAX_CANDIDATES ceiling refuses request_invalid, naming the entry:
@@ -1217,13 +1245,20 @@ def test_failing_request_cancels_and_awaits_live_parsed_trailing_tasks(
     real_launch_slot_options = _relaunch_mod._launch_slot_options_task
     real_launch_observations = _observations_dispatch_mod._launch_observations_task
 
+    async def _held_open(task: asyncio.Task):
+        # The probe's handle stays live until the request's cleanup cancels it, however
+        # soon the probe's own read finishes, so the test does not race the read.
+        result = await task
+        await asyncio.Event().wait()
+        return result
+
     def _counting_launch_slot_options(*args, **kwargs):
-        task = real_launch_slot_options(*args, **kwargs)
+        task = create_owned_task(_held_open(real_launch_slot_options(*args, **kwargs)))
         slot_tasks.append(task)
         return task
 
     def _counting_launch_observations(*args, **kwargs):
-        task = real_launch_observations(*args, **kwargs)
+        task = create_owned_task(_held_open(real_launch_observations(*args, **kwargs)))
         obs_tasks.append(task)
         return task
 
@@ -2127,3 +2162,173 @@ def test_identity_resubmit_round_trips_comparison_without_folding():
         assert not any(
             warning.code == "binding_folded" for part in result.parts for warning in part.warnings
         )
+
+
+# ---------------------------------------------------------------------------
+# Scope entries: an identity entry posting scope_entries compiles them over its base.
+# ---------------------------------------------------------------------------
+
+_SOURCE_A = "sector:1"
+_SOURCE_B = "sector:2"
+
+
+def _activity_source_rule(base, record, facts) -> AxisTable:
+    """A synthetic axis over the GDP identity's activitySource slot, which the base holds
+    on its first option."""
+    return AxisTable(
+        axis="sector",
+        rule="test_activity_source",
+        options=tuple(
+            Option(
+                option_id=option_id,
+                label=option_id,
+                binding=SlotBinding(slot="activitySource", state="value", refs=[ref]),
+                availability=OptionAvailability(status="available"),
+            )
+            for option_id, ref in ((_SOURCE_A, "SourceA"), (_SOURCE_B, "SourceB"))
+        ),
+        preference=(_SOURCE_A, _SOURCE_B),
+        held=_SOURCE_A,
+    )
+
+
+def _scope_entry(option_id: str, *, choice_id: str = "c") -> ScopeEntry:
+    return ScopeEntry(
+        axis="sector",
+        option_id=option_id,
+        provenance="explicit",
+        origin=ChoiceOrigin(choice_id=choice_id),
+    )
+
+
+def _scoped_entry(identity, scope_entries) -> ResubmitIdentityEntry:
+    return ResubmitIdentityEntry(
+        variable_text="GDP", identity=identity, scope_entries=scope_entries
+    )
+
+
+@pytest.mark.parametrize("live_axis", [False, True], ids=["no-live-axis", "synthetic-axis"])
+def test_a_served_identity_resubmitted_with_its_own_scope_entries_keeps_its_spec_id(
+    live_axis, monkeypatch
+):
+    """The no-op switch: a served identity posted as its own base with the entries that
+    settled it resolves to the same spec_id, and the part states its scope."""
+    if live_axis:
+        monkeypatch.setattr(scope_rules, "AXIS_RULES", {"sector": _activity_source_rule})
+    first = offline_resolve(
+        ResolveRequest(input=DatasetResubmitInput(entries=[_gdp_entry(_INDIA, "GDP")]))
+    )
+    served = first.parts[0].spec
+    entries = [_scope_entry(_SOURCE_A, choice_id=f"{served.spec_id}:sector")] if live_axis else []
+
+    again = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(entries=[_scoped_entry(served.definition.identity, entries)])
+        )
+    )
+
+    spec = again.parts[0].spec
+    scope = spec.resolved.scope_choices
+    assert served.resolved.scope_choices is None
+    assert spec.spec_id == served.spec_id
+    assert scope is not None
+    assert (scope.id, scope.base.spec_id, scope.compiled.spec_id) == (served.spec_id,) * 3
+    assert [(c.axis, c.active, c.provenance) for c in scope.choices] == (
+        [("sector", _SOURCE_A, "explicit")] if live_axis else []
+    )
+    assert scope.entries == entries
+
+
+@pytest.mark.parametrize(
+    ("live_axis", "scope_entries", "code", "pointer"),
+    [
+        pytest.param(
+            False,
+            [_scope_entry("sector:120+130")],
+            "requested_option_unavailable",
+            "/input/entries/0/scope_entries/0",
+            id="axis-not-settled",
+        ),
+        pytest.param(
+            True,
+            [_scope_entry("sector:3")],
+            "requested_option_unavailable",
+            "/input/entries/0/scope_entries/0",
+            id="option-not-offered",
+        ),
+        pytest.param(
+            True,
+            [_scope_entry(_SOURCE_A), _scope_entry(_SOURCE_B)],
+            "conflicting_requested_options",
+            "/input/entries/0/scope_entries/1",
+            id="two-options-on-one-axis",
+        ),
+    ],
+)
+def test_scope_entries_a_part_cannot_take_refuse_422_at_the_entry(
+    live_axis, scope_entries, code, pointer, monkeypatch
+):
+    if live_axis:
+        monkeypatch.setattr(scope_rules, "AXIS_RULES", {"sector": _activity_source_rule})
+    identity = _gdp_entry(_INDIA, "GDP").identity
+
+    resp = _client().post(
+        "/api/search/resolve", json=_wire_request([_scoped_entry(identity, scope_entries)])
+    )
+
+    body = resp.json()
+    assert (resp.status_code, body["code"], body["pointer"]) == (422, code, pointer)
+    assert "parts" not in body
+
+
+class _Captured(Exception):
+    """Stops a resubmit at its resolve, once the payload it posts is captured."""
+
+
+@pytest.mark.parametrize("onto_composite", [True, False], ids=["onto-composite", "off-composite"])
+def test_a_scope_switch_onto_or_off_a_composite_restates_the_region_group(
+    monkeypatch, onto_composite
+):
+    """A posted group naming the OECD's registry group, on scope entries that compile to the
+    graph region's members, is restated as the graph region in the payload the part resolves,
+    whether the switch leaves the identity a provider-inclusive composite, read as its
+    bilateral table identity, or takes it off one."""
+    row = next(row for row in REGION_READINGS if row.region == "SubSaharanAfrica")
+    total = get_index().parties[row.total]
+    assert total.totals is not None
+    held = shared_membership_policy().members(row.region).members
+    assert isinstance(held, tuple)
+    members = sorted(held)
+    compiled = education_aid_identity(
+        source="provenance/ONEBilateralAndImputedMultilateral" if onto_composite else None
+    )
+    compiled["entities"] = {"origin": ["country/FRA"], "destination": members}
+    compiled_identity = BaseIdentity.model_validate(compiled)
+    posted = education_aid_identity(
+        source=None if onto_composite else "provenance/ONEBilateralAndImputedMultilateral"
+    )
+    posted["entities"] = {"origin": ["country/FRA"], "destination": ["country/KEN"]}
+    scope = SimpleNamespace(
+        compiled=SimpleNamespace(identity=compiled_identity, spec_id="spec_compiled")
+    )
+    monkeypatch.setattr(_dataset_resubmit_mod, "_compiled_scope", lambda *a, **k: scope)
+    seen = []
+
+    def _capture(*, inp, **_kwargs):
+        seen.append(inp)
+        raise _Captured
+
+    monkeypatch.setattr(_dataset_resubmit_mod, "resolve_spec_resubmit", _capture)
+    entry = ResubmitIdentityEntry(
+        variable_text="education aid",
+        identity=BaseIdentity.model_validate(posted),
+        scope_entries=[],
+        entity_groups={"destination": EntityGroup(label=row.name, group_id=total.totals)},
+    )
+
+    with pytest.raises(_Captured):
+        offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry])))
+
+    (payload,) = seen
+    assert payload.entity_groups == {"destination": EntityGroup(ref=row.region, label=row.name)}
+    assert (payload.identity.facets or {}).get("provenance") is None

@@ -49,6 +49,7 @@ from search.models import (
     Operation,
     Ordering,
     ParsedPart,
+    PartScope,
     ResolvedQualifier,
     RoleAxis,
     SlotOptions,
@@ -289,6 +290,10 @@ class RegionResult:
     # (`render.assumptions.assumptions_for`). None when the entry echoes none and on every
     # other door.
     assumption_echo: tuple[Assumption, ...] | None = None
+    # How the part was counted (`ResolvedSpec.scope_choices`), set on a definite result
+    # whose request posted scope entries or whose binders settled a scope axis. Its definite
+    # part attaches it to its own Spec; a part folded into a same-shape merge does not.
+    scope_choices: PartScope | None = None
     # The assumptions each reading of a dataset resubmit candidates entry echoed back
     # (`ResubmitCandidate.assumptions`), keyed by the rebuilt reading's spec_id. Its
     # candidates part reads each reading with its echo (`render.assumptions.assumptions_for`);
@@ -541,6 +546,26 @@ def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:
     """Return the roles a Spec built from `shape` answers under
     (`RegionResult.answered_roles`)."""
     return shape.declared_roles or ("observationAbout",)
+
+
+def with_composite_answer(region: RegionResult, spec: Spec) -> RegionResult:
+    """`region` answering `spec`, the composite its definite answer was restated as
+    (`scope.composite.assemble_composite`). Its trailing slot options, place options and
+    observation preview read the one table the region resolved, under that answer's spec_id,
+    so the composite carries none. A task already launched is cancelled and none relaunches."""
+    for task in (region.slot_options_task, region.place_options_task, region.observations_task):
+        if task is not None:
+            task.cancel()
+    return dataclasses.replace(
+        region,
+        specs=(spec, *region.specs[1:]),
+        slot_options_task=None,
+        slot_options_relaunch=None,
+        place_options_task=None,
+        place_options_relaunch=None,
+        observations_task=None,
+        observations_relaunch=None,
+    )
 
 
 def with_runnable_operations(region: RegionResult, operations: Sequence[Operation]) -> RegionResult:

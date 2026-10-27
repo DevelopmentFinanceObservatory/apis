@@ -61,6 +61,16 @@ class PlaceSet:
     # A group's id in the membership registry (`entity_resolution.Group.dcid`), such as
     # `groups/OECD.DAC.Region.Asia`. `None` for a place and a region.
     group_id: str | None = None
+    # The OECD's reading of a graph region a DAC dataset counts with other members
+    # (`scope_conventions.REGION_READINGS`): the DAC group's members, its regional total and
+    # the group's registry id, under this set's node, name and label. A shape answering from
+    # a dataset that publishes the total binds it in place of this set where the part sums
+    # the region (`place_roles._with_region_residuals`). `None` for any other set.
+    oecd: PlaceSet | None = None
+    # Whether this set is such an OECD reading, which a request names by its registry group
+    # rather than by the graph node it shares with the request's set
+    # (`place_roles.request_named_groups`).
+    oecd_read: bool = False
 
     @property
     def expands(self) -> bool:

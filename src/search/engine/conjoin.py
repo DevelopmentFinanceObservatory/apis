@@ -33,7 +33,12 @@ from search.engine.role_text import (
     role_axis_for_text,
     role_text_for_axis,
 )
-from search.engine.same_shape import FacetOptionsReader, collapse_same_shape, fold_key
+from search.engine.same_shape import (
+    FacetOptionsReader,
+    ScopeReader,
+    collapse_same_shape,
+    fold_key,
+)
 from search.engine.source_scope import compile_part_sources
 from search.engine.unit.bind import unit_text_naming
 from search.engine.unit.conversion import conversion_unavailable_warning
@@ -669,6 +674,7 @@ def _build_part(
             asked_axes=region.every_member_axes,
             own_spec=None if representative is region else region.spec,
             members_in_words=region.members_in_words,
+            scope_choices=representative.scope_choices,
         )
     if region.status == "candidates":
         return build_candidates_part(
@@ -872,6 +878,7 @@ def combine_regions(
     query: str = "",
     set_ref_for: Callable[[list[str]], GraphRef | None] | None = None,
     facet_options_for: FacetOptionsReader | None = None,
+    scope_for: ScopeReader | None = None,
 ) -> tuple[Resolution, list[RegionResult]]:
     """Combine regions into one response, with one part per input in query order.
 
@@ -883,7 +890,8 @@ def combine_regions(
     object identity. Merged entries are new with ``slot_options_task`` and
     ``place_options_task`` cleared. Identity lets the caller cancel and relaunch enrichment.
     Its only graph reads are the injected ``set_ref_for`` and ``facet_options_for``
-    readers a same-shape merge calls. It performs no task operations.
+    readers a same-shape merge calls, and ``scope_for`` builds a merged region's scope,
+    which every part it folds states. It performs no task operations.
 
     ``llm_usage`` is summed by the caller. A supplied ``echo`` is used
     verbatim. Otherwise a raw-text echo is built from ``query``. Skills-index
@@ -893,7 +901,10 @@ def combine_regions(
     others = [r for r in regions if r.status != "definite"]
 
     collapsed, residual_texts = collapse_same_shape(
-        definite, set_ref_for=set_ref_for, facet_options_for=facet_options_for
+        definite,
+        set_ref_for=set_ref_for,
+        facet_options_for=facet_options_for,
+        scope_for=scope_for,
     )
     residual_indices = {earliest_index for _variable_text, earliest_index in residual_texts}
     refused = [r for r in definite if r.earliest_index in residual_indices]

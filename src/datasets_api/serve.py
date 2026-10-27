@@ -54,8 +54,9 @@ import contextvars
 import logging
 import math
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
@@ -63,8 +64,10 @@ from typing import cast
 
 from artifact_store import ArtifactStore, ArtifactStoreError
 from artifact_store.inventory import InventoryBatch, InventoryEntry
+from code_index.composites import ComponentIdentity, composite_ref
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
+from code_index.types import CompositeDeclaration
 from dataset_store.clock import utc_now
 from dataset_store.snapshot import (
     ManifestFacts,
@@ -74,7 +77,11 @@ from dataset_store.snapshot import (
     VersionState,
     select_servable_locations,
 )
-from datasets_api.adapter import pinned_provenance_scope
+from datasets_api.adapter import (
+    composite_components,
+    identity_requested_window,
+    pinned_provenance_scope,
+)
 from datasets_api.admission import MaterialisePermits, bounded_materialise_slot
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.manifest import (
@@ -86,6 +93,7 @@ from datasets_api.manifest import (
     persisted_manifest,
     provenance_refs_of,
     reshape_warning_models,
+    source_refs_of,
     stored_manifest_facts,
     year_coverage,
 )
@@ -99,6 +107,7 @@ from datasets_api.manifest_models import (
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.origin import (
+    OriginGap,
     catalogue_build_id,
     refuse_unserved_empty_probe,
     refuse_unserved_selection,
@@ -147,8 +156,16 @@ from materialise import (
     materialise_group,
 )
 from materialise.bundle import ReproducingCall
+from materialise.ceiling import check_ceiling
+from materialise.composite import (
+    ComponentResult,
+    compose_components,
+    rows_in_years,
+    stacked_years,
+    table_years,
+)
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
-from materialise.errors import DefaultFacetUndefinedError
+from materialise.errors import DefaultFacetUndefinedError, MaterialisationUsageError
 from materialise.graph import GraphReader
 from materialise.profile import OutputProfile, compute_output_profile_from_chunks
 from materialise.provenance_doc import (
@@ -163,7 +180,7 @@ from materialise.statistics import (
     compute_series_statistics_table,
 )
 from materialise.window import Coverage
-from origin_catalogue import current_catalogue, recording_un_blocked_places
+from origin_catalogue import UnBlockedPlaces, current_catalogue, recording_un_blocked_places
 from series_coverage.index import CoverageIndex, Estimate
 from spec_registry.reader import StoredDefinition
 
@@ -496,8 +513,11 @@ class DefinitionPrewrite:
     # `datasets_api.origin`'s `withheld_by_registry` and `un_system_unavailable` warnings for this
     # call, found once here and joined to every manifest the write half builds.
     origin_warnings: tuple[WarningModel, ...]
-    # The provenance refs of this call's trace (`provenance_refs_of`).
+    # The provenance refs this call's rows carry (`provenance_refs_of`): a composite's own.
     provenance_refs: list[str]
+    # The sources this call's figures come from (`manifest.source_refs_of`), which the citation
+    # names: a composite's component tables, else `provenance_refs`.
+    citation_refs: list[str]
     spec_dict: dict[str, object]
     # All requests share a role signature, so rendering uses the first request's roles.
     entity_columns: tuple[str, ...]
@@ -537,6 +557,173 @@ def _prewrite_citations(
         deadline=deadline,
         documented=documented,
         coverage_facts_of=coverage_facts_of(coverage_index),
+    )
+
+
+@dataclass(frozen=True)
+class _OriginFindings:
+    """The origin warnings a materialisation's reads found (`datasets_api.origin`) and the
+    places they name, which the trace records."""
+
+    warnings: tuple[WarningModel, ...]
+    gaps: tuple[OriginGap, ...]
+
+
+def _materialise_scoped(
+    requests: Sequence[MaterialisationRequest],
+    *,
+    ceiling: int,
+    precomputed_probe: CollectionFacetProbe | None,
+    sdmx: SdmxClient,
+    graph: GraphReader,
+    materialiser_build: str,
+    capability_version: str,
+    enrichment: EnrichmentLookup,
+    member_concurrency: int,
+    rate_cache: RateTableCache,
+    coverage_index: CoverageIndex | None,
+    deadline: float | None,
+    progress: RowProgress | None,
+    code_index: CodeIndex,
+) -> tuple[MaterialisationResult, UnBlockedPlaces]:
+    """`materialise_group` over `requests` under the read scope in context, and the UN reads
+    it recorded as unserved. A member's `default_facet_undefined` refusal and an empty probe
+    become the UN or registry refusal where those explain them
+    (`origin.refuse_unserved_selection`, `origin.refuse_unserved_empty_probe`)."""
+    with recording_un_blocked_places() as un_blocked:
+        try:
+            with phase("materialise"):
+                result = materialise_group(
+                    requests,
+                    sdmx=sdmx,
+                    graph=graph,
+                    ceiling=ceiling,
+                    materialiser_build=materialiser_build,
+                    capability_version=capability_version,
+                    enrichment=enrichment,
+                    member_concurrency=member_concurrency,
+                    rate_cache=rate_cache,
+                    coverage=coverage_index,
+                    precomputed_probe=precomputed_probe,
+                    deadline=deadline,
+                    progress=progress,
+                    absent_reads_zero=partial(absent_member_reads_zero, code_index),
+                )
+        except DefaultFacetUndefinedError as exc:
+            if exc.request is not None:
+                refuse_unserved_selection(
+                    un_blocked, exc.request, graph, availability=sdmx, deadline=deadline
+                )
+            raise
+        if result.probe_empty:
+            refuse_unserved_empty_probe(
+                un_blocked, requests, graph, availability=sdmx, deadline=deadline
+            )
+    return result, un_blocked
+
+
+def _origin_findings(
+    requests: Sequence[MaterialisationRequest],
+    result: MaterialisationResult,
+    *,
+    un_blocked: UnBlockedPlaces,
+    graph: GraphReader,
+    deadline: float | None,
+) -> _OriginFindings:
+    """The withheld and UN-unavailable findings of `result`'s reads, made under the read
+    scope in context. An empty probe's withheld re-read was made by
+    `refuse_unserved_empty_probe`."""
+    withheld = (
+        None
+        if result.probe_empty
+        else withheld_finding(
+            graph,
+            [(request, result.coverage) for request in requests],
+            default_scope=result.default_scope,
+            deadline=deadline,
+        )
+    )
+    return _OriginFindings(
+        warnings=(() if withheld is None else (withheld[1],)) + un_unavailable_warnings(un_blocked),
+        gaps=(() if withheld is None else (withheld[2],)) + un_unavailable_gaps(un_blocked),
+    )
+
+
+def _materialise_components(
+    requests: Sequence[MaterialisationRequest],
+    *,
+    components: Sequence[ComponentIdentity],
+    ceiling: int,
+    materialise: Callable[..., tuple[MaterialisationResult, UnBlockedPlaces]],
+    stored: StoredDefinition,
+    code_index: CodeIndex,
+    graph: GraphReader,
+    enrichment: EnrichmentLookup,
+    deadline: float | None,
+    coverage_index: CoverageIndex | None,
+) -> tuple[MaterialisationResult, _OriginFindings]:
+    """A composite's result: each component's requests materialised under the component
+    identity's pinned provenances (`adapter.pinned_provenance_scope`), in declaration order,
+    sharing `ceiling`, then composed into one frame
+    (`materialise.composite.compose_components`), whose rows, zero rows included, must fit
+    `ceiling` (`materialise.ceiling.check_ceiling`). Each run gets the rows the runs before
+    it keep: a stacked composite keeps the rows in the years every component's table covers
+    in `coverage_index` (`materialise.composite.stacked_years`), read before any run. Each
+    component's origin findings are read under its own scope. A component no request names,
+    a spliced one whose periods the window does not reach, is left out. Raises
+    `MaterialisationUsageError` without `coverage_index`, which a composite's years are read
+    from."""
+    if coverage_index is None:
+        raise MaterialisationUsageError(
+            "a composite reads its components' years from the coverage snapshot"
+        )
+    ref = cast(str, composite_ref(stored.identity))
+    composite = cast("CompositeDeclaration", code_index.composite(ref))
+    covered = {
+        component.role: table_years(code_index, coverage_index, component.identity)
+        for component in components
+    }
+    kept = stacked_years(covered.values()) if composite.kind == "stacked" else None
+    results: list[ComponentResult] = []
+    warnings: list[WarningModel] = []
+    gaps: list[OriginGap] = []
+    remaining = ceiling
+    seconds = 0.0
+    for component in components:
+        part = [request for request in requests if request.component == component.role]
+        if not part:
+            continue
+        with pinned_provenance_scope(component.identity):
+            result, un_blocked = materialise(part, ceiling=remaining, precomputed_probe=None)
+            findings = _origin_findings(
+                part, result, un_blocked=un_blocked, graph=graph, deadline=deadline
+            )
+        charged = result.coverage.rows if kept is None else rows_in_years(result.frame_chunks, kept)
+        remaining = max(remaining - charged, 0)
+        seconds += result.output_profile_seconds
+        warnings.extend(warning for warning in findings.warnings if warning not in warnings)
+        gaps.extend(findings.gaps)
+        results.append(
+            ComponentResult(
+                role=component.role,
+                recipe=component.recipe,
+                requests=part,
+                result=result,
+                covered_years=covered[component.role],
+            )
+        )
+    with phase("materialise"):
+        composed = compose_components(
+            results,
+            composite=composite,
+            window=identity_requested_window(stored.identity),
+            role_columns=requests[0].declared_roles,
+            enrichment=enrichment,
+        )
+    check_ceiling(composed.coverage, ceiling=ceiling)
+    return (
+        replace(composed, output_profile_seconds=seconds),
+        _OriginFindings(warnings=tuple(warnings), gaps=tuple(gaps)),
     )
 
 
@@ -592,40 +779,49 @@ def prewrite_definition(
 
     Every read runs under the identity's pinned provenances
     (`adapter.pinned_provenance_scope`), so a pinned source is admitted before DFO
-    precedence and the withheld re-reads name no source the pin leaves out.
+    precedence and the withheld re-reads name no source the pin leaves out. A composite
+    identity's requests materialise per component, each under its component identity's pins,
+    and compose into one frame (`_materialise_components`); its citation names the component
+    tables (`manifest.source_refs_of`), and its rows carry the composite's provenance.
+    `precomputed_probe` serves a plain identity alone.
     """
-    with pinned_provenance_scope(stored.identity):
-        with recording_un_blocked_places() as un_blocked:
-            try:
-                with phase("materialise"):
-                    result = materialise_group(
-                        requests,
-                        sdmx=sdmx,
-                        graph=graph,
-                        ceiling=ceiling,
-                        materialiser_build=materialiser_build,
-                        capability_version=capability_version,
-                        enrichment=enrichment,
-                        member_concurrency=member_concurrency,
-                        rate_cache=rate_cache,
-                        coverage=coverage_index,
-                        precomputed_probe=precomputed_probe,
-                        deadline=deadline,
-                        progress=progress,
-                        absent_reads_zero=partial(absent_member_reads_zero, code_index),
-                    )
-            except DefaultFacetUndefinedError as exc:
-                if exc.request is not None:
-                    refuse_unserved_selection(
-                        un_blocked, exc.request, graph, availability=sdmx, deadline=deadline
-                    )
-                raise
-            if result.probe_empty:
-                refuse_unserved_empty_probe(
-                    un_blocked, requests, graph, availability=sdmx, deadline=deadline
-                )
+    components = composite_components(stored.identity, code_index=code_index)
+    materialise = partial(
+        _materialise_scoped,
+        sdmx=sdmx,
+        graph=graph,
+        materialiser_build=materialiser_build,
+        capability_version=capability_version,
+        enrichment=enrichment,
+        member_concurrency=member_concurrency,
+        rate_cache=rate_cache,
+        coverage_index=coverage_index,
+        deadline=deadline,
+        progress=progress,
+        code_index=code_index,
+    )
+    with pinned_provenance_scope(stored.identity) if components is None else nullcontext():
+        if components is None:
+            result, un_blocked = materialise(
+                requests, ceiling=ceiling, precomputed_probe=precomputed_probe
+            )
+            origin: _OriginFindings | None = None
+        else:
+            result, origin = _materialise_components(
+                requests,
+                components=components,
+                ceiling=ceiling,
+                materialise=materialise,
+                stored=stored,
+                code_index=code_index,
+                graph=graph,
+                enrichment=enrichment,
+                deadline=deadline,
+                coverage_index=coverage_index,
+            )
         record_elapsed("profile", result.output_profile_seconds)
         provenance_refs = provenance_refs_of(result.trace.facets)
+        citation_refs = source_refs_of(result.trace)
         persisted = _persisted_state(
             snapshot_reader,
             subject_id=stored.spec_id,
@@ -635,31 +831,21 @@ def prewrite_definition(
         with phase("citation"):
             source_citations = _prewrite_citations(
                 graph,
-                provenance_refs,
+                citation_refs,
                 documented=documented and persisted is None,
                 deadline=deadline,
                 coverage_index=coverage_index,
             )
-        # `refuse_unserved_empty_probe` already made the withheld re-read an empty probe gets.
-        withheld = (
-            None
-            if result.probe_empty
-            else withheld_finding(
-                graph,
-                [(request, result.coverage) for request in requests],
-                default_scope=result.default_scope,
-                deadline=deadline,
+        if origin is None:
+            origin = _origin_findings(
+                requests, result, un_blocked=un_blocked, graph=graph, deadline=deadline
             )
-        )
-        origin_warnings = (() if withheld is None else (withheld[1],)) + un_unavailable_warnings(
-            un_blocked
-        )
+        origin_warnings = origin.warnings
         # Every manifest built from `result` records the places those warnings name.
-        origin_gaps = (() if withheld is None else (withheld[2],)) + un_unavailable_gaps(un_blocked)
         result = replace(
             result,
             trace=replace(
-                result.trace, origin_gaps=tuple(gap.as_trace_entry() for gap in origin_gaps)
+                result.trace, origin_gaps=tuple(gap.as_trace_entry() for gap in origin.gaps)
             ),
         )
         spec_dict: dict[str, object] = {
@@ -672,7 +858,7 @@ def prewrite_definition(
             stored=stored,
             materialisation=result,
             artifacts=[],
-            provenance_refs=provenance_refs,
+            provenance_refs=citation_refs,
             source_citations=source_citations,
             prepared_at=_prepared_now(),
             capability_version=capability_version,
@@ -690,6 +876,7 @@ def prewrite_definition(
             source_citations=source_citations,
             origin_warnings=origin_warnings,
             provenance_refs=provenance_refs,
+            citation_refs=citation_refs,
             spec_dict=spec_dict,
             entity_columns=requests[0].declared_roles,
             coverage_stamp=coverage_stamp,
@@ -1139,6 +1326,7 @@ def _render_pass(
         options=options,
         spec=prewrite.spec_dict,
         provenance_refs=prewrite.provenance_refs,
+        citation_refs=prewrite.citation_refs,
         citations=citations,
         reproducing_call=(
             ReproducingCall(
@@ -1168,7 +1356,7 @@ def _render_pass(
             content_version=(
                 derived.content_version if derived is not None else result.content_version
             ),
-            refs=prewrite.provenance_refs,
+            refs=prewrite.citation_refs,
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
@@ -1182,7 +1370,7 @@ def _render_pass(
             stored=stored,
             materialisation=result,
             artifacts=[artifact, statistics_artifact],
-            provenance_refs=prewrite.provenance_refs,
+            provenance_refs=prewrite.citation_refs,
             source_citations=prewrite.source_citations,
             prepared_at=render_prepared_at,
             capability_version=deps.capability_version,
@@ -1239,7 +1427,7 @@ def _render_pass(
         stored=stored,
         materialisation=derived_result,
         artifacts=[artifact, derived_statistics_artifact],
-        provenance_refs=prewrite.provenance_refs,
+        provenance_refs=prewrite.citation_refs,
         source_citations=prewrite.source_citations,
         prepared_at=render_prepared_at,
         capability_version=deps.capability_version,

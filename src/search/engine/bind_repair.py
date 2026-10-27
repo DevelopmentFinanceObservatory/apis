@@ -77,16 +77,23 @@ def _label_negated_in_text(label: str, text: str) -> bool:
 def _label_has_negated_occurrence(label: str, text: str) -> bool:
     """Whether any whole-word occurrence is negated, including mixed wording."""
     pattern = r"\b" + re.escape(label) + r"\b"
-    for match in re.finditer(pattern, text, re.IGNORECASE):
-        prefix = text[: match.start()]
-        prefix_words = list(re.finditer(r"[\w']+", prefix))
-        context_start = prefix_words[-3].start() if len(prefix_words) >= 3 else 0
-        context = prefix[context_start:]
-        context = re.sub(pattern, "", context, flags=re.IGNORECASE)
-        context = f"{context}{text[match.start() : match.end()]}"
-        if _label_negated_in_text(label, context):
-            return True
-    return False
+    return any(
+        occurrence_negated(text, match.start(), match.end())
+        for match in re.finditer(pattern, text, re.IGNORECASE)
+    )
+
+
+def occurrence_negated(text: str, start: int, end: int) -> bool:
+    """Whether the occurrence of a word at `text[start:end]` is negated or excluded: a
+    negator or exclusion phrase among the three words before it, or a fused or spaced
+    ``non`` prefix. Other occurrences of the word in those three words are ignored."""
+    label = text[start:end]
+    pattern = r"\b" + re.escape(label) + r"\b"
+    prefix = text[:start]
+    prefix_words = list(re.finditer(r"[\w']+", prefix))
+    context_start = prefix_words[-3].start() if len(prefix_words) >= 3 else 0
+    context = re.sub(pattern, "", prefix[context_start:], flags=re.IGNORECASE)
+    return _label_negated_in_text(label, f"{context}{label}")
 
 
 def stated_words_negated(text: str, *, index: CodeIndex) -> tuple[str, ...]:

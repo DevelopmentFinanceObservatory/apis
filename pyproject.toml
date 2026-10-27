@@ -243,9 +243,10 @@ dfo-data-tools = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is 26f733c on spec-kit's dev branch. It registers
-# slot_default_not_applied, the three source-code refusals and
-# whole_total_available, retires starved_axis_binding_restored, and holds the
+# The pin is 455e958 on spec-kit's dev branch. It registers slot_default_not_applied, the three source-code
+# refusals, whole_total_available and the scope-choice refusals
+# requested_option_unavailable and conflicting_requested_options, retires
+# starved_axis_binding_restored, and holds the
 # client contract `dfo-spec-kit-client-contract` reads, whose ref format admits
 # a `without_party_totals` rendering and whose warning codes include
 # `ref_digest_changed`, and it registers the `timed_out` no_data reason. The
@@ -257,8 +258,8 @@ dfo-data-tools = { workspace = true }
 # role-keys rules.
 # Follow-up: move all six to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "26f733c29ce269407371662a8bca6d6b20c58244", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "26f733c29ce269407371662a8bca6d6b20c58244", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "455e958ca865c43e2fa1e774e4799a92d5f3da3d", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "455e958ca865c43e2fa1e774e4799a92d5f3da3d", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

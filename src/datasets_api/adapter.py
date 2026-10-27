@@ -7,6 +7,9 @@ resolves pinned or described identities from the graph or code index.
 `rehydrate_definition` combines resolution and validation for stored definitions.
 `verify_sidecar_definition` checks a supplied identity against its id.
 `pinned_member_ref` extracts pinned refs for batch shape resolution.
+A composite identity (`code_index.composites`) resolves as the union of its component
+identities' members, each shape tagged with its component (`composite_components`), and no
+reader here takes its provenance pin as a table.
 """
 
 from __future__ import annotations
@@ -15,12 +18,18 @@ import dataclasses
 import logging
 import time
 from collections.abc import Collection, Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Literal, cast
 
 from dfo_spec_kit.identity import IdentityError, validate_identity_core
 
+from code_index.composites import (
+    ComponentIdentity,
+    CompositeNotServable,
+    component_identities,
+    composite_ref,
+)
 from code_index.members import (
     FamilyQuery,
     SourceNotInFamily,
@@ -32,7 +41,10 @@ from code_index.members import (
     pinned_refs,
 )
 from code_index.query import CodeIndex
+from code_index.types import ComponentRole, CompositeDeclaration
 from datasets_api.codes_materialise import (
+    CompositeUnservable,
+    CompositeWindowUnsupported,
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
     InvalidRoleRef,
@@ -373,7 +385,13 @@ def to_materialisation_request(
     raise `IdentityError`. An undeclared role currency raises
     `CurrencyRoleUndeclared`. The caller adds the wire pointer.
     Validation covers facet-binding shape only.
+
+    A shape resolved for a component of a composite (`StatVarShape.component`) reads that
+    component's identity in place of `identity`, and the request names the component.
     """
+    component = shape.component
+    if component is not None:
+        identity = component.identity
     entities = cast("Mapping[str, list[str]]", identity.get("entities", {}))
     role_bindings: dict[str, EntityFilter] = {}
     for role, refs in entities.items():
@@ -426,9 +444,7 @@ def to_materialisation_request(
                 "schema_violation",
                 f"{axis} facet binding requires 'ref', 'request' or 'national_currency'",
             )
-    window = _requested_window(
-        cast("Mapping[str, object]", identity.get("requested_window", {"kind": "all"}))
-    )
+    window = identity_requested_window(identity)
     return MaterialisationRequest(
         stat_var=shape.stat_var,
         role_bindings=role_bindings,
@@ -439,6 +455,14 @@ def to_materialisation_request(
         dataset=shape.dataset,
         family=admitted_family(identity, shape),
         stub_candidates=shape.stub_candidates,
+        component=component.role if component is not None else None,
+    )
+
+
+def identity_requested_window(identity: Mapping[str, object]) -> RequestedWindow:
+    """The window a request reads for `identity`'s `requested_window` (`_requested_window`)."""
+    return _requested_window(
+        cast("Mapping[str, object]", identity.get("requested_window", {"kind": "all"}))
     )
 
 
@@ -453,8 +477,50 @@ def pinned_provenance_scope(identity: Mapping[str, object]) -> AbstractContextMa
     """Bind the request's catalogue narrowed to `identity`'s pinned provenances
     (`provenance_pin`, `origin_catalogue.scoped_reads`) for every read of a mint of it, so
     a pinned source is admitted before DFO precedence and a base pin serves at a place
-    where a DFO table also holds data. Binds nothing for an identity that pins no provenance."""
+    where a DFO table also holds data. Binds nothing for an identity that pins no provenance.
+
+    A composite identity's pin names no table, so a caller derives its components first
+    (`composite_components`) and scopes each component's reads by its component identity.
+    Handed a composite, `provenance_pin` raises `code_index.composites.CompositeProvenanceRead`."""
     return scoped_reads(provenance_pin(identity))
+
+
+def composite_components(
+    identity: Mapping[str, object], *, code_index: CodeIndex
+) -> tuple[ComponentIdentity, ...] | None:
+    """The component identities of a composite `identity`
+    (`code_index.composites.component_identities`), or `None` for a plain identity. Every
+    reader of an identity's provenance pin in this package asks this first.
+
+    Raises `CompositeUnservable` where the components cannot be derived."""
+    try:
+        return component_identities(code_index, identity)
+    except CompositeNotServable as exc:
+        raise CompositeUnservable(str(exc), identity_pointer=exc.pointer) from exc
+
+
+def identity_composite(
+    identity: Mapping[str, object], *, code_index: CodeIndex
+) -> CompositeDeclaration | None:
+    """The composite `identity` binds as its provenance (`CodeIndex.composite`), or `None` for a
+    plain identity."""
+    ref = composite_ref(identity)
+    return code_index.composite(ref) if ref is not None else None
+
+
+def definition_read_scope(
+    identity: Mapping[str, object], *, code_index: CodeIndex
+) -> AbstractContextManager[object]:
+    """The scope a read over every request of `identity` runs under: its pinned provenances
+    (`pinned_provenance_scope`). A composite's reads over every request run unscoped, since no
+    table publishes the composite, and a mint reads each component under its component
+    identity's pins (`serve.prewrite_definition`). The one read over every request, the head fingerprint
+    (`materialise.dependencies.refreshed_dependencies`), consults the scope only to elect a
+    `latest` request's year, and a composite has no `latest` window
+    (`CompositeWindowUnsupported`), so it reads the same unscoped."""
+    if composite_components(identity, code_index=code_index) is not None:
+        return nullcontext()
+    return pinned_provenance_scope(identity)
 
 
 def admitted_family(identity: Mapping[str, object], shape: StatVarShape) -> MemberFamily | None:
@@ -469,7 +535,8 @@ def _identity_is_index_sourced(identity: Mapping[str, object], *, code_index: Co
     """Return whether `resolve_definition_members` resolves a described arm from `code_index`.
 
     The test is `index_decides` on the identity's query, the one `index_family` applies.
-    Pinned arms resolve against the graph.
+    Pinned arms resolve against the graph. `identity` is a plain identity or one component's
+    (`to_materialisation_request` reads a composite's component identity in its place).
     """
     shape_member = cast("Mapping[str, object]", identity.get("shape", {}))
     if shape_member.get("kind") == "stat_var":
@@ -735,8 +802,29 @@ def resolve_definition_members(
     An identity that binds a slot to an invariant of the dataset it names and one that
     leaves it unbound resolve the same members, since their canonical forms agree
     (`code_index.members.canonical_identity`).
+
+    A composite identity resolves each component identity as above
+    (`composite_components`), with `role_keys` and `open_role_keys` applied to each, and
+    returns every component's shapes in declaration order, each naming its component
+    (`StatVarShape.component`), with the union of their families. It raises
+    `CompositeWindowUnsupported` for a `latest` window, and `CompositeUnservable` where a
+    component resolves off the code index, from another table than its recipe names, or to a
+    member another component holds.
     """
     validate_identity_core(identity)
+    components = composite_components(identity, code_index=code_index)
+    if components is not None:
+        return _resolve_composite_members(
+            identity,
+            components,
+            spec_id=spec_id,
+            graph=graph,
+            enumerator=enumerator,
+            code_index=code_index,
+            bounds=bounds,
+            role_keys=role_keys,
+            open_role_keys=open_role_keys,
+        )
     shape_member = cast("Mapping[str, object]", identity.get("shape", {}))
     if shape_member.get("kind") == "stat_var":
         ref = f"{_STAT_VAR_PREFIX}{shape_member['id']}"
@@ -855,6 +943,56 @@ def resolve_definition_members(
         len(shapes),
     )
     return ResolvedMembers(shapes=shapes, family=walked)
+
+
+def _resolve_composite_members(
+    identity: Mapping[str, object],
+    components: Sequence[ComponentIdentity],
+    *,
+    spec_id: str,
+    graph: GraphReader,
+    enumerator: MemberEnumerator,
+    code_index: CodeIndex,
+    bounds: MemberReadBounds,
+    role_keys: Collection[str] | None,
+    open_role_keys: Collection[str] | None,
+) -> ResolvedMembers:
+    """`resolve_definition_members` for a composite `identity` and its `components`."""
+    ref = cast(str, composite_ref(identity))
+    window = cast("Mapping[str, object]", identity.get("requested_window", {}))
+    if window.get("kind") == "latest":
+        raise CompositeWindowUnsupported(composite=ref)
+    shapes: list[StatVarShape] = []
+    family: set[str] = set()
+    owners: dict[str, ComponentRole] = {}
+    for component in components:
+        resolved = resolve_definition_members(
+            component.identity,
+            spec_id=spec_id,
+            graph=graph,
+            enumerator=enumerator,
+            code_index=code_index,
+            bounds=bounds,
+            role_keys=role_keys,
+            open_role_keys=open_role_keys,
+        )
+        for shape in resolved.shapes:
+            elected = shape.dataset.provenance if shape.dataset is not None else None
+            if elected != component.recipe.dataset:
+                raise CompositeUnservable(
+                    f"composite {ref!r}'s {component.role} component resolves "
+                    f"{shape.stat_var!r} from {elected!r}, not from "
+                    f"{component.recipe.dataset!r}"
+                )
+            holder = owners.setdefault(shape.stat_var, component.role)
+            if holder != component.role:
+                raise CompositeUnservable(
+                    f"composite {ref!r}'s {holder} and {component.role} components both "
+                    f"resolve {shape.stat_var!r}"
+                )
+            shapes.append(dataclasses.replace(shape, component=component))
+        family |= resolved.family
+    return ResolvedMembers(shapes=tuple(shapes), family=frozenset(family))
 
 
 def check_reproducible(

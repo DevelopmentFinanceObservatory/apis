@@ -222,27 +222,24 @@ def test_a_timeout_around_the_pass_cancels_the_queued_walk(
 def test_the_pass_end_cancels_an_untaken_countries_listing(
     pool: _Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The listing runs on the default executor (`_start_countries_listing`), here the
-    held pool, so it is still queued when the pass ends."""
+    """The listing runs on an executor (`_start_countries_listing` uses the default one),
+    here the held pool, so it is still queued when the pass ends. Only the listing goes to
+    the held pool: the pass's own executor work, the scope build, keeps the default."""
     state = _state()
 
     async def start_listing(state: ResolveState) -> None:
-        state.countries_listing = asyncio.ensure_future(asyncio.to_thread(pool.listing))
-        # One step of the listing's task submits the read to the executor's queue.
-        await asyncio.sleep(0)
+        loop = asyncio.get_running_loop()
+        state.countries_listing = loop.run_in_executor(pool.executor, pool.listing)
         assert len(pool.executor.submitted) == 1
 
     monkeypatch.setattr(pipeline, "_PHASES", (start_listing, _terminal))
 
     async def run_pass() -> bool:
-        asyncio.get_running_loop().set_default_executor(pool.executor)
         await pipeline._run_phases(state)
         listing = state.countries_listing
         assert listing is not None
         # Five seconds only bounds a regression, which would otherwise hang on the blocker.
         await asyncio.wait({listing}, timeout=5)
-        # `asyncio.run` shuts the default executor down on exit, which waits on the blocker.
-        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
         # Read before `asyncio.run` cancels every task left at its exit.
         return listing.cancelled() and pool.executor.submitted[0].cancelled()
 

@@ -108,6 +108,7 @@ from search.engine.source_scope import (
     source_dictionary,
 )
 from search.engine.source_spans import read_sources, unclaimed_words
+from search.engine.stated_scope import part_scope_intakes
 from search.engine.surface_resolution import corrected_surfaces, is_surface, named_dcids
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.heading.departure_fact import DepartureFact
@@ -124,6 +125,7 @@ from search.models import (
     Warning,
 )
 from search.render.assumptions import NameCorrection
+from search.scope.state import ScopeIntake
 
 logger = logging.getLogger(__name__)
 
@@ -752,7 +754,10 @@ class _ExtractionPrep:
     `per_variable_source_codes` runs parallel to `unique` too: the series code the query
     writes for each variable (`source_code.scan_source_codes`), and
     `per_variable_compiled_codes` what each compiles to within its variable's scope, `None`
-    for a variable with none.
+    for a variable with none. `per_variable_scope_intakes` runs parallel to `unique` too:
+    the scope entries and total intent each part's words state
+    (`stated_scope.part_scope_intakes`), read from the query when it asks for one variable
+    and from each variable's own text when it asks for several.
     """
 
     date_request: DateRequest | None
@@ -781,6 +786,7 @@ class _ExtractionPrep:
     per_variable_source_scopes: list[SourceScope | SourceRefusal | None]
     per_variable_source_codes: list[str | None]
     per_variable_compiled_codes: list[PartCode | None]
+    per_variable_scope_intakes: list[ScopeIntake]
     name_corrections: tuple[NameCorrection, ...] = ()
 
     def dropped_phrases_of(self, i: int) -> list[str]:
@@ -1141,6 +1147,7 @@ def _prepare_extraction(
         per_variable_source_scopes=per_variable_source_scopes,
         per_variable_source_codes=per_variable_source_codes,
         per_variable_compiled_codes=per_variable_compiled_codes,
+        per_variable_scope_intakes=part_scope_intakes(message=query, part_texts=unique),
         name_corrections=name_corrections,
     )
 
@@ -1232,6 +1239,7 @@ async def _handle_single_variable(
         per_variable_unit_texts=prep.per_variable_unit_texts,
         per_variable_source_scopes=prep.per_variable_source_scopes,
         per_variable_source_codes=prep.per_variable_compiled_codes,
+        per_variable_scope_intakes=prep.per_variable_scope_intakes,
         unit_text_best_effort=True,
         door="raw_text",
         include_option_coverage=params.include_option_coverage,
@@ -1369,6 +1377,7 @@ async def _handle_multi_variable(
         per_variable_unit_texts=prep.per_variable_unit_texts,
         per_variable_source_scopes=prep.per_variable_source_scopes,
         per_variable_source_codes=prep.per_variable_compiled_codes,
+        per_variable_scope_intakes=prep.per_variable_scope_intakes,
         unit_text_best_effort=True,
         per_variable_separate=prep.separate,
         door="raw_text",
@@ -1497,8 +1506,9 @@ async def handle(
     )
 
     # Include entities, roles, dates, qualifiers, operations, sources, the unit text peeled
-    # from each variable, raw-text signals and the extraction's warnings in the cache key so
-    # semantically distinct queries retain separate entries.
+    # from each variable, the scope each part's words state, raw-text signals and the
+    # extraction's warnings in the cache key so semantically distinct queries retain
+    # separate entries.
     # `query_text` applies only to N=1, matching the single-variable cache readers.
     # A cache hit returns before binding. Core always supplies `scope`.
     # Direct tests may omit it.
@@ -1521,6 +1531,7 @@ async def handle(
             extraction_warnings=prep.clamp_warnings,
             measure_qualifiers=prep.per_variable_measure_qualifiers,
             open_axes=prep.per_variable_open_axes,
+            stated_scopes=prep.per_variable_scope_intakes,
             llm_usage=extract_usage,
         )
     _log_unclaimed_words(prep, extraction, query=query)

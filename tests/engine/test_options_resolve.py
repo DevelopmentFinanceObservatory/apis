@@ -22,6 +22,7 @@ from search.models import (
     OptionsFor,
     OptionsRequest,
 )
+from tests.code_index.aid_identity import education_aid_identity
 from tests.engine._index_slots import unbound_index_slots
 from tests.engine.test_options_population import (
     _IDS_BY_CREDITOR,
@@ -85,6 +86,25 @@ class TestPinnedAskRefusesBeforeDerivation:
         assert exc_info.value.code == "request_invalid"
         assert exc_info.value.status == 400
         assert exc_info.value.pointer == "/identity/shape"
+
+
+class TestCompositeTheComponentsCannotServeRefusesBeforeDerivation:
+    def test_a_bound_modality_on_the_inclusive_composite_refuses_request_invalid(self):
+        """The imputed component's rows declare no co-operation modality, so the composite
+        cannot serve one: the door refuses at the bound slot before it reads anything."""
+        document = education_aid_identity(source="provenance/ONEBilateralAndImputedMultilateral")
+        document["slots"][0]["binding"] = {"state": "value", "ref": "CRSCooperationModalityA01"}
+        identity = BaseIdentity.model_validate(document)
+        req = OptionsRequest(identity=identity, **{"for": OptionsFor(role="financingProvider")})
+
+        with pytest.raises(EngineInputError) as exc_info:
+            resolve_options_target(
+                req, graph=FakeGraph(), materialise_graph=FakeGraphReader(arcs={}, subjects={})
+            )
+
+        assert exc_info.value.code == "request_invalid"
+        assert exc_info.value.status == 400
+        assert exc_info.value.pointer == "/identity/slots/0"
 
 
 # ---------------------------------------------------------------------------

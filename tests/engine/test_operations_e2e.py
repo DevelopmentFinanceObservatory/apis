@@ -114,6 +114,9 @@ def _measures_not_applied(part) -> list[str | None]:
     return [d.asked for d in part.departures if d.code == "measure_not_applied"]
 
 
+# The fixture's member measures grant equivalents, which count ODA as CRS flows 10 and 60
+# (`code_index.scope_conventions.BASIS_MEASURES`), so the ODA default binds both.
+_GE_ODA_FLOWS = ["CRSTypeOfFlow10", "CRSTypeOfFlow60"]
 _ODA_DEFAULT_NOTE = (
     "No flow was named, so the answer covers official development assistance, the default flow."
 )
@@ -210,8 +213,8 @@ def test_a_rank_over_sectors_of_aid_keeps_the_oda_default_and_the_sector_slot_op
     assert part.status == "definite"
     assert part.operations == [Operation(verb="rank", phrase=phrase, over="category")]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert flow_filter.binding_kind == "value"
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert flow_filter.binding_kind == "set"
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
     sector_filter = _filter_for(part.spec, "crsPurpose")
     assert sector_filter.binding_kind == "unbound"
@@ -297,7 +300,7 @@ def test_a_rank_whose_phrase_opens_no_flow_slot_states_the_oda_default(
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
     assert _filter_for(part.spec, "crsPurpose").binding_kind == "unbound"
     assert _slot_defaulted_warnings(response) == [_ODA_DEFAULT_NOTE]
@@ -371,7 +374,7 @@ def test_a_flow_default_warns_only_where_the_query_names_flows(query, extraction
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
     assert _slot_defaulted_warnings(response) == slot_warnings
     assert _query_qualifier_warnings(response) == []
@@ -407,7 +410,7 @@ def test_a_flow_breakdown_keeps_its_warning_beside_the_default(dropped, departs)
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
     note = f'The requested qualifier "{dropped}" was not applied.'
     assert _slot_defaulted_warnings(response) == [_ODA_DEFAULT_NOTE]
@@ -621,7 +624,8 @@ def test_an_operation_over_another_category_leaves_the_flow_default_in_place():
     assert isinstance(part, NoDataPart)
     assert part.no_data.flagged_match is not None
     flow_filter = _filter_for(part.no_data.flagged_match, "crsTypeOfFlow")
-    assert flow_filter.binding_kind == "value"
+    assert flow_filter.binding_kind == "set"
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
 
 

@@ -38,6 +38,14 @@ reads end at `params.deadline` (45 s) unless its walk ran the full read. The tra
 stream runs to the latest `RegionResult.reads_deadline` among the parts, so it keeps the
 request deadline unless a promote ran the full read.
 
+An identity entry that posts `scope_entries` compiles them over its identity
+(`scope.build.build_part_scope`), resolves the identity they compile to, and carries the
+scope on its definite part (`_compiled_scope`, `_served_scope`). A composite identity, posted
+or compiled, resolves the identity its option was set on
+(`identity_edit.composite_table_identity`) and answers as the composite (`_as_composite`). A
+posted one asking for the latest year reads the year its tables elect, as a compiled one does
+(`scope.provider.elect_latest_window`).
+
 A part whose answer stands on less than a later request may read
 (`RegionResult.leg_degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
 
@@ -54,6 +62,7 @@ import dataclasses
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.named import cut
@@ -82,24 +91,39 @@ from search.engine.entry.params import EntryParams
 from search.engine.envelope import _terminal_events, now_ms
 from search.engine.errors import EngineInputError
 from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
+from search.engine.identity_edit import composite_table_identity
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
-from search.engine.region.result import with_runnable_operations
+from search.engine.region.result import with_composite_answer, with_runnable_operations
 from search.engine.region.sentence_events import answer_events, response_sentence_events
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
+from search.engine.retrieval.bound_values import identity_dataset
+from search.engine.spec_id import identity_spec_id
 from search.models import (
+    BaseIdentity,
     DatasetResubmitInput,
+    EntityGroup,
+    PartScope,
     QueryEcho,
     ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
+    ResubmitIdentityPayload,
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
     Unsupported,
     Warning,
 )
+from search.scope.basis import identity_basis_record
+from search.scope.build import build_part_scope, refusal_error
+from search.scope.compile import Refusal
+from search.scope.composite import assemble_composite
+from search.scope.provider import elect_latest_window
+from search.scope.region import region_groups
+from search.scope.tables import PartFacts, ScopeFacts
+from series_coverage.shared import CoverageSnapshot
 
 
 def full_read_deadline_for(deadline: float) -> float:
@@ -107,6 +131,58 @@ def full_read_deadline_for(deadline: float) -> float:
     request whose own deadline is `deadline`: `resubmit_full_read_timeout_s` from request
     start where `deadline` is `request_timeout_s` from it."""
     return deadline + settings().resubmit_full_read_timeout_s - settings().request_timeout_s
+
+
+def _compiled_scope(
+    entry: ResubmitIdentityEntry, *, index: int, coverage: CoverageSnapshot
+) -> PartScope:
+    """The scope `entry`'s scope entries compile to over its identity, with the basis record
+    the identity reads (`basis.identity_basis_record`). Raises the compile's refusal as a
+    422 error pointed at the scope entry it refuses."""
+    assert entry.scope_entries is not None
+    dataset = identity_dataset(entry.identity)
+    # The comprehension widens the posted role keys to `str`, which `dict()` cannot.
+    groups: dict[str, EntityGroup] = {  # noqa: C416
+        role: group for role, group in (entry.entity_groups or {}).items()
+    }
+    basis = identity_basis_record(entry.identity, get_index(), entry.scope_entries)
+    built = build_part_scope(
+        base=entry.identity,
+        entries=entry.scope_entries,
+        records={} if basis is None else {"measure_basis": basis},
+        facts=ScopeFacts(
+            index=get_index(),
+            coverage=coverage,
+            part=PartFacts(
+                operations=tuple(entry.operations),
+                entity_groups=groups,
+                datasets=() if dataset is None else (dataset,),
+            ),
+        ),
+    )
+    if isinstance(built, Refusal):
+        raise refusal_error(built, pointer=f"/input/entries/{index}/scope_entries/{built.entry}")
+    return built
+
+
+def _as_composite(
+    region: RegionResult,
+    identity: BaseIdentity,
+    *,
+    scope: PartScope | None,
+    facts: ScopeFacts,
+) -> RegionResult:
+    """`region`, resolved for composite `identity`'s table identity, answering the composite
+    (`scope.composite.assemble_composite`) under its own spec_id, which is the compiled
+    scope's when `scope` compiled it."""
+    spec_id = scope.compiled.spec_id if scope is not None else identity_spec_id(identity)
+    spec, _ = assemble_composite(region.spec, identity, spec_id, facts=facts)
+    return with_composite_answer(region, spec)
+
+
+def _served_scope(scope: PartScope | None, region: RegionResult) -> PartScope | None:
+    """`scope`, for a region answering a Spec; None when it answers none."""
+    return scope if region.status == "definite" else None
 
 
 def _rewrite_pointer(exc: EngineInputError, index: int) -> EngineInputError:
@@ -275,7 +351,33 @@ async def handle(
     )
 
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
-        payload = spec_resubmit_input_for_identity(entry)
+        # A composite its components cannot serve refuses before its scope compiles.
+        composite_table_identity(entry.identity, pointer=f"/input/entries/{index}/identity")
+        # The scope build reads coverage and scans families, so it runs off the event loop.
+        scope = (
+            None
+            if entry.scope_entries is None
+            else await asyncio.to_thread(
+                _compiled_scope, entry, index=index, coverage=params.coverage
+            )
+        )
+        facts = ScopeFacts(index=get_index(), coverage=params.coverage)
+        # A composite posted with no scope entries reads as a compiled one does.
+        identity = (
+            elect_latest_window(entry.identity, facts) if scope is None else scope.compiled.identity
+        )
+        read = composite_table_identity(identity, pointer=f"/input/entries/{index}/identity")
+        # A compiled scope may switch the region's reading, so its groups are restated.
+        groups = (
+            entry.entity_groups
+            if scope is None or entry.entity_groups is None
+            else region_groups(entry.entity_groups, read, index=get_index())
+        )
+        payload = (
+            spec_resubmit_input_for_identity(entry)
+            if scope is None and read is identity
+            else ResubmitIdentityPayload(identity=read, entity_groups=groups)
+        )
         key = memo.key(payload, options) if memo is not None and memo.active else None
         stored = memo.lookup(key) if memo is not None and key is not None else None
         if stored is not None:
@@ -297,12 +399,15 @@ async def handle(
             # Stored before any trailing task launches, without its closures.
             if memo is not None and key is not None:
                 memo.store(key, region)
+        if read is not identity and region.status == "definite":
+            region = _as_composite(region, identity, scope=scope, facts=facts)
         return dataclasses.replace(
             region,
             assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),
             variable_text=entry.variable_text,
             earliest_index=index,
             separate=entry.separate,
+            scope_choices=_served_scope(scope, region),
         )
 
     def _memo_hit(stored: RegionResult) -> RegionResult:

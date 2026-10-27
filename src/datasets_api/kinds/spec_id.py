@@ -43,6 +43,7 @@ from datasets_api.adapter import (
     MemberReadBounds,
     build_identity_document,
     check_reproducible,
+    identity_composite,
     member_read_bounds,
     resolve_definition_members,
     to_materialisation_request,
@@ -58,6 +59,8 @@ from datasets_api.admission import (
     xlsx_splits_totals,
 )
 from datasets_api.codes_materialise import (
+    CompositeUnservable,
+    CompositeWindowUnsupported,
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
     MalformedSidecarIdentity,
@@ -129,7 +132,8 @@ def _resolve_members(
     bounds: MemberReadBounds,
     scope: Scope | None = None,
 ) -> tuple[StatVarShape, ...]:
-    """Resolves an identity and attaches `/input/spec_id` to `MemberNotResolvable`.
+    """Resolves an identity and attaches `/input/spec_id` to `MemberNotResolvable` and to the
+    composite refusals (`CompositeUnservable`, `CompositeWindowUnsupported`).
 
     Accepts a registered identity or an unregistered sidecar. A `scope` that supplies `facets`
     replaces the identity's own before resolution, as scope surgery does, and one that supplies
@@ -163,6 +167,9 @@ def _resolve_members(
         )
     except MemberNotResolvable as exc:
         exc.issue_pointer = _POINTER
+        raise
+    except (CompositeUnservable, CompositeWindowUnsupported) as exc:
+        exc.pointer = _POINTER
         raise
     return resolved.shapes
 
@@ -646,7 +653,10 @@ def serve_mint(
         return served
     with phase("estimate"):
         estimate = sync_estimate(
-            requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
+            requests,
+            index=coverage_snapshot.index,
+            member_concurrency=deps.member_concurrency,
+            composite=identity_composite(stored.identity, code_index=definition_deps.code_index),
         )
         refuse_excel_over_estimate(
             estimate,

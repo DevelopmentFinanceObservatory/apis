@@ -3,10 +3,12 @@ blocks into a separate `MeasureIndex` (`parse_measure_axes`)."""
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast, get_args
 
+from code_index.declarations import COMPOSITES
 from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
 from code_index.types import (
     PARTY_CLASSES,
@@ -15,6 +17,7 @@ from code_index.types import (
     BroadReading,
     CodeRow,
     CodeSystemDeclaration,
+    CompositeDeclaration,
     DatasetDeclaration,
     DeclaredDefault,
     HouseDefaultCase,
@@ -36,6 +39,7 @@ from code_index.types import (
     StatVarRow,
     WholeMarker,
     WholeTotalSet,
+    YearPeriod,
     covered_class,
     invalid_when_named_entry,
     marked_datasets,
@@ -51,7 +55,12 @@ class IndexFormatError(ValueError):
     """A `CodeIndex` export has a missing required key or a value of the wrong type."""
 
 
-def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex:
+def parse_index(
+    payload: Mapping,
+    *,
+    source: object = "<document>",
+    composites: Sequence[CompositeDeclaration] = COMPOSITES,
+) -> CodeIndex:
     """Parses and validates a `CodeIndex` export document. `source` names it in errors.
 
     Raises `IndexFormatError` for missing or malformed fields, invalid
@@ -86,8 +95,9 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     whole marker (`PartyRow.whole`) the row cannot carry (`_check_whole_markers`), two whole
     totals covering the same class on one dataset and axis, and a whole total set its members
     contradict (`_check_whole_totals`). A party without
-    a `whole` key is no whole total. A code row without a `definition` carries
-    none, as does a measure value or measure label in `parse_measure_axes`."""
+    a `whole` key is no whole total. The index serves each of `composites` whose component
+    tables it declares, and refuses one `_check_composites` refuses. A code row without a
+    `definition` carries none, as does a measure value or measure label in `parse_measure_axes`."""
     try:
         stamp = _parse_stamp(payload["stamp"])
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
@@ -122,6 +132,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
     _check_source_codes(source_codes, [*statvars, *listed_statvars])
     _check_partly_stated_values(partly_stated_values, [*statvars, *listed_statvars])
     _check_implied_values(implied_values, declarations, codes, [*statvars, *listed_statvars])
+    served_composites = _check_composites(composites, datasets, statvars)
     return CodeIndex(
         stamp=stamp,
         declarations=declarations,
@@ -142,7 +153,87 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
         source_codes=source_codes,
         value_parents=value_parents,
         whole_total_sets=whole_total_sets,
+        composites=served_composites,
     )
+
+
+def _check_composites(
+    composites: Sequence[CompositeDeclaration],
+    datasets: Sequence[DatasetDeclaration],
+    statvars: Sequence[StatVarRow],
+) -> tuple[CompositeDeclaration, ...]:
+    """The `composites` whose component tables `datasets` all declare, each checked.
+
+    Raises `IndexFormatError` for a composite whose provenance a dataset declares, with no
+    component or two of one role, a recipe setting both a measured property and a basis, a
+    stacked component limited to periods, a spliced component with none, or spliced periods
+    that overlap or leave a year between them. A served stacked composite whose component
+    tables' rows declare different role sets is refused too, since the composed frame holds
+    one set of role columns. A composite naming a table `datasets` does not declare is not served."""
+    declared = {dataset.provenance for dataset in datasets}
+    role_sets: dict[str, set[tuple[str, ...]]] = {}
+    for row in statvars:
+        for provenance in row.provenances:
+            role_sets.setdefault(provenance, set()).add(row.observation_properties)
+    served: list[CompositeDeclaration] = []
+    for composite in composites:
+        _check_composite_declaration(composite, declared)
+        tables = {recipe.dataset for recipe in composite.components}
+        if not tables <= declared:
+            continue
+        if composite.kind == "stacked":
+            signatures = {frozenset(role_sets.get(table, set())) for table in sorted(tables)}
+            if len(signatures) > 1:
+                raise IndexFormatError(
+                    f"stacked composite {composite.provenance!r} reads tables {sorted(tables)!r} "
+                    "whose rows declare different role sets"
+                )
+        served.append(composite)
+    return tuple(served)
+
+
+def _check_composite_declaration(composite: CompositeDeclaration, declared: set[str]) -> None:
+    """Refuse a malformed composite declaration (`_check_composites`)."""
+    name = composite.provenance
+    if name in declared:
+        raise IndexFormatError(f"composite {name!r} is also declared as a dataset")
+    roles = [recipe.role for recipe in composite.components]
+    if not roles or len(set(roles)) != len(roles):
+        raise IndexFormatError(f"composite {name!r} declares components {roles!r}")
+    for recipe in composite.components:
+        if recipe.measured_property is not None and recipe.basis is not None:
+            raise IndexFormatError(
+                f"composite {name!r} component {recipe.role!r} sets both a measured property "
+                "and a basis"
+            )
+        if (recipe.periods is None) != (composite.kind == "stacked"):
+            raise IndexFormatError(
+                f"composite {name!r} is {composite.kind} and its component {recipe.role!r} "
+                f"declares periods {recipe.periods!r}"
+            )
+        # A spliced component's zeros would fill the other components' years, which it
+        # does not cover.
+        if recipe.zero_absent and composite.kind == "spliced":
+            raise IndexFormatError(
+                f"spliced composite {name!r} component {recipe.role!r} reads absence as zero"
+            )
+    if composite.kind == "spliced":
+        _check_spliced_periods(composite)
+
+
+def _check_spliced_periods(composite: CompositeDeclaration) -> None:
+    """Refuse spliced periods that overlap or leave a year out between them. Ordered by first
+    year, each period must begin the year after the one before it ends."""
+    periods = sorted(
+        (cast("YearPeriod", recipe.periods) for recipe in composite.components),
+        key=lambda period: -1 if period.first is None else period.first,
+    )
+    for earlier, later in itertools.pairwise(periods):
+        if earlier.last is None or later.first is None or later.first != earlier.last + 1:
+            raise IndexFormatError(
+                f"spliced composite {composite.provenance!r} declares periods {earlier!r} and "
+                f"{later!r}, which overlap or leave a year out"
+            )
 
 
 def _parse_shape_slot_default(row: Mapping) -> ShapeSlotDefault:

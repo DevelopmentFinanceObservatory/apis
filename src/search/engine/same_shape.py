@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         Entity,
         FacetOptions,
         GraphRef,
+        PartScope,
         ResolvedFacet,
         ResolvedQualifier,
         RoleAxis,
@@ -65,6 +66,10 @@ if TYPE_CHECKING:
         Spec,
         Warning,
     )
+
+ScopeReader = Callable[["RegionResult", "Sequence[RegionResult]"], "PartScope | None"]
+"""Build the scope of a merged region from it and the group it folds
+(`region.pipeline.merged_scope_choices` bound to the request's coverage snapshot)."""
 
 FacetOptionsReader = Callable[[FacetProbe], "tuple[list[FacetOptions], Warning | None]"]
 """Build facet options over a probe, with a warning when the read fails
@@ -577,6 +582,7 @@ def collapse_same_shape(
     *,
     set_ref_for: Callable[[list[str]], GraphRef | None] | None = None,
     facet_options_for: FacetOptionsReader | None = None,
+    scope_for: ScopeReader | None = None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
     """Merge definite regions with the same fold key (`fold_key`) when their identities
     align.
@@ -603,7 +609,8 @@ def collapse_same_shape(
 
     Merges rebuild the spec id and slot filters, union slot and entity options, judge
     facet options over the merged spec (`_merge_facet_options`), preserve shared
-    identity facets, and set ``earliest_index`` to the group's minimum. Returns
+    identity facets, and set ``earliest_index`` to the group's minimum. A merged region
+    states the scope ``scope_for`` builds over the merged identity, none without it. Returns
     effective regions and residual ``(variable_text, earliest_index)`` pairs;
     ``variable_text`` may be ``None`` for dataset-resubmit entries.
     """
@@ -617,7 +624,9 @@ def collapse_same_shape(
     effective: list[RegionResult] = []
     residual_texts: list[tuple[str | None, int]] = []
     for group in groups.values():
-        group_effective, group_residual = _collapse_group(group, set_ref_for, facet_options_for)
+        group_effective, group_residual = _collapse_group(
+            group, set_ref_for, facet_options_for, scope_for
+        )
         effective.extend(group_effective)
         residual_texts.extend(group_residual)
     return effective, residual_texts
@@ -631,8 +640,10 @@ def _collapse_group(
     group: list[RegionResult],
     set_ref_for: Callable[[list[str]], GraphRef | None] | None,
     facet_options_for: FacetOptionsReader | None,
+    scope_for: ScopeReader | None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
-    """Merge one group; keep the first member and residualise the rest on refusal."""
+    """Merge one group; keep the first member and residualise the rest on refusal. The
+    merged region states the scope `scope_for` builds over its identity, none without it."""
     if len(group) == 1:
         return [group[0]], []
     try:
@@ -640,7 +651,8 @@ def _collapse_group(
     except _RefuseMerge:
         residual = [(r.variable_text, r.earliest_index) for r in group[1:]]
         return [group[0]], residual
-    return [merged_region], []
+    scope = scope_for(merged_region, group) if scope_for is not None else None
+    return [dataclasses.replace(merged_region, scope_choices=scope)], []
 
 
 def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:
@@ -930,14 +942,22 @@ def _merge_coverage(group: list[RegionResult], base_spec: Spec):
 
 def _merge_slot_filter_properties(
     group: list[RegionResult],
-) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-    """Union slot-filter properties by provenance across the group.
+) -> tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]:
+    """Union slot-filter properties by provenance across the group: the text-recognised,
+    the grouped, the measure-elected and the defaulted.
 
     Query-recognized properties outrank measure elections, which outrank
     defaults. Subtraction keeps each property in one set, as ``build_spec``
-    requires.
+    requires. A property a member's sector concept bound to its declared grouping is
+    grouped on the merge, and text-recognised too, as ``build_spec`` requires.
     """
-    text_recognized = frozenset(
+    grouped = frozenset(
+        sf.key.property.ref
+        for r in group
+        for sf in r.spec.resolved.trace.slot_filters
+        if sf.provenance == "declared_grouping" and sf.key.property is not None
+    )
+    text_recognized = grouped | frozenset(
         sf.key.property.ref
         for r in group
         for sf in r.spec.resolved.trace.slot_filters
@@ -962,7 +982,7 @@ def _merge_slot_filter_properties(
         - text_recognized
         - measure_elected
     )
-    return text_recognized, measure_elected, defaulted
+    return text_recognized, grouped, measure_elected, defaulted
 
 
 def _merge_measure_partition(
@@ -1154,7 +1174,7 @@ def _merge_group(
     merged_shape = _merge_shape(group, base_spec, is_where)
     inapplicable_slots, unresolved_slots = _merge_slot_flags(group, merged_slots)
     merged_coverage = _merge_coverage(group, base_spec)
-    text_recognized, measure_elected, defaulted = _merge_slot_filter_properties(group)
+    text_recognized, grouped, measure_elected, defaulted = _merge_slot_filter_properties(group)
     measure_partition, measure_siblings = _merge_measure_partition(group)
     open_axis_facts = _union_open_axis_facts(group)
     role_axis_facts, entity_options = _union_role_axis_facts(group)
@@ -1191,6 +1211,7 @@ def _merge_group(
         facet_options=[],
         equivalent_readings=_union_equivalent_readings(group),
         text_recognized_properties=text_recognized,
+        grouped_properties=grouped,
         query_qualifiers=_union_query_qualifiers(group),
         # Every member comes from one leg, which applied one default reading.
         default_reading=base_spec.resolved.trace.default_reading,

@@ -144,6 +144,7 @@ from search.models import (
     UnitAlternative,
     Warning,
 )
+from search.scope.state import ScopeState
 from series_coverage.shared import CoverageSnapshot
 
 if TYPE_CHECKING:
@@ -733,6 +734,10 @@ class ResolveState:
 
     # --- (b) evolving pipeline state ------------------------------------------
     timing: dict[str, int]
+    # The part's explicit and carried scope entries, which binders read on their axis, and
+    # the record of each axis they settle, from which the pass's definite answer states its
+    # scope choices (`pipeline._with_scope_choices`).
+    scope_selection: ScopeState = field(default_factory=ScopeState)
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]
     # The departure facts raised beside warnings, each under its warning's key
@@ -1017,6 +1022,10 @@ class ResolveState:
     # Properties whose admitted qualifier matches bound the slot
     # (`phase_rank_bind._force_qualifier_bindings`); `build_spec` marks their provenance.
     text_recognized_properties: frozenset[str] = frozenset()
+    # The text-recognised properties a sector concept the text named bound to its declared
+    # grouping (`phase_election._settle_sector`); `build_spec` marks their provenance
+    # `declared_grouping`. A subset of `text_recognized_properties`, since the text bound them.
+    grouped_properties: frozenset[str] = frozenset()
     # Measure properties inserted by family election; `build_spec` marks their provenance.
     measure_elected_properties: frozenset[str] = frozenset()
     # Properties defaulted by `apply_declared_defaults`; `build_spec` marks their provenance.
@@ -1242,7 +1251,7 @@ class ResolveState:
 
     def forget_bound(self, properties: AbstractSet[str]) -> None:
         """Drop what the engine derived from binding `properties`, once they are unbound:
-        their place among the text-recognised, defaulted and measure-elected properties,
+        their place among the text-recognised, grouped, defaulted and measure-elected properties,
         each fired default's warnings and the phrases it answers (`slot_defaults`), and,
         when a measure-elected property goes, the measure election's partition and dropped
         axes, which describe a family the bindings no longer select."""
@@ -1250,6 +1259,7 @@ class ResolveState:
             self.measure_elected_partition = None
             self.measure_dropped_axes = ()
         self.text_recognized_properties -= properties
+        self.grouped_properties -= properties
         self.measure_elected_properties -= properties
         self.defaulted_properties -= properties
         stale = [self.slot_defaults.pop(prop) for prop in properties if prop in self.slot_defaults]

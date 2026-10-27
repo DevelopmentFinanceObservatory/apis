@@ -342,6 +342,37 @@ class CurrencyRoleUndeclared(Refusal):
         )
 
 
+class CompositeUnservable(Refusal):
+    """A composite identity whose components cannot be served
+    (`code_index.composites.CompositeNotServable`), because it binds a slot a component's rows
+    do not declare, pins a StatVar, names its composite in a provenance set, or has a
+    component that resolves off the code index or from another table than its recipe names.
+    Wire mapping:
+    `request_invalid`, 400. `identity_pointer` names the identity member at fault, relative to
+    the identity, and a door that knows where the identity sits sets `pointer`."""
+
+    code = "request_invalid"
+
+    def __init__(self, message: str, *, identity_pointer: str | None = None) -> None:
+        self.identity_pointer = identity_pointer
+        super().__init__(message)
+
+
+class CompositeWindowUnsupported(Refusal):
+    """A composite identity with a `latest` window. Its components could elect different
+    latest years, so the composite serves a range or every year. Wire mapping:
+    `request_invalid`, 400."""
+
+    code = "request_invalid"
+
+    def __init__(self, *, composite: str) -> None:
+        self.composite = composite
+        super().__init__(
+            f"composite {composite!r} serves a range of years or every year; a latest window "
+            "could elect a different year for each of its components"
+        )
+
+
 class RoleSignatureIncompatible(Refusal):
     """Described-arm members disagree on `declared_roles`.
 

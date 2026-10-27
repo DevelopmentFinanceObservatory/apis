@@ -109,6 +109,7 @@ from materialise.series_conversion import (
     decode_series_conversion_entries,
     encode_series_conversions,
 )
+from materialise.trace import ManifestTrace
 from materialise.window import Coverage
 from origin_catalogue import current_catalogue
 from series_coverage.coverage_types import YearCount
@@ -599,7 +600,8 @@ def assemble_manifest(
 
     Uses the caller's `CodeIndex` for rendering and the trace stamp. `coverage_stamp` is
     admission-time lineage, excluded from `content_version`. `None` leaves it unset.
-    `prepared_at` is the version's first-mint instant.
+    `prepared_at` is the version's first-mint instant. `provenance_refs` are the sources the
+    citation names (`source_refs_of`): a composite's component tables.
 
     `warnings` holds the materialisation's warnings, then `extra_warnings`. `diagnostics` holds
     the citation's (`citation_diagnostics`), then a stale origin catalogue's. A choice of source,
@@ -654,7 +656,7 @@ def assemble_manifest(
             identity=stored.identity,
             capabilities=capabilities,
             parties=code_index.parties,
-            datasets=provenance_refs_of(materialisation.trace.facets),
+            datasets=source_refs_of(materialisation.trace),
         ),
         series_coverage_stamp=coverage_stamp,
     )
@@ -702,6 +704,30 @@ def provenance_refs_of(facets: Iterable[Mapping[str, object]]) -> list[str]:
     materialisation dispatched, and none for one whose facet probe was empty
     (`MaterialisationResult.probe_empty`), which selects no facet."""
     return [cast(str, facet["ref"]) for facet in facets if facet["axis"] == "provenance"]
+
+
+def source_refs_of(trace: ManifestTrace | Mapping[str, object]) -> list[str]:
+    """The provenance refs a version's figures come from, in first-seen order: for a composite
+    each component's (`trace.components`), whose tables its citation names, and otherwise the
+    one its rows carry (`provenance_refs_of`). A live `ManifestTrace` or a stored or wire
+    trace mapping. The citation cites these, and the parties of their datasets decide which
+    rows are totals; `provenance_refs_of` gives what the rows carry, which the render's source
+    guards read."""
+    if isinstance(trace, ManifestTrace):
+        components: Sequence[Mapping[str, object]] = trace.components
+        facets: Iterable[Mapping[str, object]] = trace.facets
+    else:
+        components = cast("Sequence[Mapping[str, object]]", trace.get("components") or ())
+        facets = cast("Iterable[Mapping[str, object]]", trace.get("facets", ()))
+    if components:
+        return list(
+            dict.fromkeys(
+                cast(str, component["provenance"])
+                for component in components
+                if component.get("provenance") is not None
+            )
+        )
+    return provenance_refs_of(facets)
 
 
 def stored_manifest_facts(stored: StoredVersion) -> ManifestFacts:

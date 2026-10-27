@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 
+from code_index.composites import DECLARED_COMPOSITES
 from code_index.members import pinned_refs
 from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
@@ -70,6 +71,7 @@ from search.models import (
     TimeWindow,
     ValueKind,
 )
+from search.scope.region import without_residuals
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +160,12 @@ def pinned_provenance_scope(
     """Bind the request's catalogue narrowed to the posted `facets.provenance` refs
     (`origin_catalogue.scoped_reads`), so a pinned source is admitted before DFO precedence
     and a base pin serves at a place where a DFO table also holds data. Binds nothing when
-    provenance is unbound."""
+    provenance is unbound, or binds a declared composite, whose reads are those of the
+    identity its option was set on (`code_index.composites.table_identity`), which pins no
+    provenance."""
+    binding = (facets or {}).get("provenance")
+    if isinstance(binding, IdentityBindingValue) and binding.ref in DECLARED_COMPOSITES:
+        return scoped_reads(None)
     return scoped_reads(frozenset(_source_dcids_from_facets_provenance(facets)) or None)
 
 
@@ -499,6 +506,9 @@ def resubmit_named_groups(
             )
             continue
         role_entities = frozenset(entities[role])
+        # A summed region binds its residual buckets beside its members; the group stands
+        # for the members (`scope.region.is_residual`).
+        role_members = frozenset(without_residuals(role_entities, get_index())) or role_entities
         total = _bound_total(group, role, role_entities)
         if group.total is not None and total is None:
             logger.info(
@@ -521,7 +531,7 @@ def resubmit_named_groups(
                     )
                 )
             elif registry_group is not None:
-                if restored := _registry_named_group(group, registry_group, role, role_entities):
+                if restored := _registry_named_group(group, registry_group, role, role_members):
                     named.append(restored)
             else:
                 logger.info(
@@ -530,7 +540,7 @@ def resubmit_named_groups(
                     role,
                 )
             continue
-        kept.append((group.ref, group, role_entities, total))
+        kept.append((group.ref, group, role_entities if total is not None else role_members, total))
     if not kept:
         return tuple(named)
     dcids = sorted({dcid for dcid, _, _, _ in kept})

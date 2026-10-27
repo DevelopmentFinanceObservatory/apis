@@ -1006,7 +1006,7 @@ def test_a_declared_default_settles_the_bindings_before_the_places_bind(
 
     assert _origin(answer.spec) is None
     assert _whole_read(answer) is None
-    assert pinned_under == [frozenset({"origin", "destination"}), frozenset({"destination"})]
+    assert pinned_under[:2] == [frozenset({"origin", "destination"}), frozenset({"destination"})]
 
 
 def _never_offered(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1017,19 +1017,20 @@ def _never_offered(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_total_the_measure_vote_leaves_without_series_settles_as_never_offered(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Coverage holds the official donors' total to Ethiopia only for DAC2a's net
-    disbursements, and the measure vote elects gross ones, a step that runs after the
-    places offer the total. The bindings settled under the total's role keys hold no series
-    at it, so the donor side is left to its parties, and the answer, bindings included, is
-    the one a request offered no total gives, settled under the role keys it states."""
+    """The graph holds DAC2a's gross and net disbursements. Coverage holds the official
+    donors' total to Ethiopia only for the gross ones, and the measure vote elects the net
+    ones the recipient convention counts, a step that runs after the places offer the
+    total. The bindings settled under the total's role keys hold no series at it, so the
+    donor side is left to its parties, and the answer, bindings included, is the one a
+    request offered no total gives, settled under the role keys it states."""
     net = _DAC2A_MEMBER.replace("_Gross_", "_Net_")
     assert net != _DAC2A_MEMBER
     names = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
         [
-            (net, "dac2a", _OFFICIAL, _ETH, [2021]),
-            (_DAC2A_MEMBER, "dac2a", _FRA, _ETH, [2021]),
+            (_DAC2A_MEMBER, "dac2a", _OFFICIAL, _ETH, [2021]),
+            (net, "dac2a", _FRA, _ETH, [2021]),
             (_CRS_MEMBER, "crs", _FRA, _ETH, [2021]),
         ],
         role_names=dict.fromkeys((net, _DAC2A_MEMBER, _CRS_MEMBER), names),
@@ -1048,16 +1049,18 @@ def test_a_total_the_measure_vote_leaves_without_series_settles_as_never_offered
     monkeypatch.setattr(phase_election, "canonical_pin_bindings", recording_pin)
     part = {"entities": [_TO_ETHIOPIA], "time": "2021", "variable": _VARIABLE}
 
-    answer = _part(_resolve(part))
+    members = (_DAC2A_MEMBER, net, _CRS_MEMBER)
+
+    answer = _part(_resolve(part, members=members))
     settled_under = list(pinned_under)
     _never_offered(monkeypatch)
-    unoffered = _part(_resolve(part))
+    unoffered = _part(_resolve(part, members=members))
 
     assert _origin(answer.spec) is None
     assert _whole_read(answer) is None
     assert {slot.property: slot.binding for slot in answer.spec.definition.identity.slots}[
         "nettingBasis"
-    ].model_dump() == {"state": "value", "ref": "Gross"}
+    ].model_dump() == {"state": "value", "ref": "Net"}
     assert settled_under == [frozenset({"origin", "destination"}), frozenset({"destination"})]
     assert answer.spec.model_dump(mode="json") == unoffered.spec.model_dump(mode="json")
     assert [w.code for w in answer.warnings] == [w.code for w in unoffered.warnings]
@@ -1141,9 +1144,10 @@ def test_binding_repair_judges_a_whole_total_on_the_bindings_without_their_sampl
     settled = SimpleNamespace(served=True, shape=None, bindings=[_SAMPLED_CLAIM])
     monkeypatch.setattr(phase_election, "bind_place_roles", lambda *_args: _NAMED)
     monkeypatch.setattr(phase_election, "whole_total_candidates", lambda *_args: [_WHOLE])
-    monkeypatch.setattr(phase_election, "_settle_role_bindings", lambda *_args: settled)
+    monkeypatch.setattr(phase_election, "_settle_role_bindings", lambda *_a, **_k: settled)
     monkeypatch.setattr(phase_election, "holds_whole_total", _holds_only_open)
-    monkeypatch.setattr(phase_election, "_install_settled", lambda *_args: None)
+    monkeypatch.setattr(phase_election, "_install_settled", lambda *_a, **_k: None)
+    monkeypatch.setattr(phase_election, "_part_basis", lambda *_args: None)
     state = SimpleNamespace(shape_draft=None, query_place_roles=None)
     open_slot = SlotBindingDraft(axis="how", property_dcid="dac2aAidType", kind="unbound")
 

@@ -526,6 +526,11 @@ def _reshape_groupby_collapse(
     returns any unconsumed decode plan. A grammar frame requires `subject_id` unless one member
     contributed and `kept` is empty."""
     refuse_provenance_disagreement(provenance_refs=provenance_refs)
+    # `refuse_provenance_disagreement` leaves one provenance at most: the dataset the frame
+    # was served from, which is the elected one for an index-resolved family, or the
+    # composite its components were composed into.
+    dataset = next(iter(set(provenance_refs)), None)
+    composite = code_index.composite(dataset) if dataset is not None else None
     decode_lookup = decode_plan.lookup if decode_plan is not None else {}
     if frame_chunks is None:
         if decode_plan is not None:
@@ -539,7 +544,10 @@ def _reshape_groupby_collapse(
             code_systems=decoded_code_systems,
         )
         refuse_stat_var_collision(
-            current, index=code_index, decoded_code_systems=decoded_code_systems
+            current,
+            index=code_index,
+            decoded_code_systems=decoded_code_systems,
+            composite=composite,
         )
         # `contributing_dcids` counts members with rows. Resolved zero-row members stay out.
         contributors = contributing_dcids(current)
@@ -551,9 +559,6 @@ def _reshape_groupby_collapse(
             refs=decode_lookup.keys(),
             code_systems=decoded_code_systems,
         )
-    # `refuse_provenance_disagreement` leaves one provenance at most: the dataset the frame
-    # was served from, which is the elected one for an index-resolved family.
-    dataset = next(iter(set(provenance_refs)), None)
     missing_declared_as_zero = absent_member_reads_zero(code_index, dataset)
     summable_columns = frozenset(
         f"{_STAT_VAR_COLUMN}_{code_system}"
@@ -607,7 +612,10 @@ def _reshape_groupby_collapse(
                 rows=tuple((dcid,) for dcid in sorted(streaming_contributors)),
             )
             refuse_stat_var_collision(
-                distinct_table, index=code_index, decoded_code_systems=decoded_code_systems
+                distinct_table,
+                index=code_index,
+                decoded_code_systems=decoded_code_systems,
+                composite=composite,
             )
             if outcome.violation is not None:
                 raise outcome.violation
@@ -2660,6 +2668,7 @@ def render_and_store(
     deadline: float | None = None,
     base_frame_sha256: str | None = None,
     frame_mode: FrameMode = FrameMode.RAW,
+    citation_refs: Sequence[str] | None = None,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings.
     `frame_chunks` returns a fresh pass over the materialised frame's chunks in order. Long
@@ -2684,7 +2693,11 @@ def render_and_store(
     `code_index` controls decoding, and the artifact carries its `enrichment_digest` as
     `enrichment_stamp` when it holds party-kind cells (`versions.enrichment_stamp`, over
     the role columns of the frame it renders). `resolved_stat_var_refs` and `provenance_refs`
-    support groupby population and source checks. A collapse frame mints its own version,
+    support groupby population and source checks: `provenance_refs` are the provenances the
+    frame's rows carry. `citation_refs` are the sources the bundle names and the datasets whose
+    totals the file splits out, `provenance_refs` when `None`. A composite's rows carry its own
+    provenance and its citation names its component tables
+    (`datasets_api.manifest.source_refs_of`). A collapse frame mints its own version,
     which its artifact uses; every other artifact uses `content_version`. `serve` writes
     version records.
 
@@ -2711,6 +2724,7 @@ def render_and_store(
     keeps its label.
     """
     check_options_supported(options, code_index=code_index)
+    cited_refs = list(citation_refs) if citation_refs is not None else provenance_refs
     subject_id = str(spec.get("spec_id"))
     identity = spec.get("identity")
     # A cut reads `Frame` chunks, which `datasets_api.current` and `datasets_api.serve` pass.
@@ -2755,7 +2769,7 @@ def render_and_store(
         identity=identity,
         entity_columns=entity_columns,
         parties=enrichment.parties,
-        datasets=provenance_refs,
+        datasets=cited_refs,
     )
     with phase("render"):
         rendering = Rendering(column_types=_COLUMN_TYPES)
@@ -2804,7 +2818,7 @@ def render_and_store(
         else:
             summed_ref = None
 
-    sources = _sources(provenance_refs, citations)
+    sources = _sources(cited_refs, citations)
     with phase("store_rendering"):
         try:
             with artifact_store.open_put(tier=Tier.working) as sink:

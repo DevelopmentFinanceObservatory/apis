@@ -115,6 +115,7 @@ from search.models import (
     TraceDefaultReading,
     served_date_range,
 )
+from search.scope.region import without_residuals
 from unit_words.price_basis import price_basis_option_label
 
 if TYPE_CHECKING:
@@ -444,9 +445,12 @@ def _dcids_by_role(entities: Iterable[Entity]) -> dict[str, set[str]]:
 
 
 def _role_group(groups: Sequence[NamedGroup], dcids: set[str]) -> NamedGroup | None:
-    """The group whose members or total a role's dcids equal. Of groups with the same
-    members, one with a node wins over one without, then the first by dcid, then label."""
-    matches = [g for g in groups if g.member_dcids == dcids or {g.total} == dcids]
+    """The group whose members or total a role's dcids equal, the members with or without
+    the residual buckets a summed region binds beside them (`scope.region.is_residual`).
+    Of groups with the same members, one with a node wins over one without, then the first
+    by dcid, then label."""
+    members = set(without_residuals(dcids, get_index())) or dcids
+    matches = [g for g in groups if g.member_dcids in (dcids, members) or {g.total} == dcids]
     if not matches:
         return None
     return min(matches, key=lambda g: (g.dcid is None, g.dcid or "", g.label))
@@ -770,8 +774,9 @@ def _measure_alternatives(
 
     ``partition`` is None when no single measure partition describes the served rows,
     and the result is then ``(None, NO_MEASURE_LABEL)``. Siblings without authored labels are
-    omitted. A sibling that differs only in price basis is published with axis "unit"
-    and labelled by its prices; the rest are the measure menu, axis "what" (see
+    omitted. Measures of another basis stay: a part whose scope choices offer those bases
+    leaves them out when the choices attach (`assemble.with_scope_choices`). A sibling that
+    differs only in price basis is published with axis "unit" and labelled by its prices; the rest are the measure menu, axis "what" (see
     ``_menu_siblings``). The main label is `measure_label_for_partition`'s. Each
     alternative carries its own identity definition so resubmission can recover that
     measure family. ``served_rows`` counts the rows a resubmit of a sibling's identity
@@ -962,9 +967,10 @@ def _compose_wire_shape_label(
 
     An authored measure label supplies the head. Single bound values and constant
     open-axis values add qualifiers unless the label already covers their axes.
-    Without a measure label, qualifiers form the
-    whole label. Varying axes and set bindings are omitted, and duplicate label text
-    is removed case-insensitively.
+    A set binding adds the label of the group it was drawn from, else its members' labels
+    joined ("official development assistance and private sector instruments" for CRS
+    flows 10 and 60). Without a measure label, qualifiers form the whole label. Varying
+    axes are omitted, and duplicate label text is removed case-insensitively.
     """
     covered = set(measure_label_axes)
     qualifiers: list[str] = []
@@ -984,6 +990,9 @@ def _compose_wire_shape_label(
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
             covered.add(prop.ref)
             _add_qualifier(binding.value.ref.label)
+        elif isinstance(binding, BindingSet) and (label := _set_label(binding)) is not None:
+            covered.add(prop.ref)
+            _add_qualifier(label)
     for fact in open_axis_facts or ():
         if fact.property in covered or fact.varies or fact.value is None:
             continue
@@ -997,6 +1006,17 @@ def _compose_wire_shape_label(
     if measure_label.endswith(")"):
         return f"{measure_label[:-1]}, {joined})"
     return f"{measure_label} ({joined})"
+
+
+def _set_label(binding: BindingSet) -> str | None:
+    """The words naming `binding`'s members: the label of the group it was drawn from, else
+    each member's label joined into one phrase, None when a member has no reference."""
+    if binding.set_ref is not None:
+        return binding.set_ref.label
+    labels = [value.ref.label for value in binding.values if value.ref is not None]
+    if len(labels) < len(binding.values):
+        return None
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
 def _check_provenance_disjoint(
@@ -1062,10 +1082,12 @@ def _build_slot_filters(
     slots: list[Slot],
     *,
     text_recognized_properties: frozenset[str],
+    grouped_properties: frozenset[str],
     measure_elected_properties: frozenset[str],
     defaulted_properties: frozenset[str],
 ) -> list[ResolvedFilter]:
-    """Build slot filters with refs and provenance."""
+    """Build slot filters with refs and provenance. A grouped property is text-recognised
+    too, and reads `declared_grouping`."""
     slot_filters: list[ResolvedFilter] = []
     for slot in slots:
         binding = slot.binding
@@ -1078,7 +1100,9 @@ def _build_slot_filters(
         kind: BindingKind = binding.kind  # type: ignore[assignment]
         prop_dcid = slot.key.property.ref if slot.key.property is not None else None
         provenance: BindingProvenance
-        if prop_dcid is not None and prop_dcid in text_recognized_properties:
+        if prop_dcid is not None and prop_dcid in grouped_properties:
+            provenance = "declared_grouping"
+        elif prop_dcid is not None and prop_dcid in text_recognized_properties:
             provenance = "text_recognized"
         elif prop_dcid is not None and prop_dcid in measure_elected_properties:
             provenance = "measure_elected"
@@ -1121,6 +1145,7 @@ def build_spec(
     equivalent_readings: list[Spec] | None = None,
     scope: ResolvedScope | None = None,
     text_recognized_properties: frozenset[str] = frozenset(),
+    grouped_properties: frozenset[str] = frozenset(),
     query_qualifiers: list[ResolvedQualifier] | None = None,
     default_reading: TraceDefaultReading | None = None,
     stated_form: QuantityForm | None = None,
@@ -1170,6 +1195,9 @@ def build_spec(
             ``ResolvedSpec`` and excluded from identity.
         text_recognized_properties, measure_elected_properties, defaulted_properties:
             Slot provenance sources. They must be disjoint.
+        grouped_properties: The text-recognised properties a sector concept bound to its
+            declared grouping, whose slots read ``declared_grouping``. A subset of
+            ``text_recognized_properties``.
         measure_partition and measure_siblings: Served partition and alternatives for
             the response label.
         measure_served_rows: Counts the rows a resubmit of each alternative measure would
@@ -1204,6 +1232,11 @@ def build_spec(
     _check_provenance_disjoint(
         text_recognized_properties, measure_elected_properties, defaulted_properties
     )
+    if not grouped_properties <= text_recognized_properties:
+        raise ValueError(
+            f"grouped_properties {sorted(grouped_properties - text_recognized_properties)!r} "
+            "are not text-recognised; a grouping binds only what the text named"
+        )
 
     if pin_served_provenance and (served := served_provenances(plan)):
         slots = with_served_provenance(slots, served)
@@ -1267,6 +1300,7 @@ def build_spec(
     slot_filters = _build_slot_filters(
         slots,
         text_recognized_properties=text_recognized_properties,
+        grouped_properties=grouped_properties,
         measure_elected_properties=measure_elected_properties,
         defaulted_properties=defaulted_properties,
     )

@@ -1727,6 +1727,34 @@ class CoverageIndex:
             requests += len(chunks)
         return Estimate(rows=rows, requests=requests)
 
+    def cell_count(
+        self,
+        *,
+        variables: Sequence[str],
+        bound: BoundRoles,
+        first_year: int | None = None,
+        last_year: int | None = None,
+    ) -> int:
+        """How many distinct cells, a donor and recipient pair and a year, any series of
+        `variables` under `bound` holds data in inside `[first_year, last_year]`. A read of
+        `variables` serves rows in no other cell, so this bounds the cells a frame composed
+        from them holds (`datasets_api.admission.sync_estimate`)."""
+        rows = self._filtered(
+            variables=variables, bound=bound, first_year=first_year, last_year=last_year
+        )
+        if rows.num_rows == 0:
+            return 0
+        rows = rows.combine_chunks()
+        width = len(cast("pa.DictionaryArray", rows[RECIPIENT_COLUMN].chunk(0)).dictionary)
+        keys = _codes(rows[DONOR_COLUMN]).astype(np.int64) * width + _codes(
+            rows[RECIPIENT_COLUMN]
+        ).astype(np.int64)
+        order = np.argsort(keys, kind="stable")
+        sorted_keys = keys[order]
+        starts = np.flatnonzero(np.r_[True, sorted_keys[1:] != sorted_keys[:-1]])
+        masks = np.bitwise_or.reduceat(_mask_matrix(rows, self._horizon)[order], starts)
+        return int(popcount64(masks).sum())
+
     def exhaustive_single_axis_filter(
         self,
         *,

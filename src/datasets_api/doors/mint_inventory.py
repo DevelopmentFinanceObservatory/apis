@@ -15,6 +15,8 @@ from artifact_store import (
 )
 from datasets_api.codes_materialise import (
     CapabilityUnavailable,
+    CompositeUnservable,
+    CompositeWindowUnsupported,
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
     ExcludedByRegistry,
@@ -91,6 +93,8 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     InvalidRoleRef,
     RoleIncompatible,
     CurrencyRoleUndeclared,
+    CompositeUnservable,
+    CompositeWindowUnsupported,
     WindowOverCap,
     EntityKindRefused,
     RecipeNotDeclaredError,
@@ -159,6 +163,8 @@ MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     InvalidRoleRef(stat_var="dcid:exemplar", role="exemplar"),
     RoleIncompatible(stat_var="dcid:exemplar", role="exemplar"),
     CurrencyRoleUndeclared(stat_var="dcid:exemplar", role="exemplar", declared_roles=("exemplar",)),
+    CompositeUnservable("exemplar", identity_pointer="/slots/0"),
+    CompositeWindowUnsupported(composite="provenance/exemplar"),
     WindowOverCap(
         pointer="/input/scope/window",
         start_year=1960,

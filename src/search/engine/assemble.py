@@ -48,6 +48,7 @@ from search.models import (
     Operation,
     Ordering,
     ParsedPart,
+    PartScope,
     ResolvedQualifier,
     RoleAxis,
     Timing,
@@ -74,6 +75,8 @@ from search.render.no_data import (
 )
 from search.render.plan import render_sentence_plan
 from search.render.tokens import plan_words, sentence_from_plan
+from search.scope.basis import offers_basis_of
+from search.scope.build import served_scope
 from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
@@ -209,6 +212,33 @@ def with_skills(spec: Spec, *, index: SkillsIndex) -> Spec:
                 }
             )
             for twin in twins
+        ]
+    return spec.model_copy(update={"resolved": spec.resolved.model_copy(update=update)})
+
+
+def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
+    """Attach how the part was counted under ``resolved.scope_choices``, its compiled record
+    restated from ``spec``'s own definition: the identity the part serves, which the resolve
+    may have canonicalised after the scope compiled. A compiled record of ``spec`` itself
+    stands as it is, since a composite's states the years each component serves. An
+    alternative measure on a basis the measure-basis choice offers
+    (`scope.basis.offers_basis_of`) leaves ``resolved.alternative_measures``, since the choice
+    is the part's one route to it. Update ``resolved`` because ``model_copy(update=...)``
+    skips validation and the field belongs to it."""
+    served = (
+        scope
+        if scope.compiled.spec_id == spec.spec_id
+        else scope.model_copy(
+            update={"compiled": served_scope(spec.spec_id, spec.definition.identity)}
+        )
+    )
+    update: dict[str, object] = {"scope_choices": served}
+    alternatives = spec.resolved.alternative_measures
+    if alternatives is not None:
+        update["alternative_measures"] = [
+            alternative
+            for alternative in alternatives
+            if not offers_basis_of(served, alternative.definition.identity)
         ]
     return spec.model_copy(update={"resolved": spec.resolved.model_copy(update=update)})
 
@@ -422,6 +452,7 @@ def build_definite_part(
     asked_axes: frozenset[RoleAxis] = frozenset(),
     own_spec: Spec | None = None,
     members_in_words: bool = False,
+    scope_choices: PartScope | None = None,
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -441,11 +472,14 @@ def build_definite_part(
     open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
     ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
     ``members_in_words`` is whether the part's door asks for a flow side's members in the
-    question's words (`RegionResult.members_in_words`).
+    question's words (`RegionResult.members_in_words`). ``scope_choices`` is how the part
+    was counted (`RegionResult.scope_choices`), attached to ``spec`` when given.
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
     spec = with_sentence(spec)
+    if scope_choices is not None:
+        spec = with_scope_choices(spec, scope_choices)
     if include_skills and skills_index is not None:
         spec = with_skills(spec, index=skills_index)
     return DefinitePart(

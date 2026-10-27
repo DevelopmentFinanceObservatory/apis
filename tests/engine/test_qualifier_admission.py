@@ -71,6 +71,7 @@ from search.heading.departure_fact import DepartureFact
 from search.models import SourceMention
 from search.render.plan import render_sentence
 from series_coverage.schema import RoleNames
+from tests.engine import test_two_ended_menu as two_ended_menu
 from tests.engine._binders import elected_reply
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
@@ -689,6 +690,15 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
     assert [match.code_dcid for match in promoted] == ["CRSTypeOfFlow10"]
 
 
+# DAC2a's net members, as graph nodes built from their index rows.
+_DAC2A_NET_NODES = {
+    row.dcid: _index_row_node(row.dcid)
+    for row in _REAL_INDEX.statvars
+    if "provenance/OECDDAC2A" in row.provenances
+    and row.constraint_properties.get("nettingBasis") == "Net"
+}
+
+
 @pytest.mark.parametrize(
     ("query", "entities", "variable", "recalled"),
     [
@@ -708,10 +718,14 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
         ),
     ],
 )
-def test_attributed_as_a_plain_verb_names_no_measure(query, entities, variable, recalled):
+def test_attributed_as_a_plain_verb_names_no_measure(
+    query, entities, variable, recalled, monkeypatch: pytest.MonkeyPatch
+):
     """The attributed-amount measure reads on phrases that name it ("attributed to donors",
     "attributed aid"). The verb alone names none, so the answer warns of no dropped
-    qualifier."""
+    qualifier. The graph holds DAC2a's net members beside its gross one, as DAC2a publishes
+    both, so a recipient part counted on DAC2a's net receipts finds them."""
+    monkeypatch.setattr(two_ended_menu, "_NODES", {**two_ended_menu._NODES, **_DAC2A_NET_NODES})
     result, _menu = _resolve_two_ended(query, entities, variable=variable, recalled=(recalled,))
 
     assert not [
@@ -1095,7 +1109,7 @@ _AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
         ),
         (
             "health and education ODA",
-            ["CRSPurposeCode120", "CRSPurposeCode110"],
+            ["CRSPurposeCode110", "CRSPurposeCode120", "CRSPurposeCode130"],
             {
                 "health": ("bound", None, ("union", ["CRSPurposeCode120", "CRSPurposeCode110"])),
                 "education": (
@@ -1117,7 +1131,7 @@ _AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
         ),
         (
             "health excluding malaria control ODA",
-            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
             {
                 "health": ("bound", None, None),
                 "malaria control": ("unbound", None, None),
@@ -1163,7 +1177,7 @@ _AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
         ),
         (
             "health & education ODA",
-            ["CRSPurposeCode120", "CRSPurposeCode110"],
+            ["CRSPurposeCode110", "CRSPurposeCode120", "CRSPurposeCode130"],
             {
                 "health": ("bound", None, ("union", ["CRSPurposeCode120", "CRSPurposeCode110"])),
                 "education": (
@@ -1176,7 +1190,7 @@ _AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
         ),
         (
             "health including malaria control ODA",
-            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
             {
                 "health": ("bound", None, _INCLUDING),
                 "malaria control": ("bound", None, _INCLUDING),
@@ -1233,7 +1247,8 @@ def test_two_matches_on_one_code_system_bind_by_the_connective_between_them(
     model's empty draft leaves them unbound. An exclusion of a system's only code forces
     nothing on it. A comparison after an exclusion compares the code the exclusion kept.
     Repeating the variable's codes in the query text changes nothing, because the copies
-    do not combine."""
+    do not combine. "health" names CRS 120, and wherever 120 binds as its code it binds as
+    the declared health grouping, 120 and 130 (`scope.sector.read_sector`)."""
     search_settings(qualifier_coverage=mode)
     shape = _crs_amount_shape()
     vocabulary = shape_vocabulary(shape)
@@ -1962,9 +1977,11 @@ def test_e2e_admitted_matches_reach_the_wire_as_forced_value_slots(caplog, monke
             if s.key.property is not None and s.key.property.ref == prop
         )
 
+    # The shape measures grant equivalents, which count ODA as flows 10 and 60
+    # (`BASIS_MEASURES`), so the admitted ODA flow binds both.
     flow_slot = _slot("crsTypeOfFlow")
-    assert flow_slot.binding.kind == "value"
-    assert flow_slot.binding.value.ref.ref == "CRSTypeOfFlow10"
+    assert flow_slot.binding.kind == "set"
+    assert [v.ref.ref for v in flow_slot.binding.values] == ["CRSTypeOfFlow10", "CRSTypeOfFlow60"]
 
     finance_slot = _slot("crsTypeOfFinance")
     assert finance_slot.binding.kind == "value"
@@ -2011,9 +2028,11 @@ def test_e2e_query_text_admits_a_finance_type_qualifier_the_paraphrase_dropped(c
             if s.key.property is not None and s.key.property.ref == prop
         )
 
+    # The shape measures grant equivalents, which count ODA as flows 10 and 60
+    # (`BASIS_MEASURES`), so the admitted ODA flow binds both.
     flow_slot = _slot("crsTypeOfFlow")
-    assert flow_slot.binding.kind == "value"
-    assert flow_slot.binding.value.ref.ref == "CRSTypeOfFlow10"
+    assert flow_slot.binding.kind == "set"
+    assert [v.ref.ref for v in flow_slot.binding.values] == ["CRSTypeOfFlow10", "CRSTypeOfFlow60"]
 
     finance_slot = _slot("crsTypeOfFinance")
     assert finance_slot.binding.kind == "value"
@@ -2212,14 +2231,14 @@ _P130_13030 = ("union", ["CRSPurposeCode13030", "CRSPurposeCode130"])
         (
             "infant health ODA",
             ["CRSPurposeCode120"],
-            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
             {"health": ("bound", None, None)},
             {"infant": ("unbound", "uncovered", None)},
         ),
         (
             "infant health ODA",
             ["CRSPurposeCode121"],
-            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
             {"health": ("bound", None, None)},
             {"infant": ("unbound", "uncovered", None)},
         ),
@@ -2314,7 +2333,7 @@ def test_a_code_chosen_from_a_phrases_menu_reads_the_phrase(
     refuse under `refuse`. The term's own code (120 for "infant health", whose menu's hit
     is 12240), its child (121) and a hit's ancestor (100 for "population") read nothing
     and force nothing, so the terms force as with no menu. 121 gives way to the 120
-    "health" names, and 100, which no term contests, stays the model's binding. A code on
+    "health" names, which binds as the health grouping with 130, and 100, which no term contests, stays the model's binding. A code on
     two phrases' menus (130, an ancestor of 13030 and a hit for "population policies") is
     no choice. The model's binding stays and reads neither phrase. No term names 130, so
     its name reads "policies" (`_unnamed_bound_code_words`), and the part refuses on the

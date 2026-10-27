@@ -1005,6 +1005,7 @@ def _build_definite_spec(
         unresolved_slots=state.unresolved_slots,
         # Use qualifier bindings after election vetting and repair.
         text_recognized_properties=state.text_recognized_properties,
+        grouped_properties=state.grouped_properties,
         # The trace is judged under the unit request the answer is served under, as its
         # carve-outs judge it (`settle_answer`).
         query_qualifiers=answer_terms(

@@ -1,7 +1,11 @@
 """Resolve pre-parsed inputs with per-part variable, entity, time, unit, and source data.
 
 Parsed inputs bypass extraction. A part names or excludes the sources it answers from in
-`sources`, which `interpret_parts` compiles into each part's source scope.
+`sources`, which `interpret_parts` compiles into each part's source scope. The scope words of
+the user's message (`ParsedInput.user_message`) on a request of one part, or of each part's
+own text on a request of several, become the part's explicit scope entries beside the
+conversation's carried entries (`ParsedInput.carried_entries`,
+`stated_scope.part_scope_intakes`).
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ from search.engine.source_scope import (
     compile_part_sources,
     without_source_words,
 )
+from search.engine.stated_scope import part_scope_intakes
 from search.engine.time_bind import parse_time_text, time_window_defaulted_warning
 from search.models import Operation, ParsedInput, ParsedPart, QueryEcho, RoleAxis, Warning
 
@@ -573,8 +578,17 @@ async def handle(
 
     A fresh run reports its health to `scope` so the caller stores only a complete
     answer. Direct callers may omit `scope`."""
+    parts_with_indices = _dedupe_parts_with_indices(inp.parts)
+    original_indices = [i for i, _ in parts_with_indices]
+    parts = [p for _, p in parts_with_indices]
+    scope_intakes = part_scope_intakes(
+        message=inp.user_message,
+        part_texts=[part.variable_text for part in parts],
+        carried=inp.carried_entries or (),
+    )
+
     if scope is not None:
-        cached = await scope.lookup_parsed_input(inp)
+        cached = await scope.lookup_parsed_input(inp, stated_scopes=scope_intakes)
         if cached is not None:
             async with aclosing(
                 scope.hit_events(
@@ -595,10 +609,6 @@ async def handle(
                 async for ev in hit:
                     yield ev
             return
-
-    parts_with_indices = _dedupe_parts_with_indices(inp.parts)
-    original_indices = [i for i, _ in parts_with_indices]
-    parts = [p for _, p in parts_with_indices]
 
     # Confirm pins before fan-out, preserving original indices for refusal pointers.
     pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
@@ -672,6 +682,7 @@ async def handle(
             per_variable_operations=interpretation.operations,
             per_variable_open_axes=interpretation.open_axes,
             per_variable_separate=interpretation.separate,
+            per_variable_scope_intakes=scope_intakes,
             coverage=params.coverage,
         ):
             yield ev
@@ -771,6 +782,7 @@ async def handle(
         per_variable_operations=interpretation.operations,
         per_variable_open_axes=interpretation.open_axes,
         per_variable_separate=interpretation.separate,
+        per_variable_scope_intakes=scope_intakes,
         coverage=params.coverage,
     ):
         yield ev

@@ -603,6 +603,23 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "and leaves out what the data allocates to no single country: Africa, unallocated by "
         "country (DAC); North of Sahara, unallocated by country (DAC).",
     ),
+    # Africa summed on the CRS counts its residual buckets beside its countries.
+    (
+        DepartureFact(
+            code="group_read_as_members",
+            binding_ref="where:",
+            asked="Africa",
+            group_dcid="africa",
+            included=(
+                "Africa, unallocated by country (DAC)",
+                "North of Sahara, unallocated by country (DAC)",
+            ),
+        ),
+        "aid",
+        "You asked for Africa. This shows the countries in it, each on its own, with what the "
+        "data allocates to no single country: Africa, unallocated by country (DAC); North of "
+        "Sahara, unallocated by country (DAC).",
+    ),
     (
         DepartureFact(
             code="group_read_as_members",

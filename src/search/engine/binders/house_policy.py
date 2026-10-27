@@ -3,23 +3,35 @@
 A bare "GDP", "aid" or "ODA" measures several menu shapes that differ by a house convention
 alone. The policies choose among the shapes a binder declares as measuring the phrase (its
 `PolicyPool`), whichever binder elected, so the answer follows the convention.
-Every fact the module reads comes from shape data, the frame and declared dataset
-defaults.
+Every fact the module reads comes from shape data, the frame, the part's measure-basis
+entries and the declared conventions.
+
+A part that names a place, a sector or a restriction is counted on the measure basis the
+declared conventions give its shape and window (`scope.basis.elect_basis`), or the one an
+explicit or carried entry asks for: `Context.basis`. That basis decides the three policies
+it bears on, whatever words name the measure. A part the conventions do not read
+falls back to the window and to gross.
 
 The six policies run in order, each over the survivors of the one before:
 
 1. `nominal_vs_va`: among output (EconomicActivity `amount`) and value-added shapes,
    nominal output (Nominal where only some output shapes are) over value added, when a
    value-added shape is among the candidates.
-2. `amount_vs_ge`: among FinancialFlow shapes measuring `amount` or `grantEquivalent`,
-   grant equivalent, or `amount` when the window starts before grant-equivalent reporting
-   does (`GE_STARTS`) or names no start year, so the years before it stay in the answer.
-3. `net_vs_gross`: among shapes with a `nettingBasis` slot, one that offers Gross.
+2. `amount_vs_ge`: among FinancialFlow shapes measuring `amount` or `grantEquivalent`, those
+   measuring the basis's measured property. With no basis, grant equivalent, or `amount`
+   when the window starts before grant-equivalent reporting does (`GE_STARTS`) or names no
+   start year, so the years before it stay in the answer.
+3. `net_vs_gross`: among shapes with a `nettingBasis` slot, one that offers the basis's
+   netting basis, Gross for a basis that carries none and with no basis.
 4. `commit_vs_disb`: among FinancialObligation shapes and FinancialFlow shapes with a
-   `financialFlowType` slot, a flow whose slot offers Disbursement.
-5. `default_dataset`: a shape whose family the part's house default dataset
-   (`Context.wanted_dataset`) publishes. An opt-in table is its own dataset, so the
-   imputed multilateral sectors family fits no house default.
+   `financialFlowType` slot, the obligations on a commitments basis, else a flow whose slot
+   offers Disbursement.
+5. `default_dataset`: a shape whose family the part's wanted dataset
+   (`Context.wanted_dataset`) publishes: the dataset the basis convention reads, else the
+   house default for the kind of question. An opt-in table is its own dataset, so the
+   imputed multilateral sectors family fits no house default. A basis the wanted dataset
+   does not publish leaves none of its shapes standing, so the policy keeps the shapes of
+   the dataset that does. A recipient's grant equivalents are the CRS's.
 6. `data_at_places`: a shape with data at the named places.
 
 The four convention policies (`CONVENTION_POLICIES`) run first, so a dataset default
@@ -49,7 +61,7 @@ probability or rating reads as 0.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from operator import attrgetter
 from typing import Literal, get_args
 
@@ -60,6 +72,12 @@ from search.engine.frame import Frame
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.retrieval.bound_values import shape_part_datasets
 from search.engine.shape import ShapeDraft
+from search.models import Entry
+from search.scope.basis import (
+    GRANT_EQUIVALENT_HEADLINE_FROM,
+    BasisElection,
+    elect_part_basis,
+)
 
 type PolicyName = Literal[
     "nominal_vs_va",
@@ -90,7 +108,7 @@ CONVENTION_POLICIES: tuple[PolicyName, ...] = (
 )
 
 # The first year donors report official development assistance as grant equivalent.
-GE_STARTS = 2018
+GE_STARTS = GRANT_EQUIVALENT_HEADLINE_FROM
 
 # The `ShapeFacts` field each shape-kind measure axis reads.
 _AXIS_FACTS: Mapping[str, str] = {
@@ -131,14 +149,18 @@ class Context:
     open at its start, and a part that names no years, ask for every year the data holds
     up to their end, those before `GE_STARTS` included, so both are pre-GE. A part that
     asks for the latest year is not.
-    `dataset_case` is the kind of question the part is for the default-dataset policy, and
-    `wanted_dataset` that kind's declared house default. Both are `None` when the part names
-    no place and admits no code that declares a kind.
+    `dataset_case` is the kind of question the part is for the default-dataset policy.
+    `basis` is the measure basis the part is counted on, None when the conventions read no
+    shape of it (`scope.basis.part_shape`). `wanted_dataset` is the dataset the basis
+    convention reads, else the kind's declared house default. `dataset_case` and
+    `wanted_dataset` are `None` when the part names no place and admits no code that
+    declares a kind.
     """
 
     pre_ge: bool
     dataset_case: HouseDefaultCase | None
     wanted_dataset: str | None
+    basis: BasisElection | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,14 +231,15 @@ def _facts(
         measured_property=stated.measured_property,
         stat_type=stated.stat_type,
         qualifier=stated.qualifier,
-        netting=_slot_values(taxonomy, "nettingBasis"),
-        flow_types=_slot_values(taxonomy, "financialFlowType"),
+        netting=slot_values(taxonomy, "nettingBasis"),
+        flow_types=slot_values(taxonomy, "financialFlowType"),
         datasets=shape_part_datasets(shape, code_index),
         available=available,
     )
 
 
-def _slot_values(taxonomy: Mapping[str, list[str]], prop: str) -> tuple[str, ...] | None:
+def slot_values(taxonomy: Mapping[str, list[str]], prop: str) -> tuple[str, ...] | None:
+    """The values a shape's slot taxonomy offers on `prop`, None when it has no such slot."""
     return next((tuple(v) for k, v in taxonomy.items() if k.endswith(f":{prop}")), None)
 
 
@@ -227,6 +250,8 @@ def context_of(
     *,
     wanted_datasets: Mapping[HouseDefaultCase, str],
     case_systems: Mapping[str, HouseDefaultCase],
+    pool_datasets: Sequence[str],
+    basis_entries: Sequence[Entry] = (),
 ) -> Context:
     """The part's context over the pool before any policy narrows it.
 
@@ -237,6 +262,12 @@ def context_of(
     pool shape makes the part that kind of question (`sector` for a sector or purpose).
     Otherwise a place on the destination axis, on both axes or on none makes it a
     `recipient` question, and places that are all donors make it a `donor` question.
+    The part's shape (read from the same places and admitted codes) and its window elect
+    its basis (`scope.basis.elect_part_basis`), as the part's basis record reads it, from the
+    datasets the pool's shapes are answered from (`pool_datasets`, in pool order): the
+    part's own convention where they include its dataset, else the convention of the first
+    of them a convention reads. `basis_entries`, the part's measure-basis entries with explicit first
+    (`ScopeState.entries_on`), win over the convention.
     """
     window = frame.window.value
     if window == "all":
@@ -246,12 +277,12 @@ def context_of(
     else:
         pre_ge = window.start_year is None or window.start_year < GE_STARTS
     directions = [place.direction for place in frame.places]
-    admitted = {
-        case_systems[match.code_system]
+    systems = {
+        match.code_system
         for i in pool
         for match in (admitted_qualifiers[i] if admitted_qualifiers else ())
-        if match.code_system in case_systems
     }
+    admitted = {case_systems[system] for system in systems if system in case_systems}
     case: HouseDefaultCase | None
     if admitted:
         case = next(c for c in get_args(HouseDefaultCase) if c in admitted)
@@ -261,10 +292,20 @@ def context_of(
         case = "donor"
     else:
         case = None
+    basis = elect_part_basis(
+        datasets=pool_datasets,
+        directions=directions,
+        admitted_systems=systems,
+        sector_systems=[system for system, kind in case_systems.items() if kind == "sector"],
+        window=window,
+        entries=basis_entries,
+    )
+    wanted = basis.convention.dataset if basis is not None else None
     return Context(
         pre_ge=pre_ge,
         dataset_case=case,
-        wanted_dataset=wanted_datasets.get(case) if case else None,
+        wanted_dataset=wanted or (wanted_datasets.get(case) if case else None),
+        basis=basis,
     )
 
 
@@ -281,7 +322,10 @@ def _nominal_output(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
 
 
 def _amount_or_ge(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
-    measure = "amount" if ctx.pre_ge else "grantEquivalent"
+    if ctx.basis is not None:
+        measure = ctx.basis.measure.measured_property
+    else:
+        measure = "amount" if ctx.pre_ge else "grantEquivalent"
     return [
         s.index
         for s in shapes
@@ -289,8 +333,9 @@ def _amount_or_ge(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
     ]
 
 
-def _gross(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
-    return [s.index for s in shapes if s.netting is not None and "Gross" in s.netting]
+def _netting(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
+    wanted = (ctx.basis.measure.netting_basis if ctx.basis is not None else None) or "Gross"
+    return [s.index for s in shapes if s.netting is not None and wanted in s.netting]
 
 
 def _default_dataset(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
@@ -299,7 +344,9 @@ def _default_dataset(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
     return [s.index for s in shapes if ctx.wanted_dataset in s.datasets]
 
 
-def _disbursed(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
+def _disbursed(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
+    if ctx.basis is not None and ctx.basis.basis == "commitments":
+        return [s.index for s in shapes if s.population_type == "FinancialObligation"]
     return [
         s.index
         for s in shapes
@@ -345,7 +392,7 @@ _POLICIES: Mapping[
 ] = {
     "nominal_vs_va": (_output_or_value_added, _nominal_output),
     "amount_vs_ge": (_flow_amount_or_ge, _amount_or_ge),
-    "net_vs_gross": (_netted, _gross),
+    "net_vs_gross": (_netted, _netting),
     "commit_vs_disb": (_flow_or_obligation, _disbursed),
     "default_dataset": (_any_shape, _default_dataset),
     "data_at_places": (_any_shape, _with_data),
@@ -398,6 +445,7 @@ def apply_house_policies(
     candidates: Sequence[ShapeFacts] = [
         f for f in pooled if holds is None or f.index == chosen or holds.get(f.index, False)
     ]
+    context = _servable(context, candidates)
     fired: list[PolicyName] = []
     for policy in POLICY_ORDER:
         kept = apply_policy(policy, candidates, context)
@@ -412,6 +460,20 @@ def apply_house_policies(
         dropped=frozenset(pool.measuring) - frozenset(survivors),
         facts=pooled,
     )
+
+
+def _servable(context: Context, candidates: Sequence[ShapeFacts]) -> Context:
+    """`context` counting on the convention's basis where the basis an entry asks for is
+    measured by none of `candidates`, so the policies fall back to the convention, not to
+    the window and gross."""
+    basis = context.basis
+    if basis is None or basis.entry is None:
+        return context
+    if any(
+        basis.measured_by(f.population_type, f.measured_property, f.netting) for f in candidates
+    ):
+        return context
+    return replace(context, basis=basis.by_convention())
 
 
 def _tie_break(

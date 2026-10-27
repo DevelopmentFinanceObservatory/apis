@@ -51,7 +51,7 @@ import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 
-from code_index.types import PartyRow
+from code_index.types import CompositeDeclaration, PartyRow
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
@@ -359,6 +359,7 @@ def sync_estimate(
     *,
     index: CoverageIndex,
     member_concurrency: int,
+    composite: CompositeDeclaration | None = None,
 ) -> Estimate:
     """Estimate covered rows and SDMX requests, plus uncovered members, before network access.
 
@@ -367,24 +368,33 @@ def sync_estimate(
     before covered costs are computed. `index` must come from the caller's
     coverage snapshot so its estimate and any coverage stamp share one artifact.
 
-    Group by dispatch key and window years, then use the same lanes and
-    StatVar chunks as materialisation. Estimate each chunk with `lanes=1`,
-    using the first member's roles and window. The `latest` window keeps
+    Group by component, dispatch key and window years, then use the same lanes and
+    StatVar chunks as materialisation. A composite's components materialise apart
+    (`serve.prewrite_definition`), so each component's requests are priced as reads of their
+    own, under their own windows, and the estimate is their sum. Estimate each chunk with
+    `lanes=1`, using the first member's roles and window. The `latest` window keeps
     `LATEST` in request-size estimates while coverage prices all years, and
     adds the requests of one read alone at one year of each member that can
     make it (`_members_read_twice`): a member with a series ending after the
     year it elects is read again at that year.
+
+    `composite` is the declaration `requests` compose under, or `None`. Its composed frame
+    adds a zero row for each member of a zero-filling component (`ComponentRecipe.zero_absent`)
+    in each covered cell that member holds no row in (`materialise.composite`), so the rows
+    count each such member once per cell any of `requests` can hold
+    (`CoverageIndex.cell_count`), a bound no composed frame exceeds.
     """
     lanes = dispatch_lanes(member_concurrency, len(requests))
     groups: dict[
-        tuple[tuple[object, ...], int | None, int | None], list[MaterialisationRequest]
+        tuple[str | None, tuple[object, ...], int | None, int | None],
+        list[MaterialisationRequest],
     ] = {}
     uncovered_requests = 0
     for request in requests:
         if index.role_names.get(_bare_dcid(request.stat_var)) is None:
             uncovered_requests += 1
         first_year, last_year = _window_years(request)
-        key = (request_batch_key(request), first_year, last_year)
+        key = (request.component, request_batch_key(request), first_year, last_year)
         groups.setdefault(key, []).append(request)
     if uncovered_requests > UNCOVERED_MEMBER_CAP:
         raise OverCeilingError(
@@ -400,7 +410,7 @@ def sync_estimate(
         )
     total_rows = 0
     total_requests = 0
-    for (_batch_key, first_year, last_year), members in groups.items():
+    for (_component, _batch_key, first_year, last_year), members in groups.items():
         bound = bound_roles(members[0], index=index)
         variables = [_bare_dcid(member.stat_var) for member in members]
         time_period = _time_period_for_window(members[0].window)
@@ -430,7 +440,32 @@ def sync_estimate(
                 for variable in chunk_variables
                 if variable in read_twice
             )
+    if composite is not None and requests:
+        total_rows += _zero_row_bound(requests, composite=composite, index=index)
     return Estimate(rows=total_rows, requests=total_requests, uncovered_requests=uncovered_requests)
+
+
+def _zero_row_bound(
+    requests: Sequence[MaterialisationRequest],
+    *,
+    composite: CompositeDeclaration,
+    index: CoverageIndex,
+) -> int:
+    """The most zero rows `composite`'s composed frame of `requests` can hold: each member of a
+    zero-filling component times the cells any request's series holds in the window
+    (`sync_estimate`)."""
+    zero_filling = {recipe.role for recipe in composite.components if recipe.zero_absent}
+    members = sum(1 for request in requests if request.component in zero_filling)
+    if not members:
+        return 0
+    first_year, last_year = _window_years(requests[0])
+    cells = index.cell_count(
+        variables=list(dict.fromkeys(_bare_dcid(request.stat_var) for request in requests)),
+        bound=bound_roles(requests[0], index=index),
+        first_year=first_year,
+        last_year=last_year,
+    )
+    return members * cells
 
 
 def within_sync_budget(

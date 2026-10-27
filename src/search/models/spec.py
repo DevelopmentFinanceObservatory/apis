@@ -14,15 +14,15 @@ from dfo_platform.roles import FlowAccount
 
 from .base import StrictModel
 from .coverage import Coverage, Headline
+from .definition import SpecDefinition
 from .entity import EntityGroup, ResolvedEntity
 from .grammar import DataCommonsRef, GraphRef, SentenceToken, Shape, Slot, SourceRef, TimeWindow
-from .identity import BaseIdentity
 from .observations import SpecObservations
 from .options import EntityOptions, FacetOptions, SlotOptions
+from .scope import PartScope
 from .statvar import ResolvedStatVars, SentenceFacts, StatVar
 from .trace import ResolutionTrace
 from .vocab import (
-    SCHEMA_VERSION,
     Axis,
     CandidateBasis,
     Confidence,
@@ -180,44 +180,6 @@ class ResolvedScope(StrictModel):
             "every entity on axis this Spec's read plan serves, sorted by ref; each carries "
             "role == axis and a best-effort label/entity_type from a batched graph read, "
             "None when the graph has neither"
-        )
-    )
-
-
-class SpecDefinition(StrictModel):
-    """The canonical definition a Spec was resolved from: `{schema_version,
-    spec_id, identity}`. This is the form the registry stores and permalinks
-    carry, so it is self-contained. A definition lifted out of its Spec still
-    names which spec it is.
-
-    `identity` is the identity-core projection (see `BaseIdentity`) this
-    Spec's spec_id was minted from, so hashing `identity` again reproduces
-    `spec_id` by construction.
-
-    `spec_id` is carried here as well as on `Spec.spec_id` deliberately: the
-    duplication is what makes the definition independently meaningful once
-    detached from the response that delivered it. The one exception is an
-    `unsupported` response's definition, which omits it: the request was
-    valid and understood but never became a resolvable construction, so no
-    spec_id was ever legitimately minted for it.
-    """
-
-    schema_version: Literal[1] = Field(
-        default=SCHEMA_VERSION,
-        description="contract schema version this definition was published under; exactly 1",
-    )
-    spec_id: str = Field(
-        description=(
-            "the spec_id minted from `identity`; equals the sibling Spec.spec_id, "
-            "and is what a detached definition (registry row, permalink) is keyed by"
-        )
-    )
-    identity: BaseIdentity = Field(
-        description=(
-            "the identity-core projection this Spec's spec_id was minted from, "
-            "serialised once and never re-derived; post it back byte-for-byte as "
-            "ResubmitIdentityPayload.identity to edit this Spec. Directional edits "
-            "change identity.entities.origin or identity.entities.destination directly"
         )
     )
 
@@ -947,6 +909,20 @@ class ResolvedSpec(StrictModel):
             "served year, so nothing converts, or no conversion catalogue is loaded, which "
             "the part's unit_conversion_unavailable warning states. Never a member of "
             "BaseIdentity, never hashed."
+        ),
+    )
+    scope_choices: PartScope | None = Field(
+        default=None,
+        description=(
+            "how the part this Spec answers was counted: one ScopeChoice per axis a "
+            "declared rule or the request settled (sector, region, measure basis, provider "
+            "scope), with its options and their availability, the explicit and carried "
+            "entries applied, and the identity they compile to (see PartScope). To switch "
+            "an option, post base.identity as identity on a dataset_resubmit identity "
+            "entry, with entries as scope_entries, the entry on the switched axis "
+            "replaced by the switch: one entry per axis. None when no axis was settled "
+            "and no scope entries were "
+            "posted. Never a member of BaseIdentity, never hashed."
         ),
     )
     # The named entities the answer's read plan serves no point at, each with the role it

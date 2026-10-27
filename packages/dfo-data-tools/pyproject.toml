@@ -13,7 +13,7 @@ dependencies = [
     # assembler.catalogue loads the description and step schemas the envelope references
     # by `$id`; datasets_api checks a publish's steps with `check_steps`.
     "dfo-spec-kit-descriptions",
-    # graph_generation's TLRU caches (wave 2) key their lifetime on the
+    # graph_generation's TLRU caches key their lifetime on the
     # captured GenerationStamp; cachetools.TLRUCache is the shared
     # implementation every generation-keyed cache in this repo builds on.
     "cachetools>=7.2",
@@ -88,10 +88,10 @@ graph-release = ["google-cloud-spanner>=3.57", "dfo-data-tools[coverage]"]
 [tool.uv.sources]
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "26f733c29ce269407371662a8bca6d6b20c58244", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "26f733c29ce269407371662a8bca6d6b20c58244", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "26f733c29ce269407371662a8bca6d6b20c58244", subdirectory = "python/provenance-docs" }
-dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "26f733c29ce269407371662a8bca6d6b20c58244", subdirectory = "python/descriptions" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "455e958ca865c43e2fa1e774e4799a92d5f3da3d", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "455e958ca865c43e2fa1e774e4799a92d5f3da3d", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "455e958ca865c43e2fa1e774e4799a92d5f3da3d", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "455e958ca865c43e2fa1e774e4799a92d5f3da3d", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

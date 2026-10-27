@@ -268,6 +268,7 @@ def layer2_key(
     extraction_warnings: Sequence[Warning] = (),
     measure_qualifiers: Sequence[tuple[str, ...]] = (),
     open_axes: Sequence[frozenset[str]] = (),
+    stated_scopes: Sequence[Mapping[str, object] | None] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -294,6 +295,11 @@ def layer2_key(
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
     positions and adds nothing when none is marked.
+    `stated_scopes` runs parallel to `variables` when given and holds the scope entries and
+    total intent each part's words state (`stated_scope.intake_key_document`), None for a
+    part whose words state none, so "ODA to Kenya", "bilateral ODA to Kenya" and "net ODA
+    to Kenya" key apart whatever their extractions. The key states them and
+    adds nothing when no part states any.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -350,6 +356,8 @@ def layer2_key(
             for variable, axes in zip(variables, open_axes, strict=True)
             if axes
         }
+    if any(stated is not None for stated in stated_scopes):
+        document["stated_scopes"] = list(stated_scopes)
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):
@@ -363,12 +371,29 @@ def layer2_key(
     return _digest("l2", document)
 
 
-def parsed_key(*, parsed: ParsedInput, scope: dict) -> str:
-    """Key a parsed request's whole input over the shared scope, on layer 2.
+def parsed_key(
+    *,
+    parsed: ParsedInput,
+    scope: dict,
+    stated_scopes: Sequence[Mapping[str, object] | None] = (),
+) -> str:
+    """Key a parsed request's input over the shared scope, on layer 2.
 
     The posted parts are the extraction a raw-text request derives, and every field of
-    them, and the raw query its echo carries, reaches the answer."""
-    document = {"scope": scope, "parsed": parsed.model_dump(mode="json")}
+    them, and the raw query its echo carries, reaches the answer. The user's message and
+    the carried entries reach it only through the scope entries each part is posted with,
+    so they enter as `stated_scopes`, parallel to the deduplicated parts
+    (`stated_scope.intake_key_document`, None for a part posted with none), as the raw-text
+    door keys them (`layer2_key`). Two messages that state no scope share an entry; a
+    stated entry carries its words' offsets in the message (`Entry.origin`), so messages
+    worded apart key apart even where they state the same scope. The key states them and
+    adds nothing when no part is posted any."""
+    document: dict[str, object] = {
+        "scope": scope,
+        "parsed": parsed.model_dump(mode="json", exclude={"user_message", "carried_entries"}),
+    }
+    if any(stated is not None for stated in stated_scopes):
+        document["stated_scopes"] = list(stated_scopes)
     return _digest("l2", document)
 
 
