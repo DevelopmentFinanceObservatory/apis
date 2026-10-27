@@ -131,9 +131,11 @@ def _edit_provider(
     """Bind the stacked composite of bilateral and imputed multilateral spending as the
     identity's source for the inclusive scope, with the option's window when it sets one
     (`ProviderBinding.window`), or remove that composite for the bilateral scope, leaving the
-    window as it is. The two are inverses on an identity that binds no other provenance."""
+    window as it is. The two are inverses on an identity that binds no other provenance. The
+    contributions scope, which a published donor total holds as it is, removes the composite
+    too, a no-op on any identity it is offered on."""
     assert isinstance(binding, ProviderBinding)
-    if binding.scope == "bilateral":
+    if binding.scope != "inclusive":
         return _with_source(identity, None, kind="stacked")
     edited = _with_source(identity, INCLUSIVE_PROVENANCE, kind="stacked")
     if binding.window is None:

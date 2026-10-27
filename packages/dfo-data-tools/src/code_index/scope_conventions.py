@@ -4,8 +4,10 @@
 `MEASURE_BASIS_CONVENTIONS` names the measure basis each part shape and window defaults to,
 `BASIS_MEASURES` what each basis binds in an identity, and `BASIS_RESTRICTIONS` the code
 systems besides the sector whose admitted code makes a part a restricted one.
-`PROVIDER_CONVENTIONS` names whose spending a part counts by default, and
-`REDISTRIBUTED_PROVIDERS` the providers no pool takes the inclusive scope with. `OPTION_LABELS`
+`PROVIDER_CONVENTIONS` names whose spending a part counts by default,
+`REDISTRIBUTED_PROVIDERS` the providers no pool takes the inclusive scope with, and
+`CONTRIBUTION_TOTALS` the published donor totals that count core contributions to
+multilaterals, which take neither the bilateral nor the inclusive scope. `OPTION_LABELS`
 words the options the rules build from code and group labels, and `REGION_READINGS` names
 the graph regions a DAC dataset counts as the OECD's region. `search.scope`
 reads them all, and `graph_release.declarations` hashes the tables beside the other
@@ -84,6 +86,21 @@ class ProviderConvention:
     dataset: str
     names_donor: bool
     asks_total: bool
+    note: str
+
+
+@dataclass(frozen=True)
+class ContributionTotal:
+    """A published donor total that counts the donor's bilateral flows and its core
+    contributions to multilateral organisations, in the year it pays them.
+
+    A part counts it when its identity is served from `dataset` and binds `code` on
+    `code_system`. `note` says why the total takes neither the bilateral scope nor the
+    inclusive one."""
+
+    dataset: str
+    code_system: str
+    code: str
     note: str
 
 
@@ -180,10 +197,10 @@ class OptionLabels:
     its `words` (`BasisMeasure.words`), the `prices` of the identity's price basis
     ("current", "constant 2024") and its `currency` ("USD", "donor currency"), and
     `measure_basis_unpriced` from its words alone, for an identity that states no price
-    basis. `oecd_headline` names the OECD's headline basis per year. `provider_bilateral` and
-    `provider_inclusive` name the two provider scopes, and `provider_inclusive_years` the
-    inclusive scope over the `years` both of its tables cover ("2011 to 2024", "2023"), when
-    they set the part's window."""
+    basis. `oecd_headline` names the OECD's headline basis per year. `provider_bilateral`,
+    `provider_inclusive` and `provider_contributions` name the three provider scopes, and
+    `provider_inclusive_years` the inclusive scope over the `years` both of its tables cover
+    ("2011 to 2024", "2023"), when they set the part's window."""
 
     sector_code: str
     sector_code_alone: str
@@ -197,6 +214,7 @@ class OptionLabels:
     provider_inclusive_years: str
     region_as_oecd_counts: str
     region_place_members: str
+    provider_contributions: str
 
 
 OPTION_LABELS = OptionLabels(
@@ -213,6 +231,7 @@ OPTION_LABELS = OptionLabels(
     region_as_oecd_counts="{region} as the OECD counts it, {count} countries incl. regional and "
     "unspecified amounts",
     region_place_members="{region_of} {count} countries (UN regions)",
+    provider_contributions="bilateral plus core contributions to multilaterals",
 )
 
 CONVENTION_CURRENCY = "USD"
@@ -359,6 +378,25 @@ REDISTRIBUTED_PROVIDERS: tuple[str, ...] = ("EuropeanUnionInstitutions",)
 
 PROVIDER_DEFAULT_RULE = "bilateral_flows"
 """The rule of a part no provider convention settles. It counts the donor's bilateral flows."""
+
+# DAC1's total ODA counts a donor's bilateral flows and its core contributions to the
+# multilateral organisations, in the year it pays them. The imputed multilateral table instead
+# attributes the multilaterals' own spending back to their funders, so the two differ in what
+# they count, in timing and in amount, and the total takes no inclusive scope. DAC1 publishes
+# bilateral ODA as another aid type, a total of another table whose whole need not hold a part
+# the CRS counts, so the total takes no bilateral scope either.
+CONTRIBUTION_TOTALS: tuple[ContributionTotal, ...] = (
+    ContributionTotal(
+        dataset=DAC1,
+        code_system="dac1AidType",
+        code="DAC1AidType1010",
+        note="DAC1 total ODA counts bilateral flows plus core contributions to multilaterals",
+    ),
+)
+
+CONTRIBUTIONS_RULE = "contribution_total"
+"""The rule of a part that counts a `CONTRIBUTION_TOTALS` total, whose only provider scope is
+the one it publishes."""
 
 ODA_FLOW_SYSTEM = "crsTypeOfFlow"
 """The code system an ODA flow binding binds."""

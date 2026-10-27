@@ -127,7 +127,12 @@ class ProviderBinding(StrictModel):
     """An option that sets whose spending the answer counts."""
 
     kind: Literal["provider"] = "provider"
-    scope: ProviderScope = Field(description="bilateral flows alone, or with imputed shares")
+    scope: ProviderScope = Field(
+        description=(
+            "bilateral flows alone, with imputed shares of multilateral spending, or with core "
+            "contributions to multilaterals as a published donor total counts them"
+        )
+    )
     window: YearSpan | None = Field(
         default=None,
         description=(
@@ -160,7 +165,8 @@ class OptionAvailability(StrictModel):
         default_factory=dict,
         description=(
             "the code's parameters: `why` for provider_not_offered, `dataset` for "
-            "basis_not_published, `entry` and `cause` for conflicts_with"
+            "basis_not_published and counts_core_contributions, `entry` and `cause` for "
+            "conflicts_with"
         ),
     )
 

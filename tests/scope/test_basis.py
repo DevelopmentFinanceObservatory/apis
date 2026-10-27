@@ -38,6 +38,7 @@ from search.models import (
     ParsedEntity,
     ParsedInput,
     ParsedPart,
+    PartScope,
     Resolution,
     ResolveRequest,
     ResubmitIdentityEntry,
@@ -50,14 +51,19 @@ from search.scope.basis import (
     identity_basis_record,
     window_class,
 )
+from search.scope.build import build_part_scope
+from search.scope.compile import Refusal
 from search.scope.edits import apply_binding
+from search.scope.rules import AXIS_RULES
+from search.scope.tables import ScopeFacts
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import elected_reply
-from tests.engine._fake_coverage import patch_coverage
+from tests.engine._fake_coverage import empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph
+from tests.scope._axes import switch
 
 _USA = "country/USA"
 _KEN = "country/KEN"
@@ -756,19 +762,113 @@ def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
     assert scope.compiled.spec_id == spec.spec_id == scope.base.spec_id
 
 
-def test_a_stated_bilateral_on_a_donor_total_with_no_provider_axis_is_reported():
-    """A donor's DAC1 total has no provider axis, so a typed "bilateral" is reported as not
-    applied."""
+def _provider_options(spec: Spec) -> dict[str, tuple[str, str | None, dict[str, str]]]:
+    """The spec's provider options, by id: each one's status, reason code and detail."""
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "provider")
+    return {
+        o.option_id: (o.availability.status, o.availability.code, o.availability.detail)
+        for o in choice.options
+    }
+
+
+_COUNTS_CONTRIBUTIONS = ("unavailable", "counts_core_contributions", {"dataset": _DAC1})
+
+
+@pytest.mark.parametrize("cell", ["donor-only-2019", "donor-only-2016", "donor-only-2010-2024"])
+def test_a_dac1_total_offers_only_the_contributions_it_counts_as_its_provider_scope(cell: str):
+    """DAC1's total ODA counts core contributions to multilaterals, on every basis and on
+    the OECD headline composite: its one available provider option is the contributions
+    scope it holds, and bilateral and inclusive are unavailable with the reason, so a
+    calculation aligning provider scopes never reads it as either."""
+    row = _CELLS[cell]
+
+    spec = _ask(row.variable, time=row.time, recipient=row.recipient)
+
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "provider")
+    assert (choice.active, choice.provenance, choice.rule) == (
+        "provider:contributions",
+        "default",
+        "contribution_total",
+    )
+    assert _provider_options(spec) == {
+        "provider:bilateral": _COUNTS_CONTRIBUTIONS,
+        "provider:inclusive": _COUNTS_CONTRIBUTIONS,
+        "provider:contributions": ("available", None, {}),
+    }
+
+
+@pytest.mark.parametrize("cell", ["donor-only-2019", "donor-only-2010-2024"])
+def test_the_contributions_scope_leaves_a_dac1_totals_spec_id_as_it_is(cell: str):
+    """The provider record edits nothing: a DAC1 total compiles to the spec_id its scope
+    compiles to with no provider rule, and a switch to the contributions scope it holds
+    resubmits to the same spec_id."""
+    row = _CELLS[cell]
+    spec = _ask(row.variable, time=row.time, recipient=row.recipient)
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "provider")
+    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+    without_provider = {axis: rule for axis, rule in AXIS_RULES.items() if axis != "provider"}
+
+    with_rule = build_part_scope(base=scope.base.identity, entries=[], records={}, facts=facts)
+    without_rule = build_part_scope(
+        base=scope.base.identity, entries=[], records={}, facts=facts, rules=without_provider
+    )
+    switched = _resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=row.variable,
+                        identity=scope.base.identity,
+                        scope_entries=[
+                            Entry(
+                                axis="provider",
+                                option_id="provider:contributions",
+                                provenance="explicit",
+                                origin=ChoiceOrigin(choice_id=choice.id),
+                            )
+                        ],
+                    )
+                ]
+            )
+        ),
+        row.variable,
+    )
+
+    assert isinstance(with_rule, PartScope) and isinstance(without_rule, PartScope)
+    assert any(c.axis == "provider" for c in with_rule.choices)
+    assert with_rule.compiled.spec_id == without_rule.compiled.spec_id == spec.spec_id
+    assert switched.spec_id == spec.spec_id
+
+
+def test_a_stated_bilateral_on_a_dac1_total_is_reported_with_the_contributions_it_counts():
+    """A typed "bilateral" on a donor's DAC1 total is not applied, since the total counts core
+    contributions, and is reported with that cause; a switch to bilateral refuses with it."""
     spec = _ask("aid", time="2019", recipient=False, message="bilateral aid from the US in 2019")
     scope = spec.resolved.scope_choices
     assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "provider")
 
-    assert all(choice.axis != "provider" for choice in scope.choices)
+    assert choice.active == "provider:contributions"
     (dropped,) = (d for d in scope.dropped_entries if d.entry.axis == "provider")
     assert (dropped.entry.option_id, dropped.code, dropped.cause) == (
         "provider:bilateral",
         "stated_choice_not_applied",
-        "axis_absent",
+        "counts_core_contributions",
+    )
+    refused = build_part_scope(
+        base=scope.base.identity,
+        entries=[switch("provider:bilateral")],
+        records={},
+        facts=ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot()),
+    )
+    assert refused == Refusal(
+        code="requested_option_unavailable", entry=0, cause="counts_core_contributions"
     )
 
 
