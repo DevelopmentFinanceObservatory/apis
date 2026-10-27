@@ -358,7 +358,7 @@ COMPOSITES: tuple[CompositeDeclaration, ...] = (
         measure_noun="including imputed multilateral spending",
         kind="stacked",
         components=(
-            ComponentRecipe(role="bilateral", dataset=_CRS),
+            ComponentRecipe(role="bilateral", dataset=CRS),
             ComponentRecipe(
                 role="imputed",
                 dataset=_IMPUTED_MULTILATERAL_SECTORS,
@@ -378,13 +378,13 @@ COMPOSITES: tuple[CompositeDeclaration, ...] = (
         components=(
             ComponentRecipe(
                 role="headline_net",
-                dataset=_DAC1,
+                dataset=DAC1,
                 periods=YearPeriod(first=None, last=2017),
                 basis=("amount", "Net"),
             ),
             ComponentRecipe(
                 role="headline_ge",
-                dataset=_DAC1,
+                dataset=DAC1,
                 periods=YearPeriod(first=2018, last=None),
                 basis=("grantEquivalent", None),
             ),
