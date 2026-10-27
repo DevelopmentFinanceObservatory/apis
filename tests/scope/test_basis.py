@@ -779,7 +779,7 @@ _COUNTS_CONTRIBUTIONS = ("unavailable", "counts_core_contributions", {"dataset":
 @pytest.mark.parametrize("cell", ["donor-only-2019", "donor-only-2016", "donor-only-2010-2024"])
 def test_a_dac1_total_offers_only_the_contributions_it_counts_as_its_provider_scope(cell: str):
     """DAC1's total ODA counts core contributions to multilaterals, on every basis and on
-    the OECD headline composite: its one available provider option is the contributions
+    the OECD headline composite. Its one available provider option is the contributions
     scope it holds, and bilateral and inclusive are unavailable with the reason, so a
     calculation aligning provider scopes never reads it as either."""
     row = _CELLS[cell]
@@ -803,7 +803,7 @@ def test_a_dac1_total_offers_only_the_contributions_it_counts_as_its_provider_sc
 
 @pytest.mark.parametrize("cell", ["donor-only-2019", "donor-only-2010-2024"])
 def test_the_contributions_scope_leaves_a_dac1_totals_spec_id_as_it_is(cell: str):
-    """The provider record edits nothing: a DAC1 total compiles to the spec_id its scope
+    """The provider record edits nothing. A DAC1 total compiles to the spec_id its scope
     compiles to with no provider rule, and a switch to the contributions scope it holds
     resubmits to the same spec_id."""
     row = _CELLS[cell]
@@ -848,7 +848,7 @@ def test_the_contributions_scope_leaves_a_dac1_totals_spec_id_as_it_is(cell: str
 
 def test_a_stated_bilateral_on_a_dac1_total_is_reported_with_the_contributions_it_counts():
     """A typed "bilateral" on a donor's DAC1 total is not applied, since the total counts core
-    contributions, and is reported with that cause; a switch to bilateral refuses with it."""
+    contributions, and is reported with that cause. A switch to bilateral refuses with it."""
     spec = _ask("aid", time="2019", recipient=False, message="bilateral aid from the US in 2019")
     scope = spec.resolved.scope_choices
     assert scope is not None

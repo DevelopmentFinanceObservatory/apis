@@ -179,9 +179,9 @@ def _contributions_table(
 
     The contributions option is the one the total holds and its only available one. The
     bilateral and inclusive options are unavailable (`counts_core_contributions`, with the
-    total's dataset): the total cannot drop the contributions it counts, nor replace them
-    with imputed shares of multilateral spending, and the table's own bilateral line is
-    another total, which no option of this part binds. The rule is the record's when a
+    total's dataset), since the total cannot drop the contributions it counts or replace
+    them with imputed shares of multilateral spending, and the table's own bilateral line
+    is another total, which no option of this part binds. The rule is the record's when a
     binder wrote one, else `CONTRIBUTIONS_RULE`."""
     total = _contribution_total(base, facts)
     if total is None:
