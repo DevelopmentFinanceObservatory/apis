@@ -211,6 +211,12 @@ def _check_composite_declaration(composite: CompositeDeclaration, declared: set[
                 f"composite {name!r} is {composite.kind} and its component {recipe.role!r} "
                 f"declares periods {recipe.periods!r}"
             )
+        # A spliced component's zeros would fill the other components' years, which it
+        # does not cover.
+        if recipe.zero_absent and composite.kind == "spliced":
+            raise IndexFormatError(
+                f"spliced composite {name!r} component {recipe.role!r} reads absence as zero"
+            )
     if composite.kind == "spliced":
         _check_spliced_periods(composite)
 

@@ -157,9 +157,15 @@ from materialise import (
 )
 from materialise.bundle import ReproducingCall
 from materialise.ceiling import check_ceiling
-from materialise.composite import ComponentResult, compose_components
+from materialise.composite import (
+    ComponentResult,
+    compose_components,
+    rows_in_years,
+    stacked_years,
+    table_years,
+)
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
-from materialise.errors import DefaultFacetUndefinedError
+from materialise.errors import DefaultFacetUndefinedError, MaterialisationUsageError
 from materialise.graph import GraphReader
 from materialise.profile import OutputProfile, compute_output_profile_from_chunks
 from materialise.provenance_doc import (
@@ -654,16 +660,30 @@ def _materialise_components(
     graph: GraphReader,
     enrichment: EnrichmentLookup,
     deadline: float | None,
+    coverage_index: CoverageIndex | None,
 ) -> tuple[MaterialisationResult, _OriginFindings]:
     """A composite's result: each component's requests materialised under the component
     identity's pinned provenances (`adapter.pinned_provenance_scope`), in declaration order,
-    sharing `ceiling` (each run gets the rows the runs before it left), then composed into one
-    frame (`materialise.composite.compose_components`), whose rows, zero rows included, must
-    fit `ceiling` (`materialise.ceiling.check_ceiling`). Each component's origin findings are
-    read under its own scope. A component no request names, a spliced one whose periods the
-    window does not reach, is left out."""
+    sharing `ceiling`, then composed into one frame
+    (`materialise.composite.compose_components`), whose rows, zero rows included, must fit
+    `ceiling` (`materialise.ceiling.check_ceiling`). Each run gets the rows the runs before
+    it keep: a stacked composite keeps the rows in the years every component's table covers
+    in `coverage_index` (`materialise.composite.stacked_years`), read before any run. Each
+    component's origin findings are read under its own scope. A component no request names,
+    a spliced one whose periods the window does not reach, is left out. Raises
+    `MaterialisationUsageError` without `coverage_index`, which a composite's years are read
+    from."""
+    if coverage_index is None:
+        raise MaterialisationUsageError(
+            "a composite reads its components' years from the coverage snapshot"
+        )
     ref = cast(str, composite_ref(stored.identity))
     composite = cast("CompositeDeclaration", code_index.composite(ref))
+    covered = {
+        component.role: table_years(code_index, coverage_index, component.identity)
+        for component in components
+    }
+    kept = stacked_years(covered.values()) if composite.kind == "stacked" else None
     results: list[ComponentResult] = []
     warnings: list[WarningModel] = []
     gaps: list[OriginGap] = []
@@ -678,13 +698,18 @@ def _materialise_components(
             findings = _origin_findings(
                 part, result, un_blocked=un_blocked, graph=graph, deadline=deadline
             )
-        remaining = max(remaining - result.coverage.rows, 0)
+        charged = result.coverage.rows if kept is None else rows_in_years(result.frame_chunks, kept)
+        remaining = max(remaining - charged, 0)
         seconds += result.output_profile_seconds
         warnings.extend(warning for warning in findings.warnings if warning not in warnings)
         gaps.extend(findings.gaps)
         results.append(
             ComponentResult(
-                role=component.role, recipe=component.recipe, requests=part, result=result
+                role=component.role,
+                recipe=component.recipe,
+                requests=part,
+                result=result,
+                covered_years=covered[component.role],
             )
         )
     with phase("materialise"):
@@ -792,6 +817,7 @@ def prewrite_definition(
                 graph=graph,
                 enrichment=enrichment,
                 deadline=deadline,
+                coverage_index=coverage_index,
             )
         record_elapsed("profile", result.output_profile_seconds)
         provenance_refs = provenance_refs_of(result.trace.facets)

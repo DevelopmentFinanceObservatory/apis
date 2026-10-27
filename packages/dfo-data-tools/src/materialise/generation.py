@@ -6,7 +6,6 @@ once generation returns.
 
 from __future__ import annotations
 
-import io
 import logging
 import math
 import threading
@@ -18,7 +17,6 @@ from typing import TYPE_CHECKING, Literal
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 
 from dc_sdmx import (
     DEFAULT_PLANNING_LANES,
@@ -85,6 +83,7 @@ from materialise.facets import (
 from materialise.frame_build import (
     Frame,
     ParquetFrameChunks,
+    ParquetFrameSink,
     build_frame_from_member_tables,
     build_frame_from_table,
     fold_method_periods,
@@ -2080,33 +2079,6 @@ class _PooledCoverageTotals:
         return self.year_min, self.year_max
 
 
-class _CanonicalParquetSink:
-    """Writes each closed group chunk as a row group in an in-memory Parquet file.
-
-    The first chunk sets the shared schema. `_generate_group` always yields a
-    chunk, even when every member has zero rows. `finish()` returns a zero-copy
-    view; durable storage happens only after a successful materialisation.
-    """
-
-    def __init__(self) -> None:
-        self._sink = io.BytesIO()
-        self._writer: pq.ParquetWriter | None = None
-
-    def write(self, table: pa.Table) -> None:
-        if self._writer is None:
-            self._writer = pq.ParquetWriter(self._sink, table.schema)
-        self._writer.write_table(table)
-
-    def finish(self) -> memoryview:
-        assert self._writer is not None, (
-            "_CanonicalParquetSink.finish() called before any chunk was written"
-        )
-        self._writer.close()
-        # `getbuffer()` returns a zero-copy view and keeps the sink alive.
-        # The view blocks later writes, and `finish()` is the final call.
-        return self._sink.getbuffer()
-
-
 def _probe_group_members(
     requests: Sequence[MaterialisationRequest],
     *,
@@ -2353,7 +2325,7 @@ class _GroupRowStreamer:
         self.grains: dict[str, str] = {}
         self.method_periods: dict[str, tuple[str, str]] = {}
         self.totals = _PooledCoverageTotals(shared_roles=shared_roles)
-        self.parquet_sink = _CanonicalParquetSink()
+        self.parquet_sink = ParquetFrameSink()
         self.statistics_sink = SeriesStatisticsSink(continuing=continuing)
 
     def _generate_one_chunk(self, chunk: _ShapeChunk) -> dict[int, _ConvertedMember]:

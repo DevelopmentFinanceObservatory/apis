@@ -98,6 +98,11 @@ def test_the_fixture_index_serves_both_declared_composites():
             "both a measured property and a basis",
             id="measure-and-basis",
         ),
+        pytest.param(
+            (_with_component(_SPLICED, "headline_net", zero_absent=True),),
+            "reads absence as zero",
+            id="spliced-zero-absent",
+        ),
     ],
 )
 def test_the_loader_refuses_a_malformed_composite(composites, message):

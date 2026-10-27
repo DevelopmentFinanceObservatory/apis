@@ -26,6 +26,7 @@ from code_index.types import (
 
 if TYPE_CHECKING:
     from code_index.query import CodeIndex
+    from dfo_platform.roles import FlowAccount
 
 _PROVENANCE = "provenance"
 _PINNED_SHAPE = "stat_var"
@@ -84,6 +85,27 @@ def composite_ref(identity: Mapping[str, object]) -> str | None:
             pointer=f"/facets/{_PROVENANCE}",
         )
     return None
+
+
+def provenance_datasets(ref: str) -> tuple[str, ...]:
+    """The datasets a provenance `ref` serves from: a declared composite's component tables,
+    each once in declaration order, else `ref` itself."""
+    composite = DECLARED_COMPOSITES.get(ref)
+    if composite is None:
+        return (ref,)
+    return tuple(dict.fromkeys(recipe.dataset for recipe in composite.components))
+
+
+def provenance_account(index: CodeIndex, ref: str) -> FlowAccount | None:
+    """The flow account the datasets of `ref` declare (`DatasetDeclaration.account`,
+    `provenance_datasets`), or `None` where `index` declares none of them or they declare
+    different accounts."""
+    accounts = {
+        index.datasets[dataset].account
+        for dataset in provenance_datasets(ref)
+        if dataset in index.datasets
+    }
+    return accounts.pop() if len(accounts) == 1 else None
 
 
 def refuse_composite_refs(refs: Sequence[str]) -> None:

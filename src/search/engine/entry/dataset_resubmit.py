@@ -42,7 +42,9 @@ An identity entry that posts `scope_entries` compiles them over its identity
 (`scope.build.build_part_scope`), resolves the identity they compile to, and carries the
 scope on its definite part (`_compiled_scope`, `_served_scope`). A composite identity, posted
 or compiled, resolves the identity its option was set on
-(`identity_edit.composite_table_identity`) and answers as the composite (`_as_composite`).
+(`identity_edit.composite_table_identity`) and answers as the composite (`_as_composite`). A
+posted one asking for the latest year reads the year its tables elect, as a compiled one does
+(`scope.provider.elect_latest_window`).
 
 A part whose answer stands on less than a later request may read
 (`RegionResult.leg_degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
@@ -118,6 +120,7 @@ from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
 from search.scope.composite import assemble_composite
+from search.scope.provider import elect_latest_window
 from search.scope.region import region_groups
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -167,13 +170,12 @@ def _as_composite(
     identity: BaseIdentity,
     *,
     scope: PartScope | None,
-    coverage: CoverageSnapshot,
+    facts: ScopeFacts,
 ) -> RegionResult:
     """`region`, resolved for composite `identity`'s table identity, answering the composite
     (`scope.composite.assemble_composite`) under its own spec_id, which is the compiled
     scope's when `scope` compiled it."""
     spec_id = scope.compiled.spec_id if scope is not None else identity_spec_id(identity)
-    facts = ScopeFacts(index=get_index(), coverage=coverage)
     spec, _ = assemble_composite(region.spec, identity, spec_id, facts=facts)
     return with_composite_answer(region, spec)
 
@@ -359,7 +361,11 @@ async def handle(
                 _compiled_scope, entry, index=index, coverage=params.coverage
             )
         )
-        identity = entry.identity if scope is None else scope.compiled.identity
+        facts = ScopeFacts(index=get_index(), coverage=params.coverage)
+        # A composite posted with no scope entries reads as a compiled one does.
+        identity = (
+            elect_latest_window(entry.identity, facts) if scope is None else scope.compiled.identity
+        )
         read = composite_table_identity(identity, pointer=f"/input/entries/{index}/identity")
         # A compiled scope may switch the region's reading, so its groups are restated.
         groups = (
@@ -394,7 +400,7 @@ async def handle(
             if memo is not None and key is not None:
                 memo.store(key, region)
         if read is not identity and region.status == "definite":
-            region = _as_composite(region, identity, scope=scope, coverage=params.coverage)
+            region = _as_composite(region, identity, scope=scope, facts=facts)
         return dataclasses.replace(
             region,
             assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),

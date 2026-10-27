@@ -5,9 +5,10 @@ A composite identity binds a declared composite provenance (`code_index.composit
 provider-inclusive total of a donor's bilateral flows and its imputed multilateral share
 (stacked), or the OECD headline, net flows to 2017 and grant equivalents from 2018 (spliced).
 The Datasets mint composes its frame from one read per component, keeping the years every
-stacked component holds rows in. Search reads the same years from the request's coverage
-snapshot, in memory (`component_years`), so the window a scope option offers is the window the
-mint serves.
+stacked component's table covers (`materialise.composite.table_years`, `stacked_years`). Search
+reads the same years from the request's coverage snapshot, in memory, and the years each
+component holds under the part's places (`component_years`), so the window a scope option
+offers is the window the mint serves.
 
 `assemble_composite` restates a Search answer resolved for the composite's table identity
 (`code_index.composites.table_identity`) as the composite: its identity and spec_id, its
@@ -27,11 +28,13 @@ from code_index.composites import (
     ComponentIdentity,
     CompositeNotServable,
     component_identities,
+    provenance_account,
     table_identity,
 )
 from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.query import CodeIndex
 from code_index.types import CompositeDeclaration
+from materialise.composite import spans, stacked_years, table_years
 from search.engine.retrieval.bound_values import served_members
 from search.models import (
     BaseIdentity,
@@ -48,7 +51,6 @@ from search.models import (
     Spec,
     SpecDefinition,
     TimeWindow,
-    YearSpan,
 )
 from search.observations import provenance_refs
 from search.scope.tables import ScopeFacts
@@ -144,22 +146,11 @@ def table_document(identity: BaseIdentity, index: CodeIndex) -> dict[str, object
         return None
 
 
-def spans(years: Iterable[int]) -> list[YearSpan]:
-    """`years` as closed runs of consecutive years, in order."""
-    runs: list[YearSpan] = []
-    for year in sorted(set(years)):
-        if runs and runs[-1][1] == year - 1:
-            runs[-1] = (runs[-1][0], year)
-        else:
-            runs.append((year, year))
-    return runs
-
-
 @dataclass(frozen=True, slots=True)
-class _Served:
-    """One component, the series its family holds per year, the years it serves in the
-    composite, and the StatVars a mint of it serves (None when the index does not settle
-    them)."""
+class ServedComponent:
+    """One component, the series its family holds per year under the part's places, the
+    years it serves in the composite, and the StatVars a mint of it serves (None when the
+    index does not settle them)."""
 
     component: ComponentIdentity
     years: YearCounts
@@ -167,22 +158,42 @@ class _Served:
     members: frozenset[str] | None
 
 
-def _served(identity: Mapping[str, object], *, facts: ScopeFacts) -> list[_Served]:
-    """Each component of composite `identity` with the years it serves. A stacked composite
-    serves the years every component holds a series in, a spliced one the years its own
-    component holds. Raises `code_index.composites.CompositeNotServable` as
-    `component_identities` does, and `ValueError` for an identity that binds no composite."""
+def served_components(
+    identity: Mapping[str, object], *, facts: ScopeFacts
+) -> list[ServedComponent]:
+    """Each component of composite `identity` with the years it serves, as the mint composes
+    them (`materialise.composite`). A stacked composite's years are those every component's
+    table covers (`stacked_years`); in them, a component serves the years it holds a series
+    in, and a zero-filling one (`ComponentRecipe.zero_absent`) every year any component holds
+    one in, since its zero rows fill the cells it lacks. A spliced component serves the years
+    it holds. Raises `code_index.composites.CompositeNotServable` as `component_identities`
+    does, and `ValueError` for an identity that binds no composite."""
     components = component_identities(facts.index, identity)
     if components is None:
         raise ValueError("the identity binds no composite provenance")
     counted = [
         (component, component_years(component.identity, facts=facts)) for component in components
     ]
-    stacked = _declaration(facts.index, identity).kind == "stacked"
-    shared = frozenset.intersection(*(years.held for _, years in counted))
+    if _declaration(facts.index, identity).kind != "stacked":
+        return [ServedComponent(c, years, years.held, _members(c)) for c, years in counted]
+    covered = stacked_years(_table_years(c.identity, facts=facts) for c, _ in counted)
+    held_by_any = frozenset[int]().union(*(years.held for _, years in counted))
     return [
-        _Served(c, years, shared if stacked else years.held, _members(c)) for c, years in counted
+        ServedComponent(
+            c,
+            years,
+            covered & (held_by_any if c.recipe.zero_absent else years.held),
+            _members(c),
+        )
+        for c, years in counted
     ]
+
+
+def _table_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> frozenset[int]:
+    """The years the table component `identity` reads covers in `facts`' coverage snapshot
+    (`materialise.composite.table_years`), read once per identity for one `facts`."""
+    key = "table:" + json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return facts.remembered(key, lambda: table_years(facts.index, facts.coverage.index, identity))
 
 
 def _members(component: ComponentIdentity) -> frozenset[str] | None:
@@ -207,7 +218,7 @@ def assemble_composite(
     the composite's components (`CompiledScope.components`).
 
     The restated answer's definition is `identity`; its coverage counts every component's
-    series in the years each serves (`_served`), over the window those years span; its
+    series in the years each serves (`served_components`), over the window those years span; its
     headline counts the latest of those years over every component serving it
     (`_headline`); its StatVar counts are the components' summed (`_stat_vars`); its
     provenance facet names the composite, with the composite's label and the account its
@@ -220,19 +231,18 @@ def assemble_composite(
     `code_index.composites.CompositeNotServable` as `component_identities` does."""
     document = identity.model_dump(mode="json", exclude_none=True)
     index = facts.index
-    served = _served(document, facts=facts)
+    served = served_components(document, facts=facts)
     declaration = _declaration(index, document)
     years = sorted({year for item in served for year in item.served})
     observations = sum(item.years.counts.get(year, 0) for item in served for year in item.served)
     window = TimeWindow(start_year=years[0], end_year=years[-1]) if years else None
-    accounts = {index.datasets[recipe.dataset].account for recipe in declaration.components}
     facets = {
         **spec.resolved.facets,
         "provenance": ResolvedFacet(
             basis="bound",
             ref=declaration.provenance,
             label=declaration.label,
-            account=accounts.pop() if len(accounts) == 1 else None,
+            account=provenance_account(index, declaration.provenance),
         ),
     }
     resolved = spec.resolved.model_copy(
@@ -299,14 +309,14 @@ def composite_components(identity: BaseIdentity, *, facts: ScopeFacts) -> list[C
     document = identity.model_dump(mode="json", exclude_none=True)
     if component_identities(facts.index, document) is None:
         return None
-    return _components(_served(document, facts=facts))
+    return _components(served_components(document, facts=facts))
 
 
-def _components(served: Sequence[_Served]) -> list[Component]:
+def _components(served: Sequence[ServedComponent]) -> list[Component]:
     return [
         Component(
             role=item.component.role,
-            periods=spans(item.served),
+            periods=list(spans(item.served)),
             provenance=item.component.recipe.dataset,
             stat_vars=len(item.members) if item.members is not None else None,
             identity=BaseIdentity.model_validate(item.component.identity),
@@ -316,7 +326,7 @@ def _components(served: Sequence[_Served]) -> list[Component]:
 
 
 def _with_data(
-    item: _Served, bound: BoundRoles, coverage: CoverageIndex, years: Iterable[int]
+    item: ServedComponent, bound: BoundRoles, coverage: CoverageIndex, years: Iterable[int]
 ) -> frozenset[str]:
     """The StatVars of `item` holding a series under `bound` in one of `years`."""
     held = sorted(set(years))
@@ -332,7 +342,7 @@ def _with_data(
 
 
 def _stat_vars(
-    served: Sequence[_Served],
+    served: Sequence[ServedComponent],
     stated: ResolvedStatVars,
     identity: Mapping[str, object],
     *,
@@ -362,7 +372,7 @@ def _stat_vars(
 
 
 def _headline(
-    served: Sequence[_Served],
+    served: Sequence[ServedComponent],
     identity: Mapping[str, object],
     stated: Headline | None,
     *,

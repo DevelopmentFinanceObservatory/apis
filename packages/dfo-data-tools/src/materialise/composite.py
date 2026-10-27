@@ -4,16 +4,19 @@ A composite provenance (`code_index.types.CompositeDeclaration`) names the serie
 served from. Each component materialises through `pipeline.materialise_group` alone, and
 `compose_components` makes one result of them:
 
-- A stacked composite serves the years every component holds a row in, inside the requested
-  window. Rows of other years are dropped, and each component's summary names the years it
-  lost. A spliced composite serves each component's rows in its own declared years.
+- A stacked composite serves the years every component's table covers in the coverage
+  snapshot (`table_years`, `stacked_years`), inside the requested window, whatever rows this
+  read returns. Rows of other years are dropped, and each component's summary names the
+  years it lost. Search reads the same years (`search.scope.composite`). A spliced composite
+  serves each component's rows in its own declared years.
 - Inside those years, each member of a component whose absence reads as zero
   (`ComponentRecipe.zero_absent`) gets a row of value 0 in every cell, a role tuple and
   period, that another component fills and it does not. Outside them no zero row is
   written, so a year a component does not cover is missing. A zero row states the unit its
   cell's rows state, its own component's where that component holds the cell, and the
   member's measurement method, so a cell's rows share one unit when the components'
-  conversions agree on it. Each component is converted before it is composed, and a
+  conversions agree on it. A zero-filling component holding no row at all copies another
+  component's row, with the one method its facet selection names, or none. Each component is converted before it is composed, and a
   converted zero is a zero in its cell's unit. A component without
   the flag contributes nothing where it holds no row, and neither does a member its facet
   group election left out (`MaterialisationResult.unserved_members`), whose series sit under
@@ -24,8 +27,9 @@ served from. Each component materialises through `pipeline.materialise_group` al
 The frame keeps `row_sort_key` order by construction. Every row of one `stat_var` comes from
 one component, and `stat_var` leads the sort key (`dfo_frame_grammar.grammar.derive_columns`),
 so the composed frame is each component's rows of one member at a time, merged across
-components by `stat_var` alone. Each pass holds one member's rows, the cells of the covered
-years, and each zero-filling member's own cells.
+components by `stat_var` alone. It is composed once: the pass that hashes it also counts it,
+folds its series statistics and output profile, and writes it as Parquet, one row group per
+member, which every later pass reads (`frame_build.ParquetFrameChunks`).
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ from dfo_frame_grammar import (
 )
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 
+from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import pipeline
 from materialise.codes import MaterialisationWarning
@@ -65,14 +70,16 @@ from materialise.finish import (
     currency_unmapped_omitted_warning,
     deflator_missing_omitted_warning,
 )
-from materialise.frame_build import build_frame
-from materialise.profile import compute_output_profile_from_chunks
+from materialise.frame_build import ParquetFrameChunks, ParquetFrameSink, build_frame
+from materialise.profile import OutputProfileFold
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace
 from materialise.window import AppliedWindow, Coverage, RequestedWindow, compute_applied_window
 
 if TYPE_CHECKING:
+    from code_index.query import CodeIndex
     from materialise.pipeline import MaterialisationRequest, MaterialisationResult
+    from series_coverage.index import CoverageIndex
 
 _PROVENANCE_AXIS = "provenance"
 PROVENANCE_COLUMN = "provenance"
@@ -101,13 +108,47 @@ type _Cell = tuple[tuple[str, ...], str]
 
 @dataclass(frozen=True)
 class ComponentResult:
-    """One component's materialisation: its role and recipe, the requests it read, and the
-    result `pipeline.materialise_group` returned for them."""
+    """One component's materialisation: its role and recipe, the requests it read, the
+    result `pipeline.materialise_group` returned for them, and the years its table covers
+    (`table_years`)."""
 
     role: ComponentRole
     recipe: ComponentRecipe
     requests: Sequence[MaterialisationRequest]
     result: MaterialisationResult
+    covered_years: frozenset[int]
+
+
+def table_years(
+    index: CodeIndex, coverage: CoverageIndex, identity: Mapping[str, object]
+) -> frozenset[int]:
+    """The years the table a component `identity` reads covers: those any series of its
+    index family (`code_index.members.index_family`) holds in `coverage`, under any place.
+    Empty for a family the index does not decide, or one its named dataset does not
+    publish."""
+    try:
+        family = index_family(index, identity_family_query(index, identity))
+    except SourceNotInFamily:
+        return frozenset()
+    if family is None or not family.rows:
+        return frozenset()
+    counts = coverage.series_by_year(
+        variables=[row.dcid for row in family.rows],
+        first_year=coverage.horizon.epoch_year,
+        last_year=coverage.horizon.max_year,
+    )
+    return frozenset(year for year, count in counts.items() if count)
+
+
+def stacked_years(covered: Iterable[frozenset[int]]) -> frozenset[int]:
+    """The years a stacked composite serves: those every component's table covers, each
+    component's `covered` (`table_years`)."""
+    return frozenset.intersection(*covered)
+
+
+def rows_in_years(frame_chunks: Callable[[], Iterator[Frame]], years: frozenset[int]) -> int:
+    """How many rows of `frame_chunks` fall in `years`."""
+    return sum(sum(1 for year in _years(frame.table) if year in years) for frame in frame_chunks())
 
 
 @dataclass(frozen=True)
@@ -184,7 +225,8 @@ def compose_components(
     module docstring states. `window` is the composite's requested window and `role_columns`
     the role columns every component's frame holds.
 
-    The frame's hash and `content_version` come from the composed chunks. The trace states
+    The frame's hash and `content_version` come from the composed chunks, in the one pass
+    that composes them. The trace states
     the composite's provenance as its one provenance selection, keeps each component's
     selections in its summary (`ManifestTrace.components`), and lists every member served. A
     warning code is stated once: `coverage_below_scope` counts the requested entities any
@@ -200,12 +242,6 @@ def compose_components(
     role_columns = tuple(role_columns)
     _check_components(components, role_columns=role_columns)
     plan = _plan(components, composite=composite)
-
-    def frame_chunks() -> Iterator[Frame]:
-        return _composed_chunks(
-            components, plan=plan, composite=composite, role_columns=role_columns
-        )
-
     fold = _Fold()
     owner = {
         request.stat_var: component.role
@@ -213,17 +249,26 @@ def compose_components(
         for request in component.requests
     }
     statistics = SeriesStatisticsSink(continuing=_continuations(components, composite=composite))
+    profile = OutputProfileFold(role_columns=role_columns, enrichment=enrichment)
+    sink = ParquetFrameSink()
+    columns: list[tuple[str, ...]] = []
 
     def counted(chunks: Iterator[Frame]) -> Iterator[Frame]:
         for frame in chunks:
             _fold(fold, frame, plan=plan, owner=owner, role_columns=role_columns)
             statistics.write(compute_series_statistics_table(frame))
+            profile.add(frame)
+            sink.write(frame.table)
+            columns[:] = [frame.columns]
             yield frame
 
-    frame_digest = stream_frame_sha256(counted(frame_chunks()))
-    output_profile = compute_output_profile_from_chunks(
-        frame_chunks, role_columns=role_columns, enrichment=enrichment
+    frame_digest = stream_frame_sha256(
+        counted(
+            _composed_chunks(components, plan=plan, composite=composite, role_columns=role_columns)
+        )
     )
+    frame_chunks = ParquetFrameChunks(sink.finish(), columns=columns[0])
+    output_profile = profile.finish(frame_chunks)
     served_bounds = (min(fold.all_years), max(fold.all_years)) if fold.all_years else None
     applied = compute_applied_window(window, served_bounds)
     coverage = Coverage(
@@ -338,6 +383,7 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
     member_cells: dict[str, set[_Cell]] = {}
     templates: dict[str, pa.Table] = {}
     component_templates: dict[ComponentRole, dict[object, pa.Table]] = {}
+    sample: pa.Table | None = None
     roles = _role_columns(components)
     for component in components:
         zero_fill = component.recipe.zero_absent
@@ -345,6 +391,8 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
             table = frame.table
             if table.num_rows == 0:
                 continue
+            if sample is None:
+                sample = table.take([0])
             years = _years(table)
             role_values = [_strings(table, role) for role in roles]
             periods = _strings(table, TIME_PERIOD_COLUMN)
@@ -365,7 +413,7 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
                     table, templates, component_templates.setdefault(component.role, {})
                 )
     if composite.kind == "stacked":
-        shared = frozenset.intersection(*(frozenset(years) for years in held.values()))
+        shared = stacked_years(component.covered_years for component in components)
         kept = {component.role: shared for component in components}
     else:
         kept = {
@@ -396,6 +444,8 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
         )
         zero_members[component.role] = members
         by_method = component_templates.get(component.role, {})
+        if not by_method and sample is not None:
+            by_method = {None: _borrowed_template(component, sample)}
         for member in members:
             if member in templates or not covered:
                 continue
@@ -421,6 +471,22 @@ def _plan(components: Sequence[ComponentResult], *, composite: CompositeDeclarat
             )
             for role, members in zero_members.items()
         },
+    )
+
+
+def _borrowed_template(component: ComponentResult, row: pa.Table) -> pa.Table:
+    """`row`, another component's, as the template of zero-filling `component`'s zero rows
+    when it holds no row: its measurement method is the one `component`'s facet selection
+    names, or none."""
+    methods = {
+        facet.get("ref")
+        for facet in component.result.trace.facets
+        if facet.get("axis") == _METHOD_AXIS
+    }
+    method = methods.pop() if len(methods) == 1 else None
+    position = row.schema.get_field_index(_METHOD_COLUMN)
+    return row.set_column(
+        position, _METHOD_COLUMN, pa.array([method], type=row.schema.field(position).type)
     )
 
 
@@ -701,7 +767,7 @@ def _summary(component: ComponentResult, *, plan: _Plan, fold: _Fold) -> Compone
         role=component.role,
         provenance=provenance,
         content_version=component.result.content_version,
-        periods=_spans(served_years),
+        periods=spans(served_years),
         dropped_years=tuple(
             sorted(plan.held_years[component.role] - plan.kept_years[component.role])
         ),
@@ -713,8 +779,9 @@ def _summary(component: ComponentResult, *, plan: _Plan, fold: _Fold) -> Compone
     )
 
 
-def _spans(years: Iterable[int]) -> tuple[tuple[int, int], ...]:
-    """`years` as closed spans of consecutive years."""
+def spans(years: Iterable[int]) -> tuple[tuple[int, int], ...]:
+    """`years` as closed spans of consecutive years, in order, as the mint's component
+    summaries and Search's composite answers state them."""
     spans: list[list[int]] = []
     for year in sorted(set(years)):
         if spans and year == spans[-1][1] + 1:

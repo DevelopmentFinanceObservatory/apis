@@ -12,6 +12,7 @@ from typing import ClassVar
 import pyarrow as pa
 import pytest
 
+from code_index.declarations import COMPOSITES
 from dc_graph.client import SubjectPage
 from materialise.convert import require_conversion_coverage
 from materialise.errors import UpstreamResponseError
@@ -445,6 +446,31 @@ def test_the_conversion_accepts_every_year_and_base_year_the_offer_states(
 )
 def test_no_recipe_offers_nothing(spec: Spec, members):
     assert _offer(spec, members) is None
+
+
+def test_a_composite_offers_the_recipe_its_component_tables_share():
+    """A composite answer's provenance facet names the composite, which names no recipe; its
+    component tables do, and they share one."""
+    composite, _ = COMPOSITES
+    catalogue = ConversionCatalogue(
+        recipes=MappingProxyType(
+            {recipe.dataset: "ConversionRecipeDAC" for recipe in composite.components}
+        ),
+        tables=_CATALOGUE.tables,
+        national_currencies=_CATALOGUE.national_currencies,
+        default_base_year=2024,
+    )
+    plan = _plan((1990, 2024), (("observationAbout", "country/GTM"),))
+
+    offer = unit_conversion(
+        _usd(composite.provenance, served=(1990, 2024)),
+        members=_members(),
+        plans=(plan,),
+        catalogue=catalogue,
+    )
+
+    assert offer is not None
+    assert [currency.code for currency in offer.currencies] == ["EUR", "GTQ", "USD"]
 
 
 def test_a_role_bound_to_one_entity_offers_its_national_currency():

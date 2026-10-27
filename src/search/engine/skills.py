@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from code_index.composites import provenance_datasets
 from search.models import BindingSet, BindingValue
 from skills_index import SkillsIndex, match_dcids
 
@@ -27,7 +28,9 @@ def project_spec_dcids(spec: Spec) -> set[str]:
     Slots on ``where``, ``when``, and ``source`` add nothing, even when a
     constraint property backs them, and neither does an unbound slot.
     The provenance facet adds its ``ref``, the one provenance every served
-    series reads, which matches skills attached on ``skillAppliesToProvenance``.
+    series reads, or a composite's component tables in its place
+    (``code_index.composites.provenance_datasets``), which match skills attached
+    on ``skillAppliesToProvenance``.
     A provenance facet selected per series, and every other facet axis, add
     nothing. ``expansion.added``, entities, and the resolved StatVars add
     nothing either. Every Spec ``with_skills`` reaches is projected this way,
@@ -50,7 +53,7 @@ def project_spec_dcids(spec: Spec) -> set[str]:
             dcids.add(ref.ref)
     provenance = spec.resolved.facets.get("provenance")
     if provenance is not None and provenance.ref is not None:
-        dcids.add(provenance.ref)
+        dcids.update(provenance_datasets(provenance.ref))
     for slot in spec.resolved.slots:
         if slot.key.axis not in _PROJECTED_AXES or slot.key.property is None:
             continue

@@ -75,6 +75,8 @@ from datasets_api.adapter import (
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_materialise import (
     CapabilityUnavailable,
+    CompositeUnservable,
+    CompositeWindowUnsupported,
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
     ExcludedByRegistry,
@@ -784,6 +786,10 @@ _RESOLUTION_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     GraphDeadlineExceededError,
     MemberReadDeadline,
     CurrencyRoleUndeclared,
+    # A composite identity's components are derived and resolved with its members
+    # (`adapter.resolve_definition_members`).
+    CompositeUnservable,
+    CompositeWindowUnsupported,
 )
 
 # The failures of a materialisation run, which the definition and options routes make.

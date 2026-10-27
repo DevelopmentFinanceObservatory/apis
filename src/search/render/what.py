@@ -7,6 +7,7 @@ import string
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
+from code_index.composites import provenance_datasets
 from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
 from code_index.shared import get_index
 from dfo_platform.roles import RoleWording
@@ -447,11 +448,13 @@ def _unit_heading_phrase(
 def _ratio_base_owner(facets: Mapping[str, ResolvedFacet], wording: RoleWording) -> str | None:
     """The noun of the party whose own total the answer's ratio divides by, as the one
     dataset it serves from declares it (`DatasetDeclaration.ratio_base_axis`), else `None`:
-    for a dataset that declares none, and for series of several datasets."""
+    for a dataset that declares none, and for series of several datasets, as a composite's
+    are when its components read several (`code_index.composites.provenance_datasets`)."""
     provenance = facets.get("provenance")
     if provenance is None or provenance.ref is None:
         return None
-    dataset = get_index().datasets.get(provenance.ref)
+    datasets = provenance_datasets(provenance.ref)
+    dataset = get_index().datasets.get(datasets[0]) if len(datasets) == 1 else None
     if dataset is None or dataset.ratio_base_axis is None:
         return None
     return wording.noun(dataset.ratio_base_axis).singular

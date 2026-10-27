@@ -20,6 +20,7 @@ from artifact_store import Tier
 from code_index.composites import CompositeNotServable, component_identities
 from code_index.declarations import COMPOSITES
 from code_index.shared import get_index
+from datasets_api import serve
 from datasets_api.adapter import resolve_definition_members
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.groupby import refuse_provenance_disagreement, refuse_stat_var_collision
@@ -27,6 +28,7 @@ from datasets_api.version_store import LiveHeadStore
 from materialise.reshape import RollupNotSummableError, Table
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import recompute_identity
+from spec_registry.reader import StoredDefinition
 from statvar_members import MemberEnumerator
 from tests.code_index.aid_identity import (
     CRS_MEMBER_COUNT,
@@ -36,6 +38,7 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
 )
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.materialise import test_composite as composite_test
 
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
@@ -407,3 +410,72 @@ def test_the_door_refuses_a_composite_it_cannot_compose_before_any_read(edit, de
     assert problem["code"] == "request_invalid"
     assert problem["pointer"] == "/input/spec_id"
     assert detail in problem["detail"]
+
+
+def test_each_component_run_is_charged_only_the_rows_the_composite_keeps(monkeypatch):
+    """The imputed table covers 2020 and 2021, so the bilateral run's 2019 rows are dropped
+    from the composite and leave the ceiling to the imputed run."""
+    populated = _populated()
+    crs_rows = [
+        (f"dcid:{dcid}", _RECIPIENT, year, float(value))
+        for dcid, (facet, value, years) in populated.items()
+        if facet == _CRS_FACET
+        for year in years
+    ]
+    imputed_rows = [
+        (f"dcid:{dcid}", _RECIPIENT, year, float(value))
+        for dcid, (facet, value, years) in populated.items()
+        if facet == _IMPUTED_FACET
+        for year in years
+    ]
+    results = {
+        "bilateral": composite_test._component(
+            _STACKED,
+            "bilateral",
+            crs_rows,
+            provenance=CRS_PROVENANCE,
+            members=sorted({row[0] for row in crs_rows}),
+        ),
+        "imputed": composite_test._component(
+            _STACKED,
+            "imputed",
+            imputed_rows,
+            provenance=IMPUTED_PROVENANCE,
+            members=sorted({row[0] for row in imputed_rows}),
+        ),
+    }
+    ceilings: dict[str, int] = {}
+
+    def _materialise(part, *, ceiling, precomputed_probe):
+        role = part[0].component
+        ceilings[role] = ceiling
+        return results[role].result, None
+
+    monkeypatch.setattr(serve, "_origin_findings", lambda *a, **k: serve._OriginFindings((), ()))
+    identity = _identity()
+    components = component_identities(get_index(), identity)
+    assert components is not None
+    ceiling = 1_000
+
+    serve._materialise_components(
+        [request for result in results.values() for request in result.requests],
+        components=components,
+        ceiling=ceiling,
+        materialise=_materialise,
+        stored=StoredDefinition(
+            spec_id="spec_test",
+            schema_version=1,
+            identity=identity,
+            identity_bytes=b"",
+            identity_digest="",
+        ),
+        code_index=get_index(),
+        graph=FakeMintGraphReader(),
+        enrichment=composite_test._ENRICHMENT,
+        deadline=None,
+        coverage_index=_coverage(populated).snapshot().index,
+    )
+
+    kept_crs_rows = sum(1 for row in crs_rows if row[2] in _IMPUTED_YEARS)
+    assert kept_crs_rows < len(crs_rows)
+    assert ceilings == {"bilateral": ceiling, "imputed": ceiling - kept_crs_rows}

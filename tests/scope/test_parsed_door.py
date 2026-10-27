@@ -20,6 +20,7 @@ from search.models import (
     ResolveRequest,
     ShapeBinding,
     SlotBinding,
+    TextOrigin,
 )
 from search.scope import rules as scope_rules
 from search.scope.state import AxisRecord, ScopeState
@@ -252,6 +253,35 @@ def test_a_stated_word_on_an_axis_the_part_lacks_is_reported_not_applied(monkeyp
         "end": 9,
     }
     assert scope.entries == []
+
+
+def test_a_stated_entry_made_for_a_concept_attaches_only_where_its_axis_holds_the_concept():
+    """A "health" sector entry on a part with no sector axis (a recipient's total, which
+    settles its basis alone) is another part's, so it is not reported dropped there. A stated
+    word with no concept on the absent axis is the part's own, and is."""
+    health = Entry(
+        axis="sector",
+        option_id=_HELD,
+        provenance="explicit",
+        concept="health",
+        origin=TextOrigin(text="health", start=0, end=6),
+    )
+    bilateral = Entry(
+        axis="provider",
+        option_id="provider:bilateral",
+        provenance="explicit",
+        origin=TextOrigin(text="bilateral", start=0, end=9),
+    )
+    basis = AxisRecord(axis="measure_basis", rule="test_basis", active=_NET, provenance="default")
+
+    total = ScopeState(entries=(health, bilateral), records={"measure_basis": basis})
+    sector = AxisRecord(
+        axis="sector", rule="test_rule", active=_HELD, provenance="default", concept="health"
+    )
+    health_part = ScopeState(entries=(health,), records={"sector": sector})
+
+    assert total.attached() == (bilateral,)
+    assert health_part.attached() == (health,)
 
 
 def test_an_unavailable_stated_option_is_dropped_and_the_default_derives(monkeypatch):

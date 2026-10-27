@@ -14,6 +14,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from code_index.scope_conventions import REGION_READINGS
+from code_index.shared import get_index
+from entity_resolution.shared import shared_membership_policy
 from search.engine.concurrency import create_owned_task
 from search.engine.core import resolve_events
 from search.engine.enrichment import _launch_trailing_tasks
@@ -2276,3 +2279,56 @@ def test_scope_entries_a_part_cannot_take_refuse_422_at_the_entry(
     body = resp.json()
     assert (resp.status_code, body["code"], body["pointer"]) == (422, code, pointer)
     assert "parts" not in body
+
+
+class _Captured(Exception):
+    """Stops a resubmit at its resolve, once the payload it posts is captured."""
+
+
+@pytest.mark.parametrize("onto_composite", [True, False], ids=["onto-composite", "off-composite"])
+def test_a_scope_switch_onto_or_off_a_composite_restates_the_region_group(
+    monkeypatch, onto_composite
+):
+    """A posted group naming the OECD's registry group, on scope entries that compile to the
+    graph region's members, is restated as the graph region in the payload the part resolves,
+    whether the switch leaves the identity a provider-inclusive composite, read as its
+    bilateral table identity, or takes it off one."""
+    row = next(row for row in REGION_READINGS if row.region == "SubSaharanAfrica")
+    total = get_index().parties[row.total]
+    assert total.totals is not None
+    held = shared_membership_policy().members(row.region).members
+    assert isinstance(held, tuple)
+    members = sorted(held)
+    compiled = education_aid_identity(
+        source="provenance/ONEBilateralAndImputedMultilateral" if onto_composite else None
+    )
+    compiled["entities"] = {"origin": ["country/FRA"], "destination": members}
+    compiled_identity = BaseIdentity.model_validate(compiled)
+    posted = education_aid_identity(
+        source=None if onto_composite else "provenance/ONEBilateralAndImputedMultilateral"
+    )
+    posted["entities"] = {"origin": ["country/FRA"], "destination": ["country/KEN"]}
+    scope = SimpleNamespace(
+        compiled=SimpleNamespace(identity=compiled_identity, spec_id="spec_compiled")
+    )
+    monkeypatch.setattr(_dataset_resubmit_mod, "_compiled_scope", lambda *a, **k: scope)
+    seen = []
+
+    def _capture(*, inp, **_kwargs):
+        seen.append(inp)
+        raise _Captured
+
+    monkeypatch.setattr(_dataset_resubmit_mod, "resolve_spec_resubmit", _capture)
+    entry = ResubmitIdentityEntry(
+        variable_text="education aid",
+        identity=BaseIdentity.model_validate(posted),
+        scope_entries=[],
+        entity_groups={"destination": EntityGroup(label=row.name, group_id=total.totals)},
+    )
+
+    with pytest.raises(_Captured):
+        offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry])))
+
+    (payload,) = seen
+    assert payload.entity_groups == {"destination": EntityGroup(ref=row.region, label=row.name)}
+    assert (payload.identity.facets or {}).get("provenance") is None

@@ -12,8 +12,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, assert_never, get_args
 
+from code_index.composites import provenance_account
 from code_index.shared import get_index
-from dfo_platform.roles import FlowAccount
 from materialise.facets import native_currency_iso
 from search.engine.clients.graph import Facet
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
@@ -126,8 +126,8 @@ def _resolved_facets(
 
     An axis is omitted when no series carries it. A shared ref on every series yields
     `ref` with the first-seen series' label, source, and Data Commons, and on the provenance
-    axis the account of a declared dataset (`_declared_account`). Differing refs or a
-    missing value on any series yield `selection="per_series"` without a ref or label. `bound_axes` supplies each axis's
+    axis the account its datasets declare (`code_index.composites.provenance_account`).
+    Differing refs or a missing value on any series yield `selection="per_series"` without a ref or label. `bound_axes` supplies each axis's
     basis. Unbound axes use `fallback`. `request_basis` is copied to the unit axis only, and
     a shared unit takes its ISO 4217 code from `currency_of` (`unit.refs.unit_currency`).
     Keys follow `FacetAxis` order.
@@ -160,7 +160,9 @@ def _resolved_facets(
                 currency=(
                     currency_of(shared.ref) if axis == "unit" and currency_of is not None else None
                 ),
-                account=_declared_account(shared.ref) if axis == "provenance" else None,
+                account=(
+                    provenance_account(get_index(), shared.ref) if axis == "provenance" else None
+                ),
                 request_basis=axis_request_basis,
             )
         else:
@@ -168,19 +170,6 @@ def _resolved_facets(
                 basis=basis, selection="per_series", request_basis=axis_request_basis
             )
     return result
-
-
-def _declared_account(ref: str) -> FlowAccount | None:
-    """The flow account of the dataset `ref` when the code index declares it
-    (`DatasetDeclaration.account`), the one account every component table of a composite it
-    serves gives (`CodeIndex.composite`), else `None`."""
-    index = get_index()
-    composite = index.composite(ref)
-    if composite is not None:
-        accounts = {index.datasets[recipe.dataset].account for recipe in composite.components}
-        return accounts.pop() if len(accounts) == 1 else None
-    dataset = index.datasets.get(ref)
-    return dataset.account if dataset is not None else None
 
 
 def _currency_label(ref: str, labels: Mapping[str, str]) -> str:

@@ -10,7 +10,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 import pytest
-from dfo_frame_grammar import FRAME_GRAMMAR_VERSION, derive_columns, frame_sha256
+from dfo_frame_grammar import (
+    FRAME_GRAMMAR_VERSION,
+    derive_columns,
+    frame_sha256,
+    stream_frame_sha256,
+)
 
 from code_index.declarations import COMPOSITES
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
@@ -22,8 +27,8 @@ from materialise.enrichment import EnrichmentLookup
 from materialise.errors import MaterialisationUsageError
 from materialise.finish import _coverage_below_scope_warning
 from materialise.frame_build import build_frame
-from materialise.profile import compute_output_profile
-from materialise.statistics import SeriesStatisticsSink
+from materialise.profile import compute_output_profile, compute_output_profile_from_chunks
+from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage, RequestedWindow
 
@@ -62,10 +67,12 @@ def _component(
     years: tuple[int, int] = (2005, 2024),
     unserved: Sequence[str] = (),
     units: Mapping[str, object] | None = None,
+    covered: Sequence[int] | None = None,
 ) -> ComponentResult:
     """One component's result over `rows`, as `pipeline.materialise_group` returns it, with
     `unserved` the members its facet group election left out and its warning counting them.
-    Each row's unit is its recipient's in `units`, USD when `units` is None."""
+    Each row's unit is its recipient's in `units`, USD when `units` is None. Its table covers
+    `covered`, the years of `rows` when None."""
     frame = build_frame(
         role_keys=_ROLES,
         rows=[
@@ -161,7 +168,11 @@ def _component(
         ),
     )
     return ComponentResult(
-        role=role, recipe=_recipe(composite, role), requests=requests, result=result
+        role=role,
+        recipe=_recipe(composite, role),
+        requests=requests,
+        result=result,
+        covered_years=frozenset((year for _, _, year, _ in rows) if covered is None else covered),
     )
 
 
@@ -246,6 +257,70 @@ def test_an_internal_gap_leaves_the_year_out_of_every_component():
 
     assert {period for _, _, period, _, _ in _rows(result)} == {"2011", "2013"}
     assert _summary(result, "bilateral")["dropped_years"] == [2012]
+
+
+def test_a_year_the_imputed_table_covers_and_this_read_lacks_keeps_the_bilateral_figure():
+    """The imputed table covers 2011 to 2013, so the composite serves every one of them, and
+    a year this read holds no imputed row in is filled with zeros instead of dropped."""
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [(_B, "country/KEN", year, 10.0) for year in (2011, 2012, 2013)],
+        provenance=_CRS,
+        members=[_B],
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(_I, "country/KEN", year, 1.0) for year in (2011, 2013)],
+        provenance=_IMPUTED,
+        members=[_I],
+        covered=(2011, 2012, 2013),
+    )
+
+    result = _compose([bilateral, imputed])
+
+    rows = _rows(result)
+    assert (_B, "country/KEN", "2012", 10.0, _STACKED.provenance) in rows
+    assert (_I, "country/KEN", "2012", 0.0, _STACKED.provenance) in rows
+    assert _summary(result, "bilateral")["dropped_years"] == []
+    assert _summary(result, "imputed")["periods"] == [[2011, 2013]]
+
+
+def test_an_empty_imputed_read_in_years_its_table_covers_writes_zeros_beside_the_bilateral():
+    """No imputed row reaches this read, but the table covers the year: the composite keeps
+    the bilateral figure and writes each imputed member's zero row with the method its facet
+    selection names."""
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [(_B, "country/KEN", 2012, 10.0), (_B, "country/GHA", 2012, 20.0)],
+        provenance=_CRS,
+        members=[_B],
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [],
+        provenance=_IMPUTED,
+        members=[_I],
+        method="ONEImputed",
+        covered=(2012,),
+    )
+
+    result = _compose([bilateral, imputed])
+
+    assert sorted(
+        (row["stat_var"], row["financingRecipient"], row["value"], row["measurementMethod"])
+        for frame in result.frame_chunks()
+        for row in frame.table.to_pylist()
+    ) == [
+        (_B, "country/GHA", 20.0, None),
+        (_B, "country/KEN", 10.0, None),
+        (_I, "country/GHA", 0.0, "ONEImputed"),
+        (_I, "country/KEN", 0.0, "ONEImputed"),
+    ]
+    assert _summary(result, "imputed")["zero_rows"] == 2
 
 
 def test_a_covered_cell_the_imputed_table_lacks_gets_one_zero_row():
@@ -632,3 +707,65 @@ def test_a_member_holding_no_row_in_a_frame_of_several_currencies_takes_each_cel
     )
     assert zeros == [("country/GHA", "GHS", "ONEImputed"), ("country/KEN", "KES", "ONEImputed")]
     assert all(len(units) == 1 for units in _units_by_cell(result).values())
+
+
+def test_the_frame_is_composed_once_and_every_later_pass_reads_the_same_rows():
+    """The pass that hashes the composed frame also folds its statistics and profile, so
+    each component is read twice (the plan and the composition) however often the result is
+    read after, and what that pass folded equals what separate passes over the result read."""
+    members_b = [f"dcid:Amount_Health_{i}" for i in range(3)]
+    members_i = [f"dcid:AttributedAmount_Health_{i}" for i in range(2)]
+    reads: dict[str, int] = {}
+
+    def counted(component: ComponentResult) -> ComponentResult:
+        chunks = component.result.frame_chunks
+
+        def frame_chunks():
+            reads[component.role] = reads.get(component.role, 0) + 1
+            return chunks()
+
+        return replace(component, result=replace(component.result, frame_chunks=frame_chunks))
+
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [
+            (member, recipient, year, float(position + year - 2000))
+            for position, member in enumerate(members_b)
+            for recipient in ("country/KEN", "country/GHA")
+            for year in (2011, 2012)
+        ],
+        provenance=_CRS,
+        members=members_b,
+        units=_NATIONAL,
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(members_i[0], "country/GHA", 2012, 2.0)],
+        provenance=_IMPUTED,
+        members=members_i,
+        units=_NATIONAL,
+        covered=(2011, 2012),
+    )
+
+    result = _compose([counted(bilateral), counted(imputed)])
+    passes = [list(result.frame_chunks()) for _ in range(3)]
+
+    assert reads == {"bilateral": 2, "imputed": 2}
+    assert all(
+        [frame.table for frame in chunks] == [frame.table for frame in passes[0]]
+        for chunks in passes
+    )
+    assert [frame.table["stat_var"].to_pylist()[0] for frame in passes[0]] == [
+        *members_b,
+        *members_i,
+    ]
+    assert result.frame_sha256 == stream_frame_sha256(iter(passes[0]))
+    assert result.output_profile == compute_output_profile_from_chunks(
+        result.frame_chunks, role_columns=_ROLES, enrichment=_ENRICHMENT
+    )
+    statistics = SeriesStatisticsSink(continuing=())
+    for frame in passes[0]:
+        statistics.write(compute_series_statistics_table(frame))
+    assert result.series_statistics.data == statistics.finish().data

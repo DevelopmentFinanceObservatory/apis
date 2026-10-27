@@ -51,6 +51,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Literal, Self
 
+from code_index.composites import provenance_datasets
 from materialise.convert import TermKey, row_terms
 from materialise.facets import native_currency_iso
 from materialise.recipe_bodies import ConversionRecipe
@@ -632,11 +633,12 @@ def _window(run: YearRun | None) -> TimeWindow | None:
 
 
 def _provenances(spec: Spec) -> list[str]:
-    """The served provenances: the provenance facet's one ref, else every resolved
+    """The served provenances: the datasets of the provenance facet's one ref, a composite's
+    component tables (`code_index.composites.provenance_datasets`), else every resolved
     source."""
     provenance = spec.resolved.facets.get("provenance")
     if provenance is not None and provenance.ref is not None:
-        return [provenance.ref]
+        return list(provenance_datasets(provenance.ref))
     return [source.ref for source in spec.resolved.trace.resolved_sources]
 
 

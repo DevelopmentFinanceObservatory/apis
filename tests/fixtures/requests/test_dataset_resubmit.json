@@ -1,4 +1,5 @@
 {
+  "test_a_composite_identity_its_components_cannot_serve_refuses_request_invalid_on_the_wire": [],
   "test_a_resubmit_drops_a_label_only_group_and_states_a_spec_sentence_without_departures": [
     ["FakeGraph.node_arcs_batch",{"dcids":["Amount_EconomicActivity_GrossDomesticProduction_Nominal"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["GrossDomesticProduction","activitySource"]}],
@@ -15,6 +16,8 @@
     ["FakeGraph.node_labels_batch",{"dcids":["Country"]}],
     ["FakeGraph.observation_facets_batch",{"stat_vars":["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],"entities":["country/IND"],"needs_dates":true}]
   ],
+  "test_a_scope_switch_onto_or_off_a_composite_restates_the_region_group[off-composite]": [],
+  "test_a_scope_switch_onto_or_off_a_composite_restates_the_region_group[onto-composite]": [],
   "test_a_served_identity_resubmitted_with_its_own_scope_entries_keeps_its_spec_id[no-live-axis]": [
     ["FakeGraph.node_arcs_batch",{"dcids":["Amount_EconomicActivity_GrossDomesticProduction_Nominal"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["GrossDomesticProduction","activitySource"]}],
@@ -75,7 +78,6 @@
     ["FakeGraph.node_labels_batch",{"dcids":["Country"]}],
     ["FakeGraph.observation_facets_batch",{"stat_vars":["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],"entities":["country/IND"],"needs_dates":true}]
   ],
-  "test_a_composite_identity_its_components_cannot_serve_refuses_request_invalid_on_the_wire": [],
   "test_an_identity_over_the_place_bound_refuses_request_invalid_on_the_wire[200-and-100-across-two-roles]": [],
   "test_an_identity_over_the_place_bound_refuses_request_invalid_on_the_wire[one-role-of-300]": [],
   "test_build_candidates_region_one_survivor_collapses_to_definite[one]": [

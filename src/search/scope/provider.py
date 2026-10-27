@@ -37,6 +37,7 @@ from code_index.scope_conventions import (
     REDISTRIBUTED_PROVIDERS,
     ProviderConvention,
 )
+from materialise.composite import spans
 from search.models import (
     BaseIdentity,
     IdentityFacetValueRequest,
@@ -48,7 +49,7 @@ from search.models import (
     YearSpan,
 )
 from search.scope.basis import held_measure, identity_part_shape
-from search.scope.composite import component_years, spans
+from search.scope.composite import component_years, served_components
 from search.scope.edits import INCLUSIVE_PROVENANCE
 from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import AxisTable, ScopeFacts
@@ -75,10 +76,11 @@ _SLOT_WHY: Mapping[str, str] = {
 @dataclass(frozen=True, slots=True)
 class InclusiveReach:
     """What the inclusive scope serves of a part: `asked`, the years its bilateral answer
-    holds in the window it asks for, and `covered`, those the imputed table holds too. For a
-    part asking for the latest year, `latest` is the year a `latest` read elects
-    (`series_coverage.index.elected_year`) over the years both tables hold, counting the
-    series of both in each; None otherwise, or when they share no year."""
+    holds in the window it asks for, and `covered`, those of them the composite serves, in
+    the years both tables cover (`composite.served_components`). For a part asking for the
+    latest year, `latest` is the year a `latest` read elects
+    (`series_coverage.index.elected_year`) over `covered`, counting the series of both
+    tables in each; None otherwise, or when `covered` is empty."""
 
     asked: frozenset[int]
     covered: frozenset[int]
@@ -91,21 +93,19 @@ def inclusive_reach(identity: BaseIdentity, facts: ScopeFacts) -> InclusiveReach
     `code_index.composites.CompositeNotServable` where the imputed table cannot serve what
     `identity` binds."""
     document = identity.model_dump(mode="json", exclude_none=True)
-    components = component_identities(
-        facts.index,
+    bilateral, imputed = served_components(
         {**document, "facets": {**document.get("facets", {}), "provenance": _inclusive()}},
+        facts=facts,
     )
-    assert components is not None
-    bilateral, imputed = (
-        component_years(component.identity, facts=facts) for component in components
-    )
-    shared = bilateral.held & imputed.held
+    covered = bilateral.served
     if document["requested_window"]["kind"] == "latest":
-        counts = {year: bilateral.counts[year] + imputed.counts[year] for year in shared}
+        counts = {
+            year: bilateral.years.counts[year] + imputed.years.counts[year] for year in covered
+        }
         return InclusiveReach(
-            asked=bilateral.held, covered=imputed.held, latest=elected_year(counts)
+            asked=bilateral.years.held, covered=covered, latest=elected_year(counts)
         )
-    return InclusiveReach(asked=bilateral.held, covered=shared)
+    return InclusiveReach(asked=bilateral.years.held, covered=covered)
 
 
 def _inclusive() -> dict[str, str]:

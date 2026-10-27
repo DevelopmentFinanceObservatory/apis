@@ -467,7 +467,8 @@ class ComponentRecipe:
     `zero_absent` says the component's absence in a covered cell is a zero. The composite
     writes a zero row for each of its members holding no row in a cell another component
     fills, inside the composite's years. A component without it contributes nothing where it
-    holds no row."""
+    holds no row. Only a stacked composite's component sets it: a spliced one's zeros would
+    fill years it does not cover, and the loader refuses it."""
 
     role: ComponentRole
     dataset: str

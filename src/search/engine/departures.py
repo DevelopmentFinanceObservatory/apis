@@ -36,7 +36,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
-from code_index.composites import DECLARED_COMPOSITES
+from code_index.composites import provenance_datasets
 from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
@@ -379,10 +379,7 @@ def served_datasets(spec: Spec) -> frozenset[str]:
     resolved."""
     provenance = spec.resolved.facets.get("provenance")
     if provenance is not None and provenance.ref is not None:
-        composite = DECLARED_COMPOSITES.get(provenance.ref)
-        if composite is not None:
-            return frozenset(recipe.dataset for recipe in composite.components)
-        return frozenset({provenance.ref})
+        return frozenset(provenance_datasets(provenance.ref))
     return frozenset(source.ref for source in spec.resolved.trace.resolved_sources)
 
 

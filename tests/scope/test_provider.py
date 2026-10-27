@@ -397,6 +397,18 @@ def test_a_latest_window_elects_the_latest_year_both_tables_cover_and_switches_b
     back = _resubmit(scope.base.identity, [_switch("provider:inclusive", choice)])
     assert back.spec_id == spec.spec_id
     assert _resubmit(scope.base.identity, []).spec_id == spec.spec_id
+    # Posted with no scope entries, the composite still reads the year both tables cover.
+    posted = _resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(variable_text="health aid", identity=scope.base.identity)
+                ]
+            )
+        )
+    )
+    assert posted.definition.identity.requested_window == latest_year
+    assert posted.spec_id == spec.spec_id
 
 
 def test_a_resubmit_of_a_composite_with_its_own_entries_returns_its_spec_id(monkeypatch):
@@ -656,3 +668,28 @@ def test_a_latest_window_elects_the_latest_year_both_tables_hold():
     assert table is not None
     (option,) = (o for o in table.options if o.option_id == "provider:inclusive")
     assert option.binding.model_dump()["window"] == (2022, 2022)
+
+
+def test_the_inclusive_scope_serves_the_years_the_imputed_table_covers_not_those_the_part_holds():
+    """The imputed table carries no row to Kenya before 2018 but covers every year (it holds
+    Ghana's), so the mint writes zero imputed rows for Kenya there: the inclusive scope
+    serves every year the bilateral answer holds, as the mint does."""
+    rows = [
+        *((dcid, "crs", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in _CRS_MEMBERS),
+        *((dcid, "imputed", _USA, _KEN, list(range(2018, 2025))) for dcid in _IMPUTED_MEMBERS),
+        *((dcid, "imputed", _USA, "country/GHA", list(_ALL_YEARS)) for dcid in _IMPUTED_MEMBERS),
+    ]
+    _, extra = _coverage_rows(_ALL_YEARS)
+    facts = ScopeFacts(
+        index=get_index(),
+        coverage=FakeCoverageService(build_coverage_index(rows, **extra)).snapshot(),
+    )
+    identity = _bilateral_identity()
+
+    reach = inclusive_reach(identity, facts)
+    table = provider_rule(identity, None, facts)
+
+    assert reach.covered == reach.asked == frozenset(range(2015, 2021))
+    assert table is not None
+    (option,) = (o for o in table.options if o.option_id == "provider:inclusive")
+    assert option.availability.status == "available"

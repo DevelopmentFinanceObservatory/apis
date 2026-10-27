@@ -103,12 +103,13 @@ class ScopeState:
     def attached(self) -> tuple[Entry, ...]:
         """The entries that attach to the part: those on an axis a binder settled, and of
         those made for a concept, the ones whose concept is the one the axis was asked for,
-        then, on a part whose binders settled some axis, every explicit entry on an axis the
-        part has no record of. An entry on another axis the part does not have, or for
-        another concept ("health" on an education part), is not the part's when it was
-        carried, so it neither applies nor is reported as dropped. A stated word on an axis
-        the part lacks ("bilateral aid" from a donor's DAC1 total, which has no provider
-        axis) is the part's own, which serves no option for it, so it is reported."""
+        then, on a part whose binders settled some axis, every explicit entry made for no
+        concept on an axis the part has no record of. An entry on another axis the part does
+        not have, or for another concept ("health" on an education part, or on a recipient's
+        total with no sector axis), is not the part's, so it neither applies nor is reported
+        as dropped. A stated word with no concept on an axis the part lacks ("bilateral aid"
+        from a donor's DAC1 total, which has no provider axis) is the part's own, which serves
+        no option for it, so it is reported."""
         return tuple(
             entry
             for entry in self.entries
@@ -116,5 +117,10 @@ class ScopeState:
                 (record := self.records.get(entry.axis)) is not None
                 and entry.concept in (None, record.concept)
             )
-            or (bool(self.records) and record is None and entry.provenance == "explicit")
+            or (
+                bool(self.records)
+                and record is None
+                and entry.provenance == "explicit"
+                and entry.concept is None
+            )
         )
