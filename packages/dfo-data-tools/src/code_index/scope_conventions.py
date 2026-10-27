@@ -28,6 +28,7 @@ from code_index.declarations import (
     CRS_PURPOSE_RECONSTRUCTION_RELIEF,
     CRS_PURPOSE_REPRODUCTIVE_HEALTH,
     DAC1,
+    DAC1_TOTAL_ODA,
     DAC2A,
 )
 
@@ -389,7 +390,7 @@ CONTRIBUTION_TOTALS: tuple[ContributionTotal, ...] = (
     ContributionTotal(
         dataset=DAC1,
         code_system="dac1AidType",
-        code="DAC1AidType1010",
+        code=DAC1_TOTAL_ODA,
         note="DAC1 total ODA counts bilateral flows plus core contributions to multilaterals",
     ),
 )
