@@ -17,6 +17,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
+from code_index.declarations import (
+    CRS,
+    CRS_FLOW_PRIVATE_SECTOR_INSTRUMENTS,
+    CRS_PURPOSE_EMERGENCY_RESPONSE,
+    CRS_PURPOSE_HEALTH,
+    CRS_PURPOSE_RECONSTRUCTION_RELIEF,
+    CRS_PURPOSE_REPRODUCTIVE_HEALTH,
+    DAC1,
+    DAC2A,
+)
+
 MeasureBasis = Literal["gross", "net", "grant_equivalent", "commitments", "oecd_headline"]
 """Every measure basis a part can be counted on. `oecd_headline` is the OECD's headline
 basis per year: net flows to 2017 and grant equivalents from 2018, as two period
@@ -107,9 +118,6 @@ class BasisConvention:
 
 
 _CRS_PURPOSE = "crsPurpose"
-_CRS = "provenance/OECDCreditorReportingSystem"
-_DAC1 = "provenance/OECDDAC1"
-_DAC2A = "provenance/OECDDAC2A"
 
 # ONE's analytical groupings of CRS sectors. Health joins Health (120) and Population
 # policies and programmes and reproductive health (130).
@@ -123,14 +131,18 @@ SECTOR_GROUPINGS: tuple[SectorGrouping, ...] = (
     SectorGrouping(
         concept="health",
         code_system=_CRS_PURPOSE,
-        codes=("CRSPurposeCode120", "CRSPurposeCode130"),
+        codes=(CRS_PURPOSE_HEALTH, CRS_PURPOSE_REPRODUCTIVE_HEALTH),
         words=("health",),
         label="health incl. population and reproductive health (CRS 120 + 130)",
     ),
     SectorGrouping(
         concept="humanitarian",
         code_system=_CRS_PURPOSE,
-        codes=("CRSPurposeCode720", "CRSPurposeCode730", "CRSPurposeCode740"),
+        codes=(
+            CRS_PURPOSE_EMERGENCY_RESPONSE,
+            CRS_PURPOSE_RECONSTRUCTION_RELIEF,
+            "CRSPurposeCode740",
+        ),
         words=("humanitarian aid",),
         label="humanitarian aid (CRS 720 + 730 + 740)",
     ),
@@ -280,35 +292,35 @@ MEASURE_BASIS_CONVENTIONS: tuple[BasisConvention, ...] = (
         shape="donor_only",
         window="from_2018",
         basis="grant_equivalent",
-        dataset=_DAC1,
+        dataset=DAC1,
         note="OECD headline ODA, grant equivalents (DAC1 measure 11010)",
     ),
     BasisConvention(
         shape="donor_only",
         window="before_2018",
         basis="net",
-        dataset=_DAC1,
+        dataset=DAC1,
         note="OECD headline ODA before 2018, net flows",
     ),
     BasisConvention(
         shape="donor_only",
         window="crossing_2018",
         basis="oecd_headline",
-        dataset=_DAC1,
+        dataset=DAC1,
         note="OECD headline ODA per year: net flows to 2017, grant equivalents from 2018",
     ),
     BasisConvention(
         shape="recipient_all_sectors",
         window="any",
         basis="net",
-        dataset=_DAC2A,
+        dataset=DAC2A,
         note="OECD receipts, net disbursements (DAC2a measure 206)",
     ),
     BasisConvention(
         shape="sector_or_restriction",
         window="any",
         basis="gross",
-        dataset=_CRS,
+        dataset=CRS,
         note="CRS gross disbursements",
     ),
 )
@@ -371,7 +383,7 @@ BASIS_MEASURES: tuple[BasisMeasure, ...] = (
         measured_property="grantEquivalent",
         netting_basis=None,
         flow_type=_DISBURSED,
-        oda_flows=(ODA_FLOW, "CRSTypeOfFlow60"),
+        oda_flows=(ODA_FLOW, CRS_FLOW_PRIVATE_SECTOR_INSTRUMENTS),
         words="grant equivalents (OECD headline)",
     ),
     BasisMeasure(
