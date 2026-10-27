@@ -169,6 +169,20 @@ def _switch(option_id: str, choice: ScopeChoice) -> Entry:
     )
 
 
+def _served_window_texts(spec: Spec) -> dict[str, object]:
+    """The years an answer states it serves: its served date range, its when slot's window,
+    and the period its sentence names."""
+    served = spec.resolved.stat_vars.data_date_range
+    (when,) = (s for s in spec.resolved.slots if s.key.axis == "when")
+    window = when.binding.value.time_window
+    (token,) = (t for t in spec.resolved.sentence_plan or () if t.axis == "when")
+    return {
+        "data_date_range": (served.start, served.end) if served is not None else None,
+        "when_slot": (window.start_year, window.end_year) if window is not None else None,
+        "sentence_when": token.text,
+    }
+
+
 _ALL_YEARS = tuple(range(2005, 2025))
 _FROM_2011 = tuple(range(2011, 2025))
 
@@ -346,6 +360,12 @@ def test_a_latest_window_elects_the_latest_year_both_tables_cover_and_switches_b
     assert spec.definition.identity.requested_window == latest_year
     assert scope.base.identity.requested_window.kind == "latest"
     assert [c.periods for c in scope.compiled.components] == [[(2023, 2023)], [(2023, 2023)]]
+    assert _served_window_texts(spec) == {
+        "data_date_range": ("2023", "2023"),
+        "when_slot": (2023, 2023),
+        "sentence_when": "in 2023",
+    }
+    assert spec.resolved.download is None
 
     to_bilateral = _resubmit(scope.base.identity, [_switch("provider:bilateral", choice)])
     assert _source(to_bilateral) is None

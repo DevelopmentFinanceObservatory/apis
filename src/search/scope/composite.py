@@ -35,12 +35,15 @@ from code_index.types import CompositeDeclaration
 from search.engine.retrieval.bound_values import served_members
 from search.models import (
     BaseIdentity,
+    BindingValue,
     Component,
     CoverageExact,
+    DateRange,
     Headline,
     HeadlineYear,
     ResolvedFacet,
     ResolvedStatVars,
+    SlotValue,
     Spec,
     SpecDefinition,
     TimeWindow,
@@ -236,8 +239,15 @@ def assemble_composite(
             "observations": None,
             "headline": _headline(served, document, spec.resolved.headline, facts=facts),
             "stat_vars": _stat_vars(served, spec.resolved.stat_vars, document, facts=facts),
+            "slots": [
+                slot.model_copy(update={"binding": _window_binding(window)})
+                if slot.key.axis == "when" and window is not None
+                else slot
+                for slot in spec.resolved.slots
+            ],
+            "download": None,
         }
-    )
+    ).stating_data_years((years[0], years[-1]) if years else None)
     restated = spec.model_copy(
         update={
             "spec_id": spec_id,
@@ -246,6 +256,11 @@ def assemble_composite(
         }
     )
     return restated, _components(served)
+
+
+def _window_binding(window: TimeWindow) -> BindingValue:
+    """The when slot's binding to `window`, as `spec_build.bind_when_slot` binds it."""
+    return BindingValue(value=SlotValue(ref=None, value_kind="time_window", time_window=window))
 
 
 def composite_components(identity: BaseIdentity, *, facts: ScopeFacts) -> list[Component] | None:
@@ -298,7 +313,8 @@ def _stat_vars(
     """`stated`, the table identity's StatVar counts, restated over every component: the
     StatVars holding a series in the years their component serves, and those a mint of each
     component serves, summed, or None where the index settles some component's members
-    none."""
+    none; and the years the components serve as the served date range."""
+    years = sorted({year for item in served for year in item.served})
     bound = _bound(identity)
     confirmed = sum(
         len(_with_data(item, bound, facts.coverage.index, item.served)) for item in served
@@ -309,6 +325,9 @@ def _stat_vars(
             "member_count": confirmed,
             "member_count_exact": True,
             "served_count": None if None in counts else sum(c for c in counts if c is not None),
+            "data_date_range": (
+                DateRange(start=str(years[0]), end=str(years[-1])) if years else None
+            ),
         }
     )
 
