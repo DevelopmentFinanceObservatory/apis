@@ -217,7 +217,7 @@ _FROM_2011 = tuple(range(2011, 2025))
             _FROM_2011,
             "provider:bilateral",
             "default",
-            "named_donor_total",
+            "bilateral_flows",
             "partial",
             id="named-donor-total-shortened",
         ),
@@ -237,7 +237,7 @@ _FROM_2011 = tuple(range(2011, 2025))
             _ALL_YEARS,
             "provider:bilateral",
             "explicit",
-            "named_donor_total",
+            "bilateral_flows",
             "available",
             id="bilateral-typed",
         ),
@@ -541,7 +541,7 @@ def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(
     assert (record.active, record.provenance, record.rule) == (
         "provider:bilateral",
         "default",
-        "named_donor_total",
+        "bilateral_flows",
     )
 
 

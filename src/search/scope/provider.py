@@ -24,7 +24,7 @@ total of a CRS sector or recipient part counts both, when they cover every year 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from code_index.composites import (
     DECLARED_COMPOSITES,
@@ -469,9 +469,10 @@ def settle_provider(
     carried entry, since only a switch shortens the years asked for. Otherwise a published
     total holds the scope its row declares, under the row's rule (`_published_scope`). On a
     part the CRS serves, the declared convention matching the part (`provider_convention`,
-    with the request's total intent) settles its scope under its rule when the scope is
-    available, and the scope `identity` holds stands otherwise; with no convention it stands
-    under `PROVIDER_DEFAULT_RULE`."""
+    with the request's total intent) settles its scope when the scope is available, and the
+    scope `identity` holds stands otherwise. The record names the convention's rule when the
+    option it holds is the convention's scope, else `PROVIDER_DEFAULT_RULE`, as a resubmit
+    of the identity it compiles to reads it (`_held_rule`)."""
     published = _published_scope(identity, facts)
     if published is not None:
         table = _published_table(published, None)
@@ -482,7 +483,9 @@ def settle_provider(
     convention = provider_convention(identity, facts, asks_total=state.total)
     if convention is None:
         return _settled(table, state, rule=PROVIDER_DEFAULT_RULE, wanted=table.held)
-    return _settled(table, state, rule=convention.rule, wanted=provider_option_id(convention.scope))
+    wanted = provider_option_id(convention.scope)
+    record = _settled(table, state, rule=convention.rule, wanted=wanted)
+    return record if record.active == wanted else replace(record, rule=PROVIDER_DEFAULT_RULE)
 
 
 def _settled(table: AxisTable, state: ScopeState, *, rule: str, wanted: str) -> AxisRecord:
