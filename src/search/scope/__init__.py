@@ -22,8 +22,9 @@ An axis goes live by adding values to these extension points:
   `tables.AxisTable` (options with their bindings and intrinsic availability, default
   preference, the option the base holds), or None when the axis is absent from the part.
 - `rules.CONFLICTS`: pairs of options of different axes that cannot hold together.
-- `edits.EDITS`: the identity edit of each binding kind, and `edits.AXIS_BINDING`, the binding
-  kinds each axis's options carry.
+- `edits.EDITS`: the identity edit of each binding kind, `edits.AXIS_BINDING`, the binding
+  kind each axis's options carry, and `edits.PUBLISHED_BINDING`, the one they may also carry
+  on a part counting a published total.
 - `tables.ScopeFacts`: the in-memory indexes a rule reads, passed explicitly, so compile
   reads no global and does no I/O.
 - `models.vocab.ScopeReasonCode`: why an option is partial or unavailable.

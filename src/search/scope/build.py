@@ -17,18 +17,16 @@ from search.models import (
     Entry,
     EntryProvenance,
     IdentityBindingValue,
-    OptionBinding,
     PartScope,
     ProviderBinding,
     ScopeAxis,
-    ShapeBinding,
     SpecDefinition,
 )
 from search.scope import rules as scope_rules
 from search.scope.basis import SERVED_DIFFERS_RULE
 from search.scope.compile import Compiled, Refusal, compile
 from search.scope.composite import composite_components
-from search.scope.edits import apply_binding
+from search.scope.edits import apply_binding, binds_composite
 from search.scope.provider import elect_latest_window
 from search.scope.rules import AxisRule
 from search.scope.state import AxisRecord
@@ -149,7 +147,7 @@ def _with_recorded_composites(
         if record is None or record.active == table.held:
             continue
         option = table.option(record.active)
-        if option is None or not _binds_composite(option.binding):
+        if option is None or not binds_composite(option.binding):
             continue
         if option.availability.status != "available":
             settled[axis] = AxisRecord(
@@ -164,13 +162,6 @@ def _with_recorded_composites(
             binding = binding.model_copy(update={"window": None})
         base = apply_binding(base, binding, [o.binding for o in table.options])
     return base, settled
-
-
-def _binds_composite(binding: OptionBinding) -> bool:
-    """Whether `binding` binds a composite as the identity's source."""
-    return (isinstance(binding, ShapeBinding) and binding.provenance is not None) or (
-        isinstance(binding, ProviderBinding) and binding.scope == "inclusive"
-    )
 
 
 def _with_concept(entry: Entry, tables: Mapping[ScopeAxis, AxisTable]) -> Entry:

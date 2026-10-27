@@ -1,6 +1,6 @@
 """The identity edit each scope option makes.
 
-`AXIS_BINDING` names the binding kinds an axis's options carry, and `EDITS` the edit of each
+`AXIS_BINDING` names the binding kind an axis's options carry, and `EDITS` the edit of each
 binding kind: which identity members it touches and how. An edit takes the identity, the
 option's binding and every binding of the option's axis, so an option replaces whatever a
 sibling option put there and the edit needs no record of the option it replaces. An edit
@@ -58,13 +58,16 @@ class Edit:
     apply: Callable[[BaseIdentity, OptionBinding, Sequence[OptionBinding]], BaseIdentity]
 
 
-AXIS_BINDING: Mapping[ScopeAxis, frozenset[BindingKind]] = {
-    "sector": frozenset({"slot"}),
-    "region": frozenset({"entities"}),
-    "measure_basis": frozenset({"shape"}),
-    "provider": frozenset({"provider", "slot"}),
+AXIS_BINDING: Mapping[ScopeAxis, BindingKind] = {
+    "sector": "slot",
+    "region": "entities",
+    "measure_basis": "shape",
+    "provider": "provider",
 }
-"""The binding kinds the options of an axis carry. A provider option on a published donor
+"""The binding kind every option of an axis carries."""
+PUBLISHED_BINDING: Mapping[ScopeAxis, BindingKind] = {"provider": "slot"}
+"""The binding kind an option of an axis may carry beside `AXIS_BINDING`'s on a part that
+counts a published total (`tables.AxisTable.published`): a provider option on a published donor
 total binds the code of the total that counts its scope (`provider._published_table`)."""
 
 
@@ -177,6 +180,16 @@ EDITS: Mapping[BindingKind, Edit] = {
     "provider": Edit(members=frozenset({"facets", "requested_window"}), apply=_edit_provider),
 }
 """The edit of each binding kind."""
+
+
+def binds_composite(binding: OptionBinding) -> bool:
+    """Whether `binding` binds a declared composite as the identity's source: the OECD
+    headline basis (`ShapeBinding.provenance`) or the inclusive provider scope. A fresh
+    search applies such an option to the identity it resolved; any other option reads
+    another identity, which a switch or resubmit serves."""
+    return (isinstance(binding, ShapeBinding) and binding.provenance is not None) or (
+        isinstance(binding, ProviderBinding) and binding.scope == "inclusive"
+    )
 
 
 def apply_binding(

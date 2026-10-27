@@ -12,6 +12,7 @@ read, as the deployed service reads them.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 
 import pytest
@@ -47,8 +48,8 @@ from search.models import (
 )
 from search.scope.build import build_part_scope
 from search.scope.compile import Refusal
-from search.scope.edits import apply_binding
-from search.scope.provider import inclusive_reach, provider_rule, settle_provider
+from search.scope.edits import ScopeTableError, apply_binding
+from search.scope.provider import _settled, inclusive_reach, provider_rule, settle_provider
 from search.scope.rules import AXIS_RULES
 from search.scope.state import ScopeState
 from search.scope.tables import ScopeFacts
@@ -753,6 +754,7 @@ def test_the_inclusive_scope_serves_the_years_the_imputed_table_covers_not_those
 # multilaterals, and its bilateral ODA its bilateral flows alone. The parts resolve over
 # `test_basis`'s fixture graph, where DAC1's total ODA members sit beside the CRS's.
 _DAC1 = basis._DAC1
+_HEADLINE = basis._HEADLINE
 _DAC1_TOTAL_ODA = "DAC1AidType1010"
 _DAC1_BILATERAL_ODA = "DAC1AidType1015"
 _DAC_MULTILATERALS = "DACMultilaterals"
@@ -935,15 +937,24 @@ def test_a_stated_provider_scope_on_a_dac1_total_is_reported_and_left_to_a_switc
         assert _slot_ref(compiled.compiled.identity, "dac1AidType") == switched
 
 
-def _dac1_identity(aid_type: str, origin: Sequence[str]) -> BaseIdentity:
-    """A DAC1 grant-equivalent total of `aid_type` from `origin` in 2019."""
+def _dac1_identity(
+    aid_type: str,
+    origin: Sequence[str],
+    *,
+    window: tuple[int, int] | None = (2019, 2019),
+    headline: bool = False,
+) -> BaseIdentity:
+    """A DAC1 grant-equivalent total of `aid_type` from `origin` over `window`, by default
+    2019, its latest year when `window` is None, or with `headline` its OECD headline
+    composite: net flows to 2017 and grant equivalents from 2018."""
+    netting = [{"property": "nettingBasis", "binding": {"state": "value", "ref": "Net"}}]
     return BaseIdentity.model_validate(
         {
             "identity_version": "spec1",
             "shape": {
                 "kind": "statvar_schema",
                 "population_type": "FinancialFlow",
-                "measured_property": "grantEquivalent",
+                "measured_property": "amount" if headline else "grantEquivalent",
                 "stat_type": "measuredValue",
                 "measurement_qualifier": "Nominal",
             },
@@ -953,9 +964,17 @@ def _dac1_identity(aid_type: str, origin: Sequence[str]) -> BaseIdentity:
                     "property": "financialFlowType",
                     "binding": {"state": "value", "ref": "Disbursement"},
                 },
+                *(netting if headline else ()),
             ],
             "entities": {"origin": list(origin)} if origin else {},
-            "requested_window": {"kind": "range", "start_year": 2019, "end_year": 2019},
+            "requested_window": (
+                {"kind": "latest"}
+                if window is None
+                else {"kind": "range", "start_year": window[0], "end_year": window[1]}
+            ),
+            **(
+                {"facets": {"provenance": {"state": "value", "ref": _HEADLINE}}} if headline else {}
+            ),
         }
     )
 
@@ -1115,6 +1134,136 @@ def test_a_dac1_total_offers_its_sibling_total_only_where_a_series_covers_the_pa
         ("available", None) if available else ("unavailable", "option_not_covered")
     )
     assert (record.active, record.rule) == (f"provider:{row.scope}", row.rule)
+
+
+_GE = "GrantEquivalent_"
+_NET = "Amount_FinancialFlow_Net_"
+_COVERED = ("available", None, None)
+_NOT_COVERED = ("unavailable", "option_not_covered", None)
+
+
+def _partial(*years: tuple[int, int]) -> tuple[str, str, list[tuple[int, int]]]:
+    return ("partial", "option_not_covered", list(years))
+
+
+@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(
+    ("origin", "covered", "latest", "expected"),
+    [
+        pytest.param((_USA,), {_USA: (2015, 2020)}, False, _COVERED, id="every-year"),
+        pytest.param(
+            (_USA,), {_USA: (2018, 2020)}, False, _partial((2018, 2020)), id="later-years"
+        ),
+        pytest.param(
+            (_USA, _DEU),
+            {_USA: (2015, 2020), _DEU: (2015, 2020)},
+            False,
+            _COVERED,
+            id="pool-every-year",
+        ),
+        pytest.param(
+            (_USA, _DEU),
+            {_USA: (2015, 2020), _DEU: (2017, 2020)},
+            False,
+            _partial((2017, 2020)),
+            id="pool-later-years",
+        ),
+        pytest.param((_USA, _DEU), {_USA: (2015, 2020)}, False, _NOT_COVERED, id="pool-one-donor"),
+        pytest.param((_USA,), {_USA: (2018, 2020)}, True, _COVERED, id="latest"),
+        pytest.param((_USA, _DEU), {_USA: (2018, 2020)}, True, _NOT_COVERED, id="latest-pool"),
+    ],
+)
+def test_a_dac1_sibling_option_serves_the_years_every_donor_holds(
+    row, origin: tuple[str, ...], covered: dict[str, tuple[int, int]], latest: bool, expected
+):
+    """A 2015 to 2020 grant-equivalent total offers the other DAC1 aid type over the years
+    each donor it names holds a series of it: available where they hold every year the
+    total holds, partial over the years they hold where those are fewer, and unavailable
+    where a donor of the pool holds none. A switch on a part asking for the latest year
+    reads the other total's own latest year, available wherever each donor holds one."""
+    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
+    extra = [
+        (member, donor, range(first, last + 1))
+        for donor, (first, last) in covered.items()
+        for member in _members_on(sibling.code, _GE)
+    ]
+    facts = _dac1_facts(row.code, extra=extra)
+
+    window = None if latest else (2015, 2020)
+    table = provider_rule(_dac1_identity(row.code, origin, window=window), None, facts)
+
+    assert table is not None
+    option = table.option(f"provider:{sibling.scope}")
+    assert option is not None
+    availability = option.availability
+    assert (availability.status, availability.code, availability.years) == expected
+
+
+@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(
+    ("prefixes", "expected"),
+    [
+        pytest.param((_NET, _GE), _COVERED, id="both-bases"),
+        pytest.param((_NET,), _partial((2016, 2017)), id="net-only"),
+        pytest.param((_GE,), _partial((2018, 2019)), id="grant-equivalent-only"),
+    ],
+)
+def test_a_dac1_sibling_option_on_the_headline_reads_each_basis_it_splices(
+    row, prefixes: tuple[str, ...], expected
+):
+    """On the OECD headline over 2016 to 2019, the other DAC1 aid type serves the years its
+    net series hold before 2018 and its grant-equivalent series hold from 2018."""
+    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
+    extra = [
+        (member, _USA, _ALL_YEARS)
+        for prefix in prefixes
+        for member in _members_on(sibling.code, prefix)
+    ]
+    facts = _dac1_facts(row.code, extra=extra)
+    identity = _dac1_identity(row.code, (_USA,), window=(2016, 2019), headline=True)
+
+    table = provider_rule(identity, None, facts)
+
+    assert table is not None
+    option = table.option(f"provider:{sibling.scope}")
+    assert option is not None
+    availability = option.availability
+    assert (availability.status, availability.code, availability.years) == expected
+
+
+def test_a_convention_the_pass_cannot_serve_leaves_the_part_on_the_option_it_holds():
+    """Where a matched convention's option is not served, the record holds the part's own
+    option before the bilateral one, so it never names a sibling total the answer does not
+    read: DAC1's total ODA keeps the contributions scope though bilateral ODA is available."""
+    facts = _dac1_facts(_DAC1_TOTAL_ODA, _DAC1_BILATERAL_ODA)
+    table = provider_rule(_dac1_identity(_DAC1_TOTAL_ODA, (_USA,)), None, facts)
+    (convention,) = (row for row in PROVIDER_CONVENTIONS if row.scope == "inclusive")
+
+    assert table is not None
+    bilateral = table.option("provider:bilateral")
+    assert bilateral is not None and bilateral.availability.status == "available"
+    record = _settled(table, ScopeState(), convention)
+
+    assert (record.active, record.rule) == ("provider:contributions", "contribution_total")
+
+
+def test_only_a_published_total_offers_a_provider_option_binding_another_code():
+    """A provider option binding a slot reads another published total, so a table of a part
+    the CRS serves refuses one, and a published total's table holds one only as published."""
+    crs = provider_rule(_bilateral_identity(), None, _facts())
+    dac1 = provider_rule(
+        _dac1_identity(_DAC1_TOTAL_ODA, (_USA,)),
+        None,
+        _dac1_facts(_DAC1_TOTAL_ODA, _DAC1_BILATERAL_ODA),
+    )
+    assert crs is not None and dac1 is not None
+    slot_options = tuple(o for o in dac1.options if isinstance(o.binding, SlotBinding))
+    assert slot_options
+
+    with pytest.raises(ScopeTableError):
+        dataclasses.replace(crs, options=(*crs.options, *slot_options))
+    with pytest.raises(ScopeTableError):
+        dataclasses.replace(dac1, published=False)
 
 
 def test_a_stated_provider_scope_on_the_multilaterals_dac1_total_is_reported_absent(monkeypatch):
