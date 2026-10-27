@@ -18,8 +18,9 @@ composition it counts.
 from __future__ import annotations
 
 import functools
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Final
 
 from code_index.query import CodeIndex
 from code_index.scope_conventions import (
@@ -33,6 +34,8 @@ from entity_resolution.shared import shared_membership_policy
 from search.models import (
     BaseIdentity,
     EntitiesBinding,
+    EntityGroup,
+    EntityRoleKey,
     Operation,
     Option,
     OptionAvailability,
@@ -45,7 +48,7 @@ from search.scope.vocabulary import REGION_MEMBERS_AND_RESIDUALS, REGION_MEMBERS
 REGION_RULE = "region_residuals"
 """The declared rule the region axis applies: a summed region counts its residuals."""
 
-REGION_ROLE = "destination"
+REGION_ROLE: Final = "destination"
 """The role key a region on the recipient side binds under."""
 
 _AXIS: RoleAxis = "destination"
@@ -162,6 +165,53 @@ def region_total(
         default=None,
     )
     return None if best is None else best[1]
+
+
+def region_groups(
+    groups: Mapping[EntityRoleKey, EntityGroup], identity: BaseIdentity, *, index: CodeIndex
+) -> dict[EntityRoleKey, EntityGroup]:
+    """`groups` with the recipient group restated for the reading `identity` holds, so a
+    switch between a region's two readings (`REGION_READINGS`) keeps the region named.
+
+    A recipient group naming a reading's graph region (`EntityGroup.ref`) or its OECD
+    registry group (`EntityGroup.group_id`) is restated as the graph region where
+    `identity`'s recipients, less residuals, are the graph region's members, and as the
+    registry group where they are the OECD's, as a first answer names each
+    (`place_roles.request_named_groups`). A group already naming the reading `identity`
+    holds, and any other group, is kept as posted."""
+    group = groups.get(REGION_ROLE)
+    reading = None if group is None else _group_reading(group, index)
+    if group is None or reading is None:
+        return dict(groups)
+    total = index.parties.get(reading.total)
+    if total is None or total.totals is None:
+        return dict(groups)
+    members = frozenset(without_residuals(identity.entities.get(REGION_ROLE, ()), index))
+    if members == _policy_members(total.totals) and group.group_id != total.totals:
+        restated = EntityGroup(label=group.label, group_id=total.totals)
+    elif members == _policy_members(reading.region) and group.ref != reading.region:
+        restated = EntityGroup(ref=reading.region, label=group.label)
+    else:
+        return dict(groups)
+    return {**groups, REGION_ROLE: restated}
+
+
+def _group_reading(group: EntityGroup, index: CodeIndex) -> RegionReading | None:
+    """The reading whose graph region `group` names by its node, or whose DAC total sums
+    the registry group `group` names by its id."""
+    if group.ref is not None and (row := _READINGS_BY_REGION.get(group.ref)) is not None:
+        return row
+    if group.group_id is None:
+        return None
+    return next(
+        (
+            row
+            for row in REGION_READINGS
+            if (total := index.parties.get(row.total)) is not None
+            and total.totals == group.group_id
+        ),
+        None,
+    )
 
 
 def region_rule(

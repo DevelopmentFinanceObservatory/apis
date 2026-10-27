@@ -60,7 +60,7 @@ probability or rating reads as 0.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from operator import attrgetter
 from typing import Literal, get_args
@@ -76,9 +76,7 @@ from search.models import Entry
 from search.scope.basis import (
     GRANT_EQUIVALENT_HEADLINE_FROM,
     BasisElection,
-    elect_basis,
-    part_shape,
-    window_class,
+    elect_part_basis,
 )
 
 type PolicyName = Literal[
@@ -252,6 +250,7 @@ def context_of(
     *,
     wanted_datasets: Mapping[HouseDefaultCase, str],
     case_systems: Mapping[str, HouseDefaultCase],
+    pool_datasets: Collection[str],
     basis_entries: Sequence[Entry] = (),
 ) -> Context:
     """The part's context over the pool before any policy narrows it.
@@ -263,10 +262,11 @@ def context_of(
     pool shape makes the part that kind of question (`sector` for a sector or purpose).
     Otherwise a place on the destination axis, on both axes or on none makes it a
     `recipient` question, and places that are all donors make it a `donor` question.
-    The part's shape (read from the same places and admitted codes,
-    `scope.basis.part_shape`) and its window elect its basis. `basis_entries`, the part's
-    measure-basis entries with explicit first (`ScopeState.entries_on`), win over the
-    convention.
+    The part's shape (read from the same places and admitted codes) and its window elect
+    its basis (`scope.basis.elect_part_basis`), as the part's basis record reads it, where
+    a dataset the pool's shapes are answered from (`pool_datasets`) is one the conventions
+    read. `basis_entries`, the part's measure-basis entries with explicit first
+    (`ScopeState.entries_on`), win over the convention.
     """
     window = frame.window.value
     if window == "all":
@@ -291,15 +291,13 @@ def context_of(
         case = "donor"
     else:
         case = None
-    shape = part_shape(
+    basis = elect_part_basis(
+        datasets=pool_datasets,
         directions=directions,
         admitted_systems=systems,
         sector_systems=[system for system, kind in case_systems.items() if kind == "sector"],
-    )
-    basis = (
-        None
-        if shape is None
-        else elect_basis(shape=shape, window=window_class(window), entries=basis_entries)
+        window=window,
+        entries=basis_entries,
     )
     wanted = basis.convention.dataset if basis is not None else None
     return Context(

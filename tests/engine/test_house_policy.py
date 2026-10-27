@@ -480,7 +480,9 @@ def test_the_window_is_pre_grant_equivalent_when_it_starts_before_2018(
     frame: Frame, expected: bool
 ):
     assert (
-        context_of(frame, [], [0], wanted_datasets=_WANTED, case_systems=_CASE_SYSTEMS).pre_ge
+        context_of(
+            frame, [], [0], wanted_datasets=_WANTED, case_systems=_CASE_SYSTEMS, pool_datasets=()
+        ).pre_ge
         is expected
     )
 
@@ -508,10 +510,33 @@ def test_the_part_names_the_kind_of_question_its_default_dataset_answers(
         [0, 1],
         wanted_datasets=_WANTED,
         case_systems=_CASE_SYSTEMS,
+        pool_datasets=tuple(_CONVENTION_DATASETS.values()),
     )
 
     assert context.dataset_case == expected
     assert context.wanted_dataset == (_CONVENTION_DATASETS[expected] if expected else None)
+
+
+@pytest.mark.parametrize(
+    ("datasets", "basis"),
+    [
+        pytest.param(("provenance/OECDDAC2A",), "net", id="a-convention-dataset"),
+        pytest.param(("provenance/WorldBankWDI",), None, id="no-convention-dataset"),
+    ],
+)
+def test_a_pool_no_convention_dataset_publishes_elects_no_basis(datasets, basis):
+    """The policies elect a basis only for a pool a dataset the conventions read publishes,
+    as the part's basis record does, so a pool served elsewhere keeps the house default."""
+    context = context_of(
+        _frame(places={"Kenya": ("destination",)}),
+        [],
+        [0],
+        wanted_datasets=_WANTED,
+        case_systems=_CASE_SYSTEMS,
+        pool_datasets=datasets,
+    )
+
+    assert (context.basis.basis if context.basis is not None else None) == basis
 
 
 def test_a_packaged_purpose_code_makes_a_sector_question():
@@ -522,6 +547,7 @@ def test_a_packaged_purpose_code_makes_a_sector_question():
         [0],
         wanted_datasets=index.house_defaults(),
         case_systems=index.house_case_systems(),
+        pool_datasets=("provenance/OECDCreditorReportingSystem",),
     )
 
     assert (context.dataset_case, context.wanted_dataset) == (
@@ -537,6 +563,7 @@ def test_a_sector_admitted_outside_the_pool_names_no_sector():
         [0],
         wanted_datasets=_WANTED,
         case_systems=_CASE_SYSTEMS,
+        pool_datasets=(),
     )
 
     assert context.dataset_case is None

@@ -1001,7 +1001,11 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         ),
                         state,
                     )
-                    return _with_scope_choices(_stating_unpublished_wholes(result, state), state)
+                    # The scope build reads coverage and scans families, so it runs off
+                    # the event loop.
+                    return await asyncio.to_thread(
+                        _with_scope_choices, _stating_unpublished_wholes(result, state), state
+                    )
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))
                     scoped = True

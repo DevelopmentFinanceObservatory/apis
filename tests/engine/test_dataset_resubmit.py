@@ -1224,13 +1224,20 @@ def test_failing_request_cancels_and_awaits_live_parsed_trailing_tasks(
     real_launch_slot_options = _relaunch_mod._launch_slot_options_task
     real_launch_observations = _observations_dispatch_mod._launch_observations_task
 
+    async def _held_open(task: asyncio.Task):
+        # The probe's handle stays live until the request's cleanup cancels it, however
+        # soon the probe's own read finishes, so the test does not race the read.
+        result = await task
+        await asyncio.Event().wait()
+        return result
+
     def _counting_launch_slot_options(*args, **kwargs):
-        task = real_launch_slot_options(*args, **kwargs)
+        task = create_owned_task(_held_open(real_launch_slot_options(*args, **kwargs)))
         slot_tasks.append(task)
         return task
 
     def _counting_launch_observations(*args, **kwargs):
-        task = real_launch_observations(*args, **kwargs)
+        task = create_owned_task(_held_open(real_launch_observations(*args, **kwargs)))
         obs_tasks.append(task)
         return task
 

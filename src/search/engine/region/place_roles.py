@@ -75,7 +75,7 @@ from search.engine.shape import (
     role_names_by_axis,
 )
 from search.engine.spec_build import NamedGroup
-from search.models import EntityRoleKey, Entry, RoleAxis, TextOrigin
+from search.models import EntityRoleKey, Entry, RoleAxis
 from search.scope.region import (
     REGION_RULE,
     counts_oecd_region,
@@ -962,14 +962,13 @@ def _with_oecd_readings(assignment: PlaceAssignment, datasets: Collection[str]) 
 
 def _members_entry(state: ResolveState, place_set: PlaceSet) -> Entry:
     """The explicit members-only entry a set named for its members makes, read from the
-    request's words for it, at their offset in the part's query when they occur there."""
-    words = state.words_of(place_set.name)
-    start = max(state.role_query.find(words), 0)
+    request's words for it, at their offset in the text the part's scope was read from
+    (`ScopeState.origin_of`)."""
     return Entry(
         axis="region",
         option_id=REGION_MEMBERS_ONLY,
         provenance="explicit",
-        origin=TextOrigin(text=words, start=start, end=start + len(words)),
+        origin=state.scope_selection.origin_of(state.words_of(place_set.name)),
     )
 
 

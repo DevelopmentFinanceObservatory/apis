@@ -112,6 +112,7 @@ from search.models import (
 from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
+from search.scope.region import region_groups
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
@@ -326,16 +327,22 @@ async def handle(
     )
 
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
+        # The scope build reads coverage and scans families, so it runs off the event loop.
         scope = (
             None
             if entry.scope_entries is None
-            else _compiled_scope(entry, index=index, coverage=params.coverage)
+            else await asyncio.to_thread(
+                _compiled_scope, entry, index=index, coverage=params.coverage
+            )
         )
         payload = (
             spec_resubmit_input_for_identity(entry)
             if scope is None
             else ResubmitIdentityPayload(
-                identity=scope.compiled.identity, entity_groups=entry.entity_groups
+                identity=scope.compiled.identity,
+                entity_groups=None
+                if entry.entity_groups is None
+                else region_groups(entry.entity_groups, scope.compiled.identity, index=get_index()),
             )
         )
         key = memo.key(payload, options) if memo is not None and memo.active else None

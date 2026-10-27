@@ -5,13 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from code_index.labels import compose_measure_label
-from code_index.shared import get_index, get_measure_index
+from code_index.shared import get_measure_index
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.bound_values import MeasurePartition, mint_sibling_identity
 from search.engine.shape import ShapeDraft, role_class
 from search.engine.spec_build import measure_axis_values
 from search.models import Spec, SpecAlternativeMeasure, SpecDefinition
-from search.scope.basis import basis_dataset, names_a_basis
 
 
 def _facet_provenance_ids(facets: list[Facet]) -> set[str]:
@@ -55,13 +54,11 @@ def _fold_measure_sibling_candidates(
 
     Keep a sibling as a separate candidate when it lacks a partition or a matching label.
     A folded sibling shares the retained Spec's price basis, so it is a measure option
-    (axis "what"), labelled without the price basis. A sibling of another measure basis of
-    a retained Spec the measure-basis axis applies to (`scope.basis.basis_dataset`) folds
-    without becoming an option. The axis's scope choice offers it once the Spec is
-    resubmitted.
+    (axis "what"), labelled without the price basis. A sibling of another measure basis is
+    an option too, until a scope choice offering that basis attaches to the Spec
+    (`assemble.with_scope_choices`).
     """
     measure_index = get_measure_index()
-    index = get_index()
     consumed: set[str] = set()
     folded_any = False
     result: list[Spec] = []
@@ -69,7 +66,6 @@ def _fold_measure_sibling_candidates(
         if spec.spec_id in consumed:
             continue
         shape = shapes_by_spec_id[spec.spec_id]
-        basis_owned = basis_dataset(spec.definition.identity, index) is not None
         folded: list[SpecAlternativeMeasure] = []
         for other in specs[i + 1 :]:
             if other.spec_id in consumed:
@@ -90,9 +86,6 @@ def _fold_measure_sibling_candidates(
             if sibling.label is None:
                 continue
             consumed.add(other.spec_id)
-            if basis_owned and names_a_basis(other_shape.pop_type_dcid, other_shape.meas_prop_dcid):
-                folded_any = True
-                continue
             folded.append(
                 SpecAlternativeMeasure(
                     definition=SpecDefinition(spec_id=sibling.spec_id, identity=sibling.identity),

@@ -4476,6 +4476,7 @@ class _HousePolicyStep:
                 pool,
                 wanted_datasets=self.code_index.house_defaults(),
                 case_systems=self.code_index.house_case_systems(),
+                pool_datasets={d for i in pool for d in self._facts[i].datasets},
                 basis_entries=self.basis_entries,
             )
         return self._contexts[key]
