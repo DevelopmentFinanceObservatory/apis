@@ -97,7 +97,7 @@ axis."""
 
 _MEASURES: Mapping[MeasureBasis, BasisMeasure] = {row.basis: row for row in BASIS_MEASURES}
 _NETTING = "nettingBasis"
-_RECIPIENT_DIRECTIONS = ("destination", "both", "undirected")
+_RECIPIENT_DIRECTIONS = ("destination", "both")
 
 
 def window_class(window: TimeWindow | Literal["all", "latest"]) -> WindowClass:
@@ -125,13 +125,16 @@ def part_shape(
     """The shape the conventions read of a part whose places take `directions` and whose
     admitted qualifier matches name codes of `admitted_systems`: a sector or restriction
     part when one of them is a sector system (`sector_systems`, the code systems the code
-    index declares sector questions of) or a restriction (`BASIS_RESTRICTIONS`), else a
-    recipient part when a place is a recipient or undirected, else a donor part when it
-    names places, and None when it names none."""
+    index declares sector questions of) or a restriction (`BASIS_RESTRICTIONS`), else None
+    when a place is named without a direction, which settles only after election and gives
+    the part its shape then (`identity_part_shape`), else a recipient part when a place is a
+    recipient, else a donor part when it names places, and None when it names none."""
     restricting = frozenset(sector_systems) | frozenset(BASIS_RESTRICTIONS)
     if restricting.intersection(admitted_systems):
         return "sector_or_restriction"
     directions = tuple(directions)
+    if "undirected" in directions:
+        return None
     if any(direction in _RECIPIENT_DIRECTIONS for direction in directions):
         return "recipient_all_sectors"
     return "donor_only" if directions else None

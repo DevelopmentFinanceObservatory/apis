@@ -488,22 +488,59 @@ def test_the_window_is_pre_grant_equivalent_when_it_starts_before_2018(
 
 
 @pytest.mark.parametrize(
-    ("places", "qualifiers", "expected"),
+    ("places", "qualifiers", "expected", "wanted"),
     [
-        pytest.param({"Kenya": ()}, [[], [_purpose("purposeCode")]], "sector", id="sector-named"),
-        pytest.param({"Kenya": ()}, [[], [_purpose("flowCode")]], "recipient", id="undirected"),
-        pytest.param({"Kenya": ("destination",)}, [], "recipient", id="recipient"),
-        pytest.param({"Kenya": ("origin", "destination")}, [], "recipient", id="both-axes"),
-        pytest.param({"Japan": ("origin",), "Kenya": ()}, [], "recipient", id="donor-and-place"),
-        pytest.param({"Japan": ("origin",)}, [], "donor", id="donor-only"),
-        pytest.param({}, [], None, id="no-place"),
+        pytest.param(
+            {"Kenya": ()},
+            [[], [_purpose("purposeCode")]],
+            "sector",
+            _CONVENTION_DATASETS["sector"],
+            id="sector-named",
+        ),
+        pytest.param(
+            {"Kenya": ()},
+            [[], [_purpose("flowCode")]],
+            "recipient",
+            _WANTED["recipient"],
+            id="undirected",
+        ),
+        pytest.param({"Germany": ()}, [], "recipient", _WANTED["recipient"], id="undirected-donor"),
+        pytest.param(
+            {"Kenya": ("destination",)},
+            [],
+            "recipient",
+            _CONVENTION_DATASETS["recipient"],
+            id="recipient",
+        ),
+        pytest.param(
+            {"Kenya": ("origin", "destination")},
+            [],
+            "recipient",
+            _CONVENTION_DATASETS["recipient"],
+            id="both-axes",
+        ),
+        pytest.param(
+            {"Japan": ("origin",), "Kenya": ()},
+            [],
+            "recipient",
+            _WANTED["recipient"],
+            id="donor-and-place",
+        ),
+        pytest.param(
+            {"Japan": ("origin",)}, [], "donor", _CONVENTION_DATASETS["donor"], id="donor-only"
+        ),
+        pytest.param({}, [], None, None, id="no-place"),
     ],
 )
 def test_the_part_names_the_kind_of_question_its_default_dataset_answers(
     places: Mapping[str, tuple[str, ...]],
     qualifiers: list[list[QualifierMatch]],
     expected: HouseDefaultCase | None,
+    wanted: str | None,
 ):
+    """A part's convention dataset is the one its basis convention reads. A place named
+    without a direction gives a part outside a sector no convention until the direction
+    settles, so the kind's house default stands."""
     context = context_of(
         _frame(places=places),
         qualifiers,
@@ -514,7 +551,8 @@ def test_the_part_names_the_kind_of_question_its_default_dataset_answers(
     )
 
     assert context.dataset_case == expected
-    assert context.wanted_dataset == (_CONVENTION_DATASETS[expected] if expected else None)
+    assert context.wanted_dataset == wanted
+    assert (context.basis is not None) == (wanted in _CONVENTION_DATASETS.values())
 
 
 @pytest.mark.parametrize(

@@ -161,6 +161,8 @@ class TestParsedInputParts:
                 }
             ],
             "raw_query": "health ODA grants from USA since 2015",
+            "user_message": None,
+            "carried_entries": None,
         }
         req = ParsedInput.model_validate(payload)
         assert req.model_dump(mode="json") == payload
