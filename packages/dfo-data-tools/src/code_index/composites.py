@@ -37,9 +37,9 @@ DECLARED_COMPOSITES: Mapping[str, CompositeDeclaration] = {
 
 
 class CompositeNotServable(ValueError):
-    """A composite identity whose components cannot be derived: it binds a slot a component's
-    rows do not declare, pins a StatVar, names a composite in a provenance set, or names one
-    the index serves no component table of. `ref` is the composite's provenance and `pointer`
+    """A composite identity whose components cannot be derived, because it binds a slot a
+    component's rows do not declare, pins a StatVar, names a composite in a provenance set, or
+    names one the index serves no component table of. `ref` is the composite's provenance and `pointer`
     the identity member at fault, relative to the identity."""
 
     def __init__(self, message: str, *, ref: str, pointer: str) -> None:
@@ -154,11 +154,11 @@ def component_identities(
 
 
 def table_identity(index: CodeIndex, identity: Mapping[str, object]) -> Mapping[str, object]:
-    """The identity a reader of one table's family reads for `identity`: for a composite, the
-    identity its composite option was set on (`without_composite`), once its components derive
-    (`component_identities`); `identity` itself otherwise. That is the bilateral component of a
-    provider-inclusive composite, and the net identity over the whole window of the OECD
-    headline, whose shape the part elected. Search reads a composite's family, pins, dataset and
+    """The identity a reader of one table's family reads for `identity`. For a composite that
+    is the identity its composite option was set on (`without_composite`), once its components
+    derive (`component_identities`), and otherwise `identity` itself. The result is the
+    bilateral component of a provider-inclusive composite, and the net identity over the whole
+    window of the OECD headline, whose shape the part elected. Search reads a composite's family, pins, dataset and
     provenance scope here, so its readers elect over the same rows the composite's option
     edits.
 
@@ -169,8 +169,8 @@ def table_identity(index: CodeIndex, identity: Mapping[str, object]) -> Mapping[
 
 
 def component_of(composite: CompositeDeclaration, row: StatVarRow) -> ComponentRole | None:
-    """The role of `composite`'s component that serves `row`: the first whose table publishes
-    it (`StatVarRow.provenances`) and whose recipe sets no measure or the measure `row` has.
+    """The role of the first component of `composite` whose table publishes `row`
+    (`StatVarRow.provenances`) and whose recipe sets no measure or the measure `row` has.
     `None` when no component serves it."""
     for recipe in composite.components:
         measure = recipe.basis[0] if recipe.basis is not None else recipe.measured_property

@@ -451,9 +451,9 @@ class ComponentRecipe:
     """How one component's identity derives from its composite's identity.
 
     `dataset` is the provenance of the table the component reads, and `provenance` the
-    provenance its identity binds: `dataset` itself for a table a question answers from only
-    when it names it (the imputed table), `None` where the component's shape elects the table
-    as an unpinned identity does (the CRS, DAC1). `periods` limits the component to its own
+    provenance its identity binds, `dataset` itself for a table a question answers from only
+    when it names it (the imputed table) and `None` where the component's shape elects the
+    table as an unpinned identity does (the CRS, DAC1). `periods` limits the component to its own
     years, `None` for every year of the composite.
 
     `measured_property` replaces the shape's measured property and leaves every slot as it
@@ -461,10 +461,10 @@ class ComponentRecipe:
     its measured property and netting basis, `None` for a measure that carries none, with the
     population and flow-type slots the basis declares. A recipe sets one of the two at most.
     `bind` binds each named slot to its code. `drop_unbound` names the slots the component's
-    rows do not declare: an unbound slot on them is removed, and a bound one makes the
+    rows do not declare. An unbound slot on them is removed, and a bound one makes the
     composite unservable (`code_index.composites.CompositeNotServable`).
 
-    `zero_absent` says the component's absence in a covered cell is a zero: the composite
+    `zero_absent` says the component's absence in a covered cell is a zero. The composite
     writes a zero row for each of its members holding no row in a cell another component
     fills, inside the composite's years. A component without it contributes nothing where it
     holds no row."""
@@ -488,8 +488,8 @@ class CompositeDeclaration:
     composed from one materialisation per component (`code_index.composites`), every row
     carrying `provenance`. The graph holds no node for it: every graph or catalogue read uses
     the component provenances. `label` names the composite for a reader. `measure_noun` is
-    the words a sentence names its measure by: after the measure label of a stacked
-    composite, whose components share the measure, and in its place for a spliced one, whose
+    the words a sentence names its measure by. It follows the measure label of a stacked
+    composite, whose components share the measure, and replaces it for a spliced one, whose
     measure changes between its periods. Each component table gives a provider's account of
     a flow, and so does the composite."""
 

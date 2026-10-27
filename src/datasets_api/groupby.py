@@ -215,9 +215,9 @@ def refuse_stat_var_collision(
 
     `composite` is the declared composite the frame's rows carry as their provenance, or
     `None`. Its components' members are parts of one total, so a group of StatVars passes
-    when each is a member of a different component (`code_index.composites.component_of`):
-    the bilateral and imputed parts of one sector, or the net and grant-equivalent years of
-    one aid type, which never share a year.
+    when each is a member of a different component (`code_index.composites.component_of`),
+    as the bilateral and imputed parts of one sector are, or the net and grant-equivalent
+    years of one aid type, which share no year.
     """
     if _STAT_VAR_COLUMN not in table.columns:
         return

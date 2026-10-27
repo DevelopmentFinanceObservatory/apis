@@ -42,7 +42,7 @@ def edit_basis(
     On an identity whose population a declared basis measures, the basis the two name
     (`declared_basis`) also sets the population, the flow-type slot that says a flow is
     disbursed or committed, and the CRS types of flow an ODA flow binding reads as
-    (`BasisMeasure.oda_flows`). The result is uncanonicalised: an edited slot moves to the end.
+    (`BasisMeasure.oda_flows`). The result is uncanonicalised, and an edited slot moves to the end.
     Raises `ValueError` for a pinned shape, which has no measure to set."""
     shape = cast("Mapping[str, object]", identity["shape"])
     if shape.get("kind") != _DESCRIBED:

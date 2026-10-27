@@ -371,8 +371,8 @@ def sync_estimate(
     Group by component, dispatch key and window years, then use the same lanes and
     StatVar chunks as materialisation. A composite's components materialise apart
     (`serve.prewrite_definition`), so each component's requests are priced as reads of their
-    own, under their own windows, and the estimate is their sum. Estimate each chunk with `lanes=1`,
-    using the first member's roles and window. The `latest` window keeps
+    own, under their own windows, and the estimate is their sum. Estimate each chunk with
+    `lanes=1`, using the first member's roles and window. The `latest` window keeps
     `LATEST` in request-size estimates while coverage prices all years, and
     adds the requests of one read alone at one year of each member that can
     make it (`_members_read_twice`): a member with a series ending after the

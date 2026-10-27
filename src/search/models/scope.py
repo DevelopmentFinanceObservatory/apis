@@ -244,7 +244,7 @@ class CompiledScope(StrictModel):
 class LedgerStep(StrictModel):
     """One switch: the entry it replaced and the entry it applied.
 
-    Search answers with `ledger: []`; a client that records its switches fills it, and can
+    Search answers with `ledger: []`. A client that records its switches fills it, and can
     undo one by posting the prior entry back.
     """
 

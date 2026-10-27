@@ -139,7 +139,7 @@ def _with_recorded_composites(
     the OECD headline per year, `phase_election._record_basis`), with the records it then
     holds. The base keeps its own window: an option's window is applied when the scope
     compiles (`provider.elect_latest_window`). An option the part cannot serve
-    (`OptionAvailability.status` not `available`) is not applied; its axis keeps the option
+    (`OptionAvailability.status` not `available`) is not applied. Its axis keeps the option
     the base holds, settled by default, under `SERVED_DIFFERS_RULE` on the measure basis,
     since the served basis is then not the convention's. The scope's base is then the
     identity whose options the answer serves, so a resubmit of it keeps them."""

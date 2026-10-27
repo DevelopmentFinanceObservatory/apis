@@ -168,9 +168,9 @@ class _Served:
 
 
 def _served(identity: Mapping[str, object], *, facts: ScopeFacts) -> list[_Served]:
-    """Each component of composite `identity` with the years it serves: for a stacked
-    composite the years every component holds a series in, for a spliced one the years its
-    own component holds. Raises `code_index.composites.CompositeNotServable` as
+    """Each component of composite `identity` with the years it serves. A stacked composite
+    serves the years every component holds a series in, a spliced one the years its own
+    component holds. Raises `code_index.composites.CompositeNotServable` as
     `component_identities` does, and `ValueError` for an identity that binds no composite."""
     components = component_identities(facts.index, identity)
     if components is None:
@@ -338,10 +338,11 @@ def _stat_vars(
     *,
     facts: ScopeFacts,
 ) -> ResolvedStatVars:
-    """`stated`, the table identity's StatVar counts, restated over every component: the
-    StatVars holding a series in the years their component serves, and those a mint of each
-    component serves, summed, or None where the index settles some component's members
-    none; and the years the components serve as the served date range."""
+    """`stated`, the table identity's StatVar counts, restated over every component. The
+    member count is the StatVars holding a series in the years their component serves, the
+    served count sums the StatVars a mint of each component serves (None where the index does
+    not settle some component's members), and the served date range spans the years the
+    components serve."""
     years = sorted({year for item in served for year in item.served})
     bound = _bound(identity)
     confirmed = sum(

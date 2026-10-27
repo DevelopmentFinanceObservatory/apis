@@ -213,9 +213,9 @@ def family_label(
     with no provenance pin (`code_index.composites.without_composite`), and is named by its
     declaration (`CompositeDeclaration.label`): after the measure label for a stacked
     composite, whose components share the measure, and in its place for a spliced one, whose
-    measure changes between its periods (the OECD headline). Returns `None` when
-    neither part has a label. The presentation door labels a collapsed family's `dcid:<spec_id>` ref with this, and the
-    datasets door's `stat_vars_summed` warning carries the same string as `stat_var_label`.
+    measure changes between its periods (the OECD headline). Returns `None` when neither part
+    has a label. The presentation door labels a collapsed family's `dcid:<spec_id>` ref with
+    this, and the datasets door's `stat_vars_summed` warning carries the same string as `stat_var_label`.
     """
     shape = cast("Mapping[str, object]", identity.get("shape", {}))
     slots = cast("Sequence[Mapping[str, object]]", identity.get("slots", ()))

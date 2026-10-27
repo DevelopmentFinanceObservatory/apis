@@ -322,7 +322,7 @@ def settle_provider(
     the axis does not apply (`provider_rule`).
 
     The first entry on the axis (`ScopeState.entries_on`, explicit before carried) whose
-    option is available settles it; a partial option is not applied from words or a
+    option is available settles it. A partial option is not applied from words or a
     carried entry, since only a switch shortens the years asked for. Otherwise the declared
     convention matching the part (`provider_convention`, with the request's total intent)
     settles its scope when the scope is available, and the bilateral scope stands otherwise.

@@ -314,8 +314,8 @@ MEASURE_BASIS_CONVENTIONS: tuple[BasisConvention, ...] = (
 )
 
 # A named donor's total of a CRS sector, or of a part the CRS serves for a recipient, counts
-# its bilateral flows plus its imputed share of multilateral spending, after ONE's method:
-# the multilateral organisations' own spending in the sector, attributed to the donors in
+# its bilateral flows plus its imputed share of multilateral spending, after ONE's method,
+# which attributes the multilateral organisations' own spending in the sector to the donors in
 # proportion to their core contributions. Every other part counts bilateral flows. DAC1 donor
 # totals already count core contributions to multilaterals, and DAC2a's imputed line is
 # netted differently, so neither takes the inclusive scope.
@@ -335,7 +335,7 @@ PROVIDER_CONVENTIONS: tuple[ProviderConvention, ...] = (
 )
 
 PROVIDER_DEFAULT_RULE = "bilateral_flows"
-"""The rule of a part no provider convention settles: it counts the donor's bilateral flows."""
+"""The rule of a part no provider convention settles. It counts the donor's bilateral flows."""
 
 ODA_FLOW_SYSTEM = "crsTypeOfFlow"
 """The code system an ODA flow binding binds."""

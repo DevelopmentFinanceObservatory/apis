@@ -256,7 +256,7 @@ def pinned_refs(facets: Mapping[str, Mapping[str, object]]) -> tuple[str, ...]:
     the options door) reads it here.
 
     Raises `code_index.composites.CompositeProvenanceRead` for a pin naming a declared
-    composite, which no table publishes: its reader reads the composite's components
+    composite, which no table publishes. Its reader reads the composite's components
     (`code_index.composites.component_identities`)."""
     binding = facets.get(_SOURCE_FACET, {})
     ref = binding.get("ref")

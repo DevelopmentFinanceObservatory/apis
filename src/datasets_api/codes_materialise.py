@@ -344,9 +344,10 @@ class CurrencyRoleUndeclared(Refusal):
 
 class CompositeUnservable(Refusal):
     """A composite identity whose components cannot be served
-    (`code_index.composites.CompositeNotServable`): it binds a slot a component's rows do not
-    declare, pins a StatVar, names its composite in a provenance set, or a component resolves
-    off the code index or from another table than its recipe names. Wire mapping:
+    (`code_index.composites.CompositeNotServable`), because it binds a slot a component's rows
+    do not declare, pins a StatVar, names its composite in a provenance set, or has a
+    component that resolves off the code index or from another table than its recipe names.
+    Wire mapping:
     `request_invalid`, 400. `identity_pointer` names the identity member at fault, relative to
     the identity, and a door that knows where the identity sits sets `pointer`."""
 

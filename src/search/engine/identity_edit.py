@@ -123,10 +123,10 @@ def refuse_over_place_bound(
 
 
 def composite_table_identity(identity: BaseIdentity, *, pointer: str) -> BaseIdentity:
-    """The identity a Search door reads for `identity`: for a composite
-    (`code_index.composites`), the identity its option was set on
+    """The identity a Search door reads for `identity`. For a composite
+    (`code_index.composites`) that is the identity its option was set on
     (`code_index.composites.table_identity`), whose one table every graph and index read
-    names; `identity` itself otherwise. Refuses a composite whose components cannot be derived
+    names, and otherwise `identity` itself. Refuses a composite whose components cannot be derived
     (`CompositeNotServable`) as `request_invalid`, at `pointer`, the posted identity, joined
     with the member at fault."""
     document = identity.model_dump(mode="json", exclude_none=True)
@@ -143,7 +143,7 @@ def check_not_composite(identity: BaseIdentity, *, pointer: str) -> None:
     """Refuse an identity whose `facets.provenance` names a declared composite
     (`code_index.composites`), at `pointer`, the posted identity's provenance facet.
 
-    No table publishes a composite, so its pin scopes every read to nothing: a Search door
+    No table publishes a composite, so its pin scopes every read to nothing. A Search door
     resolves the identity its option was set on (`composite_table_identity`) in its place,
     and this guards the resolve that reads it."""
     try:

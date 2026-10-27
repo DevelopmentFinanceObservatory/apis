@@ -96,8 +96,8 @@ def parse_index(
     totals covering the same class on one dataset and axis, and a whole total set its members
     contradict (`_check_whole_totals`). A party without
     a `whole` key is no whole total. The index serves each of `composites` whose component
-    tables it declares, and refuses one `_check_composites` refuses. A code row without a `definition` carries
-    none, as does a measure value or measure label in `parse_measure_axes`."""
+    tables it declares, and refuses one `_check_composites` refuses. A code row without a
+    `definition` carries none, as does a measure value or measure label in `parse_measure_axes`."""
     try:
         stamp = _parse_stamp(payload["stamp"])
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
@@ -168,8 +168,8 @@ def _check_composites(
     component or two of one role, a recipe setting both a measured property and a basis, a
     stacked component limited to periods, a spliced component with none, or spliced periods
     that overlap or leave a year between them. A served stacked composite whose component
-    tables' rows declare different role sets is refused too: the composed frame holds one set
-    of role columns. A composite naming a table `datasets` does not declare is not served."""
+    tables' rows declare different role sets is refused too, since the composed frame holds
+    one set of role columns. A composite naming a table `datasets` does not declare is not served."""
     declared = {dataset.provenance for dataset in datasets}
     role_sets: dict[str, set[tuple[str, ...]]] = {}
     for row in statvars:

@@ -380,8 +380,8 @@ def basis_rule(
     available when its identity (`base` with the option's binding) reads a member of the
     dataset holding every other binding of `base` with a series in the coverage index,
     `option_not_covered` when the dataset publishes such a member with no series there, and
-    `basis_not_published` otherwise; the headline when both bases it splices are
-    (`_headline_availability`). A composite base is read through the identity its option was
+    `basis_not_published` otherwise. The headline is available when both bases it splices
+    are (`_headline_availability`). A composite base is read through the identity its option was
     set on (`table_document`)."""
     dataset = basis_dataset(base, facts.index)
     held_id = held_option(base)
@@ -430,7 +430,7 @@ def basis_rule(
 
 def _offers_headline(identity: BaseIdentity, dataset: str) -> bool:
     """Whether the OECD headline per year is an option of a part served from `dataset` whose
-    identity is `identity`: a convention counts that dataset's parts on it, and the
+    identity is `identity`. It is when a convention counts that dataset's parts on it and the
     identity's window crosses 2018 (`window_class`), where the headline changes basis."""
     reads_headline = any(
         row.basis == "oecd_headline" and row.dataset == dataset for row in MEASURE_BASIS_CONVENTIONS

@@ -479,7 +479,7 @@ def pinned_provenance_scope(identity: Mapping[str, object]) -> AbstractContextMa
     a pinned source is admitted before DFO precedence and a base pin serves at a place
     where a DFO table also holds data. Binds nothing for an identity that pins no provenance.
 
-    A composite identity's pin names no table: a caller derives its components first
+    A composite identity's pin names no table, so a caller derives its components first
     (`composite_components`) and scopes each component's reads by its component identity.
     Handed a composite, `provenance_pin` raises `code_index.composites.CompositeProvenanceRead`."""
     return scoped_reads(provenance_pin(identity))
@@ -512,9 +512,9 @@ def definition_read_scope(
     identity: Mapping[str, object], *, code_index: CodeIndex
 ) -> AbstractContextManager[object]:
     """The scope a read over every request of `identity` runs under: its pinned provenances
-    (`pinned_provenance_scope`). A composite's reads over every request run unscoped: no table
-    publishes the composite, and a mint reads each component under its component identity's
-    pins (`serve.prewrite_definition`). The one read over every request, the head fingerprint
+    (`pinned_provenance_scope`). A composite's reads over every request run unscoped, since no
+    table publishes the composite, and a mint reads each component under its component
+    identity's pins (`serve.prewrite_definition`). The one read over every request, the head fingerprint
     (`materialise.dependencies.refreshed_dependencies`), consults the scope only to elect a
     `latest` request's year, and a composite has no `latest` window
     (`CompositeWindowUnsupported`), so it reads the same unscoped."""

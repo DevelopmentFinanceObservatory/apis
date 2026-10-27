@@ -10,7 +10,7 @@ served from. Each component materialises through `pipeline.materialise_group` al
 - Inside those years, each member of a component whose absence reads as zero
   (`ComponentRecipe.zero_absent`) gets a row of value 0 in every cell, a role tuple and
   period, that another component fills and it does not. Outside them no zero row is
-  written, so a year a component does not cover is missing, never zero. A component without
+  written, so a year a component does not cover is missing. A component without
   the flag contributes nothing where it holds no row, and neither does a member its facet
   group election left out (`MaterialisationResult.unserved_members`), whose series sit under
   another source, unit or method.
@@ -475,7 +475,7 @@ def _member_runs(
     frame_chunks: Callable[[], Iterator[Frame]], *, kept: frozenset[int]
 ) -> Iterator[tuple[str, pa.Table]]:
     """Each member's rows in `kept` years, one table per member in `stat_var` order. A
-    member's rows may span chunks; they are joined before it is yielded."""
+    member's rows may span chunks, and they are joined before it is yielded."""
     pending: str | None = None
     parts: list[pa.Table] = []
     for frame in frame_chunks():
