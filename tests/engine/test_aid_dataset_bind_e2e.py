@@ -378,6 +378,25 @@ def test_a_question_naming_no_dataset_answers_the_crs(
     assert spec.spec_id == _spec_id(plain)
 
 
+def test_a_recipient_total_on_a_crs_only_shape_is_counted_on_the_crs_convention():
+    """A recipient's all-sector total is counted net by DAC2a's convention, which applies
+    only to a shape DAC2a publishes. The shape here is the CRS's alone, so the part takes the
+    CRS's own convention, gross disbursements, and its choice names that convention as the
+    rule that settled the basis."""
+    response, _llm = _resolve("total aid to Kenya", "aid")
+
+    (spec,) = _specs(response)
+    assert _bound(spec)["nettingBasis"] == "Gross"
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+    assert (choice.active, choice.provenance, choice.rule) == (
+        "measure_basis:gross",
+        "default",
+        "measure_basis_convention",
+    )
+
+
 def test_a_ranked_education_aid_question_asks_every_donor_and_keeps_its_operation():
     """The rank runs over donors, so the part leaves the donor open. The CRS declares the
     donor, and the identity states it beside the plain CRS one."""

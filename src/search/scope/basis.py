@@ -65,7 +65,8 @@ BASIS_RULE = "measure_basis_convention"
 
 SERVED_DIFFERS_RULE = "served_differs_from_convention"
 """The rule of a part whose answer holds another basis than its convention's, which no
-entry asked for: no shape of its pool measures the convention's basis."""
+entry asked for: no shape of its pool measures the convention's basis, or the coverage holds
+a series of its shape's default basis at its places and none of the convention's."""
 
 GRANT_EQUIVALENT_HEADLINE_FROM = 2018
 """The first year the OECD's headline counts official development assistance in grant
@@ -185,7 +186,12 @@ def elect_basis(
     (`ScopeState.entries_on`, explicit before carried) asking for a basis one identity can
     hold wins; otherwise the convention's basis, with the per-year headline counted as
     `HEADLINE_SERVED_AS`."""
-    row = convention(shape, window)
+    return _elect_on(convention(shape, window), entries)
+
+
+def _elect_on(row: BasisConvention, entries: Sequence[Entry]) -> BasisElection:
+    """The basis a part whose applicable convention is `row` is counted on: the basis the
+    first of `entries` asking for one an identity can hold names, else `row`'s."""
     for entry in entries:
         measure = next(
             (m for m in BASIS_MEASURES if measure_basis_option_id(m.basis) == entry.option_id),
@@ -196,9 +202,28 @@ def elect_basis(
     return BasisElection(convention=row, basis=_served(row))
 
 
+def applicable_convention(
+    shape: PartShape, window: WindowClass, datasets: Sequence[str]
+) -> BasisConvention | None:
+    """The convention a part of `shape` asking for `window` is counted on when it is
+    answered from one of `datasets`. A convention row pairs a basis with the dataset that
+    publishes it, so the part's own row applies where `datasets` include its dataset.
+    Otherwise the row of the first of `datasets` a convention reads applies, that dataset's
+    own default for `window`: gross disbursements for the CRS (the sector row), net
+    receipts for DAC2a, the headline for DAC1. None when no convention reads any of them."""
+    row = convention(shape, window)
+    if row.dataset in datasets:
+        return row
+    for dataset in datasets:
+        rows = [r for r in MEASURE_BASIS_CONVENTIONS if r.dataset == dataset]
+        if rows:
+            return next((r for r in rows if r.window in (window, "any")), rows[0])
+    return None
+
+
 def elect_part_basis(
     *,
-    datasets: Collection[str],
+    datasets: Sequence[str],
     directions: Iterable[str],
     admitted_systems: Collection[str],
     sector_systems: Collection[str],
@@ -206,18 +231,19 @@ def elect_part_basis(
     entries: Sequence[Entry],
 ) -> BasisElection | None:
     """The basis a part is counted on, from the shape its places (`directions`) and
-    admitted codes give it (`part_shape`) and its `window` (`elect_basis`), with `entries`
-    winning over the convention. None when no dataset of `datasets`, those the part could
-    be answered from, is one the conventions read (`CONVENTION_DATASETS`), and for a part
-    the conventions read no shape of."""
-    if CONVENTION_DATASETS.isdisjoint(datasets):
-        return None
+    admitted codes give it (`part_shape`), its `window` and `datasets`, those the part
+    could be answered from, in serving order (`applicable_convention`), with `entries`
+    winning over the convention. None for a part the conventions read no shape of, and
+    when no convention reads a dataset of `datasets`."""
     shape = part_shape(
         directions=directions, admitted_systems=admitted_systems, sector_systems=sector_systems
     )
     if shape is None:
         return None
-    return elect_basis(shape=shape, window=window_class(window), entries=entries)
+    row = applicable_convention(shape, window_class(window), datasets)
+    if row is None:
+        return None
+    return _elect_on(row, entries)
 
 
 def _served(row: BasisConvention) -> MeasureBasis:

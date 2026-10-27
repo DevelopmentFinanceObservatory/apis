@@ -47,6 +47,11 @@ class _FlowOpenLLM:
         ), None
 
 
+# The fixture's member measures grant equivalents, which count ODA as CRS flows 10 and 60
+# (`code_index.scope_conventions.BASIS_MEASURES`), so the ODA default binds both.
+_GE_ODA_FLOWS = ["CRSTypeOfFlow10", "CRSTypeOfFlow60"]
+
+
 def _filter_for(spec, prop: str):
     return next(
         f
@@ -80,8 +85,8 @@ def test_grants_question_with_no_flow_type_defaults_crs_type_of_flow_to_oda():
 
     # The default provenance is carried on the flow filter.
     flow_filter = _filter_for(spec, "crsTypeOfFlow")
-    assert flow_filter.binding_kind == "value"
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert flow_filter.binding_kind == "set"
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
 
     # The default leaves text-recognised finance provenance unchanged.
@@ -180,7 +185,7 @@ def test_single_variable_raw_query_naming_aid_defaults_the_flow_type():
     assert response.status == "definite"
     [flow_filter] = _flow_filters(response)
     assert flow_filter.provenance == "declared_default"
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
 
 
 def test_two_variable_raw_query_naming_aid_leaves_the_flow_type_open():

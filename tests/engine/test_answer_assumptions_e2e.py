@@ -33,6 +33,7 @@ from search.models import (
     ResubmitCandidate,
     ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
+    Spec,
 )
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine.test_operations_e2e import (
@@ -250,20 +251,33 @@ def _merged_answer() -> ResolveResponse:
 
 
 def test_a_merged_part_keeps_the_default_its_own_request_left():
-    """ "aid flows" leaves the flow open and "psi flows" names private sector instruments, so
-    the two merge into one Spec whose flow slot reads as recognised. The first part's own
-    request still left its flow to the ODA default, which it states; the second asked for
-    its flow and states none. The merged heading names no flow role, so neither part
-    states one."""
+    """ "aid flows" leaves the flow open and "psi flows" names private sector instruments.
+    On grant equivalents the ODA default binds CRS flows 10 and 60, which already hold the
+    private sector instruments, so the two parts stay separate Specs: merging them would
+    count flow 60 twice. Each part keeps what its own request left: the first states the ODA
+    default, the second asked for its flow and states none."""
     response = _merged_answer()
     first, second = response.parts
     assert isinstance(first, DefinitePart)
     assert isinstance(second, DefinitePart)
-    assert first.spec.spec_id == second.spec.spec_id
+    assert first.spec.spec_id != second.spec.spec_id
+    assert [_flow_refs(part.spec) for part in (first, second)] == [
+        ["CRSTypeOfFlow10", "CRSTypeOfFlow60"],
+        ["CRSTypeOfFlow60"],
+    ]
     assert "slot_defaulted" in [warning.code for warning in first.warnings]
+    assert "slot_defaulted" not in [warning.code for warning in second.warnings]
     assert [part.assumptions for part in response.parts] == [[_ASSUMED_ODA], []]
-    assert response.rendered_sentence is not None
-    assert response.rendered_sentence.endswith(" Assumed: official development assistance.")
+
+
+def _flow_refs(spec: Spec) -> list[str]:
+    """The flow values `spec`'s trace records its flow slot as binding."""
+    (flow,) = (
+        slot_filter
+        for slot_filter in spec.resolved.trace.slot_filters
+        if slot_filter.key.as_ref() == "how:crsTypeOfFlow"
+    )
+    return [value.ref for value in flow.refs]
 
 
 @pytest.mark.parametrize("reposted", [2, 1], ids=["both-parts", "first-part"])

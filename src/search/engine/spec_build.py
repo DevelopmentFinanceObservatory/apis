@@ -967,9 +967,10 @@ def _compose_wire_shape_label(
 
     An authored measure label supplies the head. Single bound values and constant
     open-axis values add qualifiers unless the label already covers their axes.
-    Without a measure label, qualifiers form the
-    whole label. Varying axes and set bindings are omitted, and duplicate label text
-    is removed case-insensitively.
+    A set binding adds the label of the group it was drawn from, else its members' labels
+    joined ("official development assistance and private sector instruments" for CRS
+    flows 10 and 60). Without a measure label, qualifiers form the whole label. Varying
+    axes are omitted, and duplicate label text is removed case-insensitively.
     """
     covered = set(measure_label_axes)
     qualifiers: list[str] = []
@@ -989,6 +990,9 @@ def _compose_wire_shape_label(
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
             covered.add(prop.ref)
             _add_qualifier(binding.value.ref.label)
+        elif isinstance(binding, BindingSet) and (label := _set_label(binding)) is not None:
+            covered.add(prop.ref)
+            _add_qualifier(label)
     for fact in open_axis_facts or ():
         if fact.property in covered or fact.varies or fact.value is None:
             continue
@@ -1002,6 +1006,17 @@ def _compose_wire_shape_label(
     if measure_label.endswith(")"):
         return f"{measure_label[:-1]}, {joined})"
     return f"{measure_label} ({joined})"
+
+
+def _set_label(binding: BindingSet) -> str | None:
+    """The words naming `binding`'s members: the label of the group it was drawn from, else
+    each member's label joined into one phrase, None when a member has no reference."""
+    if binding.set_ref is not None:
+        return binding.set_ref.label
+    labels = [value.ref.label for value in binding.values if value.ref is not None]
+    if len(labels) < len(binding.values):
+        return None
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
 def _check_provenance_disjoint(

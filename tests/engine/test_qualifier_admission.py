@@ -71,6 +71,7 @@ from search.heading.departure_fact import DepartureFact
 from search.models import SourceMention
 from search.render.plan import render_sentence
 from series_coverage.schema import RoleNames
+from tests.engine import test_two_ended_menu as two_ended_menu
 from tests.engine._binders import elected_reply
 from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
@@ -689,6 +690,15 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
     assert [match.code_dcid for match in promoted] == ["CRSTypeOfFlow10"]
 
 
+# DAC2a's net members, as graph nodes built from their index rows.
+_DAC2A_NET_NODES = {
+    row.dcid: _index_row_node(row.dcid)
+    for row in _REAL_INDEX.statvars
+    if "provenance/OECDDAC2A" in row.provenances
+    and row.constraint_properties.get("nettingBasis") == "Net"
+}
+
+
 @pytest.mark.parametrize(
     ("query", "entities", "variable", "recalled"),
     [
@@ -708,10 +718,14 @@ def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
         ),
     ],
 )
-def test_attributed_as_a_plain_verb_names_no_measure(query, entities, variable, recalled):
+def test_attributed_as_a_plain_verb_names_no_measure(
+    query, entities, variable, recalled, monkeypatch: pytest.MonkeyPatch
+):
     """The attributed-amount measure reads on phrases that name it ("attributed to donors",
     "attributed aid"). The verb alone names none, so the answer warns of no dropped
-    qualifier."""
+    qualifier. The graph holds DAC2a's net members beside its gross one, as DAC2a publishes
+    both, so a recipient part counted on DAC2a's net receipts finds them."""
+    monkeypatch.setattr(two_ended_menu, "_NODES", {**two_ended_menu._NODES, **_DAC2A_NET_NODES})
     result, _menu = _resolve_two_ended(query, entities, variable=variable, recalled=(recalled,))
 
     assert not [
@@ -1963,9 +1977,11 @@ def test_e2e_admitted_matches_reach_the_wire_as_forced_value_slots(caplog, monke
             if s.key.property is not None and s.key.property.ref == prop
         )
 
+    # The shape measures grant equivalents, which count ODA as flows 10 and 60
+    # (`BASIS_MEASURES`), so the admitted ODA flow binds both.
     flow_slot = _slot("crsTypeOfFlow")
-    assert flow_slot.binding.kind == "value"
-    assert flow_slot.binding.value.ref.ref == "CRSTypeOfFlow10"
+    assert flow_slot.binding.kind == "set"
+    assert [v.ref.ref for v in flow_slot.binding.values] == ["CRSTypeOfFlow10", "CRSTypeOfFlow60"]
 
     finance_slot = _slot("crsTypeOfFinance")
     assert finance_slot.binding.kind == "value"
@@ -2012,9 +2028,11 @@ def test_e2e_query_text_admits_a_finance_type_qualifier_the_paraphrase_dropped(c
             if s.key.property is not None and s.key.property.ref == prop
         )
 
+    # The shape measures grant equivalents, which count ODA as flows 10 and 60
+    # (`BASIS_MEASURES`), so the admitted ODA flow binds both.
     flow_slot = _slot("crsTypeOfFlow")
-    assert flow_slot.binding.kind == "value"
-    assert flow_slot.binding.value.ref.ref == "CRSTypeOfFlow10"
+    assert flow_slot.binding.kind == "set"
+    assert [v.ref.ref for v in flow_slot.binding.values] == ["CRSTypeOfFlow10", "CRSTypeOfFlow60"]
 
     finance_slot = _slot("crsTypeOfFinance")
     assert finance_slot.binding.kind == "value"

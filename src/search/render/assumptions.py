@@ -24,8 +24,9 @@ corrected, with no graph or model call:
 
 A `dataset_resubmit` identity entry posts every slot bound and may echo the part's list
 back. Its part states the echoed items that still hold, matched by kind and binding and
-worded from the rebuilt Spec. A declared default holds while its slot still binds the
-echoed value dcids (`Assumption.refs`). A name correction holds while the Spec still binds
+worded from the rebuilt Spec. A declared default holds while the echoed value dcids
+(`Assumption.refs`) are exactly the values its slot's default fixes on the rebuilt Spec, so
+flow 60 alone does not hold on a slot binding ODA as flows 10 and 60. A name correction holds while the Spec still binds
 its entity on the echoed role, worded from the Spec with the typed words the echo carries
 (`Assumption.asked`), since the resubmit posts them nowhere else. An entry with no echo states the open roles and
 place scope the answer reads and no declared default, since it binds every slot.
@@ -107,8 +108,8 @@ def assumptions_for(
 
     ``echo`` is the list a `dataset_resubmit` identity entry posts back, None when it posts
     none. With an echo, the result is the echoed items that still hold for `spec`, each with
-    its words read from `spec`. A declared default holds while its slot still binds the
-    echoed `refs`, and states those refs. An open role holds while `spec` still reads it open
+    its words read from `spec`. A declared default holds while the echoed `refs` equal the
+    values its slot's default fixes (`_defaulted_values`), and states those refs. An open role holds while `spec` still reads it open
     on the echoed axis, and the place scope while `spec` still names no place. An item the
     echo lacks is left out, since the posted identity or its edit asked for it, so an empty
     echo states none. A name correction holds while `spec` binds its echoed ref on the
@@ -126,7 +127,8 @@ def assumptions_for(
         }
     else:
         # The posted identity of an echo binds every slot, so none carries declared_default
-        # provenance. On an echo a how slot holds an echoed default while it binds its refs.
+        # provenance. On an echo a how slot holds an echoed default while its refs are the
+        # values the slot's default fixes.
         how = {slot_filter.key.as_ref() for slot_filter in slots if slot_filter.key.axis == "how"}
         fixed = {
             item.binding_ref: set(item.refs)
@@ -137,7 +139,7 @@ def assumptions_for(
         _declared_default(slot_filter, refs=fixed[ref])
         for slot_filter in spec.resolved.trace.slot_filters
         if (ref := slot_filter.key.as_ref()) in fixed
-        and fixed[ref] <= {value.ref for value in slot_filter.refs}
+        and fixed[ref] == _defaulted_values(slot_filter)
     ]
     filled = [*_open_roles(spec, heading, asked_axes, operations), *_place_scope(spec)]
     if echo is None:

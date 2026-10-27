@@ -521,12 +521,17 @@ def test_the_part_names_the_kind_of_question_its_default_dataset_answers(
     ("datasets", "basis"),
     [
         pytest.param(("provenance/OECDDAC2A",), "net", id="a-convention-dataset"),
+        pytest.param(
+            ("provenance/OECDCreditorReportingSystem",), "gross", id="another-rows-dataset"
+        ),
         pytest.param(("provenance/WorldBankWDI",), None, id="no-convention-dataset"),
     ],
 )
 def test_a_pool_no_convention_dataset_publishes_elects_no_basis(datasets, basis):
     """The policies elect a basis only for a pool a dataset the conventions read publishes,
-    as the part's basis record does, so a pool served elsewhere keeps the house default."""
+    as the part's basis record does, so a pool served elsewhere keeps the house default. A
+    recipient's pool the CRS alone publishes takes the CRS's own gross convention, since
+    the recipient's net convention is DAC2a's."""
     context = context_of(
         _frame(places={"Kenya": ("destination",)}),
         [],
