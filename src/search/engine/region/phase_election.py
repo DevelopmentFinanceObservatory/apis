@@ -40,6 +40,7 @@ from search.engine.region.codes import (
     SLOT_DEFAULT_NOT_APPLIED,
     SLOT_DEFAULTED,
 )
+from search.engine.region.coverage_series import holds_series
 from search.engine.region.named_source import with_named_source, without_dataset_drafts
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches_against_elected_shape,
@@ -69,6 +70,7 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.place_roles import (
     PlaceAssignment,
+    PlaceRoleRefusal,
     bind_place_roles,
     holds_whole_total,
     whole_total_candidates,
@@ -1442,24 +1444,56 @@ def _bind_query_places(
     claims: Mapping[str, SlotBindingDraft],
 ) -> RegionResult | None:
     """Bind the query's places to the elected shape (`ResolveState.query_place_roles`) and
-    settle the bindings under the role keys they give (`_settle_role_bindings`), or return
-    the refusal of a part no table serves.
+    settle the bindings under the role keys they give (`_settle_places`), or return the
+    refusal of a part no table serves.
 
-    The places bind as named (`place_roles.bind_place_roles`). Where the shape offers whole
-    totals on sides they leave unnamed (`place_roles.whole_total_candidates`), the bindings
-    are settled under each total's role keys in the order offered, and the first total
-    binds whose bindings a table serves and, read without the claims, hold its series
-    (`place_roles.holds_whole_total`). Where none does, they are settled under the named
-    places' role keys, where no total remains to judge. With at most one total per side,
-    the part settles at most three times: once per offered total, and once without. Each
-    run starts from the same `bindings` and writes nothing to the state, and the bindings
-    installed are those the bound total was judged under. Places that refuse to bind
-    settle under no role keys, as the flagged identity of a role refusal binds no entity
-    and leaves no axis open. `bindings` hold `claims`, the claims a recall sample alone
-    backs, open, and each settling returns them (`_settle_role_bindings`)."""
+    The bindings are settled on the measure basis the part is counted on (`_part_basis`).
+    Where the convention elected that basis and no entry asked for it, the coverage snapshot
+    judges it against the shape's declared default basis at the places (`_coverage_rank`):
+    when the default's members hold a series there and the convention's do not, or the
+    snapshot holds members of the default and none of the convention's, the part is settled
+    on the default. A convention so never leaves unanswered a part its shape answers, nor
+    refuses it on a basis the shape's dataset holds no series of. The basis record of an
+    answer then names the served basis as differing from the convention's
+    (`_record_basis`). `bindings` hold `claims`, the claims a recall sample alone backs,
+    open, and each settling returns them (`_settle_role_bindings`)."""
     shape = state.shape_draft
     basis = _part_basis(state, shape)
     assignment = bind_place_roles(state, shape)
+    place_roles, settled = _settle_places(state, shape, assignment, bindings, claims, basis)
+    if basis is not None and basis.entry is None:
+        rank = _coverage_rank(state, place_roles, settled)
+        if rank < _HELD:
+            default_roles, default = _settle_places(
+                state, shape, assignment, bindings, claims, None
+            )
+            if _coverage_rank(state, default_roles, default) > rank:
+                place_roles, settled = default_roles, default
+    state.query_place_roles = place_roles
+    return _install_settled(state, settled, basis=basis)
+
+
+def _settle_places(
+    state: ResolveState,
+    shape: ShapeDraft,
+    assignment: PlaceAssignment | PlaceRoleRefusal,
+    bindings: list[SlotBindingDraft],
+    claims: Mapping[str, SlotBindingDraft],
+    basis: BasisElection | None,
+) -> tuple[PlaceAssignment | PlaceRoleRefusal, _SettledBindings]:
+    """The place roles `bindings` settle under and the bindings settled on `basis`
+    (`_settle_role_bindings`), writing nothing to `state`.
+
+    The places bind as named (`assignment`). Where the shape offers whole totals on sides
+    they leave unnamed (`place_roles.whole_total_candidates`), the bindings are settled under
+    each total's role keys in the order offered, and the first total binds whose bindings a
+    table serves and, read without the claims, hold its series
+    (`place_roles.holds_whole_total`). Where none does, they are settled under the named
+    places' role keys, where no total remains to judge. With at most one total per side,
+    the part settles at most three times: once per offered total, and once without. Each
+    run starts from the same `bindings`. Places that refuse to bind settle under no role
+    keys, as the flagged identity of a role refusal binds no entity and leaves no axis
+    open."""
     if isinstance(assignment, PlaceAssignment):
         for whole in whole_total_candidates(state, shape, assignment):
             settled = _settle_role_bindings(
@@ -1468,12 +1502,36 @@ def _bind_query_places(
             if settled.served and holds_whole_total(
                 state, settled.shape, whole, without_sampled_claims(settled.bindings)
             ):
-                state.query_place_roles = whole
-                return _install_settled(state, settled, basis=basis)
-    state.query_place_roles = assignment
+                return whole, settled
     role_keys = assignment.role_keys if isinstance(assignment, PlaceAssignment) else RoleKeys()
     settled = _settle_role_bindings(state, shape, bindings, claims, role_keys, basis=basis)
-    return _install_settled(state, settled, basis=basis)
+    return assignment, settled
+
+
+# How far the coverage snapshot shows settled bindings answer at the places
+# (`_coverage_rank`): it holds no member of their family, it holds members and no series at
+# the places, it holds a series there.
+_UNKNOWN, _UNHELD, _HELD = 0, 1, 2
+
+
+def _coverage_rank(
+    state: ResolveState,
+    place_roles: PlaceAssignment | PlaceRoleRefusal,
+    settled: _SettledBindings,
+) -> int:
+    """How far the coverage snapshot shows the family `settled` elects, read without the
+    claims, holds a series at the places `place_roles` binds (`coverage_series.holds_series`):
+    `_HELD`, `_UNHELD` for bindings no table serves and a family with no series there, and
+    `_UNKNOWN` for places that refuse to bind, no place bound on a flow role, and a family
+    the snapshot holds no member of."""
+    if not isinstance(place_roles, PlaceAssignment):
+        return _UNKNOWN
+    if not settled.served:
+        return _UNHELD
+    held = holds_series(
+        state, settled.shape, place_roles.sets, bindings=without_sampled_claims(settled.bindings)
+    )
+    return _UNKNOWN if held is None else _HELD if held else _UNHELD
 
 
 def _settle_role_bindings(
@@ -1629,8 +1687,9 @@ def _install_settled(
 
 
 def _part_basis(state: ResolveState, shape: ShapeDraft) -> BasisElection | None:
-    """The measure basis the part is counted on (`scope.basis.elect_basis`): read from the
-    shape its places and admitted codes give it and its window, or from its explicit or
+    """The measure basis the part is counted on (`scope.basis.elect_part_basis`): read from
+    the shape its places and admitted codes give it, its window and the datasets `shape` is
+    answered from (`scope.basis.applicable_convention`), or from its explicit or
     carried measure-basis entry when `shape` measures the basis the entry asks for, else
     from the convention alone. None for a part the conventions read no shape of, and for a
     `shape` no dataset the conventions read publishes."""
@@ -1705,8 +1764,9 @@ def _record_basis(state: ResolveState, settled: _SettledBindings, basis: BasisEl
     (`ResolveState.scope_selection`), with the entry that settled it when they hold the
     option the entry asked for. A part whose convention is the OECD headline per year and
     which holds its net shape records the headline option, which the scope serves from the
-    headline composite. A basis no entry settled that is not the convention's,
-    served because no shape of the pool measures the convention's, records
+    headline composite. A basis no entry settled that is not the convention's, served
+    because no shape of the pool measures the convention's or because the coverage shows
+    only the shape's default basis at the places (`_bind_query_places`), records
     `SERVED_DIFFERS_RULE` in place of the convention's rule and is logged with the part's
     shape, so the choice does not claim the convention settled it. A shape whose measure no
     declared basis names records none."""

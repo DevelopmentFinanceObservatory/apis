@@ -43,7 +43,13 @@ from search.models import (
     ResubmitIdentityEntry,
     Spec,
 )
-from search.scope.basis import basis_binding, basis_label, identity_basis_record, window_class
+from search.scope.basis import (
+    applicable_convention,
+    basis_binding,
+    basis_label,
+    identity_basis_record,
+    window_class,
+)
 from search.scope.edits import apply_binding
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import elected_reply
@@ -931,3 +937,19 @@ def test_an_identity_reads_the_basis_rule_its_search_recorded(
     assert (None if record is None else (record.rule, record.active)) == (
         None if expected is None else (expected, "measure_basis:net")
     )
+
+
+@pytest.mark.parametrize(
+    "datasets",
+    [
+        pytest.param(("provenance/OECDDAC1",), id="dac1"),
+        pytest.param(("provenance/ONEOECDHeadlineODA",), id="headline-composite"),
+    ],
+)
+def test_a_donor_window_crossing_2018_reads_the_headline_from_dac1_or_its_composite(datasets):
+    """The headline convention reads DAC1, so it applies to a shape read from DAC1 and to one
+    read from the composite whose components read DAC1."""
+    row = applicable_convention("donor_only", "crossing_2018", datasets)
+
+    assert row is not None
+    assert (row.basis, row.dataset) == ("oecd_headline", "provenance/OECDDAC1")

@@ -60,7 +60,7 @@ probability or rating reads as 0.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from operator import attrgetter
 from typing import Literal, get_args
@@ -250,7 +250,7 @@ def context_of(
     *,
     wanted_datasets: Mapping[HouseDefaultCase, str],
     case_systems: Mapping[str, HouseDefaultCase],
-    pool_datasets: Collection[str],
+    pool_datasets: Sequence[str],
     basis_entries: Sequence[Entry] = (),
 ) -> Context:
     """The part's context over the pool before any policy narrows it.
@@ -263,9 +263,10 @@ def context_of(
     Otherwise a place on the destination axis, on both axes or on none makes it a
     `recipient` question, and places that are all donors make it a `donor` question.
     The part's shape (read from the same places and admitted codes) and its window elect
-    its basis (`scope.basis.elect_part_basis`), as the part's basis record reads it, where
-    a dataset the pool's shapes are answered from (`pool_datasets`) is one the conventions
-    read. `basis_entries`, the part's measure-basis entries with explicit first
+    its basis (`scope.basis.elect_part_basis`), as the part's basis record reads it, from the
+    datasets the pool's shapes are answered from (`pool_datasets`, in pool order): the
+    part's own convention where they include its dataset, else the convention of the first
+    of them a convention reads. `basis_entries`, the part's measure-basis entries with explicit first
     (`ScopeState.entries_on`), win over the convention.
     """
     window = frame.window.value
