@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
+from collections.abc import Set as AbstractSet
+from concurrent.futures import Future
+from concurrent.futures import wait as futures_wait
 
 import httpx
 import pytest
 
 from dc_sdmx import SdmxClient, SdmxResponseError
-from materialise import EnrichmentLookup, materialise_group
+from materialise import EnrichmentLookup, generation, materialise_group
 from materialise.errors import OverCeilingError
-from materialise.generation import _DISPATCH_LOOK_AHEAD_POOLS
+from materialise.generation import _DISPATCH_LOOK_AHEAD_POOLS, _GroupRowStreamer
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
@@ -471,3 +475,155 @@ def test_a_stalled_first_chunk_lets_dispatch_run_at_most_the_look_ahead():
     serial_rows = [row for frame in serial.frame_chunks() for row in frame.table.to_pylist()]
     assert pooled_rows == serial_rows
     assert pooled.content_version == serial.content_version
+
+
+# ---------------------------------------------------------------------------
+# `stream_rows` learns of finished fetches without waiting for the head
+# ---------------------------------------------------------------------------
+
+
+class _StagedChunks:
+    """Holds chosen chunks of a group read, fails some of them, and logs what `stream_rows`
+    submits and blocks on, so a test can time a chunk's end against the loop's own steps.
+
+    Chunk `n` is the group's `n`th member, which sits alone in its chunk. A held chunk waits
+    for `release`; a failing chunk raises once released. `on_submit[n]` runs on the calling
+    thread right after chunk `n` is submitted. `on_collected[n]` runs right after a `wait`
+    returns chunk `n`'s future. Each hook fires once."""
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        held: AbstractSet[int],
+        failing: AbstractSet[int] = frozenset(),
+    ) -> None:
+        self.log: list[str] = []
+        self.on_submit: dict[int, Callable[[], None]] = {}
+        self.on_collected: dict[int, Callable[[], None]] = {}
+        self._gates = {chunk: threading.Event() for chunk in held}
+        self._futures: dict[int, Future] = {}
+        real_generate = _GroupRowStreamer._generate_one_chunk
+        real_submit = generation.submit_with_context
+        real_wait = generation.wait
+
+        def generate(streamer, chunk):
+            index = chunk.member_indices[0]
+            if gate := self._gates.get(index):
+                assert gate.wait(timeout=5.0), f"chunk {index} was never released"
+            if index in failing:
+                raise RuntimeError(f"chunk {index} failed")
+            return real_generate(streamer, chunk)
+
+        def submit(pool, fn, chunk):
+            index = chunk.member_indices[0]
+            future = real_submit(pool, fn, chunk)
+            self._futures[index] = future
+            self.log.append(f"submit {index}")
+            if hook := self.on_submit.pop(index, None):
+                hook()
+            return future
+
+        def wait(in_flight, **kwargs):
+            if kwargs.get("timeout") is None:
+                self.log.append("block")
+            done, pending = real_wait(in_flight, **kwargs)
+            for future in done:
+                if hook := self.on_collected.pop(in_flight[future], None):
+                    hook()
+            return done, pending
+
+        monkeypatch.setattr(_GroupRowStreamer, "_generate_one_chunk", generate)
+        monkeypatch.setattr(generation, "submit_with_context", submit)
+        monkeypatch.setattr(generation, "wait", wait)
+
+    def release(self, *chunks: int) -> None:
+        for chunk in chunks:
+            self._gates[chunk].set()
+
+    def finish(self, *chunks: int) -> None:
+        """Releases the chunks and returns once each one's future is done."""
+        self.release(*chunks)
+        _done, not_done = futures_wait([self._futures[chunk] for chunk in chunks], timeout=5.0)
+        assert not not_done, "a released chunk never finished"
+
+    def submitted(self) -> list[int]:
+        return [int(entry.split()[1]) for entry in self.log if entry.startswith("submit")]
+
+    def close(self) -> None:
+        self.release(*self._gates)
+
+
+def _read_group_of(count: int, *, workers: int):
+    """Reads `count` single-member chunks through `materialise_group` on `workers` workers."""
+    members = [(f"Stat_{index:02d}", f"country/M{index:02d}") for index in range(count)]
+    bodies = {
+        bare: _CSV_HEADER
+        + _csv_row(
+            stat_var=bare,
+            year="2015",
+            value=str(index + 1),
+            unit="UNIT1",
+            method="METH1",
+            provenance="PROV1",
+            facet_id="facet1",
+        )
+        for index, (bare, _entity) in enumerate(members)
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=bodies[str(request.url.params.get("c[variableMeasured]"))],
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+
+    graph = FakeGraphReader(facets={(bare, entity): [_SHARED_FACET] for bare, entity in members})
+    return materialise_group(
+        [
+            _request(stat_var=f"dcid:{bare}", facet_bindings=_BOUND_FACETS, entity=entity)
+            for bare, entity in members
+        ],
+        sdmx=SdmxClient(
+            base_url="https://datacommons.one.org/core/api",
+            transport=httpx.MockTransport(respond),
+        ),
+        graph=graph,
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        materialiser_build="build-123",
+        capability_version="cap-v1",
+        member_concurrency=workers,
+        coverage=_coverage_for([(bare, "facet1", entity) for bare, entity in members]),
+    )
+
+
+def test_no_chunk_is_submitted_after_a_failure_that_ended_while_the_head_was_ready(monkeypatch):
+    """Two workers, chunk 0 slow, chunk 2 failing. Chunk 2 fails right after chunk 0 is
+    collected, while chunk 0 is the head and chunk 1 is already waiting in `ready`. The loop
+    submits again before its next blocking wait, and the failure is still in `in_flight`
+    uncollected, so it must be seen first: nothing past chunk 2 is submitted."""
+    staged = _StagedChunks(monkeypatch, held={0, 2}, failing={2})
+    staged.on_submit[2] = lambda: staged.release(0)
+    staged.on_collected[0] = lambda: staged.finish(2)
+    try:
+        with pytest.raises(RuntimeError, match="chunk 2 failed"):
+            _read_group_of(8, workers=2)
+    finally:
+        staged.close()
+
+    assert staged.submitted() == [0, 1, 2]
+
+
+def test_finished_fetches_free_their_workers_before_the_next_chunks_are_submitted(monkeypatch):
+    """Three workers, chunks 2 and 3 held until chunk 0 is collected, then both finish.
+    With the head ready, the loop refills before blocking: chunks 4 and 5 go out back to back
+    with no wait between them, though chunks 2 and 3 were never collected by a blocking wait."""
+    staged = _StagedChunks(monkeypatch, held={0, 2, 3})
+    staged.on_submit[3] = lambda: staged.release(0)
+    staged.on_collected[0] = lambda: staged.finish(2, 3)
+    try:
+        _read_group_of(10, workers=3)
+    finally:
+        staged.close()
+
+    assert staged.log[staged.log.index("submit 4") + 1] == "submit 5"

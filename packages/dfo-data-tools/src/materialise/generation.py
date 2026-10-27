@@ -2477,8 +2477,12 @@ class _GroupRowStreamer:
         lets the pool run that far ahead and no further. Completed chunks wait in `ready` until every
         chunk before them has been consumed, so results are consumed in
         chunk order whatever order the fetches finish in, and the first
-        failed chunk in that order is what raises. Once any chunk has
-        failed, no further chunk is submitted.
+        failed chunk in that order is what raises. Every pass of the
+        dispatch loop first moves each finished fetch out of the in-flight
+        set without blocking, so a finished fetch frees its worker for the
+        submissions of that pass and a failure is seen before them: once any
+        chunk has failed, no further chunk is submitted, even while the head
+        chunk is already waiting in `ready`.
 
         Each consumed chunk's own member outcomes are recorded into
         `pending_members`, keyed by dcid position, and `cursor` then walks
@@ -2521,9 +2525,16 @@ class _GroupRowStreamer:
         ready: dict[int, Future[dict[int, _ConvertedMember]]] = {}
         next_chunk = 0
         failed = False
+
+        def collect(finished: set[Future[dict[int, _ConvertedMember]]]) -> bool:
+            for future in finished:
+                ready[in_flight.pop(future)] = future
+            return any(future.exception() is not None for future in finished)
+
         try:
             for head in range(len(chunks)):
                 while True:
+                    failed = collect(wait(in_flight, timeout=0)[0]) or failed
                     dispatch_end = min(len(chunks), head + look_ahead)
                     while not failed and next_chunk < dispatch_end and len(in_flight) < max_workers:
                         future = submit_with_context(
@@ -2534,9 +2545,7 @@ class _GroupRowStreamer:
                     if head in ready:
                         break
                     completed, _ = wait(in_flight, return_when=FIRST_COMPLETED)
-                    for future in completed:
-                        ready[in_flight.pop(future)] = future
-                        failed = failed or future.exception() is not None
+                    failed = collect(completed) or failed
                 result = ready.pop(head).result()
                 for index, member in result.items():
                     request = self._dcid_requests[index][1]
