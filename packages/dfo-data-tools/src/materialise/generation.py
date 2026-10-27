@@ -2483,18 +2483,20 @@ class _GroupRowStreamer:
         currently being assembled (closing and yielding it first, via
         `_close_row_chunk`, when the next member would put it over
         `_FRAME_CHUNK_TARGET_ROWS`), and its own table is dropped from
-        `pending_members` in the same step. Because `chunks` is
-        dcid-sorted and consumed in that same order, `cursor` almost
-        always advances to the end of `pending_members` in one pass per
-        consumed chunk; it can fall behind only when the group spans more
-        than one entity-scope/`"latest"`-ness group, which interleaves dcid
-        positions across chunks.
+        `pending_members` in the same step. `_plan_collection_chunks`
+        splits each entity-scope/`"latest"`-ness batch into runs of
+        consecutive positions and sorts the chunks by first position, so
+        when the group is one batch `cursor` empties `pending_members`
+        after every consumed chunk. When the group spans several batches
+        their positions interleave across chunks, and a consumed chunk's
+        members wait in `pending_members` until the chunk of every lower
+        position has been consumed.
 
-        `ready` and `pending_members` together hold the chunks completed
-        ahead of the oldest one not yet consumed, never more than
-        `2 * member_concurrency - 1` of them. Peak memory during this whole
-        pass is bounded by that window plus the one row chunk currently
-        being assembled, never by the group's own total row count.
+        Peak memory is the sum of three parts: `ready`, at most
+        `2 * member_concurrency - 1` completed chunks ahead of the oldest
+        one not yet consumed; `pending_members`, empty for a one-batch
+        group and up to every member of the consumed chunks for a
+        multi-batch group; and the one row chunk being assembled.
 
         `finally: pool.shutdown(wait=True, cancel_futures=True)` blocks for
         every already-submitted chunk's own fetch to finish, past whichever

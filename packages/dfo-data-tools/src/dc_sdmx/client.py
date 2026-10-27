@@ -18,6 +18,7 @@ from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
@@ -140,6 +141,9 @@ _HEDGE_LOSER_CAP = 4
 # Poll every 20 ms so coordinators notice completed siblings while waiting
 # for a contended slot, including when `total_concurrency < chunk_concurrency`.
 _SLOT_POLL_INTERVAL = 0.02
+
+# Request Timeout and Too Many Requests may clear on a resend; any other 4xx would repeat.
+_TRANSIENT_CLIENT_ERRORS = frozenset({408, 429})
 
 
 def _count_request(_request: httpx.Request) -> None:
@@ -528,14 +532,15 @@ class SdmxClient:
     (`dfo_platform.cloud_run_auth`).
 
     With `hedge_after`, a `/data` request that has no response headers after that many seconds
-    is sent once more and the first 2xx response wins (`DATA_HEDGE_AFTER_SECONDS` is the mint's
-    value). Both requests run on their own threads, so a slow loser holds no caller's thread or
-    total-concurrency slot. A loser ends at its httpx timeout, which a guarded read caps at the
-    time its deadline left when the request was sent, and its response is closed unread. Each
-    send counts as an active request, so `close()` waits for a loser to settle. At most
-    `_HEDGE_SLOTS` races are undecided per instance, and no duplicate is sent while
-    `_HEDGE_LOSER_CAP` losers are still running; a request that cannot hedge waits for its own
-    answer. `/availability` requests are sent once.
+    is sent once more and the first 2xx response, or the first client error other than 408 and
+    429, decides the race (`DATA_HEDGE_AFTER_SECONDS` is the mint's value). Both requests run
+    on their own threads, so a slow loser holds no caller's thread or total-concurrency slot. A
+    loser ends at its httpx timeout, which a guarded read caps at the time its deadline left when
+    the request was sent, and its response is closed unread. Each send counts as an active
+    request, so `close()` waits for a loser to settle. At most `_HEDGE_SLOTS` races are undecided
+    per instance, and no duplicate is sent while `_HEDGE_LOSER_CAP` losers are still running; a
+    request that cannot hedge waits for its own answer. Either wait ends when its read's deadline
+    passes or the read is stopped. `/availability` requests are sent once.
     """
 
     def __init__(
@@ -1530,51 +1535,75 @@ class SdmxClient:
         timeout: float,
         guard: _DeadlineGuard | None,
     ) -> httpx.Response:
-        """`send()`'s first 2xx response: the request alone, or the request and one duplicate
+        """`send()`'s deciding response: the request alone, or the request and one duplicate
         when it has no response after `self._hedge_after` seconds, the read's deadline has time
         left, fewer than `_HEDGE_LOSER_CAP` losers are running, and a hedge slot is free. The
         duplicate's timeout is the time left.
 
-        A send that raises or answers non-2xx loses to the other one; only when both fail does
-        the request's own outcome reach the caller. The slot is released as soon as the race is
-        decided. The loser's response, if any, is closed when it arrives.
+        A 2xx response decides the race, and so does a client error other than 408 and 429,
+        which the other send would repeat. A send that raises or answers 408, 429 or 5xx loses
+        to the other one; only when both fail does the request's own outcome reach the caller.
+        Once the request has outlasted `self._hedge_after`, the wait for it, with or without a
+        duplicate, ends with `TimeoutError` when the read's deadline passes and with
+        `_ReadStoppedError` when the read is stopped. The slot is released as soon as the race
+        ends. Each response that loses or is abandoned is closed when it arrives.
         """
         primary = self._send_on_own_thread(lambda: send(timeout))
         if wait((primary,), timeout=self._hedge_after).done:
             return primary.result()
         hedge_timeout = self._hedge_timeout(guard)
-        with self._hedge_lock:
-            losers_at_cap = self._running_losers >= _HEDGE_LOSER_CAP
-        if hedge_timeout is None or losers_at_cap or not self._hedge_slots.acquire(blocking=False):
+        if hedge_timeout is None or not self._reserve_hedge(primary):
+            try:
+                _race((primary,), guard=guard)
+            except BaseException:
+                primary.add_done_callback(_close_sent_response)
+                raise
             return primary.result()
         try:
-            hedge = self._send_on_own_thread(lambda: send(hedge_timeout))
+            hedge = self._send_on_own_thread(partial(send, hedge_timeout))
         except BaseException:
             self._hedge_slots.release()
+            self._free_loser_place()
             primary.add_done_callback(_close_sent_response)
             raise
-        pending = {primary, hedge}
-        while pending:
-            done, pending = wait(pending, return_when=FIRST_COMPLETED)
-            winner = next(
-                (sent for sent in (primary, hedge) if sent in done and _answered(sent)), None
-            )
-            if winner is not None:
-                self._hedge_slots.release()
-                with self._hedge_lock:
-                    self._running_losers += 1
-                (hedge if winner is primary else primary).add_done_callback(self._settle_loser)
-                return winner.result()
-        self._hedge_slots.release()
-        _close_sent_response(hedge)
-        return primary.result()
+        try:
+            winner = _race((primary, hedge), guard=guard)
+        except BaseException:
+            primary.add_done_callback(_close_sent_response)
+            hedge.add_done_callback(self._settle_loser)
+            raise
+        finally:
+            self._hedge_slots.release()
+        if winner is None:
+            self._settle_loser(hedge)
+            return primary.result()
+        (hedge if winner is primary else primary).add_done_callback(self._settle_loser)
+        return winner.result()
+
+    def _reserve_hedge(self, primary: Future[httpx.Response]) -> bool:
+        """Take a hedge slot and a loser place for a duplicate of `primary`, unless `primary`
+        has settled, the losers still running reach `_HEDGE_LOSER_CAP`, or no slot is free.
+        The place is taken under the lock that checks the cap, so concurrent races never hold
+        more places than the cap."""
+        with self._hedge_lock:
+            if (
+                primary.done()
+                or self._running_losers >= _HEDGE_LOSER_CAP
+                or not self._hedge_slots.acquire(blocking=False)
+            ):
+                return False
+            self._running_losers += 1
+            return True
 
     def _settle_loser(self, loser: Future[httpx.Response]) -> None:
         try:
             _close_sent_response(loser)
         finally:
-            with self._hedge_lock:
-                self._running_losers -= 1
+            self._free_loser_place()
+
+    def _free_loser_place(self) -> None:
+        with self._hedge_lock:
+            self._running_losers -= 1
 
     def _hedge_timeout(self, guard: _DeadlineGuard | None) -> float | None:
         """The duplicate's timeout, or None when the read is stopped or out of time."""
@@ -1964,9 +1993,39 @@ class SdmxClient:
         )
 
 
-def _answered(sent: Future[httpx.Response]) -> bool:
-    """Whether a settled send holds a 2xx response."""
-    return sent.exception() is None and sent.result().is_success
+def _race(
+    sends: tuple[Future[httpx.Response], ...], *, guard: _DeadlineGuard | None
+) -> Future[httpx.Response] | None:
+    """The first of `sends` to settle with a deciding response, or None when every one fails.
+
+    With a guard, wait in `_SLOT_POLL_INTERVAL` slices and raise `TimeoutError` once the
+    deadline passes or `_ReadStoppedError` once the read is stopped.
+    """
+    pending = set(sends)
+    while pending:
+        if guard is not None:
+            guard.check()
+            if guard.stopped.is_set():
+                raise _ReadStoppedError()
+        done, pending = wait(
+            pending,
+            timeout=None if guard is None else _SLOT_POLL_INTERVAL,
+            return_when=FIRST_COMPLETED,
+        )
+        winner = next((sent for sent in sends if sent in done and _decides(sent)), None)
+        if winner is not None:
+            return winner
+    return None
+
+
+def _decides(sent: Future[httpx.Response]) -> bool:
+    """Whether a settled send holds a 2xx response or a client error a resend would repeat."""
+    if sent.exception() is not None:
+        return False
+    response = sent.result()
+    return response.is_success or (
+        response.is_client_error and response.status_code not in _TRANSIENT_CLIENT_ERRORS
+    )
 
 
 def _close_sent_response(sent: Future[httpx.Response]) -> None:
