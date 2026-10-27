@@ -19,6 +19,7 @@ import pytest
 
 from code_index.composites import component_identities
 from code_index.scope_conventions import (
+    OPTION_LABELS,
     PROVIDER_CONVENTIONS,
     PROVIDER_SCOPE_RULES,
     PUBLISHED_PROVIDER_SCOPES,
@@ -1150,6 +1151,10 @@ def test_a_dac1_total_offers_its_sibling_total_only_where_a_series_covers_the_pa
 
 
 _GE = "GrantEquivalent_"
+_SCOPE_LABELS = {
+    "bilateral": OPTION_LABELS.provider_bilateral,
+    "contributions": OPTION_LABELS.provider_contributions,
+}
 _NET = "Amount_FinancialFlow_Net_"
 _COVERED = ("available", None, None)
 _NOT_COVERED = ("unavailable", "option_not_covered", None)
@@ -1275,11 +1280,79 @@ def test_a_partial_dac1_sibling_option_serves_the_years_the_part_holds_over_thei
 
     availability = option.availability
     assert (availability.status, availability.code, availability.years) == _partial((2016, 2017))
+    assert option.label == f"{_SCOPE_LABELS[sibling.scope]}, 2016 to 2017"
     assert isinstance(switched, PartScope)
     assert _slot_ref(switched.compiled.identity, "dac1AidType") == sibling.code
     assert switched.compiled.identity.requested_window == IdentityWindowRange(
         start_year=2016, end_year=2017
     )
+
+
+@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(
+    ("own", "sibling_years", "expected"),
+    [
+        # One donor holds no year of the part's own total: the answer is the other donor's
+        # years, and a sibling holding the empty donor in 2019 alone reaches only that year.
+        pytest.param(
+            {_USA: (2015, 2020)},
+            {_USA: (2015, 2020), _DEU: (2019, 2019)},
+            _partial((2019, 2019)),
+            id="a-donor-holding-no-year",
+        ),
+        # Donors holding different runs: the answer is the union, and the sibling covers it
+        # in full only where every donor holds the whole union.
+        pytest.param(
+            {_USA: (2015, 2017), _DEU: (2018, 2020)},
+            {_USA: (2015, 2020), _DEU: (2015, 2020)},
+            _COVERED,
+            id="different-runs-every-donor-holds-the-union",
+        ),
+        pytest.param(
+            {_USA: (2015, 2017), _DEU: (2018, 2020)},
+            {_USA: (2015, 2020), _DEU: (2018, 2020)},
+            _partial((2018, 2020)),
+            id="different-runs-one-donor-holds-part-of-the-union",
+        ),
+    ],
+)
+def test_a_dac1_sibling_option_is_measured_against_the_years_any_donor_of_the_pool_holds(
+    row, own: dict[str, tuple[int, int]], sibling_years: dict[str, tuple[int, int]], expected
+):
+    """A pool's answer holds the years any of its donors holds the part's own total in, so
+    a donor holding none, or another run, leaves the sibling option partial over what it
+    covers rather than available over a window it understates. A partial option states its
+    years in its label."""
+    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
+    extra = [
+        *(
+            (member, donor, range(first, last + 1))
+            for donor, (first, last) in own.items()
+            for member in _members_on(row.code, _GE)
+        ),
+        *(
+            (member, donor, range(first, last + 1))
+            for donor, (first, last) in sibling_years.items()
+            for member in _members_on(sibling.code, _GE)
+        ),
+    ]
+    facts = _dac1_facts(extra=extra)
+    identity = _dac1_identity(row.code, (_USA, _DEU), window=(2015, 2020))
+
+    table = provider_rule(identity, None, facts)
+
+    assert table is not None
+    option = table.option(f"provider:{sibling.scope}")
+    assert option is not None
+    availability = option.availability
+    assert (availability.status, availability.code, availability.years) == expected
+    label = _SCOPE_LABELS[sibling.scope]
+    if availability.years is None:
+        assert option.label == label
+    else:
+        (first, last) = availability.years[-1]
+        years = str(first) if first == last else f"{first} to {last}"
+        assert option.label == f"{label}, {years}"
 
 
 def test_a_convention_the_pass_cannot_serve_leaves_the_part_on_the_option_it_holds():

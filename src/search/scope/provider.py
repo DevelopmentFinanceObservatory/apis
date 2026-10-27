@@ -231,7 +231,7 @@ def _published_table(
     asked = (
         None
         if identity.requested_window.kind == "latest"
-        else frozenset[int].intersection(*_donor_years(identity, facts))
+        else frozenset[int]().union(*_donor_years(identity, facts))
     )
     for scope in get_args(ProviderScope):
         sibling = rows.get(scope)
@@ -276,13 +276,14 @@ def _sibling_option(
 ) -> Option:
     """The option of `scope` binding the sibling total `binding` names, which each donor of
     the part holds in the years `held` names for it, against `asked`, the years the part's
-    own total holds for every donor (`_donor_years`), None for a part asking for the latest
-    year. It is unavailable when a donor holds no year of it. On a part asking for the
-    latest year, a switch reads each donor's own latest year, so it is available otherwise.
-    It is available when every donor holds it in each year asked, partial over the years
-    asked that every donor holds when those are fewer, with their latest run as the window
-    a switch reads (`SlotBinding.window`), and unavailable when they hold none of them in
-    common. Each reason is `option_not_covered`."""
+    own total holds for any donor, which its answer serves (`_donor_years`), None for a part
+    asking for the latest year. It is unavailable when a donor holds no year of it. On a part
+    asking for the latest year, a switch reads each donor's own latest year, so it is
+    available otherwise. It is available when every donor holds it in each year asked,
+    partial over the years asked that every donor holds when those are fewer, with their
+    latest run as the window a switch reads (`SlotBinding.window`) and the years its label
+    states, and unavailable when they hold none of them in common. Each reason is
+    `option_not_covered`."""
     if not all(held):
         return _option(scope, _unavailable("option_not_covered"), binding=binding)
     if asked is None:
@@ -298,6 +299,7 @@ def _sibling_option(
         scope,
         OptionAvailability(status="partial", years=runs, code="option_not_covered"),
         binding=binding.model_copy(update={"window": runs[-1]}),
+        window=runs[-1],
     )
 
 
@@ -325,12 +327,15 @@ def _option(
     window: YearSpan | None = None,
 ) -> Option:
     """The option of `scope`, with `availability`, available when None, binding `binding` or
-    else the scope itself over `window` when it sets one, as the inclusive scope over the
-    years both its tables cover (`OPTION_LABELS.provider_inclusive_years`)."""
+    else the scope itself over `window`. A `window` also states its years in the label
+    (`OPTION_LABELS.provider_years`): the years both tables of the inclusive scope cover, or
+    the run a partial sibling total serves."""
     label = (
         _SCOPE_LABELS[scope]
         if window is None
-        else OPTION_LABELS.provider_inclusive_years.format(years=_years_label(window))
+        else OPTION_LABELS.provider_years.format(
+            label=_SCOPE_LABELS[scope], years=_years_label(window)
+        )
     )
     return Option(
         option_id=provider_option_id(scope),

@@ -228,8 +228,8 @@ class OptionLabels:
     `measure_basis_unpriced` from its words alone, for an identity that states no price
     basis. `oecd_headline` names the OECD's headline basis per year. `provider_bilateral`,
     `provider_inclusive` and `provider_contributions` name the three provider scopes, and
-    `provider_inclusive_years` the inclusive scope over the `years` both of its tables cover
-    ("2011 to 2024", "2023"), when they set the part's window."""
+    `provider_years` a scope's `label` followed by the `years` its option serves ("2011 to
+    2024", "2023") where they set the part's window."""
 
     sector_code: str
     sector_code_alone: str
@@ -240,7 +240,7 @@ class OptionLabels:
     oecd_headline: str
     provider_bilateral: str
     provider_inclusive: str
-    provider_inclusive_years: str
+    provider_years: str
     region_as_oecd_counts: str
     region_place_members: str
     provider_contributions: str
@@ -256,7 +256,7 @@ OPTION_LABELS = OptionLabels(
     oecd_headline="OECD headline (net flows to 2017, grant equivalents from 2018)",
     provider_bilateral="bilateral flows only",
     provider_inclusive="bilateral plus imputed multilateral",
-    provider_inclusive_years="bilateral plus imputed multilateral, {years}",
+    provider_years="{label}, {years}",
     region_as_oecd_counts="{region} as the OECD counts it, {count} countries incl. regional and "
     "unspecified amounts",
     region_place_members="{region_of} {count} countries (UN regions)",
