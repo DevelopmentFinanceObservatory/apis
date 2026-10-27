@@ -144,13 +144,15 @@ _HEDGE_LOSER_CAP = 4
 # for a contended slot, including when `total_concurrency < chunk_concurrency`.
 _SLOT_POLL_INTERVAL = 0.02
 
-# Request Timeout and Too Many Requests may clear on a resend; any other 4xx would repeat.
-_TRANSIENT_CLIENT_ERRORS = frozenset({408, 429})
+# Request Timeout and Too Many Requests may clear on a resend, and so may Unauthorized and
+# Forbidden, since a token refresh can fail one send alone. Any other 4xx would repeat.
+_TRANSIENT_CLIENT_ERRORS = frozenset({401, 403, 408, 429})
 
 
 def _count_request(_request: httpx.Request) -> None:
-    """Count each request this client sends, retries included, on the calling door's timings
-    as `sdmx_requests`."""
+    """Count each request this client sends, retries and hedge duplicates included, on the
+    calling door's timings as `sdmx_requests`. The `sdmx_hedges` count is the duplicates'
+    share."""
     count("sdmx_requests")
 
 
@@ -427,7 +429,8 @@ class _ConcurrentChunkRead:
         wake_when: Callable[[], bool] | None,
     ) -> Future[Any] | None:
         """Submit an already-slot-backed worker while the read is active. The worker receives
-        the slot's lease, so a send it launches can hold the slot past the worker."""
+        the slot's lease, so a send it launches can hold the slot past the worker until the
+        send settles or loses a decided race (`SdmxClient._hedged_send`)."""
         lease = _TotalSlot(self._client._total_semaphore).lease()
         with self.guard._admission_lock:
             if self.guard.stopped.is_set() or (wake_when is not None and wake_when()):
@@ -572,10 +575,12 @@ class SdmxClient:
 
     With `hedge_after`, a `/data` request that has no response headers after that many seconds
     is sent once more and the first 2xx SDMX-CSV response, or the first client error other than
-    408 and 429, decides the race (`DATA_HEDGE_AFTER_SECONDS` is the mint's value). Both
+    401, 403, 408 and 429, decides the race (`DATA_HEDGE_AFTER_SECONDS` is the mint's value). Both
     requests run on their own threads, so a slow loser holds no caller's thread. The request
-    holds its read's total-concurrency slot and the duplicate a loser place until each settles,
-    so the sends running at once never exceed the slots plus `_HEDGE_LOSER_CAP`. A loser ends at
+    holds its read's total-concurrency slot and the duplicate a loser place; a request that
+    loses a decided race trades its slot for the winner's place, so the total limit governs
+    live reads and the loser cap the sends left running. The sends running at once never
+    exceed the slots plus `_HEDGE_LOSER_CAP`. A loser ends at
     its httpx timeout, which a guarded read caps at the time its deadline left when the request
     was sent, and its response is closed unread. Each send counts as an active request, so
     `close()` waits for a loser to settle. At most `_HEDGE_SLOTS` races are undecided per
@@ -584,7 +589,7 @@ class SdmxClient:
     `hedge_after` left; a request that cannot hedge waits for its own answer. Every wait ends
     when its read's deadline passes or the read is stopped. A read counts the duplicates it
     sends as `sdmx_hedges` and those whose 2xx SDMX-CSV response wins as `sdmx_hedge_wins`
-    (`dfo_platform.timings.count`). `/availability` requests are sent once.
+    (`dfo_platform.timings.count`); `sdmx_requests` counts the duplicates too. `/availability` requests are sent once.
     """
 
     def __init__(
@@ -1605,9 +1610,9 @@ class SdmxClient:
         least that long left, fewer than `_HEDGE_LOSER_CAP` losers are running, and fewer than
         `_HEDGE_SLOTS` races are undecided. The duplicate's timeout is the time left.
 
-        A 2xx SDMX-CSV response decides the race, and so does a client error other than 408
-        and 429, which the other send would repeat. A send that raises, answers 408, 429 or
-        5xx, or answers 2xx with another content type loses to the other one; only when both
+        A 2xx SDMX-CSV response decides the race, and so does a client error other than 401,
+        403, 408 and 429, which the other send would repeat. A send that raises, answers 401,
+        403, 408, 429 or 5xx, or answers 2xx with another content type loses to the other one; only when both
         fail does the request's own outcome reach the caller. Every wait for the request, with
         or without a duplicate, ends with `TimeoutError` when the read's deadline passes and
         with `_ReadStoppedError` when the read is stopped. The race leaves the undecided count
@@ -1615,8 +1620,11 @@ class SdmxClient:
 
         Each send runs on its own thread and holds a place until it settles: the request holds
         a lease on the read's total-concurrency slot (`slot`), and the duplicate a loser place
-        reserved when it launches. A send still running when this block exits, because it lost
-        or its read gave up on it, also takes a loser place. A send settles when it fails, when
+        reserved when it launches. When the duplicate wins while the request still runs, the
+        request releases its lease and takes over the winner's place, so a straggler holds no
+        slot a live read could use; the read's own lease covers the winner. A request still
+        running when its read gave up on it keeps its lease and also takes a loser place, which
+        stops new duplicates while it runs. A send settles when it fails, when
         its response arrives after it lost or was abandoned (the response is closed unread), or,
         for the winner, when this block exits. So the sends running against the mixer never
         exceed the total-concurrency slots plus `_HEDGE_LOSER_CAP`.
@@ -1648,6 +1656,14 @@ class SdmxClient:
                 winner = self._hedge(primary, send, holds=holds, guard=guard)
             yield winner.result()
         finally:
+            primary_lease, _ = holds[primary]
+            if winner is not None and winner is not primary and not primary.done():
+                # The read's own lease covers the winning duplicate, so the request takes over
+                # its loser place and gives back its slot, keeping the loser count in its cap.
+                holds[winner] = (None, False)
+                holds[primary] = (None, True)
+                if primary_lease is not None:
+                    primary_lease.release()
             for sent, (lease, place) in holds.items():
                 if sent is not winner and not place and not sent.done():
                     self._take_loser_place()

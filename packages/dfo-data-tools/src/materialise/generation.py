@@ -2030,6 +2030,11 @@ chunk to about eight members and resident member tables to roughly
 `member_concurrency * 8`. Kenya-scale fetches use about 35 requests instead
 of 110."""
 
+_DISPATCH_LOOK_AHEAD_POOLS = 2
+"""A group fetch dispatches chunks only within two pools' worth of the oldest chunk not yet
+consumed (`_GroupRowStreamer.stream_rows`), so a stalled chunk lets the workers run that far
+ahead and the completed chunks waiting on it stay bounded."""
+
 
 def dispatch_lanes(member_concurrency: int, request_count: int) -> int:
     """Returns the lane count used by group fetches.
@@ -2467,9 +2472,9 @@ class _GroupRowStreamer:
         full: at most `member_concurrency` chunks' own fetches in flight,
         and a new chunk submitted, in chunk order, whenever any in-flight
         chunk completes. A slow chunk therefore holds one worker. Dispatch
-        stays within `2 * member_concurrency` chunks of the oldest chunk
-        not yet consumed, so a stalled chunk lets the pool run that far
-        ahead and no further. Completed chunks wait in `ready` until every
+        stays within `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency`
+        chunks of the oldest chunk not yet consumed, so a stalled chunk
+        lets the pool run that far ahead and no further. Completed chunks wait in `ready` until every
         chunk before them has been consumed, so results are consumed in
         chunk order whatever order the fetches finish in, and the first
         failed chunk in that order is what raises. Once any chunk has
@@ -2493,7 +2498,8 @@ class _GroupRowStreamer:
         position has been consumed.
 
         Peak memory is the sum of three parts: `ready`, at most
-        `2 * member_concurrency - 1` completed chunks ahead of the oldest
+        `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency - 1` completed
+        chunks ahead of the oldest
         one not yet consumed; `pending_members`, empty for a one-batch
         group and up to every member of the consumed chunks for a
         multi-batch group; and the one row chunk being assembled.
@@ -2509,7 +2515,7 @@ class _GroupRowStreamer:
         cursor = 0
 
         max_workers = max(1, min(self._member_concurrency, len(chunks)))
-        look_ahead = 2 * max_workers
+        look_ahead = _DISPATCH_LOOK_AHEAD_POOLS * max_workers
         pool = ThreadPoolExecutor(max_workers=max_workers)
         in_flight: dict[Future[dict[int, _ConvertedMember]], int] = {}
         ready: dict[int, Future[dict[int, _ConvertedMember]]] = {}

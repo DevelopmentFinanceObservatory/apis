@@ -109,8 +109,13 @@ def _total_slots_free(client: SdmxClient, slots: int) -> bool:
 
 def test_a_stalled_request_is_answered_by_its_duplicate_and_the_loser_frees_its_slot_at_once():
     transport = _StalledFirstRequest()
-    client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
     hedged = [f"V{i}" for i in range(_HEDGE_SLOTS + 1)]
+    client = SdmxClient(
+        base_url=_BASE_URL,
+        transport=transport,
+        total_concurrency=len(hedged),
+        hedge_after=_HEDGE_AFTER,
+    )
     timings = PhaseTimings()
 
     # Each read returns its duplicate's answer while its first request is still stalled. The
@@ -120,6 +125,11 @@ def test_a_stalled_request_is_answered_by_its_duplicate_and_the_loser_frees_its_
     assert transport.requests == Counter(dict.fromkeys(hedged, 2))
     counts = timings.count_snapshot()
     assert (counts["sdmx_hedges"], counts["sdmx_hedge_wins"]) == (len(hedged), len(hedged))
+
+    # Each stalled first request gave its total slot back when its race was decided and runs
+    # on in a loser place.
+    assert _total_slots_free(client, len(hedged))
+    assert client._running_losers == len(hedged)
 
     # The losers' responses are closed unread once they arrive.
     transport.release.set()
@@ -215,6 +225,8 @@ def _reset(request: httpx.Request) -> httpx.Response:
         pytest.param(lambda _request: httpx.Response(503, text="unavailable"), id="503"),
         pytest.param(lambda _request: httpx.Response(429, text="slow down"), id="429"),
         pytest.param(lambda _request: httpx.Response(408, text="request timeout"), id="408"),
+        pytest.param(lambda _request: httpx.Response(401, text="unauthorized"), id="401"),
+        pytest.param(lambda _request: httpx.Response(403, text="forbidden"), id="403"),
         pytest.param(
             lambda _request: httpx.Response(200, text="<html></html>"), id="2xx without csv"
         ),
@@ -578,25 +590,33 @@ def test_a_wait_on_an_unhedged_request_ends_when_a_sibling_chunk_fails():
     _wait_until(lambda: _total_slots_free(client, len(variables)))
 
 
-def test_reads_abandoned_at_their_deadline_never_run_more_sends_than_the_slots_and_the_loser_cap():
-    """Every send stalls past its read's deadline. Each abandoned send keeps its total slot or
-    loser place until it settles, so the sends running together never exceed
-    `total_concurrency` plus `_HEDGE_LOSER_CAP`."""
+@pytest.mark.parametrize("duplicates", ["stall", "answer"])
+def test_reads_never_run_more_sends_than_the_slots_and_the_loser_cap(duplicates):
+    """Every first request stalls past its read's deadline. When duplicates stall too, every
+    read is abandoned and each send keeps its total slot or loser place until it settles. When
+    duplicates answer at once, each decided race's request runs on in the winner's place and
+    the reads that find no place left are abandoned. Either way the sends running together
+    never exceed `total_concurrency` plus `_HEDGE_LOSER_CAP`."""
     total = 2
     release = threading.Event()
     lock = threading.Lock()
+    sent: Counter[str] = Counter()
     running = 0
     peak = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal running, peak
+        variable = str(request.url.params["c[variableMeasured]"])
         with lock:
+            sent[variable] += 1
+            stalls = duplicates == "stall" or sent[variable] == 1
             running += 1
             peak = max(peak, running)
         try:
-            assert release.wait(timeout=10)
+            if stalls:
+                assert release.wait(timeout=10)
             return httpx.Response(
-                200, headers={"content-type": _CONTENT_TYPE}, content=_body("V0", "1")
+                200, headers={"content-type": _CONTENT_TYPE}, content=_body(variable, "1")
             )
         finally:
             with lock:
@@ -610,15 +630,18 @@ def test_reads_abandoned_at_their_deadline_never_run_more_sends_than_the_slots_a
     )
     reads = 3 * (total + _HEDGE_LOSER_CAP)
 
-    def abandoned_read(i: int) -> None:
-        with pytest.raises(TimeoutError):
+    def read(i: int) -> bool:
+        try:
             _value(client, f"V{i}", deadline=time.monotonic() + 4 * _HEDGE_AFTER)
+        except TimeoutError:
+            return False
+        return True
 
     try:
         with ThreadPoolExecutor(max_workers=total + _HEDGE_LOSER_CAP) as pool:
-            for read in [pool.submit(abandoned_read, i) for i in range(reads)]:
-                read.result(timeout=5)
+            answered = list(pool.map(read, range(reads), timeout=10))
         assert total < peak <= total + _HEDGE_LOSER_CAP
+        assert (sum(answered) > 0) == (duplicates == "answer")
     finally:
         release.set()
 

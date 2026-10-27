@@ -10,6 +10,7 @@ import pytest
 from dc_sdmx import SdmxClient, SdmxResponseError
 from materialise import EnrichmentLookup, materialise_group
 from materialise.errors import OverCeilingError
+from materialise.generation import _DISPATCH_LOOK_AHEAD_POOLS
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
@@ -392,14 +393,16 @@ def test_a_slow_chunk_leaves_every_other_worker_fetching_and_the_rows_in_dcid_or
 # ---------------------------------------------------------------------------
 
 
-def test_a_stalled_first_chunk_lets_dispatch_run_at_most_two_pools_ahead():
+def test_a_stalled_first_chunk_lets_dispatch_run_at_most_the_look_ahead():
     """Twelve members land in twelve chunks on two workers. The first chunk stalls until the
-    others stop arriving: three answered, then 0.2 s with no fourth. Only chunks within two
-    pools of the first one (`2 * member_concurrency`) are sent while it is pending, so the
+    others stop arriving: three answered, then 0.2 s with no fourth. Only chunks within
+    `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency` of the first one are sent while it is
+    pending, so the
     completed chunks waiting on it stay bounded. The frame matches a serial read's."""
     members = [(f"Stat_{index:02d}", f"country/M{index:02d}") for index in range(12)]
     slow_bare = members[0][0]
     workers = 2
+    look_ahead = _DISPATCH_LOOK_AHEAD_POOLS * workers
     bodies = {
         bare: _CSV_HEADER
         + _csv_row(
@@ -431,8 +434,8 @@ def test_a_stalled_first_chunk_lets_dispatch_run_at_most_two_pools_ahead():
             return respond(bare)
         with changed:
             if bare == slow_bare:
-                changed.wait_for(lambda: answered >= 2 * workers - 1, timeout=2.0)
-                changed.wait_for(lambda: answered >= 2 * workers, timeout=0.2)
+                changed.wait_for(lambda: answered >= look_ahead - 1, timeout=2.0)
+                changed.wait_for(lambda: answered >= look_ahead, timeout=0.2)
                 answered_before_head.append(answered)
             else:
                 answered += 1
@@ -463,7 +466,7 @@ def test_a_stalled_first_chunk_lets_dispatch_run_at_most_two_pools_ahead():
     pooled = read(stalling, workers)
     serial = read(lambda request: respond(str(request.url.params.get("c[variableMeasured]"))), 1)
 
-    assert answered_before_head == [2 * workers - 1]
+    assert answered_before_head == [look_ahead - 1]
     pooled_rows = [row for frame in pooled.frame_chunks() for row in frame.table.to_pylist()]
     serial_rows = [row for frame in serial.frame_chunks() for row in frame.table.to_pylist()]
     assert pooled_rows == serial_rows
