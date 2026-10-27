@@ -11,10 +11,10 @@ import httpx
 import pytest
 
 from dc_sdmx import SdmxClient
-from materialise import decide_member_unit
+from materialise import decide_group_unit, decide_member_unit
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
 from materialise.errors import DefaultFacetUndefinedError
-from materialise.facets import FacetBinding, UnitRequest
+from materialise.facets import CoverageAdmission, FacetBinding, MemberProbe, UnitRequest
 from materialise.generation import _generate_member
 from materialise.graph import Facet
 from materialise.pipeline import MaterialisationRequest
@@ -463,13 +463,13 @@ def test_precomputed_candidates_decide_a_request_binding_no_entity_without_a_pro
     request = _request(unit=FacetBinding(state="unbound"), role_bindings={})
 
     sdmx, sdmx_requests = _router_sdmx({})
-    selections = decide_member_unit(
-        request,
+    (selections,) = decide_group_unit(
+        [request],
+        [MemberProbe(candidates=tuple(facets), admission=CoverageAdmission())],
         settle=True,
         graph=graph,
         sdmx=sdmx,
         coverage=_SUBJECT_ONLY_COVERAGE,
-        precomputed=facets,
     )
 
     assert selections["unit"].ref == "CurrencyEUR"

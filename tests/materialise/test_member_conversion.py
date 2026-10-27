@@ -9,7 +9,13 @@ from dc_sdmx import SdmxClient
 from materialise import member_conversion
 from materialise.convert import merged_record
 from materialise.errors import MaterialisationUsageError
-from materialise.facets import FacetBinding, FacetSelection, UnitRequest
+from materialise.facets import (
+    CoverageAdmission,
+    FacetBinding,
+    FacetSelection,
+    MemberProbe,
+    UnitRequest,
+)
 from materialise.generation import _convert_by_series, _split_by_roles
 from materialise.graph import Facet
 from materialise.member_conversion import (
@@ -22,7 +28,7 @@ from materialise.member_conversion import (
     require_decision_coverage,
     served_block,
 )
-from materialise.pipeline import MaterialisationRequest, decide_member_unit
+from materialise.pipeline import MaterialisationRequest, decide_group_unit
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.recipes import (
@@ -995,13 +1001,13 @@ def test_role_shaped_constant_price_undeclared_deflator_role_refuses_on_both_dec
     )
     entry_sdmx, entry_server = _multi_sdmx({})
     with pytest.raises(RecipeNotDeclaredError) as exc_info2:
-        decide_member_unit(
-            entry_request,
+        decide_group_unit(
+            [entry_request],
+            [MemberProbe(candidates=(facet,), admission=CoverageAdmission())],
             settle=True,
             graph=graph,
             sdmx=entry_sdmx,
             coverage=_UNUSED_COVERAGE,
-            precomputed=[facet],
         )
     assert exc_info2.value.cause == "role_undeclared"
     assert (

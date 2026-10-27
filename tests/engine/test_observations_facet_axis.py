@@ -92,8 +92,9 @@ def test_observation_series_facet_map_provenance_agrees_with_source_refs():
     assert series.facet["measurementMethod"].documentation is None
 
 
-def test_open_axis_with_differing_data_selects_per_series():
-    """Each StatVar has one open-axis candidate, with different method values."""
+def test_open_axis_with_differing_data_serves_one_group():
+    """Each StatVar has one open-axis candidate, under its own source and method. The two
+    serve one group, the one holding more points, so the other StatVar serves nothing."""
     materialise_graph, materialise_sdmx = _facet_axis_materialise_double()
     observations, warn = build_observations_planned(
         [_PER_SERIES_SV_A, _PER_SERIES_SV_B],
@@ -106,10 +107,7 @@ def test_open_axis_with_differing_data_selects_per_series():
     assert warn is None
     assert observations is not None
     winners = {s.stat_var.ref: s.facet["measurementMethod"].ref for s in observations.series}
-    assert winners == {
-        _PER_SERIES_SV_A: "GrossDisbursement",
-        _PER_SERIES_SV_B: "Commitment",
-    }
+    assert winners == {_PER_SERIES_SV_A: "GrossDisbursement"}
 
 
 def test_resolved_facets_single_ref_shape():
@@ -136,20 +134,24 @@ def test_resolved_facets_single_ref_shape():
 
 def test_resolved_facets_per_series_shape():
     """Different method values yield `per_series`; an unbound axis has
-    `fallback` basis.
+    `fallback` basis. Each StatVar is read alone, since one read's members serve one
+    group.
     """
     materialise_graph, materialise_sdmx = _facet_axis_materialise_double()
-    observations, warn = build_observations_planned(
-        [_PER_SERIES_SV_A, _PER_SERIES_SV_B],
-        {"observationAbout": ["country/USA"]},
-        graph=FakeGraph(),
-        materialise_graph=materialise_graph,
-        materialise_sdmx=materialise_sdmx,
-        coverage=empty_coverage_snapshot(),
-    )
-    assert warn is None
-    assert observations is not None
-    facets = _resolved_facets([s.facet for s in observations.series], {})
+    series = []
+    for stat_var in (_PER_SERIES_SV_A, _PER_SERIES_SV_B):
+        observations, warn = build_observations_planned(
+            [stat_var],
+            {"observationAbout": ["country/USA"]},
+            graph=FakeGraph(),
+            materialise_graph=materialise_graph,
+            materialise_sdmx=materialise_sdmx,
+            coverage=empty_coverage_snapshot(),
+        )
+        assert warn is None
+        assert observations is not None
+        series += observations.series
+    facets = _resolved_facets([s.facet for s in series], {})
     entry = facets["measurementMethod"]
     assert entry.selection == "per_series"
     assert entry.ref is None

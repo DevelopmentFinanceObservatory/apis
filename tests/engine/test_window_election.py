@@ -26,7 +26,7 @@ from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region.convertibility import decide_part_unit
+from search.engine.region.convertibility import decide_spec_unit
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.read_plan import facets_served, plan_standard
@@ -239,7 +239,7 @@ def test_a_converting_unit_decision_dispatches_the_facet_the_plan_cites(from_ans
         arcs=_UNIT_ARCS,
     )
     _unused_graph, materialise_sdmx = materialise_double_from_obs({})
-    elected = decide_part_unit(
+    elected = decide_spec_unit(
         [_AMOUNT],
         unit_request=IdentityUnitRequest.model_validate({"currency": "EUR", "prices": "current"}),
         role_bindings={"observationAbout": [_KEN]},
@@ -348,7 +348,7 @@ def test_at_two_places_every_election_names_the_answers_one_group(
     assert (minted.ref, minted.dispatch_facet_id in group_ids) == (source, True)
 
     for probes in (None, plan.probes):
-        (selections,) = decide_part_unit(
+        (selections,) = decide_spec_unit(
             [_AMOUNT],
             unit_request=IdentityUnitRequest.model_validate(
                 {"currency": "EUR", "prices": "current"}

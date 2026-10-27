@@ -23,7 +23,7 @@ from search.engine.retrieval.coverage import (
     answer_headline,
     citable_source_ids,
 )
-from search.engine.retrieval.read_plan import facets_served, series_facets
+from search.engine.retrieval.read_plan import facets_served, populated_members, series_facets
 from search.engine.unit.lexicon import CURRENCY_DISPLAY_NAMES
 from search.models import (
     Coverage,
@@ -397,16 +397,19 @@ def filter_answer(
     facets `admission` admits (`ReadPlan.narrowed`), and coverage and the headline are built
     from the narrowed plan as resolve built them from the unfiltered one
     (`coverage.answer_coverage`, `coverage.answer_headline`). The preview dispatch reads the
-    narrowed plan. With no filter, or an answer that read no facets, the answer is unchanged.
+    narrowed plan. A unit decision elects a unit only for the members its group serves
+    (`elected_units`), so the members holding data that it elects none for are left out, and
+    the narrowed plan names them (`ReadPlan.leaving_out`). With no filter, or an answer that
+    read no facets, the answer is unchanged.
     """
     if not admission or mat.read_plan is None or mat.coverage_form is None:
         return FilteredAnswer(mat.coverage, mat.headline, mat.read_plan)
-    return plan_answer(
-        mat,
-        mat.read_plan.narrowed(admission.admits),
-        date_request=date_request,
-        coverage_index=coverage_index,
-    )
+    narrowed = mat.read_plan.narrowed(admission.admits)
+    if admission.elected_units is not None:
+        narrowed = narrowed.leaving_out(
+            populated_members(mat.read_plan) - admission.elected_units.keys()
+        )
+    return plan_answer(mat, narrowed, date_request=date_request, coverage_index=coverage_index)
 
 
 def plan_answer(

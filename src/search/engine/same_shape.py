@@ -1120,6 +1120,23 @@ def _merged_unserved(group: list[RegionResult], merged_spec: Spec) -> tuple[tupl
     )
 
 
+def _merged_unserved_members(group: list[RegionResult]) -> tuple[GraphRef, ...]:
+    """The merged Spec's `unserved_members`: each member's own (`ResolvedSpec.unserved_members`)
+    that no member's answer serves, in group order, once each."""
+    served = {
+        member.ref.ref
+        for region in group
+        for member in region.spec.resolved.members
+        if member.ref.ref not in {ref.ref for ref in region.spec.resolved.unserved_members}
+    }
+    named: dict[str, GraphRef] = {}
+    for region in group:
+        for ref in region.spec.resolved.unserved_members:
+            if ref.ref not in served:
+                named.setdefault(ref.ref, ref)
+    return tuple(named.values())
+
+
 def _merged_data_years(group: list[RegionResult]) -> tuple[int, int] | None:
     """The merged Spec's `data_years`: the earliest first and latest last year over the
     members' own (`ResolvedSpec.data_years`), `None` when no member states them."""
@@ -1213,6 +1230,7 @@ def _merge_group(
     merged_spec = merged_spec.model_copy(
         update={
             "resolved": merged_spec.resolved.stating_unserved(_merged_unserved(group, merged_spec))
+            .stating_unserved_members(_merged_unserved_members(group))
             .stating_data_years(_merged_data_years(group))
             .stating_continued(any(region.spec.resolved.continued for region in group))
         }

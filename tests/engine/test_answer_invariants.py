@@ -136,15 +136,6 @@ def cannot_exist(cell: Cell) -> str | None:
     return None
 
 
-# The cells each declared exemption passed over, by issue. A check records a cell here when
-# it drops a disagreement that the issue describes.
-PASSED_OVER: dict[str, set[Cell]] = {}
-
-
-def _pass_over(issue: str, cell: Cell) -> None:
-    PASSED_OVER.setdefault(issue, set()).add(cell)
-
-
 # ---------------------------------------------------------------------------
 # What an answer states.
 # ---------------------------------------------------------------------------
@@ -943,13 +934,6 @@ def _datasets_read(
     return _READS[key]
 
 
-def _is_multi_member(spec: Stated) -> bool:
-    """Whether a Spec is issue #1060: it lists more than one variable. The answer elects
-    each member's group on its own and a mint elects one group across the members, so no
-    one datasets read stands for the answer."""
-    return len(spec.stat_vars) != 1
-
-
 def _unserved_places_stated(world: World, spec: Stated) -> Iterator[str]:
     """An answer naming places serves one group across them, and states as unserved
     (`ResolvedSpec.unserved_entities`) exactly the named places its preview serves no
@@ -973,18 +957,12 @@ def i3_one_election(run: Doors) -> list[str]:
     """The source an answer cites is the source a datasets read of its Spec elects, the
     election a mint runs, and the source every unit decision behind the answer elects. The
     rows that read returns lie inside the years the answer states. A named place the one
-    group does not serve is stated as unserved, at each door that previews.
-
-    The one expected difference is issue #1060, a Spec with more than one variable
-    (`_is_multi_member`)."""
+    group does not serve is stated as unserved, at each door that previews."""
     cell, world = run.cell, run.world
     found: list[str] = []
     for door, answer in run.answers():
         for spec, said in zip(answer.specs, statements(answer), strict=True):
             found += [f"in {door}, {message}" for message in _unserved_places_stated(world, said)]
-            if _is_multi_member(said):
-                _pass_over("#1060", cell)
-                continue
             read = _datasets_read(world, spec)
             if isinstance(read, str):
                 # A provenance-less top facet refuses a read that binds no provenance (`i5`).
@@ -1680,13 +1658,10 @@ def i10_election_warnings(run: Doors) -> list[str]:
 def i11_download_is_the_datasets_read(run: Doors) -> list[str]:
     """The rows and years a Spec states for its file (`ResolvedSpec.download`) are those a
     datasets read of its Spec reads: the same rows when stated exact, at least as many when
-    stated as an upper bound. A Spec whose read refuses has no file to state. The read and
-    the answer elect apart in issue #1060, as `i3_one_election` passes over."""
+    stated as an upper bound. A Spec whose read refuses has no file to state."""
     found: list[str] = []
     for door, answer in run.answers():
-        for spec, said in zip(answer.specs, statements(answer), strict=True):
-            if _is_multi_member(said):
-                continue
+        for spec in answer.specs:
             read = _datasets_read(run.world, spec)
             if isinstance(read, str):
                 continue
@@ -1815,9 +1790,7 @@ def test_every_cell_holds_every_invariant(
     """Each cell the grid runs (`CELLS_RUN`) runs its doors once and every invariant's
     check reads them. The cells of one block share their first doors. A
     failure lists one line per disagreement: the cell, the invariant and the two statements
-    that disagree. The grid expects one difference, passed over by a predicate tied to its
-    issue: #1060, a Spec with more than one variable (`i3_one_election`). I9 runs on the
-    covering array's cells only (`checks_for`)."""
+    that disagree. I9 runs on the covering array's cells only (`checks_for`)."""
     recorded_engine(route)
     failures: list[str] = []
     for cell in CELLS_RUN[route, row_set, kind, unit, date]:

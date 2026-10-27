@@ -347,7 +347,7 @@ def _candidate_conversions(
     """Each candidate's conversion (`_CandidateConversion`), in input order.
 
     A conversion runs only where the collapse's bound-unit filter reads it: for a candidate
-    with data at the place whose plan serves every StatVar under its elected unit
+    with data at the place whose plan serves a StatVar the unit decision serves under its elected unit
     (`convertibility.unit_gate`). Any other candidate keeps its answer and an empty coverage,
     so a candidate the filter drops or passes unchecked makes no conversion read. Candidates
     read nothing another writes, so several run side by side."""

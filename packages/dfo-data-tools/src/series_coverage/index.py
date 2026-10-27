@@ -54,6 +54,7 @@ from series_coverage.schema import (
     FacetMetadata,
     RoleNames,
     YearHorizon,
+    is_sub_annual,
 )
 from series_coverage.summary import CoverageSummary
 
@@ -472,14 +473,10 @@ type KeptYears = Callable[[str, str], Collection[int] | None]
 it does not bind), None for every year it serves (`CoverageIndex.series_years`)."""
 
 
-# A whole number of years (`P1Y`, `P5Y`); any other stated period is shorter than a year.
-_YEARLY_PERIOD = re.compile(r"P\d+Y")
-
-
 def _sub_annual(metadata: FacetMetadata | None) -> bool:
-    """Whether `metadata` states an observation period shorter than a year."""
-    period = metadata.observation_period if metadata is not None else None
-    return period is not None and _YEARLY_PERIOD.fullmatch(period) is None
+    """Whether `metadata` states an observation period shorter than a year
+    (`schema.is_sub_annual`)."""
+    return is_sub_annual(metadata.observation_period if metadata is not None else None)
 
 
 def _at_variable_latest(masks: np.ndarray, variable_codes: np.ndarray) -> np.ndarray:

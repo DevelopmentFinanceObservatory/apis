@@ -13,9 +13,9 @@ elects, read the same way, so a card that reports it cannot disagree with that m
   executor given for them, merged by place. Each variable is cut to its own scope
   (`facets.subject_probe`), so its profile does not depend on its companions.
 
-The default is `facets.served_facets` with no window and the probe's breadth across every
-place or role tuple. `served_facets` reads the origin catalogue bound to the context, so a
-read needs one bound.
+The default is `group_facets.group_served` over the variable alone with no window, led by the
+probe's breadth across every place or role tuple. `group_served` reads the origin catalogue
+bound to the context, so a read needs one bound.
 
 `FacetProfileCache` holds profiles in a `SingleFlightCache` keyed on variable, catalogue build,
 coverage build and source scope, under the graph generation. Each missing variable reads in a
@@ -53,10 +53,10 @@ from materialise.facets import (
     PlaceAdmission,
     SeriesCounts,
     coverage_probe,
-    served_facets,
     subject_probe,
 )
 from materialise.graph import Facet
+from materialise.group_facets import group_served
 from materialise.place_scope import (
     MAX_EVERY_PLACE,
     AvailabilityReader,
@@ -139,7 +139,8 @@ class FacetProfile:
     maps each facet id to the places, or the donor and recipient pairs for a role-bearing
     variable, at which it holds a point in any year. It holds no union of several facets'
     series: a ranking that joins facets counts theirs when it reads (`profile_breadth`).
-    `default` is the facets such a request is served (`served_facets`), empty when no candidate dispatches. `places_by_facet` maps each
+    `default` is the facets such a request is served (`group_facets.group_served`), empty when
+    no candidate dispatches. `places_by_facet` maps each
     facet id to the places it was admitted at, and is empty for a role-bearing variable.
     `places` is a subject-only variable's default place scope. `countries_fallback` is true
     when that scope is its countries with data because availability failed or listed too many
@@ -358,7 +359,7 @@ def _profile(
         stat_var=stat_var,
         candidates=probe.candidates,
         breadth=dict(breadth),
-        default=served_facets(probe.candidates, stat_vars=[stat_var], window=None, breadth=breadth),
+        default=group_served({stat_var: probe}, window=None)[stat_var],
         places_by_facet=admission.places_by_facet if isinstance(admission, PlaceAdmission) else {},
         places=places,
         countries_fallback=countries_fallback,

@@ -51,7 +51,7 @@ from search.engine.region import OPTION_COVERAGE_PROBE_FAILED
 from search.engine.region.convertibility import (
     BoundFacetCombinationsCeilingExceededError,
     bound_facet_refs,
-    decide_part_unit,
+    decide_option_units,
     elected_unit_refs,
 )
 from search.engine.region.resubmit_request import (
@@ -285,9 +285,10 @@ def _decide_elected_units(
     coverage_snapshot: CoverageSnapshot,
     deadline: float | None,
 ) -> Mapping[str, frozenset[str]] | None:
-    """Decide a request-form unit binding's own convertibility: the same
-    decision the text and promote doors run, region/convertibility.py's
-    decide_part_unit. A facet is admitted only when its unit is one a mint
+    """Decide a request-form unit binding's own convertibility for each
+    stat_var alone (region/convertibility.py's decide_option_units): the
+    options are alternatives, not members of one Spec, so each elects as a
+    Spec of that one stat_var would. A facet is admitted only when its unit is one a mint
     would elect for that stat_var, given every candidate still present
     after the presence filter. Decided once per stat_var, over every
     present candidate: elected_units is a per-stat_var property, and this
@@ -298,7 +299,7 @@ def _decide_elected_units(
 
     Raises EngineInfraError when materialise_graph/materialise_sdmx are not
     initialised, or EngineInputError for every recipe/coverage/ceiling
-    failure decide_part_unit itself raises.
+    failure decide_option_units itself raises.
     """
     unit_binding = facet_bindings.get("unit")
     if not isinstance(unit_binding, IdentityFacetValueRequest):
@@ -312,7 +313,7 @@ def _decide_elected_units(
         facet_bindings, _source_dcids_from_facets_provenance(facet_bindings)
     )
     try:
-        elected = decide_part_unit(
+        elected = decide_option_units(
             sv_dcids,
             unit_request=unit_binding.request,
             role_bindings={"observationAbout": present},
@@ -568,7 +569,7 @@ def _observation_about_options_set(
     satisfying any bound member. Facet reads required for membership propagate
     failures; coverage-only reads fail open with a warning.
 
-    Request-form units use `decide_part_unit` across all present candidates;
+    Request-form units use `decide_option_units` across all present candidates;
     only each StatVar's elected unit refs qualify. The result is truncated when its
     candidate list was capped.
     """

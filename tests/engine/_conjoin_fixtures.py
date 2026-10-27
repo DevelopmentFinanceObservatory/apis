@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from search.engine.conjoin import assemble_region
 from search.engine.region import RegionResult
 from search.engine.retrieval.bound_values import MeasurePartition, OpenAxisFact
-from search.models import Spec, StatusLiteral
+from search.models import Departure, Spec, StatusLiteral
 from tests.engine._builders import shape_five_tuple as _shape
 
 
@@ -47,3 +48,22 @@ def _region(
 # Common shapes for reuse across tests
 _PERSON_SHAPE = _shape("Person", "count")
 _ECON_SHAPE = _shape("EconomicActivity", "amount", mq="Nominal")
+
+
+def member_departures(region: RegionResult) -> list[tuple[str | None, str | None, str | None]]:
+    """The `member_unavailable` departures of the one part `region` assembles into, each as
+    its `(binding_ref, asked, shown)`."""
+    return [(d.binding_ref, d.asked, d.shown) for d in _member_unavailable(region)]
+
+
+def member_departure_texts(region: RegionResult) -> list[str]:
+    """The texts of the `member_unavailable` departures of the one part `region` assembles
+    into."""
+    return [d.text for d in _member_unavailable(region)]
+
+
+def _member_unavailable(region: RegionResult) -> list[Departure]:
+    (part,) = assemble_region(
+        region, query="", extra_warnings=[], start_ms=0, engine_build="test", max_candidates=10
+    ).parts
+    return [d for d in part.departures if d.code == "member_unavailable"]

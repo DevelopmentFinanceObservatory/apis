@@ -272,7 +272,7 @@ def test_a_group_with_an_overlap_member_shares_dfo_facet():
 
     selections = select_group_facets(
         [_request(_VARIABLE), _request(_OTHER)], candidates, graph=FakeGraphReader()
-    ).selections
+    ).election.selections
 
     assert selections["provenance"].ref == _DFO_PROVENANCE
     assert selections["provenance"].selection_reason == "dfo_precedence"
@@ -304,7 +304,7 @@ def test_a_group_narrows_to_the_window_before_precedence(window, provenance, rea
         [_request(_VARIABLE, window), _request(_OTHER, window)],
         candidates,
         graph=FakeGraphReader(),
-    ).selections
+    ).election.selections
 
     assert selections["provenance"].ref == provenance
     assert selections["provenance"].selection_reason == reason

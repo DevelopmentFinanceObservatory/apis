@@ -21,12 +21,15 @@ from search.engine.departures import (
     surviving_facts,
     warning_key,
     window_gap_fact,
+    without_request_words,
 )
 from search.engine.entry.raw_text import _dropped_phrase_fact
 from search.engine.retrieval.read_plan import WindowGap, data_years, plan_standard, served_dates
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
+    BindingSet,
+    BindingValue,
     DateRange,
     EntityGroup,
     GraphRef,
@@ -42,7 +45,9 @@ from search.models import (
     SeriesEntityRef,
     SeriesFacetRef,
     SeriesStatVarRef,
+    Slot,
     SlotKey,
+    SlotValue,
     Spec,
     SpecObservations,
     TimeWindow,
@@ -391,6 +396,45 @@ def test_group_read_as_members_asks_in_the_request_s_words(role, binding_ref, en
     ] == [("group_read_as_members", binding_ref, asked, "European Union", "EuropeanUnion")]
 
 
+@pytest.mark.parametrize(
+    ("fact", "stated"),
+    [
+        pytest.param(
+            DepartureFact(code="group_read_as_members", binding_ref="where:", asked="Africa"),
+            DepartureFact(code="group_read_as_members", binding_ref="where:"),
+            id="request-words-dropped",
+        ),
+        pytest.param(
+            DepartureFact(code="measure_not_applied", binding_ref="how:x", asked="loans"),
+            DepartureFact(code="measure_not_applied", binding_ref="how:x", values=("loans",)),
+            id="measure-value-moves-to-values",
+        ),
+        pytest.param(
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            id="spec-members-stand",
+        ),
+    ],
+)
+def test_a_door_without_request_words_asks_only_for_what_the_spec_names(
+    fact: DepartureFact, stated: DepartureFact
+):
+    """A resubmit holds no words of the request, so its part states no `asked` the words
+    gave. `member_unavailable` asks for the Spec's own members, which no request words name,
+    so it keeps them."""
+    assert without_request_words(fact) == stated
+
+
 _AFRICA_GROUP = EntityGroup(ref="africa", label="Africa", entity_type="Continent")
 
 
@@ -561,6 +605,102 @@ def test_a_group_read_as_its_total_departs_nothing():
     spec = _served_from(_spec(groups={"destination": group}), "provenance/OECDDAC2A")
 
     assert spec_departure_facts(spec, operations=()) == []
+
+
+_SOURCE_SLOT = Slot(
+    key=SlotKey(axis="source", label="source"),
+    binding=BindingValue(
+        value=SlotValue(ref=GraphRef(ref="dc/base/SrcA", label="Source A"), value_kind="source")
+    ),
+)
+_SET_SLOT = Slot(
+    key=SlotKey(
+        axis="how",
+        property=GraphRef(ref="financingSource", label="financing source"),
+        label="source",
+    ),
+    binding=BindingSet(
+        values=[
+            SlotValue(ref=GraphRef(ref=ref, label=ref), value_kind="enum_value")
+            for ref in ("SourceA", "SourceB")
+        ]
+    ),
+)
+_FLOW_B = GraphRef(ref="Flow_B", label="Aid flow B")
+
+
+_USD = ResolvedFacet(basis="fallback", ref="CurrencyUSD", label="US Dollar", currency="USD")
+_PERCENT = ResolvedFacet(basis="fallback", ref="Percent", label="Percent")
+_SOURCE_A = ResolvedFacet(basis="fallback", ref="dc/base/SrcA", label="Source A")
+
+
+@pytest.mark.parametrize(
+    ("slots", "unserved", "facets", "fact"),
+    [
+        pytest.param(
+            [_SOURCE_SLOT, _SET_SLOT],
+            (_FLOW_B,),
+            {"provenance": _SOURCE_A, "unit": _USD},
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                shown="Source A",
+                members=("Aid flow B",),
+                unit="US dollars",
+            ),
+            id="bound-source-currency-unit",
+        ),
+        pytest.param(
+            [_SET_SLOT],
+            (_FLOW_B, GraphRef(ref="Flow_C", label="")),
+            {"unit": _PERCENT},
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="how:financingSource",
+                asked="Aid flow B, Flow_C",
+                members=("Aid flow B", "Flow_C"),
+                unit="Percent",
+            ),
+            id="set-binding-unit-by-label",
+        ),
+        pytest.param(
+            [],
+            (_FLOW_B,),
+            {},
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref=None,
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            id="no-slot-no-facets",
+        ),
+        pytest.param([_SET_SLOT], (), {"unit": _USD}, None, id="every-member-served"),
+    ],
+)
+def test_member_unavailable_names_the_members_the_group_leaves_out(
+    slots: list[Slot],
+    unserved: tuple[GraphRef, ...],
+    facets: dict[str, ResolvedFacet],
+    fact: DepartureFact | None,
+):
+    """The members holding data that the answer's one group leaves out, by label, else by
+    dcid, on the source slot where the answer binds one, else on the set binding naming
+    them, with the source and the unit the answer's served series carry: a currency by its
+    plural noun, another unit by label. A group serving every member departs nothing."""
+    spec = _spec()
+    spec = spec.model_copy(
+        update={
+            "resolved": spec.resolved.model_copy(
+                update={"slots": slots, "facets": facets}
+            ).stating_unserved_members(unserved),
+        }
+    )
+
+    facts = [f for f in spec_departure_facts(spec, operations=()) if f.code == "member_unavailable"]
+
+    assert facts == ([fact] if fact is not None else [])
 
 
 def test_entity_unavailable_names_each_role_s_unserved_entities_on_its_token():

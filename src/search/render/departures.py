@@ -224,6 +224,25 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
     )
 
 
+def _member_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
+    """The variables a reading's one group leaves out, by name. A group is one source, unit
+    and method, so the text says the source read (`shown`) holds no values for them under
+    the unit and method read, naming the unit (`DepartureFact.unit`) where the fact holds
+    it. Naming the source ties the text to its reading on a part showing several. It names
+    what the reading reads and gives no reason for the choice."""
+    if not fact.members:
+        raise ValueError("member_unavailable needs the variables the answer leaves out")
+    one = len(fact.members) == 1
+    unit = f" ({fact.unit})" if fact.unit else ""
+    if fact.shown:
+        held = f"{fact.shown} holds no values for {'it' if one else 'them'} under the unit and method read"
+    else:
+        held = (
+            f"{'It holds' if one else 'They hold'} no values under the source, unit and method read"
+        )
+    return f"You asked for {_join_labels(list(fact.members))}. {held}{unit}."
+
+
 def _latest_period(years: tuple[int, int] | None) -> str:
     """The phrase naming a latest period, with its leading space: "in 2024" for one year,
     "in the latest period" for one spanning several (series whose latest points fall in
@@ -549,6 +568,7 @@ _TEXT_BY_CODE: Final[Mapping[DepartureCode, _TextWriter]] = MappingProxyType(
         "operation_not_applied": _operation_not_applied,
         "breakdown_not_applied": _breakdown_not_applied,
         "entity_unavailable": _entity_unavailable,
+        "member_unavailable": _member_unavailable,
         "year_unavailable": _year_unavailable,
         "modelled_values": _modelled_values,
         "group_read_as_members": _group_read_as_members,
