@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal, get_args
 
+from code_index.scope_conventions import ProviderScope  # noqa: F401 -- re-exported by search.models
 from dfo_platform import RoleAxis  # noqa: F401 -- re-exported by search.models
 
 SCHEMA_VERSION = 1
@@ -159,6 +160,7 @@ ScopeReasonCode = Literal[
     "stated_choice_not_applied",
     "option_not_covered",
     "counts_core_contributions",
+    "contributions_counted",
 ]
 """Every reason a scope option is partial or unavailable, or a carried or stated entry is
 not applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary
@@ -169,11 +171,6 @@ ComponentRole = Literal["whole", "bilateral", "imputed", "headline_net", "headli
 """What one component of a compiled scope holds: the whole answer of a plain Spec, the
 bilateral or imputed multilateral part of a composite, or the net or grant-equivalent
 years of the OECD headline basis."""
-ProviderScope = Literal["bilateral", "inclusive", "contributions"]
-"""Whose spending a provider scope counts: the donor's bilateral flows, those plus its
-imputed share of multilateral spending, or those plus its core contributions to multilateral
-organisations, as a published donor total counts them
-(`code_index.scope_conventions.CONTRIBUTION_TOTALS`)."""
 SCOPE_OPTION_ID_PATTERN = r"^(sector|region|measure_basis|provider):[A-Za-z0-9_+]+$"
 """An option id: its axis, a colon and the option's declared value (`sector:120+130`,
 `region:members_and_residuals`, `measure_basis:gross`, `provider:inclusive`). One option
