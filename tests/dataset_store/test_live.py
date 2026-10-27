@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -1910,6 +1911,10 @@ def _subject_operation(store: LiveOperationStore, run_id: str):
     )
 
 
+_PLAIN_DEFINITION = SimpleNamespace(identity={})
+"""A stored definition whose identity binds no composite, as the worker reads one."""
+
+
 def _must_not_serve(*_, **__):
     raise AssertionError("an over-ceiling or superseded run must not materialise")
 
@@ -1923,9 +1928,13 @@ def test_worker_fails_over_ceiling_when_the_execution_estimate_breaches_it(live_
     claimed = store.claim(op.id, submission_count=0, lease_seconds=600, final_delivery=False)
     assert claimed is not None
     over = Estimate(rows=DatasetsBuildSettings().async_max_rows + 1, requests=1)
-    monkeypatch.setattr(worker_module, "_resolve_spec_requests", lambda **_: (object(), []))
     monkeypatch.setattr(
-        worker_module, "sync_estimate", lambda requests, *, index, member_concurrency: over
+        worker_module, "_resolve_spec_requests", lambda **_: (_PLAIN_DEFINITION, [])
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "sync_estimate",
+        lambda requests, *, index, member_concurrency, composite: over,
     )
     monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
@@ -1957,9 +1966,13 @@ def test_worker_a_stale_attempt_cannot_fail_the_reclaimed_row_over_ceiling(live_
     first = setup.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
     assert first is not None
     over = Estimate(rows=DatasetsBuildSettings().async_max_rows + 1, requests=1)
-    monkeypatch.setattr(worker_module, "_resolve_spec_requests", lambda **_: (object(), []))
     monkeypatch.setattr(
-        worker_module, "sync_estimate", lambda requests, *, index, member_concurrency: over
+        worker_module, "_resolve_spec_requests", lambda **_: (_PLAIN_DEFINITION, [])
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "sync_estimate",
+        lambda requests, *, index, member_concurrency, composite: over,
     )
     monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
