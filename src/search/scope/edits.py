@@ -1,6 +1,6 @@
 """The identity edit each scope option makes.
 
-`AXIS_BINDING` names the binding kind an axis's options carry, and `EDITS` the edit of each
+`AXIS_BINDING` names the binding kinds an axis's options carry, and `EDITS` the edit of each
 binding kind: which identity members it touches and how. An edit takes the identity, the
 option's binding and every binding of the option's axis, so an option replaces whatever a
 sibling option put there and the edit needs no record of the option it replaces. An edit
@@ -58,13 +58,14 @@ class Edit:
     apply: Callable[[BaseIdentity, OptionBinding, Sequence[OptionBinding]], BaseIdentity]
 
 
-AXIS_BINDING: Mapping[ScopeAxis, BindingKind] = {
-    "sector": "slot",
-    "region": "entities",
-    "measure_basis": "shape",
-    "provider": "provider",
+AXIS_BINDING: Mapping[ScopeAxis, frozenset[BindingKind]] = {
+    "sector": frozenset({"slot"}),
+    "region": frozenset({"entities"}),
+    "measure_basis": frozenset({"shape"}),
+    "provider": frozenset({"provider", "slot"}),
 }
-"""The binding kind every option of an axis carries."""
+"""The binding kinds the options of an axis carry. A provider option on a published donor
+total binds the code of the total that counts its scope (`provider._published_reading`)."""
 
 
 def _with_slot(identity: BaseIdentity, slot: IdentitySlot) -> list[IdentitySlot]:

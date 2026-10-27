@@ -17,6 +17,7 @@ from collections.abc import Sequence
 import pytest
 
 from code_index.composites import component_identities
+from code_index.scope_conventions import PUBLISHED_PROVIDER_SCOPES
 from code_index.shared import get_index
 from search.engine.spec_id import identity_spec_id
 from search.models import (
@@ -37,6 +38,7 @@ from search.models import (
     ResolveRequest,
     ResubmitIdentityEntry,
     ScopeChoice,
+    SlotBinding,
     Spec,
 )
 from search.scope.build import build_part_scope
@@ -56,7 +58,7 @@ from tests.engine._fake_coverage import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
 from tests.scope import test_basis as basis
-from tests.scope._axes import explicit, switch
+from tests.scope._axes import carried, explicit, switch
 from tests.scope.test_basis import _crs_member, _graph, _PickingLLM
 
 _USA = "country/USA"
@@ -241,6 +243,16 @@ _FROM_2011 = tuple(range(2011, 2025))
             "available",
             id="bilateral-typed",
         ),
+        pytest.param(
+            "health aid from the United States to Kenya including multilateral, 2015 to 2020",
+            "2015-2020",
+            _ALL_YEARS,
+            "provider:inclusive",
+            "explicit",
+            "named_donor_total",
+            "available",
+            id="inclusive-typed-no-total",
+        ),
     ],
 )
 def test_the_provider_default_rule(
@@ -259,9 +271,13 @@ def test_the_provider_default_rule(
     entry = next((e for e in _scope(spec).entries if e.axis == "provider"), None)
     if provenance == "explicit":
         assert entry is not None
-        assert getattr(entry.origin, "text", None) == "bilateral"
+        assert entry.option_id == active
     else:
         assert entry is None
+    # A resubmit of the answer's identity holds the option the search settled and names
+    # the same rule.
+    again = _provider(_resubmit(spec.definition.identity, []))
+    assert (again.active, again.rule) == (active, rule)
 
 
 def test_a_covered_total_answers_the_composite_with_its_components(monkeypatch):
@@ -726,15 +742,20 @@ def _ask_dac1(monkeypatch: pytest.MonkeyPatch, cell: str, *, message: str | None
     return basis._ask(row.variable, time=row.time, recipient=row.recipient, message=message)
 
 
+def _slot_ref(identity: BaseIdentity, prop: str) -> str | None:
+    """The code `identity` binds on `prop` as a value, None when it binds none."""
+    binding = next((s.binding for s in identity.slots if s.property == prop), None)
+    return binding.ref if isinstance(binding, IdentityBindingValue) else None
+
+
 @pytest.mark.parametrize("cell", ["donor-only-2019", "donor-only-2016", "donor-only-2010-2024"])
-def test_a_dac1_total_holds_the_contributions_it_counts_as_its_only_provider_scope(
+def test_a_dac1_total_holds_the_contributions_it_counts_and_offers_bilateral_oda(
     monkeypatch, cell: str
 ):
     """DAC1's total ODA counts core contributions to multilaterals, on every basis and on
-    the OECD headline composite. Its one available provider option is the contributions
-    scope it holds. Bilateral flows are unavailable since the total cannot drop the
-    contributions, and the inclusive scope since it counts them in place of an imputed
-    share."""
+    the OECD headline composite. It holds the contributions scope, offers bilateral flows as
+    DAC1's bilateral ODA, and the inclusive scope as unavailable since it counts the
+    contributions in place of an imputed share."""
     spec = _ask_dac1(monkeypatch, cell)
 
     choice = _provider(spec)
@@ -744,14 +765,14 @@ def test_a_dac1_total_holds_the_contributions_it_counts_as_its_only_provider_sco
         "contribution_total",
     )
     assert _provider_options(spec) == {
-        "provider:bilateral": ("unavailable", "counts_core_contributions", {"dataset": _DAC1}),
-        "provider:inclusive": (
-            "unavailable",
-            "contributions_counted",
-            {"dataset": _DAC1},
-        ),
+        "provider:bilateral": ("available", None, {}),
+        "provider:inclusive": ("unavailable", "contributions_counted", {"dataset": _DAC1}),
         "provider:contributions": ("available", None, {}),
     }
+    (bilateral,) = (o for o in choice.options if o.option_id == "provider:bilateral")
+    assert bilateral.binding == SlotBinding(
+        slot="dac1AidType", state="value", refs=[_DAC1_BILATERAL_ODA]
+    )
 
 
 @pytest.mark.parametrize("cell", ["donor-only-2019", "donor-only-2010-2024"])
@@ -791,47 +812,85 @@ def test_the_contributions_scope_leaves_a_dac1_totals_spec_id_as_it_is(monkeypat
     assert switched.spec_id == spec.spec_id
 
 
+def test_a_switch_to_bilateral_on_a_dac1_total_reads_bilateral_oda_and_switches_back(
+    monkeypatch,
+):
+    """A switch to bilateral flows on DAC1's total ODA compiles the part's identity onto
+    bilateral ODA. That identity holds the bilateral scope under its own rule, and a switch
+    back to core contributions compiles to the total's spec_id."""
+    spec = _ask_dac1(monkeypatch, "donor-only-2019")
+    base = _scope(spec).base.identity
+    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+
+    to_bilateral = build_part_scope(
+        base=base, entries=[switch("provider:bilateral")], records={}, facts=facts
+    )
+    assert isinstance(to_bilateral, PartScope)
+    bilateral_oda = to_bilateral.compiled.identity
+    assert _slot_ref(base, "dac1AidType") == _DAC1_TOTAL_ODA
+    assert _slot_ref(bilateral_oda, "dac1AidType") == _DAC1_BILATERAL_ODA
+    (choice,) = (c for c in to_bilateral.choices if c.axis == "provider")
+    assert (choice.active, choice.rule) == ("provider:bilateral", "bilateral_total")
+
+    held = build_part_scope(base=bilateral_oda, entries=[], records={}, facts=facts)
+    back = build_part_scope(
+        base=bilateral_oda, entries=[switch("provider:contributions")], records={}, facts=facts
+    )
+    assert isinstance(held, PartScope) and isinstance(back, PartScope)
+    (choice,) = (c for c in held.choices if c.axis == "provider")
+    assert (choice.active, choice.rule) == ("provider:bilateral", "bilateral_total")
+    assert back.compiled.spec_id == spec.spec_id
+
+
 @pytest.mark.parametrize(
-    ("message", "option_id", "cause"),
+    ("message", "option_id", "cause", "switched"),
     [
         pytest.param(
             "bilateral aid from the US in 2019",
             "provider:bilateral",
-            "counts_core_contributions",
+            "not_served",
+            _DAC1_BILATERAL_ODA,
             id="bilateral",
         ),
         pytest.param(
             "aid from the US including multilateral in 2019",
             "provider:inclusive",
             "contributions_counted",
+            None,
             id="including-multilateral",
         ),
     ],
 )
-def test_a_stated_provider_scope_on_a_dac1_total_is_reported_with_what_the_total_counts(
-    monkeypatch, message: str, option_id: str, cause: str
+def test_a_stated_provider_scope_on_a_dac1_total_is_reported_and_left_to_a_switch(
+    monkeypatch, message: str, option_id: str, cause: str, switched: str | None
 ):
-    """A typed "bilateral" on a donor's DAC1 total is reported as the total counting core
-    contributions, and a typed "including multilateral" as the total counting them already,
-    in place of an imputed share. Neither applies, and a switch to either refuses with the
-    same cause."""
+    """A fresh search answers the total it resolved. A typed "bilateral" on a donor's DAC1
+    total is reported as not served, and a switch to it reads bilateral ODA. A typed
+    "including multilateral" is reported as the total counting core contributions in place
+    of an imputed share, and a switch to it refuses with that cause."""
     spec = _ask_dac1(monkeypatch, "donor-only-2019", message=message)
     scope = _scope(spec)
 
     assert _provider(spec).active == "provider:contributions"
+    assert _provider_options(spec)["provider:contributions"] == ("available", None, {})
+    assert _slot_ref(spec.definition.identity, "dac1AidType") == _DAC1_TOTAL_ODA
     (dropped,) = (d for d in scope.dropped_entries if d.entry.axis == "provider")
     assert (dropped.entry.option_id, dropped.code, dropped.cause) == (
         option_id,
         "stated_choice_not_applied",
         cause,
     )
-    refused = build_part_scope(
+    compiled = build_part_scope(
         base=scope.base.identity,
         entries=[switch(option_id)],
         records={},
         facts=ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot()),
     )
-    assert refused == Refusal(code="requested_option_unavailable", entry=0, cause=cause)
+    if switched is None:
+        assert compiled == Refusal(code="requested_option_unavailable", entry=0, cause=cause)
+    else:
+        assert isinstance(compiled, PartScope)
+        assert _slot_ref(compiled.compiled.identity, "dac1AidType") == switched
 
 
 def _dac1_identity(aid_type: str, origin: Sequence[str]) -> BaseIdentity:
@@ -859,32 +918,74 @@ def _dac1_identity(aid_type: str, origin: Sequence[str]) -> BaseIdentity:
     )
 
 
+_GROUP_OF_SEVEN = "GroupOfSeven"
+_DAC_COUNTRIES = "DACCountriesTotal"
+_DAC_EU_MEMBERS = "DACEUMembers"
+_EU_INSTITUTIONS = "EuropeanUnionInstitutions"
+_DEU = "country/DEU"
+
+
 @pytest.mark.parametrize(
     ("aid_type", "origin", "expected"),
     [
         pytest.param(
             _DAC1_TOTAL_ODA,
             (_USA,),
-            ("contributions", "contribution_total"),
+            ("contributions", "contribution_total", ["bilateral", "contributions"]),
             id="total-oda",
         ),
         pytest.param(
             _DAC1_BILATERAL_ODA,
             (_USA,),
-            ("bilateral", "bilateral_total"),
+            ("bilateral", "bilateral_total", ["bilateral", "contributions"]),
             id="bilateral-oda",
+        ),
+        pytest.param(
+            _DAC1_TOTAL_ODA,
+            (_DAC_COUNTRIES,),
+            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            id="group-of-countries",
+        ),
+        pytest.param(
+            _DAC1_TOTAL_ODA,
+            (_GROUP_OF_SEVEN,),
+            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            id="g7",
+        ),
+        pytest.param(
+            _DAC1_TOTAL_ODA,
+            (_EU_INSTITUTIONS,),
+            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            id="eu-institutions",
+        ),
+        # A pool of an EU member and the EU institutions counts the member's core
+        # contributions to the institutions twice in total ODA, which a switch from
+        # bilateral ODA would reach.
+        pytest.param(
+            _DAC1_TOTAL_ODA, (_DEU, _EU_INSTITUTIONS), None, id="pool-with-eu-institutions"
+        ),
+        pytest.param(
+            _DAC1_BILATERAL_ODA,
+            (_DEU, _EU_INSTITUTIONS),
+            None,
+            id="bilateral-pool-with-eu-institutions",
         ),
         pytest.param(_DAC1_TOTAL_ODA, (_DAC_MULTILATERALS,), None, id="multilaterals"),
         pytest.param(_DAC1_TOTAL_ODA, (_USA, _DAC_MULTILATERALS), None, id="pool-with-them"),
+        pytest.param(_DAC1_TOTAL_ODA, (_DAC_EU_MEMBERS,), None, id="total-of-no-declared-group"),
         pytest.param(_DAC1_TOTAL_ODA, (), None, id="no-provider"),
     ],
 )
-def test_each_dac1_aid_type_holds_its_declared_provider_scope_for_a_bilateral_donor(
-    aid_type: str, origin: tuple[str, ...], expected: tuple[ProviderScope, str] | None
+def test_each_dac1_aid_type_holds_its_declared_provider_scope_for_donors(
+    aid_type: str,
+    origin: tuple[str, ...],
+    expected: tuple[ProviderScope, str, list[ProviderScope]] | None,
 ):
-    """Total ODA holds the contributions scope and bilateral ODA the bilateral one, each as
-    its only available option. A part naming the multilaterals' total, or no provider, has
-    no provider record, since its total counts no donor's contributions."""
+    """Total ODA holds the contributions scope and bilateral ODA the bilateral one, each
+    under its row's rule, for a part naming countries, the EU institutions or totals of a
+    group of countries alone. A part naming the multilaterals' total, a total of no
+    declared group, a pool of the EU institutions and a member, or no provider, has no
+    provider record."""
     facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
     identity = _dac1_identity(aid_type, origin)
 
@@ -895,9 +996,74 @@ def test_each_dac1_aid_type_holds_its_declared_provider_scope_for_a_bilateral_do
         assert table is None and record is None
         return
     assert table is not None and record is not None
-    scope, rule = expected
-    assert (record.active, record.rule) == (f"provider:{scope}", rule)
+    scope, rule, available = expected
+    assert (record.active, record.rule, table.rule) == (f"provider:{scope}", rule, rule)
     assert [o.option_id for o in table.options if o.availability.status == "available"] == [
-        f"provider:{scope}"
+        f"provider:{held}" for held in available
     ]
     assert apply_binding(identity, ProviderBinding(scope=scope), []) == identity
+
+
+def test_a_carried_inclusive_scope_on_dac1_bilateral_oda_is_dropped_with_the_reason():
+    """DAC1's bilateral ODA is a total of another table than the CRS, so a carried
+    inclusive scope is not offered there: the part keeps bilateral ODA under its own rule and
+    reports the entry with the reason."""
+    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+    identity = _dac1_identity(_DAC1_BILATERAL_ODA, (_USA,))
+    entry = carried("provider:inclusive")
+
+    record = settle_provider(identity, ScopeState(entries=(entry,)), facts)
+    assert record is not None
+    built = build_part_scope(
+        base=identity,
+        entries=[],
+        records={"provider": record},
+        facts=facts,
+        read=(entry,),
+        refuse=False,
+    )
+
+    assert (record.active, record.provenance, record.rule) == (
+        "provider:bilateral",
+        "default",
+        "bilateral_total",
+    )
+    assert isinstance(built, PartScope)
+    assert built.compiled.spec_id == identity_spec_id(identity)
+    (dropped,) = built.dropped_entries
+    assert (dropped.entry, dropped.code, dropped.cause) == (
+        entry,
+        "carried_choice_not_applied",
+        "provider_not_offered",
+    )
+
+
+@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(
+    "origin",
+    [
+        (_USA,),
+        (_DAC_COUNTRIES,),
+        (_EU_INSTITUTIONS,),
+        (_USA, _DEU),
+        (_DEU, _EU_INSTITUTIONS),
+        (_USA, _DAC_MULTILATERALS),
+        (_DAC_EU_MEMBERS,),
+    ],
+    ids=lambda origin: "+".join(origin),
+)
+def test_a_dac1_record_never_holds_an_option_it_marks_unavailable(row, origin):
+    """For every declared DAC1 row and every kind of provider set, the record's active
+    option, fresh or carried to a resubmit, is available on the table it reads."""
+    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+    identity = _dac1_identity(row.code, origin)
+
+    table = provider_rule(identity, None, facts)
+    record = settle_provider(identity, ScopeState(), facts)
+
+    assert (table is None) == (record is None)
+    if table is None or record is None:
+        return
+    for active in (record.active, table.held):
+        option = table.option(active)
+        assert option is not None and option.availability.status == "available"

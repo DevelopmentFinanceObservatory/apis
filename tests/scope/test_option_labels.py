@@ -101,13 +101,19 @@ def test_every_option_a_rule_emits_has_a_label_other_than_its_id(case):
         # search and its switch name it alike.
         ("africa-no-group", {"region:members_only": "Africa's countries only"}),
         ("asia-registry-group", {"region:members_only": "Asia's 47 countries (UN regions)"}),
-        (
-            "dac1-total",
-            {"provider:contributions": "bilateral plus core contributions to multilaterals"},
-        ),
     ],
 )
 def test_a_label_names_the_codes_or_the_region_it_counts(case, expected):
     labels = _labels(case)
 
     assert {option_id: labels[option_id] for option_id in expected} == expected
+
+
+def test_a_dac1_total_offers_every_provider_scope_with_a_label():
+    """The labels themselves are checked by
+    `test_every_option_a_rule_emits_has_a_label_other_than_its_id`."""
+    provider = {
+        option_id for option_id in _labels("dac1-total") if option_id.startswith("provider:")
+    }
+
+    assert provider == {"provider:bilateral", "provider:inclusive", "provider:contributions"}

@@ -184,7 +184,7 @@ def compile(
         ScopeChoice(
             id=f"{base_spec_id}:{axis}",
             axis=axis,
-            rule=tables[axis].rule,
+            rule=tables[axis].rule_of(active[axis].option_id),
             provenance=active[axis].provenance,
             active=active[axis].option_id,
             options=[

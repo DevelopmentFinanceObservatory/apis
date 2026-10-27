@@ -21,10 +21,12 @@ class AxisTable:
     intrinsic availability (what the part's own data and constraints allow, before any
     other entry is weighed). `preference` is the order a default is derived in: the first
     option no entry blocks. `held` is the option the base identity holds. `rule` names the
-    declared rule, and `concept` the concept the axis was asked for, None when it has none.
+    declared rule, and `rules` the rule an option names when the part holds it, where the
+    rule depends on the option (`rule_of`). `concept` is the concept the axis was asked
+    for, None when it has none.
 
     Raises `ScopeTableError` for an empty table, a repeated option, an option of another
-    axis or binding kind, or a `preference` or `held` naming no option."""
+    axis or binding kind, or a `preference`, `held` or `rules` naming no option."""
 
     axis: ScopeAxis
     rule: str
@@ -32,6 +34,7 @@ class AxisTable:
     preference: tuple[str, ...]
     held: str
     concept: str | None = None
+    rules: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         ids = [option.option_id for option in self.options]
@@ -40,12 +43,19 @@ class AxisTable:
         for option in self.options:
             if option.option_id.partition(":")[0] != self.axis:
                 raise ScopeTableError(f"{option.option_id!r} is not an option of {self.axis!r}")
-            if option.binding.kind != AXIS_BINDING[self.axis]:
+            if option.binding.kind not in AXIS_BINDING[self.axis]:
                 raise ScopeTableError(f"{option.option_id!r} carries a {option.binding.kind!r}")
         if not self.preference or not set(self.preference) <= set(ids):
             raise ScopeTableError(f"{self.axis!r} preference {self.preference} names no option")
         if self.held not in ids:
             raise ScopeTableError(f"{self.axis!r} holds {self.held!r}, which it does not offer")
+        if not set(self.rules) <= set(ids):
+            raise ScopeTableError(f"{self.axis!r} rules {sorted(self.rules)} name no option")
+
+    def rule_of(self, option_id: str) -> str:
+        """The rule the axis names when the part holds `option_id`: its entry in `rules`,
+        else `rule`."""
+        return self.rules.get(option_id, self.rule)
 
     def option(self, option_id: str) -> Option | None:
         """The option `option_id`, None when the axis offers none."""

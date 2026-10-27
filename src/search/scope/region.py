@@ -108,7 +108,7 @@ def oecd_region_reading(region: str) -> RegionReading | None:
 
 
 @functools.cache
-def _policy_members(ref: str) -> frozenset[str]:
+def policy_members(ref: str) -> frozenset[str]:
     """The members the membership policy holds for group or region `ref`, empty when it
     holds none. Cached by ref, since the policy is the process's
     (`shared_membership_policy`)."""
@@ -150,7 +150,7 @@ def region_total(
             if (
                 total is not None
                 and total.totals is not None
-                and members in (_policy_members(row.region), _policy_members(total.totals))
+                and members in (policy_members(row.region), policy_members(total.totals))
             ):
                 return total
     held_set = set(held)
@@ -187,9 +187,9 @@ def region_groups(
     if total is None or total.totals is None:
         return dict(groups)
     members = frozenset(without_residuals(identity.entities.get(REGION_ROLE, ()), index))
-    if members == _policy_members(total.totals) and group.group_id != total.totals:
+    if members == policy_members(total.totals) and group.group_id != total.totals:
         restated = EntityGroup(label=group.label, group_id=total.totals)
-    elif members == _policy_members(reading.region) and group.ref != reading.region:
+    elif members == policy_members(reading.region) and group.ref != reading.region:
         restated = EntityGroup(ref=reading.region, label=group.label)
     else:
         return dict(groups)
@@ -338,8 +338,8 @@ def _oecd_readings(
     region when it binds a residual (`binds_residuals`) or the OECD's members where they
     differ from the graph's (`held_members`). None when the membership policy holds either
     group empty, or both readings bind the same places."""
-    oecd = _policy_members(total.totals) if total.totals is not None else frozenset()
-    place = _policy_members(reading.region)
+    oecd = policy_members(total.totals) if total.totals is not None else frozenset()
+    place = policy_members(reading.region)
     if not oecd or not place:
         return None
     as_oecd = [*sorted(oecd - place), *residuals]

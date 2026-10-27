@@ -165,7 +165,7 @@ class OptionAvailability(StrictModel):
         default_factory=dict,
         description=(
             "the code's parameters: `why` for provider_not_offered, `dataset` for "
-            "basis_not_published, counts_core_contributions and contributions_counted, "
+            "basis_not_published and contributions_counted, "
             "`entry` and `cause` for conflicts_with"
         ),
     )

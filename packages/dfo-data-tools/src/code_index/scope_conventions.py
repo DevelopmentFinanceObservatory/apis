@@ -5,9 +5,9 @@
 `BASIS_MEASURES` what each basis binds in an identity, and `BASIS_RESTRICTIONS` the code
 systems besides the sector whose admitted code makes a part a restricted one.
 `PROVIDER_CONVENTIONS` names whose spending a part counts by default,
-`REDISTRIBUTED_PROVIDERS` the providers no pool takes the inclusive scope with,
+`REDISTRIBUTED_PROVIDERS` the providers no pool takes a scope counting multilateral aid with,
 `PUBLISHED_PROVIDER_SCOPES` the provider scope a published donor total counts, and
-`MULTILATERAL_PROVIDERS` the providers whose totals count no donor's aid. `OPTION_LABELS`
+`DONOR_ORGANISATIONS` the organisations a published donor total counts as donors. `OPTION_LABELS`
 words the options the rules build from code and group labels, and `REGION_READINGS` names
 the graph regions a DAC dataset counts as the OECD's region. `search.scope`
 reads them all, and `graph_release.declarations` hashes the tables beside the other
@@ -31,7 +31,6 @@ from code_index.declarations import (
     DAC1_BILATERAL_ODA,
     DAC1_TOTAL_ODA,
     DAC2A,
-    DAC_MULTILATERALS,
 )
 
 MeasureBasis = Literal["gross", "net", "grant_equivalent", "commitments", "oecd_headline"]
@@ -98,8 +97,9 @@ class PublishedProviderScope:
     """The provider scope a published donor total counts.
 
     A part counts `scope` when its identity is served from `dataset`, binds `code` on
-    `code_system`, and names providers none of which is in `MULTILATERAL_PROVIDERS`. `rule`
-    names the row on the scope choice it settles, and `note` says what the total counts."""
+    `code_system`, and names donors alone: countries, `DONOR_ORGANISATIONS`, or totals of a
+    group made only of countries. `rule` names the row on the scope choice it settles, and
+    `note` says what the total counts."""
 
     dataset: str
     code_system: str
@@ -371,15 +371,19 @@ PROVIDER_CONVENTIONS: tuple[ProviderConvention, ...] = (
     ),
 )
 
+_EU_INSTITUTIONS = "EuropeanUnionInstitutions"
+
 # The providers the imputed multilateral table carries rows for that are themselves
 # multilaterals whose own outflows its rows attribute to other providers. The EU institutions
 # report to the CRS as a provider and hold an imputed share of the multilaterals they fund, and
 # ONE's method attributes their own spending to the EU member states that fund them. A pool
 # naming one of them beside another provider counts those outflows twice, as the multilateral's
-# own flows and inside its funders' imputed shares, so it takes no inclusive scope. The graph
-# types every multilateral an `Organization`, as it types a private foundation, and the code
-# index marks none, so this table is the only record of the grouping.
-REDISTRIBUTED_PROVIDERS: tuple[str, ...] = ("EuropeanUnionInstitutions",)
+# own flows and inside its funders' imputed shares, so it takes no inclusive scope. DAC1's
+# total ODA counts the same outflows twice for such a pool, as the EU institutions' own aid
+# and inside each member's core contributions to them, so it has no provider record there. The
+# graph types every multilateral an `Organization`, as it types a private foundation, and the
+# code index marks none, so this table is the only record of the grouping.
+REDISTRIBUTED_PROVIDERS: tuple[str, ...] = (_EU_INSTITUTIONS,)
 
 PROVIDER_DEFAULT_RULE = "bilateral_flows"
 """The rule of a part no provider convention settles. It counts the donor's bilateral flows."""
@@ -388,9 +392,8 @@ PROVIDER_DEFAULT_RULE = "bilateral_flows"
 # donor's bilateral flows and its core contributions to the multilateral organisations, in the
 # year it pays them. The imputed multilateral table instead attributes the multilaterals' own
 # spending back to their funders, so the two differ in what they count, in timing and in
-# amount. Bilateral ODA counts the bilateral flows alone. Each total holds the one scope it
-# publishes: no option moves a part from one aid type to the other, since DAC1's bilateral ODA
-# is a total of another table than the CRS, whose whole need not hold a part the CRS counts.
+# amount. Bilateral ODA counts the bilateral flows alone. A part reading one row is offered
+# every other row of its dataset and code system as an option that binds that row's code.
 PUBLISHED_PROVIDER_SCOPES: tuple[PublishedProviderScope, ...] = (
     PublishedProviderScope(
         dataset=DAC1,
@@ -410,11 +413,12 @@ PUBLISHED_PROVIDER_SCOPES: tuple[PublishedProviderScope, ...] = (
     ),
 )
 
-# The providers whose published totals count the multilateral organisations' own outflows, so
-# no row of `PUBLISHED_PROVIDER_SCOPES` reads a part naming one. DAC1 publishes the
-# multilaterals only as the DAC's total of them; every other DAC1 provider is a donor country,
-# a group of donor countries, or the EU institutions, a DAC member.
-MULTILATERAL_PROVIDERS: tuple[str, ...] = (DAC_MULTILATERALS,)
+# The organisations a row of `PUBLISHED_PROVIDER_SCOPES` reads as donors, beside countries
+# and totals of a group made only of countries. The EU institutions are a DAC member and report
+# their own aid to DAC1 as a donor does. Any other organisation or total a part names, the
+# DAC's total of the multilaterals among them, counts multilateral outflows, so the part has
+# no provider record.
+DONOR_ORGANISATIONS: tuple[str, ...] = (_EU_INSTITUTIONS,)
 
 ODA_FLOW_SYSTEM = "crsTypeOfFlow"
 """The code system an ODA flow binding binds."""

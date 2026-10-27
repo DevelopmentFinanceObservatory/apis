@@ -159,7 +159,6 @@ ScopeReasonCode = Literal[
     "carried_choice_not_applied",
     "stated_choice_not_applied",
     "option_not_covered",
-    "counts_core_contributions",
     "contributions_counted",
 ]
 """Every reason a scope option is partial or unavailable, or a carried or stated entry is
