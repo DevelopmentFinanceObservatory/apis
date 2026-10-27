@@ -118,6 +118,7 @@ from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
 from search.scope.composite import assemble_composite
+from search.scope.region import region_groups
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
@@ -350,17 +351,26 @@ async def handle(
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
         # A composite its components cannot serve refuses before its scope compiles.
         composite_table_identity(entry.identity, pointer=f"/input/entries/{index}/identity")
+        # The scope build reads coverage and scans families, so it runs off the event loop.
         scope = (
             None
             if entry.scope_entries is None
-            else _compiled_scope(entry, index=index, coverage=params.coverage)
+            else await asyncio.to_thread(
+                _compiled_scope, entry, index=index, coverage=params.coverage
+            )
         )
         identity = entry.identity if scope is None else scope.compiled.identity
         read = composite_table_identity(identity, pointer=f"/input/entries/{index}/identity")
+        # A compiled scope may switch the region's reading, so its groups are restated.
+        groups = (
+            entry.entity_groups
+            if scope is None or entry.entity_groups is None
+            else region_groups(entry.entity_groups, read, index=get_index())
+        )
         payload = (
             spec_resubmit_input_for_identity(entry)
             if scope is None and read is identity
-            else ResubmitIdentityPayload(identity=read, entity_groups=entry.entity_groups)
+            else ResubmitIdentityPayload(identity=read, entity_groups=groups)
         )
         key = memo.key(payload, options) if memo is not None and memo.active else None
         stored = memo.lookup(key) if memo is not None and key is not None else None

@@ -589,6 +589,34 @@ def test_a_convention_settled_part_offers_no_basis_sibling_as_an_alternative_mea
         )
 
 
+@pytest.mark.parametrize("cell", ["sector", "donor-only-2016"])
+def test_a_resubmit_without_scope_entries_keeps_the_basis_siblings_as_alternatives(cell: str):
+    """A resubmit posting no scope entries carries no scope choice, so the measures of
+    another basis stay among its alternatives, the one route to them."""
+    row = _CELLS[cell]
+    first = _ask(row.variable, time=row.time, recipient=row.recipient)
+
+    resubmitted = _resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=row.variable, identity=first.definition.identity
+                    )
+                ]
+            )
+        ),
+        row.variable,
+    )
+
+    assert resubmitted.resolved.scope_choices is None
+    assert any(
+        _served_basis_of(alternative.definition.identity)
+        != (row.basis.measured_property, row.basis.netting)
+        for alternative in resubmitted.resolved.alternative_measures or []
+    )
+
+
 def _served_basis_of(identity: BaseIdentity) -> tuple[str | None, str | None]:
     assert isinstance(identity.shape, IdentityShapeSchema)
     netting = next(

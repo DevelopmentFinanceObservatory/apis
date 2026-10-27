@@ -1,6 +1,7 @@
 """A role-bearing FinancialFlow/amount candidate that differs only in measured property folds into
 the elected grantEquivalent spec. The two differ in measure basis, which the spec's
-measure-basis scope choice offers, so the folded sibling rides no `alternative_measures` entry.
+measure-basis scope choice offers, so once the choice attaches the folded sibling rides no
+`alternative_measures` entry.
 """
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ from __future__ import annotations
 import asyncio
 
 from code_index.shared import get_index
+from search.engine.assemble import with_scope_choices
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import Binder
 from search.engine.clients.graph import Facet
@@ -215,8 +217,10 @@ def _bound_ref(identity, property_dcid: str) -> str | None:
 def test_the_folded_basis_sibling_rides_no_alternative_and_no_second_menu_entry(monkeypatch):
     result = _run(monkeypatch, binder=ReplyBinder())
     (survivor,) = result.specs
+    assert result.scope_choices is not None
+    answer = with_scope_choices(survivor, result.scope_choices)
 
-    alternatives = survivor.resolved.alternative_measures or []
+    alternatives = answer.resolved.alternative_measures or []
     assert not any(a.definition.identity.shape.measured_property == "amount" for a in alternatives)
     assert _bound_ref(survivor.definition.identity, _PROP_PURPOSE) == _EXTRA_PURPOSE
 

@@ -347,6 +347,36 @@ def test_a_sector_phrase_binds_and_states_its_sector_choice(variable: str, searc
         assert _choice(again) == row.choice
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["how much basic health aid went to Kenya", "how much  basic   health aid went to Kenya"],
+    ids=["plain", "extra-spaces"],
+)
+def test_a_code_entry_points_at_its_words_in_the_message(message: str):
+    """A part of a one-part request is read from the user's message with its whitespace
+    collapsed, so the entry's offsets point at its words there, whatever spacing the
+    message has."""
+    spec = _resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text="basic health",
+                        entities=[ParsedEntity(text="Kenya", role_text="to")],
+                    )
+                ],
+                user_message=message,
+            )
+        ),
+        "basic health",
+    )
+
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (origin,) = [e.origin for e in scope.entries if isinstance(e.origin, TextOrigin)]
+    assert origin.model_dump() == {"kind": "text", "text": "basic health", "start": 9, "end": 21}
+
+
 def test_a_carried_entry_for_the_concept_binds_on_a_new_part():
     """`sector:120` settled earlier for health binds CRS 120 alone on a new "health aid"
     part, and the scope states it as carried."""
@@ -553,6 +583,18 @@ def _entry(option_id: str, provenance: EntryProvenance, concept: str | None) -> 
             _HEALTH,
             "default",
             id="an-option-the-grouping-does-not-offer",
+        ),
+        pytest.param(
+            (_entry("sector:130", "carried", None),),
+            _HEALTH,
+            "default",
+            id="a-code-entry-the-part-does-not-name",
+        ),
+        pytest.param(
+            (_entry("sector:110", "explicit", "health"), _entry("sector:120", "carried", "health")),
+            ("CRSPurposeCode120",),
+            "carried",
+            id="a-later-entry-the-grouping-offers",
         ),
     ],
 )

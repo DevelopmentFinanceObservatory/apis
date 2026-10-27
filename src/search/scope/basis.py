@@ -53,6 +53,7 @@ from search.models import (
     IdentityWindowRange,
     Option,
     OptionAvailability,
+    PartScope,
     ShapeBinding,
     TimeWindow,
 )
@@ -87,13 +88,6 @@ HEADLINE_BINDING = ShapeBinding(
 )
 """The binding of the OECD headline option: the net shape the part elects
 (`HEADLINE_SERVED_AS`) and the headline composite as its source."""
-
-BASIS_AXES: frozenset[str] = frozenset(
-    {"populationType", "measuredProperty", "nettingBasis"}
-    | {row.flow_type[0] for row in BASIS_MEASURES}
-)
-"""The measure axes a basis sets (`code_index.types.MeasureAxis.axis`). Measures that differ
-on one differ in basis, which the axis owns, so no other list offers them."""
 
 CONVENTION_DATASETS: frozenset[str] = frozenset(row.dataset for row in MEASURE_BASIS_CONVENTIONS)
 """The datasets the conventions read. A part served from another has no measure-basis
@@ -213,6 +207,30 @@ def elect_basis(
         if measure is not None:
             return BasisElection(convention=row, basis=measure.basis, entry=entry)
     return BasisElection(convention=row, basis=_served(row))
+
+
+def elect_part_basis(
+    *,
+    datasets: Collection[str],
+    directions: Iterable[str],
+    admitted_systems: Collection[str],
+    sector_systems: Collection[str],
+    window: TimeWindow | Literal["all", "latest"],
+    entries: Sequence[Entry],
+) -> BasisElection | None:
+    """The basis a part is counted on, from the shape its places (`directions`) and
+    admitted codes give it (`part_shape`) and its `window` (`elect_basis`), with `entries`
+    winning over the convention. None when no dataset of `datasets`, those the part could
+    be answered from, is one the conventions read (`CONVENTION_DATASETS`), and for a part
+    the conventions read no shape of."""
+    if CONVENTION_DATASETS.isdisjoint(datasets):
+        return None
+    shape = part_shape(
+        directions=directions, admitted_systems=admitted_systems, sector_systems=sector_systems
+    )
+    if shape is None:
+        return None
+    return elect_basis(shape=shape, window=window_class(window), entries=entries)
 
 
 def _served(row: BasisConvention) -> MeasureBasis:
@@ -352,6 +370,22 @@ def basis_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
     if family is None:
         return None
     return next((dataset for dataset in family.datasets if dataset in CONVENTION_DATASETS), None)
+
+
+def offers_basis_of(scope: PartScope, identity: BaseIdentity) -> bool:
+    """Whether `scope`'s measure-basis choice offers the basis `identity` holds
+    (`held_measure`) as an option other than its active one: a measure the choice switches
+    to, which no other list of the part need offer."""
+    held = held_measure(identity)
+    if held is None:
+        return False
+    option = measure_basis_option_id(held.basis)
+    return any(
+        choice.axis == "measure_basis"
+        and choice.active != option
+        and any(o.option_id == option for o in choice.options)
+        for choice in scope.choices
+    )
 
 
 def oda_flows(basis: BasisMeasure, held: Collection[str]) -> tuple[str, ...]:

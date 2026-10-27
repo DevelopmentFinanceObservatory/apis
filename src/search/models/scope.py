@@ -35,8 +35,10 @@ YearSpan = tuple[int, int]
 
 
 class TextOrigin(StrictModel):
-    """The words an explicit entry was read from: the user's message on a request of one
-    part, or the part's own variable text on a request of several."""
+    """The words an explicit entry was read from, and where they lie in the text the part's
+    scope was read from: the user's message on a request of one part, or the part's own
+    variable text on a request of several, with its whitespace collapsed. Words that text
+    does not hold have an empty span at its start."""
 
     kind: Literal["text"] = "text"
     text: str = Field(min_length=1, max_length=256, description="the words, as written")

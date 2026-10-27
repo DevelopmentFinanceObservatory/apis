@@ -3,9 +3,10 @@ write back."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
-from search.models import ChoiceProvenance, Entry, ScopeAxis
+from search.models import ChoiceProvenance, Entry, ScopeAxis, TextOrigin
 
 _PRECEDENCE = {"explicit": 0, "carried": 1}
 
@@ -40,14 +41,16 @@ class ScopeIntake:
     `entries` are the explicit entries read from the part's words and the conversation's
     carried entries. `total` is whether the words ask for a total ("total health aid"),
     which the provider default reads. It is a fact about the request and sits outside the
-    entries."""
+    entries. `text` is the text the part's words were read from, the one every text origin
+    of the part indexes (`models.TextOrigin`)."""
 
     entries: tuple[Entry, ...] = ()
     total: bool = False
+    text: str = ""
 
     def state(self) -> ScopeState:
         """A fresh state for one resolution of the part."""
-        return ScopeState(entries=self.entries, total=self.total)
+        return ScopeState(entries=self.entries, total=self.total, text=self.text)
 
 
 @dataclass(slots=True)
@@ -57,11 +60,23 @@ class ScopeState:
 
     `entries` are the part's explicit and carried entries. A binder reads those on its axis
     (`entries_on`) and applies precedence itself, then writes one `AxisRecord` (`write`).
-    `total` is the request's total intent (`ScopeIntake.total`)."""
+    `total` is the request's total intent (`ScopeIntake.total`) and `text` the text the
+    part's words were read from (`ScopeIntake.text`)."""
 
     entries: tuple[Entry, ...] = ()
     records: dict[ScopeAxis, AxisRecord] = field(default_factory=dict)
     total: bool = False
+    text: str = ""
+
+    def origin_of(self, words: str) -> TextOrigin:
+        """The origin of an entry read from `words`: their first occurrence in `text`,
+        matched without regard to case or runs of whitespace, as `text` writes them. Words
+        `text` does not hold have an empty span at its start."""
+        pattern = r"\s+".join(map(re.escape, words.split()))
+        found = re.search(pattern, self.text, re.IGNORECASE) if pattern else None
+        if found is None:
+            return TextOrigin(text=words, start=0, end=0)
+        return TextOrigin(text=found.group(), start=found.start(), end=found.end())
 
     def entries_on(self, axis: ScopeAxis, *, concept: str | None = None) -> tuple[Entry, ...]:
         """The entries on `axis`, explicit before carried, each in posted order. With

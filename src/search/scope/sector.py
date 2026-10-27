@@ -35,7 +35,6 @@ from search.models import (
     Option,
     OptionAvailability,
     SlotBinding,
-    TextOrigin,
 )
 from search.scope.composite import table_document
 from search.scope.state import AxisRecord, ScopeState
@@ -98,11 +97,12 @@ def read_sector(
     """The reading of a sector binding to `codes` that the qualifier `matches` on its code
     system forced, read from the part's `variable`.
 
-    A concept named alone ("health aid") binds the option the first entry made for it holds
-    (`ScopeState.entries_on`), when the grouping offers that option, else the grouping
-    itself, the default. A concept named beside other codes ("health and education aid")
-    binds the grouping's codes beside theirs, by default. Codes no concept names are an
-    explicit entry of the words that named them."""
+    A concept named alone ("health aid") binds the option of the first entry that applies to
+    it (`ScopeState.entries_on`, `_applies`), else the grouping itself, the default. A
+    concept named beside other codes ("health and education aid") binds the grouping's
+    codes beside theirs, by default. Codes no concept names are an explicit entry of the
+    words that named them, at their place in the text the part's scope was read from
+    (`ScopeState.origin_of`)."""
     named = {
         match.code_dcid: grouping
         for match in matches
@@ -114,7 +114,7 @@ def read_sector(
             axis="sector",
             option_id=sector_option_id(codes),
             provenance="explicit",
-            origin=_origin(matches, variable),
+            origin=scope.origin_of(_words(matches, variable)),
         )
         return SectorReading(
             codes=tuple(codes),
@@ -132,8 +132,15 @@ def read_sector(
     if len(groupings) == 1 and set(codes) == named.keys():
         (grouping,) = groupings
         options = grouping_options(grouping)
-        entry = next(iter(scope.entries_on("sector", concept=grouping.concept)), None)
-        if entry is not None and entry.option_id in options:
+        entry = next(
+            (
+                entry
+                for entry in scope.entries_on("sector", concept=grouping.concept)
+                if _applies(entry, options, named=codes)
+            ),
+            None,
+        )
+        if entry is not None:
             return SectorReading(
                 codes=options[entry.option_id],
                 grouped=True,
@@ -162,19 +169,30 @@ def read_sector(
     )
 
 
-def _origin(matches: Sequence[QualifierMatch], variable: str) -> TextOrigin:
+def _applies(entry: Entry, options: dict[str, tuple[str, ...]], *, named: Sequence[str]) -> bool:
+    """Whether `entry` applies to a part naming a grouping alone whose options are
+    `options`, with the codes `named` its words matched.
+
+    The grouping must offer the entry's option. An entry made for the grouping's concept then
+    applies; one made for no concept, a code entry ("reproductive health aid", CRS 130),
+    applies only when the part's words named each of its codes, so a code chosen for other
+    words never narrows the grouping."""
+    codes = options.get(entry.option_id)
+    if codes is None:
+        return False
+    return entry.concept is not None or set(codes) <= set(named)
+
+
+def _words(matches: Sequence[QualifierMatch], variable: str) -> str:
     """The words of `variable` the matches read: the span from the first match to the last
-    when every match was read from the variable, else the first match's words where the
-    variable holds them."""
+    when every match was read from the variable, else the first match's words."""
     starts = [m.start for m in matches]
     ends = [m.end for m in matches]
     if matches and all(s is not None for s in starts) and all(e is not None for e in ends):
         start = min(s for s in starts if s is not None)
         end = max(e for e in ends if e is not None)
-        return TextOrigin(text=variable[start:end], start=start, end=end)
-    text = matches[0].matched_text if matches else variable
-    start = max(variable.casefold().find(text.casefold()), 0)
-    return TextOrigin(text=text, start=start, end=start + len(text))
+        return variable[start:end]
+    return matches[0].matched_text if matches else variable
 
 
 def sector_rule(

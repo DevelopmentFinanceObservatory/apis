@@ -14,13 +14,17 @@ every member and its DAC2a net series to Africa's total.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
+from code_index.scope_conventions import REGION_READINGS
 from code_index.shared import get_index
 from entity_resolution.shared import shared_membership_policy
 from search.engine.departures import spec_departure_facts
+from search.engine.entry import dataset_resubmit
+from search.engine.region import pipeline
 from search.models import (
     ChoiceOrigin,
     DatasetResubmitInput,
@@ -277,3 +281,138 @@ def test_oda_to_africa_with_no_sector_reads_the_dac2a_total_on_net():
     assert "region" not in [c.axis for c in scope.choices]
     (basis,) = (c for c in scope.choices if c.axis == "measure_basis")
     assert (basis.active, basis.provenance) == ("measure_basis:net", "default")
+
+
+_SSA = "SubSaharanAfrica"
+_SSA_ROW = next(row for row in REGION_READINGS if row.region == _SSA)
+_DAC_SSA = get_index().parties[_SSA_ROW.total]
+assert _DAC_SSA.totals is not None
+_OECD_SSA_MEMBERS = shared_membership_policy().members(_DAC_SSA.totals).members
+_GRAPH_SSA_MEMBERS = shared_membership_policy().members(_SSA).members
+
+
+def test_a_switch_between_a_regions_two_readings_names_the_group_each_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sub-Saharan Africa summed on the CRS reads as the OECD counts it, named by the
+    registry group. A switch to the graph region's members names the graph region, and a
+    switch back names the registry group again, so each answer states its group and the
+    members it was read as."""
+    members = sorted({*_OECD_SSA_MEMBERS, *_GRAPH_SSA_MEMBERS})
+    patch_coverage(
+        monkeypatch,
+        [(_CRS_MEMBER, "crs", _FRA, member, [2019, 2020, 2021]) for member in members],
+        role_names={
+            _CRS_MEMBER: RoleNames(donor="financingProvider", recipient="financingRecipient")
+        },
+        facet_metadata={"crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD")},
+    )
+    graph = _africa_graph()
+    graph._nodes[_SSA] = {"label": "Sub-Saharan Africa", "type": "GeoRegion"}
+    for member in members:
+        graph._nodes.setdefault(member, {"label": member, "type": "Country"})
+    for residual in _DAC_SSA.residuals:
+        graph._nodes.setdefault(
+            residual, {"label": get_index().parties[residual].label, "type": "Organization"}
+        )
+    graph._resolve["Sub-Saharan Africa"] = _SSA
+
+    def run(request: ResolveRequest) -> DefinitePart:
+        response = offline_resolve(
+            request,
+            graph=graph,
+            llm=_ScriptedLLM(_SECTOR_VARIABLE),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+        (part,) = response.parts
+        assert isinstance(part, DefinitePart), part
+        return part
+
+    first = run(
+        _parsed(
+            {
+                "variable": _SECTOR_VARIABLE,
+                "entities": [_FROM_FRANCE, {"role": "to", "text": "Sub-Saharan Africa"}],
+                "time": "2021",
+            }
+        )
+    ).spec
+    scope = first.resolved.scope_choices
+    assert scope is not None
+    assert first.resolved.entity_groups is not None
+    assert first.resolved.entity_groups["destination"].group_id == _DAC_SSA.totals
+
+    def switched(option: str) -> DefinitePart:
+        switch = Entry(
+            axis="region",
+            option_id=option,
+            provenance="explicit",
+            origin=ChoiceOrigin(choice_id=f"{scope.id}:region"),
+        )
+        entry = ResubmitIdentityEntry(
+            variable_text=_SECTOR_VARIABLE,
+            identity=scope.base.identity,
+            entity_groups=first.resolved.entity_groups,
+            scope_entries=[*(e for e in scope.entries if e.axis != "region"), switch],
+        )
+        return run(ResolveRequest(input=DatasetResubmitInput(entries=[entry])))
+
+    to_members = switched(_MEMBERS)
+    groups = to_members.spec.resolved.entity_groups
+
+    assert _destination(to_members.spec) == sorted(_GRAPH_SSA_MEMBERS)
+    assert groups is not None
+    assert groups["destination"].ref == _SSA
+    assert "group_read_as_members" in [d.code for d in to_members.departures]
+
+    back = switched(_ALL)
+
+    assert back.spec.spec_id == first.spec_id
+    assert back.spec.resolved.entity_groups == first.resolved.entity_groups
+
+
+def test_the_scope_builds_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A search and a switch build their scope in a worker thread, so a scope build's
+    coverage reads never block the event loop."""
+    on_loop: list[bool] = []
+
+    def recording(build):
+        def wrapper(**kwargs):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                on_loop.append(False)
+            else:
+                on_loop.append(True)
+            return build(**kwargs)
+
+        return wrapper
+
+    for module in (pipeline, dataset_resubmit):
+        monkeypatch.setattr(module, "build_part_scope", recording(module.build_part_scope))
+
+    first = _ask({}).spec
+    scope = first.resolved.scope_choices
+    assert scope is not None
+    switch = Entry(
+        axis="region",
+        option_id=_MEMBERS,
+        provenance="explicit",
+        origin=ChoiceOrigin(choice_id=f"{scope.id}:region"),
+    )
+    _run(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=_SECTOR_VARIABLE,
+                        identity=scope.base.identity,
+                        entity_groups=first.resolved.entity_groups,
+                        scope_entries=[switch],
+                    )
+                ]
+            )
+        )
+    )
+
+    assert on_loop == [False, False]

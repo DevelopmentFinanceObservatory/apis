@@ -75,6 +75,7 @@ from search.render.no_data import (
 )
 from search.render.plan import render_sentence_plan
 from search.render.tokens import plan_words, sentence_from_plan
+from search.scope.basis import offers_basis_of
 from search.scope.build import served_scope
 from skills_index import SkillsIndex
 
@@ -219,9 +220,11 @@ def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
     """Attach how the part was counted under ``resolved.scope_choices``, its compiled record
     restated from ``spec``'s own definition: the identity the part serves, which the resolve
     may have canonicalised after the scope compiled. A compiled record of ``spec`` itself
-    stands as it is, since a composite's states the years each component serves. Update
-    ``resolved`` because ``model_copy(update=...)`` skips validation and the field belongs
-    to it."""
+    stands as it is, since a composite's states the years each component serves. An
+    alternative measure on a basis the measure-basis choice offers
+    (`scope.basis.offers_basis_of`) leaves ``resolved.alternative_measures``, since the choice
+    is the part's one route to it. Update ``resolved`` because ``model_copy(update=...)``
+    skips validation and the field belongs to it."""
     served = (
         scope
         if scope.compiled.spec_id == spec.spec_id
@@ -229,9 +232,15 @@ def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
             update={"compiled": served_scope(spec.spec_id, spec.definition.identity)}
         )
     )
-    return spec.model_copy(
-        update={"resolved": spec.resolved.model_copy(update={"scope_choices": served})}
-    )
+    update: dict[str, object] = {"scope_choices": served}
+    alternatives = spec.resolved.alternative_measures
+    if alternatives is not None:
+        update["alternative_measures"] = [
+            alternative
+            for alternative in alternatives
+            if not offers_basis_of(served, alternative.definition.identity)
+        ]
+    return spec.model_copy(update={"resolved": spec.resolved.model_copy(update=update)})
 
 
 def _surviving_qualifier_warnings(

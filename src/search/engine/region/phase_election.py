@@ -130,16 +130,13 @@ from search.engine.written_phrase import written_phrase
 from search.models import ResolvedQualifier, Warning
 from search.scope.basis import (
     BASIS_RULE,
-    CONVENTION_DATASETS,
     HEADLINE_OPTION,
     SERVED_DIFFERS_RULE,
     BasisElection,
-    elect_basis,
+    elect_part_basis,
     measure_of,
     oda_flows,
-    part_shape,
     sector_systems,
-    window_class,
 )
 from search.scope.sector import SECTOR_PROPERTIES, read_sector
 from search.scope.state import AxisRecord
@@ -1637,20 +1634,17 @@ def _part_basis(state: ResolveState, shape: ShapeDraft) -> BasisElection | None:
     carried measure-basis entry when `shape` measures the basis the entry asks for, else
     from the convention alone. None for a part the conventions read no shape of, and for a
     `shape` no dataset the conventions read publishes."""
-    if not CONVENTION_DATASETS.intersection(shape_part_datasets(shape, get_index())):
-        return None
-    read = part_shape(
+    index = get_index()
+    election = elect_part_basis(
+        datasets=shape_part_datasets(shape, index),
         directions=[place.direction for place in state.frame.places],
         admitted_systems={match.code_system for match in state.admitted_qualifiers},
-        sector_systems=sector_systems(get_index()),
-    )
-    if read is None:
-        return None
-    election = elect_basis(
-        shape=read,
-        window=window_class(state.frame.window.value),
+        sector_systems=sector_systems(index),
+        window=state.frame.window.value,
         entries=state.scope_selection.entries_on("measure_basis"),
     )
+    if election is None:
+        return None
     netting = slot_values(shape.slot_taxonomy or {}, "nettingBasis")
     if election.entry is None or election.measured_by(
         shape.pop_type_dcid, shape.meas_prop_dcid, netting

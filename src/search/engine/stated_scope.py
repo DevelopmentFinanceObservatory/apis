@@ -35,6 +35,7 @@ from dataclasses import dataclass
 
 from code_index.scope_conventions import MeasureBasis
 from search.engine.bind_repair import occurrence_negated
+from search.engine.response_cache_keys import normalise_query
 from search.models import SCOPE_AXES, Entry, ScopeAxis, TextOrigin
 from search.scope.state import ScopeIntake
 from search.scope.vocabulary import measure_basis_option_id, provider_option_id
@@ -200,14 +201,21 @@ def part_scope_intakes(
     """The scope each part is posted with, in part order.
 
     A request of one part reads `message`, or the part's own text when there is none; a
-    request of several reads each part's own text. Every part also takes every `carried`
-    entry, which attaches to it by axis and concept once its binders have run
+    request of several reads each part's own text. The text is read normalised
+    (`response_cache_keys.normalise_query`), and every text origin of the part indexes it
+    (`ScopeIntake.text`), so requests the response cache serves alike (layer 1 by the
+    normalised query, layer 2 by a single part's whitespace-collapsed query or by each
+    part's own text) point at the same words. Every part also takes every `carried` entry,
+    which attaches to it by axis and concept once its binders have run
     (`ScopeState.attached`)."""
-    texts = [message] if len(part_texts) == 1 and message is not None else part_texts
-    return [
-        ScopeIntake(entries=(*stated.entries, *carried), total=stated.total)
-        for stated in map(read_stated_scope, texts)
-    ]
+    raw = [message] if len(part_texts) == 1 and message is not None else part_texts
+    intakes = []
+    for text in map(normalise_query, raw):
+        stated = read_stated_scope(text)
+        intakes.append(
+            ScopeIntake(entries=(*stated.entries, *carried), total=stated.total, text=text)
+        )
+    return intakes
 
 
 def intake_key_document(intake: ScopeIntake) -> dict[str, object] | None:

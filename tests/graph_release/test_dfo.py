@@ -355,6 +355,24 @@ def test_dfo_inputs_refuse_empty_declarations(field: str, empty: object) -> None
         ),
         pytest.param(
             lambda d, m: (
+                m.setattr(
+                    scope_conventions,
+                    "OPTION_LABELS",
+                    dataclasses.replace(scope_conventions.OPTION_LABELS, sector_code="{label}"),
+                )
+                or d
+            ),
+            id="option-labels",
+        ),
+        pytest.param(
+            lambda d, m: m.setattr(scope_conventions, "REGION_NAMES", ()) or d, id="region-names"
+        ),
+        pytest.param(
+            lambda d, m: m.setattr(scope_conventions, "CONVENTION_CURRENCY", "EUR") or d,
+            id="convention-currency",
+        ),
+        pytest.param(
+            lambda d, m: (
                 m.setattr(release_declarations, "IMPORT_ADDED_CONSTRAINT_PROPERTIES", frozenset())
                 or d
             ),
