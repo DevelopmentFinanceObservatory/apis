@@ -14,6 +14,7 @@ import pytest
 
 from dc_sdmx import SdmxHttpError
 from dc_sdmx.client import _HEDGE_LOSER_CAP, _HEDGE_SLOTS, SdmxClient
+from dfo_platform.timings import PhaseTimings, collecting
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _CONTENT_TYPE = "application/vnd.sdmx.data+csv;version=2.0.0"
@@ -102,11 +103,15 @@ def test_a_stalled_request_is_answered_by_its_duplicate_and_the_loser_frees_its_
     transport = _StalledFirstRequest()
     client = SdmxClient(base_url=_BASE_URL, transport=transport, hedge_after=_HEDGE_AFTER)
     hedged = [f"V{i}" for i in range(_HEDGE_SLOTS + 1)]
+    timings = PhaseTimings()
 
     # Each read returns its duplicate's answer while its first request is still stalled. The
-    # stalled losers hold no slot, so more reads hedge than there are slots.
-    assert [_value(client, variable) for variable in hedged] == ["2"] * len(hedged)
+    # stalled losers hold no hedge slot, so more reads hedge than there are hedge slots.
+    with collecting(timings):
+        assert [_value(client, variable) for variable in hedged] == ["2"] * len(hedged)
     assert transport.requests == Counter(dict.fromkeys(hedged, 2))
+    counts = timings.count_snapshot()
+    assert (counts["sdmx_hedges"], counts["sdmx_hedge_wins"]) == (len(hedged), len(hedged))
 
     # The losers' responses are closed unread once they arrive.
     transport.release.set()
@@ -202,6 +207,9 @@ def _reset(request: httpx.Request) -> httpx.Response:
         pytest.param(lambda _request: httpx.Response(503, text="unavailable"), id="503"),
         pytest.param(lambda _request: httpx.Response(429, text="slow down"), id="429"),
         pytest.param(lambda _request: httpx.Response(408, text="request timeout"), id="408"),
+        pytest.param(
+            lambda _request: httpx.Response(200, text="<html></html>"), id="2xx without csv"
+        ),
     ],
 )
 def test_a_duplicate_that_fails_at_once_loses_to_a_primary_that_answers_late(fail):
@@ -222,9 +230,13 @@ def test_a_duplicate_that_fails_at_once_loses_to_a_primary_that_answers_late(fai
     client = SdmxClient(
         base_url=_BASE_URL, transport=httpx.MockTransport(handler), hedge_after=_HEDGE_AFTER
     )
+    timings = PhaseTimings()
 
-    assert _value(client, "V0") == "1"
+    with collecting(timings):
+        assert _value(client, "V0") == "1"
     assert requests["sent"] == 2
+    counts = timings.count_snapshot()
+    assert (counts["sdmx_hedges"], counts.get("sdmx_hedge_wins", 0)) == (1, 0)
 
 
 def test_a_read_whose_two_sends_fail_raises_the_first_requests_error():
@@ -382,7 +394,6 @@ def test_a_race_ends_when_a_sibling_chunk_fails():
             # Fail once the stalled chunk has sent its duplicate.
             _wait_until(lambda: requests[stalled] == 2)
             return httpx.Response(400, text="bad request")
-        # Outlast `_wait_until`, so only leaving the race frees the slot in time.
         assert release.wait(timeout=10)
         return httpx.Response(
             200, headers={"content-type": _CONTENT_TYPE}, content=_body(variable, "1")
@@ -403,9 +414,11 @@ def test_a_race_ends_when_a_sibling_chunk_fails():
     assert excinfo.value.upstream_status == 400
     assert requests[stalled] == 2
 
-    # The stalled chunk leaves its race and frees its slot while both its sends still stall.
-    _wait_until(lambda: _total_slots_free(client, len(variables)))
+    # The stalled chunk leaves its race, but its first send keeps its slot until it settles.
+    time.sleep(4 * _HEDGE_AFTER)
+    assert not _total_slots_free(client, len(variables))
     release.set()
+    _wait_until(lambda: _total_slots_free(client, len(variables)))
 
 
 def test_concurrent_reads_never_run_more_losers_than_the_cap():
@@ -465,7 +478,6 @@ def test_a_wait_on_an_unhedged_request_ends_when_a_sibling_chunk_fails():
             _wait_until(lambda: requests[stalled] == 1)
             time.sleep(4 * _HEDGE_AFTER)
             return httpx.Response(400, text="bad request")
-        # Outlast `_wait_until`, so only leaving the wait frees the slot in time.
         assert release.wait(timeout=10)
         return httpx.Response(
             200, headers={"content-type": _CONTENT_TYPE}, content=_body(variable, "1")
@@ -487,5 +499,53 @@ def test_a_wait_on_an_unhedged_request_ends_when_a_sibling_chunk_fails():
     assert excinfo.value.upstream_status == 400
     assert requests[stalled] == 1
 
-    _wait_until(lambda: _total_slots_free(client, len(variables)))
+    # The abandoned request keeps its slot until it settles.
+    time.sleep(4 * _HEDGE_AFTER)
+    assert not _total_slots_free(client, len(variables))
     release.set()
+    _wait_until(lambda: _total_slots_free(client, len(variables)))
+
+
+def test_reads_abandoned_at_their_deadline_never_run_more_sends_than_the_slots_and_the_loser_cap():
+    """Every send stalls past its read's deadline. Each abandoned send keeps its total slot or
+    loser place until it settles, so the sends running together never exceed
+    `total_concurrency` plus `_HEDGE_LOSER_CAP`."""
+    total = 2
+    release = threading.Event()
+    lock = threading.Lock()
+    running = 0
+    peak = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        try:
+            assert release.wait(timeout=10)
+            return httpx.Response(
+                200, headers={"content-type": _CONTENT_TYPE}, content=_body("V0", "1")
+            )
+        finally:
+            with lock:
+                running -= 1
+
+    client = SdmxClient(
+        base_url=_BASE_URL,
+        transport=httpx.MockTransport(handler),
+        total_concurrency=total,
+        hedge_after=_HEDGE_AFTER,
+    )
+    reads = 3 * (total + _HEDGE_LOSER_CAP)
+
+    def abandoned_read(i: int) -> None:
+        with pytest.raises(TimeoutError):
+            _value(client, f"V{i}", deadline=time.monotonic() + 4 * _HEDGE_AFTER)
+
+    try:
+        with ThreadPoolExecutor(max_workers=total + _HEDGE_LOSER_CAP) as pool:
+            for read in [pool.submit(abandoned_read, i) for i in range(reads)]:
+                read.result(timeout=5)
+        assert total < peak <= total + _HEDGE_LOSER_CAP
+    finally:
+        release.set()

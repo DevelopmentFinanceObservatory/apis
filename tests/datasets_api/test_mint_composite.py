@@ -237,20 +237,27 @@ def test_a_composite_mints_one_frame_over_the_years_both_components_hold():
 
 
 def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
-    """The first SDMX request stalls past the hedge, so the pooled mint's chunks finish out of
-    order and that chunk is answered by its duplicate. Its frame, CSV and content version
-    match a mint that reads one chunk at a time."""
+    """The first SDMX request stalls past the hedge and then answers other values, so its
+    duplicate answers it. The pooled mint's frame, CSV and content version match a mint that
+    reads one request at a time, so the duplicate's answer is the one the mint used."""
     populated = _populated()
-    stalled = threading.Event()
+    stale = {
+        dcid: (facet, value + 1000, years) for dcid, (facet, value, years) in populated.items()
+    }
     lock = threading.Lock()
     sent: Counter[str] = Counter()
+    stalled: list[str] = []
 
     def stall_first(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
         with lock:
-            sent[str(request.url)] += 1
-        if not stalled.is_set():
-            stalled.set()
+            sent[url] += 1
+            stall = not stalled
+            if stall:
+                stalled.append(url)
+        if stall:
             time.sleep(0.3)
+            return _sdmx_response(stale, request)
         return _sdmx_response(populated, request)
 
     def mint(concurrency: int, transport: httpx.MockTransport, hedge_after: float | None):
@@ -270,9 +277,13 @@ def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
     pooled = mint(4, httpx.MockTransport(stall_first), 0.05)
     serial = mint(1, _sdmx_transport(populated), None)
 
+    [stalled_url] = stalled
+    assert sent[stalled_url] == 2
     assert max(sent.values()) == 2
     assert pooled[1]
     assert pooled == serial
+    # The stalled request names members with rows, so its stale values would have shown.
+    assert any(dcid in stalled_url for dcid in populated)
 
 
 def test_a_groupby_collapse_of_a_composite_sums_both_components():
