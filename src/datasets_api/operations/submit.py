@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from typing import cast
 
 from datasets_api.admission import refuse_async_over_ceiling
+from datasets_api.background_admission import admission_headroom
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import Operation, OperationStore
 from datasets_api.operations.dispatch import dispatch_if_due
@@ -74,9 +75,10 @@ def submit_over_budget(
     202 never reads it.
 
     Otherwise, async row or request limits raise `OverCeilingError` before a row or task exists.
-    `OperationBacklogFull` also propagates. The function records or reuses the operation,
-    creates its task when the submission records no dispatch, and raises `OperationSubmitted`
-    for a 202 response.
+    `OperationBacklogFull` also propagates, and for a background mint
+    (`datasets_api.background_admission`) a new operation must leave one backlog place free. The
+    function records or reuses the operation, creates its task when the submission records no
+    dispatch, and raises `OperationSubmitted` for a 202 response.
 
     The create follows the committed store transaction. A create that fails or times out leaves
     the dispatch unrecorded, and the operations poll creates the task again under the same name
@@ -94,6 +96,7 @@ def submit_over_budget(
             coverage_stamp=coverage_stamp,
             origin_catalogue_build_id=catalogue_build_id(),
             estimate=estimate,
+            headroom=admission_headroom(),
         )
     with phase("dispatch"):
         dispatch_if_due(accepted, operation_store=operation_store, task_client=task_client)

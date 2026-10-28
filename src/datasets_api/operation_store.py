@@ -317,12 +317,14 @@ class OperationStore(Protocol):
         coverage_stamp: str,
         origin_catalogue_build_id: str,
         estimate: Estimate,
+        headroom: int = 0,
     ) -> Operation:
         """Creates or reuses the operation keyed by identity, catalogue build, and rendering.
 
         A new row commits `pending` with no dispatch. Existing rows remain unchanged unless
         resettable; a `done` row always is. Raises `OperationBacklogFull` when a new row
-        would exceed the configured backlog limit.
+        would leave fewer than `headroom` of the configured backlog limit free. A background
+        mint leaves one for foreground callers.
         """
         ...
 
@@ -411,6 +413,7 @@ class NullOperationStore:
         coverage_stamp: str,
         origin_catalogue_build_id: str,
         estimate: Estimate,
+        headroom: int = 0,
     ) -> Operation:
         raise NotImplementedError(
             "NullOperationStore cannot create an operation it could never find again"
@@ -604,6 +607,7 @@ class LiveOperationStore:
         coverage_stamp: str,
         origin_catalogue_build_id: str,
         estimate: Estimate,
+        headroom: int = 0,
     ) -> Operation:
         id = compute_operation_id(
             request_identity=request_identity,
@@ -625,6 +629,7 @@ class LiveOperationStore:
                     row = self._create_or_reset_locked(
                         tx,
                         id=id,
+                        headroom=headroom,
                         request_identity=request_identity,
                         options=options,
                         coverage_stamp=coverage_stamp,
@@ -655,6 +660,7 @@ class LiveOperationStore:
         origin_catalogue_build_id: str,
         estimate: Estimate,
         now: datetime,
+        headroom: int,
     ) -> Mapping[str, object] | None:
         """One pass of `create_or_get` under the backlog lock.
 
@@ -672,7 +678,7 @@ class LiveOperationStore:
             (id, *_abandoned_params(now, deadline=self._deadline)),
         )
         in_flight = cast(int, backlog_row["n"]) if backlog_row is not None else 0
-        if in_flight >= self._backlog_max:
+        if in_flight + headroom >= self._backlog_max:
             raise OperationBacklogFull(in_flight=in_flight, limit=self._backlog_max)
         if existing is None:
             return tx.fetch_one(
