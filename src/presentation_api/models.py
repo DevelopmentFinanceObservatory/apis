@@ -28,6 +28,12 @@ __all__ = [
     "FrameStructuralViewResponse",
     "FrameViewResponse",
     "ReleaseDocumentResponse",
+    "ShareCardModel",
+    "ShareFrameModel",
+    "ShareReadResponse",
+    "ShareSlotModel",
+    "ShareWriteResponse",
+    "SharedResponse",
     "WindowModel",
     "WriteReplyResponse",
 ]
@@ -267,6 +273,98 @@ class ComponentReadResponse(BaseModel):
         "`held_until` has passed the frame can refuse `frame_unavailable`; fetch the card's "
         "data with latest=True to draw from current data. Null for a card that draws no frame",
     )
+
+
+# -- shares (presentation_api.doors.shares) ---------------------------------
+
+
+class ShareWriteResponse(BaseModel):
+    """`PUT /api/presentation/shares/{share_id}`'s 200 body: where the replaced share lives."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="the share's id, 8 letters and digits")
+    url: str = Field(description="the share's page on the public website, /s/<id>")
+    embed_url: str = Field(description="the share's embeddable page, /embed/<id>")
+    data_urls: list[str] = Field(
+        description="one JSON data URL per slot, in slot order. A slot keeps its URL across "
+        "replacements, so data_urls[0] always reads the share's first slot"
+    )
+    revision: int = Field(description="the share revision this write made, 1 on a create")
+    latest: bool = Field(
+        description="true for a live share, which follows new data; false for a snapshot, "
+        "which keeps the versions its cards drew when it was made"
+    )
+
+
+class SharedResponse(ShareWriteResponse):
+    """`POST /api/presentation/shares`'s 201 body."""
+
+    write_token: str = Field(
+        description="the shw_ token that grants replacing and deleting this share, sent back as "
+        "the x-dfo-write-token header. It appears only in this reply; keep it as a secret"
+    )
+
+
+class ShareFrameModel(BaseModel):
+    """The frame a slot's card revision draws."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str = Field(description="the frame's spec_ or ops_ id")
+    content_version: str = Field(description="the frame's cv_ or ocv_ content version")
+
+
+class ShareCardModel(BaseModel):
+    """The card revision a slot shows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    component_id: str = Field(description="the card's cmp_ id")
+    revision: int = Field(description="the card revision the slot shows")
+    frame: ShareFrameModel | None = Field(
+        description="the frame the card revision draws, null for a card that draws none or an "
+        "imported slot whose frame was not recorded"
+    )
+
+
+class ShareSlotModel(BaseModel):
+    """One numbered slot of a share."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: int = Field(description="the slot's number, from 1")
+    card: ShareCardModel | None = Field(
+        description="the card the slot shows, null for a slot a replacement with fewer cards "
+        "left empty"
+    )
+    data_url: str = Field(description="the slot's JSON data URL")
+
+
+class ShareReadResponse(BaseModel):
+    """`GET /api/presentation/shares/{share_id}`'s 200 body. It never carries the write
+    token."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="the share's id, 8 letters and digits")
+    kind: Literal["card", "canvas", "search", "conversation"] = Field(
+        description="what the share publishes"
+    )
+    mode: Literal["live", "snapshot"] = Field(
+        description="live follows new data; snapshot keeps the versions its cards drew when it "
+        "was made"
+    )
+    title: str | None = Field(description="the share's title, null when it has none")
+    revision: int = Field(description="the share's latest revision")
+    slots: list[ShareSlotModel] = Field(
+        description="every slot the share has had, in order. Search and conversation shares "
+        "have none"
+    )
+    payload: object = Field(
+        description="website-owned JSON stored with the share as given, null when there is none"
+    )
+    created_at: str = Field(description="when the share was made, as an ISO 8601 timestamp")
 
 
 # -- meta (presentation_api.doors.meta) -------------------------------------

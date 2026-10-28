@@ -1,7 +1,8 @@
 """Write tokens grant revise. A `cmp_` or `cps_` id grants only read.
 
 A create mints a `cmw_` token for the new component, and `composition_id="new"` mints a
-`cpw_` token for the new composition. Each token is its prefix plus
+`cpw_` token for the new composition. A share's create mints a `shw_` token, which grants
+replacing and deleting that share (`presentation_api.doors.shares`). Each token is its prefix plus
 `secrets.token_urlsafe(16)`, 128 random bits. The store keeps only the unsalted SHA-256
 digest, and the reply returns the token once.
 
@@ -23,6 +24,7 @@ import rfc8785
 __all__ = [
     "COMPONENT_WRITE_TOKEN_PREFIX",
     "COMPOSITION_WRITE_TOKEN_PREFIX",
+    "SHARE_WRITE_TOKEN_PREFIX",
     "CreateRequestInvalid",
     "create_request_digest",
     "mint_write_token",
@@ -33,6 +35,7 @@ __all__ = [
 
 COMPONENT_WRITE_TOKEN_PREFIX = "cmw_"
 COMPOSITION_WRITE_TOKEN_PREFIX = "cpw_"
+SHARE_WRITE_TOKEN_PREFIX = "shw_"
 
 # `secrets.token_urlsafe(16)` returns 22 characters from the url-safe base64 alphabet.
 _CLIENT_WRITE_TOKEN = re.compile(rf"{COMPONENT_WRITE_TOKEN_PREFIX}[A-Za-z0-9_-]{{22}}")

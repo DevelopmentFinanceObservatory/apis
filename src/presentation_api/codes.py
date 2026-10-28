@@ -29,6 +29,12 @@ refresh. Transient frame, release, service, and timeout failures retry after a d
 `internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
 release manifest.
 
+The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` beside these:
+`write_token_required` and `write_token_invalid` at 403 and `share_not_replaceable` at 409, none
+retryable, and the platform's `allowance_exhausted` at 429, retryable after `Retry-After`. The
+component catalogue's release manifest lists no share code, so they stay out of
+`CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface serves.
+
 Problem details expose fixed extension fields and no generic extra-data slot. Legal-value lists
 use `alternatives`, structured facet failures use `issues`, and details such as `minimal_intent`,
 constraint fixes, and limit names appear in `detail`.
@@ -42,7 +48,10 @@ __all__ = [
     "CODE_CATALOG",
     "CODE_RETRY_MODE",
     "PRESENTATION_CODE_CATALOGUE",
+    "PRESENTATION_SERVED_CODES",
     "PRESENTATION_SERVED_PLATFORM_CODES",
+    "SHARE_CODE_CATALOGUE",
+    "SHARE_SERVED_PLATFORM_CODES",
     "replay_retryable",
     "retryable_for",
 ]
@@ -89,9 +98,27 @@ PRESENTATION_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     ),
 }
 
+# The shares door's own codes.
+SHARE_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
+    "write_token_required": (
+        "Write Token Required",
+        "A replace or delete of a share carries no x-dfo-write-token.",
+    ),
+    "write_token_invalid": (
+        "Write Token Invalid",
+        "The x-dfo-write-token sent is not the share's, or the share was made without one, "
+        "which no token can change.",
+    ),
+    "share_not_replaceable": (
+        "Share Not Replaceable",
+        "The share is a snapshot, whose cards are fixed for good. Only a live share takes new "
+        "cards.",
+    ),
+}
+
 # This catalogue adds presentation codes to the shared platform catalogue.
 CODE_CATALOG: dict[str, tuple[str, str]] = merge_catalogues(
-    PLATFORM_CODE_CATALOGUE, PRESENTATION_CODE_CATALOGUE
+    PLATFORM_CODE_CATALOGUE, PRESENTATION_CODE_CATALOGUE, SHARE_CODE_CATALOGUE
 )
 
 # Headline retry mode per served code, mirrored in the baked release manifest.
@@ -127,6 +154,16 @@ PRESENTATION_SERVED_PLATFORM_CODES: frozenset[str] = frozenset(
     }
 )
 
+# Platform codes the shares door renders and the component catalogue does not.
+SHARE_SERVED_PLATFORM_CODES: frozenset[str] = frozenset({"allowance_exhausted"})
+
+PRESENTATION_SERVED_CODES: frozenset[str] = (
+    frozenset(PRESENTATION_CODE_CATALOGUE)
+    | PRESENTATION_SERVED_PLATFORM_CODES
+    | frozenset(SHARE_CODE_CATALOGUE)
+    | SHARE_SERVED_PLATFORM_CODES
+)
+
 _expected_codes = set(PRESENTATION_CODE_CATALOGUE) | (
     PRESENTATION_SERVED_PLATFORM_CODES - {"unsupported_schema_version"}
 )
@@ -139,10 +176,11 @@ if set(CODE_RETRY_MODE) != _expected_codes:
         "needs a matching entry on the other"
     )
 
-if not frozenset(PLATFORM_CODE_CATALOGUE) >= PRESENTATION_SERVED_PLATFORM_CODES:
+_served_platform_codes = PRESENTATION_SERVED_PLATFORM_CODES | SHARE_SERVED_PLATFORM_CODES
+if not frozenset(PLATFORM_CODE_CATALOGUE) >= _served_platform_codes:
     raise AssertionError(
-        f"PRESENTATION_SERVED_PLATFORM_CODES names code(s) "
-        f"{sorted(PRESENTATION_SERVED_PLATFORM_CODES - frozenset(PLATFORM_CODE_CATALOGUE))} "
+        f"the served platform codes name code(s) "
+        f"{sorted(_served_platform_codes - frozenset(PLATFORM_CODE_CATALOGUE))} "
         "absent from PLATFORM_CODE_CATALOGUE"
     )
 

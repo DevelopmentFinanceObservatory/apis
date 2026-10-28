@@ -61,8 +61,7 @@ _SERVED: dict[str, frozenset[str]] = {
     | frozenset(materialise_bundle.BUNDLE_CODE_CATALOGUE)
     | frozenset(materialise_reshape.RESHAPE_CODE_CATALOGUE)
     | search_observations.PREVIEW_OMISSION_REASONS,
-    "presentation": frozenset(presentation_codes.PRESENTATION_CODE_CATALOGUE)
-    | presentation_codes.PRESENTATION_SERVED_PLATFORM_CODES,
+    "presentation": presentation_codes.PRESENTATION_SERVED_CODES,
     "graph": frozenset(graph_codes.GRAPH_CODE_CATALOGUE) | graph_codes.SHARED_PLATFORM_CODES,
     "skills": frozenset(skills_codes.SKILLS_CODE_CATALOGUE)
     | frozenset(skills_codes.SKILLS_WARNING_CATALOGUE)

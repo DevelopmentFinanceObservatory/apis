@@ -1,20 +1,40 @@
-"""Mint `cmp_` and `cps_` ULIDs without a dependency. Each ID encodes a 48-bit millisecond
-timestamp and 80 random bits as 26 Crockford Base32 characters. The big-endian timestamp keeps
-lexical order chronological. Randomness removes the need for monotonic increments. Primary keys
-guard against collisions.
+"""Mint `cmp_` and `cps_` ULIDs without a dependency, and 8-character share ids.
+
+Each ULID encodes a 48-bit millisecond timestamp and 80 random bits as 26 Crockford Base32
+characters. The big-endian timestamp keeps lexical order chronological. Randomness removes the
+need for monotonic increments. Primary keys guard against collisions.
+
+A share id is 8 characters drawn uniformly from the case-sensitive `[A-Za-z0-9]` alphabet, about
+47.6 bits, the shape of the website's `/s/<id>` links, so imported website shares keep their ids
+in the same space. The store checks each minted id against every stored one
+(`presentation_store.shares`).
 """
 
 from __future__ import annotations
 
 import os
+import re
+import secrets
+import string
 import time
 
-__all__ = ["mint_component_id", "mint_composition_id", "new_ulid"]
+__all__ = [
+    "SHARE_ID_PATTERN",
+    "mint_component_id",
+    "mint_composition_id",
+    "mint_share_id",
+    "new_ulid",
+]
 
 _CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _TIMESTAMP_BYTES = 6
 _RANDOMNESS_BYTES = 10
 _ULID_CHARS = 26  # ceil(128 bits / 5 bits-per-char)
+
+_SHARE_ID_ALPHABET = string.ascii_letters + string.digits
+_SHARE_ID_LENGTH = 8
+SHARE_ID_PATTERN = re.compile(rf"[A-Za-z0-9]{{{_SHARE_ID_LENGTH}}}")
+"""A share id, minted here or kept from an imported website share."""
 
 
 def _encode_crockford32(data: bytes) -> str:
@@ -42,3 +62,7 @@ def mint_component_id() -> str:
 
 def mint_composition_id() -> str:
     return f"cps_{new_ulid()}"
+
+
+def mint_share_id() -> str:
+    return "".join(secrets.choice(_SHARE_ID_ALPHABET) for _ in range(_SHARE_ID_LENGTH))

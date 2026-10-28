@@ -8,7 +8,7 @@ The surface mounts on the shared FastAPI platform at `/api/presentation` when en
 
 ## Architecture and Doors
 
-The surface exposes four doors through a single router, error classifier, and lifespan context.
+The surface exposes five doors through a single router, error classifier, and lifespan context.
 
 ```
 /api/presentation
@@ -16,7 +16,8 @@ The surface exposes four doors through a single router, error classifier, and li
 ├── /capabilities                         (Meta door)
 ├── /release                              (Release door)
 ├── /frames/{spec_id}/{content_version}   (Frames door)
-└── /components[/{component_id}]          (Components door)
+├── /components[/{component_id}]          (Components door)
+└── /shares[/{share_id}]                  (Shares door)
 ```
 
 ### 1. Meta Door
@@ -67,6 +68,38 @@ Handles creation, revision, and readback of visual components and layout composi
 | `GET`   | `/api/presentation/components/{component_id}/revisions/{revision}/data[?format&bundle]` | Downloads the frame rows behind every value one revision shows, as CSV, XLSX, or Parquet, in a zip bundle by default (`README.md`, the data file, `data/codes.csv`, `SOURCES.md`, `CITATION.cff`, `datapackage.json`). The download is named `dfo_<card-title-slug>_<YYYY-MM-DD>_<format>_r<revision>.zip`. |
 | `POST`  | `/api/presentation/components/{component_id}/revisions/{revision}/render` | Draws one stored revision on another frame for a live share. Live-refresh principal only. |
 | `GET`   | `/api/presentation/components/{component_id}/revisions/{revision}/render/data?spec_id&content_version[&format&bundle]` | Downloads the rows behind that drawing. Live-refresh principal only. |
+
+### 5. Shares Door
+
+Publishes cards under one public `/s/<id>` id (`presentation_api.doors.shares`, records in `presentation_store.shares`). Every route serves the code registry endpoint `presentation.shares`.
+
+| Method   | Endpoint                               | Description |
+| :------- | :------------------------------------- | :---------- |
+| `POST`   | `/api/presentation/shares`             | Body `{cards: [{component_id, revision}], latest, title?}`, at most 24 cards. `latest` has no default: `true` makes a live share, which follows new data, and `false` a snapshot, which keeps the versions its cards draw now. Answers 201 `{id, url, embed_url, data_urls, write_token, revision, latest}`. |
+| `GET`    | `/api/presentation/shares/{share_id}`  | Public, with `Access-Control-Allow-Origin: *`: `{id, kind, mode, title, revision, slots, payload, created_at}`, each slot `{slot, card, data_url}`. Never the write token. |
+| `PUT`    | `/api/presentation/shares/{share_id}`  | Body `{cards}`. Writes a live share's next revision. Needs `x-dfo-write-token`. Answers 200 `{id, url, embed_url, data_urls, revision, latest}`. |
+| `DELETE` | `/api/presentation/shares/{share_id}`  | Takes the share down, 204. Needs `x-dfo-write-token`. |
+
+A share id is 8 characters from the case-sensitive `[A-Za-z0-9]` alphabet, the shape of the website's `/s/<id>` links, so shares imported from the website keep their ids. `url` is `<DFO_PUBLIC_SITE_URL>/s/<id>`, `embed_url` is `/embed/<id>` under the same origin, and slot n's data URL is `/api/v1/presentation/shares/<id>/slots/<n>/data` under it.
+
+Slots are numbered from 1. A create puts the nth card in slot n. A replace puts its nth card in slot n and leaves every further slot the share has had empty (`card: null`), so each slot keeps its embed and data URLs and a later replacement with more cards fills them again. A snapshot cannot be replaced. Each slot records the frame its card revision draws.
+
+A create names its caller with `dfo_platform.caller.resolve_caller` and spends one unit of the caller's daily `share` allowance (`DATASETS_SHARE_DAILY_ALLOWANCE`, default 10, `datasets_api.allowance`) after it has read every card and before it pins or writes anything, so a malformed request or an unknown card spends nothing and a unit stays spent when the pin or the write fails. Every share pins the frames its cards draw when it first includes them (`presentation_store.pin_card_frames`): a create pins every card, live or snapshot, and a replace pins the card revisions the share did not show before. Replace and delete spend no allowance.
+
+The create returns a `shw_` write token once, and the store keeps its SHA-256 digest. A replace or delete checks the token before the share's mode, so a caller without the token learns nothing more about the share. A share stored without a token, as a guest's share imports from the website, refuses every token.
+
+| Error Code              | HTTP Status | When |
+| :---------------------- | :---------- | :--- |
+| `write_token_required`  | 403         | A replace or delete sent no `x-dfo-write-token`. |
+| `write_token_invalid`   | 403         | The token sent is not the share's, or the share has none. |
+| `share_not_replaceable` | 409         | A replace names a snapshot. |
+| `allowance_exhausted`   | 429         | The caller has spent today's share allowance. Retryable after `Retry-After`, the next UTC midnight. |
+| `not_found`             | 404         | No share at the id, or it was taken down; on a create or replace, a card or revision the store lacks. |
+| `request_invalid`       | 400         | A malformed body (`latest` missing or not a boolean, no cards, more than 24, an unknown field) or id, or a website request whose `x-dfo-caller` is missing or malformed. |
+| `frame_unavailable`     | 404 / 503   | A card's frame cannot be pinned, as on the component routes. |
+| `internal_error`        | 500         | The caller cannot be named: `DFO_CALLER_HMAC_KEY` is unset or the trusted `X-Forwarded-For` entry is missing. |
+
+The shares door mounts when the surface builds its stores live or is given a `share_store`. A surface composed over an injected `revision_store` without one serves no share route.
 
 ---
 

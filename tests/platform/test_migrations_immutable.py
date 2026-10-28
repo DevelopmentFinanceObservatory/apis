@@ -120,6 +120,7 @@ _PRESENTATION_STORE = {
     "0011_revision_frame_rendering.sql": (
         "956cc50b9e0285883089f082f663aa37b311974d0ac1b46cb1ee51e78a0889f0"
     ),
+    "0012_share.sql": "af08f2b8183f5347fca21e7b4392adfd88161a854587c40cb7eef3fc6b134a51",
 }
 
 

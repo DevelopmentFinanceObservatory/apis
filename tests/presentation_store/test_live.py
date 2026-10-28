@@ -15,12 +15,19 @@ import pytest
 from assembler.catalogue import BakedReleaseRegistry
 from assembler.fakes import FakeFrameStore
 from assembler.pipeline import write_component
-from assembler.ports import DraftNotFound, PriorCreate, RevisionRecord, WriteTokenInUse
+from assembler.ports import (
+    DraftNotFound,
+    FrameRef,
+    PriorCreate,
+    RevisionRecord,
+    WriteTokenInUse,
+)
 from assembler.testing import malaria_ethiopia_resolved_frame
 from assembler.write_token import write_token_digest
 from dataset_store import ConnectionPool, LiveDatasetStore, connect
 from dataset_store.migrate import apply_pending
 from presentation_store.migrate import MIGRATIONS_DIR
+from presentation_store.shares import LiveShareStore, ShareCard, ShareNotFound
 from presentation_store.store import LivePresentationStore
 from presentation_store.store_errors import GeneratedIdCollision
 
@@ -562,3 +569,55 @@ def test_two_racing_creates_with_one_client_token_leave_one_component(
     assert second_reply.component_id == first_reply.component_id
     assert (second_reply.revision, second_reply.write_token) == (1, token)
     assert _components_holding(live_store, token=token) == [first_reply.component_id]
+
+
+def _share_card(component_id: str) -> ShareCard:
+    return ShareCard(
+        component_id=component_id,
+        revision=1,
+        frame=FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "b" * 32),
+    )
+
+
+def test_a_share_keeps_its_slots_across_replacements_and_reads_absent_once_deleted(live_store):
+    _apply()
+    shares = LiveShareStore(store=live_store)
+    digest = secrets.token_bytes(32)
+
+    created = shares.create_share(
+        kind="card",
+        mode="live",
+        title="Live share",
+        write_token_sha256=digest,
+        cards=[_share_card("cmp_a"), ShareCard(component_id="cmp_n", revision=2, frame=None)],
+    )
+    replaced = shares.replace_share(share_id=created.id, cards=[_share_card("cmp_c")])
+
+    assert shares.read_share(share_id=created.id) == replaced
+    assert replaced.revision == 2
+    assert replaced.write_token_sha256 == digest
+    assert [(slot.slot, slot.card) for slot in replaced.slots] == [
+        (1, _share_card("cmp_c")),
+        (2, None),
+    ]
+    assert created.slots[1].card == ShareCard(component_id="cmp_n", revision=2, frame=None)
+
+    shares.delete_share(share_id=created.id)
+    with pytest.raises(ShareNotFound):
+        shares.read_share(share_id=created.id)
+
+
+def test_a_share_mint_moves_past_an_id_already_stored(live_store):
+    _apply()
+    taken = LiveShareStore(store=live_store).create_share(
+        kind="card", mode="snapshot", title=None, write_token_sha256=None, cards=[]
+    )
+    minted = iter([taken.id, "Zq" + secrets.token_hex(3)])
+    shares = LiveShareStore(store=live_store, mint_id=lambda: next(minted))
+
+    created = shares.create_share(
+        kind="card", mode="snapshot", title=None, write_token_sha256=None, cards=[]
+    )
+
+    assert created.id != taken.id
+    assert shares.read_share(share_id=taken.id).write_token_sha256 is None

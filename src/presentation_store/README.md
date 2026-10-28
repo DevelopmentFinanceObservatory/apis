@@ -41,6 +41,7 @@ Each ULID contains a 48-bit big-endian millisecond timestamp and 80 bits of cryp
 
 - Component IDs (`mint_component_id`): `cmp_` prefix (e.g. `cmp_01ARYZ6S41YYYYYYYYYYYYYYYY`).
 - Composition IDs (`mint_composition_id`): `cps_` prefix (e.g. `cps_01ARYZ6S41ZZZZZZZZZZZZZZZZ`).
+- Share IDs (`mint_share_id`): 8 characters drawn uniformly from the case-sensitive `[A-Za-z0-9]` alphabet with `secrets.choice` (e.g. `k3Qx8vTa`), the shape of the website's `/s/<id>` links. Shares imported from the website keep their ids in the same space, and `presentation.share`'s primary key is the collision check (see Shares below).
 
 An id grants read of its draft. The 80 random bits keep ids from being guessed or enumerated. An id that names no row raises `assembler.ports.DraftNotFound`.
 
@@ -61,6 +62,10 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 | `presentation.composition`          | `composition_id`             | Container tracking composition identity, creation timestamp, and the nullable `write_token_sha256` digest.                                                |
 | `presentation.composition_revision` | `(composition_id, revision)` | Append-only revision log. Stores `blocks` JSONB (ordered array of `{"component_id", "revision"}`) and `actor`.                                            |
 | `presentation.component`            | `component_id`               | Component registry row. Holds optional `composition_id` foreign key assigned at creation, the nullable unique `write_token_sha256` digest, and the nullable `create_request_sha256` digest. |
+| `presentation.share`                | `id`                         | One row per share: `kind` (`card`, `canvas`, `search`, `conversation`), `mode` (`live`, `snapshot`), `title`, the nullable `write_token_sha256` digest, `owner` (left NULL), website-owned `payload` JSONB, `created_at`, and `deleted_at` once taken down. |
+| `presentation.share_revision`       | `(share_id, revision)`       | Append-only revision log of a share, from 1, with `created_at`. |
+| `presentation.share_slot`           | `(share_id, revision, slot)` | Every slot of one share revision, from 1: the card revision it shows (`component_id`, `component_revision`, both NULL for an empty slot) and the frame that revision draws (`frame_spec_id`, `frame_content_version`, NULL for a card with none or an imported slot whose frame was not recorded). |
+| `presentation.served_frame`         | `(share_id, slot, component_id, component_revision, frame_spec_id, frame_content_version)` | Every frame a share's slot served, with its nullable `rendering` JSONB and `first_served_at`. |
 | `presentation.component_revision`   | `(component_id, revision)`   | Append-only component state. Stores `stored_intent` JSONB, `resolved_payload` JSONB, `series_coordinates` JSONB, `catalog_version`, `schema_version`, the minting release's `formatter_profile` JSONB, and the nullable `frame_rendering` JSONB of the frame the revision draws. |
 
 ### Migration Sequence
@@ -76,6 +81,7 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 - `0009_drop_draft_lease.sql`: Drops the `draft_lease` table and its index.
 - `0010_revision_formatter_profile.sql`: Adds the `formatter_profile` JSONB column to `component_revision`, fills it with the 2026.8.0 profile on rows stamped `2026.8.0`, and makes it NOT NULL with that profile as its default. Any row stamped with another release fails the migration.
 - `0011_revision_frame_rendering.sql`: Adds the nullable `frame_rendering` JSONB column to `component_revision`, with no backfill.
+- `0012_share.sql`: Creates the `share`, `share_revision`, `share_slot`, and `served_frame` tables.
 
 ### Running Migrations
 
@@ -117,6 +123,17 @@ Write operations follow a set sequence:
 5. Any other duplicate freshly generated component or composition ID (`SQLSTATE 23505`) raises `GeneratedIdCollision`. Retrying creates a new ID.
 6. Inserting into `component_revision` enforces uniqueness on `(component_id, revision)`. Duplicate key violations (`SQLSTATE 23505`) map to `assembler.ports.EditConflict`.
 7. When attaching to a composition, the store updates `blocks` for existing components or appends new entries to `presentation.composition_revision`.
+
+### Shares
+
+`LiveShareStore` (`presentation_store.shares`) implements `ShareStore` over the share tables. Each method runs in one transaction.
+
+- `create_share(kind, mode, title, write_token_sha256, cards)` inserts the share under a minted id with `INSERT ... ON CONFLICT (id) DO NOTHING RETURNING id`, minting again while the id is taken, by a share made here or one imported from the website, up to five times before `GeneratedIdCollision(subject_kind="share")`. It then writes revision 1 with slot n holding the nth `ShareCard`.
+- `replace_share(share_id, cards)` locks the share row (`FOR UPDATE`) and writes the next revision with `max(len(cards), slots of the latest revision)` slots, slot n holding the nth card and every further slot empty.
+- `delete_share(share_id)` sets `deleted_at`.
+- `read_share(share_id)` returns the `ShareRecord` at its latest revision, with its slots and stored token digest.
+
+A share id with no row, or a taken-down one, raises `ShareNotFound` from every method. The store checks no token: `presentation_api.doors.shares` compares the presented token with `ShareRecord.write_token_sha256`. Driver failures become `PresentationStoreUnavailable`.
 
 ### Frame Store Operations
 
@@ -180,7 +197,8 @@ Store operations map driver and infrastructure exceptions into structured domain
 Exception
 ├── PresentationStoreError (Base)
 │   └── PresentationStoreConfigError      # Configuration parsing and environment errors
-├── GeneratedIdCollision                  # Retryable fresh component/composition ID collision
+├── GeneratedIdCollision                  # Retryable fresh component, composition, or share ID collision
+├── ShareNotFound                         # No share at the id, or it was taken down
 └── PresentationStoreUnavailable          # Database or connection failures during transactions
 ```
 
@@ -202,6 +220,6 @@ Domain mappings translate PostgreSQL errors into `assembler.ports` exceptions:
 
 Unit tests use domain doubles defined in `tests/presentation_store/conftest.py`:
 
-- `FakePresentationStore` and `FakeTransaction`: In-memory doubles implementing the SQL access patterns of `LivePresentationStore`.
+- `FakePresentationStore` and `FakeTransaction`: In-memory doubles implementing the SQL access patterns of `LivePresentationStore` and `LiveShareStore`.
 - `FakePresentationState`: Provides state snapshot and rollback methods to test transaction aborts and failure isolation.
 - `Clock`: `LiveFrameStore` accepts an injectable `Callable[[], datetime]` to test artifact servability deterministically.

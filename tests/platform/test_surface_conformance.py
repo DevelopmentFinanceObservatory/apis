@@ -23,6 +23,9 @@ from dfo_platform.problem import ProblemDetails, ProblemSpec
 from presentation_api.codes import (
     PRESENTATION_SERVED_PLATFORM_CODES as _PRESENTATION_SHARED_PLATFORM_CODES,
 )
+from presentation_api.codes import (
+    SHARE_SERVED_PLATFORM_CODES as _SHARE_SHARED_PLATFORM_CODES,
+)
 from search.engine.codes import SHARED_PLATFORM_CODES as _SEARCH_SHARED_PLATFORM_CODES
 from skills_api.codes import SHARED_PLATFORM_CODES as _SKILLS_SHARED_PLATFORM_CODES
 
@@ -34,7 +37,7 @@ _SURFACE_IDS = [s.name for s in _SURFACES]
 _DECLARED_SHARED_PLATFORM_CODES: dict[str, frozenset[str]] = {
     "search": _SEARCH_SHARED_PLATFORM_CODES,
     "datasets": _DATASETS_SHARED_PLATFORM_CODES,
-    "presentation": frozenset(_PRESENTATION_SHARED_PLATFORM_CODES),
+    "presentation": _PRESENTATION_SHARED_PLATFORM_CODES | _SHARE_SHARED_PLATFORM_CODES,
     "skills": _SKILLS_SHARED_PLATFORM_CODES,
 }
 

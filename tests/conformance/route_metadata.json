@@ -738,6 +738,42 @@
     "surface": "presentation"
   },
   {
+    "has_description": true,
+    "method": "POST",
+    "name": "create_share",
+    "operation_id": "presentation_create_share",
+    "path": "/api/presentation/shares",
+    "summary": "Create Share",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "DELETE",
+    "name": "delete_share",
+    "operation_id": "presentation_delete_share",
+    "path": "/api/presentation/shares/{share_id}",
+    "summary": "Delete Share",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_share",
+    "operation_id": "presentation_read_share",
+    "path": "/api/presentation/shares/{share_id}",
+    "summary": "Read Share",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "PUT",
+    "name": "replace_share",
+    "operation_id": "presentation_replace_share",
+    "path": "/api/presentation/shares/{share_id}",
+    "summary": "Replace Share",
+    "surface": "presentation"
+  },
+  {
     "has_description": false,
     "method": "GET",
     "name": "get_capabilities",

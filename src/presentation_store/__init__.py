@@ -1,4 +1,4 @@
-"""Postgres persistence for assembler components, compositions, and frame pins.
+"""Postgres persistence for assembler components, compositions, frame pins, and shares.
 Importing reads no environment variables. Settings load through the provider or migration
 entrypoint.
 """
@@ -15,6 +15,14 @@ from presentation_store.frame_store import (
     frame_reads_bounded_by,
 )
 from presentation_store.provider import close_shared_pool, shared_pool
+from presentation_store.shares import (
+    LiveShareStore,
+    ShareCard,
+    ShareNotFound,
+    ShareRecord,
+    ShareSlot,
+    ShareStore,
+)
 from presentation_store.store import LivePresentationStore
 from presentation_store.store_errors import GeneratedIdCollision, PresentationStoreUnavailable
 
@@ -24,10 +32,16 @@ __all__ = [
     "GeneratedIdCollision",
     "LiveFrameStore",
     "LivePresentationStore",
+    "LiveShareStore",
     "PresentationStoreConfigError",
     "PresentationStoreError",
     "PresentationStoreSettings",
     "PresentationStoreUnavailable",
+    "ShareCard",
+    "ShareNotFound",
+    "ShareRecord",
+    "ShareSlot",
+    "ShareStore",
     "close_shared_pool",
     "frame_reads_bounded_by",
     "pin_card_frames",

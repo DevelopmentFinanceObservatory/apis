@@ -201,6 +201,7 @@ def test_every_object_schema_names_its_properties(schema: dict[str, Any]):
 _HANDLER_VERBS = frozenset(
     {
         "create",
+        "delete",
         "get",
         "list",
         "mint",
@@ -211,6 +212,7 @@ _HANDLER_VERBS = frozenset(
         "refresh",
         "register",
         "render",
+        "replace",
         "resolve",
         "revise",
     }
