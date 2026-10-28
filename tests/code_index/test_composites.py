@@ -14,6 +14,7 @@ from code_index.composites import (
     CompositeNotServable,
     CompositeProvenanceRead,
     component_identities,
+    component_of,
 )
 from code_index.declarations import COMPOSITES
 from code_index.loader import parse_index
@@ -183,6 +184,26 @@ def test_dac2a_stacks_its_total_oda_on_its_own_gross_imputed_line_on_either_basi
         ],
     }
     assert not imputed.recipe.zero_absent
+
+
+@pytest.mark.parametrize(
+    ("dcid", "role"),
+    [
+        pytest.param(
+            "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal", "bilateral"
+        ),
+        pytest.param("Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal", "bilateral"),
+        pytest.param(
+            "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal", "imputed"
+        ),
+    ],
+)
+def test_each_dac2a_row_belongs_to_the_one_component_binding_its_aid_type(dcid: str, role: str):
+    """Both components of DAC2a's inclusive composite read DAC2a, so the aid type each binds
+    is what tells a row's component."""
+    (row,) = (row for row in _INDEX.statvars if row.dcid == dcid)
+
+    assert component_of(_DAC2A_STACKED, row) == role
 
 
 def test_an_identity_binding_no_composite_has_no_components():

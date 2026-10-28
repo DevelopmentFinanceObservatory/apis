@@ -222,6 +222,9 @@ def containing_totals(axes: Collection[RoleAxis]) -> tuple[str, ...]:
     )
 
 
+_FLOW_AXES: tuple[RoleAxis, ...] = ("origin", "destination")
+
+
 def with_containing_total(identity: BaseIdentity, *, coverage: CoverageIndex) -> BaseIdentity:
     """`identity` with the containing total of its dataset (`containing_reading`) bound on
     each flow side the identity leaves open, binding no entity there and not asking for every
@@ -241,10 +244,12 @@ def with_containing_total(identity: BaseIdentity, *, coverage: CoverageIndex) ->
         for role, dcids in identity.entities.items()
         if (axis := role_key_axis(role)) is not None
     }
+    unbound = {axis for axis in _FLOW_AXES if axis not in bound and axis not in open_roles}
     totals = {
-        axis: held.total
-        for (held_dataset, axis), held in CONTAINING_TOTALS.items()
-        if held_dataset == dataset and axis not in bound and axis not in open_roles
+        reading.axis: dcid
+        for dcid in containing_totals(unbound)
+        if (reading := containing_reading(dcid, datasets=(dataset,))) is not None
+        and reading.axis in unbound
     }
     if not totals:
         return identity

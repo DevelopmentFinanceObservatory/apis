@@ -21,6 +21,7 @@ _GRANT_EQUIVALENT = "measure_basis:grant_equivalent"
 _COMMITMENTS = "measure_basis:commitments"
 _BILATERAL = "provider:bilateral"
 _INCLUSIVE = "provider:inclusive"
+_MULTILATERAL = "provider:multilateral"
 
 
 @pytest.mark.parametrize(
@@ -127,6 +128,17 @@ _INCLUSIVE = "provider:inclusive"
         ),
         ("ODA to Kenya including multilaterals", [(_INCLUSIVE, "including multilaterals")], False),
         ("ODA as a share of gross national income", [], False),
+        # Words naming a donor's core contributions to the multilaterals state DAC1's
+        # multilateral ODA; the multilaterals as donors name a kind of provider.
+        ("US multilateral ODA in 2022", [(_MULTILATERAL, "multilateral ODA")], False),
+        (
+            "what share of US ODA goes to multilaterals",
+            [(_MULTILATERAL, "to multilaterals")],
+            False,
+        ),
+        ("aid from multilaterals to Kenya", [], False),
+        ("ODA to multilateral development banks", [], False),
+        ("bilateral and multilateral ODA from the UK", [], False),
         ("ODA net of debt relief", [], False),
     ],
 )
@@ -260,3 +272,52 @@ def test_several_parts_read_their_own_text_and_never_the_message():
         [_INCLUSIVE],
     ]
     assert [i.total for i in intakes] == [False, False]
+
+
+@pytest.mark.parametrize(
+    ("message", "part_texts", "stated"),
+    [
+        pytest.param(
+            "what share of US ODA goes to multilaterals",
+            ["US ODA", "US ODA to multilaterals"],
+            [[], [_MULTILATERAL]],
+            id="share-to-multilaterals",
+        ),
+        pytest.param(
+            "US bilateral plus multilateral ODA",
+            ["US bilateral ODA", "US multilateral ODA"],
+            [[_BILATERAL], [_MULTILATERAL]],
+            id="bilateral-plus-multilateral",
+        ),
+        pytest.param(
+            "aid from multilaterals to Kenya",
+            ["aid from multilaterals to Kenya"],
+            [[]],
+            id="multilaterals-as-donors",
+        ),
+    ],
+)
+def test_each_part_states_the_provider_row_its_own_words_pick(message, part_texts, stated):
+    """A part asking for what a donor pays the multilaterals states DAC1's multilateral ODA,
+    and a sibling part asking for another row states its own, so the two keep apart. The
+    multilaterals named as donors state no provider."""
+    intakes = part_scope_intakes(message=message, part_texts=part_texts)
+
+    assert [[e.option_id for e in i.entries if e.axis == "provider"] for i in intakes] == stated
+
+
+@pytest.mark.parametrize(
+    ("text", "sums"),
+    [
+        pytest.param("US bilateral plus multilateral ODA", True, id="bilateral-plus"),
+        pytest.param("bilateral plus imputed multilateral aid", False, id="imputed"),
+        pytest.param("health ODA to Kenya including multilateral", False, id="including"),
+        pytest.param("aid from France not including multilateral", False, id="negated"),
+    ],
+)
+def test_words_summing_both_lines_with_no_imputed_share_are_marked(text, sums):
+    """Only "bilateral plus multilateral", naming no imputed share, leaves the sum to the
+    part's dataset (`ScopeIntake.sums_providers`); each still states its entry."""
+    (intake,) = part_scope_intakes(message=None, part_texts=[text])
+
+    assert intake.sums_providers is sums

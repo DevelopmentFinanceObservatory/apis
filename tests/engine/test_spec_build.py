@@ -433,10 +433,10 @@ def test_the_concept_of_a_dac1_provider_scope_names_the_total_it_scopes(
     since the provider options state the scope; the shape label keeps each code's own."""
     slots = [_aid_type_slot(code)]
 
-    assert _shared_qualifiers([], slots, None) == [shape_qualifier]
-    assert _shared_qualifiers([], slots, None, concept_of=get_index()) == [
-        "official development assistance"
-    ]
+    assert _shared_qualifiers([], slots, None, index=get_index()) == (
+        [shape_qualifier],
+        ["official development assistance"],
+    )
 
 
 class TestConstraintProperties:

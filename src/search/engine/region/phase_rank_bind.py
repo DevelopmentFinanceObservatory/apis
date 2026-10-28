@@ -1124,10 +1124,12 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
     that a table that is not opt-in publishes measures what the opt-in shape does: ONE's
     imputed multilateral sectors and DAC2a's imputed multilateral ODA line are both
     attributed amounts of financial flows. The opt-in shape stays when the question names
-    a code (`ResolveState.pinned_part_matches`) on one of its slots that none of those
-    other shapes holds and that its tables do not hold fixed on every row
+    a code (`ResolveState.pinned_part_matches`), or asks an operation over `category`
+    of (`operation_slot_phrases`), one of its slots that none of those other shapes
+    holds and that its tables do not hold fixed on every row
     (`DatasetDeclaration.invariants`): "imputed multilateral aid to health" names a
-    sector only ONE's table breaks down, while "imputed multilateral ODA" names DAC2a's
+    sector and "which sectors get the most imputed multilateral ODA" ranks the sectors,
+    which only ONE's table breaks down, while "imputed multilateral ODA" names DAC2a's
     aid type and ONE's fixed flow type, so DAC2a's own line answers it. A part naming a
     source keeps every shape its scope allows. An excluding part keeps the rule as it
     stands without the exclusion, so excluding a table opens no opt-in one, as
@@ -1156,6 +1158,8 @@ def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -
         }
         offered = frozenset().union(*(shape_vocabulary(other) for other in others))
         breakdown = shape_vocabulary(shape) - offered - fixed
+        if not breakdown.isdisjoint(operation_slot_phrases(state.operations, shape)):
+            return False
         return not any(
             match.code_system in breakdown for match in for_shape(state.pinned_part_matches, shape)
         )

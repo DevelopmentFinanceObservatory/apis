@@ -1661,31 +1661,51 @@ def _imputed_lines_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+_RANK_SECTORS = ExtractedOperation(
+    verb="rank", variable=0, phrase="which sectors get the most", over="category"
+)
+
+
 @pytest.mark.parametrize(
-    ("variable", "members", "source"),
+    ("variable", "members", "operations", "source"),
     [
-        pytest.param("imputed multilateral ODA", _IMPUTED_LINES, _DAC2A, id="imputed-first"),
-        pytest.param("imputed multilateral ODA", _IMPUTED_LINES[::-1], _DAC2A, id="dac2a-first"),
+        pytest.param("imputed multilateral ODA", _IMPUTED_LINES, (), _DAC2A, id="imputed-first"),
+        pytest.param(
+            "imputed multilateral ODA", _IMPUTED_LINES[::-1], (), _DAC2A, id="dac2a-first"
+        ),
         pytest.param(
             "imputed multilateral aid to education",
             _IMPUTED_LINES,
+            (),
             IMPUTED_PROVENANCE,
             id="sector",
+        ),
+        pytest.param(
+            "imputed multilateral ODA",
+            _IMPUTED_LINES,
+            (_RANK_SECTORS,),
+            IMPUTED_PROVENANCE,
+            id="sector-breakdown",
         ),
     ],
 )
 def test_an_unnamed_imputed_question_answers_from_dac2a_unless_it_asks_a_sector(
-    monkeypatch: pytest.MonkeyPatch, variable: str, members: tuple[str, ...], source: str
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    members: tuple[str, ...],
+    operations: tuple[ExtractedOperation, ...],
+    source: str,
 ):
     """The scripted bind elects the first shape it is offered. A question naming no table
     answers from DAC2a's own imputed line, whichever line recall finds first, so the bind
-    is offered no imputed table. A question naming a sector, a breakdown only the
-    imputed table holds, answers from it."""
+    is offered no imputed table. A question naming a sector, or ranking the sectors, a
+    breakdown only the imputed table holds, answers from it."""
     _imputed_lines_coverage(monkeypatch)
-    llm = _ScriptedLLM(variable)
+    llm = _ScriptedLLM(variable, operations=operations)
+    prefix = f"{operations[0].phrase} " if operations else ""
 
     response = _resolve_scripted(
-        f"{variable} to Kenya", llm, graph=_graph(variable, members=members)
+        f"{prefix}{variable} to Kenya", llm, graph=_graph(variable, members=members)
     )
 
     (spec,) = _specs(response)

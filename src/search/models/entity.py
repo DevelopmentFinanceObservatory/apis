@@ -122,7 +122,10 @@ class EntityGroup(StrictModel):
     or a union of such totals ("all donors including private"), states the
     classes of party that population covers in `whole_of`, and the classes the answer's
     dataset publishes on that side in `side_classes`; a resubmit derives both from the
-    identity and the code index, whatever it posts. A Spec serves its groups on
+    identity and the code index, whatever it posts. A role read as the group's members states
+    the residuals the group's total counts that the members leave out in `left_out`, and
+    whether the source publishes its own figure for the group in `sum_differs`
+    (`spec_build.with_members_left_out`). A Spec serves its groups on
     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
     (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`)."""
 
@@ -201,6 +204,31 @@ class EntityGroup(StrictModel):
             '"residual"] for donors in DAC2a; a class here and not in whole_of, such as '
             '"private", is outside the total. Absent for any other group. Derived from the '
             "identity on every answer; a posted value is ignored"
+        ),
+    )
+
+    left_out: list[str] | None = Field(
+        default=None,
+        max_length=64,
+        exclude_if=_is_none,
+        description=(
+            "for a group the role reads as its members, the labels of the residuals the "
+            "group's published total counts beside the members that the answer leaves out "
+            "and its dataset publishes on the role's side, in the total's order, e.g. "
+            '["Africa, unallocated by country (DAC)"] for Africa read as its countries. Absent '
+            "when the members leave nothing out, for a group the role reads as its total or "
+            "whole population, and on a role outside a flow. Derived on every answer; a posted "
+            "value is ignored"
+        ),
+    )
+    sum_differs: bool | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "for a group the role reads as its members, true when the dataset publishes its "
+            "own figure for the group's total and that figure is not the members' sum, so it "
+            "can differ from one built from them. Absent otherwise. Derived on every answer; "
+            "a posted value is ignored"
         ),
     )
 

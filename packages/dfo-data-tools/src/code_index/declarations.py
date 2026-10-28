@@ -238,8 +238,8 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # explicit zero rows, so a missing row for those cells reads as zero, and the imputed sectors table
 # reads the same way. DAC1, DAC2a and DAC2b read a missing row as unknown, the reading for a table
 # with no zero-row evidence. A question answers from the imputed table only when it names the
-# table, or names a breakdown such as a sector that no other table of its measure offers, so
-# DAC2a's imputed multilateral line answers the rest (`phase_rank_bind._without_unasked_opt_in`).
+# table, or names or ranks a breakdown such as a sector that no other table of its measure
+# offers, so DAC2a's imputed multilateral line answers the rest (`phase_rank_bind._without_unasked_opt_in`).
 # Of two tables that can serve one family, the lower rank serves it. DAC1, DAC2a and DAC2b
 # share the CRS five-tuples under their own codes (`dac1AidType`, `dac2aAidType`,
 # `dac2bAidType`), and DAC2a's one `attributedAmount` row declares fewer properties than the
@@ -370,8 +370,9 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
 # for the same donors and recipients. DAC2a publishes the imputed line as gross disbursements
 # alone, an estimate that is neither gross nor net in substance, and the convention adds it to
 # total ODA on either basis, so the imputed component reads the gross line whatever basis the
-# composite asks for. DAC2a reads a missing row as unknown, so the imputed component writes no
-# zero rows.
+# composite asks for. Both components read DAC2a, so each binds its own aid type, and a row's
+# aid type names the one component it belongs to (`code_index.composites.component_of`).
+# DAC2a reads a missing row as unknown, so the imputed component writes no zero rows.
 #
 # The OECD headline ODA splices DAC1's net flows to 2017 and its grant equivalents from 2018,
 # the year the OECD made grant equivalents its headline measure.
@@ -403,7 +404,9 @@ COMPOSITES: tuple[CompositeDeclaration, ...] = (
         measure_noun="including imputed multilateral ODA",
         kind="stacked",
         components=(
-            ComponentRecipe(role="bilateral", dataset=DAC2A),
+            ComponentRecipe(
+                role="bilateral", dataset=DAC2A, bind={"dac2aAidType": DAC2A_TOTAL_ODA}
+            ),
             ComponentRecipe(
                 role="imputed",
                 dataset=DAC2A,

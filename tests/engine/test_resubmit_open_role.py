@@ -33,10 +33,13 @@ from search.models import (
     DefinitePart,
     Entry,
     IdentityBindingValue,
+    ParsedEntity,
     ParsedInput,
     ParsedPart,
     Resolution,
     ResolveRequest,
+    ResubmitCandidate,
+    ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
     RoleAxis,
     Spec,
@@ -121,7 +124,7 @@ def _graph(variable: str, members: tuple[str, ...] = _MEMBERS) -> FakeGraph:
             **{dcid: basis._member_node(dcid) for dcid in members},
         },
         detect={variable: {"svs": list(members), "cosine_scores": [0.9] * len(members)}},
-        resolve={"United States": _USA, "Kenya": _KEN},
+        resolve={"United States": _USA, "Kenya": _KEN, "DAC donor countries": _DAC_COUNTRIES},
     )
 
 
@@ -231,14 +234,27 @@ def test_a_crs_resubmit_dropping_a_role_reads_every_party_of_its_side(
     ]
 
 
-def test_aid_in_2019_with_no_donor_reads_dac_countries_total():
+@pytest.mark.parametrize(
+    "donors",
+    [
+        pytest.param(None, id="no-donor"),
+        pytest.param("DAC donor countries", id="named-dac-countries"),
+    ],
+)
+def test_aid_in_2019_from_no_donor_or_dac_countries_reads_dac_countries_total(
+    donors: str | None,
+):
     """A donor-less DAC1 question binds DAC countries' total on the donor side, which a
     series there holds, and so keeps the measure basis and provider choices a donor's total
-    carries. A no-op resubmit of the answer answers the same Spec."""
+    carries, as a question naming the DAC countries does. A no-op resubmit of either answer
+    answers the same Spec with the same groups, the named one under its own label."""
     variable = "aid"
+    entities = None if donors is None else [ParsedEntity(text=donors, role_text="from")]
     fresh = _answer(
         ResolveRequest(
-            input=ParsedInput(parts=[ParsedPart(variable_text=variable, time_text="2019")])
+            input=ParsedInput(
+                parts=[ParsedPart(variable_text=variable, time_text="2019", entities=entities)]
+            )
         ),
         variable,
     ).spec
@@ -254,6 +270,68 @@ def test_aid_in_2019_with_no_donor_reads_dac_countries_total():
     )
     assert again.spec_id == fresh.spec_id
     assert again.resolved.entity_groups == fresh.resolved.entity_groups
+
+
+def test_a_donor_less_candidate_reads_dac_countries_total_as_an_identity_entry_does():
+    """A candidates entry posting a donor-less DAC1 identity binds DAC countries' total on
+    the donor side, as an identity entry and a fresh search do, so it answers their Spec."""
+    variable = "aid"
+    fresh = _answer(
+        ResolveRequest(
+            input=ParsedInput(parts=[ParsedPart(variable_text=variable, time_text="2019")])
+        ),
+        variable,
+    ).spec
+    identity = fresh.definition.identity
+    open_side = identity.model_copy(
+        update={"entities": {k: v for k, v in identity.entities.items() if k != "origin"}}
+    )
+
+    part = _answer(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitCandidatesEntry(
+                        variable_text=variable,
+                        ordering="intent_rank",
+                        truncated=False,
+                        candidates=[ResubmitCandidate(identity=open_side)] * 2,
+                    )
+                ]
+            )
+        ),
+        variable,
+    )
+
+    assert part.spec.definition.identity.entities["origin"] == [_DAC_COUNTRIES]
+    assert part.spec.spec_id == _resubmit(open_side, [], variable).spec_id == fresh.spec_id
+
+
+def test_a_stated_basis_a_donor_less_answer_serves_is_applied_as_on_resubmit():
+    """ "net aid in 2019" over DAC1's gross and net members serves net to DAC countries'
+    total with no binder settling an axis, so the stated "net" is the entry the basis
+    choice applies and is reported dropped nowhere. A no-op resubmit states the same."""
+    variable = "net aid"
+    fresh = _answer(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[ParsedPart(variable_text=variable, time_text="2019")],
+                user_message="net aid in 2019",
+            )
+        ),
+        variable,
+        basis._DAC1_MEMBERS[:2],
+    ).spec
+    scope = fresh.resolved.scope_choices
+    assert scope is not None
+
+    assert basis._basis_choice(fresh) == ("measure_basis:net", "explicit", "net")
+    assert scope.dropped_entries == []
+    again = _resubmit(
+        fresh.definition.identity, _entries(fresh), variable, fresh.resolved.entity_groups
+    )
+    assert again.spec_id == fresh.spec_id
+    assert basis._basis_choice(again) == basis._basis_choice(fresh)
 
 
 def test_a_dac1_donor_whole_is_dac_countries_total_on_the_parts_aid_type():

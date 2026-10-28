@@ -15,7 +15,7 @@ from dfo_platform.roles import FlowAccount
 from .base import StrictModel
 from .coverage import Coverage, Headline
 from .definition import SpecDefinition
-from .entity import EntityGroup, ResolvedEntity
+from .entity import EntityGroup, ResolvedEntity, _is_none
 from .grammar import DataCommonsRef, GraphRef, SentenceToken, Shape, Slot, SourceRef, TimeWindow
 from .observations import SpecObservations
 from .options import EntityOptions, FacetOptions, SlotOptions
@@ -373,10 +373,6 @@ class OpenConstraintAxisFact(StrictModel):
             "undeclared_count sum to the distinct served members. Labels as for value"
         ),
     )
-
-
-def _is_none(value: object) -> bool:
-    return value is None
 
 
 class RoleAxisFact(StrictModel):

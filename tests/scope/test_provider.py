@@ -486,19 +486,52 @@ def test_a_stated_inclusive_scope_the_imputed_table_covers_in_part_serves_its_ye
     assert back.spec_id == bilateral.spec_id
 
 
-def test_a_stated_inclusive_scope_both_tables_cover_departs_nothing(monkeypatch):
+@pytest.mark.parametrize(
+    "words",
+    [
+        pytest.param("including imputed multilateral", id="including-imputed"),
+        # Bilateral plus multilateral sums to the inclusive composite on the CRS.
+        pytest.param("bilateral plus multilateral", id="bilateral-plus-multilateral"),
+    ],
+)
+def test_a_stated_inclusive_scope_both_tables_cover_departs_nothing(monkeypatch, words):
     _cover(monkeypatch, _FROM_2011)
 
-    part = _ask_part(
-        "health aid from the United States to Kenya including imputed multilateral, 2023",
-        time="2023",
-    )
+    part = _ask_part(f"health aid from the United States to Kenya {words}, 2023", time="2023")
 
-    assert _provider(part.spec).active == "provider:inclusive"
+    assert (_provider(part.spec).active, _provider(part.spec).provenance) == (
+        "provider:inclusive",
+        "explicit",
+    )
     assert part.spec.definition.identity.requested_window == IdentityWindowRange(
         start_year=2023, end_year=2023
     )
     assert part.departures == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Corpus dq-mls-021's question; the parsed part names the fixture's donor.
+        pytest.param("Multilateral ODA from Norway to Kenya", id="dq-mls-021"),
+        pytest.param("multilateral ODA received by Kenya in 2022", id="received-by"),
+    ],
+)
+def test_multilateral_oda_words_on_a_crs_part_state_no_provider_choice(monkeypatch, message):
+    """Words naming "multilateral ODA" name DAC1's multilateral row, which the CRS does not
+    publish, so on a CRS part they state no provider entry: the axis takes its default and
+    no provider choice is reported as not applied."""
+    _cover(monkeypatch, _FROM_2011)
+
+    spec = _ask(message, time=None)
+    scope = _scope(spec)
+
+    assert (_provider(spec).active, _provider(spec).provenance) == (
+        "provider:bilateral",
+        "default",
+    )
+    assert not [e for e in scope.entries if e.axis == "provider"]
+    assert not [d for d in scope.dropped_entries if d.entry.axis == "provider"]
 
 
 def test_a_carried_inclusive_scope_the_imputed_table_covers_in_part_is_dropped(monkeypatch):
@@ -731,6 +764,7 @@ _GBR = "country/GBR"
 _IDA = "InternationalDevelopmentAssociation"
 _EU = "EuropeanUnionInstitutions"
 _FRA = "country/FRA"
+_JPN = "country/JPN"
 
 
 def _rows_for(donors: Sequence[str], *, imputed: Sequence[str]) -> list[tuple]:
@@ -780,9 +814,21 @@ def _rows_for(donors: Sequence[str], *, imputed: Sequence[str]) -> list[tuple]:
             "pooled_providers",
             id="france-and-eu-institutions",
         ),
+        # The EU institutions pooled with a donor outside the EU still pool a multilateral
+        # whose outflows the rows attribute to its funders.
+        pytest.param(
+            (_JPN, _EU),
+            (_JPN, _EU),
+            "provider:bilateral",
+            "unavailable",
+            "pooled_providers",
+            id="japan-and-eu-institutions",
+        ),
         pytest.param(
             (_IDA,), (_USA,), "provider:bilateral", "unavailable", "provider", id="ida-alone"
         ),
+        # An organisation the imputed table carries rows for counts its own share.
+        pytest.param((_IDA,), (_IDA,), "provider:inclusive", "available", None, id="ida-carried"),
         pytest.param(
             (), (_USA,), "provider:bilateral", "unavailable", "all_providers", id="all-providers"
         ),
@@ -795,9 +841,13 @@ def test_the_inclusive_scope_is_offered_only_for_providers_the_imputed_table_all
     spending. It is offered when the imputed table carries rows for every named provider
     and none of them is a multilateral whose outflows its rows redistribute; otherwise it is
     unavailable, `provider_not_offered`, with the reason, and neither the default, a typed
-    "including multilateral" nor a switch applies it."""
-    facts = _facts(_rows_for((_USA, _GBR, _IDA, _FRA, _EU), imputed=carried))
+    "including multilateral" nor a switch applies it. A resubmit posting the inclusive
+    composite over the same providers keeps it exactly where it is offered."""
+    facts = _facts(_rows_for((_USA, _GBR, _IDA, _FRA, _EU, _JPN), imputed=carried))
     identity = _bilateral_identity(origin=origin)
+    composite = apply_binding(
+        identity, ProviderBinding(scope="inclusive", provenance=_INCLUSIVE_SOURCE), []
+    )
 
     table = provider_rule(identity, None, facts)
     record = settle_provider(identity, _total(), facts)
@@ -809,11 +859,13 @@ def test_the_inclusive_scope_is_offered_only_for_providers_the_imputed_table_all
     switched = build_part_scope(
         base=identity, entries=[switch("provider:inclusive")], records={}, facts=facts
     )
+    posted, _ = provider.without_uncounted_inclusive(composite, None, facts=facts)
 
     assert table is not None and record is not None and typed is not None
     (option,) = (o for o in table.options if o.option_id == "provider:inclusive")
     assert option.availability.status == inclusive
     assert record.active == active
+    assert (posted is composite) == (why is None)
     if why is None:
         assert option.availability.code is None
         assert typed.active == "provider:inclusive"
@@ -1052,6 +1104,13 @@ def test_a_switch_to_bilateral_on_a_dac1_total_reads_bilateral_oda_and_switches_
             None,
             id="including-multilateral",
         ),
+        pytest.param(
+            "bilateral plus imputed multilateral aid from the US in 2019",
+            "provider:inclusive",
+            "contributions_counted",
+            None,
+            id="bilateral-plus-imputed-multilateral",
+        ),
     ],
 )
 def test_a_stated_provider_scope_on_a_dac1_total_is_reported_and_left_to_a_switch(
@@ -1084,6 +1143,59 @@ def test_a_stated_provider_scope_on_a_dac1_total_is_reported_and_left_to_a_switc
     else:
         assert isinstance(compiled, PartScope)
         assert _slot_ref(compiled.compiled.identity, "dac1AidType") == switched
+
+
+def test_bilateral_plus_multilateral_on_a_dac1_total_states_the_total_it_sums(monkeypatch):
+    """DAC1's total ODA counts bilateral flows plus core contributions to multilaterals, so
+    words summing the two lines with no imputed share name it: the answer holds the
+    contributions scope as the user's choice, and nothing is reported as not applied."""
+    spec = _ask_dac1(
+        monkeypatch, "donor-only-2019", message="US bilateral plus multilateral ODA in 2019"
+    )
+    scope = _scope(spec)
+
+    assert _slot_ref(spec.definition.identity, "dac1AidType") == _DAC1_TOTAL_ODA
+    choice = _provider(spec)
+    assert (choice.active, choice.provenance) == ("provider:contributions", "explicit")
+    assert [(e.option_id, e.origin.kind) for e in scope.entries if e.axis == "provider"] == [
+        ("provider:contributions", "text")
+    ]
+    assert not any(d.entry.axis == "provider" for d in scope.dropped_entries)
+
+
+@pytest.mark.parametrize(
+    ("message", "stated"),
+    [
+        pytest.param("multilateral ODA from the US in 2019", True, id="multilateral-oda"),
+        pytest.param("what share of US ODA goes to multilaterals", True, id="to-multilaterals"),
+        pytest.param("aid from multilaterals in 2019", False, id="multilaterals-as-donors"),
+    ],
+)
+def test_a_dac1_multilateral_oda_answer_the_words_pick_is_stated(
+    monkeypatch, message: str, stated: bool
+):
+    """Words asking for what the US pays the multilaterals pick DAC1's multilateral ODA, so
+    the answer holding it reports the provider row as the user's, an explicit choice no
+    entry from a choice holds, as the harness reads a choice made in words. The
+    multilaterals named as donors pick no row, and the row stays the default."""
+    members = tuple(m for ms in _DAC1_MEMBERS_BY_CODE.values() for m in ms)
+    basis._cover(monkeypatch, members)
+    spec = basis._ask(
+        "multilateral ODA", time="2019", recipient=False, message=message, members=members
+    )
+    scope = _scope(spec)
+
+    assert _slot_ref(spec.definition.identity, "dac1AidType") == _DAC1_MULTILATERAL_ODA
+    choice = _provider(spec)
+    assert (choice.active, choice.provenance) == (
+        "provider:multilateral",
+        "explicit" if stated else "default",
+    )
+    assert not any(
+        entry.axis == "provider" and isinstance(entry.origin, ChoiceOrigin)
+        for entry in scope.entries
+    )
+    assert not any(d.entry.axis == "provider" for d in scope.dropped_entries)
 
 
 def _dac1_identity(

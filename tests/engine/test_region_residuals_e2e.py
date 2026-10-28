@@ -222,6 +222,14 @@ def test_a_carried_members_only_entry_reaches_the_region_binder():
     assert [e for e in spec.resolved.scope_choices.entries if e.axis == "region"] == [carried]
 
 
+def _without_left_out(spec: Spec) -> dict[str, dict[str, object]]:
+    """`spec`'s entity groups by role, each less what its members leave out of its total."""
+    return {
+        role: group.model_dump(exclude={"left_out", "sum_differs"})
+        for role, group in (spec.resolved.entity_groups or {}).items()
+    }
+
+
 def test_a_switch_round_trips_through_dataset_resubmit():
     """Switching the summed region to its members and back, each posted over the scope's
     base identity with its entries, returns the first answer's spec_id."""
@@ -251,7 +259,9 @@ def test_a_switch_round_trips_through_dataset_resubmit():
     assert _region(members)[:2] == (_MEMBERS, "explicit")
     assert members.spec_id != first.spec_id
     assert back.spec_id == first.spec_id
-    assert back.resolved.entity_groups == members.resolved.entity_groups
+    # The members alone leave the residuals out (`EntityGroup.left_out`), which the summed
+    # answer binds, so the groups agree on all but the fields derived from that.
+    assert _without_left_out(back) == _without_left_out(members)
     assert back.resolved.entity_groups == first.resolved.entity_groups
     assert _region(back)[:2] == (_ALL, "explicit")
 

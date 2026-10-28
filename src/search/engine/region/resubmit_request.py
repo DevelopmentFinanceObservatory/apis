@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 
@@ -487,10 +487,13 @@ def resubmit_named_groups(
 
     A role whose entities the identity's dataset reads as the whole population of its side
     (`_whole_named_groups`) carries that population, whatever group the request posts on it,
-    so a first answer's whole total survives a resubmit that posts no group.
+    so a first answer's whole total survives a resubmit that posts no group. A role bound
+    to its side's containing total carries the total's group only where the request posts
+    none on it, as on a side the posted identity left open, so a resubmit of "ODA from DAC
+    donor countries" keeps the group its first answer named.
     """
     kept: list[tuple[str, EntityGroup, frozenset[str], str | None]] = []
-    whole = _whole_named_groups(inp.identity)
+    whole = _whole_named_groups(inp.identity, posted=(inp.entity_groups or {}).keys())
     named: list[NamedGroup] = list(whole.values())
     entities = inp.identity.entities
     for role, group in (inp.entity_groups or {}).items():
@@ -590,14 +593,16 @@ def resubmit_named_groups(
     return tuple(named)
 
 
-def _whole_named_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
+def _whole_named_groups(
+    identity: BaseIdentity, *, posted: Collection[str]
+) -> dict[str, NamedGroup]:
     """The group of each flow role whose entities the dataset elected for `identity`
     (`bound_values.identity_dataset`) reads as the whole population of the role's side over
     its requested window (`whole_totals.whole_reading`), by role key: one whole total ("ODA
-    to Ethiopia" binds `DACOfficialDonors`) or the members of one whole total set, or the
-    containing total of the side (`whole_totals.containing_reading`: DAC1's
-    `DACCountriesTotal`) with its registry group. Empty for
-    an identity whose dataset the code index does not elect."""
+    to Ethiopia" binds `DACOfficialDonors`) or the members of one whole total set, or, on a
+    role the request posts no group on (`posted` names those it does), the containing total
+    of the side (`whole_totals.containing_reading`: DAC1's `DACCountriesTotal`) with its
+    registry group. Empty for an identity whose dataset the code index does not elect."""
     dataset = identity_dataset(identity)
     if dataset is None:
         return {}
@@ -605,7 +610,7 @@ def _whole_named_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
     groups: dict[str, NamedGroup] = {}
     for role, dcids in identity.entities.items():
         reading = whole_reading(dcids, datasets=(dataset,), years=years)
-        if reading is None and len(dcids) == 1:
+        if reading is None and len(dcids) == 1 and role not in posted:
             reading = containing_reading(dcids[0], datasets=(dataset,))
         if reading is not None and reading.axis == role_key_axis(role):
             groups[role] = reading.named_group()

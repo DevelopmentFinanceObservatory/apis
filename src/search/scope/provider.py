@@ -84,6 +84,7 @@ from search.models import (
     ProviderScope,
     ScopeReasonCode,
     SlotBinding,
+    TextOrigin,
     YearSpan,
 )
 from search.scope.basis import held_measure, identity_part_shape
@@ -99,6 +100,12 @@ BILATERAL = provider_option_id("bilateral")
 """The bilateral provider option."""
 INCLUSIVE = provider_option_id("inclusive")
 """The inclusive provider option."""
+CONTRIBUTIONS = provider_option_id("contributions")
+"""The contributions provider option: bilateral flows plus core contributions to
+multilaterals, DAC1's total ODA."""
+MULTILATERAL = provider_option_id("multilateral")
+"""The multilateral provider option: core contributions to multilaterals alone, DAC1's
+multilateral ODA."""
 _SCOPE_LABELS: Mapping[ProviderScope, str] = {
     "bilateral": OPTION_LABELS.provider_bilateral,
     "inclusive": OPTION_LABELS.provider_inclusive,
@@ -550,24 +557,30 @@ def _names_donors_alone(identity: BaseIdentity, index: CodeIndex) -> bool:
 
 
 def without_uncounted_inclusive(
-    identity: BaseIdentity, entries: Sequence[Entry] | None, *, index: CodeIndex
+    identity: BaseIdentity, entries: Sequence[Entry] | None, *, facts: ScopeFacts
 ) -> tuple[BaseIdentity, Sequence[Entry] | None]:
     """A posted `identity` and its scope `entries`, with the inclusive scope its identity
-    binds read as a carried entry where its providers cannot take it.
+    binds read as a carried entry where a fresh search would not offer it.
 
-    The inclusive composite adds the imputed share of multilateral spending to what the
-    named donors' bilateral line counts. A part naming no provider, or a provider that is no
-    donor alone (`_names_donors_alone`), such as "Official Donors, Total", already counts the
-    multilaterals' outflows, so the composite would count them twice. Such an identity is
-    served its bilateral line (`_without_inclusive`), and `provider:inclusive` joins its
-    entries as a carried entry from the posted identity's provider choice, unless they hold
-    a provider entry, so the scope drops it as it drops any carried entry the part cannot
-    take (`compile`), and says so. `identity` and `entries` themselves otherwise."""
+    The rule is the one a fresh search reads: the provider table of the identity's
+    bilateral line (`provider_rule`) offers the inclusive option, so the providers it names
+    can take the imputed share (`_inclusive_option`, and on a published total
+    `_published_row`). Where it does not, as for a part naming no provider, or a provider
+    whose total already counts the multilaterals' outflows, the identity is served its
+    bilateral line (`_without_inclusive`), and `provider:inclusive` joins its entries as a
+    carried entry from the posted identity's provider choice, unless they hold a provider
+    entry, so the scope drops it as it drops any carried entry the part cannot take
+    (`compile`), and says so. `identity` and `entries` themselves otherwise."""
     try:
         ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
     except CompositeNotServable:
         return identity, entries
-    if ref not in _SOURCE_COMPOSITES or _names_donors_alone(identity, index):
+    if ref not in _SOURCE_COMPOSITES:
+        return identity, entries
+    bilateral = _without_inclusive(identity, ref)
+    table = provider_rule(bilateral, None, facts)
+    option = table.option(INCLUSIVE) if table is not None else None
+    if option is not None and option.availability.code != "provider_not_offered":
         return identity, entries
     held = list(entries or ())
     if not any(entry.axis == "provider" for entry in held):
@@ -579,7 +592,7 @@ def without_uncounted_inclusive(
                 origin=ChoiceOrigin(choice_id=f"{identity_spec_id(identity)}:provider"),
             )
         )
-    return _without_inclusive(identity, ref), held
+    return bilateral, held
 
 
 def _counts_as_donor(party: str, index: CodeIndex) -> bool:
@@ -837,6 +850,58 @@ def _convention(
         ),
         None,
     )
+
+
+def with_summed_provider(
+    identity: BaseIdentity, state: ScopeState, facts: ScopeFacts
+) -> ScopeState:
+    """`state` with its words summing the bilateral and multilateral lines
+    (`ScopeState.sums_providers`, "bilateral plus multilateral ODA") read as the option
+    summing them on the dataset of the part whose answer is `identity`. Where the part's
+    provider table offers the contributions scope (`provider_rule`, a DAC1 total, whose total
+    ODA counts bilateral flows plus core contributions to multilaterals), the explicit
+    inclusive entry read from those words asks for that scope. Elsewhere, on the CRS and
+    DAC2a, the inclusive composite is the sum, and `state` is itself."""
+    if not state.sums_providers:
+        return state
+    table = provider_rule(identity, None, facts)
+    if table is None or table.option(CONTRIBUTIONS) is None:
+        return state
+    entries = tuple(
+        entry.model_copy(update={"option_id": CONTRIBUTIONS})
+        if entry.option_id == INCLUSIVE
+        and entry.provenance == "explicit"
+        and isinstance(entry.origin, TextOrigin)
+        else entry
+        for entry in state.entries
+    )
+    return dataclasses.replace(state, entries=entries)
+
+
+def without_unoffered_multilateral(
+    identity: BaseIdentity, state: ScopeState, facts: ScopeFacts
+) -> ScopeState:
+    """`state` without the explicit multilateral entry its words state ("multilateral ODA",
+    `stated_scope._MULTILATERAL_ROW`) where the provider table of the part whose answer is
+    `identity` offers no multilateral option (`provider_rule`), as on a CRS or DAC2a part
+    or one with no provider table. Those words name DAC1's multilateral ODA only on a
+    dataset that publishes it, so elsewhere the axis is unstated and the entry is neither
+    applied nor reported. `state` itself where the table offers the option."""
+    table = provider_rule(identity, None, facts)
+    if table is not None and table.option(MULTILATERAL) is not None:
+        return state
+    entries = tuple(
+        entry
+        for entry in state.entries
+        if not (
+            entry.option_id == MULTILATERAL
+            and entry.provenance == "explicit"
+            and isinstance(entry.origin, TextOrigin)
+        )
+    )
+    if len(entries) == len(state.entries):
+        return state
+    return dataclasses.replace(state, entries=entries)
 
 
 def settle_provider(

@@ -43,10 +43,11 @@ An identity entry that posts `scope_entries` compiles them over its identity
 scope on its definite part (`_compiled_scope`, `_served_scope`). A composite identity, posted
 or compiled, resolves the identity its option was set on
 (`identity_edit.composite_table_identity`) and answers as the composite (`_as_composite`). A
-posted inclusive composite whose providers would count the multilaterals' outflows twice, a
-donor total holding multilaterals or no provider at all, answers its bilateral line, and its
-scope reports the inclusive scope dropped as a carried entry
-(`scope.provider.without_uncounted_inclusive`). A
+posted identity, as a posted candidate, is read as a fresh search of it would serve it
+(`dataset_entries.served_posted_identity`): a flow side it leaves open binds its dataset's
+containing total, and an inclusive composite whose providers a fresh search would not offer
+the inclusive scope answers its bilateral line, its scope reporting the inclusive scope
+dropped as a carried entry. A
 posted one asking for the latest year reads the year its tables elect, as a compiled one does
 (`scope.provider.elect_latest_window`).
 
@@ -88,6 +89,7 @@ from search.engine.entry.dataset_entries import (
     check_candidates_ceiling,
     resolve_candidates_entry,
     resolve_parsed_entries,
+    served_posted_identity,
     spec_resubmit_input_for_identity,
 )
 from search.engine.entry.multi import _stream_combined_regions
@@ -103,7 +105,6 @@ from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import with_composite_answer, with_runnable_operations
 from search.engine.region.sentence_events import answer_events, response_sentence_events
 from search.engine.region.state import EngineOptions
-from search.engine.region.whole_totals import with_containing_total
 from search.engine.response_cache_flow import PartMemoScope
 from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.spec_id import identity_spec_id
@@ -125,7 +126,7 @@ from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
 from search.scope.composite import assemble_composite
-from search.scope.provider import elect_latest_window, without_uncounted_inclusive
+from search.scope.provider import elect_latest_window
 from search.scope.region import region_groups
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -136,6 +137,38 @@ def full_read_deadline_for(deadline: float) -> float:
     request whose own deadline is `deadline`: `resubmit_full_read_timeout_s` from request
     start where `deadline` is `request_timeout_s` from it."""
     return deadline + settings().resubmit_full_read_timeout_s - settings().request_timeout_s
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Promoted:
+    """An identity entry's promote: the scope its scope entries compiled to, the facts it
+    read, the identity it answers, the table identity it read, the part memo key it stores
+    under, and the region, which the part memo held when `stored`."""
+
+    scope: PartScope | None
+    facts: ScopeFacts
+    identity: BaseIdentity
+    read: BaseIdentity
+    key: str | None
+    region: RegionResult
+    stored: bool
+
+
+def _served_entry(
+    entry: ResubmitIdentityEntry, *, index: int, coverage: CoverageSnapshot
+) -> tuple[ResubmitIdentityEntry, PartScope | None]:
+    """`entry` with its identity and scope entries as a fresh search of the identity would
+    serve them (`dataset_entries.served_posted_identity`), so a no-op resubmit of a fresh
+    answer answers the same Spec, and the scope its scope entries compile to
+    (`_compiled_scope`), None when it posts none."""
+    identity, entries = served_posted_identity(
+        entry.identity, entry.scope_entries, coverage=coverage
+    )
+    if identity is not entry.identity:
+        entry = entry.model_copy(update={"identity": identity, "scope_entries": entries})
+    if entry.scope_entries is None:
+        return entry, None
+    return entry, _compiled_scope(entry, index=index, coverage=coverage)
 
 
 def _compiled_scope(
@@ -355,29 +388,12 @@ async def handle(
         deadline=params.deadline,
     )
 
-    async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
-        # A composite its components cannot serve refuses before its scope compiles.
-        composite_table_identity(entry.identity, pointer=f"/input/entries/{index}/identity")
-        # A side the identity leaves open reads its dataset's containing total where a fresh
-        # search would bind it, so a no-op resubmit of a fresh answer answers the same Spec.
-        bound = with_containing_total(entry.identity, coverage=params.coverage.index)
-        if bound is not entry.identity:
-            entry = entry.model_copy(update={"identity": bound})
-        # An inclusive composite over providers it would count twice serves the bilateral
-        # line, and its scope drops the inclusive scope as a carried entry.
-        served, scope_entries = without_uncounted_inclusive(
-            entry.identity, entry.scope_entries, index=get_index()
-        )
-        if served is not entry.identity:
-            entry = entry.model_copy(update={"identity": served, "scope_entries": scope_entries})
-        # The scope build reads coverage and scans families, so it runs off the event loop.
-        scope = (
-            None
-            if entry.scope_entries is None
-            else await asyncio.to_thread(
-                _compiled_scope, entry, index=index, coverage=params.coverage
-            )
-        )
+    def _promote(index: int, entry: ResubmitIdentityEntry) -> _Promoted:
+        """`entry` promoted in one worker thread: its posted identity read as a fresh search
+        would serve it and its scope compiled (`_served_entry`), both of which read coverage
+        and scan families, then the part memo's region for its payload or a fresh
+        `resolve_spec_resubmit`."""
+        entry, scope = _served_entry(entry, index=index, coverage=params.coverage)
         facts = ScopeFacts(index=get_index(), coverage=params.coverage)
         # A composite posted with no scope entries reads as a compiled one does.
         identity = (
@@ -398,26 +414,51 @@ async def handle(
         key = memo.key(payload, options) if memo is not None and memo.active else None
         stored = memo.lookup(key) if memo is not None and key is not None else None
         if stored is not None:
-            region = _memo_hit(stored)
+            return _Promoted(
+                scope=scope,
+                facts=facts,
+                identity=identity,
+                read=read,
+                key=None,
+                region=stored,
+                stored=True,
+            )
+        try:
+            region = resolve_spec_resubmit(
+                inp=payload,
+                graph=graph,
+                sdmx=sdmx,
+                coverage=params.coverage,
+                options=options,
+                full_read_deadline=full_read_deadline,
+            )
+        except EngineInputError as exc:
+            raise _rewrite_pointer(exc, index) from exc
+        return _Promoted(
+            scope=scope,
+            facts=facts,
+            identity=identity,
+            read=read,
+            key=key,
+            region=region,
+            stored=False,
+        )
+
+    async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
+        # A composite its components cannot serve refuses before its scope compiles.
+        composite_table_identity(entry.identity, pointer=f"/input/entries/{index}/identity")
+        async with sem:
+            promoted = await asyncio.to_thread(_promote, index, entry)
+        if promoted.stored:
+            region = _memo_hit(promoted.region)
         else:
-            async with sem:
-                try:
-                    region = await asyncio.to_thread(
-                        resolve_spec_resubmit,
-                        inp=payload,
-                        graph=graph,
-                        sdmx=sdmx,
-                        coverage=params.coverage,
-                        options=options,
-                        full_read_deadline=full_read_deadline,
-                    )
-                except EngineInputError as exc:
-                    raise _rewrite_pointer(exc, index) from exc
+            region = promoted.region
             # Stored before any trailing task launches, without its closures.
-            if memo is not None and key is not None:
-                memo.store(key, region)
-        if read is not identity and region.status == "definite":
-            region = _as_composite(region, identity, scope=scope, facts=facts)
+            if memo is not None and promoted.key is not None:
+                memo.store(promoted.key, region)
+        scope = promoted.scope
+        if promoted.read is not promoted.identity and region.status == "definite":
+            region = _as_composite(region, promoted.identity, scope=scope, facts=promoted.facts)
         return dataclasses.replace(
             region,
             assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),

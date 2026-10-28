@@ -520,15 +520,15 @@ async def _stream_one_variable(
             return source_code_refusal_result(v, source_code, timing_by_step=base_timing)
         # The words a scope phrase states are the scope entry's alone, so the leg's
         # binders and qualifier matching read the texts without them; its restatement
-        # keeps them, so posting it states the same scope.
+        # keeps them, so posting it states the same scope. A text the phrases fill whole
+        # is read as it is.
+        asked_roles = role_query if role_query is not None else query
         return await resolve_variable(
             without_scope_phrases(v, scope_intake) or v,
             entities=entities,
             date_request=date_request,
             detect_query=without_scope_phrases(variable_text, scope_intake) or variable_text,
-            role_query=without_scope_phrases(
-                role_query if role_query is not None else query, scope_intake
-            ),
+            role_query=without_scope_phrases(asked_roles, scope_intake) or asked_roles,
             entity_roles=entity_roles,
             member_entities=member_entities,
             unit_text=unit_text,

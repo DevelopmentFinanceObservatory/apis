@@ -191,14 +191,25 @@ def table_identity(index: CodeIndex, identity: Mapping[str, object]) -> Mapping[
 
 
 def component_of(composite: CompositeDeclaration, row: StatVarRow) -> ComponentRole | None:
-    """The role of the first component of `composite` whose table publishes `row`
-    (`StatVarRow.provenances`) and whose recipe sets no measure or the measure `row` has.
-    `None` when no component serves it."""
-    for recipe in composite.components:
-        measure = recipe.basis[0] if recipe.basis is not None else recipe.measured_property
-        if recipe.dataset in row.provenances and measure in (None, row.measured_property):
-            return recipe.role
-    return None
+    """The role of the one component of `composite` that serves `row`: its table publishes
+    `row` (`StatVarRow.provenances`), its recipe sets no measure or the measure `row` has, and
+    `row` holds every code the recipe binds (`ComponentRecipe.bind`). `None` when no component
+    or more than one serves it, so a row two components could each have read is no member of
+    either. DAC2a's inclusive composite reads both components from DAC2a, and only the aid type
+    each binds tells its rows apart."""
+    roles = [
+        recipe.role
+        for recipe in composite.components
+        if recipe.dataset in row.provenances
+        and _recipe_measure(recipe) in (None, row.measured_property)
+        and all(row.constraint_properties.get(prop) == code for prop, code in recipe.bind.items())
+    ]
+    return roles[0] if len(roles) == 1 else None
+
+
+def _recipe_measure(recipe: ComponentRecipe) -> str | None:
+    """The measured property `recipe` sets, by its basis or alone, or `None`."""
+    return recipe.basis[0] if recipe.basis is not None else recipe.measured_property
 
 
 def without_composite(identity: Mapping[str, object]) -> Mapping[str, object]:

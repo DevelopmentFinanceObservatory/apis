@@ -19,12 +19,12 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import PartyRow, label_for_pairs
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
-from entity_resolution.shared import shared_membership_policy
 from materialise.enrichment import party_count
 from origin_catalogue import ORIGINS, current_catalogue
 from search.engine import multilaterals
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
+from search.engine.departures import members_left_out
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     StatedMembers,
@@ -118,7 +118,7 @@ from search.models import (
     served_date_range,
 )
 from search.scope.provider import provider_total_code
-from search.scope.region import without_residuals
+from search.scope.region import policy_members, without_residuals
 from search.scope.sector import sector_concept
 from unit_words.price_basis import price_basis_option_label
 
@@ -425,11 +425,9 @@ def total_members(total: str) -> list[str] | None:
     sorted (`EntityGroup.members`). `None` where the index declares no group for `total` or
     the policy lists no members for it."""
     row = get_index().parties.get(total)
-    membership = shared_membership_policy()
-    if row is None or row.totals is None or row.totals not in membership:
+    if row is None or row.totals is None:
         return None
-    held = membership.members(row.totals).members
-    return sorted(held) if isinstance(held, tuple) and held else None
+    return sorted(held) if (held := policy_members(row.totals)) else None
 
 
 def with_side_classes(
@@ -1032,31 +1030,25 @@ def _shared_qualifiers(
     slots: Sequence[Slot],
     open_axis_facts: Sequence[OpenConstraintAxisFact] | None,
     *,
-    concept_of: CodeIndex | None = None,
-) -> list[str]:
-    """The labels of the values the served group shares outside the measure label's axes.
+    index: CodeIndex,
+) -> tuple[list[str], list[str]]:
+    """The labels of the values the served group shares outside the measure label's axes,
+    as the shape label states them and as the concept label does.
 
     Single bound values and constant open-axis values each add their label, unless the
     measure label covers their axis. A set binding adds the label of the group it was drawn
     from, else its members' labels joined ("official development assistance and private
     sector instruments" for CRS flows 10 and 60). Varying axes are omitted, and duplicate
-    label text is removed case-insensitively. The shape label states them after the measure
-    label (`_composed_shape_label`). Read with `concept_of`, the release's code index, they
-    name what the series count with no basis or provider scope (`ResolvedSpec.concept_label`):
-    a code a provider option reads as a scope of a published total names that total
-    (`provider.provider_total_code`), so DAC1's bilateral ODA names "official development
-    assistance" as the total and its multilateral ODA do.
+    label text is removed case-insensitively. The shape label states the first list after
+    the measure label (`_composed_shape_label`). The second names what the series count with
+    no basis or provider scope (`ResolvedSpec.concept_label`): a code a provider option
+    reads as a scope of a published total in `index`, the release's code index, names that
+    total (`provider.provider_total_code`), so DAC1's bilateral ODA names "official
+    development assistance" as the total and its multilateral ODA do.
     """
     covered = set(measure_label_axes)
-    qualifiers: list[str] = []
-    seen_text: set[str] = set()
-
-    def _add_qualifier(label: str) -> None:
-        folded = label.casefold()
-        if folded not in seen_text:
-            qualifiers.append(label)
-            seen_text.add(folded)
-
+    shown: list[str] = []
+    concept: list[str] = []
     for slot in slots:
         prop = slot.key.property
         if prop is None or prop.ref in covered:
@@ -1064,25 +1056,38 @@ def _shared_qualifiers(
         binding = slot.binding
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
             covered.add(prop.ref)
-            _add_qualifier(_value_label(prop.ref, binding.value.ref, concept_of))
+            shown.append(binding.value.ref.label)
+            concept.append(_concept_value_label(prop.ref, binding.value.ref, index))
         elif isinstance(binding, BindingSet) and (label := _set_label(binding)) is not None:
             covered.add(prop.ref)
-            _add_qualifier(label)
+            shown.append(label)
+            concept.append(label)
     for fact in open_axis_facts or ():
         if fact.property in covered or fact.varies or fact.value is None:
             continue
         covered.add(fact.property)
-        _add_qualifier(fact.value.label)
-    return qualifiers
+        shown.append(fact.value.label)
+        concept.append(fact.value.label)
+    return _distinct_labels(shown), _distinct_labels(concept)
 
 
-def _value_label(prop: str, ref: GraphRef, concept_of: CodeIndex | None) -> str:
-    """The label of code `ref` bound on `prop`; read with `concept_of`, the label of the
-    published total a provider option reads it as a scope of (`_shared_qualifiers`)."""
-    if concept_of is None:
-        return ref.label
-    total = provider_total_code(prop, ref.ref, concept_of)
-    row = concept_of.code_by_dcid(total) if total not in (None, ref.ref) else None
+def _distinct_labels(labels: Iterable[str]) -> list[str]:
+    """`labels` in order, each text once, compared case-insensitively."""
+    seen: set[str] = set()
+    distinct: list[str] = []
+    for label in labels:
+        if (folded := label.casefold()) not in seen:
+            seen.add(folded)
+            distinct.append(label)
+    return distinct
+
+
+def _concept_value_label(prop: str, ref: GraphRef, index: CodeIndex) -> str:
+    """The label of code `ref` bound on `prop` as the concept label names it: the label of
+    the published total a provider option reads it as a scope of (`_shared_qualifiers`),
+    else its own."""
+    total = provider_total_code(prop, ref.ref, index)
+    row = index.code_by_dcid(total) if total not in (None, ref.ref) else None
     return row.label if row is not None else ref.label
 
 
@@ -1386,15 +1391,10 @@ def build_spec(
     )
 
     # Identity is minted before the display label is composed. See _wire_shape_label.
-    qualifiers = (
-        _shared_qualifiers(measure_label.axes, slots, resolved_open_axis_facts)
+    qualifiers, concept_qualifiers = (
+        _shared_qualifiers(measure_label.axes, slots, resolved_open_axis_facts, index=index)
         if measure_partition is not None
-        else []
-    )
-    concept_qualifiers = (
-        _shared_qualifiers(measure_label.axes, slots, resolved_open_axis_facts, concept_of=index)
-        if measure_partition is not None
-        else []
+        else ([], [])
     )
     wire_shape = _wire_shape_label(
         shape,
@@ -1442,7 +1442,7 @@ def build_spec(
     )
     unserved = unserved_entities(plan)
     left_out = set(unserved_members(plan))
-    return Spec(
+    spec = Spec(
         spec_id=spec_id,
         definition=definition,
         resolved=ResolvedSpec(
@@ -1518,6 +1518,32 @@ def build_spec(
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values)
         .stating_built_shape_label(shape.label),
+    )
+    return with_members_left_out(spec)
+
+
+def with_members_left_out(spec: Spec) -> Spec:
+    """`spec` with each group a role reads as its members stating what those members leave
+    out of the group's total (`departures.members_left_out`): the residuals the total counts
+    beside them (`EntityGroup.left_out`), and whether the source publishes its own figure for
+    the group (`EntityGroup.sum_differs`). Each is absent where it states nothing. A group
+    read as its total or whole population is unchanged."""
+    groups = spec.resolved.entity_groups
+    if not groups:
+        return spec
+    stated = dict(groups)
+    for role, group in groups.items():
+        if group.whole_of or group.total is not None:
+            continue
+        excluded, sum_differs = members_left_out(spec, role, group.ref)
+        if excluded or sum_differs:
+            stated[role] = group.model_copy(
+                update={"left_out": list(excluded) or None, "sum_differs": sum_differs or None}
+            )
+    if stated == groups:
+        return spec
+    return spec.model_copy(
+        update={"resolved": spec.resolved.model_copy(update={"entity_groups": stated})}
     )
 
 

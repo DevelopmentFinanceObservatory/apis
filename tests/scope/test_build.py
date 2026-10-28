@@ -7,6 +7,7 @@ import re
 import pytest
 from pydantic import ValidationError
 
+from code_index import declarations as code_index_declarations
 from code_index import scope_conventions
 from code_index.shared import get_index
 from search.engine.spec_id import identity_spec_id
@@ -136,10 +137,17 @@ def test_a_base_settling_no_live_axis_holds_no_choices_and_refuses_an_entry_on_o
     assert refused == Refusal(code="requested_option_unavailable", entry=0, cause="axis_absent")
 
 
-def test_the_rule_version_moves_with_the_declared_conventions(monkeypatch):
+@pytest.mark.parametrize(
+    ("module", "table", "empty"),
+    [
+        pytest.param(scope_conventions, "SECTOR_GROUPINGS", (), id="sector-groupings"),
+        pytest.param(code_index_declarations, "CONTAINING_TOTALS", {}, id="containing-totals"),
+    ],
+)
+def test_the_rule_version_moves_with_the_declared_conventions(monkeypatch, module, table, empty):
     before = scope_rules.rule_version({}, ())
 
-    monkeypatch.setattr(scope_conventions, "SECTOR_GROUPINGS", ())
+    monkeypatch.setattr(module, table, empty)
 
     assert scope_rules.rule_version({}, ()) != before
     assert scope_rules.rule_version({}, CONFLICTS) != scope_rules.rule_version({}, ())

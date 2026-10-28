@@ -297,7 +297,7 @@ def spec_departure_facts(
             continue
         if group.total is not None:
             continue
-        excluded, sum_differs = _members_left_out(spec, role, group.ref)
+        excluded, sum_differs = members_left_out(spec, role, group.ref)
         facts.append(
             DepartureFact(
                 code="group_read_as_members",
@@ -366,7 +366,7 @@ def _role_members(spec: Spec, role: str) -> list[str]:
 
 def _residuals_bound(spec: Spec, role: str) -> tuple[str, ...]:
     """The labels of the residual buckets `spec` binds on `role` beside a group's members
-    (`scope.region.is_residual`), each by the code index's label, as `_members_left_out`
+    (`scope.region.is_residual`), each by the code index's label, as `members_left_out`
     names them, else its dcid."""
     index = get_index()
     return tuple(
@@ -386,7 +386,7 @@ def served_datasets(spec: Spec) -> frozenset[str]:
     return frozenset(source.ref for source in spec.resolved.trace.resolved_sources)
 
 
-def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
+def members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
     """What the members of `group`, read on `role`, leave out of the group's total, by the
     code index: the labels of the residuals the total counts beside them
     (`PartyRow.residuals`) that the role does not bind beside them, and whether the total is

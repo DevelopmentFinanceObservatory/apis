@@ -26,7 +26,12 @@ from typing import TYPE_CHECKING
 
 from code_index.members import identity_family_query, query_family
 from code_index.query import CodeIndex
-from code_index.scope_conventions import OPTION_LABELS, SECTOR_GROUPINGS, SectorGrouping
+from code_index.scope_conventions import (
+    OPTION_LABELS,
+    SECTOR_GROUPINGS,
+    SectorGrouping,
+    grouping_of,
+)
 from search.models import (
     BaseIdentity,
     Entry,
@@ -249,8 +254,8 @@ def sector_concept(base: BaseIdentity, index: CodeIndex) -> str | None:
     if bound is None:
         return None
     prop, codes = bound
-    grouping = _grouping_holding(prop, codes)
-    if grouping is not None and codes == grouping.codes:
+    grouping = grouping_of(prop, codes)
+    if grouping is not None:
         return grouping.concept
     rows = [index.code_by_dcid(code) for code in codes]
     if any(row is None for row in rows):

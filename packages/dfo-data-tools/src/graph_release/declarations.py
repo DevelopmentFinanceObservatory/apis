@@ -50,6 +50,7 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (code_index_declarations, "CODE_SYNONYMS"),
     (code_index_declarations, "COMPOSITES"),
     (code_index_declarations, "CONCEPT_GROUPS"),
+    (code_index_declarations, "CONTAINING_TOTALS"),
     (code_index_declarations, "DECLARED_MEASURE_VALUES"),
     (code_index_declarations, "MEASURE_VALUE_TEXT"),
     (code_index_declarations, "MEASURE_WORD_SYNONYMS_KEPT"),
@@ -71,7 +72,8 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
 )
 """The tables read from their modules rather than passed as arguments, each with its module:
 the `code_index.declarations` tables `code_index.export` reads, the composites
-`code_index.loader.parse_index` serves (`COMPOSITES`), and the
+`code_index.loader.parse_index` serves (`COMPOSITES`), the totals `search` binds on an open
+flow side (`CONTAINING_TOTALS`), and the
 `code_index.scope_conventions` tables `search.scope` reads. Every name is unique across
 modules, since `declarations_json` keys each table by its name alone."""
 
@@ -129,9 +131,9 @@ class Declarations:
 
 def _plain(value: object) -> object:
     """`value` as JSON values: a dataclass as an object of its fields, a mapping as an object
-    (an integer key as its decimal text), a set as a sorted array, a compiled pattern as its
-    pattern and flags. Raises `TypeError` for anything else that JSON cannot hold, and for a
-    mapping key that is neither a string nor an integer."""
+    (an integer key as its decimal text, a tuple of strings as its JSON array text), a set as
+    a sorted array, a compiled pattern as its pattern and flags. Raises `TypeError` for
+    anything else that JSON cannot hold, and for a mapping key of any other type."""
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             field.name: _plain(getattr(value, field.name)) for field in dataclasses.fields(value)
@@ -139,12 +141,16 @@ def _plain(value: object) -> object:
     if isinstance(value, re.Pattern):
         return {"pattern": value.pattern, "flags": int(value.flags)}
     if isinstance(value, Mapping):
-        keys = [key for key in value if not isinstance(key, str | int)]
+        keys = [key for key in value if not _plain_key(key)]
         if keys:
             raise TypeError(
-                f"declaration mapping keys must be strings or integers; got {keys[:5]!r}"
+                "declaration mapping keys must be strings, integers or tuples of strings; "
+                f"got {keys[:5]!r}"
             )
-        return {str(key): _plain(item) for key, item in value.items()}
+        return {
+            json.dumps(list(key)) if isinstance(key, tuple) else str(key): _plain(item)
+            for key, item in value.items()
+        }
     if isinstance(value, frozenset | set):
         return sorted(cast("list[str]", [_plain(item) for item in value]))
     if isinstance(value, tuple | list):
@@ -152,6 +158,14 @@ def _plain(value: object) -> object:
     if value is None or isinstance(value, str | int | float):
         return value
     raise TypeError(f"cannot serialise a declaration of type {type(value).__name__}")
+
+
+def _plain_key(key: object) -> bool:
+    """Whether `_plain` writes `key` as an object key: a string, an integer or a tuple of
+    strings."""
+    if isinstance(key, tuple):
+        return all(isinstance(part, str) for part in key)
+    return isinstance(key, str | int)
 
 
 DECLARATIONS: Final[Declarations] = Declarations(
