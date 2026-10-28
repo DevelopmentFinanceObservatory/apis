@@ -1,5 +1,6 @@
-"""The analysis door through the app factory: the ready body and its stored frame, a rerun, the
-pending answer, refusals with their fix, the anchor route, and a full analysis pool.
+"""The analysis door through the app factory: the ready body and its stored frame, a rerun
+answered from its stored body, a request joining a run of its key, the pending answer, refusals
+with their fix, the anchor route, and a full analysis pool.
 
 The door's roots come from a double source (`_analysis_doubles.FakeRootSource`) in place of
 `LiveRootSource`; the frame, its version and its recipe go through the live store SQL."""
@@ -10,9 +11,11 @@ import threading
 from typing import Any
 
 import pytest
+from dfo_frame_grammar import Frame
 from fastapi.testclient import TestClient
 
 import datasets_api.doors.analysis as analysis_door
+from datasets_api.analysis import ResolvedRoot, RootExpired
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
@@ -58,13 +61,15 @@ def _client(
     )
 
 
-def test_a_tree_answers_its_stored_frame_and_a_rerun_answers_the_same(
+def test_a_tree_answers_its_stored_frame_and_a_rerun_answers_the_same_reading_no_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stores = Stores()
-    with _client(stores, source(stores), monkeypatch) as client:
+    roots = source(stores)
+    with _client(stores, roots, monkeypatch) as client:
         first = client.post(_PATH, json={"tree": _TREE})
         versions = stores.version_count()
+        reads = roots.reads
         again = client.post(_PATH, json={"tree": _TREE})
 
     assert first.status_code == 200, first.text
@@ -80,6 +85,8 @@ def test_a_tree_answers_its_stored_frame_and_a_rerun_answers_the_same(
     assert stores.snapshot_reader.read_version(member["spec"]["spec_id"], member["content_version"])
     assert again.json() == body
     assert stores.version_count() == versions
+    assert reads == 2
+    assert roots.reads == reads
 
 
 def test_a_root_still_building_answers_202_with_retry_after(
@@ -176,3 +183,73 @@ def test_a_full_analysis_pool_refuses_503(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert refused.status_code == 503, refused.text
     assert refused.json()["code"] == "service_unavailable"
+
+
+class _ReadBlockingSource(FakeRootSource):
+    """Holds every frame read until `release` is set."""
+
+    def __init__(self, base: FakeRootSource) -> None:
+        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def read(self, root: ResolvedRoot) -> Frame:
+        self.entered.set()
+        assert self.release.wait(5)
+        return super().read(root)
+
+
+def test_a_request_whose_key_is_running_joins_it_with_202_reading_no_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    roots = _ReadBlockingSource(source(stores))
+    with _client(stores, roots, monkeypatch) as client:
+        answers: list[Any] = []
+        held = threading.Thread(
+            target=lambda: answers.append(client.post(_PATH, json={"tree": _TREE}))
+        )
+        held.start()
+        assert roots.entered.wait(5)
+        joined = client.post(_PATH, json={"tree": _TREE})
+        reads = roots.reads
+        roots.release.set()
+        held.join(5)
+        stored = client.post(_PATH, json={"tree": _TREE})
+
+    assert joined.status_code == 202, joined.text
+    assert joined.json() == {"status": "pending", "retry_after_s": 5.0, "operations": []}
+    assert joined.headers["retry-after"] == "5"
+    assert reads == 0
+    assert answers[0].status_code == 200, answers[0].text
+    assert stored.json() == answers[0].json()
+
+
+class _FailingOnceSource(FakeRootSource):
+    """Refuses the first frame read as expired."""
+
+    def __init__(self, base: FakeRootSource) -> None:
+        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
+        self.failed = False
+
+    def read(self, root: ResolvedRoot) -> Frame:
+        if not self.failed:
+            self.failed = True
+            raise RootExpired(
+                spec_id=root.dataset.spec_id,
+                content_version=root.dataset.content_version,
+                reason="expired",
+            )
+        return super().read(root)
+
+
+def test_a_run_that_fails_releases_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    stores = Stores()
+    roots = _FailingOnceSource(source(stores))
+    with _client(stores, roots, monkeypatch) as client:
+        failed = client.post(_PATH, json={"tree": _TREE})
+        retried = client.post(_PATH, json={"tree": _TREE})
+
+    assert failed.json()["code"] == "artifact_expired", failed.text
+    assert retried.status_code == 200, retried.text
+    assert roots.reads == 2

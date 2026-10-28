@@ -1,10 +1,14 @@
 """The shares door: every publication rule vector over HTTP, the share allowance, pinning on
-create and replace, ids kept from the website, and take-down."""
+create and replace, ids kept from the website, take-down, and a burst of reads over its
+executor."""
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Iterator
 from datetime import datetime
+from typing import Any
 
 import pytest
 from dfo_client_contract import rule
@@ -21,8 +25,10 @@ from dfo_platform.app import create_app
 from dfo_platform.caller import Caller, address_key
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
+from presentation_api.config import PRESENTATION_COMPONENTS_MAX_CONCURRENCY
+from presentation_api.doors import shares as shares_door
 from presentation_api.doors.shares import MAX_SHARE_PAYLOAD_BYTES, build_shares_door
-from presentation_store import LiveShareStore, ShareCard
+from presentation_store import LiveShareStore, ShareCard, ShareRecord
 from tests.presentation_store.conftest import FakePresentationStore
 
 _SITE = "https://site.example"
@@ -592,3 +598,88 @@ def test_every_share_route_handler_is_a_module_level_function():
 
     assert len(routes) == 8
     assert all("<locals>" not in getattr(route.endpoint, "__qualname__", "") for route in routes)
+
+
+class _GatedShareStore(LiveShareStore):
+    """Holds every share read until `gate` is set, counting the reads holding a thread."""
+
+    def __init__(self) -> None:
+        super().__init__(store=FakePresentationStore())
+        self.gate = threading.Event()
+        self.gate.set()
+        self.full = threading.Event()
+        self._lock = threading.Lock()
+        self._held = 0
+
+    def read_share(self, *, share_id: str) -> ShareRecord:
+        with self._lock:
+            self._held += 1
+            if self._held == PRESENTATION_COMPONENTS_MAX_CONCURRENCY:
+                self.full.set()
+        try:
+            assert self.gate.wait(5)
+            return super().read_share(share_id=share_id)
+        finally:
+            with self._lock:
+                self._held -= 1
+
+
+@pytest.fixture
+def gated(release_registry: FakeReleaseRegistry, frame_store: FakeFrameStore) -> Iterator[_Door]:
+    share_store = _GatedShareStore()
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=FakeRevisionStore(),
+        release_registry=release_registry,
+        share_store=share_store,
+        allowances=_Allowances(limit=50),
+        caller_settings=CallerSettings(caller_hmac_key=SecretStr(_HMAC_KEY)),
+    )
+    with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
+        yield _Door(client, share_store=share_store, allowances=None, frame_store=frame_store)
+
+
+def _hold_every_thread(door: _Door, share_id: str) -> list[threading.Thread]:
+    """Start one read per executor thread and return once every one holds its thread."""
+    store = door.share_store
+    store.gate.clear()
+    held = [
+        threading.Thread(target=door.read, args=(share_id,))
+        for _ in range(PRESENTATION_COMPONENTS_MAX_CONCURRENCY)
+    ]
+    for thread in held:
+        thread.start()
+    assert store.full.wait(5)
+    return held
+
+
+def test_a_read_past_the_executor_waits_for_a_thread_and_is_served(gated: _Door):
+    share_id = gated.share(["cmp_a"], latest=False).json()["id"]
+    held = _hold_every_thread(gated, share_id)
+    answers: list[Any] = []
+    waiting = threading.Thread(target=lambda: answers.append(gated.read(share_id)))
+    waiting.start()
+    # Long enough for the read to reach the full executor, where it used to refuse at once.
+    time.sleep(0.3)
+    gated.share_store.gate.set()
+    for thread in (*held, waiting):
+        thread.join(5)
+
+    assert answers[0].status_code == 200, answers[0].json()
+
+
+def test_a_read_that_waits_past_the_admission_wait_refuses_503(
+    gated: _Door, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(shares_door, "SHARES_ADMISSION_WAIT_SECONDS", 0.1)
+    share_id = gated.share(["cmp_a"], latest=False).json()["id"]
+    held = _hold_every_thread(gated, share_id)
+    try:
+        refused = gated.read(share_id)
+    finally:
+        gated.share_store.gate.set()
+        for thread in held:
+            thread.join(5)
+
+    body = _assert_refused(refused, status=503, code="service_unavailable")
+    assert body["retryable"] is True

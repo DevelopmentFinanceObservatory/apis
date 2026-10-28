@@ -49,7 +49,9 @@ from datasets_api.operations import worker as worker_module
 from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.worker import OperationSuperseded, run_operation
 from datasets_api.principals import Principal
+from datasets_api.recipe_store import AnswerRecord, LiveRecipeStore
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import (
     ArtifactRecord,
@@ -802,6 +804,39 @@ def test_version_revocation_fk_rejects_an_unknown_version(live_store):
             "INSERT INTO datasets.version_revocation "
             "(subject_id, content_version, revoked_at) VALUES (%s, %s, now())",
             ("spec:does-not-exist", "cv1"),
+        )
+
+
+def test_an_analysis_answer_is_replaced_under_its_key_and_names_a_stored_version(live_store):
+    subject_id = f"ops_{uuid4().hex}"
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_record "
+            "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+            "recorded_at) VALUES (%s, %s, %s, %s, %s, now())",
+            (subject_id, "spec", "ocv1", 1, {"prepared_at": "2026-01-01T00:00:00Z"}),
+        )
+    answers = LiveRecipeStore(store=live_store)
+    key = uuid4().hex
+    answers.write_answer(
+        AnswerRecord(request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 1})
+    )
+    answers.write_answer(
+        AnswerRecord(request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 2})
+    )
+
+    assert answers.read_answer(request_key=key) == AnswerRecord(
+        request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 2}
+    )
+    assert answers.read_answer(request_key=uuid4().hex) is None
+    with pytest.raises(DatasetsStoreUnavailable):
+        answers.write_answer(
+            AnswerRecord(
+                request_key=uuid4().hex,
+                spec_id="ops_does-not-exist",
+                content_version="ocv1",
+                body={},
+            )
         )
 
 

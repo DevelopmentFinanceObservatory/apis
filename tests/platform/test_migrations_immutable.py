@@ -101,6 +101,9 @@ _DATASET_STORE = {
     "0040_caller_allowance_budgets.sql": (
         "29c6abfdfae3f078aa2f1d1de79cd745e116aca295707629567ccfa54938bbc7"
     ),
+    "0041_analysis_answer.sql": (
+        "f2868dc1a5d525e7d1d37415e53f339f649a9ae967e86a2ce285a94e0115df99"
+    ),
 }
 
 _PRESENTATION_STORE = {

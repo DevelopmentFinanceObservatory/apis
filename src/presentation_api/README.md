@@ -526,4 +526,4 @@ The surface mounts through the platform application factory when `DFO_PRESENTATI
 
 ### Concurrency and Thread Pools
 
-Component and frame operations execute in dedicated `ThreadPoolExecutor` instances with bounded semaphores (`PRESENTATION_COMPONENTS_MAX_CONCURRENCY` and `PRESENTATION_FRAMES_MAX_CONCURRENCY`). When execution permits are saturated, incoming requests return HTTP `503` with problem code `service_unavailable` immediately.
+Component and frame operations execute in dedicated `ThreadPoolExecutor` instances with bounded semaphores (`PRESENTATION_COMPONENTS_MAX_CONCURRENCY` and `PRESENTATION_FRAMES_MAX_CONCURRENCY`). When execution permits are saturated, component and frame requests return HTTP `503` with problem code `service_unavailable` immediately. The shares door runs on its own executor of `PRESENTATION_COMPONENTS_MAX_CONCURRENCY` threads, and a share request that finds every thread busy waits up to `SHARES_ADMISSION_WAIT_SECONDS` (5 s) for one before it returns the same `503`, so a share page reading more slots than the executor holds is served.

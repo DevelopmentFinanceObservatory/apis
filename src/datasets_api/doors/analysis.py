@@ -24,14 +24,24 @@ still refuses, as on every route that resolves callers. Every Datasets code the 
 goes out at the status the code registry maps on `datasets.analysis`. A run takes a thread of
 the analysis executor (`DATASETS_ANALYSIS_MAX_CONCURRENCY`), refusing retryable `service_unavailable`
 (503) when every thread is busy, and one materialise permit for its frames; it answers timeout
-(504) after `DATASETS_ANALYSIS_TIMEOUT_SECONDS`.
+(504) after `DATASETS_ANALYSIS_TIMEOUT_SECONDS`, and its thread runs on to store the frame.
+
+A run is keyed (`analysis.prepare_analysis`) before it takes its materialise permit. A key that
+holds a stored answer whose frame file is still served answers that body
+(`analysis.stored_answer`). A key another request of this process is computing answers the
+pending body, 202 with `Retry-After` 5 and no operations, so a retry after a timeout joins the
+one run and later finds its answer stored. The key is released when the run ends, whether it
+succeeds or fails.
 """
 
 from __future__ import annotations
 
 import functools
 import logging
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request
@@ -53,8 +63,10 @@ from datasets_api.analysis import (
     RootRecipeMissing,
     RootRenderingUnreadable,
     SeveralMembers,
-    run_analysis,
+    prepare_analysis,
     run_anchor,
+    run_prepared,
+    stored_answer,
 )
 from datasets_api.analysis_roots import LiveRootSource
 from datasets_api.backpressure import Backpressure
@@ -234,18 +246,60 @@ def analysis_permit(current: Deps, deps: DefinitionDeps) -> functools.partial[An
     )
 
 
+# The `Retry-After` of a request that joins a run already computing its key.
+_JOIN_RETRY_AFTER_S = 5.0
+
+
+class _RunningAnalyses:
+    """The request keys this process is computing."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._keys: set[str] = set()
+
+    @contextmanager
+    def claim(self, key: str) -> Iterator[None]:
+        """Hold `key` while the block runs, and release it however the block ends.
+
+        Raises:
+            AnalysisPending: Another request holds `key`, with no operations and
+                `_JOIN_RETRY_AFTER_S`.
+        """
+        with self._lock:
+            if key in self._keys:
+                raise AnalysisPending(operations=(), retry_after_s=_JOIN_RETRY_AFTER_S)
+            self._keys.add(key)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._keys.discard(key)
+
+
 def _analysis_job(
-    *, deps: DefinitionDeps, current: Deps, body: AnalysisRequest, trace_id: str | None
+    *,
+    deps: DefinitionDeps,
+    current: Deps,
+    body: AnalysisRequest,
+    trace_id: str | None,
+    running: _RunningAnalyses,
 ) -> dict[str, Any]:
-    result = run_analysis(
-        body,
-        source=LiveRootSource(deps=deps, recipes=current.recipe_store),
-        stores=analysis_stores(current),
-        bounds=analysis_bounds(current),
-        permit=analysis_permit(current, deps),
-        trace_id=trace_id,
-    )
-    return AnalysisReady.model_validate(result.body()).model_dump(mode="json")
+    source = LiveRootSource(deps=deps, recipes=current.recipe_store)
+    stores = analysis_stores(current)
+    bounds = analysis_bounds(current)
+    prepared = prepare_analysis(body, source=source, bounds=bounds, trace_id=trace_id)
+    answer = stored_answer(prepared, stores=stores)
+    if answer is None:
+        with running.claim(prepared.key):
+            answer = run_prepared(
+                prepared,
+                source=source,
+                stores=stores,
+                bounds=bounds,
+                permit=analysis_permit(current, deps),
+                trace_id=trace_id,
+            ).body()
+    return AnalysisReady.model_validate(answer).model_dump(mode="json")
 
 
 def _anchor_job(
@@ -276,6 +330,7 @@ class _AnalysisRoutes:
 
     def __init__(self, cell: DepsCell) -> None:
         self._cell = cell
+        self._analysis_job = functools.partial(_analysis_job, running=_RunningAnalyses())
 
     async def _run(self, job: Any, *, name: str, request: Request, body: BaseModel) -> JSONResponse:
         current = self._cell.get()
@@ -311,7 +366,7 @@ class _AnalysisRoutes:
     async def post_analysis(self, body: AnalysisRequest, request: Request) -> JSONResponse:
         """Compute a recipe tree and store its frame. Answers the stored frame's format 2 ref,
         `pending` while a root builds, or the refusal with its fix."""
-        return await self._run(_analysis_job, name="analysis", request=request, body=body)
+        return await self._run(self._analysis_job, name="analysis", request=request, body=body)
 
     async def post_anchor(self, body: AnchorRequest, request: Request) -> JSONResponse:
         """The latest period of the roots over the populations, and the series it leaves

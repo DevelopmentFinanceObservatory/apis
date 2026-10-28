@@ -62,6 +62,13 @@ the frame file (`render.FRAME_FILE_OPTIONS`), as a dataset ref names the file it
 series a step of the tree dropped for a data gap (`left_out_of`), which the derived reads serve
 (`datasets_api.derived`). `compute_analysis` computes a tree as a run does and stores nothing.
 
+A run is prepared (`prepare_analysis`) before any frame is read: its roots resolved and its
+request key (`request_key`) taken, a hash of the working tree as sent, each resolved root's
+record, `latest`, the engine's execution identity and the answer format (`ANSWER_FORMAT`). The
+run (`run_prepared`) stores its 200 body under that key (`RecipeStore.write_answer`) once its
+frame is stored, so a later request with the same key answers the stored body
+(`stored_answer`) while the frame file it names is still served, reading no frame.
+
 Bounds: a tree holds at most `max_nodes` nodes after expansion, its root frames at most
 `max_root_rows` rows together, and a `join` writes at most `max_join_rows`. Every other verb
 writes no more rows than its `data` side holds, so these bound every intermediate frame. The root
@@ -75,12 +82,14 @@ time.
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Protocol
 
+import rfc8785
 from dfo_descriptions import MAX_STEPS_BYTES, StepsError, check_steps, steps_bytes
 from dfo_frame_grammar import Frame, FrameError, RollingError, shift_period
 from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN
@@ -113,7 +122,7 @@ from datasets_api.publish_models import (
     RecipeLeftOut,
     RecipeStepRef,
 )
-from datasets_api.recipe_store import RecipeStore
+from datasets_api.recipe_store import AnswerRecord, RecipeStore
 from datasets_api.render import frame_file_location
 from datasets_api.versions import VersionRecordWriter
 from description.steps import Step
@@ -127,6 +136,7 @@ from dfo_analysis_engine.evaluate import (
     evaluate,
     latest_period_of,
 )
+from dfo_analysis_engine.execution_identity import current_execution_identity
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.op_spec import Populations, Verb
 from dfo_analysis_engine.recipe import (
@@ -1468,8 +1478,89 @@ def compute_analysis(
         return _evaluated(working, resolved, source=source, bounds=bounds, latest=request.latest)
 
 
-def run_analysis(
+# The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so a
+# body of another shape is never answered. Raise it whenever the body changes.
+ANSWER_FORMAT = "analysis_answer/1"
+
+
+def _keyed_tree(node: object) -> object:
+    """The working tree with each step node as its verb and arguments, the JSON a key hashes."""
+    if isinstance(node, StepNode):
+        return node.model_dump(mode="json", exclude={"inputs"})
+    if isinstance(node, Mapping):
+        return {key: _keyed_tree(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_keyed_tree(value) for value in node]
+    return node
+
+
+def request_key(
+    working: Mapping[str, Any], resolved: Sequence[ResolvedRoot], *, latest: bool
+) -> str:
+    """The key a run's answer is stored under: the sha256 of the canonical JSON of the working
+    tree, each resolved root's record, `latest`, the execution identity and `ANSWER_FORMAT`.
+    Two requests under one key compute one frame and answer one body."""
+    preimage = {
+        "answer_format": ANSWER_FORMAT,
+        "tree": _keyed_tree(working),
+        "roots": [dict(root.record) for root in resolved],
+        "latest": latest,
+        "execution_identity": current_execution_identity().canonical_string(),
+    }
+    return hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()
+
+
+@dataclass(frozen=True, kw_only=True)
+class PreparedAnalysis:
+    """A request planned and resolved, no frame read: its working tree, its roots at the
+    versions they are read at, and its request key."""
+
+    working: dict[str, Any]
+    resolved: tuple[ResolvedRoot, ...]
+    latest: bool
+    key: str
+
+
+def prepare_analysis(
     request: AnalysisRequest,
+    *,
+    source: RootSource,
+    bounds: AnalysisBounds = _DEFAULT_BOUNDS,
+    trace_id: str | None = None,
+) -> PreparedAnalysis:
+    """Plan `request`'s tree, resolve its roots and take its request key, reading no frame.
+
+    Raises:
+        AnalysisPending: A root is still building.
+        SeveralMembers, FrameUnavailable, AnalysisTooLarge: As their docstrings say.
+    """
+    working, roots = plan_roots(request, source=source, bounds=bounds)
+    resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
+    return PreparedAnalysis(
+        working=working,
+        resolved=tuple(resolved),
+        latest=request.latest,
+        key=request_key(working, resolved, latest=request.latest),
+    )
+
+
+def stored_answer(prepared: PreparedAnalysis, *, stores: AnalysisStores) -> dict[str, Any] | None:
+    """The body stored under `prepared`'s key while its frame file is still served at the
+    digest the body's ref names, else `None`."""
+    stored = stores.recipe_store.read_answer(request_key=prepared.key)
+    if stored is None:
+        return None
+    served = _stored_file_digest(
+        stores, spec_id=stored.spec_id, content_version=stored.content_version
+    )
+    body: dict[str, Any] = dict(stored.body)
+    if served is None or served != body["ref"]["members"][0]["artifact"]["digest"]:
+        return None
+    return body
+
+
+def run_prepared(
+    prepared: PreparedAnalysis,
     *,
     source: RootSource,
     stores: AnalysisStores,
@@ -1477,22 +1568,23 @@ def run_analysis(
     permit: Callable[[], AbstractContextManager[object]] = nullcontext,
     trace_id: str | None = None,
 ) -> AnalysisResult:
-    """Compute and store `request`'s tree. See the module docstring.
+    """Compute and store `prepared`'s tree, then store its body under its request key.
 
     Raises:
         AnalysisRefused: The engine refuses the tree.
-        AnalysisPending: A root is still building.
-        SeveralMembers, FrameUnavailable, AnalysisTooLarge: As their docstrings say.
+        AnalysisTooLarge, AnalysisStoreDiverges: As their docstrings say.
     """
-    working, roots = plan_roots(request, source=source, bounds=bounds)
-    resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
     with permit():
         computed = _evaluated(
-            working, resolved, source=source, bounds=bounds, latest=request.latest
+            prepared.working,
+            prepared.resolved,
+            source=source,
+            bounds=bounds,
+            latest=prepared.latest,
         )
         evaluation = computed.evaluation
         artifact_digest, created = _store(evaluation, computed.roots, stores, trace_id=trace_id)
-    return AnalysisResult(
+    result = AnalysisResult(
         evaluation=evaluation,
         frame_content_version=evaluation.summary["frame_content_version"],
         output_digest=computed.output_digest,
@@ -1503,6 +1595,37 @@ def run_analysis(
             rule=None if evaluation.resolved_periods is None else evaluation.resolved_periods.rule,
         ),
         created=created,
+    )
+    stores.recipe_store.write_answer(
+        AnswerRecord(
+            request_key=prepared.key,
+            spec_id=evaluation.ref.spec_id,
+            content_version=evaluation.ref.content_version,
+            body=result.body(),
+        )
+    )
+    return result
+
+
+def run_analysis(
+    request: AnalysisRequest,
+    *,
+    source: RootSource,
+    stores: AnalysisStores,
+    bounds: AnalysisBounds = _DEFAULT_BOUNDS,
+    permit: Callable[[], AbstractContextManager[object]] = nullcontext,
+    trace_id: str | None = None,
+) -> AnalysisResult:
+    """Prepare, compute and store `request`'s tree. See the module docstring.
+
+    Raises:
+        AnalysisRefused: The engine refuses the tree.
+        AnalysisPending: A root is still building.
+        SeveralMembers, FrameUnavailable, AnalysisTooLarge: As their docstrings say.
+    """
+    prepared = prepare_analysis(request, source=source, bounds=bounds, trace_id=trace_id)
+    return run_prepared(
+        prepared, source=source, stores=stores, bounds=bounds, permit=permit, trace_id=trace_id
     )
 
 
@@ -1557,6 +1680,7 @@ def run_anchor(
 
 
 __all__ = [
+    "ANSWER_FORMAT",
     "ROOT_MINT_OPTIONS",
     "AnalysisBounds",
     "AnalysisPending",
@@ -1570,6 +1694,7 @@ __all__ = [
     "DatasetRoot",
     "DerivedRoot",
     "FrameUnavailable",
+    "PreparedAnalysis",
     "RefRoot",
     "ResolvedRoot",
     "RootExpired",
@@ -1586,10 +1711,14 @@ __all__ = [
     "described_steps",
     "left_out_of",
     "plan_roots",
+    "prepare_analysis",
     "recorded_dataset_root",
+    "request_key",
     "resolve_roots",
     "resolved_periods",
     "role_columns",
     "run_analysis",
     "run_anchor",
+    "run_prepared",
+    "stored_answer",
 ]

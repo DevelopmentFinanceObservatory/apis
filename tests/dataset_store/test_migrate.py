@@ -400,6 +400,7 @@ def test_apply_pending_applies_every_real_migration_in_order():
         "0038_version_record_frame_summed.sql",
         "0039_caller_allowance.sql",
         "0040_caller_allowance_budgets.sql",
+        "0041_analysis_answer.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert any("CREATE TABLE datasets.version_record" in sql for sql in statements)
@@ -413,6 +414,7 @@ def test_apply_pending_applies_every_real_migration_in_order():
     assert any("CREATE TABLE datasets.version_revocation" in sql for sql in statements)
     assert any("CREATE TABLE datasets.artifact_reference" in sql for sql in statements)
     assert any("CREATE TABLE datasets.caller_allowance" in sql for sql in statements)
+    assert any("CREATE TABLE IF NOT EXISTS datasets.analysis_answer" in sql for sql in statements)
     assert any(
         "CREATE INDEX artifact_location_tier_idx ON datasets.artifact_location" in sql
         for sql in statements

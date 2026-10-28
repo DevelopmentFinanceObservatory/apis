@@ -23,7 +23,10 @@ from datasets_api.analysis import (
     RootRecipeMissing,
     SeveralMembers,
     column_for,
+    prepare_analysis,
     run_analysis,
+    run_prepared,
+    stored_answer,
 )
 from datasets_api.doors.analysis import classify_analysis_exception
 from datasets_api.output_digest import output_digest
@@ -234,6 +237,27 @@ def test_a_rerun_stores_nothing_new() -> None:
     assert again.artifact_digest == first.artifact_digest
     assert again.ref() == first.ref()
     assert stores.version_count() == versions
+
+
+def test_a_stored_answer_stands_while_its_frame_file_is_served_and_is_recomputed_after() -> None:
+    stores = Stores()
+    roots = source(stores)
+    request = AnalysisRequest.model_validate({"tree": _PER_PERSON})
+    first = run_analysis(request, source=roots, stores=stores.analysis())
+    reads = roots.reads
+
+    prepared = prepare_analysis(request, source=roots)
+
+    assert stored_answer(prepared, stores=stores.analysis()) == first.body()
+    assert roots.reads == reads
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s", ("2020-01-01T00:00:00+00:00",)
+        )
+    assert stored_answer(prepared, stores=stores.analysis()) is None
+    again = run_prepared(prepared, source=roots, stores=stores.analysis())
+    assert roots.reads > reads
+    assert stored_answer(prepared, stores=stores.analysis()) == again.body()
 
 
 def test_columns_listed_in_another_order_name_the_same_frame_and_recipe() -> None:

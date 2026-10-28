@@ -101,7 +101,8 @@ class DatasetsBuildSettings(BaseSettings):
     analysis_max_concurrency: int = Field(default=2, ge=1)
 
     # A run's deadline, from admission to its answer. A run past it answers timeout (504,
-    # retryable); its thread finishes and stores its frame, so a retry finds it stored.
+    # retryable) and its thread finishes and stores its frame and answer. A retry while it runs
+    # joins it (202, `Retry-After` 5), and a retry after it ends answers the stored body.
     analysis_timeout_seconds: float = Field(default=120, gt=0)
 
     # The most nodes one tree holds, steps and roots, after each derived root is expanded into

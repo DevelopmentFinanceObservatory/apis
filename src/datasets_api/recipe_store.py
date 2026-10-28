@@ -14,6 +14,11 @@ two writers of one frame can differ in display text the hashes leave out. A diff
 identity. Two instances replaying one card mint the same frame pair, so one key names one
 frame. A write naming a key another pair holds raises `ReplayKeyHeld`.
 
+An analysis answer (`AnswerRecord`) is the 200 body of `POST /api/datasets/analysis`, kept in
+`datasets.analysis_answer` under the run's request key (`datasets_api.analysis.request_key`)
+beside the frame pair it names. `write_answer` replaces the key's row, so a recomputed answer
+stands in for one whose frame file is no longer served.
+
 Store errors become `DatasetsStoreUnavailable` after the transaction exits.
 """
 
@@ -53,6 +58,16 @@ class ReplayedFrame:
 
     spec_id: str
     content_version: str
+
+
+@dataclass(frozen=True)
+class AnswerRecord:
+    """An analysis run's 200 body under its request key, and the frame pair it names."""
+
+    request_key: str
+    spec_id: str
+    content_version: str
+    body: Mapping[str, object]
 
 
 class RecipeRefusal(Refusal):
@@ -145,6 +160,14 @@ class RecipeStore(RecipeReader, Protocol):
 
     def read_replay(self, *, replay_key: str) -> ReplayedFrame | None:
         """Return the frame stored under `replay_key`, or `None` when no recipe carries it."""
+        ...
+
+    def read_answer(self, *, request_key: str) -> AnswerRecord | None:
+        """Return the analysis answer stored under `request_key`, or `None`."""
+        ...
+
+    def write_answer(self, record: AnswerRecord) -> None:
+        """Store `record` under its request key, replacing the key's row."""
         ...
 
 
@@ -259,6 +282,51 @@ class LiveRecipeStore:
             spec_id=cast(str, row["subject_id"]),
             content_version=cast(str, row["content_version"]),
         )
+
+    def read_answer(self, *, request_key: str) -> AnswerRecord | None:
+        row = self._fetch_one(
+            "SELECT subject_id, content_version, body FROM datasets.analysis_answer "
+            "WHERE request_key = %s",
+            (request_key,),
+            reading=f"analysis answer {request_key!r}",
+        )
+        if row is None:
+            return None
+        return AnswerRecord(
+            request_key=request_key,
+            spec_id=cast(str, row["subject_id"]),
+            content_version=cast(str, row["content_version"]),
+            body=cast(Mapping[str, object], row["body"]),
+        )
+
+    def write_answer(self, record: AnswerRecord) -> None:
+        failure: str | None = None
+        sqlstate: str | None = None
+        try:
+            with self._store.transaction() as tx:
+                tx.execute(
+                    "INSERT INTO datasets.analysis_answer "
+                    "(request_key, subject_id, content_version, body, recorded_at) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "ON CONFLICT (request_key) DO UPDATE SET "
+                    "subject_id = EXCLUDED.subject_id, "
+                    "content_version = EXCLUDED.content_version, "
+                    "body = EXCLUDED.body, recorded_at = EXCLUDED.recorded_at",
+                    (
+                        record.request_key,
+                        record.spec_id,
+                        record.content_version,
+                        dict(record.body),
+                        self._now(),
+                    ),
+                )
+        except Exception as exc:
+            failure = (
+                f"writing analysis answer {record.request_key!r} failed: {safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
 
     def _fetch_one(
         self, sql: str, params: tuple[object, ...], *, reading: str

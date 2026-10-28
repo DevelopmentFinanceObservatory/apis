@@ -78,7 +78,9 @@ card's frame that is gone answers 404 `frame_unavailable`, and a frame read that
 retryable 503 `service_unavailable`.
 
 Handlers are module-level functions that read `SHARES_DEPS_SLOT`, which the door's lifespan
-sets. Every route runs on one executor behind a non-blocking semaphore, and saturation answers
+sets. Every route runs on one executor of `PRESENTATION_COMPONENTS_MAX_CONCURRENCY` threads. A
+request that finds every thread busy waits up to `SHARES_ADMISSION_WAIT_SECONDS` for one, so a
+share page reading more slots than the executor holds is served, and past the wait it answers
 retryable 503.
 """
 
@@ -370,9 +372,13 @@ class SharePayloadTooLarge(Exception):
     """A create's payload is over `MAX_SHARE_PAYLOAD_BYTES`. Maps to 413 `payload_too_large`."""
 
 
+# How long a request waits for a thread of the shares executor before it answers 503.
+SHARES_ADMISSION_WAIT_SECONDS = 5.0
+
+
 class SharesUnavailable(Exception):
-    """The door is at capacity, or its lifespan has not set its dependencies. Maps to
-    retryable 503 `service_unavailable`."""
+    """No executor thread came free within `SHARES_ADMISSION_WAIT_SECONDS`, or the lifespan has
+    not set the door's dependencies. Maps to retryable 503 `service_unavailable`."""
 
     def __init__(self) -> None:
         super().__init__("the shares door cannot take this request right now; retry")
@@ -540,7 +546,9 @@ def _read_document(share: ShareRecord, *, site: str) -> dict[str, object]:
 async def _run[R: Response](deps: SharesDeps, job: Callable[[], R], /) -> R:
     with frame_reads_bounded_by(timeout_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS):
         return await asyncio.wait_for(
-            deps.executor.run(job, refuse=SharesUnavailable),
+            deps.executor.run(
+                job, refuse=SharesUnavailable, wait_seconds=SHARES_ADMISSION_WAIT_SECONDS
+            ),
             timeout=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS,
         )
 
