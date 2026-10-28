@@ -44,9 +44,11 @@ A run (`run_analysis`) resolves every root first, so a root still building answe
 `AnalysisPending` with every rebuild it waits on submitted. It then holds one materialise permit
 while it reads the root frames, evaluates the tree (`dfo_analysis_engine.evaluate`), takes the
 output digest (`datasets_api.output_digest`) and stores the result: the frame through
-`publish_built_frame` and its recipe through the recipe store, unless the frame is stored and
-servable already, in which case it writes the recipe alone, which the store keeps once. A rerun
-of one tree on the same roots therefore stores nothing new. The recipe carries `left_out`, every
+`publish_built_frame`, as its canonical frame and its bare frame-layout Parquet file, and its
+recipe through the recipe store, unless the frame file is stored and servable already, in which
+case it writes the recipe alone, which the store keeps once. A rerun of one tree on the same
+roots therefore stores nothing new and answers the same ref. The ref's `artifact.digest` names
+the frame file (`render.FRAME_FILE_OPTIONS`), as a dataset ref names the file it was read as. The recipe carries `left_out`, every
 series a step of the tree dropped for a data gap (`left_out_of`), which the derived reads serve
 (`datasets_api.derived`). `compute_analysis` computes a tree as a run does and stores nothing.
 
@@ -92,7 +94,7 @@ from datasets_api.publish_models import (
     RecipeStepRef,
 )
 from datasets_api.recipe_store import RecipeStore
-from datasets_api.render import stored_frame_location
+from datasets_api.render import frame_file_location
 from datasets_api.versions import VersionRecordWriter
 from dfo_analysis_engine.anchor import ResolvedPeriods, latest_period
 from dfo_analysis_engine.calls import admit
@@ -547,7 +549,7 @@ class AnalysisResult:
                     "resolved_periods": list(self.resolved_periods),
                     "artifact": {
                         "digest": self.artifact_digest,
-                        "rendering": {"format": "parquet", "bundle": False},
+                        "rendering": {"format": "parquet", "bundle": False, "layout": "frame"},
                     },
                 }
             ],
@@ -1070,14 +1072,15 @@ def _recipe(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> Recipe:
     )
 
 
-def _stored_frame_digest(
+def _stored_file_digest(
     stores: AnalysisStores, *, spec_id: str, content_version: str
 ) -> str | None:
-    """The digest of the servable stored frame of a recorded pair, or `None`."""
+    """The digest of the servable frame file (`render.frame_file_location`) of a recorded pair,
+    or `None`."""
     if stores.snapshot_reader.read_version(spec_id, content_version) is None:
         return None
     locations = stores.snapshot_reader.read_artifact_locations(spec_id, content_version)
-    location = stored_frame_location(select_servable_locations(locations, now=stores.now()))
+    location = frame_file_location(select_servable_locations(locations, now=stores.now()))
     return None if location is None else location.artifact_digest
 
 
@@ -1088,11 +1091,11 @@ def _store(
     *,
     trace_id: str | None,
 ) -> tuple[str, bool]:
-    """Store the evaluated frame and its recipe, and return the stored frame's digest and
-    whether this call published it."""
+    """Store the evaluated frame and its recipe, and return the digest of the stored frame
+    file, the file a ref names, and whether this call published the frame."""
     ref = evaluation.ref
     recipe = _recipe(evaluation, roots)
-    held = _stored_frame_digest(stores, spec_id=ref.spec_id, content_version=ref.content_version)
+    held = _stored_file_digest(stores, spec_id=ref.spec_id, content_version=ref.content_version)
     if held is not None:
         write_frame_recipe(
             recipe_store=stores.recipe_store,

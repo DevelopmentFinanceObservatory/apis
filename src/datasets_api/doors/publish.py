@@ -3,8 +3,12 @@
 
 The request sends grammar-independent JSON in `role_keys` and `rows`. `apis`
 and `ai` pin different `spec-kit` revisions, so this door builds the frame
-with `Frame.build` and stores it as the version's canonical frame with
-`render_and_store_canonical_frame`.
+with `Frame.build` and stores it twice: as the version's canonical frame
+(`render_and_store_canonical_frame`), which cards, replay and every later
+rendering read, and as its bare frame-layout Parquet file
+(`render_and_store_frame_file`), the flat file with a text `unit` a dataset
+version serves for `?format=parquet&bundle=false&layout=frame`. A format 2
+ref's `artifact.digest` names that file.
 
 The `datasets.publish` registry maps `publish_conflict` (409),
 `snapshot_revoked` (410), `publish_not_permitted` (403), `request_invalid`
@@ -32,10 +36,11 @@ publish (`StoredVersion.frame_sha256`), so the same rows match whatever PyArrow
 version encoded either Parquet file, and the comparison reads no stored object.
 A pair recorded without the hash is compared by the digest of its frame1
 document, the same hash. A pair holding neither refuses as a different frame.
-A matching repeat links this call's canonical frame to the pair when the frame linked there has no
-servable location (`LiveVersionRecordWriter.record_artifact`), so republishing a frame past
-working-tier retention makes it servable again. The response gives the digest of the canonical frame
-the pair links after that call, which is another encoding's while the earlier frame stays servable.
+A matching repeat links this call's canonical frame and frame file to the pair where the one
+linked there has no servable location (`LiveVersionRecordWriter.record_artifact`), so republishing
+a frame past working-tier retention makes it servable again, and a pair published before it stored
+a frame file gains one. The response gives the digest of the frame file the pair links after that
+call, which is another encoding's while the earlier file stays servable.
 A different frame or lineage, or a pair recording no lineage, raises a
 non-retryable `publish_conflict` (409). A lineage conflict matters because `ocv_`
 identifies a computation recipe. Reporting success would discard the second
@@ -180,7 +185,7 @@ from datasets_api.recipe_store import (
     ReplayKeyHeld,
 )
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import render_and_store_canonical_frame
+from datasets_api.render import render_and_store_canonical_frame, render_and_store_frame_file
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import PhaseTimings, door_call, phase, run_with_timings
 from datasets_api.version_descriptions import publish_describer
@@ -478,13 +483,14 @@ def publish_frame(
     Reject rows over `ceiling` before frame construction. Store the canonical frame first,
     then check for an existing version. Unreferenced bytes remain in the
     working tier if recording fails. Revocation takes precedence. A matching
-    frame and lineage link this call's canonical frame where the pair's has no servable
-    location and return `created=False`, while divergence raises the
+    frame and lineage link this call's canonical frame and frame file where the pair's have no
+    servable location and return `created=False`, while divergence raises the
     matching conflict. Otherwise record the version, then reread it to verify
     the winning frame, lineage, and revocation state. `created` comes from the
     writer's insert result. Missing read-back raises `PublishRecordMissing`.
-    `artifact_digest` is the digest the stored pair links as its canonical frame,
-    which is another call's when that call's encoding of the frame is linked.
+    `artifact_digest` is the digest the stored pair links as its frame file
+    (`render.FRAME_FILE_OPTIONS`), the file a format 2 ref names, which is another call's
+    when that call's encoding of the file is linked.
 
     A `recipe` goes to `recipe_store` after the version is verified, whether
     this call or an earlier one recorded it. It takes no part in the body
@@ -592,8 +598,14 @@ def publish_built_frame(
             pointer="/rows",
         )
 
-    artifact = render_and_store_canonical_frame(
+    canonical = render_and_store_canonical_frame(
         frame_chunks=(frame,),
+        subject_id=spec_id,
+        content_version=content_version,
+        artifact_store=artifact_store,
+    )
+    frame_file = render_and_store_frame_file(
+        frame_chunks=lambda: iter((frame,)),
         subject_id=spec_id,
         content_version=content_version,
         artifact_store=artifact_store,
@@ -617,7 +629,7 @@ def publish_built_frame(
         content_version=content_version,
         schema_version=1,
         facts=requested,
-        artifacts=(artifact,),
+        artifacts=(canonical, frame_file),
         frame_sha256=published_frame_sha256,
     )
     described = replace(
@@ -680,14 +692,18 @@ def publish_built_frame(
             # The version row stands; this writes or settles its description record only.
             with phase("record"):
                 _record_described(replace(described, artifacts=()))
-            # The link is kept while the pair's canonical frame has a servable location.
+            # Each link is kept while its file has a servable location.
             with phase("record"):
-                linked_digest = version_writer.record_artifact(
-                    subject_id=spec_id,
-                    content_version=content_version,
-                    artifact=artifact,
-                    trace_id=trace_id,
-                )
+                linked = [
+                    version_writer.record_artifact(
+                        subject_id=spec_id,
+                        content_version=content_version,
+                        artifact=artifact,
+                        trace_id=trace_id,
+                    )
+                    for artifact in (canonical, frame_file)
+                ]
+            linked_digest = linked[-1]
             _store_recipe()
             return PublishResult(
                 spec_id=spec_id,
@@ -710,12 +726,12 @@ def publish_built_frame(
     if not _recorded_frame_matches(recorded.version, recorded.locations):
         raise PublishBytesDiverge(spec_id=spec_id, content_version=content_version)
     _raise_if_diverges(recorded.version)
-    # A concurrent first publish can link another encoding of the frame, which the link keeps.
+    # A concurrent first publish can link another encoding of the file, which the link keeps.
     linked_digest = next(
         (
             location.artifact_digest
             for location in recorded.locations
-            if location.rendering == artifact.rendering
+            if location.rendering == frame_file.rendering
         ),
         None,
     )

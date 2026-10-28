@@ -15,6 +15,7 @@ from typing import Annotated
 import jsonschema
 import pyarrow.parquet as pq
 import pytest
+import rfc8785
 from dfo_frame_grammar import frame_sha256
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -45,7 +46,11 @@ from datasets_api.publish_models import (
     MAX_UNIT_STAT_VAR_CHARS,
     PublishFrameRequest,
 )
-from datasets_api.render import CANONICAL_FRAME_RENDERING, render_and_store_canonical_frame
+from datasets_api.render import (
+    CANONICAL_FRAME_RENDERING,
+    FRAME_FILE_RENDERING,
+    render_and_store_canonical_frame,
+)
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, NullVersionRecordWriter, VersionRecord
 from materialise.errors import OverCeilingError
@@ -178,6 +183,11 @@ def _canonical_frames(deps: _Deps):
     return [loc for loc in locations if loc.rendering == CANONICAL_FRAME_RENDERING]
 
 
+def _frame_files(deps: _Deps):
+    locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
+    return [loc for loc in locations if loc.rendering == FRAME_FILE_RENDERING]
+
+
 def test_fresh_publish_records_version_row_and_its_parquet_canonical_frame(deps: _Deps) -> None:
     result = deps.publish()
 
@@ -193,12 +203,20 @@ def test_fresh_publish_records_version_row_and_its_parquet_canonical_frame(deps:
     )
 
     locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
-    assert [(loc.rendering, loc.media_type, loc.tier) for loc in locations] == [
-        (CANONICAL_FRAME_RENDERING, CANONICAL_FRAME_MEDIA_TYPE, "working")
-    ]
-    assert locations[0].artifact_digest == result.artifact_digest
+    assert sorted(
+        ((loc.rendering, loc.media_type, loc.tier) for loc in locations), key=str
+    ) == sorted(
+        [
+            (CANONICAL_FRAME_RENDERING, CANONICAL_FRAME_MEDIA_TYPE, "working"),
+            (FRAME_FILE_RENDERING, CANONICAL_FRAME_MEDIA_TYPE, "working"),
+        ],
+        key=str,
+    )
+    # The result names the frame file, the flat file a ref names.
+    assert [loc.artifact_digest for loc in _frame_files(deps)] == [result.artifact_digest]
 
-    raw = deps.artifact_store.get(artifact_digest=result.artifact_digest, tier=Tier.working)
+    (canonical,) = _canonical_frames(deps)
+    raw = deps.artifact_store.get(artifact_digest=canonical.artifact_digest, tier=Tier.working)
     assert read_canonical_frame(raw) == build_frame(role_keys=_ROLE_KEYS, rows=_rows())
 
 
@@ -277,8 +295,8 @@ def test_repeat_publish_compares_the_stored_frame_not_its_encoding(
 ) -> None:
     """A repeat publish matches a stored frame holding the same rows whatever bytes encode it,
     and refuses one holding other rows: by the frame hash on a record that holds one, else by
-    the frame1 document's digest. It answers a digest the pair lists as its canonical frame:
-    the stored one while that is servable, else this call's."""
+    the frame1 document's digest. It links one canonical frame and its frame file, and answers
+    the frame file's digest."""
     _record_stored_pair(
         deps,
         data=encode(1.0),
@@ -294,7 +312,8 @@ def test_repeat_publish_compares_the_stored_frame_not_its_encoding(
     repeat = deps.publish(rows=_rows(1.0))
 
     assert repeat.created is False
-    assert [loc.artifact_digest for loc in _canonical_frames(deps)] == [repeat.artifact_digest]
+    assert len(_canonical_frames(deps)) == 1
+    assert [loc.artifact_digest for loc in _frame_files(deps)] == [repeat.artifact_digest]
     with pytest.raises(PublishBytesDiverge):
         deps.publish(rows=_rows(2.0))
 
@@ -354,7 +373,8 @@ def test_republishing_an_expired_frame_under_another_encoding_makes_it_servable(
 ) -> None:
     """A repeat publish matches by the frame hash the version records, with no stored object
     left to read, and links its own canonical frame in place of the expired one."""
-    first = deps.publish()
+    deps.publish()
+    (first,) = _canonical_frames(deps)
     _expire_stored_frame(deps)
     assert select_servable_locations(_canonical_frames(deps), now=datetime.now(UTC)) == []
     re_encoding = _ReEncodingArtifactStore(deps.artifact_store)
@@ -362,10 +382,11 @@ def test_republishing_an_expired_frame_under_another_encoding_makes_it_servable(
     second = deps.publish(artifact_store=re_encoding)
 
     assert second.created is False
-    assert second.artifact_digest != first.artifact_digest
     assert re_encoding.gets == 0
     (servable,) = select_servable_locations(_canonical_frames(deps), now=datetime.now(UTC))
-    assert servable.artifact_digest == second.artifact_digest
+    assert servable.artifact_digest != first.artifact_digest
+    (servable_file,) = select_servable_locations(_frame_files(deps), now=datetime.now(UTC))
+    assert servable_file.artifact_digest == second.artifact_digest
     raw = deps.artifact_store.get(artifact_digest=servable.artifact_digest, tier=Tier.working)
     assert read_canonical_frame(raw) == build_frame(role_keys=_ROLE_KEYS, rows=_rows())
 
@@ -373,7 +394,8 @@ def test_republishing_an_expired_frame_under_another_encoding_makes_it_servable(
 def test_republishing_other_rows_over_an_expired_frame_conflicts_without_reading_it(
     deps: _Deps,
 ) -> None:
-    first = deps.publish()
+    deps.publish()
+    (first,) = _canonical_frames(deps)
     _expire_stored_frame(deps)
     re_encoding = _ReEncodingArtifactStore(deps.artifact_store)
 
@@ -451,7 +473,8 @@ def test_repeat_publish_with_different_bytes_refuses_rather_than_overwrites(
 ) -> None:
     """Different rows refuse as a byte conflict, and a call whose lineage differs too reports
     the byte conflict, since lineage is compared only once the frames match."""
-    first = deps.publish(rows=_rows(1.0))
+    deps.publish(rows=_rows(1.0))
+    (first,) = _canonical_frames(deps)
 
     with pytest.raises(PublishBytesDiverge) as excinfo:
         deps.publish(rows=_rows(2.0), input_content_versions=input_content_versions)
@@ -461,9 +484,7 @@ def test_repeat_publish_with_different_bytes_refuses_rather_than_overwrites(
 
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
-    frames = _canonical_frames(deps)
-    assert len(frames) == 1
-    assert frames[0].artifact_digest == first.artifact_digest
+    assert [loc.artifact_digest for loc in _canonical_frames(deps)] == [first.artifact_digest]
 
 
 def _canonical_frame_only(deps: _Deps) -> str:
@@ -477,13 +498,17 @@ def test_repeat_publish_of_the_frame_a_canonical_frame_holds_answers_its_linked_
     deps: _Deps,
 ) -> None:
     canonical_digest = _canonical_frame_only(deps)
+    (frame_file,) = _frame_files(deps)
 
     repeat = deps.publish()
 
     assert repeat.created is False
-    assert repeat.artifact_digest == canonical_digest
+    assert repeat.artifact_digest == frame_file.artifact_digest
     locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
-    assert {loc.artifact_digest for loc in locations} == {canonical_digest}
+    assert {loc.artifact_digest for loc in locations} == {
+        canonical_digest,
+        frame_file.artifact_digest,
+    }
 
 
 def test_repeat_publish_of_another_frame_than_a_canonical_frame_holds_refuses(
@@ -497,7 +522,8 @@ def test_repeat_publish_of_another_frame_than_a_canonical_frame_holds_refuses(
 
 def test_repeat_publish_with_identical_bytes_but_different_lineage_refuses(deps: _Deps) -> None:
     """Identical bytes with different lineage raise `PublishLineageDiverge` before writing."""
-    first = deps.publish(input_content_versions=("cv_00000000000000000000000000aaaaaa",))
+    deps.publish(input_content_versions=("cv_00000000000000000000000000aaaaaa",))
+    (first,) = _canonical_frames(deps)
 
     with pytest.raises(PublishLineageDiverge) as excinfo:
         deps.publish(input_content_versions=("cv_00000000000000000000000000bbbbbb",))
@@ -652,8 +678,8 @@ def test_verify_phase_derives_created_from_the_insert_not_from_reaching_it(deps:
 
 
 def test_verify_phase_answers_the_digest_a_concurrent_publish_linked(deps: _Deps) -> None:
-    """A publish that loses the insert to another encoding of the same frame answers the
-    digest the pair links as its canonical frame, which is the winner's.
+    """A publish that loses the insert to another encoding of the same frame keeps the
+    winner's canonical frame and answers the digest of the frame file the pair links.
     """
     _record_stored_pair(
         deps,
@@ -676,8 +702,8 @@ def test_verify_phase_answers_the_digest_a_concurrent_publish_linked(deps: _Deps
     )
 
     assert result.created is False
-    assert result.artifact_digest == linked.artifact_digest
-    assert [loc.artifact_digest for loc in _canonical_frames(deps)] == [result.artifact_digest]
+    assert [loc.artifact_digest for loc in _canonical_frames(deps)] == [linked.artifact_digest]
+    assert [loc.artifact_digest for loc in _frame_files(deps)] == [result.artifact_digest]
 
 
 def test_verify_phase_catches_a_revocation_landing_between_check_and_verify(deps: _Deps) -> None:
@@ -1502,6 +1528,8 @@ def _base_year(year: int) -> dict[str, object]:
 def test_http_composed_unit_publishes_and_the_canonical_frame_holds_its_json(
     unit: dict[str, object],
 ) -> None:
+    """The canonical frame holds the composed unit as its grammar cell, and the frame file the
+    response names holds it as JCS text."""
     deps = _Deps()
     client = _build_client(deps)
     response = client.post(
@@ -1510,11 +1538,16 @@ def test_http_composed_unit_publishes_and_the_canonical_frame_holds_its_json(
         headers=_AUTH_HEADERS,
     )
     assert response.status_code == 200, response.text
-    raw = deps.artifact_store.get(
-        artifact_digest=response.json()["published"]["artifact_digest"], tier=Tier.working
-    )
+    (canonical,) = _canonical_frames(deps)
+    raw = deps.artifact_store.get(artifact_digest=canonical.artifact_digest, tier=Tier.working)
     document = canonical_frame_document(read_canonical_frame_table(raw))
     assert [row[document["columns"].index("unit")] for row in document["rows"]] == [unit]
+    flat = deps.artifact_store.get(
+        artifact_digest=response.json()["published"]["artifact_digest"], tier=Tier.working
+    )
+    assert pq.read_table(io.BytesIO(flat)).column("unit").to_pylist() == [
+        rfc8785.dumps(unit).decode()
+    ]
 
 
 # U+0958 is two code points in NFC, so each text is within its bound as sent and over it as

@@ -10,19 +10,23 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pyarrow.parquet as pq
 import pytest
+import rfc8785
 from fastapi.testclient import TestClient
 
 import datasets_api.doors.analysis as analysis_door
+from artifact_store import Tier
 from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.analysis import AnalysisRequest, run_analysis
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.derived import roots_citation
 from datasets_api.recipe_store import LiveRecipeStore
+from datasets_api.render import frame_file_location, stored_frame_location
 from datasets_api.version_store import LiveVersionLister
+from materialise.formats import canonical_frame_document, read_canonical_frame_table
 from materialise.frame_build import build_frame
 from spec_registry import LiveSpecRegistry
 
@@ -185,6 +189,7 @@ def test_a_derived_root_alone_recomputes_its_recipe_under_its_own_ids(
     assert again["spec"]["spec_id"] == member["spec"]["spec_id"]
     assert again["content_version"] == member["content_version"]
     assert again["output_digest"] == member["output_digest"]
+    assert again["artifact"]["digest"] == member["artifact"]["digest"]
 
 
 @pytest.mark.parametrize(
@@ -215,13 +220,58 @@ def test_the_file_route_writes_the_frame_in_each_format(
     if "parquet" in query:
         table = pq.read_table(io.BytesIO(response.content))
         assert table.column("financingRecipient").to_pylist() == ["country/KEN"]
-        # Bare Parquet is the stored canonical frame, the bytes the ref's digest names.
+        # Bare Parquet is the stored frame file, the bytes the ref's digest names.
         digest = "sha256:" + hashlib.sha256(response.content).hexdigest()
         assert digest == member["artifact"]["digest"]
+        assert table.column("unit").to_pylist() == _unit_texts(stores, member)
     if not query:
         names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
         assert "datapackage.json" in names
         assert any(name.startswith("data/") and name.endswith(".csv") for name in names)
+
+
+def _locations(stores: Stores, member: dict[str, Any]) -> Any:
+    return stores.snapshot_reader.read_artifact_locations(
+        member["spec"]["spec_id"], member["content_version"]
+    )
+
+
+def _unit_texts(stores: Stores, member: dict[str, Any]) -> list[str]:
+    """The `unit` cells of the member's canonical frame as a flat file writes them: a ref as
+    its string, a converted or composed unit as its JCS text."""
+    location = stored_frame_location(_locations(stores, member))
+    assert location is not None
+    raw = stores.artifact_store.get(artifact_digest=location.artifact_digest, tier=Tier.working)
+    document = canonical_frame_document(read_canonical_frame_table(raw))
+    unit = cast("list[str]", document["columns"]).index("unit")
+    rows = cast("list[list[str | dict[str, Any]]]", document["rows"])
+    cells = [row[unit] for row in rows]
+    assert any(isinstance(cell, dict) for cell in cells)
+    return [rfc8785.dumps(cell).decode() if isinstance(cell, dict) else cell for cell in cells]
+
+
+def test_a_frame_file_whose_bytes_are_gone_renders_again_to_the_ref_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the stored frame file's object deleted, bare Parquet renders again from the
+    canonical frame and gives the bytes the ref's digest names."""
+    stores = Stores()
+    member = _stored(stores)
+    frame_file = frame_file_location(_locations(stores, member))
+    assert frame_file is not None and frame_file.artifact_digest == member["artifact"]["digest"]
+    hex_digest = frame_file.artifact_digest.removeprefix("sha256:")
+    deleted = 0
+    for bucket in stores.gcs.buckets.values():
+        for key in [key for key in bucket.objects if hex_digest in str(key)]:
+            del bucket.objects[key]
+            deleted += 1
+    assert deleted == 1
+
+    with _client(stores, monkeypatch) as client:
+        response = client.get(_path(member, "/file?format=parquet&bundle=false&layout=frame"))
+
+    assert response.status_code == 200, response.text
+    assert "sha256:" + hashlib.sha256(response.content).hexdigest() == member["artifact"]["digest"]
 
 
 def test_an_unknown_frame_refuses_snapshot_not_found(monkeypatch: pytest.MonkeyPatch) -> None:

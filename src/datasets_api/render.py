@@ -134,7 +134,12 @@ from datasets_api.version_store import (
     recorded_frame_sha256,
     rendering_key,
 )
-from datasets_api.versions import ArtifactRecord, carries_party_kind, enrichment_stamp
+from datasets_api.versions import (
+    ArtifactRecord,
+    carries_party_kind,
+    enrichment_stamp,
+    link_digest,
+)
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.config import PublicSiteSettings
@@ -175,6 +180,7 @@ from materialise.formats import (
     Table,
     WrittenArtifact,
     canonical_frame_rows,
+    frame_entity_columns,
     table_schema_for,
     write_canonical_frame,
     write_csv,
@@ -903,7 +909,7 @@ def _reshape_select_pivot_enrich(
             # A pivot's index and columns group rows, so a cell that varied with the period
             # would split one party into several index rows. Its party cells are read for no
             # dataset and year, where a whole total's `party_whole` is empty (`whole_cell`).
-            parties=None if pivot is not None else reads.enrichment.parties,
+            parties=None if pivot is not None else reads.parties,
         )
     warning_order = (
         *decoded_column_names,
@@ -1601,6 +1607,14 @@ def _native_price_basis(
     return lambda stat_var: by_ref.get(stat_var, shared)
 
 
+def _lookup_of(enrichment: EnrichmentLookup | None) -> EnrichmentLookup:
+    """`enrichment`, refusing a render given none (`render_and_store_frame_file`), which
+    must read no name and no party kind."""
+    if enrichment is None:
+        raise RuntimeError("a render given no enrichment lookup asked for a name or party kind")
+    return enrichment
+
+
 @dataclass
 class _RenderReads:
     """Where a render's names and enrichment fields come from, shared by the reshape
@@ -1608,9 +1622,9 @@ class _RenderReads:
     outright: a cited source's label, a summed family's label. Every other value is read
     through `enrichment` by `lookup` against one absolute `deadline`, the render's. After one
     read fails, `lookup` refuses without reading, so a graph outage costs the render at most
-    one read's wait."""
+    one read's wait. With no `enrichment` every read raises (`_lookup_of`)."""
 
-    enrichment: EnrichmentLookup
+    enrichment: EnrichmentLookup | None
     known: Mapping[str, str]
     deadline: float | None
     failed: bool = False
@@ -1619,7 +1633,7 @@ class _RenderReads:
     def for_render(
         cls,
         *,
-        enrichment: EnrichmentLookup,
+        enrichment: EnrichmentLookup | None,
         citations: Mapping[str, CitationSource],
         family: tuple[str, str] | None,
         deadline: float | None,
@@ -1633,13 +1647,19 @@ class _RenderReads:
             deadline=deadline,
         )
 
+    @property
+    def parties(self) -> Mapping[str, PartyRow]:
+        """The code index's party rows (`EnrichmentLookup.parties`)."""
+        return _lookup_of(self.enrichment).parties
+
     def lookup(self, nodes: Sequence[str]) -> Mapping[str, Mapping[str, str]]:
         """`enrichment`'s fields of `nodes`. Raises `GraphReadError` when this read fails or
         an earlier one of the render did."""
         if self.failed:
             raise GraphReadError("an earlier name read of this render failed")
+        enrichment = _lookup_of(self.enrichment)
         try:
-            return self.enrichment.lookup(nodes, deadline=self.deadline)
+            return enrichment.lookup(nodes, deadline=self.deadline)
         except GraphReadError:
             self.failed = True
             raise
@@ -1657,7 +1677,7 @@ class _RenderReads:
         read: dict[str, dict[str, str]] = {node: {} for node in nodes}
         if party_fields := set(fields).intersection(PARTY_FIELDS):
             for node, node_fields in read.items():
-                for field_name, cell in self.enrichment.party_cells(node).items():
+                for field_name, cell in _lookup_of(self.enrichment).party_cells(node).items():
                     if field_name in party_fields:
                         node_fields[field_name] = cell
         graph_fields = set(fields).difference(PARTY_FIELDS)
@@ -1720,12 +1740,13 @@ class _TotalRows:
         *,
         identity: object,
         entity_columns: Sequence[str],
-        parties: Mapping[str, PartyRow],
+        parties: Callable[[], Mapping[str, PartyRow]],
         datasets: Collection[str],
     ) -> _TotalRows | None:
         """The total rows of a render under `options`, or `None` for a format outside
         `_TOTALS_FORMATS`, a pivot, or a definition with no role that can hold a total, read
-        over the code index's `parties` and the provenances the definition read, `datasets`."""
+        over the code index's party rows, which `parties` reads only for a format that splits
+        totals out, and the provenances the definition read, `datasets`."""
         if options.format not in _TOTALS_FORMATS or options.pivot is not None:
             return None
         if not isinstance(identity, Mapping):
@@ -1733,7 +1754,7 @@ class _TotalRows:
         roles = movable_totals_roles(
             cast("Mapping[str, object]", identity),
             entity_columns,
-            parties=parties,
+            parties=parties(),
             datasets=datasets,
         )
         if not roles:
@@ -1899,9 +1920,7 @@ class _LongLayout:
                 grain=self.grain,
             )
         self._read_names(self.projection.refs_to_name(table))
-        projected = self.projection.apply(
-            table, names=self.names, parties=self.reads.enrichment.parties
-        )
+        projected = self.projection.apply(table, names=self.names, parties=self.reads.parties)
         self.unavailable.update(projected.unavailable)
         if self.totals is None:
             return cast(Table, projected.table)
@@ -2660,7 +2679,7 @@ def render_and_store(
     site: PublicSiteSettings,
     artifact_store: ArtifactStore,
     entity_columns: Sequence[str],
-    enrichment: EnrichmentLookup,
+    enrichment: EnrichmentLookup | None,
     pivot_max_output_cells: int,
     code_index: CodeIndex | None = None,
     resolved_stat_var_refs: Sequence[str],
@@ -2712,7 +2731,9 @@ def render_and_store(
 
     `options.without_party_totals` cuts the group totals of the open party roles of `spec`'s
     identity out of the frame before any reshape (`datasets_api.party_totals`), reading the
-    kinds from `enrichment.parties`. A cut that leaves rows out renders from the cut frame,
+    kinds from `enrichment.parties`. `enrichment` is `None` only for a render that reads no
+    name and no party kind, a derived frame's file (`render_and_store_frame_file`); a read it
+    would make raises. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is. Every chunk `frame_chunks` yields is then a `Frame`.
@@ -2733,7 +2754,7 @@ def render_and_store(
         cut_party_totals(
             frames,
             roles=open_party_roles(identity, entity_columns),
-            parties=enrichment.parties,
+            parties=_lookup_of(enrichment).parties,
         )
         if options.without_party_totals and frame_mode is FrameMode.RAW
         else None
@@ -2768,7 +2789,7 @@ def render_and_store(
         options,
         identity=identity,
         entity_columns=entity_columns,
-        parties=enrichment.parties,
+        parties=lambda: _lookup_of(enrichment).parties,
         datasets=cited_refs,
     )
     with phase("render"):
@@ -3301,4 +3322,71 @@ def render_and_store_canonical_frame(
         artifact_digest=stored.digest,
         rendering=dict(CANONICAL_FRAME_RENDERING),
         media_type=written.media_type,
+    )
+
+
+FRAME_FILE_OPTIONS = MintOptions(format="parquet", bundle=False, layout=FRAME_LAYOUT)
+"""The bare frame-layout Parquet file a derived frame stores beside its canonical frame
+(`render_and_store_frame_file`), the file `?format=parquet&bundle=false&layout=frame` selects."""
+
+_FRAME_FILE_SITE = PublicSiteSettings(public_site_url="https://dfo.invalid")
+"""The site a frame file renders under. A bare file holds no link, and its rendering carries no
+rendition token (`artifact_rendering`), so no setting reaches its bytes or its key."""
+
+_FRAME_FILE_PREPARED_AT = datetime(1970, 1, 1, tzinfo=UTC)
+"""The `prepared_at` a frame file renders under. Only a bundle writes the date."""
+
+FRAME_FILE_RENDERING: Mapping[str, object] = artifact_rendering(
+    FRAME_FILE_OPTIONS, site=_FRAME_FILE_SITE
+)
+"""The rendering a frame file is stored and linked under."""
+
+
+def frame_file_location(
+    locations: Sequence[StoredArtifactLocation],
+) -> StoredArtifactLocation | None:
+    """The version's frame file (`FRAME_FILE_RENDERING`) among `locations`, else `None`."""
+    return next(
+        (location for location in locations if location.rendering == FRAME_FILE_RENDERING), None
+    )
+
+
+def render_and_store_frame_file(
+    *,
+    frame_chunks: Callable[[], Iterator[Table]],
+    subject_id: str,
+    content_version: str,
+    artifact_store: ArtifactStore,
+) -> ArtifactRecord:
+    """Store the frame `frame_chunks` holds as a version's file of `FRAME_FILE_OPTIONS`,
+    rendered by `render_and_store` as a dataset version's file of those options is, so `unit`
+    is text (a ref as its string, a converted or composed unit as its JCS text). Returns the
+    record a version links it under.
+
+    The frame layout reshapes nothing, reads no names and cuts no totals, so the render takes
+    no code index and no enrichment lookup, and its bytes depend on the frame alone: the same
+    frame stores the same digest."""
+    rendered = render_and_store(
+        frame_chunks=frame_chunks,
+        options=FRAME_FILE_OPTIONS,
+        spec={"spec_id": subject_id},
+        provenance_refs=[],
+        citations={},
+        reproducing_call=None,
+        content_version=content_version,
+        prepared_at=_FRAME_FILE_PREPARED_AT,
+        site=_FRAME_FILE_SITE,
+        artifact_store=artifact_store,
+        entity_columns=frame_entity_columns(next(frame_chunks()).columns),
+        enrichment=None,
+        # The frame layout refuses a pivot.
+        pivot_max_output_cells=0,
+        resolved_stat_var_refs=(),
+    )
+    artifact = rendered.artifact
+    return ArtifactRecord(
+        artifact_digest=artifact.artifact_digest,
+        rendering=artifact.rendering,
+        media_type=artifact.media_type,
+        enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
     )

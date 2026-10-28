@@ -10,7 +10,9 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, cast
 
+import pyarrow.parquet as pq
 import pytest
+import rfc8785
 from fastapi.testclient import TestClient
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
@@ -24,7 +26,6 @@ from datasets_api.doors.publish import build_publish_door
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveVersionRecordWriter
 from dfo_platform.app import Surface, create_app
-from materialise.formats import canonical_frame_document, read_canonical_frame_table
 from presentation_api.app import presentation_surface
 from presentation_store.frame_store import LiveFrameStore
 from tests.artifact_store.conftest import FakeGCSClient
@@ -139,15 +140,14 @@ def test_a_published_composed_unit_frame_resolves_to_cards_naming_both_sides(
         "/api/datasets/frames/publish", json=_PUBLISH_BODY, headers={"x-dfo-principal": _PRINCIPAL}
     )
     assert published.status_code == 200, published.text
-    document = canonical_frame_document(
-        read_canonical_frame_table(
-            deployment.artifact_store.get(
-                artifact_digest=published.json()["published"]["artifact_digest"], tier=Tier.working
-            )
-        )
+    # The published digest names the frame file, whose `unit` is the composed unit's JCS text.
+    frame_file = deployment.artifact_store.get(
+        artifact_digest=published.json()["published"]["artifact_digest"], tier=Tier.working
     )
-    unit_index = document["columns"].index("unit")
-    assert [row[unit_index] for row in document["rows"]] == [_FRAME_UNIT, _FRAME_UNIT]
+    assert (
+        pq.read_table(io.BytesIO(frame_file)).column("unit").to_pylist()
+        == [rfc8785.dumps(_FRAME_UNIT).decode()] * 2
+    )
 
     select = {"stat_var": "dcid:MalariaGrantDisbursements", "recipient": "country/ETH"}
     components = {}
