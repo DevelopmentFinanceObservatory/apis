@@ -17,6 +17,7 @@ from search.models import (
     Entry,
     EntryProvenance,
     IdentityBindingValue,
+    Option,
     PartScope,
     ProviderBinding,
     ScopeAxis,
@@ -61,10 +62,12 @@ def build_part_scope(
     `carried_choice_not_applied`) with the cause `_not_served` gives. With
     `refuse` false an entry compile refuses is dropped and reported the same way with the
     refusal's cause, and the rest compile without it, so the result is always a
-    `PartScope`. An option a binder settled over the identity it resolved that sets its
-    source (the inclusive or bilateral provider scope, the OECD headline per year) is
-    applied to `base` first (`_with_recorded_composites`), so the scope's base is the
-    identity the answer serves.
+    `PartScope`. An explicit entry is judged on `base` with the other explicit entries'
+    edits applied (`_requested_tables`), so a request switching several axes compiles as
+    the same switches one after the other. An option a binder settled over the identity
+    it resolved that sets its source (the inclusive or bilateral provider scope, the OECD
+    headline per year) is applied to `base` first (`_with_recorded_composites`), so the
+    scope's base is the identity the answer serves.
     A composite asking for the latest year compiles to the one year its tables both cover
     (`provider.elect_latest_window`), while the base keeps the `latest` window. The scope's
     id is the base identity's spec_id. The server keeps no ledger, so the scope's is []."""
@@ -93,8 +96,17 @@ def build_part_scope(
         for n, entry in enumerate(read)
         if entry not in applied and entry not in read[:n]
     ]
-    facts_read = CompileFacts(axes=tuple(tables.values()), conflicts=conflicts)
-    while isinstance(compiled := compile(base, compiling, facts_read), Refusal):
+    while isinstance(
+        compiled := compile(
+            base,
+            compiling,
+            CompileFacts(
+                axes=_requested_tables(base, compiling, tables, records, facts, rules, conflicts),
+                conflicts=conflicts,
+            ),
+        ),
+        Refusal,
+    ):
         if refuse:
             return compiled
         entry = compiling.pop(compiled.entry)
@@ -126,6 +138,51 @@ def _tables(
         if (rule := rules.get(axis)) is not None
         and (table := rule(base, records.get(axis), facts)) is not None
     }
+
+
+def _requested_tables(
+    base: BaseIdentity,
+    entries: Sequence[Entry],
+    tables: Mapping[ScopeAxis, AxisTable],
+    records: Mapping[ScopeAxis, AxisRecord],
+    facts: ScopeFacts,
+    rules: Mapping[ScopeAxis, AxisRule],
+    conflicts: Sequence[Conflict],
+) -> tuple[AxisTable, ...]:
+    """`tables` in order, the table of each axis an explicit entry names read off `base`
+    with the edits of the explicit entries on the other axes applied, so each requested
+    option is judged on the identity the other requested edits produce, and several edits
+    in one request compile as they do one after the other. An entry edits `base` where its
+    axis's table offers its option, `base` does not hold it, it is not unavailable, and it
+    conflicts with no other explicit entry's option (`conflicts`), so compile's conflict
+    rule decides such a pair on the tables of `base`. An axis whose rule reads no table off
+    the edited identity keeps the table of `base`."""
+    explicit = [entry for entry in entries if entry.provenance == "explicit"]
+    pairs = {frozenset((c.first, c.second)) for c in conflicts}
+    edits: dict[ScopeAxis, Option] = {}
+    for entry in explicit:
+        table = tables.get(entry.axis)
+        if table is None or entry.axis in edits:
+            continue
+        option = table.option(entry.option_id)
+        if (
+            option is not None
+            and option.option_id != table.held
+            and option.availability.status != "unavailable"
+            and not any(frozenset((option.option_id, e.option_id)) in pairs for e in explicit)
+        ):
+            edits[entry.axis] = option
+    requested = dict(tables)
+    for axis in {entry.axis for entry in explicit}:
+        if axis not in tables or not edits.keys() - {axis}:
+            continue
+        edited = base
+        for other, table in tables.items():
+            if other != axis and (option := edits.get(other)) is not None:
+                edited = apply_binding(edited, option.binding, [o.binding for o in table.options])
+        if (table := rules[axis](edited, records.get(axis), facts)) is not None:
+            requested[axis] = table
+    return tuple(requested.values())
 
 
 def _with_recorded_composites(

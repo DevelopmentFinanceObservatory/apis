@@ -1157,6 +1157,7 @@ _SCOPE_LABELS = {
     "contributions": OPTION_LABELS.provider_contributions,
 }
 _NET = "Amount_FinancialFlow_Net_"
+_GROSS = "Amount_FinancialFlow_Gross_"
 _COVERED = ("available", None, None)
 _NOT_COVERED = ("unavailable", "option_not_covered", None)
 
@@ -1324,6 +1325,80 @@ def test_a_dac1_sibling_option_on_the_headline_reads_each_basis_it_splices(
     assert option is not None
     availability = option.availability
     assert (availability.status, availability.code, availability.years) == expected
+
+
+def test_a_switch_of_basis_and_provider_together_judges_the_sibling_on_the_switched_basis():
+    """The United States' total ODA holds grant-equivalent and gross series and its bilateral
+    ODA gross series alone, over 2015 to 2020. On the grant-equivalent total, bilateral ODA
+    is not covered. Switching to gross and to bilateral flows in one resubmit judges
+    bilateral ODA on gross, so it compiles to the identity and choices the two switches
+    compile to one after the other."""
+    extra = [
+        *(
+            (member, _USA, range(2015, 2021))
+            for prefix in (_GE, _GROSS)
+            for member in _members_on(_DAC1_TOTAL_ODA, prefix)
+        ),
+        *((member, _USA, range(2015, 2021)) for member in _members_on(_DAC1_BILATERAL_ODA, _GROSS)),
+    ]
+    facts = _dac1_facts(extra=extra)
+    base = _dac1_identity(_DAC1_TOTAL_ODA, (_USA,), window=(2015, 2020))
+    to_gross, to_bilateral = switch("measure_basis:gross"), switch("provider:bilateral")
+
+    alone = build_part_scope(base=base, entries=[to_bilateral], records={}, facts=facts)
+    gross = build_part_scope(base=base, entries=[to_gross], records={}, facts=facts)
+    assert isinstance(gross, PartScope)
+    in_turn = build_part_scope(
+        base=gross.compiled.identity, entries=[to_bilateral], records={}, facts=facts
+    )
+    together = build_part_scope(
+        base=base, entries=[to_gross, to_bilateral], records={}, facts=facts
+    )
+
+    assert alone == Refusal(
+        code="requested_option_unavailable", entry=0, cause="option_not_covered"
+    )
+    assert isinstance(in_turn, PartScope) and isinstance(together, PartScope)
+    assert _slot_ref(together.compiled.identity, "dac1AidType") == _DAC1_BILATERAL_ODA
+    assert together.compiled.spec_id == in_turn.compiled.spec_id
+    (provider_together,) = (c for c in together.choices if c.axis == "provider")
+    (provider_in_turn,) = (c for c in in_turn.choices if c.axis == "provider")
+    assert provider_together.active == provider_in_turn.active == "provider:bilateral"
+    assert provider_together.options == provider_in_turn.options
+
+
+def test_two_switches_whose_options_conflict_refuse_the_conflict_whatever_each_edits():
+    """The imputed table holds gross disbursements alone, so a switch to the inclusive scope
+    and one to net flows, each available on the gross part, refuse as conflicting, naming
+    the switch to inclusive as the blocker, and neither is judged on the identity the other
+    would produce."""
+    net = tuple(
+        _crs_member(
+            code,
+            measured_property="amount",
+            netting="Net",
+            flow=_ODA,
+            modality="CRSCooperationModalityA01",
+        )
+        for code in ("CRSPurposeCode120", "CRSPurposeCode130")
+    )
+    rows, extra = _coverage_rows(_ALL_YEARS)
+    rows += [(dcid, "crs", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in net]
+    extra["role_names"] |= dict.fromkeys(net, _FLOW)
+    index = build_coverage_index(rows, **extra)
+    facts = ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
+    entries = [switch("provider:inclusive"), switch("measure_basis:net")]
+
+    compiled = build_part_scope(
+        base=_bilateral_identity(), entries=entries, records={}, facts=facts
+    )
+
+    assert compiled == Refusal(
+        code="conflicting_requested_options",
+        entry=1,
+        cause="imputed_gross_disbursements_only",
+        blocker=0,
+    )
 
 
 @pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
