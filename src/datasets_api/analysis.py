@@ -8,10 +8,13 @@ A request (`AnalysisRequest`) holds a `tree` and a `latest` flag. A step node na
 - a derived frame (`{"spec_id": "ops_...", "content_version": "ocv_..."}`);
 - a ref (`{"ref": <DatasetRef>}`), which must hold one member and reads as that member.
 
-A Spec or dataset root carries a `rendering`: `without_party_totals`, and `columns`, the
-enrichment columns its frame is read with. Left out, `columns` is the place-type and party-kind
-columns the dataset's roles take (`analysis_roots.enrichment_columns`), which the verbs need to
-keep group totals out of a sum or rank.
+A Spec or dataset root carries a `rendering`, the mint options data-mcp records for a fetched
+frame: `without_party_totals`; `columns`, the enrichment columns its frame is read with; and
+`groupby`, the sum its frame was read with (`mint_models.GroupbyOptions`), such as a breakdown
+or a sum over StatVars. Left out, `columns` is the place-type and party-kind columns the
+dataset's roles take (`analysis_roots.enrichment_columns`), which the verbs need to keep group
+totals out of a sum or rank. The rendering is part of the root's identity: its mint options
+are the root record's `options`, which the recipe's normal form names.
 
 Arguments are the engine's op-spec parameters (`dfo_analysis_engine.op_spec`) in the caller's
 vocabulary. `data` and `other` fill the verb's frame slots: `frame_ref` and `right_frame_ref` for
@@ -79,6 +82,7 @@ from artifact_store import ArtifactStore
 from dataset_store.clock import Clock
 from dataset_store.snapshot import SnapshotReader, select_servable_locations
 from datasets_api.doors.publish import publish_built_frame, write_frame_recipe
+from datasets_api.mint_models import GroupbyOptions
 from datasets_api.output_digest import output_digest
 from datasets_api.publish_models import (
     MAX_RECIPE_LEFT_OUT_SERIES,
@@ -148,10 +152,16 @@ DEFAULT_MAX_JOIN_ROWS = 250_000
 # --- Request -------------------------------------------------------------------------------------
 
 
+# The mint options a root is read with: the bare frame-layout Parquet, and the rendering.
+ROOT_MINT_OPTIONS = frozenset(
+    {"format", "bundle", "layout", "columns", "without_party_totals", "groupby"}
+)
+
+
 class RootRendering(BaseModel):
     """How a dataset root's frame is read. `columns` left out takes the enrichment its
     dataset's roles need (`analysis_roots.enrichment_columns`); `[]` reads the stored frame
-    alone."""
+    alone. `groupby` reads the frame summed as a mint with that `options.groupby` sums it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -159,6 +169,16 @@ class RootRendering(BaseModel):
     columns: tuple[Annotated[str, Field(min_length=1, max_length=200)], ...] | None = Field(
         default=None, max_length=32
     )
+    groupby: GroupbyOptions | None = None
+
+    @classmethod
+    def of_options(cls, options: Mapping[str, Any]) -> RootRendering:
+        """The rendering a root record's mint `options` state, `columns` as listed."""
+        return cls(
+            without_party_totals=options.get("without_party_totals") is True,
+            columns=tuple(options.get("columns") or ()),
+            groupby=options.get("groupby"),
+        )
 
 
 class SpecRoot(BaseModel):
@@ -195,10 +215,17 @@ class _RefSpec(BaseModel):
     spec_id: str
 
 
+class _RefRendering(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    without_party_totals: bool = False
+    groupby: GroupbyOptions | None = None
+
+
 class _RefArtifact(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    rendering: dict[str, JsonValue] = Field(default_factory=dict)
+    rendering: _RefRendering = Field(default_factory=_RefRendering)
 
 
 class _RefMember(BaseModel):
@@ -353,10 +380,38 @@ class RootRecipeMissing(FrameUnavailable):
 
 
 class RootRenderingUnreadable(FrameUnavailable):
-    """A stored recipe reads a root with options the runner does not read, such as a groupby
-    or a scope. Maps to `rendering_not_recorded`."""
+    """A stored recipe reads a root with options the runner does not read, such as a pivot or
+    a scope. Maps to `rendering_not_recorded`."""
 
     code = "rendering_not_recorded"
+
+
+def recorded_dataset_root(record: Mapping[str, Any]) -> DatasetRoot:
+    """The dataset root a stored recipe's root record `record` names: its `dataset`, read with
+    the rendering its mint `options` state.
+
+    Raises:
+        RootRenderingUnreadable: The record has a scope, an option outside
+            `ROOT_MINT_OPTIONS`, or a rendering this build does not parse.
+    """
+    options = record.get("options") or {}
+    spec_id, content_version = record["dataset"]["spec_id"], record["dataset"]["content_version"]
+    unread = sorted(set(options) - ROOT_MINT_OPTIONS) + (["scope"] if record.get("scope") else [])
+    if unread:
+        raise RootRenderingUnreadable(
+            spec_id=spec_id,
+            content_version=content_version,
+            reason=f"its recipe reads it with options the runner does not read: {unread}",
+        )
+    try:
+        rendering = RootRendering.of_options(options)
+    except ValidationError:
+        raise RootRenderingUnreadable(
+            spec_id=spec_id,
+            content_version=content_version,
+            reason="its recipe reads it with a rendering this runner does not parse",
+        ) from None
+    return DatasetRoot(spec_id=spec_id, content_version=content_version, rendering=rendering)
 
 
 class AnalysisTooLarge(Refusal):
@@ -549,11 +604,13 @@ class _Plan:
 def _member_root(member: _RefMember) -> DerivedRoot | DatasetRoot:
     if member.spec.spec_id.startswith("ops_"):
         return DerivedRoot(spec_id=member.spec.spec_id, content_version=member.content_version)
-    rendering = member.artifact.rendering if member.artifact is not None else {}
+    rendering = member.artifact.rendering if member.artifact is not None else _RefRendering()
     return DatasetRoot(
         spec_id=member.spec.spec_id,
         content_version=member.content_version,
-        rendering=RootRendering(without_party_totals=rendering.get("without_party_totals") is True),
+        rendering=RootRendering(
+            without_party_totals=rendering.without_party_totals, groupby=rendering.groupby
+        ),
     )
 
 
@@ -1269,6 +1326,7 @@ def run_anchor(
 
 
 __all__ = [
+    "ROOT_MINT_OPTIONS",
     "AnalysisBounds",
     "AnalysisPending",
     "AnalysisRequest",
@@ -1295,6 +1353,7 @@ __all__ = [
     "compute_analysis",
     "left_out_of",
     "plan_roots",
+    "recorded_dataset_root",
     "resolve_roots",
     "resolved_periods",
     "role_columns",

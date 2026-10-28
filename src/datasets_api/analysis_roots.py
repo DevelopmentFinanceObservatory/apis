@@ -3,16 +3,22 @@
 A root is read as data-mcp's `get_data` reads a frame, so a recipe the runner stores names its
 roots as the analysis tools name theirs. A mint record's `options` are the bare frame-layout
 Parquet `{"format": "parquet", "bundle": false, "layout": "frame"}`, with `columns` when the
-root asks for enrichment and `without_party_totals: true` when it leaves party totals out.
+root asks for enrichment, `without_party_totals: true` when it leaves party totals out, and
+`groupby` when it reads the frame summed.
 
-- With no `columns` the frame is the version's stored frame, its canonical frame (or frame1
-  document), named by the version's own pair.
-- With `columns` the frame is the version's frame-layout file of those columns, rendered from
-  the stored frame when none is linked (`current.head_rendering`), and decoded as data-mcp
-  decodes it: every column outside the grammar's reserved set is a role key, an empty
-  enrichment cell reads `untyped`, and a text `unit` cell holds a unit ref or the JCS text of a
-  converted unit. It is named by the pair `frame_ref_for` derives from the columns, so the two
-  renderings of one version are two frames.
+- A root read with any of those three is rendered as a definition read renders that mint from
+  the version's stored frame (`current.head_rendering`). A `groupby` sum or a party-totals cut
+  that changes the frame is a version of its own (`render.DerivedVersion`), and that version is
+  the root's dataset, as it is the `dataset` of data-mcp's mint record.
+- With no `columns` the frame is the dataset version's stored frame, its canonical frame (or
+  frame1 document).
+- With `columns` the frame is the dataset version's frame-layout file of those columns, decoded
+  as data-mcp decodes it: every column outside the grammar's reserved set is a role key, an
+  empty enrichment cell reads `untyped`, and a text `unit` cell holds a unit ref or the JCS text
+  of a converted unit.
+
+The frame is named by the pair `frame_ref_for` derives from the columns and the groupby, as
+data-mcp names it, so two renderings of one version are two frames.
 
 `enrichment_columns` gives the default `columns`: every flow party's type and kind columns for a
 dataset whose identity names a flow role, else the place type, which the verbs read to keep
@@ -61,10 +67,11 @@ from datasets_api.analysis import (
     RootExpired,
     RootNotStored,
     RootRendering,
-    RootRenderingUnreadable,
     SpecRoot,
+    recorded_dataset_root,
 )
 from datasets_api.current import DefinitionDeps, head_rendering, load_stored
+from datasets_api.derived import root_rendering
 from datasets_api.doors.definition import serve_spec, served_spec
 from datasets_api.doors.refresh import FramePending, answer_frame_refresh
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest
@@ -123,16 +130,19 @@ def frame_ref_for(
     spec_id: str,
     content_version: str,
     columns: Sequence[str],
+    groupby: Mapping[str, Any] | None = None,
     enrichment_stamp: str | None,
 ) -> FrameRef:
-    """The pair a frame of `columns` read from the version `{spec_id, content_version}` is
-    named by: the version's own pair with no columns, else `cv_` and 32 hex digits of the
-    SHA-256 of the RFC 8785 form of `{"columns": sorted, "content_version"}`, with the
-    `enrichment_stamp` of its file when the columns ask for kinds. data-mcp's
-    `frame_materialisation.frame_ref_for` names frames the same way."""
-    if not columns:
+    """The pair a frame of `columns` and `groupby` read from the version `{spec_id,
+    content_version}` is named by: the version's own pair with neither, else `cv_` and 32 hex
+    digits of the SHA-256 of the RFC 8785 form of `{"columns": sorted, "content_version"}`,
+    with `groupby` when set and the `enrichment_stamp` of its file when the columns ask for
+    kinds. data-mcp's `frame_materialisation.frame_ref_for` names frames the same way."""
+    if not columns and groupby is None:
         return FrameRef(spec_id=spec_id, content_version=content_version)
     preimage: dict[str, Any] = {"columns": sorted(columns), "content_version": content_version}
+    if groupby is not None:
+        preimage["groupby"] = dict(groupby)
     if enrichment_stamp is not None and requests_kinds(columns):
         preimage["enrichment_stamp"] = enrichment_stamp
     digest = hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
@@ -149,6 +159,8 @@ def mint_options(rendering: RootRendering, *, identity: Mapping[str, Any]) -> di
         options["columns"] = list(columns)
     if rendering.without_party_totals:
         options["without_party_totals"] = True
+    if rendering.groupby is not None:
+        options["groupby"] = rendering.groupby.model_dump(mode="json", exclude_none=True)
     return options
 
 
@@ -290,7 +302,7 @@ class LiveRootSource:
         )
         options = mint_options(root.rendering, identity=stored.definition.identity)
         manifest = stored
-        if "columns" in options:
+        if options.keys() - _BASE_OPTIONS.keys():
             rendered = head_rendering(
                 subject_id=spec_id,
                 content_version=content_version,
@@ -303,11 +315,15 @@ class LiveRootSource:
                 raise RootExpired(
                     spec_id=spec_id,
                     content_version=content_version,
-                    reason="its stored frame has expired, so its columns cannot be rendered",
+                    reason="its stored frame has expired, so its rendering cannot be made",
                 )
             manifest = rendered
+        # A groupby sum or a party-totals cut that changed the frame answers its own version.
         return self._resolved(
-            spec_id=spec_id, content_version=content_version, options=options, manifest=manifest
+            spec_id=spec_id,
+            content_version=manifest.content_version,
+            options=options,
+            manifest=manifest,
         )
 
     def _resolved(
@@ -320,6 +336,7 @@ class LiveRootSource:
             spec_id=spec_id,
             content_version=content_version,
             columns=columns,
+            groupby=options.get("groupby"),
             enrichment_stamp=stamp,
         )
         dataset = FrameRef(spec_id=spec_id, content_version=content_version)
@@ -332,14 +349,11 @@ class LiveRootSource:
         }
         if stamp is not None and requests_kinds(columns):
             record["enrichment_stamp"] = stamp
-        rendering: dict[str, Any] = {"format": "parquet", "bundle": False, "layout": "frame"}
-        if options.get("without_party_totals"):
-            rendering["without_party_totals"] = True
         return ResolvedRoot(
             frame=frame,
             dataset=dataset,
             record=record,
-            rendering=rendering,
+            rendering=root_rendering(options),
             source=_Handle(artifact=artifact),
         )
 
@@ -379,23 +393,7 @@ class LiveRootSource:
         return None if record is None else record.body
 
     def dataset_root(self, record: Mapping[str, Any]) -> DatasetRoot:
-        options = record.get("options") or {}
-        dataset = record["dataset"]
-        unreadable = set(options) - {*_BASE_OPTIONS, "columns", "without_party_totals"}
-        if unreadable or record.get("scope"):
-            raise RootRenderingUnreadable(
-                spec_id=dataset["spec_id"],
-                content_version=dataset["content_version"],
-                reason=f"its recipe reads it with options the runner does not read: {sorted(unreadable) or ['scope']}",
-            )
-        return DatasetRoot(
-            spec_id=dataset["spec_id"],
-            content_version=dataset["content_version"],
-            rendering=RootRendering(
-                without_party_totals=options.get("without_party_totals") is True,
-                columns=tuple(options.get("columns") or ()),
-            ),
-        )
+        return recorded_dataset_root(record)
 
 
 def _pending(operation_id: str) -> AnalysisPending:

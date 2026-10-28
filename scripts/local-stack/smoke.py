@@ -12,7 +12,8 @@ For each reading `seed.py` recorded in `$LOCAL_STACK_SEEDED`:
 - `POST /api/datasets/analysis` divides German ODA by Kenya's population, pairing the recipient
   with the place, and answers a format 2 ref to an `ops_`/`ocv_` frame over both roots;
 - `GET /api/datasets/derived/{ops}/{ocv}` names the frame and its roots, and its Parquet file
-  holds one Kenya row a year with the quotient the fixture gives;
+  hashes to the ref's `artifact.digest` and holds one Kenya row a year with the quotient the
+  fixture gives;
 - the bare derived root under `latest` answers the same `ops_` and `ocv_`;
 - `POST /api/presentation/components` makes a table card of the frame from the release's
   minimal table intent;
@@ -35,6 +36,7 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pyarrow.parquet as pq
@@ -137,9 +139,9 @@ def _expected_quotients(oda: Reading, population: Reading) -> dict[str, float]:
 
 def check_quotient(
     client: httpx.Client, oda: Mapping[str, object], population: Mapping[str, object]
-) -> dict[str, str]:
+) -> Mapping[str, Any]:
     """`quotient_of` of the German ODA reading over Kenya's population, pairing the recipient
-    with the place by role. Answers the derived frame's `ops_` id and `ocv_` version."""
+    with the place by role. Answers the ref's member naming the derived frame."""
     tree = {
         "verb": "quotient_of",
         "arguments": {"on": {"destination": "place"}},
@@ -150,14 +152,18 @@ def check_quotient(
     if body["status"] != "ready" or ref["format_version"] != 2 or len(ref["members"]) != 1:
         raise SmokeFailure(f"analysis answered {body['status']} with ref {ref}")
     (member,) = ref["members"]
-    derived = {"spec_id": member["spec"]["spec_id"], "content_version": member["content_version"]}
+    derived = _derived_pair(member)
     if not (
         derived["spec_id"].startswith("ops_") and derived["content_version"].startswith("ocv_")
     ):
         raise SmokeFailure(f"analysis ref names {derived}")
     if [_root(root) for root in member["roots"]] != [_root(oda), _root(population)]:
         raise SmokeFailure(f"analysis ref roots {member['roots']}")
-    return derived
+    return member
+
+
+def _derived_pair(member: Mapping[str, Any]) -> dict[str, str]:
+    return {"spec_id": member["spec"]["spec_id"], "content_version": member["content_version"]}
 
 
 def _derived_path(derived: Mapping[str, str]) -> str:
@@ -166,18 +172,24 @@ def _derived_path(derived: Mapping[str, str]) -> str:
 
 def check_derived_reads(
     client: httpx.Client,
-    derived: Mapping[str, str],
+    member: Mapping[str, Any],
     roots: Sequence[Mapping[str, object]],
     expected: Mapping[str, float],
 ) -> str:
-    """The derived manifest names the frame and its roots, and its Parquet file holds one row
-    for Kenya in each year with the quotient the fixture gives."""
+    """The derived manifest names the frame and its roots, and its Parquet file hashes to the
+    ref's artifact digest and holds one row for Kenya in each year with the quotient the
+    fixture gives."""
+    derived = _derived_pair(member)
     manifest = _get(client, _derived_path(derived)).json()
     named = {"spec_id": manifest["spec_id"], "content_version": manifest["content_version"]}
     if named != derived or [_root(root) for root in manifest["roots"]] != list(map(_root, roots)):
         raise SmokeFailure(f"derived manifest names {named} over {manifest['roots']}")
     path = f"{_derived_path(derived)}/file?format=parquet&bundle=false&layout=frame"
-    table = pq.read_table(io.BytesIO(_get(client, path).content))
+    body = _get(client, path).content
+    digest = "sha256:" + hashlib.sha256(body).hexdigest()
+    if digest != member["artifact"]["digest"]:
+        raise SmokeFailure(f"{path} holds {digest}, not the ref's {member['artifact']['digest']}")
+    table = pq.read_table(io.BytesIO(body))
     rows = table.select(["financingRecipient", "time_period", "value"]).to_pylist()
     served = {row["time_period"]: row["value"] for row in rows}
     if {row["financingRecipient"] for row in rows} != {"country/KEN"} or served.keys() != set(
@@ -189,7 +201,10 @@ def check_derived_reads(
     }
     if off:
         raise SmokeFailure(f"derived file values {off} differ from the fixture's {expected}")
-    return f"derived: manifest and Parquet file, {len(rows)} rows equal to the fixture's quotients"
+    return (
+        f"derived: manifest and Parquet file hashing to the ref's digest, {len(rows)} rows equal "
+        "to the fixture's quotients"
+    )
 
 
 def check_latest(client: httpx.Client, derived: Mapping[str, str]) -> str:
@@ -264,12 +279,13 @@ def analysis_step(
     """Divide the German ODA reading by Kenya's population, read the derived frame back, read
     it again under `latest`, and draw and share a card of it. Answers a line per check."""
     oda, population = seeded[ODA_READING], seeded[POPULATION_READING]
-    derived = check_quotient(client, oda, population)
+    member = check_quotient(client, oda, population)
+    derived = _derived_pair(member)
     expected = _expected_quotients(readings[ODA_READING], readings[POPULATION_READING])
     component_id = create_card(client, derived)
     return [
         f"analysis: quotient_of answered {derived['spec_id']} {derived['content_version']}",
-        check_derived_reads(client, derived, [oda, population], expected),
+        check_derived_reads(client, member, [oda, population], expected),
         check_latest(client, derived),
         f"card: {component_id} on the derived frame",
         check_share(client, component_id),

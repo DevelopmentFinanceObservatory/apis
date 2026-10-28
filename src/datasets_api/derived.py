@@ -5,7 +5,8 @@ stored under an `ops_` id and an `ocv_` content version.
 
 - `retention`: the frame's own (`retention.version_retention`), `pinned` or `held_until`;
 - `recipe`: the stored recipe's hashes, execution identity, `tree` and `roots`;
-- `roots`: each root dataset version once, with the rendering its frame was read with;
+- `roots`: each root dataset version once, with the rendering its frame was read with,
+  `groupby` included;
 - `resolved_periods`: each period the recipe states relative to the latest, with the period it
   resolved to (`analysis.resolved_periods`), and `anchor`, the recipe's rolling anchor;
 - `left_out`: every series a step of the recipe dropped for a data gap, each naming its
@@ -23,8 +24,11 @@ frame past retention `artifact_expired`.
 (`doors.files.selector_options`): `csv`, `xlsx` or `parquet`, alone or in a bundle zip beside the
 Data Package documents a dataset bundle holds (`materialise.bundle.assemble_bundle`), citing the
 sources the frame's `provenance` column names from its roots' citations. A derived frame's files
-hold the frame's own grammar columns, the frame layout, so `layout` takes only `frame`. Nothing is
-stored: each read renders from the stored frame.
+hold the frame's own grammar columns, the frame layout, so `layout` takes only `frame`. Bare
+Parquet is the stored canonical frame's bytes unchanged, the file a format 2 ref's
+`artifact.digest` names, as a dataset version's file link serves the bytes its manifest's
+digest names; its `unit` column is the canonical frame's tagged unit struct. Every other file
+renders from the stored frame, and nothing is stored.
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ from datasets_api.manifest_models import CitationModel, CitationSource, Retentio
 from datasets_api.mint_models import MintOptions
 from datasets_api.publish_models import Recipe
 from datasets_api.recipe_store import RecipeReader, RecipeRecord
-from datasets_api.render import stored_frame_location
+from datasets_api.render import is_canonical_frame_rendering, stored_frame_location
 from datasets_api.retention import version_retention
 from dfo_platform.config import PublicSiteSettings
 from materialise.bundle import (
@@ -95,10 +99,12 @@ class DerivedReads:
 
 def root_rendering(options: Mapping[str, Any]) -> dict[str, Any]:
     """The ref rendering of a root a recipe read with mint `options`: its format, bundle and
-    layout, and `without_party_totals` when true."""
+    layout, `without_party_totals` when true, and `groupby` when set."""
     rendering = {key: options[key] for key in _RENDERING_KEYS if key in options}
     if options.get("without_party_totals") is True:
         rendering["without_party_totals"] = True
+    if options.get("groupby") is not None:
+        rendering["groupby"] = options["groupby"]
     return rendering
 
 
@@ -244,11 +250,19 @@ class DerivedFile:
     file_name: str
 
 
-def stored_frame(
-    *, spec_id: str, content_version: str, reads: DerivedReads
-) -> tuple[Table, datetime]:
-    """The stored frame of the derived version, as a writer reads it, and when its bytes were
-    first stored.
+@dataclass(frozen=True, kw_only=True)
+class _StoredFrame:
+    """The derived version's stored frame: its bytes, their media type, whether they are its
+    canonical frame, and when they were first stored."""
+
+    data: bytes
+    media_type: str
+    canonical: bool
+    stored_on: datetime
+
+
+def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedReads) -> _StoredFrame:
+    """The stored frame of the derived version.
 
     Raises:
         SnapshotNotFound, SnapshotRevoked: The version has no record, or is taken down.
@@ -269,7 +283,12 @@ def stored_frame(
     created = location.created_at
     # A store that drops the zone records UTC, as every write stamps it.
     stored_on = created if created.tzinfo is not None else created.replace(tzinfo=UTC)
-    return read_stored_frame(data, media_type=location.media_type), stored_on
+    return _StoredFrame(
+        data=data,
+        media_type=location.media_type,
+        canonical=is_canonical_frame_rendering(location.rendering),
+        stored_on=stored_on,
+    )
 
 
 def _provenance_refs(table: Table) -> list[str]:
@@ -293,10 +312,11 @@ def render_derived_file(
     docstring.
 
     Raises:
-        SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As `stored_frame`.
+        SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As `_read_stored_frame`.
         ExcelLimitError, ExcelIllegalCharacterError, ParquetSizeBoundError: The writer's.
     """
-    table, prepared_at = stored_frame(spec_id=spec_id, content_version=content_version, reads=reads)
+    frame = _read_stored_frame(spec_id=spec_id, content_version=content_version, reads=reads)
+    table, prepared_at = read_stored_frame(frame.data, media_type=frame.media_type), frame.stored_on
     record = reads.recipe_reader.read_recipe(spec_id=spec_id, content_version=content_version)
     citation = recipe_citation(reads.snapshot_reader, record).sources_by_ref()
     sources = tuple(
@@ -308,11 +328,15 @@ def render_derived_file(
     slug = sources_slug([source.name for source in sources])
     tag = content_version.removeprefix("ocv_")[:_TAG_LENGTH]
     if not options.bundle:
-        buffer = io.BytesIO()
-        written = _WRITERS[options.format]((table,), rendering=_PLAIN, sink=buffer)
+        if options.format == "parquet" and frame.canonical:
+            data, media_type = frame.data, frame.media_type
+        else:
+            buffer = io.BytesIO()
+            written = _WRITERS[options.format]((table,), rendering=_PLAIN, sink=buffer)
+            data, media_type = buffer.getvalue(), written.media_type
         return DerivedFile(
-            data=buffer.getvalue(),
-            media_type=written.media_type,
+            data=data,
+            media_type=media_type,
             file_name=bare_file_name(
                 slug=slug, prepared=prepared_at.date(), tag=tag, extension=options.format
             ),

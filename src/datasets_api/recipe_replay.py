@@ -51,10 +51,10 @@ from datasets_api.analysis import (
     ResolvedRoot,
     RootExpired,
     RootNotStored,
-    RootRendering,
     RootRenderingUnreadable,
     SpecRoot,
     compute_analysis,
+    recorded_dataset_root,
 )
 from datasets_api.analysis_roots import frame_from_frame_layout, frame_of_stored
 from datasets_api.derived import root_rendering
@@ -103,20 +103,13 @@ class StoredRootSource:
     def dataset_root(self, record: Mapping[str, Any]) -> DatasetRoot:
         dataset = record["dataset"]
         options = record.get("options") or {}
-        if record.get("scope") or not _frame_layout(options):
+        if not _frame_layout(options):
             raise RootRenderingUnreadable(
                 spec_id=dataset["spec_id"],
                 content_version=dataset["content_version"],
                 reason="its recipe reads it with options other than a frame-layout file",
             )
-        root = DatasetRoot(
-            spec_id=dataset["spec_id"],
-            content_version=dataset["content_version"],
-            rendering=RootRendering(
-                without_party_totals=options.get("without_party_totals") is True,
-                columns=tuple(options.get("columns") or ()),
-            ),
-        )
+        root = recorded_dataset_root(record)
         self._records.append((root, record))
         return root
 
@@ -209,7 +202,6 @@ def _frame_layout(options: Mapping[str, Any]) -> bool:
         options.get("format") == "parquet"
         and options.get("bundle") is False
         and options.get("layout") == "frame"
-        and set(options) <= {"format", "bundle", "layout", "columns", "without_party_totals"}
     )
 
 

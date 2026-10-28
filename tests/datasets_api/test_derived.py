@@ -5,6 +5,7 @@ app factory and live store SQL."""
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import zipfile
@@ -214,6 +215,9 @@ def test_the_file_route_writes_the_frame_in_each_format(
     if "parquet" in query:
         table = pq.read_table(io.BytesIO(response.content))
         assert table.column("financingRecipient").to_pylist() == ["country/KEN"]
+        # Bare Parquet is the stored canonical frame, the bytes the ref's digest names.
+        digest = "sha256:" + hashlib.sha256(response.content).hexdigest()
+        assert digest == member["artifact"]["digest"]
     if not query:
         names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
         assert "datapackage.json" in names

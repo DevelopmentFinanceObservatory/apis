@@ -127,10 +127,7 @@ class FixtureRootSource:
         root = DatasetRoot(
             spec_id=record["dataset"]["spec_id"],
             content_version=record["dataset"]["content_version"],
-            rendering=RootRendering(
-                without_party_totals=options.get("without_party_totals") is True,
-                columns=tuple(options.get("columns") or ()),
-            ),
+            rendering=RootRendering.of_options(options),
         )
         held = next(held for held in self.body["roots"] if held["frame"] == record["frame"])
         self._seen.append((root, held))

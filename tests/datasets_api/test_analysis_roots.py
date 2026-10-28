@@ -1,5 +1,6 @@
 """How the live root source names and reads a root: its default enrichment, its mint options,
-its frame pair, a frame-layout file decoded, and a stored recipe root it cannot read."""
+its frame pair, a frame-layout file decoded, a root read summed by a groupby, and a stored
+recipe root it cannot read."""
 
 from __future__ import annotations
 
@@ -22,8 +23,20 @@ from datasets_api.analysis_roots import (
     frame_ref_for,
     mint_options,
 )
+from datasets_api.recipe_store import LiveRecipeStore
+from datasets_api.version_store import LiveVersionLister
 
 from ._deps_doubles import Unwired
+from ._version_record_store import FakeVersionRecordDatasetStore
+from .test_definition_door import _client
+from .test_definition_door_groupby_collapse import _hierarchical_code_index
+from .test_serve_groupby_collapse import (
+    _coverage_service,
+    _graph,
+    _mint,
+    _sdmx_transport,
+    _spec_id_and_sidecar,
+)
 
 _SPEC = "spec_" + "a" * 32
 _CV = "cv_" + "1" * 32
@@ -65,6 +78,14 @@ def test_mint_options_are_the_frame_layout_with_the_root_s_columns_and_cut() -> 
         "columns": list(FLOW_ENRICHMENT_COLUMNS),
         "without_party_totals": True,
     }
+    assert mint_options(
+        RootRendering(columns=(), groupby={"by": ["time_period"], "op": "sum"}), identity=flow
+    ) == {
+        "format": "parquet",
+        "bundle": False,
+        "layout": "frame",
+        "groupby": {"by": ["time_period"], "op": "sum"},
+    }
 
 
 def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
@@ -81,6 +102,19 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
     assert typed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
     salted = {"columns": ["party_kind"], "content_version": _CV, "enrichment_stamp": "s"}
     assert kinds.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(salted)).hexdigest()[:32]
+    summed = frame_ref_for(
+        spec_id=_SPEC,
+        content_version=_CV,
+        columns=(),
+        groupby={"by": ["time_period"], "op": "sum"},
+        enrichment_stamp=None,
+    )
+    grouped = {
+        "columns": [],
+        "content_version": _CV,
+        "groupby": {"by": ["time_period"], "op": "sum"},
+    }
+    assert summed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(grouped)).hexdigest()[:32]
 
 
 def test_a_frame_layout_file_decodes_as_data_mcp_reads_it() -> None:
@@ -111,17 +145,85 @@ def test_a_frame_layout_file_decodes_as_data_mcp_reads_it() -> None:
 
 def test_a_stored_root_read_with_options_the_runner_does_not_read_refuses() -> None:
     roots = LiveRootSource(deps=Unwired("deps"), recipes=Unwired("recipes"))  # ty: ignore[invalid-argument-type]
-    record = {
-        "dataset": {"spec_id": _SPEC, "content_version": _CV},
-        "options": {
-            "format": "parquet",
-            "bundle": False,
-            "layout": "frame",
-            "groupby": {"axis": "x"},
-        },
-    }
+    bare = {"format": "parquet", "bundle": False, "layout": "frame"}
+    record = {"dataset": {"spec_id": _SPEC, "content_version": _CV}, "options": bare}
 
-    with pytest.raises(RootRenderingUnreadable):
-        roots.dataset_root(record)
-    readable = {**record, "options": {"format": "parquet", "bundle": False, "layout": "frame"}}
-    assert roots.dataset_root(readable).rendering == RootRendering(columns=())
+    for options in (
+        {**bare, "pivot": {"index": "time_period", "columns": "stat_var"}},
+        {**bare, "groupby": {"axis": "x"}},
+    ):
+        with pytest.raises(RootRenderingUnreadable):
+            roots.dataset_root({**record, "options": options})
+    assert roots.dataset_root(record).rendering == RootRendering(columns=())
+    summed = {**bare, "groupby": {"by": ["time_period"], "op": "sum"}}
+    assert roots.dataset_root({**record, "options": summed}).rendering == RootRendering(
+        columns=(), groupby={"by": ["time_period"], "op": "sum"}
+    )
+
+
+_BARE = {"format": "parquet", "bundle": False, "layout": "frame"}
+# `get_data`'s `stat_vars="sum"` and a `breakdown` of `testAxis` at level 0.
+_STAT_VARS_SUM = {"by": ["time_period"], "op": "sum"}
+_BREAKDOWN = {"by": ["time_period", "testAxis"], "op": "sum", "levels": {"testAxis": 0}}
+
+
+@pytest.mark.parametrize(
+    "groupby", [_STAT_VARS_SUM, _BREAKDOWN], ids=["stat_vars_sum", "breakdown"]
+)
+def test_a_root_read_with_a_groupby_is_the_summed_version_its_mint_names(groupby: dict) -> None:
+    """A root of the raw version read with a groupby reads the version that groupby's mint
+    names, as does a root of that version itself, and its recipe, normal form and manifest
+    roots name the groupby."""
+    store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    raw = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)["content_version"]
+    summed = _mint(client, spec_id=spec_id, sidecar=sidecar, options={**_BARE, "groupby": groupby})
+    assert summed["content_version"] != raw
+
+    def run(content_version: str, rendering: dict) -> dict:
+        root = {"spec_id": spec_id, "content_version": content_version, "rendering": rendering}
+        tree = {
+            "verb": "aggregate",
+            "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+            "inputs": {"data": root},
+        }
+        response = client.post("/api/datasets/analysis", json={"tree": tree})
+        assert response.status_code == 200, response.text
+        return response.json()["ref"]["members"][0]
+
+    plain = run(raw, {"columns": []})
+    from_raw = run(raw, {"columns": [], "groupby": groupby})
+    from_summed = run(summed["content_version"], {"columns": [], "groupby": groupby})
+
+    assert from_summed == from_raw
+    rendering = {**_BARE, "groupby": groupby}
+    assert from_raw["roots"] == [
+        {"spec_id": spec_id, "content_version": summed["content_version"], "rendering": rendering}
+    ]
+    hashes = {member["spec"]["recipe"]["normal_form_hash"] for member in (plain, from_raw)}
+    assert len(hashes) == 2
+    derived = client.get(
+        f"/api/datasets/derived/{from_raw['spec']['spec_id']}/{from_raw['content_version']}"
+    ).json()
+    assert derived["roots"] == from_raw["roots"]
+    (record,) = derived["recipe"]["roots"]
+    assert record["options"] == rendering
+    assert (
+        record["frame"]
+        == frame_ref_for(
+            spec_id=spec_id,
+            content_version=summed["content_version"],
+            columns=(),
+            groupby=groupby,
+            enrichment_stamp=None,
+        ).model_dump()
+    )
