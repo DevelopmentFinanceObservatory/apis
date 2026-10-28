@@ -668,3 +668,49 @@ def test_a_guarded_race_wakes_when_its_read_ends_without_polling(monkeypatch, en
         error = race.exception(timeout=1)
     assert isinstance(error, _ReadStoppedError if ending == "stopped" else TimeoutError)
     guard.cancel()
+
+
+class _GatedStream(httpx.SyncByteStream):
+    """Yields the header row, then waits for `gate` before the rest of the body."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+        self.reading = threading.Event()
+        self.gate = threading.Event()
+
+    def __iter__(self) -> Iterator[bytes]:
+        head, rest = self._body[: len(_HEADER)], self._body[len(_HEADER) :]
+        yield head
+        self.reading.set()
+        assert self.gate.wait(timeout=5)
+        yield rest
+
+
+def test_a_losing_response_is_closed_unread_while_the_winners_body_is_still_read():
+    """The duplicate wins and its body is read slowly. The stalled request's 200 arrives
+    meanwhile and is closed and its loser place freed before the winner's body is read."""
+    transport = _StalledFirstRequest()
+    winner_stream = _GatedStream(_body("V0", "2"))
+
+    class _SlowWinner(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            if transport.requests["V0"] == 0:
+                return transport.handle_request(request)
+            transport.requests["V0"] += 1
+            return httpx.Response(
+                200, headers={"content-type": _CONTENT_TYPE}, stream=winner_stream
+            )
+
+    client = SdmxClient(base_url=_BASE_URL, transport=_SlowWinner(), hedge_after=_HEDGE_AFTER)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        read = pool.submit(_value, client, "V0")
+        assert winner_stream.reading.wait(timeout=5)
+        transport.release.set()
+        _wait_until(lambda: "V0" in transport.streams)
+        assert transport.streams["V0"].closed.wait(timeout=1)
+        _wait_until(lambda: client._running_losers == 0)
+        assert not read.done()
+        winner_stream.gate.set()
+        assert read.result(timeout=5) == "2"
+    assert transport.requests["V0"] == 2

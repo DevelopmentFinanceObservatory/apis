@@ -1630,8 +1630,9 @@ class SdmxClient:
         slot a live read could use; the read's own lease covers the winner. A request still
         running when its read gave up on it keeps its lease and also takes a loser place, which
         stops new duplicates while it runs. A send settles when it fails, when
-        its response arrives after it lost or was abandoned (the response is closed unread), or,
-        for the winner, when this block exits. So the sends running against the mixer never
+        its response arrives after it lost or was abandoned (the response is closed unread, even
+        while the caller still reads the winner's body), or, for the winner, when this block
+        exits. So the sends running against the mixer never
         exceed the total-concurrency slots plus `_HEDGE_LOSER_CAP`.
 
         When no thread can be started for the request, it is sent on the caller's thread and
@@ -1653,27 +1654,49 @@ class SdmxClient:
         holds: dict[Future[httpx.Response], tuple[_TotalSlotLease | None, bool]] = {
             primary: (slot.retain(), False)
         }
-        winner: Future[httpx.Response] | None = None
         try:
             if _wait_for_sends((primary,), guard=guard, timeout=self._hedge_after):
                 winner = primary
             else:
                 winner = self._hedge(primary, send, holds=holds, guard=guard)
+        except BaseException:
+            self._settle_losers(primary, holds=holds, winner=None)
+            raise
+        winner_lease, winner_place = self._settle_losers(primary, holds=holds, winner=winner)
+        try:
             yield winner.result()
         finally:
+            winner.add_done_callback(
+                partial(self._settle_send, lease=winner_lease, place=winner_place)
+            )
+
+    def _settle_losers(
+        self,
+        primary: Future[httpx.Response],
+        *,
+        holds: dict[Future[httpx.Response], tuple[_TotalSlotLease | None, bool]],
+        winner: Future[httpx.Response] | None,
+    ) -> tuple[_TotalSlotLease | None, bool]:
+        """Have each send in `holds` other than `winner` settle as soon as it ends, holding a
+        loser place while it runs, and return the winner's slot lease and place, which the
+        caller frees when its block exits. `winner` is None when the read gave up on every
+        send. When a duplicate wins while `primary` still runs, the read's own lease covers
+        the duplicate, so `primary` gives back its slot and takes over the duplicate's loser
+        place, keeping the loser count within its cap."""
+        if winner is not None and winner is not primary and not primary.done():
             primary_lease, _ = holds[primary]
-            if winner is not None and winner is not primary and not primary.done():
-                # The read's own lease covers the winning duplicate, so the request takes over
-                # its loser place and gives back its slot, keeping the loser count in its cap.
-                holds[winner] = (None, False)
-                holds[primary] = (None, True)
-                if primary_lease is not None:
-                    primary_lease.release()
-            for sent, (lease, place) in holds.items():
-                if sent is not winner and not place and not sent.done():
-                    self._take_loser_place()
-                    place = True
-                sent.add_done_callback(partial(self._settle_send, lease=lease, place=place))
+            holds[winner] = (None, False)
+            holds[primary] = (None, True)
+            if primary_lease is not None:
+                primary_lease.release()
+        for sent, (lease, place) in holds.items():
+            if sent is winner:
+                continue
+            if not place and not sent.done():
+                self._take_loser_place()
+                place = True
+            sent.add_done_callback(partial(self._settle_send, lease=lease, place=place))
+        return (None, False) if winner is None else holds[winner]
 
     def _hedge(
         self,
