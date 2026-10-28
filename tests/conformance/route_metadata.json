@@ -37,6 +37,24 @@
   },
   {
     "has_description": true,
+    "method": "GET",
+    "name": "get_derived",
+    "operation_id": "datasets_get_derived",
+    "path": "/api/datasets/derived/{id}/{content_version}",
+    "summary": "Get Derived",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "get_derived_file",
+    "operation_id": "datasets_get_derived_file",
+    "path": "/api/datasets/derived/{id}/{content_version}/file",
+    "summary": "Get Derived File",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
     "method": "POST",
     "name": "post_publish",
     "operation_id": "datasets_post_publish",

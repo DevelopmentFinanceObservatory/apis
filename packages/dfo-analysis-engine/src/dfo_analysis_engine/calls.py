@@ -60,7 +60,12 @@ from pydantic import ValidationError
 
 from dfo_analysis_engine.artifact import Exclusion, Interval, Observation, Time
 from dfo_analysis_engine.engine.aggregate import run_aggregate
-from dfo_analysis_engine.engine.common import Exclusions
+from dfo_analysis_engine.engine.common import (
+    NOT_A_FACT,
+    ExclusionReason,
+    Exclusions,
+    ExclusionSide,
+)
 from dfo_analysis_engine.engine.compare import run_compare
 from dfo_analysis_engine.engine.filter import run_filter
 from dfo_analysis_engine.engine.growth import run_growth
@@ -110,6 +115,7 @@ __all__ = [
     "DEFAULT_COVERAGE_FLOOR",
     "DEFAULT_MAX_FRAME_ROWS",
     "DerivedMarker",
+    "DroppedSeries",
     "Input",
     "VerbCall",
     "admit",
@@ -488,13 +494,27 @@ class _Outcome:
 
 
 @dataclass(frozen=True, kw_only=True)
+class DroppedSeries:
+    """One series a call dropped for a data gap
+    (`engine.common.DATA_GAP_REASONS`): its `(column, value)` coordinates, the
+    reason, the engine side it came from (`None` for a single-input verb) and
+    the rows it lost."""
+
+    coordinates: tuple[tuple[str, str], ...]
+    reason: ExclusionReason
+    side: ExclusionSide | None
+    rows: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class VerbCall:
     """One verb call's result.
 
     `ref` is the result's `{ops_, ocv_}` pair, `frame_content_version` its
     frame's `cv_`, and `canonical_op_spec` the parsed RFC 8785 op-spec its id is
     minted over. `time`, `marker` and `components` are what a next call reads
-    beside the rows (`as_input`). `summary` is described in the module docstring."""
+    beside the rows (`as_input`). `summary` is described in the module docstring.
+    `dropped` is every series the call dropped for a data gap, record by record."""
 
     ref: FrameRef
     frame: Frame
@@ -506,6 +526,7 @@ class VerbCall:
     marker: DerivedMarker | None
     components: tuple[CompositeComponent, ...]
     summary: dict[str, Any] = field(repr=False)
+    dropped: tuple[DroppedSeries, ...] = field(default=(), repr=False)
 
     def as_input(self) -> Input:
         """This result, admitted as the input of a next call.
@@ -610,6 +631,15 @@ def _finished(
         marker=outcome.marker,
         components=components,
         summary=summary,
+        dropped=_dropped(outcome.result.exclusions),
+    )
+
+
+def _dropped(exclusions: Exclusions) -> tuple[DroppedSeries, ...]:
+    return tuple(
+        DroppedSeries(coordinates=coordinates, reason=record.reason, side=record.side, rows=rows)
+        for record in exclusions.records
+        for coordinates, rows in record.series or ()
     )
 
 
@@ -639,6 +669,7 @@ def _facts(value: object, *, top: bool = False) -> object:
             item.name: _facts(getattr(value, item.name))
             for item in dataclasses.fields(value)
             if not (top and isinstance(getattr(value, item.name), Frame))
+            and not item.metadata.get(NOT_A_FACT)
         }
     if isinstance(value, Mapping):
         return {str(key): _facts(item) for key, item in value.items()}

@@ -617,7 +617,7 @@ def _option_query_schema(name: str) -> dict[str, object]:
     return schema
 
 
-_SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
+SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
     {
         "name": "format",
         "in": "query",
@@ -698,7 +698,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
         status_code=302,
         response_class=RedirectResponse,
         responses={302: _REDIRECT_RESPONSE},
-        openapi_extra={"parameters": _SELECTOR_QUERY_PARAMETERS},
+        openapi_extra={"parameters": SELECTOR_QUERY_PARAMETERS},
     )
     async def get_version_file(id: str, content_version: str, request: Request) -> RedirectResponse:
         """Redirect to the version's file in the format, bundle and layout the query names,

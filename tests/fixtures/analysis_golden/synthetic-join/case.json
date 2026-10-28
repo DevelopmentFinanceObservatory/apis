@@ -1,0 +1,201 @@
+{
+ "content_version": "ocv_ebee60c701b5c8ef959970249feb454c",
+ "expected": {
+  "frame_content_version": "cv_dfdab27a6b2731bbb6833c857b31702a",
+  "output_digest": "out_599a6e6201e8049253c1d574059330d9"
+ },
+ "origin": "synthetic",
+ "recipe": {
+  "anchor": null,
+  "execution_identity": "0.9.0|1.1.0|0.2.0",
+  "left_out": {
+   "complete": true,
+   "series": [
+    {
+     "coordinates": {
+      "reporter": "dcid:DEU",
+      "stat_var": "dcid:OfficialDevelopmentAssistanceNet_Disbursement"
+     },
+     "reason": "unmatched_key",
+     "rows": 3,
+     "side": "data",
+     "step": {
+      "node": 0,
+      "verb": "join"
+     }
+    },
+    {
+     "coordinates": {
+      "reporter": "dcid:FRA",
+      "stat_var": "dcid:OfficialDevelopmentAssistanceNet_Disbursement"
+     },
+     "reason": "unmatched_key",
+     "rows": 1,
+     "side": "data",
+     "step": {
+      "node": 0,
+      "verb": "join"
+     }
+    },
+    {
+     "coordinates": {
+      "reporter": "dcid:GBR",
+      "stat_var": "dcid:OfficialDevelopmentAssistanceNet_Disbursement"
+     },
+     "reason": "unmatched_key",
+     "rows": 1,
+     "side": "data",
+     "step": {
+      "node": 0,
+      "verb": "join"
+     }
+    },
+    {
+     "coordinates": {
+      "reporter": "dcid:JPN",
+      "stat_var": "dcid:OfficialDevelopmentAssistanceNet_Disbursement"
+     },
+     "reason": "unmatched_key",
+     "rows": 3,
+     "side": "data",
+     "step": {
+      "node": 0,
+      "verb": "join"
+     }
+    },
+    {
+     "coordinates": {
+      "reporter": "dcid:USA",
+      "stat_var": "dcid:OfficialDevelopmentAssistanceNet_Disbursement"
+     },
+     "reason": "unmatched_key",
+     "rows": 1,
+     "side": "data",
+     "step": {
+      "node": 0,
+      "verb": "join"
+     }
+    }
+   ]
+  },
+  "normal_form_hash": "rnf_c9d3e937a4b60af5c07bf3c992bc9b75",
+  "replay_key": "rpk_81192db7d1e752648d262e42d96fe052",
+  "roots": [
+   {
+    "dataset": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_11111111111111111111111111111111"
+    },
+    "frame": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_11111111111111111111111111111111"
+    },
+    "options": {
+     "bundle": false,
+     "format": "parquet",
+     "layout": "frame"
+    },
+    "schema_version": 1,
+    "scope": {}
+   },
+   {
+    "dataset": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_33333333333333333333333333333333"
+    },
+    "frame": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_33333333333333333333333333333333"
+    },
+    "options": {
+     "bundle": false,
+     "format": "parquet",
+     "layout": "frame"
+    },
+    "schema_version": 1,
+    "scope": {}
+   }
+  ],
+  "schema_version": 1,
+  "tree": {
+   "frame": {
+    "content_version": "ocv_ebee60c701b5c8ef959970249feb454c",
+    "spec_id": "ops_b479e9304840cf470db9305a8b9c369d"
+   },
+   "inputs": {
+    "frame_ref": {
+     "frame": {
+      "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "spec_id": "spec_11111111111111111111111111111111"
+     },
+     "root": 0
+    },
+    "right_frame_ref": {
+     "frame": {
+      "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "spec_id": "spec_33333333333333333333333333333333"
+     },
+     "root": 1
+    }
+   },
+   "op_spec": {
+    "frame_ref": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_11111111111111111111111111111111"
+    },
+    "identity_version": "ops1",
+    "parameters": {
+     "join_keys": [
+      "reporter"
+     ],
+     "left_unit": null,
+     "right_frame_ref": {
+      "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "spec_id": "spec_33333333333333333333333333333333"
+     },
+     "right_unit": null
+    },
+    "verb": "join"
+   }
+  }
+ },
+ "roots": [
+  {
+   "dataset": {
+    "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "spec_id": "spec_11111111111111111111111111111111"
+   },
+   "file": "roots/0.parquet",
+   "frame": {
+    "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "spec_id": "spec_11111111111111111111111111111111"
+   },
+   "options": {
+    "bundle": false,
+    "format": "parquet",
+    "layout": "frame"
+   },
+   "schema_version": 1,
+   "scope": {}
+  },
+  {
+   "dataset": {
+    "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "spec_id": "spec_33333333333333333333333333333333"
+   },
+   "file": "roots/1.parquet",
+   "frame": {
+    "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "spec_id": "spec_33333333333333333333333333333333"
+   },
+   "options": {
+    "bundle": false,
+    "format": "parquet",
+    "layout": "frame"
+   },
+   "schema_version": 1,
+   "scope": {}
+  }
+ ],
+ "spec_id": "ops_b479e9304840cf470db9305a8b9c369d"
+}

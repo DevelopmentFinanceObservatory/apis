@@ -1,0 +1,91 @@
+{
+ "content_version": "ocv_2260ddfc1c213176aa07ceca6a577dbc",
+ "expected": {
+  "frame_content_version": "cv_95bbb17b6469ed6378b06f0e442afb1e",
+  "output_digest": "out_35a1612aaa39451ace54c919a19fe991"
+ },
+ "origin": "synthetic",
+ "recipe": {
+  "anchor": null,
+  "execution_identity": "0.9.0|1.1.0|0.2.0",
+  "left_out": {
+   "complete": true,
+   "series": []
+  },
+  "normal_form_hash": "rnf_2f36179c1817c4a826ed407e55d5b720",
+  "replay_key": "rpk_6ed52c25363783fdcd57928964051c9a",
+  "roots": [
+   {
+    "dataset": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_22222222222222222222222222222222"
+    },
+    "frame": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_22222222222222222222222222222222"
+    },
+    "options": {
+     "bundle": false,
+     "format": "parquet",
+     "layout": "frame"
+    },
+    "schema_version": 1,
+    "scope": {}
+   }
+  ],
+  "schema_version": 1,
+  "tree": {
+   "frame": {
+    "content_version": "ocv_2260ddfc1c213176aa07ceca6a577dbc",
+    "spec_id": "ops_5fcfaa4c4c8bcdcf54b0c1500d133a03"
+   },
+   "inputs": {
+    "frame_ref": {
+     "frame": {
+      "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "spec_id": "spec_22222222222222222222222222222222"
+     },
+     "root": 0
+    }
+   },
+   "op_spec": {
+    "frame_ref": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_22222222222222222222222222222222"
+    },
+    "identity_version": "ops1",
+    "parameters": {
+     "change": "relative",
+     "entity_by": [
+      "reporter"
+     ],
+     "unit": null,
+     "window_end": "2023",
+     "window_start": "2018"
+    },
+    "verb": "growth"
+   }
+  }
+ },
+ "roots": [
+  {
+   "dataset": {
+    "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "spec_id": "spec_22222222222222222222222222222222"
+   },
+   "file": "roots/0.parquet",
+   "frame": {
+    "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "spec_id": "spec_22222222222222222222222222222222"
+   },
+   "options": {
+    "bundle": false,
+    "format": "parquet",
+    "layout": "frame"
+   },
+   "schema_version": 1,
+   "scope": {}
+  }
+ ],
+ "spec_id": "ops_5fcfaa4c4c8bcdcf54b0c1500d133a03"
+}

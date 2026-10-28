@@ -138,6 +138,77 @@ def test_a_summary_states_the_verbs_counts_as_json() -> None:
     assert summary["execution_identity"]["engine_version"] == "0.9.0"
 
 
+def _reporter_years(cells: list[tuple[str, str, float]]) -> Frame:
+    """A frame of `(reporter, year, value)` cells of one ODA variable."""
+    return Frame.build(
+        role_keys=["reporter"],
+        rows=[
+            {
+                "stat_var": "dcid:Oda",
+                "reporter": reporter,
+                "time_period": year,
+                "value": value,
+                "unit": "dcid:USDollar",
+            }
+            for reporter, year, value in cells
+        ],
+    )
+
+
+def test_each_step_of_a_chain_names_the_series_it_dropped_for_a_data_gap() -> None:
+    """The `quotient_of` below drops FRA, which its denominator lacks, and GBR's 2021
+    denominator, which its numerator lacks; the top `growth` then drops GBR, which lacks its
+    end year. Each step names its own drops by node."""
+    aid = _reporter_years(
+        [
+            (reporter, year, 10.0)
+            for reporter in ("dcid:USA", "dcid:GBR", "dcid:FRA")
+            for year in ("2020", "2021")
+            if (reporter, year) != ("dcid:GBR", "2021")
+        ]
+    )
+    income = _reporter_years(
+        [
+            (reporter, year, 100.0)
+            for reporter in ("dcid:USA", "dcid:GBR")
+            for year in ("2020", "2021")
+        ]
+    )
+    tree = _node(
+        "growth",
+        {
+            "frame_ref": _node(
+                "quotient_of",
+                {"frame_ref": _root(0), "denominator_frame_ref": _root(1)},
+                numerator_by=["reporter"],
+                denominator_by={"reporter": "reporter"},
+            )
+        },
+        window_start="2020",
+        window_end="2021",
+        entity_by=["reporter"],
+        change="absolute",
+    )
+
+    evaluation = evaluate(
+        tree, {0: RootFrame(ref=_ROOT, frame=aid), 1: RootFrame(ref=_OTHER_ROOT, frame=income)}
+    )
+
+    assert [(step.node, step.verb) for step in evaluation.steps] == [
+        (0, "growth"),
+        (1, "quotient_of"),
+    ]
+    growth, quotient = evaluation.steps
+    assert [
+        (dict(s.coordinates)["reporter"], s.reason, s.side, s.rows) for s in growth.dropped
+    ] == [("dcid:GBR", "endpoint_missing", None, 1)]
+    assert [(dict(s.coordinates), s.reason, s.side, s.rows) for s in quotient.dropped] == [
+        ({"reporter": "dcid:FRA"}, "unmatched_key", "numerator", 2),
+        ({"reporter": "dcid:GBR"}, "period_unmatched", "denominator", 1),
+    ]
+    assert "series" not in json.dumps(evaluation.summary)
+
+
 def _flows(role: str, cells: list[tuple[str, str, str, float]]) -> Frame:
     """A frame of `(member, origin, year, value)` cells, its members under `role`."""
     return Frame.build(

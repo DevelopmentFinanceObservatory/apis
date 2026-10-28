@@ -40,6 +40,7 @@ from dfo_analysis_engine.artifact import Exclusion
 from dfo_analysis_engine.calls import (
     DEFAULT_COVERAGE_FLOOR,
     DEFAULT_MAX_FRAME_ROWS,
+    DroppedSeries,
     Input,
     VerbCall,
     admit,
@@ -53,7 +54,7 @@ from dfo_analysis_engine.recipe import derived_nodes, pair
 from dfo_analysis_engine.refusal import AnalysisRefused, CompositeComponent, Refusal
 from dfo_analysis_engine.rolling import canonical_populations, rolling_roots
 
-__all__ = ["Evaluation", "Policy", "RootFrame", "evaluate"]
+__all__ = ["EvaluatedStep", "Evaluation", "Policy", "RootFrame", "evaluate"]
 
 _ROLLING = "rolling"
 
@@ -90,6 +91,20 @@ _EXACT = Policy()
 
 
 @dataclass(frozen=True, kw_only=True)
+class EvaluatedStep:
+    """One derived node's call: `node`, its index in `recipe.derived_nodes`
+    order over the tree, its `verb`, the engine side each of its call's `data`
+    and `other` fills where the call names them (`calls.VerbCall.summary`'s
+    `sides`, `None` otherwise), and the series it dropped for a data gap
+    (`calls.VerbCall.dropped`)."""
+
+    node: int
+    verb: str
+    sides: Mapping[str, str] | None
+    dropped: tuple[DroppedSeries, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
 class Evaluation:
     """A tree's result.
 
@@ -98,7 +113,9 @@ class Evaluation:
     its call's. `resolved_periods` is the latest period the rolling op-specs
     count from, `None` for a tree of fixed periods. `tree` is the tree as
     computed: each derived node with its `frame` pair and its canonical op-spec
-    over its inputs' pairs, and each root node with its root frame's pair."""
+    over its inputs' pairs, and each root node with its root frame's pair.
+    `steps` holds every derived node's call, in `recipe.derived_nodes` order,
+    so a reader sees what each step of the tree dropped, not the top's alone."""
 
     ref: FrameRef
     frame: Frame
@@ -107,6 +124,7 @@ class Evaluation:
     execution_identity: ExecutionIdentity
     summary: dict[str, Any] = field(repr=False)
     tree: dict[str, Any] = field(repr=False)
+    steps: tuple[EvaluatedStep, ...] = field(default=(), repr=False)
 
 
 def evaluate(
@@ -140,6 +158,7 @@ def evaluate(
         execution_identity=call.execution_identity,
         summary=call.summary,
         tree=tree,
+        steps=tuple(sorted(walk.steps, key=lambda step: step.node)),
     )
 
 
@@ -270,9 +289,14 @@ class _Walk:
     roots: Mapping[int, _Root]
     periods: ResolvedPeriods | None
     policy: Policy
+    steps: list[EvaluatedStep] = field(default_factory=list)
+    reached: int = 0
 
     def derived(self, node: Mapping[str, Any]) -> tuple[VerbCall, dict[str, Any]]:
-        """`node` computed, and its computed tree."""
+        """`node` computed, and its computed tree. Nodes are numbered as they are reached,
+        before their inputs, which is `recipe.derived_nodes` order."""
+        index = self.reached
+        self.reached += 1
         inputs: dict[str, Input] = {}
         pairs: dict[str, dict[str, str]] = {}
         trees: dict[str, dict[str, Any]] = {}
@@ -300,4 +324,12 @@ class _Walk:
             max_frame_rows=self.policy.max_frame_rows,
         )
         tree = {"frame": pair(call.ref), "op_spec": call.canonical_op_spec, "inputs": trees}
+        self.steps.append(
+            EvaluatedStep(
+                node=index,
+                verb=str(op_spec["verb"]),
+                sides=call.summary.get("sides"),
+                dropped=call.dropped,
+            )
+        )
         return call, tree

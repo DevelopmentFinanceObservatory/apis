@@ -9,7 +9,8 @@ replays every case of that verb against both.
 
 An outcome is one of:
 
-- `{"result": ...}`: every field of the engine's result dataclass, the output
+- `{"result": ...}`: every field of the engine's result dataclass but those
+  marked `engine.common.NOT_A_FACT` (an exclusion record's `series`), the output
   frame as its `frame_sha256`, columns and canonical rows, a `UnitRequest`
   as `{"unit_request": {...}}`, and join's `MatchedKeys` as the list of its
   `MatchedKey` rows.
@@ -45,6 +46,7 @@ from differential.cases import Case, frame_from_spec, generate_cases
 from pydantic import TypeAdapter
 
 from dfo_analysis_engine.engine.aggregate import run_aggregate
+from dfo_analysis_engine.engine.common import NOT_A_FACT
 from dfo_analysis_engine.engine.compare import run_compare
 from dfo_analysis_engine.engine.filter import run_filter
 from dfo_analysis_engine.engine.growth import run_growth
@@ -118,7 +120,9 @@ def to_json(value: object) -> object:
         return {"unit_request": value.as_json()}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
-            field.name: to_json(getattr(value, field.name)) for field in dataclasses.fields(value)
+            field.name: to_json(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+            if not field.metadata.get(NOT_A_FACT)
         }
     if isinstance(value, Mapping):
         return {str(key): to_json(item) for key, item in value.items()}

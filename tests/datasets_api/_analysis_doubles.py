@@ -150,10 +150,11 @@ class Stores:
     def __init__(self) -> None:
         self.store = FakeVersionRecordDatasetStore()
         self.now = datetime(2026, 10, 28, tzinfo=UTC)
+        self.gcs = FakeGCSClient()
         self.artifact_store = LiveArtifactStore(
             buckets={Tier.working: "working-bucket", Tier.pinned: "pinned-bucket"},
             inventory=LiveArtifactInventory(store=self.store),
-            client=FakeGCSClient(),
+            client=self.gcs,
         )
         self.snapshot_reader = LiveSnapshotReader(store=self.store)
         self.version_writer = LiveVersionRecordWriter(store=self.store, now=lambda: self.now)

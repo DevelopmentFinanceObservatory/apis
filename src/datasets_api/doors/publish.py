@@ -451,7 +451,7 @@ def write_frame_recipe(
             content_version=content_version,
             normal_form_hash=recipe.normal_form_hash,
             replay_key=recipe.replay_key,
-            body=recipe.model_dump(mode="json"),
+            body=recipe.stored_body(),
         )
     )
 

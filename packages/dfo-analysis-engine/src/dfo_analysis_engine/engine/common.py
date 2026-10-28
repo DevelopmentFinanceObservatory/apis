@@ -54,8 +54,9 @@ from __future__ import annotations
 
 import bisect
 import math
+from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Literal, cast, get_args
 
@@ -137,6 +138,30 @@ ExclusionReason = Literal[
 # knowing the side tells a reader whether the reported share is inflated or
 # deflated.
 ExclusionSide = Literal["numerator", "denominator", "left", "right"]
+
+# The reasons that leave rows out for missing or unusable data, as against the
+# caller's own selection (`entity_not_selected`, `unit_not_selected`,
+# `outside_window`, `predicate`, `beyond_limit`) and the flow parties
+# `without_party_totals` leaves out by choice (`party_total`, `party_residual`).
+# A record under one of these names each series it dropped (`ExclusionRecord.series`).
+DATA_GAP_REASONS: frozenset[ExclusionReason] = frozenset(
+    {
+        "unit_unbound",
+        "endpoint_missing",
+        "zero_or_sign_crossing_base",
+        "non_finite",
+        "unmatched_key",
+        "period_unmatched",
+        "zero_denominator",
+    }
+)
+
+# One series a record dropped: its `(column, value)` coordinates and its row count.
+type SeriesRows = tuple[tuple[tuple[str, str], ...], int]
+
+# The `dataclasses.field` metadata key that keeps a field out of an engine
+# result's JSON facts (`dfo_analysis_engine.calls.VerbCall.summary`).
+NOT_A_FACT = "not_a_fact"
 
 # Per-role-column cap `smallest_distinct` applies, mirroring
 # `dfo_analysis_engine.artifact.ENTITY_CAP` (the engine layer does not import the
@@ -616,6 +641,12 @@ class ExclusionRecord:
     `parties` is every distinct party the dropped rows name in their one
     role column, uncapped, for the flow parties `without_party_totals` leaves
     out, and `None` where the step keeps only the capped `entities`.
+
+    `series` is every series a record under a `DATA_GAP_REASONS` reason
+    dropped, uncapped and sorted, each its coordinates (`stat_var` and the
+    entity roles of a frame's rows, or the keys of a two-sided verb's cells)
+    and the rows it lost; `None` for any other reason. It is left out of the
+    verb's JSON facts (`NOT_A_FACT`), which name dropped rows by `entities`.
     """
 
     reason: ExclusionReason
@@ -624,6 +655,7 @@ class ExclusionRecord:
     entities_truncated: bool
     side: ExclusionSide | None = None
     parties: tuple[str, ...] | None = None
+    series: tuple[SeriesRows, ...] | None = field(default=None, metadata={NOT_A_FACT: True})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -745,12 +777,31 @@ def record_exclusion(
     when `dropped` is empty."""
     if not dropped.num_rows:
         return exclusions
+    series = None
+    if reason in DATA_GAP_REASONS:
+        columns = (STAT_VAR_COLUMN, *entity_roles(frame))
+        keys = zip(*(dropped.column(column).to_pylist() for column in columns), strict=True)
+        series = series_rows(columns, ((key, 1) for key in keys))
     return record_counted_exclusion(
         exclusions,
         reason=reason,
         row_count=dropped.num_rows,
         entities={column: distinct(dropped, column) for column in role_columns(frame)},
         side=side,
+        series=series,
+    )
+
+
+def series_rows(
+    columns: Sequence[str], counted: Iterable[tuple[Sequence[object], int]]
+) -> tuple[SeriesRows, ...]:
+    """Each distinct key of `counted`, a value per column of `columns` with a
+    row count, as series coordinates with its summed count, sorted."""
+    counts: Counter[tuple[str, ...]] = Counter()
+    for key, count in counted:
+        counts[tuple(str(value) for value in key)] += count
+    return tuple(
+        (tuple(zip(columns, key, strict=True)), count) for key, count in sorted(counts.items())
     )
 
 
@@ -762,13 +813,14 @@ def record_counted_exclusion(
     entities: Mapping[str, Iterable[str]],
     side: ExclusionSide | None = None,
     parties: tuple[str, ...] | None = None,
+    series: tuple[SeriesRows, ...] | None = None,
 ) -> Exclusions:
     """`exclusions`, plus one more `ExclusionRecord` for `row_count`
     dropped rows under `reason`, for a step that counts its dropped rows
     without holding them. `entities` maps each role column the record
     names to the values its dropped rows carry there, in any order and
-    with repeats; each is cut to `smallest_distinct`. `parties` is the
-    record's own (see `ExclusionRecord`).
+    with repeats; each is cut to `smallest_distinct`. `parties` and
+    `series` are the record's own (see `ExclusionRecord`).
     `exclusions` unchanged when `row_count` is zero."""
     if not row_count:
         return exclusions
@@ -780,6 +832,7 @@ def record_counted_exclusion(
         entities_truncated=any(truncated for _, truncated in named.values()),
         side=side,
         parties=parties,
+        series=series,
     )
     return Exclusions(records=(*exclusions.records, record))
 

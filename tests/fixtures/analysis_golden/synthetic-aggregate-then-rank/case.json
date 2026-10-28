@@ -1,0 +1,116 @@
+{
+ "content_version": "ocv_fc57fba5adfecf8d475521c1d450abea",
+ "expected": {
+  "frame_content_version": "cv_47ab9bff0167df5354ac77e83e7b4aa8",
+  "output_digest": "out_7968d7cebf8933afa65789216ca3267f"
+ },
+ "origin": "synthetic",
+ "recipe": {
+  "anchor": null,
+  "execution_identity": "0.9.0|1.1.0|0.2.0",
+  "left_out": {
+   "complete": true,
+   "series": []
+  },
+  "normal_form_hash": "rnf_7b5b0213829f519653e7198e855db63f",
+  "replay_key": "rpk_3b1ca48af9b72d82fe4e5bbe24f18239",
+  "roots": [
+   {
+    "dataset": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_11111111111111111111111111111111"
+    },
+    "frame": {
+     "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "spec_id": "spec_11111111111111111111111111111111"
+    },
+    "options": {
+     "bundle": false,
+     "format": "parquet",
+     "layout": "frame"
+    },
+    "schema_version": 1,
+    "scope": {}
+   }
+  ],
+  "schema_version": 1,
+  "tree": {
+   "frame": {
+    "content_version": "ocv_fc57fba5adfecf8d475521c1d450abea",
+    "spec_id": "ops_bd4a2adf5d3e875bc726fc670cc169eb"
+   },
+   "inputs": {
+    "frame_ref": {
+     "frame": {
+      "content_version": "ocv_7ea3608fab0df4b08b7023e90716e3de",
+      "spec_id": "ops_1831804f05a412ef1a0377127f5fa34f"
+     },
+     "inputs": {
+      "frame_ref": {
+       "frame": {
+        "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spec_id": "spec_11111111111111111111111111111111"
+       },
+       "root": 0
+      }
+     },
+     "op_spec": {
+      "frame_ref": {
+       "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+       "spec_id": "spec_11111111111111111111111111111111"
+      },
+      "identity_version": "ops1",
+      "parameters": {
+       "aggregation": "sum",
+       "group_by": [
+        "reporter"
+       ],
+       "unit": null
+      },
+      "verb": "aggregate"
+     }
+    }
+   },
+   "op_spec": {
+    "frame_ref": {
+     "content_version": "ocv_7ea3608fab0df4b08b7023e90716e3de",
+     "spec_id": "ops_1831804f05a412ef1a0377127f5fa34f"
+    },
+    "identity_version": "ops1",
+    "parameters": {
+     "aggregation": "sum",
+     "ascending": false,
+     "per_period": false,
+     "rank_by": [
+      "reporter"
+     ],
+     "unit": null,
+     "window_end": null,
+     "window_start": null
+    },
+    "verb": "rank"
+   }
+  }
+ },
+ "roots": [
+  {
+   "dataset": {
+    "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "spec_id": "spec_11111111111111111111111111111111"
+   },
+   "file": "roots/0.parquet",
+   "frame": {
+    "content_version": "cv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "spec_id": "spec_11111111111111111111111111111111"
+   },
+   "options": {
+    "bundle": false,
+    "format": "parquet",
+    "layout": "frame"
+   },
+   "schema_version": 1,
+   "scope": {}
+  }
+ ],
+ "spec_id": "ops_bd4a2adf5d3e875bc726fc670cc169eb"
+}

@@ -105,6 +105,24 @@ line per version that fails and one `datasets_frame_summed_backfilled` line coun
 `sweep` reads. No deploy runs it, since a row that stays NULL would be read and cut again on
 every deploy.
 
+`diff-recipes --report PATH` runs by hand against an environment before the old analysis paths
+go. It computes every recipe in `datasets.frame_recipe` again on its own root versions through
+the analysis runner (`recipe_replay.replay_recipe`) and compares the result frame's `cv_` and
+output digest with the stored frame's. It writes nothing to any store: roots are read only where
+their version already holds the frame or file (`recipe_replay.StoredRootSource`), nothing renders,
+and nothing is published, pinned or recorded. It writes one JSON line per recipe that is not
+equal to `PATH` (default `recipe-diff.jsonl`), each `{spec_id, content_version, family, outcome,
+stored, computed, detail}`, and one `datasets_recipes_diffed` line holding the count of each
+outcome (`equal`, `differs`, `roots_unreadable`, `frame_unreadable`) per family (`compare`,
+`sum_of`, `other`) and in total. It exits 1 when any recipe differs, with that line at `ERROR`
+severity. It reads the settings `sweep` reads.
+
+`record-recipe-golden --out DIR [--limit N] [--max-bytes B] [--origin NAME]` writes up to `N`
+(default 50) recipes whose roots and stored frame it can read, with those frames, into `DIR`, one
+case directory each labelled `NAME` (default `dfo-dev`) (`recipe_golden.record_case`), skipping
+a recipe whose frames together pass `B` bytes (default 2,000,000). It reads the stores as `diff-recipes` does and writes only under
+`DIR`, one `datasets_recipe_golden_recorded` line counting the cases written and skipped.
+
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
 of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
 """
@@ -119,7 +137,8 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
-from typing import cast
+from pathlib import Path
+from typing import TextIO, cast
 
 import pg8000.exceptions
 import pyarrow as pa
@@ -156,6 +175,7 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
+from datasets_api.analysis import FrameUnavailable
 from datasets_api.config import DEFAULT_OPERATION_DEADLINE_SECONDS
 from datasets_api.description_record import backfill_record, computed_inputs
 from datasets_api.description_store import (
@@ -174,6 +194,9 @@ from datasets_api.operation_store import (
 )
 from datasets_api.party_totals import TRACE_KEY as PARTY_TOTALS_TRACE_KEY
 from datasets_api.party_totals import PartyTotalsCut, cut_frame
+from datasets_api.recipe_golden import DEFAULT_MAX_BYTES, record_case
+from datasets_api.recipe_replay import ReplayOutcome, StoredRootSource, replay_recipe
+from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.reconciliation import sweep
 from datasets_api.recorded_rendering import (
     derived_version_sums,
@@ -1080,6 +1103,105 @@ def _backfill_frame_summed() -> int:
         )
 
 
+def stored_recipe_pairs(store: DatasetStore) -> list[tuple[str, str]]:
+    """`(spec_id, content_version)` of every frame holding a recipe, oldest recipe first."""
+    with store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, content_version FROM datasets.frame_recipe "
+            "ORDER BY recorded_at, subject_id, content_version"
+        )
+    return [(str(row["subject_id"]), str(row["content_version"])) for row in rows]
+
+
+def _replay_source(
+    store: DatasetStore, *, artifact_store: ArtifactStore, now: Clock
+) -> StoredRootSource:
+    return StoredRootSource(
+        snapshot_reader=LiveSnapshotReader(store=store),
+        artifact_store=artifact_store,
+        recipes=LiveRecipeStore(store=store),
+        now=now,
+    )
+
+
+def run_diff_recipes(
+    *, store: DatasetStore, artifact_store: ArtifactStore, report: TextIO, now: Clock = utc_now
+) -> int:
+    """Replay every stored recipe, write each one that is not equal to `report` and emit the
+    counts. Return how many differ."""
+    counts = {family: dict.fromkeys(ReplayOutcome, 0) for family in ("compare", "sum_of", "other")}
+    recipes = LiveRecipeStore(store=store)
+    for spec_id, content_version in stored_recipe_pairs(store):
+        record = recipes.read_recipe(spec_id=spec_id, content_version=content_version)
+        if record is None:
+            continue
+        replay = replay_recipe(
+            spec_id=spec_id,
+            content_version=content_version,
+            recipe=record.body,
+            source=_replay_source(store, artifact_store=artifact_store, now=now),
+        )
+        counts[replay.family][replay.outcome] += 1
+        if replay.outcome is not ReplayOutcome.EQUAL:
+            report.write(json.dumps(replay.as_json(), sort_keys=True) + "\n")
+    totals = {outcome: sum(by[outcome] for by in counts.values()) for outcome in ReplayOutcome}
+    differs = totals[ReplayOutcome.DIFFERS]
+    emit(
+        "datasets_recipes_diffed",
+        severity="ERROR" if differs else "INFO",
+        **{outcome.value: count for outcome, count in totals.items()},
+        families={
+            family: {outcome.value: count for outcome, count in by.items()}
+            for family, by in counts.items()
+        },
+    )
+    return differs
+
+
+def _diff_recipes(report: Path) -> int:
+    with report.open("w", encoding="utf-8") as sink:
+        return _run_over_artifacts("diff-recipes", partial(run_diff_recipes, report=sink))
+
+
+def run_record_recipe_golden(
+    *,
+    store: DatasetStore,
+    artifact_store: ArtifactStore,
+    out: Path,
+    limit: int,
+    max_bytes: int,
+    origin: str,
+    now: Clock = utc_now,
+) -> None:
+    """Write up to `limit` readable recipes with their frames under `out`, one case each,
+    labelled `origin`."""
+    written = skipped = 0
+    for spec_id, content_version in stored_recipe_pairs(store):
+        if written >= limit:
+            break
+        try:
+            kept = record_case(
+                spec_id=spec_id,
+                content_version=content_version,
+                source=_replay_source(store, artifact_store=artifact_store, now=now),
+                out=out / f"{spec_id}-{content_version}",
+                origin=origin,
+                max_bytes=max_bytes,
+            )
+        except FrameUnavailable:
+            kept = False
+        written += kept
+        skipped += not kept
+    emit("datasets_recipe_golden_recorded", written=written, skipped=skipped)
+
+
+def _record_recipe_golden(out: Path, limit: int, max_bytes: int, origin: str) -> int:
+    return _run_over_artifacts(
+        "record-recipe-golden",
+        partial(run_record_recipe_golden, out=out, limit=limit, max_bytes=max_bytes, origin=origin),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="datasets-maintenance")
     tasks = parser.add_subparsers(dest="task", required=True)
@@ -1104,8 +1226,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         "backfill-frame-summed",
         help="record whether each derived version recorded without it stores its collapse",
     ).set_defaults(run=_backfill_frame_summed)
+    diff = tasks.add_parser(
+        "diff-recipes",
+        help="compute every stored recipe again on its own roots and compare its output",
+    )
+    diff.add_argument("--report", type=Path, default=Path("recipe-diff.jsonl"))
+    diff.set_defaults(run=_diff_recipes)
+    golden = tasks.add_parser(
+        "record-recipe-golden",
+        help="write readable recipes with their root and output frames as golden cases",
+    )
+    golden.add_argument("--out", type=Path, required=True)
+    golden.add_argument("--limit", type=int, default=50)
+    golden.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    golden.add_argument("--origin", default="dfo-dev")
+    golden.set_defaults(run=_record_recipe_golden)
     args = parser.parse_args(argv)
-    return args.run()
+    options = {key: value for key, value in vars(args).items() if key not in ("task", "run")}
+    return args.run(**options)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,8 @@ its `population`: the runner fills both, the populations from the tree
 the roots.
 
 A derived root is expanded into its stored recipe, so the runner computes the whole chain from
-its root datasets. With `latest` false every root is read at the version it names. With `latest`
+its root datasets. A request whose whole `tree` is a derived root computes that recipe again
+under its own ids, which is how a client reads a derived frame on its datasets' newest versions. With `latest` false every root is read at the version it names. With `latest`
 true a Spec or dataset root is read at its dataset's current version of the same rendering, and
 each rolling literal follows the latest period of that data. Both read their roots through one
 `RootSource`.
@@ -42,7 +43,9 @@ while it reads the root frames, evaluates the tree (`dfo_analysis_engine.evaluat
 output digest (`datasets_api.output_digest`) and stores the result: the frame through
 `publish_built_frame` and its recipe through the recipe store, unless the frame is stored and
 servable already, in which case it writes the recipe alone, which the store keeps once. A rerun
-of one tree on the same roots therefore stores nothing new.
+of one tree on the same roots therefore stores nothing new. The recipe carries `left_out`, every
+series a step of the tree dropped for a data gap (`left_out_of`), which the derived reads serve
+(`datasets_api.derived`). `compute_analysis` computes a tree as a run does and stores nothing.
 
 Bounds: a tree holds at most `max_nodes` nodes after expansion, its root frames at most
 `max_root_rows` rows together, and a `join` writes at most `max_join_rows`. Every other verb
@@ -77,7 +80,13 @@ from dataset_store.clock import Clock
 from dataset_store.snapshot import SnapshotReader, select_servable_locations
 from datasets_api.doors.publish import publish_built_frame, write_frame_recipe
 from datasets_api.output_digest import output_digest
-from datasets_api.publish_models import Recipe
+from datasets_api.publish_models import (
+    MAX_RECIPE_LEFT_OUT_SERIES,
+    Recipe,
+    RecipeDroppedSeries,
+    RecipeLeftOut,
+    RecipeStepRef,
+)
 from datasets_api.recipe_store import RecipeStore
 from datasets_api.render import stored_frame_location
 from datasets_api.versions import VersionRecordWriter
@@ -272,11 +281,16 @@ StepInputs.model_rebuild()
 
 class AnalysisRequest(BaseModel):
     """`POST /api/datasets/analysis`: the tree to compute, and whether its roots follow their
-    datasets' newest versions."""
+    datasets' newest versions. A `tree` that is a derived root alone computes that frame's
+    stored recipe again, so `latest` reads it on its datasets' newest versions under the
+    recipe's own ids."""
 
     model_config = ConfigDict(extra="forbid")
 
-    tree: StepNode
+    tree: Annotated[
+        Annotated[StepNode, Tag("step")] | Annotated[DerivedRoot, Tag("derived")],
+        Discriminator(_node_kind),
+    ]
     latest: bool = False
 
 
@@ -902,17 +916,17 @@ def _fill_literals(tree: Mapping[str, Any], period: str) -> None:
                 predicate["value"] = shifted(predicate[_ROLLING])
 
 
-def _resolved_periods(
-    tree: Mapping[str, Any], anchor: ResolvedPeriods | None
-) -> tuple[dict[str, Any], ...]:
-    """Each period the computed tree states relative to the latest period, once, by offset."""
-    if anchor is None:
+def resolved_periods(tree: Mapping[str, Any], *, rule: str | None) -> tuple[dict[str, Any], ...]:
+    """Each period the computed recipe `tree` states relative to the latest period, once, by
+    offset, under the anchor `rule`; none when the recipe has no rolling anchor (`rule`
+    `None`)."""
+    if rule is None:
         return ()
     periods = {
         int(reference["offset"]): {
             "anchor": "latest",
             "offset": int(reference["offset"]),
-            "rule": anchor.rule,
+            "rule": rule,
             "period": literal,
         }
         for node in derived_nodes(tree)
@@ -940,6 +954,49 @@ def _recipe_hashes(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> dic
     }
 
 
+# The call's word for each engine side a two-input verb names, where its summary states no
+# `sides`: `join` and the keyed verbs read `data` on the left or the numerator.
+_CALLER_SIDES: Mapping[str, Literal["data", "other"]] = {
+    "left": "data",
+    "right": "other",
+    "numerator": "data",
+    "denominator": "other",
+}
+
+
+def _caller_side(
+    engine_side: str | None, sides: Mapping[str, str] | None
+) -> Literal["data", "other"]:
+    """The step input, `data` or `other`, that `engine_side` names. A single-input verb's
+    rows come from `data`; `compare` and `sum_of` state which side each input fills."""
+    if engine_side is None:
+        return "data"
+    if sides is not None:
+        return "data" if sides.get("data") == engine_side else "other"
+    return _CALLER_SIDES[engine_side]
+
+
+def left_out_of(evaluation: Evaluation) -> RecipeLeftOut:
+    """Every series a step of the evaluated tree dropped for a data gap, step by step in
+    `derived_nodes` order, each naming its step, the step input it came from and why, at
+    most `MAX_RECIPE_LEFT_OUT_SERIES` of them."""
+    series = [
+        RecipeDroppedSeries(
+            coordinates=dict(dropped.coordinates),
+            step=RecipeStepRef(verb=step.verb, node=step.node),
+            side=_caller_side(dropped.side, step.sides),
+            reason=dropped.reason,
+            rows=dropped.rows,
+        )
+        for step in evaluation.steps
+        for dropped in step.dropped
+    ]
+    return RecipeLeftOut(
+        series=series[:MAX_RECIPE_LEFT_OUT_SERIES],
+        complete=len(series) <= MAX_RECIPE_LEFT_OUT_SERIES,
+    )
+
+
 def _recipe(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> Recipe:
     hashes = _recipe_hashes(evaluation, roots)
     return Recipe(
@@ -952,6 +1009,7 @@ def _recipe(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> Recipe:
         anchor=None
         if evaluation.resolved_periods is None
         else evaluation.resolved_periods.as_json(),
+        left_out=left_out_of(evaluation),
     )
 
 
@@ -1018,7 +1076,9 @@ def plan_roots(
         AnalysisTooLarge: The tree holds more than `bounds.max_nodes` nodes.
     """
     plan = _Plan()
-    tree = _plan_node(request.tree, plan, source=source, verb=request.tree.verb, side="data")
+    top = request.tree
+    verb = top.verb if isinstance(top, StepNode) else ""
+    tree = _plan_node(top, plan, source=source, verb=verb, side="data")
     if plan.nodes > bounds.max_nodes:
         raise AnalysisTooLarge(
             ceiling_kind="analysis_nodes", count=plan.nodes, cap=bounds.max_nodes
@@ -1054,6 +1114,72 @@ def resolve_roots(
     return resolved
 
 
+@dataclass(frozen=True, kw_only=True)
+class Computed:
+    """A tree computed and not stored: the engine's evaluation, the roots it read in the
+    recipe's order, and the output digest of its frame."""
+
+    evaluation: Evaluation
+    roots: tuple[ResolvedRoot, ...]
+    output_digest: str
+
+
+def _evaluated(
+    working: dict[str, Any],
+    resolved: Sequence[ResolvedRoot],
+    *,
+    source: RootSource,
+    bounds: AnalysisBounds,
+    latest: bool,
+) -> Computed:
+    """Read the resolved roots and evaluate the working tree over them. The caller holds the
+    run's materialise permit."""
+    frames = [source.read(root) for root in resolved]
+    root_rows = sum(frame.num_rows for frame in frames)
+    if root_rows > bounds.max_root_rows:
+        raise AnalysisTooLarge(
+            ceiling_kind="analysis_root_rows", count=root_rows, cap=bounds.max_root_rows
+        )
+    engine = _Engine(frames=frames, resolved=resolved)
+    tree, order = _renumbered(engine.tree(working), len(resolved))
+    ordered = [resolved[index] for index in order]
+    frames = [frames[index] for index in order]
+    _fill_populations(tree, [root.record for root in ordered], frames)
+    if engine.lifted:
+        _fill_literals(tree, _anchor_of(tree, frames, ordered).period)
+    evaluation = evaluate(
+        tree,
+        {
+            index: RootFrame(ref=root.frame, frame=frame)
+            for index, (root, frame) in enumerate(zip(ordered, frames, strict=True))
+        },
+        policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows),
+    )
+    return Computed(
+        evaluation=evaluation, roots=tuple(ordered), output_digest=output_digest(evaluation.frame)
+    )
+
+
+def compute_analysis(
+    request: AnalysisRequest,
+    *,
+    source: RootSource,
+    bounds: AnalysisBounds = _DEFAULT_BOUNDS,
+    permit: Callable[[], AbstractContextManager[object]] = nullcontext,
+    trace_id: str | None = None,
+) -> Computed:
+    """Compute `request`'s tree as `run_analysis` does, storing nothing. `maintenance
+    diff-recipes` compares what this computes with a stored frame.
+
+    Raises:
+        As `run_analysis`.
+    """
+    working, roots = plan_roots(request, source=source, bounds=bounds)
+    resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
+    with permit():
+        return _evaluated(working, resolved, source=source, bounds=bounds, latest=request.latest)
+
+
 def run_analysis(
     request: AnalysisRequest,
     *,
@@ -1073,36 +1199,21 @@ def run_analysis(
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
     with permit():
-        frames = [source.read(root) for root in resolved]
-        root_rows = sum(frame.num_rows for frame in frames)
-        if root_rows > bounds.max_root_rows:
-            raise AnalysisTooLarge(
-                ceiling_kind="analysis_root_rows", count=root_rows, cap=bounds.max_root_rows
-            )
-        engine = _Engine(frames=frames, resolved=resolved)
-        tree, order = _renumbered(engine.tree(working), len(resolved))
-        resolved = [resolved[index] for index in order]
-        frames = [frames[index] for index in order]
-        _fill_populations(tree, [root.record for root in resolved], frames)
-        if engine.lifted:
-            _fill_literals(tree, _anchor_of(tree, frames, resolved).period)
-        evaluation = evaluate(
-            tree,
-            {
-                index: RootFrame(ref=root.frame, frame=frame)
-                for index, (root, frame) in enumerate(zip(resolved, frames, strict=True))
-            },
-            policy=Policy(latest=request.latest, max_frame_rows=bounds.max_join_rows),
+        computed = _evaluated(
+            working, resolved, source=source, bounds=bounds, latest=request.latest
         )
-        digest = output_digest(evaluation.frame)
-        artifact_digest, created = _store(evaluation, resolved, stores, trace_id=trace_id)
+        evaluation = computed.evaluation
+        artifact_digest, created = _store(evaluation, computed.roots, stores, trace_id=trace_id)
     return AnalysisResult(
         evaluation=evaluation,
         frame_content_version=evaluation.summary["frame_content_version"],
-        output_digest=digest,
+        output_digest=computed.output_digest,
         artifact_digest=artifact_digest,
-        roots=tuple(resolved),
-        resolved_periods=_resolved_periods(evaluation.tree, evaluation.resolved_periods),
+        roots=computed.roots,
+        resolved_periods=resolved_periods(
+            evaluation.tree,
+            rule=None if evaluation.resolved_periods is None else evaluation.resolved_periods.rule,
+        ),
         created=created,
     )
 
@@ -1165,6 +1276,7 @@ __all__ = [
     "AnalysisStores",
     "AnalysisTooLarge",
     "AnchorRequest",
+    "Computed",
     "DatasetRoot",
     "DerivedRoot",
     "FrameUnavailable",
@@ -1180,8 +1292,11 @@ __all__ = [
     "SpecRoot",
     "StepNode",
     "column_for",
+    "compute_analysis",
+    "left_out_of",
     "plan_roots",
     "resolve_roots",
+    "resolved_periods",
     "role_columns",
     "run_analysis",
     "run_anchor",

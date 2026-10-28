@@ -3,7 +3,7 @@
 `datasets_surface()` combines each door's router, classifier, exception types, and admission
 checks, and owns the one lifespan that builds the doors' shared `Deps` (`datasets_api.deps`). The
 meta door mounts first. Static paths are disjoint from subject-id routes. Those routes accept only
-`spec_` ids.
+`spec_` ids, but for the description routes and the derived door's, which take an `ops_` id.
 
 Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,
@@ -16,7 +16,8 @@ Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 the recipe door's
 `PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe` and
 `GET /api/datasets/recipes/replays/{replay_key}`, `POST /api/datasets/analysis` and its
-`/anchor` route, and `GET /api/datasets/{spec_id}/versions`.
+`/anchor` route, the derived door's `GET /api/datasets/derived/{ops_id}/{content_version}` and its
+`/file`, and `GET /api/datasets/{spec_id}/versions`.
 Registration stores definitions for later materialisation. The mint route handles four input
 kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes.
 The versions door mounts before the snapshot door, whose
@@ -50,6 +51,7 @@ from datasets_api.deps import DepsCell, DepsOverrides, open_deps
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.analysis import build_analysis_door, classify_analysis_exception
 from datasets_api.doors.definition import build_definition_door, classify_definition_exception
+from datasets_api.doors.derived import build_derived_door, build_derived_files_door
 from datasets_api.doors.description import build_description_door
 from datasets_api.doors.files import build_files_door, classify_files_exception
 from datasets_api.doors.meta import build_meta_door, classify_meta_exception
@@ -185,6 +187,8 @@ def datasets_surface(
             build_definition_door(deps=cell),
             build_refresh_door(deps=cell, settings=_settings),
             build_analysis_door(deps=cell),
+            build_derived_door(deps=cell),
+            build_derived_files_door(deps=cell),
             build_recipe_door(
                 deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
             ),

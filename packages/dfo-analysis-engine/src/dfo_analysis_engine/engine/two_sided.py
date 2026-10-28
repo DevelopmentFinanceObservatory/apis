@@ -28,6 +28,7 @@ from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN, VALUE_COLUMN, Composed
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
 from dfo_analysis_engine.engine.columnar import entity_counts, group_rows
 from dfo_analysis_engine.engine.common import (
+    DATA_GAP_REASONS,
     ExclusionReason,
     Exclusions,
     FacetSelection,
@@ -40,6 +41,7 @@ from dfo_analysis_engine.engine.common import (
     require_one_place_level,
     require_single_stat_var,
     role_columns,
+    series_rows,
     validate_entity_columns,
     without_party_totals,
 )
@@ -426,15 +428,20 @@ def record_cells(
     cells: Iterable[tuple[Key, str]],
 ) -> Exclusions:
     """`exclusions`, plus one record for `side`'s (key, period) `cells` under
-    `reason`: the rows `sums` read for them, and each of `columns`' values
-    across their keys. Unchanged when `cells` is empty."""
+    `reason`: the rows `sums` read for them, each of `columns`' values
+    across their keys, and for a data gap each key as a series. Unchanged
+    when `cells` is empty."""
     cells = list(cells)
+    rows = [sums.row_counts[key][period] for key, period in cells]
     return record_counted_exclusion(
         exclusions,
         reason=reason,
-        row_count=sum(sums.row_counts[key][period] for key, period in cells),
+        row_count=sum(rows),
         entities={column: [key[index] for key, _ in cells] for index, column in enumerate(columns)},
         side=side,
+        series=series_rows(columns, zip((key for key, _ in cells), rows, strict=True))
+        if reason in DATA_GAP_REASONS
+        else None,
     )
 
 

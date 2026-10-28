@@ -231,6 +231,14 @@ def _frame_of_frame1(data: bytes) -> Frame:
     )
 
 
+def frame_of_stored(data: bytes, *, media_type: str) -> Frame:
+    """The frame a version's stored frame `data` holds: its frame1 document when `media_type`
+    names one, else its canonical frame."""
+    if media_type == FRAME1_MEDIA_TYPE:
+        return _frame_of_frame1(data)
+    return read_canonical_frame(data)
+
+
 class LiveRootSource:
     """`analysis.RootSource` over the Datasets surface's stores, for one request.
 
@@ -362,9 +370,7 @@ class LiveRootSource:
             raise RootExpired(
                 spec_id=spec_id, content_version=content_version, reason="its stored frame is gone"
             ) from None
-        if location.media_type == FRAME1_MEDIA_TYPE:
-            return _frame_of_frame1(data)
-        return read_canonical_frame(data)
+        return frame_of_stored(data, media_type=location.media_type)
 
     def recipe(self, *, spec_id: str, content_version: str) -> Mapping[str, Any] | None:
         record = self._recipes.read_recipe(spec_id=spec_id, content_version=content_version)
@@ -402,6 +408,7 @@ __all__ = [
     "LiveRootSource",
     "enrichment_columns",
     "frame_from_frame_layout",
+    "frame_of_stored",
     "frame_ref_for",
     "mint_options",
     "requests_kinds",

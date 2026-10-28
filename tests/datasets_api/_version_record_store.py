@@ -269,6 +269,11 @@ class FakeVersionRecordDatasetStore:
         # Postgres gives each call its own pooled connection.
         self._lock = threading.Lock()
 
+    @property
+    def total_changes(self) -> int:
+        """Rows every statement so far inserted, updated or deleted."""
+        return self._conn.total_changes
+
     @contextmanager
     def transaction(self) -> Generator[_VersionRecordFakeTransaction, None, None]:
         with self._lock:
