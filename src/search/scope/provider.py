@@ -7,16 +7,16 @@ The axis is present on a part the CRS serves and on a donor's published total
 (`provider_rule`). A published total holds the scope its declared row names
 (`code_index.scope_conventions.PUBLISHED_PROVIDER_SCOPES`): DAC1's total ODA the
 contributions scope, and DAC1's bilateral ODA the bilateral scope. Each offers the other's
-scope as an option binding the other's aid type, over the years each donor the part names
-holds a series of it (`_published_table`). On a part the CRS serves, the inclusive option
-serves the years both tables cover for the part
-(`inclusive_reach`): available when they cover every year the bilateral answer holds,
-partial with a shorter window of its own when they cover fewer, and, for a part asking for
-the latest year, available over the year a `latest` read elects among those both cover. It
-is not offered (`provider_not_offered`) where the imputed table cannot serve what the part
-binds, or cannot count the providers it names (`_providers_not_offered`): a part naming no
-provider, a provider the table carries no rows for, or a pool naming a multilateral whose
-outflows the table attributes to its funders.
+scope as an option binding the other's aid type, judged per donor against the years each
+donor the part names holds its own total in (`_published_table`). On a part the CRS serves,
+the inclusive option serves the years both tables cover for the part (`inclusive_reach`):
+available when they cover every year the bilateral answer holds, partial with a shorter
+window of its own when they cover fewer, and, for a part asking for the latest year,
+available over the year a `latest` read elects among those both cover. It is not offered
+(`provider_not_offered`) where the imputed table cannot serve what the part binds, or
+cannot count the providers it names (`_providers_not_offered`): a part naming no provider,
+a provider the table carries no rows for, or a pool naming a multilateral whose outflows
+the table attributes to its funders.
 
 The default is declared (`code_index.scope_conventions.PROVIDER_CONVENTIONS`): a named donor's
 total of a CRS sector or recipient part counts both, when they cover every year asked for.
@@ -215,12 +215,14 @@ def _published_table(
     (`PUBLISHED_PROVIDER_SCOPES`) is an option binding that row's code, so a switch to it
     reads the total that counts its scope: on DAC1's total ODA, bilateral flows bind
     bilateral ODA, and on bilateral ODA, core contributions bind total ODA. Such an option
-    serves the years each donor of the part holds its total in (`_sibling_option`). The
-    inclusive scope is unavailable with the total's dataset: `contributions_counted` on a
-    total counting core contributions, since it counts them in place of an imputed share of
-    the multilaterals' spending, and `provider_not_offered` (why `dataset`) on any other,
-    since the imputed table stacks on the CRS alone. Each option names its row's rule. No
-    preference but the held scope leads, so no default moves the part to another total."""
+    serves the years each donor of the part holds its total in (`_sibling_option`), or, on a
+    part asking for the latest year, the one year the pool's read elects
+    (`_latest_sibling_option`). The inclusive scope is unavailable with the total's dataset:
+    `contributions_counted` on a total counting core contributions, since it counts them in
+    place of an imputed share of the multilaterals' spending, and `provider_not_offered` (why
+    `dataset`) on any other, since the imputed table stacks on the CRS alone. Each option
+    names its row's rule. No preference but the held scope leads, so no default moves the
+    part to another total."""
     rows = {
         sibling.scope: sibling
         for sibling in PUBLISHED_PROVIDER_SCOPES
@@ -228,10 +230,11 @@ def _published_table(
     }
     options: list[Option] = []
     rules: dict[str, str] = {}
-    asked = (
-        None
+    own = _donor_years(identity, facts)
+    own_year = (
+        elected_year(_year_counts(identity, facts))
         if identity.requested_window.kind == "latest"
-        else frozenset[int]().union(*_donor_years(identity, facts))
+        else None
     )
     for scope in get_args(ProviderScope):
         sibling = rows.get(scope)
@@ -255,8 +258,15 @@ def _published_table(
             options.append(_option(scope, binding=ProviderBinding(scope=scope)))
             continue
         binding = SlotBinding(slot=sibling.code_system, state="value", refs=[sibling.code])
-        years = _donor_years(apply_binding(identity, binding, []), facts)
-        options.append(_sibling_option(scope, binding, years, asked))
+        switched = apply_binding(identity, binding, [])
+        sibling_years = _donor_years(switched, facts)
+        options.append(
+            _sibling_option(scope, binding, own, sibling_years)
+            if identity.requested_window.kind != "latest"
+            else _latest_sibling_option(
+                scope, binding, own, sibling_years, _year_counts(switched, facts), own_year
+            )
+        )
     held = provider_option_id(row.scope)
     return AxisTable(
         axis="provider",
@@ -271,30 +281,29 @@ def _published_table(
 def _sibling_option(
     scope: ProviderScope,
     binding: SlotBinding,
+    own: Sequence[frozenset[int]],
     held: Sequence[frozenset[int]],
-    asked: frozenset[int] | None,
 ) -> Option:
-    """The option of `scope` binding the sibling total `binding` names, which each donor of
-    the part holds in the years `held` names for it, against `asked`, the years the part's
-    own total holds for any donor, which its answer serves (`_donor_years`), None for a part
-    asking for the latest year. It is unavailable when a donor holds no year of it. On a part
-    asking for the latest year, a switch reads each donor's own latest year, so it is
-    available otherwise. It is available when every donor holds it in each year asked,
-    partial over the years asked that every donor holds when those are fewer, with their
-    latest run as the window a switch reads (`SlotBinding.window`) and the years its label
-    states, and unavailable when they hold none of them in common. Each reason is
-    `option_not_covered`."""
-    if not all(held):
-        return _option(scope, _unavailable("option_not_covered"), binding=binding)
-    if asked is None:
-        return _option(scope, binding=binding)
-    covered = frozenset[int].intersection(*held)
+    """The option of `scope` binding the sibling total `binding` names, on a part asking
+    for a range or every year. `own` and `held` name, for each donor of the part in order,
+    the years it holds the part's own total and the sibling in (`_donor_years`). The answer
+    holds the years any donor holds its own total in; one of them is covered when every
+    donor holding its own total in it holds the sibling in it, so a donor holding no own
+    total in a year places no demand on it. The option is available when every year the
+    answer holds is covered, partial over the covered years when those are fewer, with
+    their latest run as the window a switch reads (`SlotBinding.window`) and the years its
+    label states, and unavailable when none is. Each reason is `option_not_covered`."""
+    asked = frozenset[int]().union(*own)
+    covered = frozenset(
+        year
+        for year in asked
+        if all(year in theirs for ours, theirs in zip(own, held, strict=True) if year in ours)
+    )
     if covered >= asked:
         return _option(scope, binding=binding)
-    served = covered & asked
-    if not served:
+    if not covered:
         return _option(scope, _unavailable("option_not_covered"), binding=binding)
-    runs = spans(served)
+    runs = spans(covered)
     return _option(
         scope,
         OptionAvailability(status="partial", years=runs, code="option_not_covered"),
@@ -303,16 +312,69 @@ def _sibling_option(
     )
 
 
+def _latest_sibling_option(
+    scope: ProviderScope,
+    binding: SlotBinding,
+    own: Sequence[frozenset[int]],
+    held: Sequence[frozenset[int]],
+    counts: Mapping[int, int],
+    own_year: int | None,
+) -> Option:
+    """The option of `scope` binding the sibling total `binding` names, on a part asking
+    for the latest year, whose read elects `own_year` for the pool. `own` and `held` are as
+    `_sibling_option` takes them, and `counts` the sibling's series per year
+    (`_year_counts`). A `latest` read elects one year for the whole pool, so the option
+    elects the sibling's year as `elected_year` does among the years every donor holds it
+    in, the donors holding their own total in `own_year` (every donor when it is None),
+    and a switch reads that one year (`SlotBinding.window`). The option is available when
+    that year is `own_year`, partial over it, stated in its label, when it is another, and
+    unavailable when the donors share no year. Each reason is `option_not_covered`."""
+    demanded = [
+        theirs
+        for ours, theirs in zip(own, held, strict=True)
+        if own_year is None or own_year in ours
+    ]
+    shared = frozenset[int].intersection(*demanded)
+    year = elected_year({y: n for y, n in counts.items() if y in shared})
+    if year is None:
+        return _option(scope, _unavailable("option_not_covered"), binding=binding)
+    window = (year, year)
+    pinned = binding.model_copy(update={"window": window})
+    if year == own_year:
+        return _option(scope, binding=pinned)
+    return _option(
+        scope,
+        OptionAvailability(status="partial", years=[window], code="option_not_covered"),
+        binding=pinned,
+        window=window,
+    )
+
+
+def _tables(identity: BaseIdentity, facts: ScopeFacts) -> list[Mapping[str, object]]:
+    """The identity of each table `identity` reads: its components on the OECD headline
+    (`component_identities`), itself otherwise."""
+    document = identity.model_dump(mode="json", exclude_none=True)
+    components = component_identities(facts.index, document)
+    return [document] if components is None else [c.identity for c in components]
+
+
+def _year_counts(identity: BaseIdentity, facts: ScopeFacts) -> dict[int, int]:
+    """How many series of the tables `identity` reads hold each year of its window
+    (`component_years`), summed over the tables."""
+    counts: dict[int, int] = {}
+    for table in _tables(identity, facts):
+        for year, series in component_years(table, facts=facts).counts.items():
+            counts[year] = counts.get(year, 0) + series
+    return counts
+
+
 def _donor_years(identity: BaseIdentity, facts: ScopeFacts) -> list[frozenset[int]]:
     """The years of its window in which each donor `identity` names holds a series of the
     total it counts, on its basis, in the order it names them, from one coverage scan per
     table it reads (`composite.donor_years`). On the OECD headline, a year counts on the
     basis the headline reads it on: net flows before 2018, grant equivalents from 2018
     (`component_identities`)."""
-    document = identity.model_dump(mode="json", exclude_none=True)
-    components = component_identities(facts.index, document)
-    tables = [document] if components is None else [c.identity for c in components]
-    held = [donor_years(table, facts=facts) for table in tables]
+    held = [donor_years(table, facts=facts) for table in _tables(identity, facts)]
     return [
         frozenset[int]().union(*(years.get(donor, frozenset()) for years in held))
         for donor in identity.entities["origin"]

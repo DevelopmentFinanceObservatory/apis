@@ -1166,47 +1166,32 @@ def _partial(*years: tuple[int, int]) -> tuple[str, str, list[tuple[int, int]]]:
 
 @pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
 @pytest.mark.parametrize(
-    ("origin", "covered", "latest", "expected"),
+    ("origin", "covered", "expected"),
     [
-        pytest.param((_USA,), {_USA: (2015, 2020)}, False, _COVERED, id="every-year"),
-        pytest.param(
-            (_USA,), {_USA: (2018, 2020)}, False, _partial((2018, 2020)), id="later-years"
-        ),
+        pytest.param((_USA,), {_USA: (2015, 2020)}, _COVERED, id="every-year"),
+        pytest.param((_USA,), {_USA: (2018, 2020)}, _partial((2018, 2020)), id="later-years"),
         pytest.param(
             (_USA, _DEU),
             {_USA: (2015, 2020), _DEU: (2015, 2020)},
-            False,
             _COVERED,
             id="pool-every-year",
         ),
         pytest.param(
             (_USA, _DEU),
             {_USA: (2015, 2020), _DEU: (2017, 2020)},
-            False,
             _partial((2017, 2020)),
             id="pool-later-years",
         ),
-        pytest.param((_USA, _DEU), {_USA: (2015, 2020)}, False, _NOT_COVERED, id="pool-one-donor"),
-        pytest.param((_USA,), {_USA: (2018, 2020)}, True, _COVERED, id="latest"),
-        pytest.param((_USA, _DEU), {_USA: (2018, 2020)}, True, _NOT_COVERED, id="latest-pool"),
-        # Each donor's read elects its own latest year, so the years need not meet.
-        pytest.param(
-            (_USA, _DEU),
-            {_USA: (2015, 2016), _DEU: (2019, 2020)},
-            True,
-            _COVERED,
-            id="latest-pool-in-different-years",
-        ),
+        pytest.param((_USA, _DEU), {_USA: (2015, 2020)}, _NOT_COVERED, id="pool-one-donor"),
     ],
 )
 def test_a_dac1_sibling_option_serves_the_years_every_donor_holds(
-    row, origin: tuple[str, ...], covered: dict[str, tuple[int, int]], latest: bool, expected
+    row, origin: tuple[str, ...], covered: dict[str, tuple[int, int]], expected
 ):
     """A 2015 to 2020 grant-equivalent total offers the other DAC1 aid type over the years
     each donor it names holds a series of it: available where they hold every year the
     total holds, partial over the years they hold where those are fewer, and unavailable
-    where a donor of the pool holds none. A switch on a part asking for the latest year
-    reads the other total's own latest year, available wherever each donor holds one."""
+    where a donor of the pool holds none."""
     (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     extra = [
         (member, donor, range(first, last + 1))
@@ -1215,14 +1200,97 @@ def test_a_dac1_sibling_option_serves_the_years_every_donor_holds(
     ]
     facts = _dac1_facts(row.code, extra=extra)
 
-    window = None if latest else (2015, 2020)
-    table = provider_rule(_dac1_identity(row.code, origin, window=window), None, facts)
+    table = provider_rule(_dac1_identity(row.code, origin, window=(2015, 2020)), None, facts)
 
     assert table is not None
     option = table.option(f"provider:{sibling.scope}")
     assert option is not None
     availability = option.availability
     assert (availability.status, availability.code, availability.years) == expected
+
+
+@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(
+    ("origin", "sibling_years", "expected", "window"),
+    [
+        pytest.param((_USA,), {_USA: (2018, 2023)}, _COVERED, 2023, id="same-year"),
+        pytest.param(
+            (_USA, _DEU),
+            {_USA: (2005, 2023), _DEU: (2005, 2023)},
+            _COVERED,
+            2023,
+            id="pool-same-year",
+        ),
+        pytest.param(
+            (_USA,), {_USA: (2018, 2020)}, _partial((2020, 2020)), 2020, id="earlier-year"
+        ),
+        # The pool's read of the other total elects 2023, which Germany does not hold, so
+        # the option serves the newest year both hold.
+        pytest.param(
+            (_USA, _DEU),
+            {_USA: (2005, 2023), _DEU: (2005, 2015)},
+            _partial((2015, 2015)),
+            2015,
+            id="pool-one-donor-ends-earlier",
+        ),
+        pytest.param((_USA, _DEU), {_USA: (2018, 2023)}, _NOT_COVERED, None, id="pool-one-donor"),
+        pytest.param(
+            (_USA, _DEU),
+            {_USA: (2015, 2016), _DEU: (2019, 2020)},
+            _NOT_COVERED,
+            None,
+            id="pool-no-shared-year",
+        ),
+    ],
+)
+def test_a_dac1_sibling_option_on_a_latest_window_serves_the_year_its_pool_shares(
+    row,
+    origin: tuple[str, ...],
+    sibling_years: dict[str, tuple[int, int]],
+    expected,
+    window: int | None,
+):
+    """A total each donor holds from 2005 to 2023, asking for the latest year, elects 2023.
+    The other DAC1 aid type serves the newest year every donor holds it in, as its read
+    elects among those years: available where that year is 2023, partial over that one
+    year otherwise, stated in its label, and unavailable where the donors share no year. A
+    switch reads that year."""
+    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
+    extra = [
+        *(
+            (member, donor, range(2005, 2024))
+            for donor in origin
+            for member in _members_on(row.code, _GE)
+        ),
+        *(
+            (member, donor, range(first, last + 1))
+            for donor, (first, last) in sibling_years.items()
+            for member in _members_on(sibling.code, _GE)
+        ),
+    ]
+    facts = _dac1_facts(extra=extra)
+    identity = _dac1_identity(row.code, origin, window=None)
+
+    table = provider_rule(identity, None, facts)
+    assert table is not None
+    option = table.option(f"provider:{sibling.scope}")
+    assert option is not None
+    switched = build_part_scope(
+        base=identity, entries=[switch(option.option_id)], records={}, facts=facts
+    )
+
+    availability = option.availability
+    assert (availability.status, availability.code, availability.years) == expected
+    label = _SCOPE_LABELS[sibling.scope]
+    assert option.label == (label if availability.status != "partial" else f"{label}, {window}")
+    if window is None:
+        assert not isinstance(switched, PartScope)
+        return
+    assert isinstance(switched, PartScope)
+    assert _slot_ref(switched.compiled.identity, "dac1AidType") == sibling.code
+    assert switched.compiled.identity.requested_window == IdentityWindowRange(
+        start_year=window, end_year=window
+    )
 
 
 @pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
@@ -1292,37 +1360,36 @@ def test_a_partial_dac1_sibling_option_serves_the_years_the_part_holds_over_thei
 @pytest.mark.parametrize(
     ("own", "sibling_years", "expected"),
     [
-        # One donor holds no year of the part's own total: the answer is the other donor's
-        # years, and a sibling holding the empty donor in 2019 alone reaches only that year.
+        # A donor holding no year of the part's own total places no demand on the other.
         pytest.param(
             {_USA: (2015, 2020)},
             {_USA: (2015, 2020), _DEU: (2019, 2019)},
-            _partial((2019, 2019)),
+            _COVERED,
             id="a-donor-holding-no-year",
         ),
-        # Donors holding different runs: the answer is the union, and the sibling covers it
-        # in full only where every donor holds the whole union.
+        # Each donor holds the other total over its own run of the part's years.
         pytest.param(
             {_USA: (2015, 2017), _DEU: (2018, 2020)},
-            {_USA: (2015, 2020), _DEU: (2015, 2020)},
+            {_USA: (2015, 2017), _DEU: (2018, 2020)},
             _COVERED,
-            id="different-runs-every-donor-holds-the-union",
+            id="different-runs-each-donor-holds-its-own",
         ),
         pytest.param(
-            {_USA: (2015, 2017), _DEU: (2018, 2020)},
+            {_USA: (2015, 2020), _DEU: (2015, 2020)},
             {_USA: (2015, 2020), _DEU: (2018, 2020)},
             _partial((2018, 2020)),
-            id="different-runs-one-donor-holds-part-of-the-union",
+            id="a-donor-holding-part-of-its-run",
         ),
     ],
 )
 def test_a_dac1_sibling_option_is_measured_against_the_years_any_donor_of_the_pool_holds(
     row, own: dict[str, tuple[int, int]], sibling_years: dict[str, tuple[int, int]], expected
 ):
-    """A pool's answer holds the years any of its donors holds the part's own total in, so
-    a donor holding none, or another run, leaves the sibling option partial over what it
-    covers rather than available over a window it understates. A partial option states its
-    years in its label."""
+    """A pool's answer holds the years any of its donors holds the part's own total in. A
+    year is covered when every donor holding the part's total in it holds the other total
+    in it, so a donor holding neither places no demand, and a donor holding the other total
+    over part of its own run leaves the option partial over the years covered. A partial
+    option states its years in its label."""
     (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     extra = [
         *(

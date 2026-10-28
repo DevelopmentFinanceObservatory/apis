@@ -136,20 +136,20 @@ def _donor_years(
     if first > last:
         return {}
     found = coverage.series_years(
-        variables=[row.dcid for row in family.rows], bound=_bound(identity)
+        variables=[row.dcid for row in family.rows],
+        bound=_bound(identity),
+        first_year=first,
+        last_year=last,
     )
     if found is None:
         return {}
     epoch = coverage.horizon.epoch_year
     held: dict[str, set[int]] = {}
     for (_variable, _recipient, donor), bits in zip(found.keys(), found.year_bits(), strict=True):
-        years = held.setdefault(donor, set())
-        years.update(
-            year
-            for offset in range(bits.bit_length())
-            if bits >> offset & 1 and first <= (year := epoch + offset) <= last
+        held.setdefault(donor, set()).update(
+            epoch + offset for offset in range(bits.bit_length()) if bits >> offset & 1
         )
-    return {donor: frozenset(years) for donor, years in held.items() if years}
+    return {donor: frozenset(years) for donor, years in held.items()}
 
 
 def _years_asked(window: Mapping[str, object], coverage: CoverageIndex) -> tuple[int, int]:
