@@ -51,7 +51,7 @@ It ends with `analysis_step` in `smoke.py`. This branch has no `POST /api/datase
 
 ## Download links
 
-The files routes answer 302 at a V4 URL that `artifact_store.signing.sign_get_url` signs through IAM `signBlob`, which needs Google credentials. `local_app.py` replaces that one function with `emulator_url`, which returns the object's unsigned media link on fake-gcs-server, for example `http://127.0.0.1:54443/download/storage/v1/b/dfo-local-working/o/sha256%3A...?alt=media`. The rest of the route runs unchanged: the version read, revocation, retention and renewal, and the 302 with `no-store`.
+In production the files routes answer 302 at a V4 URL that `artifact_store.signing.sign_get_url` signs through IAM `signBlob`, which needs Google credentials. With `STORAGE_EMULATOR_HOST` set, `sign_get_url` returns the object's unsigned media link on fake-gcs-server instead, for example `http://127.0.0.1:54443/download/storage/v1/b/dfo-local-working/o/sha256%3A...?alt=media`. The rest of the route runs unchanged: the version read, revocation, retention and renewal, and the 302 with `no-store`.
 
 ## Environment
 

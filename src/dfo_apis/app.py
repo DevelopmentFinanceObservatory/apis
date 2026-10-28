@@ -2,6 +2,7 @@
 
 Search always mounts. `DFO_DATASETS_SURFACE`, `DFO_GRAPH_SURFACE`,
 `DFO_PRESENTATION_SURFACE`, and `DFO_SKILLS_SURFACE` gate the other surfaces.
+`build_presentation_surface` builds the Presentation surface for any app that composes it.
 Datasets requires `DATASET_STORE_RUNTIME_DB_USER` and Graph requires
 `GRAPH_DCP_BASE_URL`. Presentation requires its runtime database user and
 the datasets runtime user. Skills uses Search's shared graph index.
@@ -73,7 +74,11 @@ def _graph_factory(rate_cache: RateTableCache) -> Surface:
     return graph_surface()
 
 
-def _presentation_factory(rate_cache: RateTableCache) -> Surface:
+def build_presentation_surface(rate_cache: RateTableCache) -> Surface:
+    """Build the Presentation surface `create_app` mounts under `DFO_PRESENTATION_SURFACE`,
+    with its render routes admitting the Datasets live-refresh principal from the environment.
+    Takes the shared `rate_cache` for the gated-surface factory signature; Presentation reads
+    no rate tables."""
     from datasets_api.config import DatasetsBuildSettings
     from datasets_api.live_refresh import LiveRefreshPrincipal
     from presentation_api.app import presentation_surface
@@ -102,7 +107,7 @@ class _GatedSurface:
 _GATED_SURFACES: tuple[_GatedSurface, ...] = (
     _GatedSurface("datasets_surface", _datasets_factory),
     _GatedSurface("graph_surface", _graph_factory),
-    _GatedSurface("presentation_surface", _presentation_factory),
+    _GatedSurface("presentation_surface", build_presentation_surface),
     _GatedSurface("skills_surface", _skills_factory),
 )
 

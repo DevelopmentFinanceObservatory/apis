@@ -286,7 +286,7 @@ def test_the_composed_app_passes_the_configured_principal_to_the_render_routes(
     answers = {}
     for configured in (_PRINCIPAL, ""):
         monkeypatch.setenv("LIVE_REFRESH_PRINCIPAL", configured)
-        surface = dfo_apis_app._presentation_factory(RateTableCache())
+        surface = dfo_apis_app.build_presentation_surface(RateTableCache())
         # No lifespan runs, so no live store is built. Both answers come before any store read.
         client = TestClient(create_app([surface]), raise_server_exceptions=False)
         answers[configured] = client.post(url, json={"frame": _body(_STORED)}, headers=_AUTH)

@@ -6,13 +6,20 @@ access token and account email make `google-cloud-storage` use IAM signing.
 The account needs `roles/iam.serviceAccountTokenCreator` on itself.
 
 This store caps URLs at one hour, below V4's seven-day maximum.
+
+With `STORAGE_EMULATOR_HOST` set, which `google-cloud-storage` also reads to send every call
+to a GCS emulator, `sign_get_url` returns the object's media link on that emulator. The
+emulator checks no signature and ignores the response-type and disposition overrides, so the
+link carries neither and needs no credentials.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 from datetime import timedelta
 from typing import Protocol, cast
+from urllib.parse import quote
 
 import google.auth
 from google.api_core.exceptions import GoogleAPICallError
@@ -33,6 +40,9 @@ SIGNED_URL_TTL_FLOOR = timedelta(seconds=1)
 # Signed URL reuse window. A cached URL can be this much older than the response carrying
 # it, so a caller signs for longer than this to hand out a URL with time left.
 SIGNED_URL_REUSE_WINDOW = timedelta(minutes=1)
+
+# The variable `google-cloud-storage` reads to point its client at a GCS emulator.
+STORAGE_EMULATOR_ENV = "STORAGE_EMULATOR_HOST"
 
 
 class _ServiceAccountCredentials(Protocol):
@@ -85,6 +95,9 @@ def sign_get_url(
     """Sign one GET URL for `object_name` with the requested response type and disposition
     in its query. `digest` names the bytes in a signing error.
 
+    With `STORAGE_EMULATOR_HOST` set, returns the emulator's unsigned media link for the
+    object instead.
+
     Raises `ValueError` outside the store TTL bounds before credential or
     network work. Signing failures raise `ArtifactSigningError` with safe error details.
     """
@@ -101,6 +114,8 @@ def sign_get_url(
             f"ttl {ttl!r} exceeds this store's {SIGNED_URL_TTL_CEILING!r} ceiling "
             f"(V4 signed URLs cap at {V4_MAX_TTL!r} regardless)"
         )
+    if emulator_host := os.environ.get(STORAGE_EMULATOR_ENV):
+        return _emulator_media_url(emulator_host, bucket=bucket, object_name=object_name)
     signing_failed = False
     error_class_name: str | None = None
     error_status_code: int | None = None
@@ -130,3 +145,9 @@ def sign_get_url(
             status_code=error_status_code,
         )
     raise AssertionError("unreachable: the try block above either returns or raises")
+
+
+def _emulator_media_url(host: str, *, bucket: str, object_name: str) -> str:
+    """The media download URL for `object_name` in `bucket` on the emulator at `host`."""
+    name = quote(object_name, safe="")
+    return f"{host.rstrip('/')}/download/storage/v1/b/{bucket}/o/{name}?alt=media"

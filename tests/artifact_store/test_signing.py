@@ -17,6 +17,7 @@ from artifact_store.errors import ArtifactSigningError
 from artifact_store.signing import (
     SIGNED_URL_TTL_CEILING,
     SIGNED_URL_TTL_FLOOR,
+    STORAGE_EMULATOR_ENV,
     sign_get_url,
 )
 
@@ -120,6 +121,29 @@ def test_ttl_at_the_ceiling_is_accepted(gcs_client, stub_signing):
     )
     params = parse_qs(urlsplit(url).query)
     assert params["X-Goog-Expires"] == [str(int(SIGNED_URL_TTL_CEILING.total_seconds()))]
+
+
+def test_emulator_host_returns_the_media_link_without_credential_work(gcs_client, monkeypatch):
+    def _boom():
+        raise AssertionError("google.auth.default() must not run against the emulator")
+
+    monkeypatch.setattr(google.auth, "default", _boom)
+    monkeypatch.setenv(STORAGE_EMULATOR_ENV, "http://127.0.0.1:54443/")
+
+    url = sign_get_url(
+        client=gcs_client,
+        bucket="dfo-local-working",
+        object_name="sha256:deadbeef",
+        digest="sha256:deadbeef",
+        ttl=timedelta(minutes=5),
+        response_type="text/csv",
+        response_disposition='attachment; filename="deadbeef.csv"',
+    )
+
+    assert url == (
+        "http://127.0.0.1:54443/download/storage/v1/b/dfo-local-working/o/"
+        "sha256%3Adeadbeef?alt=media"
+    )
 
 
 def test_ttl_past_the_ceiling_is_refused_before_any_credential_work(gcs_client, monkeypatch):

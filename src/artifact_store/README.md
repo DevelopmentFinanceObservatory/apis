@@ -90,6 +90,8 @@ Cloud Run workloads execute under a service account without downloadable private
 2. The `roles/iam.serviceAccountTokenCreator` role on the service account authorizes the `iamcredentials.googleapis.com` `signBlob` RPC.
 3. `Blob.generate_signed_url` receives the access token and service account email, invoking the remote `signBlob` endpoint.
 
+With `STORAGE_EMULATOR_HOST` set, which `google-cloud-storage` also reads to send every call to a GCS emulator, `sign_get_url` skips credentials and signing and returns the object's media link on that emulator. The local stack in `scripts/local-stack/` relies on it.
+
 ### URL Constraints and Caching
 
 - `SIGNED_URL_TTL_FLOOR`: Minimum TTL is 1 second (`timedelta(seconds=1)`). Sub-second TTL values and non-positive TTLs (`<= 0`) raise `ValueError` because V4 signing serializes expiry to whole seconds.
