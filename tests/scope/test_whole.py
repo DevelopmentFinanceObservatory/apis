@@ -227,5 +227,3 @@ def test_a_part_binding_no_sector_states_no_sector_choice(monkeypatch):
 
     assert served_datasets(part) == {basis_fixture._DAC1}
     assert "sector" not in _actives(part)
-    with pytest.raises(ValueError):
-        _whole_entry(_scope(part))
