@@ -65,11 +65,11 @@ from origin_catalogue import (
 )
 from origin_catalogue.graph import is_un_dcid
 from origin_catalogue.origins import BASE, DFO
-from series_coverage.coverage_types import BoundRoles, Role
+from series_coverage.coverage_types import BoundRoles, FacetCoverage, Role
 from series_coverage.facets import FacetCandidate as _CoverageFacetCandidate
 from series_coverage.facets import facet_candidates as _coverage_facet_candidates
 from series_coverage.facets import rank_candidates as _coverage_rank_candidates
-from series_coverage.schema import RoleNames
+from series_coverage.schema import FacetMetadata, RoleNames
 
 if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
@@ -474,6 +474,40 @@ def role_bearing_facet_candidates(
     )
 
 
+def role_bearing_facet_candidates_of(
+    *,
+    stat_vars: Sequence[str],
+    role_bindings: Mapping[str, EntityFilter],
+    coverage: CoverageIndex,
+    first_year: int | None = None,
+    last_year: int | None = None,
+) -> dict[str, list[Facet]]:
+    """`role_bearing_facet_candidates` of each of `stat_vars`, read in one pass over the
+    coverage index per distinct set of bound roles rather than once per variable.
+
+    Each value equals `role_bearing_facet_candidates` for its variable, `[]` where that
+    reads no row, in the order of `stat_vars`. A variable it answers `None` for, one without
+    `RoleNames`, is left out."""
+    groups: dict[frozenset[tuple[Role, frozenset[str]]], tuple[BoundRoles, list[str]]] = {}
+    for stat_var in dict.fromkeys(stat_vars):
+        bound = _bound_roles_for_coverage(role_bindings, coverage=coverage, stat_var=stat_var)
+        if bound is not None:
+            groups.setdefault(frozenset(bound.items()), (bound, []))[1].append(stat_var)
+    found: dict[str, list[Facet]] = {}
+    for bound, members in groups.values():
+        facets_by_variable = {
+            variable_coverage.variable: variable_coverage.facets
+            for variable_coverage in coverage.filter_facet_candidates(
+                variables=members, bound=bound, first_year=first_year, last_year=last_year
+            )
+        }
+        for stat_var in members:
+            found[stat_var] = _ranked_coverage_facets(
+                facets_by_variable.get(stat_var, ()), metadata=coverage.facet_metadata
+            )
+    return {stat_var: found[stat_var] for stat_var in dict.fromkeys(stat_vars) if stat_var in found}
+
+
 def role_bearing_facet_candidates_by_donor(
     *, stat_vars: Sequence[str], donors: Sequence[str], coverage: CoverageIndex
 ) -> dict[str, dict[str, list[Facet]]]:
@@ -516,9 +550,15 @@ def _coverage_facets(
         variables=[stat_var], bound=bound, first_year=first_year, last_year=last_year
     )
     facet_coverage = variable_coverage[0].facets if variable_coverage else ()
-    candidates = _coverage_facet_candidates(facet_coverage, metadata=coverage.facet_metadata)
-    ranked = _coverage_rank_candidates(candidates)
-    return [_facet_from_coverage_candidate(c) for c in ranked]
+    return _ranked_coverage_facets(facet_coverage, metadata=coverage.facet_metadata)
+
+
+def _ranked_coverage_facets(
+    facet_coverage: Sequence[FacetCoverage], *, metadata: Mapping[str, FacetMetadata]
+) -> list[Facet]:
+    """One variable's facet coverage as ranked facets."""
+    candidates = _coverage_facet_candidates(facet_coverage, metadata=metadata)
+    return [_facet_from_coverage_candidate(c) for c in _coverage_rank_candidates(candidates)]
 
 
 def coverage_probe(*, stat_var: str, bound: BoundRoles, coverage: CoverageIndex) -> MemberProbe:

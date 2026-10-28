@@ -18,6 +18,7 @@ from search.engine.region.option_coverage import (
     _maybe_build_facet_options,
     _maybe_enrich_slot_options,
 )
+from search.engine.region.phase_timing import timed_step
 from search.engine.region.promote_ground import unit_refusal_input_error
 from search.engine.region.promote_relaunch import PromoteRelaunch, bind_relaunches
 from search.engine.region.promote_results import _no_data_region
@@ -304,7 +305,8 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         (refusal := _bound_unit_refusal(state, mat_result)) is not None
     ):
         return refusal
-    _fetch = _fetch_finalize_observations(state, mat_result, unit_request=_unit_request)
+    with timed_step(state, "finalize_preview"):
+        _fetch = _fetch_finalize_observations(state, mat_result, unit_request=_unit_request)
     # A requested preview's warning joins the answer, stamped with its Spec.
     resubmit_warnings = state.definite_warnings(spec.spec_id)
     _fetched_obs = None
@@ -320,12 +322,16 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
     spec, resubmit_warnings = _attach_finalize_observations(
         state, spec, _fetched_obs, resubmit_warnings
     )
-    spec = stating_related(spec, joined_related(state.related_read))
-    resubmit_warnings = (
-        *resubmit_warnings,
-        *whole_total_warnings(spec, coverage=state.coverage.index),
-    )
+    with timed_step(state, "finalize_related"):
+        spec = stating_related(spec, joined_related(state.related_read))
+    with timed_step(state, "finalize_wholes"):
+        resubmit_warnings = (
+            *resubmit_warnings,
+            *whole_total_warnings(spec, coverage=state.coverage.index),
+        )
 
+    relaunch_t0 = now_ms()
+    relaunch = _promote_relaunch(state, mat_result, spec, _unit_request)
     region = RegionResult(
         variable_text=state.variable_text,
         status="definite",
@@ -334,7 +340,7 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         warnings=resubmit_warnings,
         timing_by_step=dict(state.timing),
         facet_probe=_promote_facet_probe(state, mat_result),
-        promote_relaunch=_promote_relaunch(state, mat_result, spec, _unit_request),
+        promote_relaunch=relaunch,
         observation_entities=state.obs_entities,
         facet_filter=state.facet_filter,
         measure_partition=state.measure_partition,
@@ -348,7 +354,7 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         member_population=mat_result.population,
         answered_roles=answered_roles(state.shape_draft),
     )
-    return bind_relaunches(
+    bound = bind_relaunches(
         region,
         graph=state.graph,
         sdmx=state.sdmx,
@@ -366,3 +372,5 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
             deadline=state.deadline,
         ),
     )
+    state.timing["finalize_relaunch"] = now_ms() - relaunch_t0
+    return bound

@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+from search.engine import conjoin
 from search.engine.conjoin import BINDING_FOLDED, assemble_region, combine_regions
 from search.engine.deadline import _cancel_and_await
 from search.engine.enrichment import _reconcile_after_collapse, _stream_slot_options
@@ -77,6 +78,31 @@ def test_assemble_region_default_echo_uses_raw_text():
     response = assemble_region(region, **_assemble_kwargs(region))
     assert response.query_echo.entry_path == "raw_text"
     assert response.query_echo.extract_skipped is False
+
+
+@pytest.mark.parametrize("assemble", ["one", "many"])
+def test_the_envelope_total_covers_building_the_parts(monkeypatch, assemble):
+    """The request's total is stamped once its parts are built, so it covers their
+    assembly."""
+    clock = [0]
+    monkeypatch.setattr(conjoin, "now_ms", lambda: clock[0])
+    build_part = conjoin._build_part
+
+    def slow_build_part(*args, **kwargs):
+        clock[0] += 250
+        return build_part(*args, **kwargs)
+
+    monkeypatch.setattr(conjoin, "_build_part", slow_build_part)
+    region = _region(_spec(_PERSON_SHAPE, "any"), "population")
+    kwargs = _assemble_kwargs(region, start_ms=0)
+
+    if assemble == "one":
+        response = assemble_region(region, **kwargs)
+    else:
+        response, _effective = combine_regions([region], **kwargs)
+
+    assert response.diagnostics.timing_ms is not None
+    assert response.diagnostics.timing_ms.total == 250
 
 
 def test_assemble_region_supplied_echo_used_verbatim():

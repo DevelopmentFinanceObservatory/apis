@@ -61,6 +61,11 @@ class ParquetFrameChunks:
         for row_group_index in range(reader.num_row_groups):
             yield reader.read_row_group(row_group_index, columns=[column])[column]
 
+    @property
+    def num_rows(self) -> int:
+        """The frame's row count, read from the Parquet footer alone."""
+        return pq.ParquetFile(pa.BufferReader(self.parquet_bytes)).metadata.num_rows
+
 
 class ParquetFrameSink:
     """Writes each frame chunk as one row group of an in-memory Parquet file, which

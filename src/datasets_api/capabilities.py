@@ -96,6 +96,13 @@ class CapabilityCaps(BaseModel):
     pivot_max_output_cells: int = Field(
         description="cap on a pivot's total output cell count (rows x columns) before pivot_over_cell_cap"
     )
+    groupby_fold_max_rows: int = Field(
+        description=(
+            "cap on the frame rows a groupby that sums the frame folds; a larger frame "
+            "refuses over_ceiling (ceiling_kind rows). A version stored as a frame1 document "
+            "folds row by row under a lower cap"
+        )
+    )
     operation_retention_days: int = Field(
         description=(
             "how long a terminal (done/failed) operation stays guaranteed pollable "
@@ -301,6 +308,7 @@ def build_capabilities(
             async_max_rows=settings.async_max_rows,
             async_max_requests=settings.async_max_requests,
             pivot_max_output_cells=settings.pivot_max_output_cells,
+            groupby_fold_max_rows=settings.groupby_fold_max_rows,
             operation_retention_days=WORKING_TIER_RETENTION.days,
         ),
         code_index=CodeIndexStamp(

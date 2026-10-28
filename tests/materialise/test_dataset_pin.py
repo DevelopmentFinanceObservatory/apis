@@ -22,6 +22,7 @@ from materialise.facets import (
     probe_collection_candidates,
     role_bearing_facet_candidates,
     role_bearing_facet_candidates_by_donor,
+    role_bearing_facet_candidates_of,
     role_bearing_facets,
 )
 from materialise.generation import _select_member_facets
@@ -318,6 +319,60 @@ def test_role_facet_candidates_ignore_source_scope_but_exclude_globally_unavaila
     assert {facet.provenance_id for facet in candidates or []} == {served, other}
     # Read by donor in one grouped pass, the choices are the same, ranked the same.
     assert by_donor == {_BARE_A: {"country/DONOR": candidates, "country/NONE": []}}
+
+
+def test_facet_candidates_of_many_members_read_the_index_once_per_bound_roles(monkeypatch):
+    """Members sharing bound roles are read in one pass, and each answer, its order and
+    its absences equal the one-member reads."""
+    served, other = "provenance/Served", "provenance/Other"
+    debt = "Debt_Bare_A"
+    unlisted = "Unlisted_Bare_A"
+    coverage = build_coverage_index(
+        [
+            (_BARE_A, "f-served", "country/DONOR", _ENTITY, [2015, 2016]),
+            (_BARE_A, "f-other", "country/DONOR", _ENTITY, [2016]),
+            (_BARE_B, "f-other", "country/NOR", _ENTITY, [2010]),
+            (debt, "f-served", "country/NOR", _ENTITY, [2016]),
+        ],
+        role_names={
+            _BARE_A: RoleNames(donor="donor", recipient="recipient"),
+            _BARE_B: RoleNames(donor="donor", recipient="recipient"),
+            debt: RoleNames(donor="creditor", recipient="debtor"),
+        },
+        facet_metadata={
+            "f-served": FacetMetadata(provenance_id=served),
+            "f-other": FacetMetadata(provenance_id=other),
+        },
+    )
+    catalogue = restrictive_catalogue(
+        provenances=[provenance_row(served, BASE), provenance_row(other, BASE)]
+    )
+    bindings = {"donor": ["country/DONOR"], "creditor": ["country/NOR"]}
+    members = [debt, unlisted, _BARE_B, _BARE_A]
+    reads: list[list[str]] = []
+    read = type(coverage).filter_facet_candidates
+
+    def counted(self, *, variables, **kwargs):
+        reads.append(list(variables))
+        return read(self, variables=variables, **kwargs)
+
+    with bound_catalogue(catalogue):
+        one_by_one = {
+            sv: role_bearing_facet_candidates(
+                stat_var=sv, role_bindings=bindings, coverage=coverage, first_year=2016
+            )
+            for sv in members
+        }
+        monkeypatch.setattr(type(coverage), "filter_facet_candidates", counted)
+        together = role_bearing_facet_candidates_of(
+            stat_vars=members, role_bindings=bindings, coverage=coverage, first_year=2016
+        )
+
+    assert together == {sv: facets for sv, facets in one_by_one.items() if facets is not None}
+    assert list(together) == [debt, _BARE_B, _BARE_A]
+    assert together[_BARE_B] == []
+    assert together[debt] != []
+    assert sorted(reads) == [[debt], [_BARE_B, _BARE_A]]
 
 
 def test_role_facet_candidates_keep_known_provenance_less_method_and_unit():

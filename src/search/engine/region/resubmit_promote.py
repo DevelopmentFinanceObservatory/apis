@@ -16,6 +16,8 @@ from dfo_spec_kit.identity import IdentityError
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
+from search.engine.envelope import now_ms
+from search.engine.region.phase_timing import book_unbooked_time, booked_ms
 from search.engine.region.promote_bindings import _phase_build_bindings
 from search.engine.region.promote_edits import _phase_detect_edits
 from search.engine.region.promote_finalize import _phase_finalize
@@ -77,8 +79,10 @@ def _resolve_standard_promote(
     `role_incompatible` (422). Absent observationAbout or donor refs raise
     `invalid_role_ref` (422).
 
-    The result's `reads_deadline` is the bound its later phases ran to. A read a phase
-    swallows is noted as lost (`degraded_reads.note_degraded_read`), and
+    The result's `timing_by_step` books each phase's time that its own steps left out
+    under `phase_<name>` (`phase_timing.book_unbooked_time`), so its steps sum to the
+    pass's wall time. The result's `reads_deadline` is the bound its later phases ran to. A
+    read a phase swallows is noted as lost (`degraded_reads.note_degraded_read`), and
     `resolve_spec_resubmit` marks the region `degraded`.
     """
     state = _PromoteState(
@@ -112,9 +116,23 @@ def _resolve_standard_promote(
         ),
     )
 
+    unbooked: dict[str, int] = {}
     try:
         for phase in _PROMOTE_PHASES:
-            result = phase(state)
+            t0, booked_before = now_ms(), booked_ms(state)
+            try:
+                result = phase(state)
+            finally:
+                # Every `_PROMOTE_PHASES` entry is a plain function, but `Callable` hides
+                # its `__name__`.
+                name = phase.__name__.removeprefix("_phase_")  # ty: ignore[unresolved-attribute]
+                book_unbooked_time(
+                    state,
+                    unbooked,
+                    f"phase_{name}",
+                    elapsed=now_ms() - t0,
+                    booked=booked_ms(state) - booked_before,
+                )
             if result is not None:
                 # Include timings from phases that returned early, the departures of the
                 # posted values the answer leaves unapplied (`with_requirement_departures`),

@@ -27,7 +27,7 @@ from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_platform.app import Surface, create_app
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, FRAME1_MEDIA_TYPE
 from materialise.graph import GraphReadError
-from materialise.series_conversion import SeriesConversion, encode_series_conversions
+from materialise.series_conversion import SeriesConversion, pack_series_conversions
 from origin_catalogue import DFO, bound_catalogue
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts
@@ -225,7 +225,7 @@ def _body(
         "series_count": series_count,
     }
     if conversions:
-        body["series_conversions"] = encode_series_conversions(conversions)
+        body["series_conversions"] = pack_series_conversions(conversions)
     if default_scope_plural is not None:
         body["default_scope_plural"] = default_scope_plural
     return body

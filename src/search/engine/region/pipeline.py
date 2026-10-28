@@ -23,7 +23,6 @@ from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.conjoin import NESTED_SHAPE_STEPS
 from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
     DegradedReads,
@@ -67,6 +66,7 @@ from search.engine.region.phase_rank_bind import (
     exclusion_records,
 )
 from search.engine.region.phase_shared import settle_unjudged_refusal
+from search.engine.region.phase_timing import book_unbooked_time, booked_ms
 from search.engine.region.place_roles import (
     bound_entity_refs,
     group_request_names,
@@ -963,7 +963,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
     unscoped and reads scoped from election on. However the pass ends, it then cancels what
     it queued (`_cancel_queued_reads`) and ends its related-measures reads
     (`_end_related_reads`). Each phase's time that no step booked lands under
-    `phase_<name>` (`_book_unbooked_time`). A refusal of the whole request
+    `phase_<name>` (`phase_timing.book_unbooked_time`). A refusal of the whole request
     (`_REQUEST_REFUSALS`) a phase raises once the bindings are final, on an elected answer
     leaving terms unmet, gives way to the part's `qualifier_not_bound` refusal
     (`refuse_unread_answer`). Stated-word coverage is judged once
@@ -980,7 +980,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 # Every `_PHASES` entry is a plain function, but `Callable` hides its `__name__`.
                 name = phase.__name__.removeprefix("_phase_")  # ty: ignore[unresolved-attribute]
                 enter_phase(f"{state.pool}:{name}")
-                t0, booked_before = now_ms(), _booked_ms(state)
+                t0, booked_before = now_ms(), booked_ms(state)
                 try:
                     result = await phase(state)
                 except _REQUEST_REFUSALS:
@@ -1009,12 +1009,12 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 # judged on them before the outcome judges the answer.
                 if result is None and phase is _phase_materialise:
                     await judge_coverage(state)
-                _book_unbooked_time(
+                book_unbooked_time(
                     state,
                     unbooked,
                     f"phase_{name}",
                     elapsed=now_ms() - t0,
-                    booked=_booked_ms(state) - booked_before,
+                    booked=booked_ms(state) - booked_before,
                 )
                 if result is None:
                     settled = settled or phase is _phase_settle
@@ -1063,36 +1063,6 @@ async def _run_phases(state: ResolveState) -> RegionResult:
         _cancel_queued_reads(state)
         enter_phase(f"{state.pool}:end_related_reads")
         await _end_related_reads(state)
-
-
-def _booked_ms(state: ResolveState) -> int:
-    """The ms `state.timing` books, leaving out the stages inside `shape`
-    (`conjoin.NESTED_SHAPE_STEPS`), since `shape` already spans them."""
-    return sum(ms for step, ms in state.timing.items() if step not in NESTED_SHAPE_STEPS)
-
-
-def _book_unbooked_time(
-    state: ResolveState,
-    unbooked: dict[str, int],
-    step: str,
-    *,
-    elapsed: int,
-    booked: int,
-) -> None:
-    """Book under `step` the part of a phase's `elapsed` ms that its own steps (`booked`)
-    left out, so no millisecond is counted twice. A step that books from before its phase
-    began (`shape` starts in `_phase_derive_shapes` and ends in `_phase_prune_and_rank`)
-    books more than the phase ran; the excess comes off the latest earlier phases
-    already booked in `unbooked`, whose entries `state.timing` mirrors."""
-    excess = booked - elapsed
-    for earlier in reversed(unbooked):
-        if excess <= 0:
-            break
-        taken = min(unbooked[earlier], excess)
-        unbooked[earlier] -= taken
-        state.timing[earlier] -= taken
-        excess -= taken
-    unbooked[step] = state.timing[step] = max(0, elapsed - booked)
 
 
 def _admitted_phrases(

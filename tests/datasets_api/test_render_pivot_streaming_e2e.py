@@ -51,6 +51,8 @@ def _render(
         code_index=code_index,
         resolved_stat_var_refs=(),
         pivot_max_output_cells=pivot_max_output_cells,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         output_profile=output_profile,
         prepared_at=PREPARED_AT,
         site=SITE,
@@ -283,6 +285,8 @@ def _render_groupby_pivot(chunks: tuple[Table, ...]):
         code_index=_INDEX,
         resolved_stat_var_refs=_GROUPBY_RESOLVED_REFS,
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         prepared_at=PREPARED_AT,
         site=SITE,
     )

@@ -1,20 +1,17 @@
-"""Reads per-series conversion records in both stored forms: the per-series entry list this
-image writes, and the packed object that names each distinct record once."""
+"""Stores per-series conversion records once per distinct record and reads both stored forms."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from typing import cast
 
 from materialise.series_conversion import (
-    RoleTuple,
     SeriesConversion,
-    SeriesKey,
     decode_series_conversion_entries,
-    encode_series_conversions,
+    pack_series_conversions,
     series_key,
 )
+
+from ._legacy_series_conversions import legacy_series_conversion_entries
 
 _SHARED = SeriesConversion(
     recipe_id="ConversionRecipeDAC",
@@ -51,55 +48,29 @@ _CONVERSIONS = {
 _CONVERSIONS[series_key("Amount_0", ("financingRecipient",), ("country/KEN",))] = _FALLBACK
 
 
-def _record_entry(conversion: SeriesConversion) -> dict[str, object]:
-    return {
-        "recipe_id": conversion.recipe_id,
-        "table_provenance_id": conversion.table_provenance_id,
-        "exchange_rate_table_version": conversion.exchange_rate_table_version,
-        "deflator_table_version": conversion.deflator_table_version,
-        "fallback_count": conversion.fallback_count,
-        "fallback_examples": [list(pair) for pair in conversion.fallback_examples],
-        "projected_count": conversion.projected_count,
-        "projected_examples": list(conversion.projected_examples),
-    }
-
-
-def _packed(conversions: Mapping[SeriesKey, SeriesConversion]) -> dict[str, object]:
-    """`conversions` as the packed object: each distinct StatVar, role tuple and record once,
-    in order of first appearance over the series sorted by key, and one `[stat_var, roles,
-    record]` triple of list positions per series, sorted by key."""
-    stat_vars: dict[str, int] = {}
-    roles: dict[RoleTuple, int] = {}
-    records: dict[SeriesConversion, int] = {}
-    series = [
-        [
-            stat_vars.setdefault(stat_var, len(stat_vars)),
-            roles.setdefault(pairs, len(roles)),
-            records.setdefault(record, len(records)),
-        ]
-        for (stat_var, pairs), record in sorted(conversions.items())
-    ]
-    return {
-        "stat_vars": list(stat_vars),
-        "roles": [[list(pair) for pair in pairs] for pairs in roles],
-        "records": [_record_entry(record) for record in records],
-        "series": series,
-    }
-
-
-def _stored(value: object) -> list[Mapping[str, object]] | dict[str, object]:
+def _stored(value: object) -> object:
     """`value` as a jsonb column returns it."""
     return json.loads(json.dumps(value))
 
 
 def test_packed_records_read_back_as_every_series_record():
-    packed = _packed(_CONVERSIONS)
+    packed = pack_series_conversions(_CONVERSIONS)
 
     assert decode_series_conversion_entries(_stored(packed)) == _CONVERSIONS
-    assert len(cast(list, packed["records"])) == 2
+    assert len(packed["records"]) == 2
+    assert len(packed["stat_vars"]) == 40
+    assert len(packed["roles"]) == 2 * 25 + 1
 
 
-def test_the_entry_list_this_image_writes_reads_back():
-    entries = encode_series_conversions(_CONVERSIONS)
+def test_a_version_stored_before_packing_reads_its_entry_list():
+    entries = legacy_series_conversion_entries(_CONVERSIONS)
 
     assert decode_series_conversion_entries(_stored(entries)) == _CONVERSIONS
+
+
+def test_packing_stores_a_few_bytes_a_series():
+    """The 2,001 series take about 15 bytes each packed, against about 375 as entries."""
+    packed = len(json.dumps(pack_series_conversions(_CONVERSIONS)))
+    entries = len(json.dumps(legacy_series_conversion_entries(_CONVERSIONS)))
+
+    assert packed * 10 < entries
