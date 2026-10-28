@@ -60,7 +60,7 @@ from search.models import (
     Timing,
     Warning,
 )
-from search.render.labels import _join_labels
+from search.render.labels import join_labels
 from search.render.no_data import ScopeSources, UnlistedPopulation, untold_place_name
 from skills_index import SkillsIndex
 
@@ -541,7 +541,7 @@ def _direction_label(entities: Sequence[ParsedEntity], region: RegionResult) -> 
 def _axis_label(places: Sequence[Sequence[str]]) -> str:
     """The places `places` holds, each by its words."""
     names = (untold_place_name(texts, quote_first=False) for texts in places)
-    return _join_labels([name for name in names if name])
+    return join_labels([name for name in names if name])
 
 
 def _unit_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:

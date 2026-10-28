@@ -102,6 +102,12 @@ class DepartureFact:
       converts over fewer years than the data holds, the first and last years the
       conversion covers, and the table that leaves the rest out (exchange rates or
       deflators). `data_years` is then the years the data serves before the conversion.
+    - `covered_years` and `limited_by` (`year_unavailable`): on an answer a scope option
+      the request's words asked for serves over fewer years than asked
+      (`OptionAvailability.status` partial), the runs of years the option covers, and what
+      leaves the rest out: the imputed multilateral line of the inclusive provider scope,
+      or the published total a provider option reads; None when the option's reason names
+      neither. `shown` is the run the answer serves.
     - `omitted_years` (`year_unavailable`): on an answer a constant-price unit request
       converts, each entity whose rows a missing deflator leaves out, by name, with the
       years it leaves out and the years it keeps, in the order the text names them.
@@ -143,7 +149,10 @@ class DepartureFact:
     requested_years: tuple[int | None, int | None] | None = None
     data_years: tuple[int, int] | None = None
     converted_years: tuple[int, int] | None = None
-    limited_by: Literal["exchange_rates", "deflators"] | None = None
+    limited_by: (
+        Literal["exchange_rates", "deflators", "imputed_multilateral", "published_total"] | None
+    ) = None
+    covered_years: tuple[tuple[int, int], ...] = ()
     omitted_years: tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...] = ()
     omitted_unnamed: int = 0
     omission_undecided: bool = False

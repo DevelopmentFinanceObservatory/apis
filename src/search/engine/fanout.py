@@ -55,6 +55,7 @@ from search.engine.source_code import (
     without_code_words,
 )
 from search.engine.source_scope import SourceRefusal, SourceScope, without_source_words
+from search.engine.stated_scope import without_scope_phrases
 from search.engine.surface_resolution import resolve_names
 from search.models import (
     EntryPath,
@@ -472,8 +473,10 @@ async def _stream_one_variable(
     `RATE_TABLE_REFUSALS` always fail the response. The qualifier sidecar is appended to the
     recall/restatement text while `v` stays bare for structured resolution. `source_scope`
     is the leg's compiled source mentions. A scope is what the leg answers under, and its
-    source words leave `v` (`_measure_words`). A refusal, or a scope allowing nothing,
-    makes the leg answer no_data and run no step
+    source words leave `v` (`_measure_words`). Resolution reads `v`, its recall text, its
+    role query and `query_text` without the phrases that state the provider entry its
+    `scope_intake` holds (`stated_scope.without_scope_phrases`), which the restatement keeps. A refusal, or a
+    scope allowing nothing, makes the leg answer no_data and run no step
     (`source_refusal_result`, `empty_scope_result`). `source_code` is the leg's compiled
     series code: its StatVars are the leg's recall, its words leave `v` too, and a refusal
     answers the leg no_data after the source refusals (`source_code_refusal_result`).
@@ -515,12 +518,17 @@ async def _stream_one_variable(
             return empty_scope_result(v, source_scope, timing_by_step=base_timing)
         if isinstance(source_code, SourceCodeRefusal):
             return source_code_refusal_result(v, source_code, timing_by_step=base_timing)
+        # The words a scope phrase states are the scope entry's alone, so the leg's
+        # binders and qualifier matching read the texts without them; its restatement
+        # keeps them, so posting it states the same scope. A text the phrases fill whole
+        # is read as it is.
+        asked_roles = role_query if role_query is not None else query
         return await resolve_variable(
-            v,
+            without_scope_phrases(v, scope_intake) or v,
             entities=entities,
             date_request=date_request,
-            detect_query=variable_text,
-            role_query=role_query if role_query is not None else query,
+            detect_query=without_scope_phrases(variable_text, scope_intake) or variable_text,
+            role_query=without_scope_phrases(asked_roles, scope_intake) or asked_roles,
             entity_roles=entity_roles,
             member_entities=member_entities,
             unit_text=unit_text,
@@ -530,7 +538,7 @@ async def _stream_one_variable(
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             operations=operations,
             open_axes=asked_open_axes(open_axes, operations),
-            query_text=query_text,
+            query_text=query_text and (without_scope_phrases(query_text, scope_intake) or None),
             qualifiers=qualifiers,
             pac=pac,
             graph=graph,

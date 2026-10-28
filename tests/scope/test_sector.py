@@ -40,7 +40,7 @@ from search.models import (
     TextOrigin,
 )
 from search.scope.build import build_part_scope
-from search.scope.sector import read_sector, sector_rule
+from search.scope.sector import read_sector, sector_concept, sector_rule
 from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import ScopeFacts
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -248,6 +248,7 @@ class _Row(NamedTuple):
     provenance: str
     choice: tuple | None
     entry_text: str | None
+    concept: str
 
 
 _MATRIX = {
@@ -256,17 +257,20 @@ _MATRIX = {
         "declared_grouping",
         ("sector_grouping", "default", "sector:120+130", _HEALTH_OPTIONS),
         None,
+        "health",
     ),
     "health aid": _Row(
         list(_HEALTH),
         "declared_grouping",
         ("sector_grouping", "default", "sector:120+130", _HEALTH_OPTIONS),
         None,
+        "health",
     ),
     "basic health": _Row(
         ["CRSPurposeCode122"],
         "text_recognized",
         ("sector_code", "explicit", "sector:122", [("sector:122", "available")]),
+        "basic health",
         "basic health",
     ),
     "reproductive health": _Row(
@@ -274,24 +278,28 @@ _MATRIX = {
         "text_recognized",
         ("sector_grouping", "explicit", "sector:130", _HEALTH_OPTIONS),
         "reproductive health",
+        "population policy, programme, and reproductive health",
     ),
     "purpose code 120": _Row(
         ["CRSPurposeCode120"],
         "text_recognized",
         ("sector_grouping", "explicit", "sector:120", _HEALTH_OPTIONS),
         "120",
+        "health",
     ),
     "CRS 120": _Row(
         ["CRSPurposeCode120"],
         "text_recognized",
         ("sector_grouping", "explicit", "sector:120", _HEALTH_OPTIONS),
         "120",
+        "health",
     ),
     "code 120": _Row(
         ["CRSPurposeCode120"],
         "text_recognized",
         ("sector_grouping", "explicit", "sector:120", _HEALTH_OPTIONS),
         "120",
+        "health",
     ),
     "humanitarian aid": _Row(
         list(_HUMANITARIAN),
@@ -308,6 +316,7 @@ _MATRIX = {
             ],
         ),
         None,
+        "humanitarian",
     ),
 }
 
@@ -332,6 +341,9 @@ def test_a_sector_phrase_binds_and_states_its_sector_choice(variable: str, searc
 
     assert _purpose(spec) == (row.refs, row.provenance)
     assert _choice(spec) == row.choice
+    # What the series count, with no codes, and the table it is published in.
+    assert spec.resolved.concept_label == row.concept
+    assert spec.resolved.published_tables == get_index().datasets[CRS_PROVENANCE].label
     scope = spec.resolved.scope_choices
     texts = (
         [e.origin.text for e in scope.entries if isinstance(e.origin, TextOrigin)]
@@ -671,13 +683,14 @@ def _base(binding: dict | None) -> BaseIdentity:
 
 
 @pytest.mark.parametrize(
-    ("binding", "rule", "held", "options"),
+    ("binding", "rule", "held", "options", "concept"),
     [
         pytest.param(
             {"state": "set", "refs": list(_HEALTH)},
             "sector_grouping",
             "sector:120+130",
             ["sector:120+130", "sector:120", "sector:130"],
+            "health",
             id="grouping",
         ),
         pytest.param(
@@ -685,6 +698,7 @@ def _base(binding: dict | None) -> BaseIdentity:
             "sector_grouping",
             "sector:130",
             ["sector:120+130", "sector:120", "sector:130"],
+            "population policy, programme, and reproductive health",
             id="one-code-of-a-grouping",
         ),
         pytest.param(
@@ -692,19 +706,32 @@ def _base(binding: dict | None) -> BaseIdentity:
             "sector_code",
             "sector:122",
             ["sector:122"],
+            "basic health",
             id="a-code-no-grouping-holds",
         ),
-        pytest.param({"state": "unbound"}, None, None, None, id="unbound"),
-        pytest.param(None, None, None, None, id="no-sector-slot"),
+        pytest.param(
+            {"state": "set", "refs": ["CRSPurposeCode110", "CRSPurposeCode122"]},
+            "sector_code",
+            "sector:110+122",
+            ["sector:110+122"],
+            "education and basic health",
+            id="codes-no-grouping-holds",
+        ),
+        pytest.param({"state": "unbound"}, None, None, None, None, id="unbound"),
+        pytest.param(None, None, None, None, None, id="no-sector-slot"),
     ],
 )
-def test_the_rule_reads_the_base_alone_and_prefers_what_it_holds(binding, rule, held, options):
+def test_the_rule_reads_the_base_alone_and_prefers_what_it_holds(
+    binding, rule, held, options, concept
+):
     base = _base(binding)
     record = AxisRecord(axis="sector", rule="any", active="sector:1", provenance="default")
 
     with_record, without = sector_rule(base, record, _facts()), sector_rule(base, None, _facts())
 
     assert with_record == without
+    # What the codes name with no codes, as the answer's concept label reads it.
+    assert sector_concept(base, get_index()) == concept
     if rule is None:
         assert without is None
         return
@@ -714,6 +741,22 @@ def test_the_rule_reads_the_base_alone_and_prefers_what_it_holds(binding, rule, 
     statuses = {o.option_id: o.availability.status for o in without.options}
     # An empty coverage index covers nothing but the option the base resolved.
     assert statuses == {o: "available" if o == held else "unavailable" for o in options}
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        pytest.param({"state": "value", "ref": "CRSPurposeCode99999"}, id="one-code"),
+        pytest.param(
+            {"state": "set", "refs": ["CRSPurposeCode122", "CRSPurposeCode99999"]},
+            id="beside-a-labelled-code",
+        ),
+    ],
+)
+def test_a_code_the_index_holds_no_label_for_leaves_the_concept_unnamed(binding):
+    """The concept label names no code, so a sector binding holding a code the index has no
+    row for names no concept at all."""
+    assert sector_concept(_base(binding), get_index()) is None
 
 
 def test_a_record_entry_joins_the_entries_only_while_the_base_holds_its_option():

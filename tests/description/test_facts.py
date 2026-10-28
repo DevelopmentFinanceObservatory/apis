@@ -42,6 +42,7 @@ from description.facts import (
     Span,
     StatusCounts,
     VariableFacts,
+    lowest_schema_version,
 )
 from description.steps import (
     MAX_SERVED_STEPS,
@@ -84,7 +85,7 @@ def _worked_example(**overrides: Any) -> DescriptionRecord:
     fields: dict[str, Any] = {
         "id": _SPEC_ID,
         "content_version": _CV,
-        "schema_version": 1,
+        "schema_version": 2,
         "basis": "mint",
         "index_stamp": _STAMP,
         "variables": VariableFacts(
@@ -336,7 +337,7 @@ def _set(payload: dict[str, Any], path: tuple[str | int, ...], value: Any) -> di
         (("colour",), "red"),
         (("series", "status", "imputed"), 0),
         (("evidence", "sources", 0, "publisher"), "OECD"),
-        (("schema_version",), 2),
+        (("schema_version",), 3),
         (("schema_version",), True),
         (("series", "series"), "523"),
         (("series", "series"), 523.0),
@@ -357,7 +358,7 @@ def _set(payload: dict[str, Any], path: tuple[str | int, ...], value: Any) -> di
         "unknown-member",
         "unknown-status-member",
         "unknown-source-member",
-        "schema-version-2",
+        "schema-version-3",
         "schema-version-true",
         "count-as-string",
         "count-as-float",
@@ -624,3 +625,32 @@ def test_step_text_bounds_are_the_kits():
         with pytest.raises(ValidationError):
             adapter.validate_python("2" * (bound + 1))
     assert served == LONG_TEXT_MAX_LENGTH
+
+
+@pytest.mark.parametrize(
+    ("within_set", "lowest"),
+    [(None, 1), (["CRSPurposeCode121", "CRSPurposeCode122"], 2)],
+    ids=["no-set", "set"],
+)
+def test_a_record_is_of_the_lowest_version_that_describes_it_or_a_later_one(
+    within_set: list[str] | None, lowest: int
+):
+    """Version 1 lacks `within_set`, so a record narrowing a dimension to a set is of version
+    2 and refuses a stamp of 1; any other record is of version 1 and reads stamped 1 or 2."""
+    variables = _worked_example().variables
+    assert variables is not None
+    assert variables.dimensions is not None
+    dimensions = list(variables.dimensions)
+    if within_set is not None:
+        dimensions[1] = dimensions[1].model_copy(update={"within": None, "within_set": within_set})
+    narrowed = variables.model_copy(update={"dimensions": dimensions})
+    payload = json.loads(_worked_example(variables=narrowed).model_dump_json())
+
+    assert lowest_schema_version(narrowed) == lowest
+    for version in (1, 2):
+        stamped = {**payload, "schema_version": version}
+        if version >= lowest:
+            assert DescriptionRecord.model_validate(stamped).schema_version == version
+        else:
+            with pytest.raises(ValidationError, match="schema version 2"):
+                DescriptionRecord.model_validate(stamped)

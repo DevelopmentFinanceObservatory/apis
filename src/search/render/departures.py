@@ -39,7 +39,7 @@ from search.models import (
     SentenceToken,
 )
 
-from .labels import _join_labels, group_members_text, group_text
+from .labels import group_members_text, group_text, join_labels
 
 _OPERATION_NOUNS: Final[Mapping[OperationVerb, tuple[str, str]]] = MappingProxyType(
     {
@@ -91,7 +91,7 @@ def no_data_limit_text(limits: Sequence[str]) -> str:
     """
     if not limits:
         raise ValueError("a no-data limit names at least one value")
-    return f"This check covered only {_join_labels(list(limits))}."
+    return f"This check covered only {join_labels(list(limits))}."
 
 
 def departure_tokens(texts: Sequence[str], *, after_text: bool) -> list[SentenceToken]:
@@ -139,7 +139,7 @@ def _measure_not_applied(fact: DepartureFact, _family: FlowFamily | None, shows_
     if fact.asked is None:
         if not fact.values:
             raise ValueError("measure_not_applied with nothing asked needs the values left out")
-        values = _join_labels(list(fact.values))
+        values = join_labels(list(fact.values))
         if shows_data:
             return f"This shows the measure without {values}."
         return f"This check left out {values}."
@@ -202,7 +202,7 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
     elif fact.entities:
         named = "it" if len(fact.entities) == 1 else "them"
         sentences.append(
-            f"You asked for {_join_labels(list(fact.entities))}. "
+            f"You asked for {join_labels(list(fact.entities))}. "
             f"The data holds no values for {named}{period}."
         )
     if fact.sets:
@@ -212,14 +212,14 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
             for members in fact.sets
         ]
         if not fact.entities and fact.asked is not None:
-            sentences.append(f"You asked for {_join_labels([m.asked for m in fact.sets])}.")
-        sentences.append(f"The data holds no values{period} for {_join_labels(counts)}.")
+            sentences.append(f"You asked for {join_labels([m.asked for m in fact.sets])}.")
+        sentences.append(f"The data holds no values{period} for {join_labels(counts)}.")
     text = " ".join(sentences)
     if not fact.sources:
         return text
     holds = "holds" if len(fact.sources) == 1 else "hold"
     return (
-        f"{text} Search does not read {_join_labels(list(fact.sources))}, "
+        f"{text} Search does not read {join_labels(list(fact.sources))}, "
         f"which {holds} values for {pronoun}."
     )
 
@@ -240,7 +240,7 @@ def _member_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
         held = (
             f"{'It holds' if one else 'They hold'} no values under the source, unit and method read"
         )
-    return f"You asked for {_join_labels(list(fact.members))}. {held}{unit}."
+    return f"You asked for {join_labels(list(fact.members))}. {held}{unit}."
 
 
 def _latest_period(years: tuple[int, int] | None) -> str:
@@ -263,6 +263,8 @@ def _year_unavailable(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     if fact.omitted_years or fact.omitted_unnamed or fact.omission_undecided:
         return _omitted_years(fact)
     lead = f"You asked for {_asked(fact)}. " if fact.asked is not None else ""
+    if fact.covered_years:
+        return lead + _scope_years(fact)
     if fact.limited_by is not None:
         return lead + _conversion_years(fact)
     if fact.requested_years is None:
@@ -315,6 +317,27 @@ def _conversion_years(fact: DepartureFact) -> str:
     return f"{table} {bound}, so this shows {fact.shown}."
 
 
+_SCOPE_LIMITS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "imputed_multilateral": "Imputed multilateral aid covers",
+        "published_total": "The published totals counting that scope cover",
+    }
+)
+
+
+def _scope_years(fact: DepartureFact) -> str:
+    """The sentence for a scope option the request's words asked for ("Imputed multilateral
+    aid covers only 2011 to 2024, so this shows those years."). It names what leaves out the
+    other years, the runs of years the option covers, and the run the answer shows."""
+    if fact.shown is None:
+        raise ValueError("year_unavailable on a scope option needs the years shown")
+    runs = [str(a) if a == b else f"{a} to {b}" for a, b in fact.covered_years]
+    covered = runs[0] if len(runs) == 1 else f"{', '.join(runs[:-1])} and {runs[-1]}"
+    subject = _SCOPE_LIMITS.get(fact.limited_by or "", "That scope covers")
+    shown = "those years" if runs == [fact.shown] else fact.shown
+    return f"{subject} only {covered}, so this shows {shown}."
+
+
 _MAX_OMITTED_NAMED: Final = 3
 """The most entities a deflator omission names before it counts the rest."""
 
@@ -341,7 +364,7 @@ def _omitted_years(fact: DepartureFact) -> str:
     if rest:
         named.append(f"{rest} {'other' if rest == 1 else 'others'}")
     return (
-        f"Constant prices leave out {_join_labels(named)}, which the price deflators do not cover."
+        f"Constant prices leave out {join_labels(named)}, which the price deflators do not cover."
     )
 
 
@@ -361,7 +384,7 @@ def _entity_years(name: str, lost: Sequence[int], kept: Sequence[int]) -> str:
         else:
             runs.append([year, year])
     spans = [str(first) if first == last else f"{first} to {last}" for first, last in runs]
-    return f"{name} in {_join_labels(spans)}"
+    return f"{name} in {join_labels(spans)}"
 
 
 def _those_years(fact: DepartureFact) -> str:

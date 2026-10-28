@@ -58,7 +58,7 @@ from search.models import (
 )
 
 from .heading import Heading, heading_for
-from .labels import _humanize_ref, _join_labels
+from .labels import _humanize_ref, join_labels
 
 CLAUSE_LEAD = "Assumed: "
 """The text that opens the assumptions clause."""
@@ -267,7 +267,7 @@ def declared_default_text(slot_filter: ResolvedFilter) -> str:
             if row is not None
             else without_property_suffix(_humanize_ref(value.ref, value.label), property_label)
         )
-    return _join_labels(labels)
+    return join_labels(labels)
 
 
 def _open_roles(

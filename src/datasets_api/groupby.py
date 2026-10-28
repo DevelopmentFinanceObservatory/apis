@@ -96,18 +96,37 @@ def levels_in_frame(
     return {axis: depth for axis, depth in (levels or {}).items() if axis in decoded}
 
 
+def sums_components(*, by: Sequence[str], composite: CompositeDeclaration | None) -> bool:
+    """Return true when the groupby adds the components of the stacked composite `composite`,
+    the composite the frame's rows carry as their provenance or `None`, into one total: `by`
+    keeps no `stat_var`.
+
+    A stacked composite's components are parts of one total by declaration, so their StatVars
+    sum whether or not they decode a summable axis. DAC2a's total ODA and its imputed
+    multilateral ODA differ only on the aid type, which is not summable."""
+    return composite is not None and composite.kind == "stacked" and _STAT_VAR_COLUMN not in by
+
+
 def sums_stat_vars(
     *,
     by: Sequence[str],
     levels: Mapping[str, int] | None,
     decoded_code_systems: Sequence[str],
     declarations: Mapping[str, CodeSystemDeclaration],
+    composite: CompositeDeclaration | None = None,
 ) -> bool:
     """Return true when the groupby sums this frame's StatVars: a decoded summable axis
-    collapses, or a kept axis rolls up to a level."""
-    return bool(
-        collapse_axes(by=by, decoded_code_systems=decoded_code_systems, declarations=declarations)
-    ) or bool(levels_in_frame(levels=levels, decoded_code_systems=decoded_code_systems))
+    collapses, a kept axis rolls up to a level, or the frame's stacked composite adds its
+    components (`sums_components`)."""
+    return (
+        bool(
+            collapse_axes(
+                by=by, decoded_code_systems=decoded_code_systems, declarations=declarations
+            )
+        )
+        or bool(levels_in_frame(levels=levels, decoded_code_systems=decoded_code_systems))
+        or sums_components(by=by, composite=composite)
+    )
 
 
 def kept_axes(
@@ -128,20 +147,22 @@ def yields_grammar_frame(
     decoded_code_systems: Sequence[str],
     declarations: Mapping[str, CodeSystemDeclaration],
     lookup: Mapping[str, Mapping[str, str]],
+    components: bool = False,
 ) -> bool:
-    """Return true when the sum leaves a grammar frame: this frame decodes a summable axis,
-    and every unsummed axis holds one value across the resolved members in `lookup`.
+    """Return true when the sum leaves a grammar frame: this frame decodes a summable axis, or
+    the sum adds a stacked composite's components (`components`, `sums_components`), and
+    every unsummed axis holds one value across the resolved members in `lookup`.
 
     The frame carries one `stat_var` on every row and keeps each summable axis named in `by`
     (`kept_axes`) as a string grain column. An unsummed axis holding one value describes the
     whole family, so its constant column is left out of that frame. One holding several values
     keeps its column and the rows stay a table grouped by it. An empty summable axis set is
-    false.
+    false unless `components`.
     """
     present = declared_axes_present(
         decoded_code_systems=decoded_code_systems, declarations=declarations
     )
-    if not present:
+    if not present and not components:
         return False
     return all(
         len({cells.get(code_system) for cells in lookup.values()}) == 1

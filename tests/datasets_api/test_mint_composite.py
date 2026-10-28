@@ -20,8 +20,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from artifact_store import Tier
-from code_index.composites import CompositeNotServable, component_identities
-from code_index.declarations import COMPOSITES
+from code_index.composites import (
+    DECLARED_COMPOSITES,
+    CompositeNotServable,
+    component_identities,
+)
+from code_index.declarations import CRS_INCLUSIVE, DAC2A_INCLUSIVE
 from code_index.shared import get_index
 from datasets_api import serve
 from datasets_api.adapter import resolve_definition_members
@@ -49,7 +53,7 @@ from ._member_bounds import mint_bounds
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
 
-_STACKED = COMPOSITES[0]
+_STACKED = DECLARED_COMPOSITES[CRS_INCLUSIVE]
 _PROVIDER = "country/FRA"
 _RECIPIENT = "country/KEN"
 _CRS_FACET = "facet_crs"
@@ -98,11 +102,21 @@ def _populated() -> dict[str, tuple[str, int, tuple[int, ...]]]:
     }
 
 
+_DAC2A_FACET = "facet_dac2a"
+_DAC2A = "provenance/OECDDAC2A"
+# The provenance each facet's SDMX rows and coverage carry.
+_SDMX_PROVENANCE = {
+    _CRS_FACET: CRS_PROVENANCE,
+    _IMPUTED_FACET: IMPUTED_PROVENANCE,
+    _DAC2A_FACET: _DAC2A,
+}
+
+
 def _sdmx_response(
     populated: Mapping[str, tuple[str, int, tuple[int, ...]]], request: httpx.Request
 ) -> httpx.Response:
     """The rows `populated` holds for the members `request` names, as SDMX CSV."""
-    provenance = {_CRS_FACET: CRS_PROVENANCE, _IMPUTED_FACET: IMPUTED_PROVENANCE}
+    provenance = _SDMX_PROVENANCE
     named = str(request.url.params.get("c[variableMeasured]", "")).split(",")
     body = _CSV_HEADER + "".join(
         f"dataflow,DC:DF_OBS(1.0.0),I,{dcid},{_PROVIDER},{_RECIPIENT},USD,GrantEquivalent,"
@@ -133,12 +147,10 @@ def _coverage(populated: Mapping[str, tuple[str, int, tuple[int, ...]]]) -> Fake
             for dcid in populated
         },
         facet_metadata={
-            _CRS_FACET: FacetMetadata(
-                provenance_id=CRS_PROVENANCE, measurement_method="GrantEquivalent", unit="USD"
-            ),
-            _IMPUTED_FACET: FacetMetadata(
-                provenance_id=IMPUTED_PROVENANCE, measurement_method="GrantEquivalent", unit="USD"
-            ),
+            facet: FacetMetadata(
+                provenance_id=provenance, measurement_method="GrantEquivalent", unit="USD"
+            )
+            for facet, provenance in _SDMX_PROVENANCE.items()
         },
     )
     return FakeCoverageService(index)
@@ -178,8 +190,13 @@ def _composite_client(
     )
 
 
-def _mint(client, *, options: Mapping[str, object] | None = None) -> httpx.Response:
-    identity = _identity()
+def _mint(
+    client,
+    *,
+    identity: Mapping[str, object] | None = None,
+    options: Mapping[str, object] | None = None,
+) -> httpx.Response:
+    identity = _identity() if identity is None else identity
     spec_id = recompute_identity(identity).spec_id
     return client.post(
         "/api/datasets",
@@ -534,3 +551,57 @@ def test_each_component_run_is_charged_only_the_rows_the_composite_keeps(monkeyp
     kept_crs_rows = sum(1 for row in crs_rows if row[2] in _IMPUTED_YEARS)
     assert kept_crs_rows < len(crs_rows)
     assert ceilings == {"bilateral": ceiling, "imputed": ceiling - kept_crs_rows}
+
+
+_DAC2A_IMPUTED = "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal"
+
+
+def _dac2a_oda_identity(netting: str) -> dict:
+    """DAC2a ODA from France to Kenya on the `netting` basis, including imputed multilateral
+    ODA (`DAC2A_INCLUSIVE`)."""
+    return {
+        "identity_version": "spec1",
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal",
+        },
+        "slots": [
+            {"property": "dac2aAidType", "binding": {"state": "value", "ref": "DAC2aAidType206"}},
+            {"property": "financialFlowType", "binding": {"state": "value", "ref": "Disbursement"}},
+            {"property": "nettingBasis", "binding": {"state": "value", "ref": netting}},
+        ],
+        "entities": {"origin": [_PROVIDER], "destination": [_RECIPIENT]},
+        "requested_window": {"kind": "all"},
+        "facets": {"provenance": {"state": "value", "ref": DAC2A_INCLUSIVE}},
+    }
+
+
+@pytest.mark.parametrize("netting", ["Gross", "Net"])
+def test_a_time_sum_of_the_dac2a_inclusive_composite_adds_total_oda_and_imputed_oda(
+    netting: str,
+):
+    """DAC2a's aid type is no summable axis, so only the composite's declaration makes its
+    two components additive: a sum over time adds total ODA on the asked basis to the gross
+    imputed multilateral line, on gross and net alike."""
+    bilateral = f"Amount_FinancialFlow_{netting}_Disbursement_DAC2aAidType206_Nominal"
+    populated = {
+        bilateral: (_DAC2A_FACET, 100, _IMPUTED_YEARS),
+        _DAC2A_IMPUTED: (_DAC2A_FACET, 7, _IMPUTED_YEARS),
+    }
+    artifacts, client = _composite_client(populated=populated)
+    assert artifacts is not None
+    identity = _dac2a_oda_identity(netting)
+
+    minted = _mint(
+        client, identity=identity, options={"groupby": {"by": ["time_period"], "op": "sum"}}
+    )
+
+    assert minted.status_code == 200, minted.text
+    rows = _csv_rows(artifacts, minted.json())
+    assert {row["time_period"]: float(row["value"]) for row in rows} == {
+        "2020": 100 + 7,
+        "2021": 100 + 7,
+    }

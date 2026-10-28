@@ -441,7 +441,7 @@ def _dataset_record(
     fields: dict[str, Any] = {
         "id": id,
         "content_version": content_version,
-        "schema_version": 1,
+        "schema_version": 2,
         "basis": "mint",
         "index_stamp": _STAMP,
         "variables": variables,
@@ -624,7 +624,7 @@ def _worked_example_wire(vocabulary: str) -> dict[str, Any]:
             "freshness.estimated_values",
             "freshness.provisional_values",
         ],
-        "built_from": {"facts_schema": 1, "vocabulary": vocabulary},
+        "built_from": {"facts_schema": 2, "vocabulary": vocabulary},
     }
 
 
@@ -967,7 +967,7 @@ def _computed_record(
     return DescriptionRecord(
         id=_OPS_ID,
         content_version=_OCV,
-        schema_version=1,
+        schema_version=2,
         basis="publish",
         index_stamp=None,
         variables=None,

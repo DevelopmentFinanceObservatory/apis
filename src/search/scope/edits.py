@@ -37,9 +37,6 @@ from search.models import (
 BindingKind = Literal["slot", "entities", "shape", "provider"]
 IdentityMember = Literal["slots", "entities", "shape", "facets", "requested_window"]
 
-INCLUSIVE_PROVENANCE: str = next(c.provenance for c in COMPOSITES if c.kind == "stacked")
-"""The composite of a donor's bilateral flows and its imputed multilateral share, which the
-inclusive provider scope binds as the identity's source."""
 HEADLINE_PROVENANCE: str = next(c.provenance for c in COMPOSITES if c.kind == "spliced")
 """The OECD headline composite, net flows to 2017 and grant equivalents from 2018, which the
 `oecd_headline` measure basis binds as the identity's source."""
@@ -135,18 +132,21 @@ def _edit_shape(
 def _edit_provider(
     identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
 ) -> BaseIdentity:
-    """Bind the stacked composite of bilateral and imputed multilateral spending as the
-    identity's source for the inclusive scope, with the option's window when it sets one
-    (`ProviderBinding.window`), or remove that composite for the bilateral scope, leaving the
-    window as it is. The two are inverses on an identity that binds no other provenance. The
-    contributions scope is the one a published donor total holds, so it leaves the identity
-    as it is."""
+    """Bind the stacked composite of bilateral and imputed multilateral spending the option
+    names (`ProviderBinding.provenance`) as the identity's source for the inclusive scope,
+    with the option's window when it sets one (`ProviderBinding.window`), or remove a stacked
+    composite for the bilateral scope, leaving the window as it is. The two are inverses on an
+    identity that binds no other provenance. The contributions and multilateral scopes are
+    held only by the published donor totals that count them, so they leave the identity as it
+    is. Raises `ScopeTableError` for an inclusive option that names no composite."""
     assert isinstance(binding, ProviderBinding)
-    if binding.scope == "contributions":
-        return identity
     if binding.scope == "bilateral":
         return _with_source(identity, None, kind="stacked")
-    edited = _with_source(identity, INCLUSIVE_PROVENANCE, kind="stacked")
+    if binding.scope != "inclusive":
+        return identity
+    if binding.provenance is None:
+        raise ScopeTableError("the inclusive option names no composite source")
+    edited = _with_source(identity, binding.provenance, kind="stacked")
     return _with_window(edited, binding.window)
 
 

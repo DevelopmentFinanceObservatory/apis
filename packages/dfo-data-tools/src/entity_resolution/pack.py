@@ -202,6 +202,17 @@ def is_organisation_name(text: str) -> bool:
     )
 
 
+@functools.cache
+def organisation_dcids() -> frozenset[str]:
+    """The dcids of the committed records of kind `organisation`: the nodes the graph types
+    `Organization`, multilaterals and private foundations alike."""
+    return frozenset(
+        record["dcid"]
+        for record in _load_records(records_path())
+        if record["kind"] == "organisation"
+    )
+
+
 def build_pack(
     *, records_path: Traversable | Path, curated_path: Traversable | Path, out_dir: Path
 ) -> Path:

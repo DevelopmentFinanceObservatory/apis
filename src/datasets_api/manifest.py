@@ -836,7 +836,9 @@ def version_body(record: VersionRecord) -> dict[str, object]:
         return body
     if facts.output_profile is not None:
         body["output_profile"] = dict(facts.output_profile)
-    if facts.series_conversions:
+    if isinstance(facts.series_conversions, dict):
+        body["series_conversions"] = dict(facts.series_conversions)
+    elif facts.series_conversions:
         body["series_conversions"] = [dict(entry) for entry in facts.series_conversions]
     if facts.default_scope_plural is not None:
         body["default_scope_plural"] = facts.default_scope_plural

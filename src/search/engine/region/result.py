@@ -622,9 +622,17 @@ def with_dropped_open_roles(region: RegionResult, open_axes: Collection[RoleAxis
     as for an operation over that axis (`with_runnable_operations`): the part warns and
     records a `breakdown_not_applied` departure, once per axis, so an axis a dropped
     operation already departs on raises nothing more. A subject-only answer, and a result
-    that answers nothing, warn only for a bound axis.
+    that answers nothing, warn only for a bound axis. An axis every Spec binding it reads as
+    a group's members (`_reads_members`) drops nothing, since the answer holds each member's
+    series, so it warns nothing.
     """
     bound = {key for spec in region.specs for key in spec.definition.identity.entities}
+    bound_alone = {
+        key
+        for spec in region.specs
+        for key in spec.definition.identity.entities
+        if not _reads_members(spec, key)
+    }
     roles = tuple(role for role in region.answered_roles or () if role != "observationAbout")
     declared = {axis_for_role(role) for role in roles}
     departed = {
@@ -635,13 +643,22 @@ def with_dropped_open_roles(region: RegionResult, open_axes: Collection[RoleAxis
     warnings = list(region.warnings)
     departure_facts = dict(region.departure_facts)
     for axis in sorted(open_axes):
-        if axis in bound:
+        if axis in bound_alone:
             warnings.append(_bound_open_role_warning(axis))
+        elif axis in bound:
+            continue
         elif roles and axis not in declared and axis not in departed:
             warning = _undeclared_open_role_warning(axis)
             warnings.append(warning)
             departure_facts[warning_key(warning)] = breakdown_not_applied(axis, asked=None)
     return dataclasses.replace(region, warnings=tuple(warnings), departure_facts=departure_facts)
+
+
+def _reads_members(spec: Spec, role: str) -> bool:
+    """Whether `spec` binds `role` as a named group's members (`EntityGroup`), one series per
+    member. A group read as its published total or its whole population answers one series."""
+    group = (spec.resolved.entity_groups or {}).get(role)
+    return group is not None and group.total is None and not group.whole_of
 
 
 def every_member_phrases(

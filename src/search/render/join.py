@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from search.models import SentenceToken, Slot
 
 from .heading import Heading, RolePhrase
-from .labels import _join_labels, _text_token
+from .labels import _text_token, join_labels
 from .tokens import (
     _SENTENCE_ENDS,
     HeadingPiece,
@@ -242,11 +242,11 @@ def _joined_phrases(splits: list[_Split], inline: list[list[_Qualifier]]) -> lis
 
 
 def _oxford_connectives(count: int) -> list[str]:
-    """The separators `_join_labels` puts between ``count`` items."""
+    """The separators `join_labels` puts between ``count`` items."""
     if count < 2:
         return []
     sentinels = [f"\x00{i}\x00" for i in range(count)]
-    joined = _join_labels(sentinels)
+    joined = join_labels(sentinels)
     return re.split("|".join(re.escape(sentinel) for sentinel in sentinels), joined)[1:-1]
 
 

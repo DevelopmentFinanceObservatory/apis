@@ -24,7 +24,7 @@ from search.models import (
 
 from .departures import departure_tokens
 from .heading import Heading, heading_for, sibling_how_properties
-from .labels import _join_labels
+from .labels import join_labels
 from .tokens import _SENTENCE_ENDS, heading_tokens
 from .what import _lower_first_word
 
@@ -186,11 +186,11 @@ def _no_observations_concept(
         return quoted
     labels = [_lower_first_word(ref.label) for ref in elected_stat_vars]
     if len(labels) <= _MAX_NAMED_CONCEPTS:
-        return _join_labels(labels)
+        return join_labels(labels)
     if quoted:
         return quoted
     remaining = len(labels) - _MAX_NAMED_CONCEPTS
-    return _join_labels([*labels[:_MAX_NAMED_CONCEPTS], f"{remaining:,} more"])
+    return join_labels([*labels[:_MAX_NAMED_CONCEPTS], f"{remaining:,} more"])
 
 
 @dataclass(frozen=True)
@@ -235,7 +235,7 @@ def _unlisted_phrase(
     no source lists side by side."""
     data = f'the "{variable_term}" data' if variable_term else "the data"
     if any(unlisted[term].listed_alone for term in terms):
-        joined = _join_labels([f'"{term}"' for term in terms])
+        joined = join_labels([f'"{term}"' for term in terms])
         return (
             f"No source of {data} can list {joined} member by member together, though each "
             "can be listed alone. Search for them separately, or ask for their totals."
@@ -247,7 +247,7 @@ def _unlisted_phrase(
         classes = [_LEFT_OUT_WORDS[cls].format(noun=noun) for cls in population.left_out]
         sentences.append(
             f'"{term}" cannot be listed {noun} by {noun}: every source of {data} also holds '
-            f'{_join_labels(classes)}, which "{term}" leaves out. Ask for its total, or name '
+            f'{join_labels(classes)}, which "{term}" leaves out. Ask for its total, or name '
             f"the {noun}s to list."
         )
     return " ".join(sentences)
@@ -331,13 +331,13 @@ def no_data_phrase(
     if reason == "qualifier_not_bound" and qualifier_terms:
         unbound = [q.text for q in qualifier_terms if q.disposition == "unbound"]
         if unbound:
-            joined = _join_labels([f'"{t}"' for t in unbound])
+            joined = join_labels([f'"{t}"' for t in unbound])
             verb = "name" if len(unbound) != 1 else "names"
             noun = "categories" if len(unbound) != 1 else "a category"
             return f"{joined} {verb} {noun} the search could not apply to this query."
         no_vocabulary = [q.text for q in qualifier_terms if q.disposition == "no_vocabulary"]
         if no_vocabulary:
-            joined = _join_labels([f'"{t}"' for t in no_vocabulary])
+            joined = join_labels([f'"{t}"' for t in no_vocabulary])
             verb = "are" if len(no_vocabulary) != 1 else "is"
             pronoun = "them" if len(no_vocabulary) != 1 else "it"
             return (
@@ -355,12 +355,12 @@ def no_data_phrase(
                 termed, _ambiguous_wordings(termed), strict=True
             )
         ]
-        return _join_labels(quoted) + _ambiguous_tail(termed, ambiguous_candidates)
+        return join_labels(quoted) + _ambiguous_tail(termed, ambiguous_candidates)
     if entity_terms:
         terms = [t.strip() for t in entity_terms if t and t.strip()]
         if terms:
             plural = len(terms) != 1
-            joined = _join_labels([f'"{t}"' for t in terms])
+            joined = join_labels([f'"{t}"' for t in terms])
             if reason == "entity_not_resolved":
                 noun = "places" if plural else "a place"
                 return (
@@ -368,7 +368,7 @@ def no_data_phrase(
                 )
             if reason == "role_not_resolved":
                 places = _untold_places(entity_groups or [[t] for t in terms])
-                place_list = _join_labels(places)
+                place_list = join_labels(places)
                 if len(places) != 1:
                     return (
                         f"Could not tell who is giving and who is receiving among {place_list}. "
@@ -474,7 +474,7 @@ def _ambiguous_tail(
         verb = "match" if len(terms) != 1 else "matches"
     named = [c.strip() for c in candidates or () if c and c.strip()]
     if named:
-        candidate_list = _join_labels([f'"{c}"' for c in named])
+        candidate_list = join_labels([f'"{c}"' for c in named])
         return f" {verb} more than one entity: {candidate_list}. Be more specific."
     return f" {verb} more than one entity in the graph. Be more specific."
 
@@ -488,14 +488,14 @@ def _source_phrase(
     if not terms:
         return _NO_DATA_PHRASES[reason]
     plural = len(terms) != 1
-    joined = _join_labels([f'"{t}"' for t in terms])
+    joined = join_labels([f'"{t}"' for t in terms])
     if reason == "source_not_resolved":
         noun = "data sources" if plural else "a data source"
         return f"Could not match {joined} to {noun}. {_NAME_A_SOURCE}"
     verb = "match" if plural else "matches"
     labels = [c.strip() for c in candidates or () if c and c.strip()]
     if labels:
-        candidate_list = _join_labels([f'"{c}"' for c in labels])
+        candidate_list = join_labels([f'"{c}"' for c in labels])
         return f"{joined} {verb} more than one source: {candidate_list}. Name one of them."
     return f"{joined} {verb} more than one source. Name one of them."
 
@@ -509,12 +509,12 @@ def _source_code_phrase(reason: NoDataReason, refusal: SourceCodeRefusal | None)
     if refusal is None:
         return _NO_DATA_PHRASES[reason]
     code = f'"{refusal.code}"'
-    sources = _join_labels([f'"{source.label}"' for source in refusal.sources])
+    sources = join_labels([f'"{source.label}"' for source in refusal.sources])
     if reason == "source_code_ambiguous":
         among = f": {sources}" if sources else ""
         return f"{code} is a series code of more than one source{among}. Name one of them."
     if reason == "source_code_shares_variable":
-        shared = _join_labels([f'"{c}"' for c in refusal.shared_codes])
+        shared = join_labels([f'"{c}"' for c in refusal.shared_codes])
         return (
             f"The series code {code} shares its variable with "
             f"{shared or 'other codes of its source'}, so this search cannot serve it alone. "
@@ -538,7 +538,7 @@ def _source_code_phrase(reason: NoDataReason, refusal: SourceCodeRefusal | None)
 
 def _scope_verdict(scope: ScopeSources) -> str:
     """The qualifier_not_bound verdict of a part whose scope leaves no series for it."""
-    joined = _join_labels(list(scope.labels))
+    joined = join_labels(list(scope.labels))
     if scope.polarity == "include":
         return f"No series for this query comes from {joined}."
     return f"No series for this query comes from a source other than {joined}."
@@ -559,7 +559,7 @@ def scope_sentence(
         q.disposition in ("unbound", "no_vocabulary") for q in qualifier_terms or ()
     ):
         return None
-    joined = _join_labels(list(scope.labels))
+    joined = join_labels(list(scope.labels))
     if scope.polarity == "include":
         return f"The search read only {joined}."
     return f"The search left out {joined}."
@@ -660,7 +660,7 @@ def misdirected_sentence(reason: NoDataReason, entity_terms: list[str] | None) -
     terms = [t.strip() for t in entity_terms or () if t and t.strip()]
     if reason != "role_incompatible" or not terms:
         return None
-    joined = _join_labels([f'"{t}"' for t in terms])
+    joined = join_labels([f'"{t}"' for t in terms])
     if len(terms) == 1:
         return f'{joined} belongs on the other side of the flow. Swap its "from" or "to".'
     return f'{joined} belong on the other side of the flow. Swap their "from" or "to".'
@@ -710,7 +710,7 @@ def _denominator_plan(
 
 
 def _join_separators(count: int) -> list[str]:
-    """The separators `_join_labels` puts between `count` labels, in order."""
+    """The separators `join_labels` puts between `count` labels, in order."""
     if count < 2:
         return []
     if count == 2:
