@@ -34,7 +34,8 @@ revision, slots, the website's payload and created_at, never the token.
 `GET /api/presentation/shares/{share_id}/slots/{slot}/data?format=json|csv|parquet` is public
 and allows any origin. It serves the rows behind the slot's card, JSON by default, on the frame
 `presentation_api.share_slots` chooses: a snapshot's recorded frame, or a live slot's newest
-data, checked at most once per `newest_frames.FRESHNESS_WINDOW`. The JSON body and the
+data, checked again once the last check is due: after `newest_frames.FRESHNESS_WINDOW`, or
+sooner for a `pending` check, after the retry time the refresh or the run gave. The JSON body and the
 `x-dfo-freshness` header state `current`, `stale` or `pending`; a live slot's
 `x-dfo-checked-at` says when the check ran. The reply carries a strong `ETag` over its bytes and
 answers `If-None-Match` with 304. A live slot's reply is `no-cache`, so a cache revalidates it;
@@ -198,13 +199,23 @@ _SLOT_DATA_EXPOSED = f"ETag, {_FRESHNESS_HEADER}, {_CHECKED_AT_HEADER}"
 _LIVE_CACHE_CONTROL = "no-cache"
 _SNAPSHOT_CACHE_CONTROL = "public, max-age=300"
 
-# How many cards each kind takes on create, and whether it may be live.
+# How many cards each kind takes, on create and on replace.
 _KIND_CARDS: Mapping[str, tuple[int, int]] = {
     "card": (1, MAX_SHARE_CARDS),
     "canvas": (0, MAX_SHARE_CARDS),
     "search": (0, 0),
     "conversation": (0, 0),
 }
+
+
+def _card_count_refusal(kind: str, count: int) -> str | None:
+    """Why a share of `kind` cannot show `count` cards, or `None` when it can. The create
+    body and a replace both ask it."""
+    least, most = _KIND_CARDS[kind]
+    if least <= count <= most:
+        return None
+    wanted = "none" if most == 0 else f"{least} to {most}"
+    return f"a {kind} share takes {wanted} cards, not {count}"
 
 
 class ShareCardBody(BaseModel):
@@ -217,14 +228,15 @@ class ShareCardBody(BaseModel):
 
 
 class ShareCardsBody(BaseModel):
-    """A replace's body: the cards the share's next revision shows, slot 1 first."""
+    """A replace's body: the cards the share's next revision shows, slot 1 first. The share's
+    kind sets how many it takes, as on create."""
 
     model_config = ConfigDict(extra="forbid")
 
     cards: list[ShareCardBody] = Field(
-        min_length=1,
         max_length=MAX_SHARE_CARDS,
-        description="the cards in slot order; two entries may name the same revision",
+        description="the cards in slot order; two entries may name the same revision. A card "
+        "share takes at least one, a canvas any number, a search or conversation share none",
     )
 
 
@@ -260,10 +272,8 @@ class CreateShareBody(BaseModel):
 
     @model_validator(mode="after")
     def _fits_its_kind(self) -> Self:
-        least, most = _KIND_CARDS[self.kind]
-        if not least <= len(self.cards) <= most:
-            wanted = "none" if most == 0 else f"{least} to {most}"
-            raise ValueError(f"a {self.kind} share takes {wanted} cards, not {len(self.cards)}")
+        if refusal := _card_count_refusal(self.kind, len(self.cards)):
+            raise ValueError(refusal)
         if self.kind == "conversation" and self.latest:
             raise ValueError("a conversation share is a snapshot: send latest=false")
         size = len(json.dumps(self.payload, ensure_ascii=False, separators=(",", ":")).encode())
@@ -491,6 +501,10 @@ async def replace_share(
         authorise_share_write(current, presented=write_token)
         if current.mode == "snapshot":
             raise ShareNotReplaceable(share_id)
+        if refusal := _card_count_refusal(current.kind, len(body.cards)):
+            raise RequestValidationError(
+                [{"type": "value_error", "loc": ("body", "cards"), "msg": refusal, "input": None}]
+            )
         cards = _read_cards(body.cards, revision_store=deps.revision_store)
         shown = {
             (slot.card.component_id, slot.card.revision)

@@ -1,8 +1,8 @@
 """The newest frame a live share slot's card can draw, asked of the Datasets surface in process.
 
 A live slot's data read (`presentation_api.doors.share_data`) asks `NewestFrames.newest` for the
-frame of the newest data in place of the frame its card revision is stored on, at most once per
-`FRESHNESS_WINDOW`:
+frame of the newest data in place of the frame its card revision is stored on, once the slot's
+last check is due (`presentation_api.share_slots`):
 
 - a dataset frame (`spec_`) is answered as the frame refresh answers it
   (`datasets_api.doors.refresh.answer_frame_refresh`): the current frame of the same rendering,
@@ -11,8 +11,9 @@ frame of the newest data in place of the frame its card revision is stored on, a
   `latest=true` (`datasets_api.analysis.run_analysis`): its stored recipe computed again on its
   datasets' newest versions and stored, the frame a client's `fetch(ref, latest=True)` reads.
 
-Either answers `NewestPending` while a rebuild runs over its inline budget. Any refusal or
-failure raises, and the read states the slot `stale`.
+Either answers `NewestPending` while a rebuild runs over its inline budget, with the seconds
+the refresh or the runner asks the caller to wait. Any refusal or failure raises, and the read
+states the slot `stale`.
 
 `DatasetsNewestFrames` reads the Datasets surface's `DepsCell`, so it answers only in an app
 that mounts that surface (`dfo_apis.app` passes the cell to both). The work runs on the share
@@ -39,14 +40,18 @@ from dfo_platform.trace import get_trace_id
 __all__ = ["FRESHNESS_WINDOW", "DatasetsNewestFrames", "NewestFrames", "NewestPending"]
 
 FRESHNESS_WINDOW = timedelta(minutes=15)
-"""How long a live slot serves one check's answer before it asks for newer data again."""
+"""How long a live slot serves a `current` or `stale` check's answer before it asks for newer
+data again, and the longest a `pending` check waits."""
 
 _DERIVED_SPEC_PREFIX = "ops_"
 
 
 @dataclass(frozen=True)
 class NewestPending:
-    """Newer data is building as a queued operation."""
+    """Newer data is building as a queued operation, and the refresh or the run asks for a retry
+    after `retry_after_s` seconds."""
+
+    retry_after_s: float
 
 
 class NewestFrames(Protocol):
@@ -86,8 +91,8 @@ class DatasetsNewestFrames:
                     permit=analysis_permit(current, deps),
                     trace_id=trace_id,
                 )
-            except AnalysisPending:
-                return NewestPending()
+            except AnalysisPending as pending:
+                return NewestPending(retry_after_s=pending.retry_after_s)
             ref = result.evaluation.ref
             return FrameRef(spec_id=ref.spec_id, content_version=ref.content_version)
         answer = answer_frame_refresh(
@@ -97,5 +102,5 @@ class DatasetsNewestFrames:
             trace_id=trace_id,
         )
         if isinstance(answer, FramePending):
-            return NewestPending()
+            return NewestPending(retry_after_s=answer.retry_after_s)
         return FrameRef(spec_id=answer.frame.spec_id, content_version=answer.frame.content_version)

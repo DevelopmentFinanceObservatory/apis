@@ -230,6 +230,66 @@ def test_a_replace_keeps_every_slot_url(door: _Door):
     assert "write_token" not in replaced
 
 
+def _create_of_kind(door: _Door, kind: str, names: list[str], *, latest: bool) -> dict:
+    resp = door.client.post(
+        "/api/presentation/shares",
+        json={
+            "cards": [{"component_id": door.cards[name], "revision": 1} for name in names],
+            "latest": latest,
+            "kind": kind,
+            "payload": [],
+        },
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 201, resp.json()
+    return resp.json()
+
+
+def test_a_replace_gives_a_live_cardless_kind_no_cards(door: _Door):
+    created = _create_of_kind(door, "search", [], latest=True)
+
+    resp = door.replace(created["id"], ["cmp_a"], token=created["write_token"])
+
+    _assert_refused(resp, status=400, code="request_invalid")
+    assert door.read(created["id"]).json()["slots"] == []
+
+
+def test_a_replace_of_a_conversation_share_is_refused_as_a_snapshot(door: _Door):
+    created = _create_of_kind(door, "conversation", [], latest=False)
+
+    resp = door.replace(created["id"], ["cmp_a"], token=created["write_token"])
+
+    _assert_refused(resp, status=409, code="share_not_replaceable")
+    assert door.read(created["id"]).json()["slots"] == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "names", "replacement"),
+    [
+        ("canvas", ["cmp_a"], []),
+        ("canvas", [], ["cmp_a", "cmp_b"]),
+        ("card", ["cmp_a"], ["cmp_b"]),
+    ],
+    ids=["canvas-to-none", "canvas-from-none", "card"],
+)
+def test_a_replace_within_the_kinds_bounds_is_accepted(
+    door: _Door, kind: str, names: list[str], replacement: list[str]
+):
+    created = _create_of_kind(door, kind, names, latest=True)
+
+    resp = door.replace(created["id"], replacement, token=created["write_token"])
+
+    assert resp.status_code == 200, resp.json()
+
+
+def test_a_replace_of_a_card_share_with_no_cards_is_refused(door: _Door):
+    created = door.share(["cmp_a"], latest=True).json()
+
+    resp = door.replace(created["id"], [], token=created["write_token"])
+
+    _assert_refused(resp, status=400, code="request_invalid")
+
+
 def test_a_read_carries_the_stored_record_and_never_the_token(door: _Door):
     created = door.share(["cmp_a"], latest=False, title="A figure").json()
 

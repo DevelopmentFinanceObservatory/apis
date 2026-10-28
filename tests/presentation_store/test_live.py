@@ -709,27 +709,33 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
         share_id=share.id,
         slot=1,
         card=card,
-        check=SlotCheck(frame=stored, freshness="pending", checked_at=at),
+        check=SlotCheck(frame=stored, freshness="pending", checked_at=at, next_check_at=at),
     )
     shares.record_slot_check(
         share_id=share.id,
         slot=1,
         card=card,
-        check=SlotCheck(frame=newer, freshness="current", checked_at=at),
+        check=SlotCheck(
+            frame=newer,
+            freshness="current",
+            checked_at=at,
+            next_check_at=at + timedelta(seconds=30),
+        ),
     )
-    later = at + timedelta(minutes=15)
+    later = at + timedelta(seconds=30)
+    until = later + timedelta(minutes=15)
     claims = [
-        shares.claim_slot_check(share_id=share.id, slot=1, card=card, now=later, due_before=at)
-        for _ in range(2)
+        shares.claim_slot_check(share_id=share.id, slot=1, card=card, now=now, claim_until=until)
+        for now in (at + timedelta(seconds=29), later, later)
     ]
     for frame in (newer, newer, stored):
         shares.record_served(
             share_id=share.id, slot=1, card=card, frame=frame, rendering={"columns": ["a"]}
         )
 
-    assert claims == [True, False]
+    assert claims == [False, True, False]
     assert shares.slot_check(share_id=share.id, slot=1, card=card) == SlotCheck(
-        frame=newer, freshness="current", checked_at=later
+        frame=newer, freshness="current", checked_at=later, next_check_at=until
     )
     served = shares.served_frames(share_id=share.id)
     assert [entry.frame for entry in served] == [stored, newer]

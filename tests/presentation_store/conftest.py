@@ -353,15 +353,26 @@ class FakeTransaction:
             return [] if row is None else [dict(row)]
 
         if sql.startswith("UPDATE presentation.share_slot_check SET checked_at = %s"):
-            now, *key, due_before = params
+            now, claim_until, *key, due_at = params
             row = s.slot_checks.get(cast("tuple[str, int, str, int]", tuple(key)))
-            if row is None or cast(datetime, row["checked_at"]) > cast(datetime, due_before):
+            if row is None or cast(datetime, row["next_check_at"]) > cast(datetime, due_at):
                 return []
             row["checked_at"] = now
+            row["next_check_at"] = claim_until
             return [{"slot": key[1]}]
 
         if sql.startswith("INSERT INTO presentation.share_slot_check ("):
-            share_id, slot, component_id, revision, spec_id, cv, freshness, checked_at = params
+            (
+                share_id,
+                slot,
+                component_id,
+                revision,
+                spec_id,
+                cv,
+                freshness,
+                checked_at,
+                next_at,
+            ) = params
             if share_id not in s.shares:
                 raise _foreign_key_violation("share_slot_check_share_id_fkey")
             s.slot_checks[
@@ -371,6 +382,7 @@ class FakeTransaction:
                 "frame_content_version": cv,
                 "freshness": freshness,
                 "checked_at": checked_at,
+                "next_check_at": next_at,
             }
             return []
 

@@ -226,13 +226,58 @@ def test_a_live_slot_checks_for_newer_data_at_most_once_per_fifteen_minutes(door
     assert first.headers["etag"] == within.headers["etag"] == after.headers["etag"]
 
 
+@pytest.mark.parametrize(
+    ("retry_after_s", "due_in_s"),
+    [(30.0, 30), (0.0, 1), (-5.0, 1), (7200.0, 900)],
+    ids=["retry-time", "floor-one-second", "negative-floor", "ceiling-the-window"],
+)
+def test_a_pending_slot_is_checked_again_after_its_retry_time_and_not_before(
+    door: _Door, retry_after_s: float, due_in_s: int
+):
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = NewestPending(retry_after_s=retry_after_s)
+    pending = door.data(share["id"])
+    door.newest.answer = _MOVED
+
+    door.later(seconds=due_in_s - 1)
+    early = door.data(share["id"])
+    door.later(seconds=1)
+    due = door.data(share["id"])
+
+    assert _stated(pending)[0] == _stated(early)[0] == "pending"
+    assert _stated(due)[:2] == ("current", _MOVED.content_version)
+    assert door.newest.asked == [_STORED, _STORED]
+
+
+def test_a_current_slot_waits_the_full_window_even_after_a_pending_check_was_short(door: _Door):
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = NewestPending(retry_after_s=30)
+    door.data(share["id"])
+    door.newest.answer = _MOVED
+    door.later(seconds=30)
+    door.data(share["id"])
+
+    door.later(minutes=14, seconds=59)
+    within = door.data(share["id"])
+    door.later(seconds=1)
+    door.data(share["id"])
+
+    assert _stated(within)[0] == "current"
+    assert len(door.newest.asked) == 3
+
+
 def test_a_live_slot_follows_newer_data_and_states_pending_and_stale_on_its_last_frame(
     door: _Door,
 ):
     share = door.share(door.card(), latest=True)
     stored_values = _values(door.data(share["id"]).json())
     states = []
-    for answer in (_MOVED, NewestPending(), RuntimeError("refresh refused"), _MOVED):
+    for answer in (
+        _MOVED,
+        NewestPending(retry_after_s=30),
+        RuntimeError("refresh refused"),
+        _MOVED,
+    ):
         door.later(minutes=15)
         door.newest.answer = answer
         resp = door.data(share["id"])

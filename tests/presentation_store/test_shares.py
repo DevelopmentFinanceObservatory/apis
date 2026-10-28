@@ -256,22 +256,26 @@ def test_a_slot_check_is_claimed_once_when_due_and_reset_by_another_card():
     store = LiveShareStore(store=FakePresentationStore())
     share = _create(store, _card("a"))
     card = _card("a")
-    check = SlotCheck(frame=_NEWER, freshness="current", checked_at=_AT)
+    due = _AT + timedelta(seconds=30)
+    check = SlotCheck(frame=_NEWER, freshness="pending", checked_at=_AT, next_check_at=due)
+    until = due + timedelta(minutes=15)
+
+    def claim(now):
+        return store.claim_slot_check(
+            share_id=share.id, slot=1, card=card, now=now, claim_until=until
+        )
 
     assert store.slot_check(share_id=share.id, slot=1, card=card) is None
-    assert not store.claim_slot_check(share_id=share.id, slot=1, card=card, now=_AT, due_before=_AT)
+    assert not claim(_AT)
     store.record_slot_check(share_id=share.id, slot=1, card=card, check=check)
-    later = _AT + timedelta(minutes=15)
 
-    early = store.claim_slot_check(
-        share_id=share.id, slot=1, card=card, now=later, due_before=_AT - timedelta(seconds=1)
-    )
-    first = store.claim_slot_check(share_id=share.id, slot=1, card=card, now=later, due_before=_AT)
-    second = store.claim_slot_check(share_id=share.id, slot=1, card=card, now=later, due_before=_AT)
+    early = claim(due - timedelta(seconds=1))
+    first = claim(due)
+    second = claim(due)
 
     assert (early, first, second) == (False, True, False)
     assert store.slot_check(share_id=share.id, slot=1, card=card) == SlotCheck(
-        frame=_NEWER, freshness="current", checked_at=later
+        frame=_NEWER, freshness="pending", checked_at=due, next_check_at=until
     )
     assert store.slot_check(share_id=share.id, slot=1, card=_card("a", revision=2)) is None
 

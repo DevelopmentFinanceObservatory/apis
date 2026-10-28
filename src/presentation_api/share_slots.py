@@ -2,13 +2,14 @@
 
 A snapshot slot serves the frame its share revision records for the card. A live slot serves the
 newest data its card's intent can be drawn on. It asks `NewestFrames.newest` for the frame of
-the card's recorded frame at most once per `FRESHNESS_WINDOW` and keeps the answer as the
-slot's `SlotCheck` (`presentation_store.shares`), which the reads in between serve. A check
-states the rows:
+the card's recorded frame and keeps the answer as the slot's `SlotCheck`
+(`presentation_store.shares`), which the reads before its `next_check_at` serve. A `pending`
+check is due again after the retry time the refresh or the run gave, between one second and
+`FRESHNESS_WINDOW`; every other check is due after `FRESHNESS_WINDOW`. A check states the rows:
 
 - `current`: the frame the check found, which is the card's own frame until its data moves;
 - `pending`: newer data is building as a queued operation, and the slot serves the frame of its
-  last check until a check after the window finds it built;
+  last check until a check after the retry time finds it built;
 - `stale`: the check failed, the card cannot be drawn on the newer frame, or no Datasets surface
   answers in this app; the slot serves the frame of its last check, or the card's own frame
   when the newer one cannot be drawn.
@@ -35,8 +36,8 @@ import json
 import logging
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
 import pyarrow.parquet as pq
@@ -71,6 +72,9 @@ logger = logging.getLogger(__name__)
 type SlotFormat = Literal["json", "csv", "parquet"]
 
 _JSON_MEDIA_TYPE = "application/json"
+
+_MIN_RETRY_S = 1.0
+"""The least a pending check waits, whatever retry time it was given."""
 
 
 class ShareSlotEmpty(Exception):
@@ -160,7 +164,7 @@ def serve_slot(*, share: ShareRecord, slot: int, format: SlotFormat, deps: Share
                 check.frame,
                 exc_info=True,
             )
-            check = SlotCheck(frame=card.frame, freshness="stale", checked_at=check.checked_at)
+            check = replace(check, frame=card.frame, freshness="stale")
             deps.share_store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
             exported = _export(card, frame=card.frame, record=record, format=format, deps=deps)
         frame, freshness, checked_at = check.frame, check.freshness, check.checked_at
@@ -230,19 +234,18 @@ def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool
 
 
 def _live_check(*, share: ShareRecord, slot: int, card: ShareCard, deps: SharesDeps) -> SlotCheck:
-    """The slot's check, run again when the last one is older than `FRESHNESS_WINDOW`. Of two
+    """The slot's check, run again once the last one is due (`SlotCheck.next_check_at`). Of two
     reads finding it due, the one whose claim moves its time runs it, and the other serves the
     last answer."""
     assert card.frame is not None
     store = deps.share_store
     now = deps.now()
-    due_before = now - FRESHNESS_WINDOW
     prior = store.slot_check(share_id=share.id, slot=slot, card=card)
     if prior is not None:
-        if prior.checked_at > due_before:
+        if prior.next_check_at > now:
             return prior
         if not store.claim_slot_check(
-            share_id=share.id, slot=slot, card=card, now=now, due_before=due_before
+            share_id=share.id, slot=slot, card=card, now=now, claim_until=now + FRESHNESS_WINDOW
         ):
             return store.slot_check(share_id=share.id, slot=slot, card=card) or prior
     last = prior.frame if prior is not None else card.frame
@@ -254,20 +257,28 @@ def _live_check(*, share: ShareRecord, slot: int, card: ShareCard, deps: SharesD
 def _check(
     frame: FrameRef, *, last: FrameRef, now: datetime, deps: SharesDeps, label: str
 ) -> SlotCheck:
-    """Ask for the newest frame standing for `frame`, serving `last` when none answers."""
+    """Ask for the newest frame standing for `frame`, serving `last` when none answers. The
+    check is due again after `FRESHNESS_WINDOW`, or after the retry time of a pending answer."""
+    due = now + FRESHNESS_WINDOW
     if deps.newest is None:
         logger.error("Share %s cannot check for newer data: no Datasets surface answers", label)
-        return SlotCheck(frame=last, freshness="stale", checked_at=now)
+        return SlotCheck(frame=last, freshness="stale", checked_at=now, next_check_at=due)
     try:
         answer = deps.newest.newest(frame)
     except Exception:
         # Every refusal and failure of the refresh or the run leaves the slot on its last frame,
         # which the reply states as stale, until the next check.
         logger.warning("Share %s newer-data check of %s failed", label, frame, exc_info=True)
-        return SlotCheck(frame=last, freshness="stale", checked_at=now)
+        return SlotCheck(frame=last, freshness="stale", checked_at=now, next_check_at=due)
     if isinstance(answer, NewestPending):
-        return SlotCheck(frame=last, freshness="pending", checked_at=now)
-    return SlotCheck(frame=answer, freshness="current", checked_at=now)
+        retry = min(max(answer.retry_after_s, _MIN_RETRY_S), FRESHNESS_WINDOW.total_seconds())
+        return SlotCheck(
+            frame=last,
+            freshness="pending",
+            checked_at=now,
+            next_check_at=now + timedelta(seconds=retry),
+        )
+    return SlotCheck(frame=answer, freshness="current", checked_at=now, next_check_at=due)
 
 
 def _export(

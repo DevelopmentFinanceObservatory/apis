@@ -1,6 +1,6 @@
 """Share records over `presentation.share`, `share_revision` and `share_slot` (migration 0012),
 the frames each slot served (`served_frame`), and each live slot's newest-data check
-(`share_slot_check`, migration 0013).
+(`share_slot_check`, migrations 0013 and 0014).
 
 A share publishes cards under one `/s/<id>` id. Each revision lists the share's slots, numbered
 from 1, and a slot holds one card revision or none. A create writes revision 1 with one slot per
@@ -15,8 +15,9 @@ serves and sets the share's mode to `snapshot`, so its slots keep those frames f
 and payload, and finds a share it imported before by its id, kind and `created_at`.
 
 A live slot's data read keeps one `SlotCheck` per slot and card revision: the frame the slot
-serves, its freshness and when the check ran. `claim_slot_check` moves a due check's time
-forward in one statement, so of two reads finding it due only one runs the check. Each frame a
+serves, its freshness, when the check ran and when the next one is due. `claim_slot_check`
+moves a due check's times forward in one statement, so of two reads finding it due only one runs
+the check. Each frame a
 read serves is recorded once in `served_frame` (`record_served`), which `served_frames` reads
 newest first.
 
@@ -139,11 +140,12 @@ class ImportedShare:
 @dataclass(frozen=True)
 class SlotCheck:
     """A live slot's newest-data check: the frame the slot serves until the next check, its
-    freshness, and when the check ran."""
+    freshness, when the check ran, and when the next one is due."""
 
     frame: FrameRef
     freshness: Freshness
     checked_at: datetime
+    next_check_at: datetime
 
 
 @dataclass(frozen=True)
@@ -241,10 +243,11 @@ class ShareStore(Protocol):
         ...
 
     def claim_slot_check(
-        self, *, share_id: str, slot: int, card: ShareCard, now: datetime, due_before: datetime
+        self, *, share_id: str, slot: int, card: ShareCard, now: datetime, claim_until: datetime
     ) -> bool:
-        """Move the check's time to `now` when it ran at or before `due_before`. Returns
-        whether it did, so the caller runs the check; `False` too when no check is stored.
+        """Move the check's time to `now` and its next due time to `claim_until` when it is due
+        at `now`. Returns whether it did, so the caller runs the check; `False` too when no
+        check is stored.
 
         Raises:
             PresentationStoreUnavailable: The store failed.
@@ -425,8 +428,8 @@ class LiveShareStore:
     def slot_check(self, *, share_id: str, slot: int, card: ShareCard) -> SlotCheck | None:
         def read(tx: Transaction) -> SlotCheck | None:
             row = tx.fetch_one(
-                "SELECT frame_spec_id, frame_content_version, freshness, checked_at "
-                "FROM presentation.share_slot_check WHERE share_id = %s AND slot = %s "
+                "SELECT frame_spec_id, frame_content_version, freshness, checked_at, "
+                "next_check_at FROM presentation.share_slot_check WHERE share_id = %s AND slot = %s "
                 "AND component_id = %s AND component_revision = %s",
                 (share_id, slot, card.component_id, card.revision),
             )
@@ -439,19 +442,20 @@ class LiveShareStore:
                 ),
                 freshness=cast("Freshness", row["freshness"]),
                 checked_at=cast(datetime, row["checked_at"]),
+                next_check_at=cast(datetime, row["next_check_at"]),
             )
 
         return self._in_transaction(f"reading slot {slot} of share {share_id!r}", read)
 
     def claim_slot_check(
-        self, *, share_id: str, slot: int, card: ShareCard, now: datetime, due_before: datetime
+        self, *, share_id: str, slot: int, card: ShareCard, now: datetime, claim_until: datetime
     ) -> bool:
         def write(tx: Transaction) -> bool:
             row = tx.fetch_one(
-                "UPDATE presentation.share_slot_check SET checked_at = %s "
+                "UPDATE presentation.share_slot_check SET checked_at = %s, next_check_at = %s "
                 "WHERE share_id = %s AND slot = %s AND component_id = %s "
-                "AND component_revision = %s AND checked_at <= %s RETURNING slot",
-                (now, share_id, slot, card.component_id, card.revision, due_before),
+                "AND component_revision = %s AND next_check_at <= %s RETURNING slot",
+                (now, claim_until, share_id, slot, card.component_id, card.revision, now),
             )
             return row is not None
 
@@ -464,11 +468,12 @@ class LiveShareStore:
             tx.execute(
                 "INSERT INTO presentation.share_slot_check (share_id, slot, component_id, "
                 "component_revision, frame_spec_id, frame_content_version, freshness, "
-                "checked_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "checked_at, next_check_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (share_id, slot, component_id, component_revision) DO UPDATE SET "
                 "frame_spec_id = EXCLUDED.frame_spec_id, "
                 "frame_content_version = EXCLUDED.frame_content_version, "
-                "freshness = EXCLUDED.freshness, checked_at = EXCLUDED.checked_at",
+                "freshness = EXCLUDED.freshness, checked_at = EXCLUDED.checked_at, "
+                "next_check_at = EXCLUDED.next_check_at",
                 (
                     share_id,
                     slot,
@@ -478,6 +483,7 @@ class LiveShareStore:
                     check.frame.content_version,
                     check.freshness,
                     check.checked_at,
+                    check.next_check_at,
                 ),
             )
 

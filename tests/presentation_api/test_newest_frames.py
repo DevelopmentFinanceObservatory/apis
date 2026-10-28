@@ -87,11 +87,11 @@ def test_a_derived_frame_reruns_its_recipe_on_the_newest_data(calls: _Calls):
     assert calls.refresh == []
 
 
-def test_a_rebuild_over_budget_is_pending_on_either_path(calls: _Calls):
+def test_a_rebuild_over_budget_is_pending_with_its_retry_time_on_either_path(calls: _Calls):
     calls.answers["refresh"] = FramePending(operation_id="op_1", retry_after_s=2.0)
-    calls.answers["run"] = AnalysisPending(operations=["op_2"], retry_after_s=2.0)
+    calls.answers["run"] = AnalysisPending(operations=["op_2"], retry_after_s=3.5)
 
     newest = _newest()
 
-    assert newest.newest(_DATASET) == NewestPending()
-    assert newest.newest(_DERIVED) == NewestPending()
+    assert newest.newest(_DATASET) == NewestPending(retry_after_s=2.0)
+    assert newest.newest(_DERIVED) == NewestPending(retry_after_s=3.5)

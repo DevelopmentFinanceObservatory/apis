@@ -124,6 +124,9 @@ _PRESENTATION_STORE = {
     "0013_share_slot_check.sql": (
         "e016def5442e46ed88a276ed0a8a21b46c8293f60add7135b8802a796735a3ac"
     ),
+    "0014_share_slot_next_check.sql": (
+        "65eb5bf176ffeaac8e951e0f5f076cd2a169c201d25653f4ed3aa88f60fe3ac0"
+    ),
 }
 
 
