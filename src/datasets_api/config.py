@@ -94,6 +94,26 @@ class DatasetsBuildSettings(BaseSettings):
     # Slot wait limit. The semaphore uses the earlier of this limit and the request deadline (503).
     materialise_wait_seconds: float = Field(default=30, gt=0)
 
+    # Analysis executor threads (`datasets_api.doors.analysis`): recipe trees the runner
+    # computes. A same-sized semaphore refuses retryable 503 when full. A run reads its root
+    # frames, computes and stores under one materialise permit, so at most
+    # `materialise_max_concurrency` runs hold frames at once across every frame path.
+    analysis_max_concurrency: int = Field(default=2, ge=1)
+
+    # A run's deadline, from admission to its answer. A run past it answers timeout (504,
+    # retryable); its thread finishes and stores its frame, so a retry finds it stored.
+    analysis_timeout_seconds: float = Field(default=120, gt=0)
+
+    # The most nodes one tree holds, steps and roots, after each derived root is expanded into
+    # its stored recipe.
+    analysis_max_nodes: int = Field(default=64, ge=1)
+
+    # The most rows a tree's root frames hold together. Every verb but `join` writes no more
+    # rows than its `data` side holds, and a `join` writes at most `analysis_max_join_rows`, so
+    # the two bound every frame a run holds.
+    analysis_max_root_rows: int = Field(default=2_000_000, ge=1)
+    analysis_max_join_rows: int = Field(default=250_000, ge=1)
+
     # Subjects a described arm's member walk reads when its first reverse page truncates
     # without a confirmed root. The walk takes the whole filtered set up to this many and
     # confirms it by the subjects' arcs. The default, shared with Search's resubmit, covers the deepest measured

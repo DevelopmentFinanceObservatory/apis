@@ -2895,6 +2895,7 @@ coverage = [
 ]
 datasets = [
     { name = "cloud-sql-python-connector", extra = ["pg8000"] },
+    { name = "dfo-analysis-engine" },
     { name = "dfo-data-tools", extra = ["coverage", "formats", "graph-release", "resolve", "sdmx"] },
     { name = "fastapi" },
     { name = "google-auth" },
@@ -2956,6 +2957,7 @@ typecheck = [
 requires-dist = [
     { name = "cachetools", specifier = ">=7.2" },
     { name = "cloud-sql-python-connector", extras = ["pg8000"], marker = "extra == 'datasets'", specifier = ">=1.15" },
+    { name = "dfo-analysis-engine", marker = "extra == 'datasets'", editable = "packages/dfo-analysis-engine" },
     { name = "dfo-data-tools", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["coverage"], marker = "extra == 'coverage'", editable = "packages/dfo-data-tools" },
     { name = "dfo-data-tools", extras = ["formats", "coverage", "sdmx", "graph-release", "resolve"], marker = "extra == 'datasets'", editable = "packages/dfo-data-tools" },

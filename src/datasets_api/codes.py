@@ -6,6 +6,7 @@ platform entries. Redeclaring them would raise `CodeCollision` in `merge_catalog
 
 from __future__ import annotations
 
+from datasets_api.codes_analysis import ANALYSIS_DOOR_CODE_CATALOGUE
 from datasets_api.codes_core import CORE_CODE_CATALOGUE
 from datasets_api.codes_materialise import MATERIALISE_DOOR_CODE_CATALOGUE
 from datasets_api.codes_publish import PUBLISH_DOOR_CODE_CATALOGUE
@@ -19,6 +20,7 @@ DATASETS_CODE_CATALOGUE: dict[str, tuple[str, str]] = merge_catalogues(
     SNAPSHOT_DOOR_CODE_CATALOGUE,
     PUBLISH_DOOR_CODE_CATALOGUE,
     REFRESH_DOOR_CODE_CATALOGUE,
+    ANALYSIS_DOOR_CODE_CATALOGUE,
 )
 
 # Include platform codes handled by this surface's classifiers.

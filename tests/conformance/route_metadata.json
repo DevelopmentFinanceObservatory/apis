@@ -9,6 +9,24 @@
     "surface": "datasets"
   },
   {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_analysis",
+    "operation_id": "datasets_post_analysis",
+    "path": "/api/datasets/analysis",
+    "summary": "Post Analysis",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_analysis_anchor",
+    "operation_id": "datasets_post_analysis_anchor",
+    "path": "/api/datasets/analysis/anchor",
+    "summary": "Post Analysis Anchor",
+    "surface": "datasets"
+  },
+  {
     "has_description": false,
     "method": "GET",
     "name": "get_capabilities",

@@ -130,6 +130,7 @@ from typing import Any
 
 from dfo_frame_grammar import (
     UNIT_COLUMN,
+    Frame,
     FrameError,
     frame_sha256,
     unit_cell_to_json,
@@ -523,6 +524,59 @@ def publish_frame(
             frame = build_frame(role_keys=role_keys, rows=rows)
     except FrameError as exc:
         raise PublishFrameInvalid(category=exc.category, message=str(exc)) from exc
+    return publish_built_frame(
+        frame=frame,
+        spec_id=spec_id,
+        content_version=content_version,
+        input_content_versions=input_content_versions,
+        artifact_store=artifact_store,
+        snapshot_reader=snapshot_reader,
+        version_writer=version_writer,
+        trace_id=trace_id,
+        ceiling=ceiling,
+        recipe=recipe,
+        recipe_store=recipe_store,
+        steps=steps,
+        enrichment=enrichment,
+    )
+
+
+def publish_built_frame(
+    *,
+    frame: Frame,
+    spec_id: str,
+    content_version: str,
+    input_content_versions: Sequence[str],
+    artifact_store: ArtifactStore,
+    snapshot_reader: SnapshotReader,
+    version_writer: VersionRecordWriter,
+    trace_id: str | None = None,
+    ceiling: int = PUBLISH_MAX_ROWS,
+    recipe: Recipe | None = None,
+    recipe_store: RecipeStore | None = None,
+    steps: Sequence[Step] | None = None,
+    enrichment: EnrichmentLookup | None = None,
+) -> PublishResult:
+    """`publish_frame` for a frame already built, as the analysis runner holds one
+    (`datasets_api.analysis`). Every check after the build is `publish_frame`'s: the row
+    ceiling, the shared unit key, the recipe store, then the store, record and verify steps.
+    """
+    if recipe is not None and recipe_store is None:
+        raise PublishRecipeStoreMissing(spec_id=spec_id, content_version=content_version)
+
+    if frame.num_rows > ceiling:
+        raise OverCeilingError(
+            f"published frame has {frame.num_rows} rows, exceeding the sync materialisation "
+            f"ceiling of {ceiling} rows",
+            detail=(
+                f"published frame has {frame.num_rows} rows, exceeding the sync materialisation "
+                f"ceiling of {ceiling} rows"
+            ),
+            ceiling_kind="rows",
+            count=frame.num_rows,
+            cap=ceiling,
+        )
+
     unit_column = frame.table.column(UNIT_COLUMN)
     shared = shared_unit_key(
         cells=[unit_cell_to_json(cell) for cell in unit_cells(unit_column, unit_codes(unit_column))]
@@ -1039,6 +1093,7 @@ __all__ = [
     "PublishResult",
     "build_publish_door",
     "classify_publish_exception",
+    "publish_built_frame",
     "publish_frame",
     "write_frame_recipe",
 ]

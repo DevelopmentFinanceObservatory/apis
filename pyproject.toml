@@ -102,6 +102,8 @@ datasets = [
     # google-auth already ships transitively via google-cloud-storage;
     # pinned here directly since this surface now imports it by name.
     "google-auth>=2.34",
+    # datasets_api.analysis runs recipe trees through the analysis engine.
+    "dfo-analysis-engine",
 ]
 graph = [
     # graph_api mounts a FastAPI door and imports dfo_platform.app

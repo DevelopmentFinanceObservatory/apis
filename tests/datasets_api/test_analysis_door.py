@@ -1,0 +1,178 @@
+"""The analysis door through the app factory: the ready body and its stored frame, a rerun, the
+pending answer, refusals with their fix, the anchor route, and a full analysis pool.
+
+The door's roots come from a double source (`_analysis_doubles.FakeRootSource`) in place of
+`LiveRootSource`; the frame, its version and its recipe go through the live store SQL."""
+
+from __future__ import annotations
+
+import threading
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+import datasets_api.doors.analysis as analysis_door
+from datasets_api.config import DatasetsBuildSettings
+from datasets_api.recipe_store import LiveRecipeStore
+from datasets_api.version_store import LiveVersionLister
+from spec_registry import LiveSpecRegistry
+
+from ._analysis_doubles import (
+    AID,
+    AID_V1,
+    POPULATION,
+    POPULATION_V1,
+    FakeRootSource,
+    Stores,
+    dataset,
+    ref_of,
+    source,
+    step,
+)
+from ._app_factories import make_client
+from .conftest import FakeDatasetStore
+
+_PATH = "/api/datasets/analysis"
+_TREE = step(
+    "quotient_of",
+    dataset(AID, AID_V1),
+    dataset(POPULATION, POPULATION_V1),
+    on={"destination": "place"},
+)
+
+
+def _client(
+    stores: Stores, roots: FakeRootSource, monkeypatch: pytest.MonkeyPatch, **settings: Any
+) -> TestClient:
+    monkeypatch.setattr(analysis_door, "LiveRootSource", lambda **_: roots)
+    resolved = DatasetsBuildSettings.from_env().model_copy(update=settings)
+    return make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=resolved,
+        artifact_store=stores.artifact_store,
+        snapshot_reader=stores.snapshot_reader,
+        version_writer=stores.version_writer,
+        recipe_store=LiveRecipeStore(store=stores.store),
+        version_lister=LiveVersionLister(store=stores.store),
+    )
+
+
+def test_a_tree_answers_its_stored_frame_and_a_rerun_answers_the_same(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    with _client(stores, source(stores), monkeypatch) as client:
+        first = client.post(_PATH, json={"tree": _TREE})
+        versions = stores.version_count()
+        again = client.post(_PATH, json={"tree": _TREE})
+
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["status"] == "ready"
+    member = body["ref"]["members"][0]
+    assert member["output_digest"] == body["output_digest"]
+    assert body["summary"]["verb"] == "quotient_of"
+    assert body["rows"] == body["summary"]["rows"] == 4
+    assert body["role_keys"] == ["financingRecipient", "financingRecipient_party_kind"]
+    assert body["execution_identity"]["engine_version"] == "0.9.0"
+    assert first.headers["cache-control"] == "no-store"
+    assert stores.snapshot_reader.read_version(member["spec"]["spec_id"], member["content_version"])
+    assert again.json() == body
+    assert stores.version_count() == versions
+
+
+def test_a_root_still_building_answers_202_with_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    roots = source(stores, pending={AID: "op_aid"})
+    with _client(stores, roots, monkeypatch) as client:
+        response = client.post(
+            _PATH, json={"tree": step("aggregate", {"spec_id": AID}, aggregation="sum")}
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json() == {"status": "pending", "retry_after_s": 2.0, "operations": ["op_aid"]}
+    assert response.headers["retry-after"] == "2"
+
+
+def test_a_dataset_of_several_readings_refuses_with_its_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    tree = step(
+        "aggregate", {"ref": ref_of((AID, AID_V1), (POPULATION, POPULATION_V1))}, aggregation="sum"
+    )
+    with _client(stores, source(stores), monkeypatch) as client:
+        response = client.post(_PATH, json={"tree": tree})
+
+    assert response.status_code == 422, response.text
+    problem = response.json()
+    assert problem["code"] == "several_members"
+    assert problem["retry_mode"] == "correct_and_retry"
+    assert problem["fix"]["spec_ids"] == [AID, POPULATION]
+    assert response.headers["content-type"] == "application/problem+json"
+
+
+def test_an_engine_refusal_answers_its_code_retry_mode_and_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    tree = step("aggregate", dataset(AID, AID_V1), aggregation="median_of_means")
+    with _client(stores, source(stores), monkeypatch) as client:
+        response = client.post(_PATH, json={"tree": tree})
+
+    assert response.status_code == 422, response.text
+    problem = response.json()
+    assert problem["code"] == "operation_uncovered"
+    assert problem["retry_mode"] == "correct_and_retry"
+    assert "sum" in problem["fix"]["supported"]
+    assert stores.version_count() == 0
+
+
+def test_the_anchor_route_answers_the_latest_period_and_stores_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    body = {"roots": [dataset(AID, AID_V1)], "populations": [{"spec_id": AID, "bindings": {}}]}
+    with _client(stores, source(stores), monkeypatch) as client:
+        response = client.post(f"{_PATH}/anchor", json=body)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "period": "2022",
+        "rule": "half1",
+        "left_out": [],
+        "roots": [{"spec_id": AID, "content_version": AID_V1}],
+    }
+    assert stores.version_count() == 0
+
+
+class _BlockingSource(FakeRootSource):
+    """Holds every resolve until `release` is set."""
+
+    def __init__(self, base: FakeRootSource) -> None:
+        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def resolve(self, root, *, latest, trace_id):
+        self.entered.set()
+        assert self.release.wait(5)
+        return super().resolve(root, latest=latest, trace_id=trace_id)
+
+
+def test_a_full_analysis_pool_refuses_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    stores = Stores()
+    roots = _BlockingSource(source(stores))
+    with _client(stores, roots, monkeypatch, analysis_max_concurrency=1) as client:
+        held = threading.Thread(target=lambda: client.post(_PATH, json={"tree": _TREE}))
+        held.start()
+        assert roots.entered.wait(5)
+        refused = client.post(_PATH, json={"tree": _TREE})
+        roots.release.set()
+        held.join(5)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["code"] == "service_unavailable"

@@ -4,9 +4,10 @@
 surface's `DepsCell`. Doors build no client and no store. The bundle holds one graph client, one
 SDMX client, one artifact store, the stores over one `dataset_store` pool borrow, the task client,
 the allowance ledger, the coverage service and rate cache, the source of the code index each request reads, the
-whole-variable breadth reader, one materialise semaphore, and two executors.
+whole-variable breadth reader, one materialise semaphore, and three executors.
 
-The read executor runs snapshot, description, observations, operations polls, members, pin, register,
+The analysis executor runs analysis trees (`datasets_api.doors.analysis`), so a long
+computation queues behind no mint and delays no read. The read executor runs snapshot, description, observations, operations polls, members, pin, register,
 recipe, and head-hit reads. The work executor runs mints, definition rebuilds, frame refreshes,
 and publishes, which parse and write frames of up to 250,000 rows, so a queue of builds cannot
 delay a poll or a download. A
@@ -15,7 +16,7 @@ the work executor only when the head cannot answer it (`datasets_api.doors.defin
 
 A dependency the caller supplies in `DepsOverrides` is used as given and never closed here.
 Every other one is built live from `DatasetsSettings` and closed when the lifespan ends, after
-both executors drain within one `ShutdownBudget`.
+the three executors drain within one `ShutdownBudget`.
 """
 
 from __future__ import annotations
@@ -119,6 +120,8 @@ class Deps:
     rebuilds: RebuildFlights
     read_executor: DoorExecutor
     work_executor: DoorExecutor
+    # Runs analysis trees (`datasets_api.doors.analysis`), apart from mints and reads.
+    analysis_executor: DoorExecutor
 
     @property
     def code_index(self) -> CodeIndex:
@@ -212,6 +215,11 @@ def build_executors(settings: DatasetsBuildSettings) -> tuple[DoorExecutor, Door
         build_door_executor(settings.read_max_concurrency, "read"),
         build_door_executor(settings.work_max_concurrency, "work"),
     )
+
+
+def build_analysis_executor(settings: DatasetsBuildSettings) -> DoorExecutor:
+    """The analysis executor, sized by `analysis_max_concurrency`."""
+    return build_door_executor(settings.analysis_max_concurrency, "analysis")
 
 
 @asynccontextmanager
@@ -315,13 +323,14 @@ async def open_deps(
         stack.callback(overrides.release.register_swap_guard(materialise_semaphore.every_permit))
 
         read_executor, work_executor = build_executors(settings)
+        analysis_executor = build_analysis_executor(settings)
         budget = ShutdownBudget()
         code_index_source = _index_source(overrides.code_index)
 
         async def _drain() -> None:
-            for executor in (work_executor, read_executor):
+            for executor in (analysis_executor, work_executor, read_executor):
                 executor.executor.shutdown(wait=False, cancel_futures=True)
-            for executor in (work_executor, read_executor):
+            for executor in (analysis_executor, work_executor, read_executor):
                 await asyncio.to_thread(executor.drain, budget)
 
         # Registered last, so the drain runs before any client or the pool closes.
@@ -372,6 +381,7 @@ async def open_deps(
             rebuilds=RebuildFlights(),
             read_executor=read_executor,
             work_executor=work_executor,
+            analysis_executor=analysis_executor,
         )
 
 
@@ -380,6 +390,7 @@ __all__ = [
     "Deps",
     "DepsCell",
     "DepsOverrides",
+    "build_analysis_executor",
     "build_executors",
     "open_deps",
 ]
