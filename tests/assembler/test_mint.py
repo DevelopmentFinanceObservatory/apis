@@ -1665,6 +1665,93 @@ def test_source_keeps_ref_only_when_the_raw_ref_can_stand_for_a_dcid(release, ra
     stamp_envelope(minted=minted, component_id="cmp_" + "s" * 20, revision=1, release=release)
 
 
+_DAC2A_REF = "dc/base/OECD_DAC2a"
+_DERIVED_FRAME_REF = FrameRef(spec_id="ops_" + "c" * 32, content_version="ocv_" + "d" * 32)
+_ROOTS_CITATION = {
+    "text": "OECD DAC2a.\n\nWorld Development Indicators.",
+    "sources": [
+        {"ref": _DAC2A_REF, "label": "OECD DAC2a", "license": None, "url": "https://oecd.org"},
+        {"ref": _WDI_REF, "label": "World Development Indicators", "license": None, "url": ""},
+    ],
+}
+"""The citation `datasets_api.derived.recipe_citation` gives a quotient of an OECD DAC2a root
+over a WDI root."""
+
+
+def _mint_on_a_quotient_frame(member, *, release):
+    """`member` drawn on a derived frame whose rows name no provenance, since a quotient of
+    two roots' figures has no one source, under its roots' citation."""
+    rows = [
+        {
+            "stat_var": "dcid:ops_quotient",
+            "recipient": "country/KEN",
+            "time_period": period,
+            "value": value,
+            "unit": None,
+            "measurementMethod": None,
+            "provenance": None,
+        }
+        for period, value in (("2020", 1.5), ("2021", 2.5))
+    ]
+    resolved_frame = build_resolved_frame(
+        frame_ref=_DERIVED_FRAME_REF,
+        role_keys=("recipient",),
+        rows=rows,
+        manifest={"schema_version": 1, "citation": _ROOTS_CITATION},
+    )
+    if member == "source_card":
+        return _mint_source_card(resolved_frame=resolved_frame, release=release)
+    selectors = [
+        {
+            "bindings": [
+                {"dimension": "stat_var", "values": ["dcid:ops_quotient"]},
+                {"dimension": "recipient", "values": ["country/KEN"]},
+            ]
+        }
+    ]
+    series, bound = _resolve_and_bind(resolved_frame=resolved_frame, selectors=selectors)
+    intent = {
+        "type": member,
+        "frame_ref": {
+            "spec_id": _DERIVED_FRAME_REF.spec_id,
+            "content_version": _DERIVED_FRAME_REF.content_version,
+        },
+        "select": {"stat_var": "dcid:ops_quotient", "recipient": "country/KEN"},
+    }
+    return mint_component(
+        member=member,
+        merged_intent=intent,
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+        clock=_fixed_clock(),
+    )
+
+
+@pytest.mark.parametrize("member", ["table", "line_chart", "source_card"])
+def test_a_card_on_a_derived_frame_cites_its_roots_sources(release, member):
+    """A row naming no provenance stands for every source its frame cites, so the card lists
+    the roots' sources and names one of them on each value, where it once named an
+    unattributed source."""
+    minted = _mint_on_a_quotient_frame(member, release=release)
+
+    sources = minted.provenance["sources"]
+    assert [(source["name"], source["ref"]) for source in sources] == [
+        ("OECD DAC2a", _DAC2A_REF),
+        ("World Development Indicators", _WDI_REF),
+    ]
+    listed = {source["id"] for source in sources}
+    component = minted.component
+    named = {
+        *(entry["source_ref"] for key in ("rows", "series") for entry in component.get(key, ())),
+        *component.get("source_refs", ()),
+    }
+    assert named and named <= listed
+    assert minted.provenance["citation"].startswith("OECD DAC2a and World Development Indicators")
+    stamp_envelope(minted=minted, component_id="cmp_" + "s" * 20, revision=1, release=release)
+
+
 def test_sources_carry_the_citation_s_source_and_data_commons_as_id_and_name(release):
     """A citation entry's `source` and `data_commons` become the envelope source's
     `{id, name}` members. A ref with no entry, like a version minted before the origin

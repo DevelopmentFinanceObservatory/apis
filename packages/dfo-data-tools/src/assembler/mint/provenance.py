@@ -105,6 +105,9 @@ def _build_sources_for_refs(
     the ref (`_citation_sources_by_ref`). Without one, `name` falls back to
     the raw ref, `url` to `""` and `licence` to `_LICENCE_NOT_STATED`, since
     the envelope requires all three. `retrieved` is the frame's `retrieved_on`.
+    A `None` ref, a row that names no provenance, stands for every source the
+    manifest cites, as on a frame derived from two roots' sources, and maps to
+    the first of them; with no cited source it is the unattributed source.
     `ref` is the raw ref, the provenance dcid a renderer looks the source up by. It is left
     out for the unattributed source and for a raw ref over `_REF_MAX`, since a truncated
     dcid would name another node.
@@ -114,15 +117,16 @@ def _build_sources_for_refs(
     """
     citation_by_ref = _citation_sources_by_ref(resolved_frame.manifest)
     retrieved = resolved_frame.retrieved_on.isoformat()
+    cited_refs: list[str | None] = [*citation_by_ref] or [None]
 
     id_by_raw_ref: dict[str | None, str] = {}
     sources: list[dict[str, object]] = []
     seen_ids: set[str] = set()
-    for raw_ref in raw_refs:
+    for raw_ref in (ref for raw in raw_refs for ref in (cited_refs if raw is None else [raw])):
         source_id = (
             _derive_source_id(raw_ref=raw_ref) if raw_ref is not None else _UNATTRIBUTED_SOURCE_ID
         )
-        id_by_raw_ref[raw_ref] = source_id
+        id_by_raw_ref.setdefault(raw_ref, source_id)
         if source_id in seen_ids:
             continue
         seen_ids.add(source_id)
@@ -144,6 +148,8 @@ def _build_sources_for_refs(
                     "name": named["label"][:LABEL_MAX],
                 }
         sources.append(source)
+    if None in raw_refs:
+        id_by_raw_ref[None] = id_by_raw_ref[cited_refs[0]]
     return tuple(sources), id_by_raw_ref
 
 

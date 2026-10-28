@@ -15,7 +15,7 @@ from contextlib import ExitStack, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
@@ -3908,6 +3908,80 @@ def test_a_frame_cached_before_its_recipe_was_written_gains_the_anchor_without_a
 
     assert (before.anchor, after.anchor) == (None, RollingAnchor(period="2024", rule="half1"))
     assert artifacts.calls.count(("get", Tier.working, digest)) == fetches == 1
+
+
+_WDI_SOURCE = {
+    **_OECD_CITATION["sources"][0],
+    "ref": "dc/base/WorldDevelopmentIndicators",
+    "label": "World Development Indicators",
+    "url": "https://example.org/wdi",
+}
+
+
+def _derived_over_cited_roots() -> tuple[
+    _FakeSnapshotReader, _FakeArtifactStore, FrameRef, _FakeRecipeReader
+]:
+    """`_derived_over_a_root`, whose root version cites the frame's `src_oecd_dac` with its
+    licence type unset and a WDI source no row of the frame names, and a recipe reader that
+    holds no recipe yet."""
+    snapshots, artifacts, frame_ref, _, root_ref, _ = _derived_over_a_root()
+    oecd = {**_OECD_CITATION["sources"][0], "label": "Stored label", "license_type": None}
+    root = snapshots.versions[(root_ref.spec_id, root_ref.content_version)]
+    snapshots.versions[(root_ref.spec_id, root_ref.content_version)] = replace(
+        root,
+        facts=replace(root.facts, citation={"text": "Root text.", "sources": [oecd, _WDI_SOURCE]}),
+    )
+    return snapshots, artifacts, frame_ref, _FakeRecipeReader()
+
+
+def _put_recipe_over_the_root(recipes: _FakeRecipeReader, frame_ref: FrameRef) -> None:
+    root_ref = malaria_ethiopia_frame_ref()
+    pair = {"spec_id": root_ref.spec_id, "content_version": root_ref.content_version}
+    recipes.put(frame_ref, anchor=None, roots=[{"dataset": pair, "options": {}}])
+
+
+def _cited(manifest: Mapping[str, object]) -> list[tuple[str, str, str | None]]:
+    citation = cast("Mapping[str, Any]", manifest["citation"])
+    return [
+        (source["ref"], source["label"], source["license_type"]) for source in citation["sources"]
+    ]
+
+
+def test_load_cites_a_derived_frame_with_its_recipe_roots_sources_filled_from_the_graph():
+    """The frame cites its root's two sources, as the derived manifest does, the root's WDI
+    source among them though no row names it; the stored label stands and the empty licence
+    type is filled from the graph."""
+    snapshots, artifacts, frame_ref, recipes = _derived_over_cited_roots()
+    _put_recipe_over_the_root(recipes, frame_ref)
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
+    )
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert _cited(resolved.manifest) == [
+        ("src_oecd_dac", "Stored label", "license/cc_by_4"),
+        (_WDI_SOURCE["ref"], "World Development Indicators", "license/cc_by_4"),
+    ]
+    assert cast("Mapping[str, Any]", resolved.manifest["citation"])["text"] == "Root text."
+
+
+def test_a_derived_frame_cached_before_its_recipe_was_written_cites_its_roots_once_it_is():
+    """Before its recipe, the frame cites its provenance refs from the graph; the load that
+    first reads the recipe cites the roots' sources instead."""
+    snapshots, artifacts, frame_ref, recipes = _derived_over_cited_roots()
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
+    )
+    before = store.load(frame_ref=frame_ref)
+
+    _put_recipe_over_the_root(recipes, frame_ref)
+    after = store.load(frame_ref=frame_ref)
+
+    assert _cited(before.manifest) == [
+        ("src_oecd_dac", "OECD Creditor Reporting System", "license/cc_by_4")
+    ]
+    assert [ref for ref, _, _ in _cited(after.manifest)] == ["src_oecd_dac", _WDI_SOURCE["ref"]]
 
 
 def test_a_rolling_card_on_a_derived_frame_is_created_at_the_recipe_s_anchor():

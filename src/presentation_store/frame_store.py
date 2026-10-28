@@ -1,10 +1,13 @@
 """`LiveFrameStore` resolves frames from dataset snapshots and digest-verified artifacts.
 It resolves best-effort labels for frames.
 
-A published `ops_` frame's version stores only its lineage, so `load()` adds the citation
-its `provenance` column names, read from the graph, as `manifest["citation"]`. The graph read
-covers the first 300 distinct refs in row order; later refs are cited by their ref alone. A
-dataset version's stored citation is served with its empty documentation and licence fields
+A published `ops_` frame's version stores only its lineage, so `load()` adds a citation as
+`manifest["citation"]`. A frame whose recipe names roots that cite sources is cited as the
+derived manifest cites it, its roots' citations merged (`datasets_api.derived.recipe_citation`),
+and those are filled as a dataset version's stored citation is. A frame with no recipe, or
+whose roots cite nothing, is cited with the sources its `provenance` column names, read from
+the graph. That read covers the first 300 distinct refs in row order; later refs are cited by
+their ref alone. A dataset version's stored citation is served with its empty documentation and licence fields
 filled from a live read of the sources with an empty field
 (`datasets_api.manifest.citation_healed_from`), as a Datasets bundle cites it; a stored
 citation with every field set reads nothing. A frame that holds a description record reads
@@ -196,6 +199,7 @@ from dataset_store.snapshot import (
     read_servable_version,
 )
 from datasets_api.codes_snapshot import SpecNotFound
+from datasets_api.derived import recipe_citation
 from datasets_api.description_record import composed_variables, title_named
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
 from datasets_api.doors.refresh import RenderingNotRecorded, rendering_of
@@ -940,6 +944,9 @@ class LiveFrameStore:
             recipe, anchor, anchor_final, anchor_labelled = self._recipe_facts(
                 frame, deadline=deadline
             )
+            if recipe is not None and frame.replay_key is None:
+                # A recipe written after the frame was cached names the roots it cites.
+                citation_due = True
             frame = replace(
                 frame, replay_key=recipe.replay_key if recipe is not None else None, anchor=anchor
             )
@@ -1148,8 +1155,10 @@ class LiveFrameStore:
     ) -> tuple[Mapping[str, object], dict[str, SourceDocumentFacts], bool]:
         """The manifest with its live citation, what each cited source's document says, and
         whether every citation read completed. One documented citation read
-        (`_source_citations`) serves both. A derived frame cites its provenance refs from the
-        graph. A root frame's stored citation has its empty fields filled
+        (`_source_citations`) serves both. A derived frame whose recipe roots cite sources
+        (`_roots_citation`) is cited with them, filled as a root frame's stored citation is;
+        any other derived frame cites its provenance refs from the graph. A root frame's stored
+        citation has its empty fields filled
         (`datasets_api.manifest.citation_healed_from`) from a read of its distinct sources with
         an empty `HEALED_FIELDS` member, or of all its distinct sources when the frame holds a
         description record, whose card words what each source's document says. The read
@@ -1159,16 +1168,19 @@ class LiveFrameStore:
         nothing and is complete."""
         frame_ref = frame.frame_ref
         if frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
-            return self._derived_citation(
-                frame.frame,
-                stored_manifest=stored_manifest,
-                frame_ref=frame_ref,
-                steps=()
-                if frame.description_record is None
-                else frame.description_record.known_steps,
-                retrieved=frame.retrieved_on,
-                deadline=deadline,
-            )
+            cited = self._roots_citation(frame_ref)
+            if cited is None:
+                return self._derived_citation(
+                    frame.frame,
+                    stored_manifest=stored_manifest,
+                    frame_ref=frame_ref,
+                    steps=()
+                    if frame.description_record is None
+                    else frame.description_record.known_steps,
+                    retrieved=frame.retrieved_on,
+                    deadline=deadline,
+                )
+            stored_manifest = {**stored_manifest, "citation": cited.model_dump(mode="json")}
         if self._graph is None or "citation" not in stored_manifest:
             return stored_manifest, {}, True
         stored_citation = CitationModel.model_validate(stored_manifest["citation"])
@@ -1191,6 +1203,18 @@ class LiveFrameStore:
         if citation != stored_citation:
             stored_manifest = {**stored_manifest, "citation": citation.model_dump(mode="json")}
         return stored_manifest, _source_documents(live), _documented(live)
+
+    def _roots_citation(self, frame_ref: FrameRef) -> CitationModel | None:
+        """A derived frame's citation as the derived manifest gives it, its recipe roots'
+        citations merged (`datasets_api.derived.recipe_citation`), or `None` when the store
+        reads no recipes, the frame has no recipe yet, or its roots cite no source."""
+        if self._recipe_reader is None:
+            return None
+        record = self._recipe_reader.read_recipe(
+            spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
+        )
+        citation = recipe_citation(self._snapshots, record)
+        return citation if citation.sources else None
 
     def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool:
         """Pin `frame_ref` for `component_id`, and, for a derived frame, each root version its

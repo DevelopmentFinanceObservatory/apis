@@ -34,7 +34,7 @@ import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactNotFoundError
@@ -49,7 +49,7 @@ from datasets_api.codes_snapshot import ArtifactExpired
 from datasets_api.manifest_models import CitationModel, CitationSource, RetentionModel
 from datasets_api.mint_models import MintOptions
 from datasets_api.publish_models import Recipe
-from datasets_api.recipe_store import RecipeReader
+from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.render import stored_frame_location
 from datasets_api.retention import version_retention
 from dfo_platform.config import PublicSiteSettings
@@ -102,10 +102,10 @@ def root_rendering(options: Mapping[str, Any]) -> dict[str, Any]:
     return rendering
 
 
-def recipe_roots(recipe: Recipe) -> list[dict[str, Any]]:
-    """Each root dataset version of `recipe` once, in its order, with its rendering."""
+def recipe_roots(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Each root dataset version a recipe's stored `roots` `records` name, once, in their
+    order, with its rendering."""
     roots: list[dict[str, Any]] = []
-    records: list[dict[str, Any]] = recipe.model_dump(mode="json")["roots"]
     for record in records:
         dataset = record["dataset"]
         options = record.get("options") or {}
@@ -134,6 +134,17 @@ def roots_citation(reader: SnapshotReader, roots: Sequence[Mapping[str, Any]]) -
         for source in citation.sources:
             sources.setdefault((source.ref, source.processing_level), source)
     return CitationModel(text="\n\n".join(texts), sources=list(sources.values()))
+
+
+def recipe_citation(reader: SnapshotReader, record: RecipeRecord | None) -> CitationModel:
+    """The citation of the derived frame whose stored recipe is `record`: its roots' citations
+    merged (`roots_citation`), and no source for a frame with no recipe."""
+    roots = (
+        []
+        if record is None
+        else recipe_roots(cast("Sequence[Mapping[str, Any]]", record.body.get("roots") or []))
+    )
+    return roots_citation(reader, roots)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -172,7 +183,7 @@ def read_derived_manifest(
         reads.snapshot_reader, subject_id=spec_id, content_version=content_version, now=now
     )
     recipe = _stored_recipe(reads, spec_id=spec_id, content_version=content_version)
-    roots = [] if recipe is None else recipe_roots(recipe)
+    roots = [] if recipe is None else recipe_roots(recipe.model_dump(mode="json")["roots"])
     return DerivedManifestFacts(
         spec_id=spec_id,
         content_version=content_version,
@@ -287,8 +298,7 @@ def render_derived_file(
     """
     table, prepared_at = stored_frame(spec_id=spec_id, content_version=content_version, reads=reads)
     record = reads.recipe_reader.read_recipe(spec_id=spec_id, content_version=content_version)
-    roots = [] if record is None else recipe_roots(Recipe.model_validate(record.body))
-    citation = roots_citation(reads.snapshot_reader, roots).sources_by_ref()
+    citation = recipe_citation(reads.snapshot_reader, record).sources_by_ref()
     sources = tuple(
         source_provenance(
             ref, cited.model_dump(mode="json") if (cited := citation.get(ref)) else None
