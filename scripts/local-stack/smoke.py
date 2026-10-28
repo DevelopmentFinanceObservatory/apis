@@ -117,8 +117,15 @@ def check_files(client: httpx.Client, artifacts: Sequence[Mapping]) -> str:
     return f"files: {len(artifacts)} links redirect to bytes matching their digests ({media})"
 
 
-def _post(client: httpx.Client, path: str, body: object, *, status: int = 200) -> httpx.Response:
-    response = client.post(path, json=body)
+def _post(
+    client: httpx.Client,
+    path: str,
+    body: object,
+    *,
+    status: int = 200,
+    headers: Mapping[str, str] | None = None,
+) -> httpx.Response:
+    response = client.post(path, json=body, headers=headers)
     if response.status_code != status:
         raise SmokeFailure(f"POST {path} answered {response.status_code}: {response.text[:400]}")
     return response
@@ -226,7 +233,14 @@ def _card(client: httpx.Client, kind: str, derived: Mapping[str, str]) -> Mappin
         "frame_ref": dict(derived),
         "select": {"stat_var": f"dcid:{derived['spec_id']}"},
     }
-    card = _post(client, "/api/presentation/components", {"intent": intent}, status=201).json()
+    # A card create spends its caller's card allowance, named from X-Forwarded-For.
+    card = _post(
+        client,
+        "/api/presentation/components",
+        {"intent": intent},
+        status=201,
+        headers={"X-Forwarded-For": "127.0.0.1"},
+    ).json()
     if not card["component_id"].startswith("cmp_") or card["revision"] != 1:
         raise SmokeFailure(f"{kind} create answered {card}")
     return card

@@ -80,7 +80,7 @@ CREATE TABLE datasets.artifact_reference (
 );
 CREATE TABLE datasets.caller_allowance (
     caller_key TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('share', 'pin', 'pin_budget', 'open_pin_budget')),
+    kind TEXT NOT NULL CHECK (kind IN ('share', 'card', 'pin', 'pin_budget', 'open_pin_budget')),
     day TEXT NOT NULL,
     count INTEGER NOT NULL CHECK (count > 0),
     PRIMARY KEY (caller_key, kind, day)

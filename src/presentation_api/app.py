@@ -12,10 +12,11 @@ construction. Live stores and credentials load in door lifespans. The website's 
 fixed window that every proxy instance shares in Postgres. A call whose count fails goes
 through. The proxy passes `Authorization` upstream unread. A `cmp_`
 or `cps_` id grants read of a draft, and the write token its create returned grants write, so the
-doors take no caller or session. The two render routes of `presentation_api.doors.render` are
-the exception. They admit the live-refresh principal the composition passes in, and refuse
-every caller when it passes none. The share routes (`presentation_api.doors.shares`) name
-their caller for the share allowance, and take the share's write token for a replace or delete.
+doors take no session. The two render routes of `presentation_api.doors.render` admit the
+live-refresh principal the composition passes in, and refuse every caller when it passes none.
+A card create or revise names its caller for the card allowance, and the share routes
+(`presentation_api.doors.shares`) for the share allowance; a replace or delete of a share takes
+its write token.
 
 The surface maps refusals to RFC 9457 problem details through the platform `Envelope`.
 """
@@ -33,6 +34,7 @@ from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore, Vocabula
 from dataset_store.snapshot import SnapshotReader
 from datasets_api.allowance import AllowanceLedger
 from datasets_api.live_refresh import LiveRefreshPrincipal
+from datasets_api.principals import Principals
 from datasets_api.recipe_store import RecipeReader
 from dfo_platform.app import Surface
 from dfo_platform.codes import merge_catalogues
@@ -70,6 +72,7 @@ def presentation_surface(
     share_store: ShareStore | None = None,
     allowances: AllowanceLedger | None = None,
     caller_settings: CallerSettings | None = None,
+    principals: Principals | None = None,
     newest_frames: NewestFrames | None = None,
 ) -> Surface:
     """Build the Presentation `Surface`. Unset stores use live dependencies. Injected stores
@@ -85,8 +88,10 @@ def presentation_surface(
     over the code index.
 
     `share_store`, `allowances` and `caller_settings` serve the share routes: the share
-    records, the ledger of each caller's daily share allowance, and how a caller is named. The
-    shares door mounts with a share store given or with no `revision_store` given, and builds
+    records, the ledger of each caller's daily allowances, and how a caller is named. The
+    components door spends the same ledger's card allowance when `allowances` is given or no
+    `revision_store` is, except for a caller whose principal `principals` grants `publish`
+    (`DatasetsBuildSettings`' by default). The shares door mounts with a share store given or with no `revision_store` given, and builds
     whichever of the three is left out. `newest_frames` answers a live share slot's check for
     newer data (`presentation_api.newest_frames`); with none, every live slot serves its card's
     own frame and states it stale.
@@ -119,6 +124,9 @@ def presentation_surface(
             recipe_reader=recipe_reader,
             vocabulary_source=vocabulary_source,
             live_refresh=live_refresh,
+            allowances=allowances,
+            caller=caller_settings,
+            principals=principals,
         ),
         build_frames_door(frame_store=frame_store),
         build_release_door(release_registry=effective_release_registry),

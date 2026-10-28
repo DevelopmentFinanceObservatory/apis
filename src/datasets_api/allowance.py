@@ -1,7 +1,8 @@
 """Daily allowances per caller, kept in `datasets.caller_allowance`.
 
 A caller (`dfo_platform.caller.Caller`) holds one allowance of each caller kind per UTC day:
-`share` (`DATASETS_SHARE_DAILY_ALLOWANCE`, default 10) for share writes, and
+`share` (`DATASETS_SHARE_DAILY_ALLOWANCE`, default 10) for share writes, `card`
+(`DATASETS_CARD_DAILY_ALLOWANCE`, default 500) for Presentation card creates and revisions, and
 `pin` (`DATASETS_PIN_DAILY_ALLOWANCE`, default 50) for the pins of callers without the pin
 grant. Two budgets every caller shares are kept the same way, under `BUDGET_KEY`: `pin_budget`
 (`DATASETS_PIN_DAILY_MAX`, default 500), the new pinned copies the pin door makes, and
@@ -9,18 +10,22 @@ grant. Two budgets every caller shares are kept the same way, under `BUDGET_KEY`
 without the pin grant. `AllowanceLedger.spend` takes one unit, or refuses `AllowanceExhausted`
 (429 `allowance_exhausted`) with `Retry-After` counting the seconds to the next UTC midnight,
 when every allowance and budget resets. `SharedAllowanceLedger.spend_together` takes one unit
-of each of several, all or none, and refuses naming the first spent out. A spent unit stays
-spent when the write it admitted later fails.
+of each of several, all or none, and refuses naming the first spent out. `AllowanceLedger.refund`
+gives one unit back, and `spending` spends one around a write and refunds it when the write
+fails, so a failed write costs its caller nothing. A pin's units stay spent when its copy fails.
 
 `LiveAllowanceLedger` spends each unit with one upsert that adds one to the day's row only while
 it is below the limit, so spends racing on one row cannot pass it. `spend_together` runs its
-upserts in one transaction and rolls them all back when one finds its row at the limit.
+upserts in one transaction and rolls them all back when one finds its row at the limit. A
+refund takes one from the day's row, or deletes the row it would leave at zero.
 """
 
 from __future__ import annotations
 
+import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
@@ -34,9 +39,12 @@ from dfo_platform.caller import Caller
 from dfo_platform.problem import Refusal
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 
+logger = logging.getLogger(__name__)
+
 
 class AllowanceKind(StrEnum):
     share = "share"
+    card = "card"
     pin = "pin"
     pin_budget = "pin_budget"
     open_pin_budget = "open_pin_budget"
@@ -81,6 +89,7 @@ def allowance_limits(settings: DatasetsBuildSettings) -> Mapping[AllowanceKind, 
     """Each kind's daily limit from `settings`."""
     return {
         AllowanceKind.share: settings.share_daily_allowance,
+        AllowanceKind.card: settings.card_daily_allowance,
         AllowanceKind.pin: settings.pin_daily_allowance,
         AllowanceKind.pin_budget: settings.pin_daily_max,
         AllowanceKind.open_pin_budget: settings.pin_open_daily_max,
@@ -96,6 +105,38 @@ class AllowanceLedger(Protocol):
             DatasetsStoreUnavailable: The ledger could not be read or written.
         """
         ...
+
+    def refund(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
+        """Give back one unit of `caller`'s `kind` allowance spent for the UTC day of `now`. A
+        day with nothing spent stays at nothing.
+
+        Raises:
+            DatasetsStoreUnavailable: The ledger could not be written.
+        """
+        ...
+
+
+@contextmanager
+def spending(
+    ledger: AllowanceLedger, caller: Caller, kind: AllowanceKind, now: datetime
+) -> Iterator[None]:
+    """Spend one unit of `caller`'s `kind` allowance for the block, and give it back when the
+    block raises, so a retry of a failed write spends one unit in all. A refund that fails is
+    logged, and the block's own error propagates.
+
+    Raises:
+        AllowanceExhausted: The day's allowance is spent. The block does not run.
+        DatasetsStoreUnavailable: The spend could not be written.
+    """
+    ledger.spend(caller, kind, now)
+    try:
+        yield
+    except BaseException:
+        try:
+            ledger.refund(caller, kind, now)
+        except Exception:
+            logger.exception("Refunding a %s allowance unit of %s failed", kind, caller.key)
+        raise
 
 
 class SharedAllowanceLedger(AllowanceLedger, Protocol):
@@ -164,6 +205,31 @@ class LiveAllowanceLedger:
         if exhausted is not None:
             raise AllowanceExhausted(kind=exhausted, limit=self._limits[exhausted], now=now)
 
+    def refund(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
+        params = (caller.key, kind.value, _utc_day(now))
+        failure: str | None = None
+        sqlstate: str | None = None
+        try:
+            with self._store.transaction() as tx:
+                # The row holds a positive count, so the last unit deletes it.
+                row = tx.fetch_one(
+                    "UPDATE datasets.caller_allowance SET count = count - 1 "
+                    "WHERE caller_key = %s AND kind = %s AND day = %s AND count > 1 "
+                    "RETURNING count",
+                    params,
+                )
+                if row is None:
+                    tx.execute(
+                        "DELETE FROM datasets.caller_allowance "
+                        "WHERE caller_key = %s AND kind = %s AND day = %s AND count = 1",
+                        params,
+                    )
+        except Exception as exc:
+            failure = f"refunding {kind} of {caller.key!r} failed: {safe_diagnostics(exc)}"
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+
 
 __all__ = [
     "BUDGET_KEY",
@@ -175,4 +241,5 @@ __all__ = [
     "Spend",
     "allowance_limits",
     "seconds_to_reset",
+    "spending",
 ]

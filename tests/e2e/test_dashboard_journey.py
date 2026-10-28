@@ -108,7 +108,9 @@ class _Journey:
             "frame_ref": frame,
             "select": {"stat_var": f"dcid:{frame['spec_id']}"},
         }
-        resp = self.client.post("/api/presentation/components", json={"intent": intent})
+        resp = self.client.post(
+            "/api/presentation/components", json={"intent": intent}, headers=_CALLER
+        )
         assert resp.status_code == 201, resp.text
         return resp.json()
 

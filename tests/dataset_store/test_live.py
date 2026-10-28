@@ -2313,6 +2313,29 @@ def test_concurrent_allowance_spends_stop_at_the_limit(live_store, together: boo
         assert spent == {"count": 3}
 
 
+def test_a_card_unit_refund_takes_one_back_and_deletes_a_day_left_at_zero(live_store):
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    ledger = LiveAllowanceLedger(store=live_store, limits={AllowanceKind.card: 2})
+    now = datetime.now(UTC)
+
+    def held() -> object:
+        with live_store.transaction() as tx:
+            return tx.fetch_one(
+                "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s AND kind = %s",
+                (caller.key, AllowanceKind.card.value),
+            )
+
+    ledger.spend(caller, AllowanceKind.card, now)
+    ledger.spend(caller, AllowanceKind.card, now)
+    ledger.refund(caller, AllowanceKind.card, now)
+    after_one = held()
+    ledger.refund(caller, AllowanceKind.card, now)
+    ledger.refund(caller, AllowanceKind.card, now)
+
+    assert after_one == {"count": 1}
+    assert held() is None
+
+
 def test_artifact_reference_upsert_reactivates_a_soft_deleted_row(live_store):
     digest = "sha256:test-live-reference-upsert-reactivate"
     subject_id = "spec:test-live-reference-upsert-reactivate"

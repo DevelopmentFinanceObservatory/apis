@@ -94,6 +94,7 @@ from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import run_operation
+from datasets_api.principals import Principals
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.reference_store import LiveArtifactReferenceWriter
 from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVersionRecordWriter
@@ -974,6 +975,7 @@ def compose(
                 share_store=LiveShareStore(store=FakePresentationStore()),
                 allowances=allowances,
                 caller_settings=settings.caller,
+                principals=Principals.resolve(settings=settings),
                 # As `dfo_apis.app.build_presentation_surface` builds it over the same cell.
                 newest_frames=DatasetsNewestFrames(
                     datasets_cell, budget_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS / 2

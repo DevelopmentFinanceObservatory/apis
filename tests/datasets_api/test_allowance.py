@@ -1,5 +1,5 @@
 """`LiveAllowanceLedger.spend` counts each caller's writes per kind and UTC day, and refuses past
-the limit with a wait to the next UTC midnight."""
+the limit with a wait to the next UTC midnight. `refund` and `spending` give a unit back."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from datasets_api.allowance import (
     AllowanceKind,
     LiveAllowanceLedger,
     Spend,
+    spending,
 )
 from dfo_platform.caller import Caller
 
@@ -94,3 +95,29 @@ def test_spends_together_take_every_unit_or_none():
     with pytest.raises(AllowanceExhausted) as spent_out:
         ledger.spend_together([budget], _NOON)
     assert spent_out.value.kind is AllowanceKind.open_pin_budget
+
+
+def test_a_refund_gives_one_unit_back_and_a_spent_out_day_spends_again(ledger):
+    ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+    ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+
+    ledger.refund(_ALICE, AllowanceKind.pin, _NOON)
+    ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+    ledger.refund(_ALICE, AllowanceKind.pin, _NOON)
+    ledger.refund(_ALICE, AllowanceKind.pin, _NOON)
+    ledger.refund(_ALICE, AllowanceKind.pin, _NOON)
+
+    ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+    ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+    with pytest.raises(AllowanceExhausted):
+        ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+
+
+def test_spending_refunds_the_unit_when_the_write_fails(ledger):
+    with pytest.raises(RuntimeError), spending(ledger, _ALICE, AllowanceKind.share, _NOON):
+        raise RuntimeError("the write failed")
+    with spending(ledger, _ALICE, AllowanceKind.share, _NOON):
+        pass
+
+    with pytest.raises(AllowanceExhausted):
+        ledger.spend(_ALICE, AllowanceKind.share, _NOON)

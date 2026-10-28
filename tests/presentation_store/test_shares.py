@@ -377,3 +377,29 @@ def test_a_slot_records_what_it_shows_each_time_it_changes_read_newest_first():
     store.delete_share(share_id=share.id)
     with pytest.raises(ShareNotFound):
         store.served_frames(share_id=share.id)
+
+
+def test_a_slot_read_locks_the_share_only_when_what_the_slot_shows_changes():
+    fake = FakePresentationStore()
+    store = LiveShareStore(store=fake)
+    share = _create(store, _card("a"))
+
+    def locks_taken(frame: FrameRef | None) -> int:
+        fake.statement_log.clear()
+        if frame is None:
+            store.record_emptied(share_id=share.id, slot=1)
+        else:
+            store.record_served(
+                share_id=share.id, slot=1, card=_card("a"), frame=frame, rendering=None
+            )
+        return sum("FOR NO KEY UPDATE" in sql for sql in fake.statement_log)
+
+    assert [locks_taken(frame) for frame in (_FRAME, _FRAME, _NEWER, _NEWER, None, None)] == [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+    ]
+    assert len(store.served_frames(share_id=share.id)) == 3

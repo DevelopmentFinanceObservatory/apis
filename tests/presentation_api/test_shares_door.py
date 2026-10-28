@@ -1,6 +1,7 @@
-"""The shares door: every publication rule vector over HTTP, the share allowance, pinning on
-create and replace, ids kept from the website, take-down, and a burst of reads over its
-executor."""
+"""The shares door: every publication rule vector over HTTP, the share allowance and its refund,
+the live share's data-card limit, pinning on create and replace, ids kept from the website,
+take-down, and a burst of reads over its executor. Also the card allowance the components door
+spends on create and revise."""
 
 from __future__ import annotations
 
@@ -16,10 +17,12 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from assembler.errors import FrameUnavailable
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef
 from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
 from datasets_api.allowance import AllowanceExhausted, AllowanceKind
+from datasets_api.principals import Grant, Principals
 from dfo_platform import ProblemDetails
 from dfo_platform.app import create_app
 from dfo_platform.caller import Caller, address_key
@@ -40,16 +43,28 @@ _CARD_NAMES = ("cmp_a", "cmp_b", "cmp_c", "cmp_d", "cmp_e")
 
 
 class _Allowances:
-    """An `AllowanceLedger` that admits `limit` spends per caller and records each."""
+    """An `AllowanceLedger` that admits `limit` spends of each kind per caller and records each
+    unit held. `spent` lists the share units, `cards` the card units."""
 
     def __init__(self, *, limit: int) -> None:
         self.limit = limit
-        self.spent: list[tuple[str, AllowanceKind]] = []
+        self.held: list[tuple[str, AllowanceKind]] = []
+
+    @property
+    def spent(self) -> list[tuple[str, AllowanceKind]]:
+        return [unit for unit in self.held if unit[1] == AllowanceKind.share]
+
+    @property
+    def cards(self) -> list[tuple[str, AllowanceKind]]:
+        return [unit for unit in self.held if unit[1] == AllowanceKind.card]
 
     def spend(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
-        if sum(1 for key, _ in self.spent if key == caller.key) >= self.limit:
+        if self.held.count((caller.key, kind)) >= self.limit:
             raise AllowanceExhausted(kind=kind, limit=self.limit, now=now)
-        self.spent.append((caller.key, kind))
+        self.held.append((caller.key, kind))
+
+    def refund(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
+        self.held.remove((caller.key, kind))
 
 
 class _Door:
@@ -73,7 +88,9 @@ class _Door:
             "window": {"start": "2015", "end": "2024"},
             "title": f"Card {name}",
         }
-        resp = self.client.post("/api/presentation/components", json={"intent": intent})
+        resp = self.client.post(
+            "/api/presentation/components", json={"intent": intent}, headers=_HEADERS
+        )
         assert resp.status_code == 201, resp.json()
         return resp.json()["component_id"]
 
@@ -249,6 +266,24 @@ def test_a_retried_create_with_the_clients_token_answers_the_first_share(door: _
     # The token is the share's: it changes the share the create made.
     replaced = door.replace(first.json()["id"], ["cmp_b"], token=token)
     assert replaced.status_code == 200, replaced.json()
+
+
+def test_a_create_whose_pin_fails_gives_its_unit_back_so_the_retry_spends_one(
+    door: _Door, monkeypatch: pytest.MonkeyPatch
+):
+    token = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
+    pin = door.frame_store.pin
+
+    def unavailable(**_: object) -> bool:
+        raise FrameUnavailable(reason="io", detail="the pin failed")
+
+    monkeypatch.setattr(door.frame_store, "pin", unavailable)
+    failed = _create_with_token(door, token)
+    monkeypatch.setattr(door.frame_store, "pin", pin)
+    retried = _create_with_token(door, token)
+
+    assert (failed.status_code, retried.status_code) == (503, 201)
+    assert len(door.allowances.spent) == 1
 
 
 @pytest.mark.parametrize(
@@ -471,6 +506,128 @@ def test_replace_and_delete_spend_no_allowance(door: _Door):
     assert door.replace(created["id"], ["cmp_b"], token=created["write_token"]).status_code == 200
     assert door.unshare(created["id"], token=created["write_token"]).status_code == 204
     assert len(door.allowances.spent) == 1
+
+
+@pytest.mark.parametrize(
+    ("count", "latest", "status"),
+    [(20, True, 201), (21, True, 400), (21, False, 201)],
+    ids=["live-at-the-limit", "live-past-the-limit", "snapshot-past-the-live-limit"],
+)
+def test_a_live_create_takes_at_most_twenty_data_cards(
+    door: _Door, count: int, latest: bool, status: int
+):
+    resp = door.share(["cmp_a"] * count, latest=latest)
+
+    assert resp.status_code == status, resp.json()
+    if status == 400:
+        _assert_refused(resp, status=400, code="request_invalid")
+        assert door.allowances.spent == []
+
+
+def test_a_replace_of_a_live_share_takes_at_most_twenty_data_cards(door: _Door):
+    created = door.share(["cmp_a"], latest=True).json()
+
+    past = door.replace(created["id"], ["cmp_b"] * 21, token=created["write_token"])
+    at = door.replace(created["id"], ["cmp_b"] * 20, token=created["write_token"])
+
+    _assert_refused(past, status=400, code="request_invalid")
+    assert at.status_code == 200, at.json()
+
+
+def _card_body(title: str) -> dict[str, object]:
+    return {
+        "intent": {
+            "type": "line_chart",
+            "frame_ref": {
+                "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790",
+                "content_version": "cv_f4a81c22d9075e3ba61c2ee98f83b405",
+            },
+            "select": {"stat_var": "dcid:MalariaGrantDisbursements", "recipient": "country/ETH"},
+            "title": title,
+        }
+    }
+
+
+def test_a_card_create_and_revise_each_spend_one_card_unit_of_the_forwarded_caller(door: _Door):
+    caller = address_key(_ADDRESS, hmac_key=_HMAC_KEY)
+    created = door.client.post(
+        "/api/presentation/components", json=_card_body("Card"), headers=_HEADERS
+    ).json()
+
+    revised = door.client.patch(
+        f"/api/presentation/components/{created['component_id']}",
+        json={"intent": {"title": "Card, revised"}},
+        headers={**_HEADERS, _TOKEN_HEADER: created["write_token"]},
+    )
+
+    assert revised.status_code == 200, revised.json()
+    # The five fixture cards, this create and its revision.
+    assert door.allowances.cards == [(caller, AllowanceKind.card)] * 7
+    assert door.allowances.spent == []
+
+
+def test_a_spent_card_allowance_refuses_create_and_revise_429_with_retry_after(door: _Door):
+    created = door.client.post(
+        "/api/presentation/components", json=_card_body("Card"), headers=_HEADERS
+    ).json()
+    door.allowances.limit = len(door.allowances.cards)
+
+    create = door.client.post(
+        "/api/presentation/components", json=_card_body("Another"), headers=_HEADERS
+    )
+    revise = door.client.patch(
+        f"/api/presentation/components/{created['component_id']}",
+        json={"intent": {"title": "Card, revised"}},
+        headers={**_HEADERS, _TOKEN_HEADER: created["write_token"]},
+    )
+
+    for resp in (create, revise):
+        body = _assert_refused(resp, status=429, code="allowance_exhausted")
+        assert body["retryable"] is True
+        assert int(resp.headers["retry-after"]) >= 1
+
+
+def test_a_refused_card_write_gives_its_unit_back(door: _Door):
+    held = len(door.allowances.cards)
+
+    resp = door.client.post(
+        "/api/presentation/components", json={"intent": {"type": "no_such_card"}}, headers=_HEADERS
+    )
+
+    assert resp.status_code == 400, resp.json()
+    assert len(door.allowances.cards) == held
+
+
+def test_a_card_write_under_the_publish_principal_spends_nothing(
+    release_registry: FakeReleaseRegistry, frame_store: FakeFrameStore
+):
+    allowances = _Allowances(limit=50)
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=FakeRevisionStore(),
+        release_registry=release_registry,
+        share_store=LiveShareStore(store=FakePresentationStore()),
+        allowances=allowances,
+        caller_settings=CallerSettings(caller_hmac_key=SecretStr(_HMAC_KEY)),
+        principals=Principals(
+            header="x-dfo-principal",
+            secrets=(("ai-publish", Grant.publish), ("site-pin", Grant.pin)),
+        ),
+    )
+    with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
+        published = client.post(
+            "/api/presentation/components",
+            json=_card_body("Card"),
+            headers={"x-dfo-principal": "ai-publish"},
+        )
+        pinned = client.post(
+            "/api/presentation/components",
+            json=_card_body("Card"),
+            headers={**_HEADERS, "x-dfo-principal": "site-pin"},
+        )
+
+    assert (published.status_code, pinned.status_code) == (201, 201)
+    assert allowances.cards == [(address_key(_ADDRESS, hmac_key=_HMAC_KEY), AllowanceKind.card)]
 
 
 @pytest.mark.parametrize(

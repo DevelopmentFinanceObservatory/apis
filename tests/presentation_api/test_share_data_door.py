@@ -113,6 +113,7 @@ class _Door:
                     "title": "Malaria grants to Ethiopia",
                 }
             },
+            headers=_HEADERS,
         )
         assert resp.status_code == 201, resp.json()
         return resp.json()["component_id"]
@@ -735,6 +736,26 @@ def test_the_history_records_a_slot_a_replace_empties_and_refills(door: _Door):
             "fetchable": False,
         }
         for slot, entry in ((3, emptied[0]), (2, emptied[1]))
+    ]
+
+
+def test_a_slot_whose_card_becomes_a_note_records_an_empty_entry(door: _Door):
+    card = door.card()
+    note = door.card({"type": "note_narration", "text": "Grants rose."})
+    share = door.share(card, latest=True)
+    share_path = f"/api/presentation/shares/{share['id']}"
+
+    resp = door.client.put(
+        share_path,
+        json={"cards": [{"component_id": note, "revision": 1}]},
+        headers={_TOKEN: share["write_token"]},
+    )
+
+    assert resp.status_code == 200, resp.text
+    served = door.client.get(f"{share_path}/history").json()["served"]
+    assert [(entry["component_id"], entry["frame"]) for entry in served] == [
+        (None, None),
+        (card, {"spec_id": _STORED.spec_id, "content_version": _STORED.content_version}),
     ]
 
 

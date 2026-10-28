@@ -152,6 +152,10 @@ class DatasetsBuildSettings(BaseSettings):
     # Shares one caller may write per UTC day (`datasets_api.allowance`).
     share_daily_allowance: int = Field(default=10, ge=0)
 
+    # Presentation card creates and revisions one caller may write per UTC day
+    # (`datasets_api.allowance`). A caller holding the publish grant spends none.
+    card_daily_allowance: int = Field(default=500, ge=0)
+
     # Sent as `x-graph-token` to live graph/SDMX clients to bypass the graph WAF. Empty omits the
     # header.
     graph_token: str = Field(default="")

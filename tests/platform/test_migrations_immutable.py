@@ -104,6 +104,9 @@ _DATASET_STORE = {
     "0041_analysis_answer.sql": (
         "f2868dc1a5d525e7d1d37415e53f339f649a9ae967e86a2ce285a94e0115df99"
     ),
+    "0042_caller_allowance_card.sql": (
+        "7f335403d0d671153813264b2c08db2d068d4d95d238e352f0c1c0dbf58ddb06"
+    ),
 }
 
 _PRESENTATION_STORE = {

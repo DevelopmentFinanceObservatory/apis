@@ -62,7 +62,8 @@ class _Rig:
         return {"spec_id": published["spec_id"], "content_version": published["content_version"]}
 
     def create(self, intent: dict[str, object]) -> str:
-        resp = self.client.post(_COMPONENTS, json={"intent": intent})
+        # As `ai` writes cards: under its publish principal, which spends no card allowance.
+        resp = self.client.post(_COMPONENTS, json={"intent": intent}, headers=PUBLISH)
         assert resp.status_code == 201, resp.text
         return resp.json()["component_id"]
 

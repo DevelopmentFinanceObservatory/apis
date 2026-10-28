@@ -191,6 +191,7 @@ def record_wire_pairs(*, composed: ComposedApp, client: TestClient) -> dict[str,
         None,
         "POST",
         _COMPONENTS,
+        principal=publish,
         body={
             "intent": {
                 "type": "line_chart",
@@ -228,6 +229,7 @@ def record_wire_pairs(*, composed: ComposedApp, client: TestClient) -> dict[str,
         None,
         "POST",
         _COMPONENTS,
+        principal=publish,
         body={
             "intent": {
                 "type": "line_chart",

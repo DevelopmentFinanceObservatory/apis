@@ -5,14 +5,16 @@ snapshots, deletes and reads shares.
 payload?, write_token?}`. `latest` has no default: true makes a live share, which follows new
 data, and false a snapshot, which keeps the versions its cards drew. `kind` defaults to `card`.
 A `card` share takes 1 to 24 cards, a `canvas` 0 to 24, and a `search` or `conversation` share
-none, and a `conversation` share is a snapshot. `payload` is website-owned JSON of at most
+none, and a `conversation` share is a snapshot. A live share holds at most
+`MAX_LIVE_SHARE_DATA_CARDS` (20) data cards, those that draw a frame, on create and on replace,
+the website's `LIVE_SHARE_MAX_DATA_CARDS`; more refuses 400 `request_invalid` at `/cards`. `payload` is website-owned JSON of at most
 `presentation_store.MAX_SHARE_PAYLOAD_BYTES` (10 MiB) as compact UTF-8, stored as given and
 read back on GET; a larger one refuses 413 `payload_too_large`. The create spends one unit of the
 caller's `share` allowance (`datasets_api.allowance`, caller named by
 `dfo_platform.caller.resolve_caller`), refusing 429 `allowance_exhausted` once it is spent, then
 pins the frame each card revision draws (`presentation_store.pin_card_frames`), live or
-snapshot, since a share first including a card pins it. A unit stays spent when the pin or the
-write then fails. The reply carries the share's page, embed and per-slot data URLs under the
+snapshot, since a share first including a card pins it. A pin or write that then fails gives the
+unit back (`datasets_api.allowance.spending`), so a retry spends one unit in all. The reply carries the share's page, embed and per-slot data URLs under the
 public site, and the `shw_` write token; the store keeps its SHA-256 digest.
 
 A create may carry its own `shw_` token in `write_token`, in the form the server mints
@@ -73,7 +75,8 @@ stored it and whether it is still fetchable (`share_slots.history_document`). A 
 or snapshot conversion records each slot's frame as served at the write, as a read does, so the
 history lists what a share shows before any read. A slot a replace leaves empty records an
 entry with `component_id`, `revision`, `frame`, `rendering` and `retention` null and
-`fetchable` false, and a slot records an entry only when what it shows changes.
+`fetchable` false, and so does a slot whose card is a note, which draws no frame. A slot records
+an entry only when what it shows changes.
 
 A share id that names no share, or one taken down, answers 404 `not_found` on every route. A
 card's frame that is gone answers 404 `frame_unavailable`, and a frame read that fails answers
@@ -150,6 +153,7 @@ from datasets_api.allowance import (
     AllowanceLedger,
     LiveAllowanceLedger,
     allowance_limits,
+    spending,
 )
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.config import DatasetsBuildSettings
@@ -215,6 +219,7 @@ from presentation_store import shared_pool as presentation_shared_pool
 from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
 __all__ = [
+    "MAX_LIVE_SHARE_DATA_CARDS",
     "MAX_SHARE_CARDS",
     "MAX_SHARE_PAYLOAD_BYTES",
     "SHARES_DEPS_SLOT",
@@ -238,6 +243,10 @@ SHARE_SLOT_DATA_PATH = f"{SHARE_SLOT_PATH}/data"
 
 MAX_SHARE_CARDS = 24
 """The most cards one create or replace takes, and so the most slots a write adds."""
+
+MAX_LIVE_SHARE_DATA_CARDS = 20
+"""The most data cards, those that draw a frame, a live share holds: the website's
+`LIVE_SHARE_MAX_DATA_CARDS`, since each one's slot checks for newer data on read."""
 
 _MAX_TITLE_LENGTH = 300
 
@@ -457,6 +466,27 @@ def _read_cards(
     return read
 
 
+def _require_live_data_cards(cards: Iterable[ShareCard]) -> None:
+    """Refuse more than `MAX_LIVE_SHARE_DATA_CARDS` data cards for a live share.
+
+    Raises:
+        RequestValidationError: `cards` holds more data cards than a live share takes.
+    """
+    count = sum(1 for card in cards if card.frame is not None)
+    if count > MAX_LIVE_SHARE_DATA_CARDS:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("body", "cards"),
+                    "msg": f"a live share holds at most {MAX_LIVE_SHARE_DATA_CARDS} data cards, "
+                    f"not {count}",
+                    "input": None,
+                }
+            ]
+        )
+
+
 def _pin(cards: Iterable[ShareCard], *, deps: SharesDeps) -> None:
     """Pin the frame each distinct card revision in `cards` draws."""
     for component_id, revision in dict.fromkeys((c.component_id, c.revision) for c in cards):
@@ -471,14 +501,13 @@ def _pin(cards: Iterable[ShareCard], *, deps: SharesDeps) -> None:
 def _record_shown(share: ShareRecord, *, deps: SharesDeps) -> None:
     """Record what each slot of `share` shows: the frame its card draws, with the card
     revision's recorded rendering, as a slot read records it, or no card for a slot a replace
-    left empty. The share's history then lists from the write on what it shows."""
+    left empty or whose card is a note. The share's history then lists from the write on what
+    it shows."""
     renderings: dict[tuple[str, int], Mapping[str, object] | None] = {}
     for slot in share.slots:
         card = slot.card
-        if card is None:
+        if card is None or card.frame is None:
             deps.share_store.record_emptied(share_id=share.id, slot=slot.slot)
-            continue
-        if card.frame is None:
             continue
         key = (card.component_id, card.revision)
         if key not in renderings:
@@ -608,21 +637,24 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
         ):
             return replayed
         cards = _read_cards(body.cards, revision_store=deps.revision_store)
-        deps.allowances.spend(caller, AllowanceKind.share, deps.now())
-        _pin(cards, deps=deps)
+        if body.latest:
+            _require_live_data_cards(cards)
         try:
-            share = deps.share_store.create_share(
-                kind=body.kind,
-                mode="live" if body.latest else "snapshot",
-                title=body.title,
-                write_token_sha256=token_sha256,
-                cards=cards,
-                payload=body.payload,
-                create_request_sha256=request_sha256,
-            )
+            with spending(deps.allowances, caller, AllowanceKind.share, deps.now()):
+                _pin(cards, deps=deps)
+                share = deps.share_store.create_share(
+                    kind=body.kind,
+                    mode="live" if body.latest else "snapshot",
+                    title=body.title,
+                    write_token_sha256=token_sha256,
+                    cards=cards,
+                    payload=body.payload,
+                    create_request_sha256=request_sha256,
+                )
         except ShareWriteTokenInUse:
             # A create with the same token committed first, or a server-minted token collided,
-            # which 128 random bits make a broken minter.
+            # which 128 random bits make a broken minter. The unit went back, since the first
+            # create spent its own.
             if request_sha256 is None:
                 raise GeneratedIdCollision(subject_kind="share write token") from None
             replayed = _replay_create(
@@ -655,6 +687,7 @@ async def replace_share(
                 [{"type": "value_error", "loc": ("body", "cards"), "msg": refusal, "input": None}]
             )
         cards = _read_cards(body.cards, revision_store=deps.revision_store)
+        _require_live_data_cards(cards)
         shown = {
             (slot.card.component_id, slot.card.revision)
             for slot in current.slots

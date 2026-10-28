@@ -25,7 +25,9 @@ check time of the last check for the reads that lose it. A slot's first claim in
 is a timeline of what each slot showed: `record_served` records the frame a slot serves, and
 `record_emptied` a slot left with no card, each only when it differs from the slot's newest
 entry, so a slot that goes back to an earlier frame records it again and repeated reads record
-nothing new. Both lock the share row first, so concurrent reads of one slot record one entry.
+nothing new. Each reads the slot's newest entry first and, only when it shows something else,
+locks the share row and checks again under the lock, so concurrent reads of one slot record one
+entry and a read of an unchanged slot takes no lock.
 `served_frames` reads the timeline newest first.
 
 `create_share` mints the id (`ids.mint_share_id`) and inserts it with `ON CONFLICT DO NOTHING`,
@@ -844,8 +846,17 @@ def _record_shown(
 ) -> None:
     """Record that `slot` shows `shown` (component id, component revision, frame spec id, frame
     content version; all `None` for no card) from now, unless the slot's newest entry already
-    shows it. The share row lock serialises the check and the insert across readers of one
+    shows it. Most reads find it does, so the newest entry is read first without a lock. When it
+    differs, the share row lock serialises a second check and the insert across readers of one
     share, and `clock_timestamp()` dates the entry after any entry the lock waited on."""
+    newest = tx.fetch_one(
+        "SELECT component_id, component_revision, frame_spec_id, frame_content_version "
+        "FROM presentation.served_frame WHERE share_id = %s AND slot = %s "
+        "ORDER BY first_served_at DESC, id DESC LIMIT 1",
+        (share_id, slot),
+    )
+    if newest is not None and tuple(newest[name] for name in _SHOWN_COLUMNS) == shown:
+        return
     tx.execute("SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE", (share_id,))
     tx.execute(
         "INSERT INTO presentation.served_frame (share_id, slot, component_id, "
@@ -859,6 +870,9 @@ def _record_shown(
         "%s::text))",
         (share_id, slot, *shown, _json_param(rendering), share_id, slot, *shown),
     )
+
+
+_SHOWN_COLUMNS = ("component_id", "component_revision", "frame_spec_id", "frame_content_version")
 
 
 def _served(row: Mapping[str, object]) -> ServedFrame:

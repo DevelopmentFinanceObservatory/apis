@@ -4,7 +4,16 @@ pipeline refusals to HTTP. The `cmp_` id grants read to any caller. Revising a c
 the write token its create returned, sent as `x-dfo-write-token`, and a create into an existing
 composition needs that composition's token in the same header. A create may carry its own `cmw_`
 token in the body's `write_token`; a retry with the same token and request returns the first
-create's reply. These routes take no caller or session.
+create's reply. These routes take no session.
+
+A create or a revise spends one unit of its caller's daily `card` allowance
+(`datasets_api.allowance`, `DATASETS_CARD_DAILY_ALLOWANCE`, default 500), the caller named by
+`dfo_platform.caller.resolve_caller` as the share create names it, and refuses 429
+`allowance_exhausted` with `Retry-After` once it is spent. A write that fails gives its unit back
+(`datasets_api.allowance.spending`), so a refused intent costs nothing. A caller whose
+`x-dfo-principal` holds the `publish` grant (`datasets_api.principals`), `ai` writing cards for
+its conversations, spends none. The door spends when it is given an allowance ledger or builds
+its stores live.
 
 No route pins a frame: a card's frame stays in the working tier until a share first includes
 the card (`presentation_store.pin_card_frames`). A create and a read state the stored frame's
@@ -25,11 +34,12 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import cast
 
-from fastapi import APIRouter, FastAPI, Header, Query
+from fastapi import APIRouter, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,14 +68,26 @@ from assembler.ports import (
 from assembler.write_token import CreateRequestInvalid
 from dataset_store import LiveDatasetStore
 from dataset_store import close_shared_pool as close_dataset_pool
+from dataset_store import shared_pool as dataset_shared_pool
 from dataset_store.snapshot import SnapshotReader
+from datasets_api.allowance import (
+    AllowanceExhausted,
+    AllowanceKind,
+    AllowanceLedger,
+    LiveAllowanceLedger,
+    allowance_limits,
+    spending,
+)
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.door_executor import build_door_executor
 from datasets_api.live_refresh import LiveRefreshPrincipal
+from datasets_api.principals import Grant, Principals
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform import Alternative, ProblemSpec
-from dfo_platform.config import PublicSiteSettings
+from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
+from dfo_platform.config import CallerSettings, PublicSiteSettings
 from dfo_platform.doors import DoorContribution, combine_classifiers
 from dfo_platform.store_errors import store_failure_is_permanent
 from presentation_api.codes import retryable_for
@@ -261,6 +283,20 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
             detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
         )
+    if isinstance(exc, AllowanceExhausted):
+        return ProblemSpec(
+            status=429,
+            code="allowance_exhausted",
+            detail=str(exc),
+            retryable=True,
+            headers=exc.headers,
+        )
+    if isinstance(exc, CallerHeaderInvalid):
+        return ProblemSpec(status=400, code="request_invalid", detail=str(exc), retryable=False)
+    if isinstance(exc, CallerUnresolved):
+        # A deployment fault a retry does not clear, so not the retryable service_unavailable.
+        logger.error("Components door cannot name a caller: %s", exc)
+        return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
     if isinstance(exc, DatasetsStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
             logger.error(
@@ -311,6 +347,16 @@ def _schema_invalid_spec(exc: SchemaInvalid) -> ProblemSpec:
     )
 
 
+@dataclass(frozen=True)
+class CardAllowance:
+    """What a card write spends: the ledger of the `card` allowance, how its caller is named,
+    and the principals whose `publish` grant spends none."""
+
+    ledger: AllowanceLedger
+    caller: CallerSettings
+    principals: Principals
+
+
 @dataclass
 class ComponentsDeps:
     frame_store: FrameStore
@@ -324,6 +370,8 @@ class ComponentsDeps:
     recipe_reader: RecipeReader | None = None
     # The words cards' descriptions are composed from, set in the lifespan.
     vocabulary_source: VocabularySource | None = None
+    # What a create or revise spends, set in the lifespan; `None` spends nothing.
+    card_allowance: CardAllowance | None = None
 
 
 def build_components_door(
@@ -335,6 +383,9 @@ def build_components_door(
     recipe_reader: RecipeReader | None = None,
     vocabulary_source: VocabularySource | None = None,
     live_refresh: LiveRefreshPrincipal | None = None,
+    allowances: AllowanceLedger | None = None,
+    caller: CallerSettings | None = None,
+    principals: Principals | None = None,
     pool_size: int | None = None,
     budget: ShutdownBudget | None = None,
 ) -> DoorContribution:
@@ -347,6 +398,12 @@ def build_components_door(
     rule. `vocabulary_source` gives the words cards' descriptions are composed from, and the
     lifespan builds a `LiveVocabularySource` when none is injected. `live_refresh` is the one
     caller the render routes admit, and `None` refuses every caller.
+
+    A create or revise spends the caller's `card` allowance when `allowances` is given or the
+    door builds its stores live (no `revision_store`). The lifespan then builds whatever is left
+    out from `DatasetsBuildSettings`: the ledger over the datasets pool, `caller`, and
+    `principals`, whose `publish` grant spends none. Over injected stores with no `allowances`,
+    writes spend nothing.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     effective_pool_size = (
@@ -365,16 +422,19 @@ def build_components_door(
         vocabulary_source=vocabulary_source,
     )
 
+    spends_cards = allowances is not None or revision_store is None
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        opened_dataset_pool = False
+        # The live frame store and the allowance ledger each borrow the datasets pool once.
+        dataset_borrows = 0
         opened_presentation_pool = False
         owned_graph = None
 
         def _close_live_clients_built_here() -> None:
             if owned_graph is not None:
                 owned_graph.close()
-            if opened_dataset_pool:
+            for _ in range(dataset_borrows):
                 close_dataset_pool()
             if opened_presentation_pool:
                 close_presentation_pool()
@@ -394,13 +454,31 @@ def build_components_door(
             if frame_store is None:
                 settings = PresentationSettings.from_env()
                 live = build_live_frame_store(settings=settings)
-                opened_dataset_pool = True
+                dataset_borrows += 1
                 owned_graph = live.graph
                 deps.frame_store = live.frame_store
                 if snapshot_reader is None:
                     deps.snapshot_reader = live.snapshot_reader
                 if recipe_reader is None:
                     deps.recipe_reader = live.recipe_reader
+            if spends_cards:
+                build_settings = DatasetsBuildSettings.from_env()
+                ledger = allowances
+                if ledger is None:
+                    ledger = LiveAllowanceLedger(
+                        store=LiveDatasetStore(connections=dataset_shared_pool()),
+                        limits=allowance_limits(build_settings),
+                    )
+                    dataset_borrows += 1
+                deps.card_allowance = CardAllowance(
+                    ledger=ledger,
+                    caller=caller if caller is not None else build_settings.caller,
+                    principals=(
+                        principals
+                        if principals is not None
+                        else Principals.resolve(settings=build_settings)
+                    ),
+                )
         except BaseException:
             _close_live_clients_built_here()
             raise
@@ -423,6 +501,23 @@ def build_components_door(
             snapshot_reader=deps.snapshot_reader,
         )
 
+    def _card_spender(request: Request) -> Caller | None:
+        """The caller a card write from `request` spends for, or `None` when it spends nothing.
+
+        Raises:
+            CallerHeaderInvalid, CallerUnresolved: The caller cannot be named.
+        """
+        allowance = deps.card_allowance
+        if allowance is None or Grant.publish in allowance.principals.parse(request).grants:
+            return None
+        return resolve_caller(request, allowance.caller)
+
+    def _spending_card(spender: Caller | None) -> AbstractContextManager[None]:
+        """Spend one `card` unit of `spender` around a write, refunded when it fails."""
+        if spender is None or deps.card_allowance is None:
+            return nullcontext()
+        return spending(deps.card_allowance.ledger, spender, AllowanceKind.card, datetime.now(UTC))
+
     async def _run[R: Response](job: Callable[[], R], /) -> R:
         with frame_reads_bounded_by(timeout_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS):
             return await asyncio.wait_for(
@@ -439,20 +534,24 @@ def build_components_door(
     )
     async def create_component(
         body: CreateComponentBody,
+        request: Request,
         write_token: str | None = Header(None, alias=WRITE_TOKEN_HEADER),
     ) -> JSONResponse:
+        spender = _card_spender(request)
+
         def job() -> JSONResponse:
-            reply = write_component(
-                intent=body.intent,
-                component_id=None,
-                composition_id=body.composition_id,
-                write_token=write_token,
-                create_write_token=body.write_token,
-                frame_store=deps.frame_store,
-                revision_store=deps.revision_store,
-                release_registry=deps.release_registry,
-                vocabulary_source=deps.vocabulary_source,
-            )
+            with _spending_card(spender):
+                reply = write_component(
+                    intent=body.intent,
+                    component_id=None,
+                    composition_id=body.composition_id,
+                    write_token=write_token,
+                    create_write_token=body.write_token,
+                    frame_store=deps.frame_store,
+                    revision_store=deps.revision_store,
+                    release_registry=deps.release_registry,
+                    vocabulary_source=deps.vocabulary_source,
+                )
             retention = _frame_ref_retention(body.intent.get("frame_ref"))
             return JSONResponse(
                 {**serialize_create_reply(reply), "retention": retention}, status_code=201
@@ -467,21 +566,24 @@ def build_components_door(
     async def revise_component(
         component_id: str,
         body: ComponentBody,
+        request: Request,
         write_token: str | None = Header(None, alias=WRITE_TOKEN_HEADER),
     ) -> JSONResponse:
         require_component_id(component_id)
+        spender = _card_spender(request)
 
         def job() -> JSONResponse:
-            reply = write_component(
-                intent=body.intent,
-                component_id=component_id,
-                composition_id=body.composition_id,
-                write_token=write_token,
-                frame_store=deps.frame_store,
-                revision_store=deps.revision_store,
-                release_registry=deps.release_registry,
-                vocabulary_source=deps.vocabulary_source,
-            )
+            with _spending_card(spender):
+                reply = write_component(
+                    intent=body.intent,
+                    component_id=component_id,
+                    composition_id=body.composition_id,
+                    write_token=write_token,
+                    frame_store=deps.frame_store,
+                    revision_store=deps.revision_store,
+                    release_registry=deps.release_registry,
+                    vocabulary_source=deps.vocabulary_source,
+                )
             return JSONResponse(serialize_write_reply(reply), status_code=200)
 
         return await _run(job)
@@ -545,6 +647,9 @@ def build_components_door(
             DatasetsStoreUnavailable,
             SpecRegistryUnavailable,
             SpecRegistryStoreError,
+            AllowanceExhausted,
+            CallerHeaderInvalid,
+            CallerUnresolved,
             *COMPONENT_DATA_EXCEPTION_TYPES,
             *RENDER_EXCEPTION_TYPES,
             # The surface classifies validation errors, but this door declares the type raised by
@@ -593,6 +698,11 @@ def build_components_door(
             DatasetsStoreUnavailable("exemplar", sqlstate="23503"),
             SpecRegistryUnavailable(),
             SpecRegistryStoreError("exemplar"),
+            AllowanceExhausted(
+                kind=AllowanceKind.card, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
+            ),
+            CallerHeaderInvalid(),
+            CallerUnresolved("exemplar"),
             RequestValidationError(
                 [{"loc": ("body", "intent"), "msg": "Field required", "type": "missing"}],
                 body={},

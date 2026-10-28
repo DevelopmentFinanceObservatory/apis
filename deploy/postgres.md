@@ -83,13 +83,17 @@ refuses `service_unavailable` (503) unless the website vouches for its caller.
 `DFO_TRUSTED_PROXY_HOPS` (default `0`) counts the X-Forwarded-For entries the
 proxies in front of this service append after the client's.
 `DATASETS_PIN_DAILY_ALLOWANCE` (default `50`), `DATASETS_PIN_OPEN_DAILY_MAX`
-(default `200`) and `DATASETS_SHARE_DAILY_ALLOWANCE` (default `10`) bound what
-such callers write (`src/datasets_api/README.md`).
+(default `200`), `DATASETS_SHARE_DAILY_ALLOWANCE` (default `10`) and
+`DATASETS_CARD_DAILY_ALLOWANCE` (default `500`) bound what such callers write
+(`src/datasets_api/README.md`).
 
 Caller allowances live in `datasets.caller_allowance`, which migration
 `0039_caller_allowance.sql` creates. The pin door writes it as the datasets
 runtime role whenever a caller without the pin grant pins, so the migration
 must be applied before the image that opens the pin door takes traffic.
+Migration `0042_caller_allowance_card.sql` admits the `card` kind, which the
+Presentation components door spends, so it must be applied before the image
+that spends it takes traffic.
 
 Derived-frame recipes live in `datasets.frame_recipe`, which migration
 `0023_frame_recipe.sql` creates. The publish door writes to it when a publish
