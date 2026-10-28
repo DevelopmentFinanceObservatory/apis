@@ -59,6 +59,7 @@ from dfo_frame_grammar.grammar import (
 from pydantic import ValidationError
 
 from dfo_analysis_engine.artifact import Exclusion, Interval, Observation, Time
+from dfo_analysis_engine.call_steps import call_step
 from dfo_analysis_engine.engine.aggregate import run_aggregate
 from dfo_analysis_engine.engine.common import (
     NOT_A_FACT,
@@ -109,6 +110,7 @@ from dfo_analysis_engine.refusal import (
     refusal_for_engine_error,
 )
 from dfo_analysis_engine.result import VerbResult, observed_shape
+from dfo_analysis_engine.steps import Step
 from dfo_analysis_engine.time_grain import TimeGrain, distinct_time_grains, is_interval, time_grain
 
 __all__ = [
@@ -514,7 +516,8 @@ class VerbCall:
     frame's `cv_`, and `canonical_op_spec` the parsed RFC 8785 op-spec its id is
     minted over. `time`, `marker` and `components` are what a next call reads
     beside the rows (`as_input`). `summary` is described in the module docstring.
-    `dropped` is every series the call dropped for a data gap, record by record."""
+    `dropped` is every series the call dropped for a data gap, record by record, and `step`
+    the call's step record (`call_steps.call_step`)."""
 
     ref: FrameRef
     frame: Frame
@@ -527,6 +530,7 @@ class VerbCall:
     components: tuple[CompositeComponent, ...]
     summary: dict[str, Any] = field(repr=False)
     dropped: tuple[DroppedSeries, ...] = field(default=(), repr=False)
+    step: Step = field(repr=False)
 
     def as_input(self) -> Input:
         """This result, admitted as the input of a next call.
@@ -596,7 +600,8 @@ def _finished(
     exclusions = _exclusions(outcome.result.exclusions)
     time = _merged_time(outcome.own_interval, inputs)
     role_keys, stat_var_count = observed_shape(frame)
-    canonical = json.loads(canonicalize_op_spec(op_spec))
+    canonical_text = canonicalize_op_spec(op_spec)
+    canonical = json.loads(canonical_text)
     shape = VerbResult(
         spec_id=op_spec_hash,
         content_version=content_version,
@@ -632,7 +637,19 @@ def _finished(
         components=components,
         summary=summary,
         dropped=_dropped(outcome.result.exclusions),
+        step=call_step(
+            op_spec,
+            outcome.result,
+            op_spec_hash=op_spec_hash,
+            canonical_op_spec=canonical_text.decode(),
+            ratio=_ratio(outcome.marker),
+            input_ratios=[_ratio(frame.marker) for frame in inputs],
+        ),
     )
+
+
+def _ratio(marker: DerivedMarker | None) -> bool:
+    return marker is not None and marker.dimensionless
 
 
 def _dropped(exclusions: Exclusions) -> tuple[DroppedSeries, ...]:

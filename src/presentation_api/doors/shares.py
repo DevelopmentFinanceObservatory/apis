@@ -30,6 +30,8 @@ need the share's token in `x-dfo-write-token`, checked before anything else abou
 a caller without it learns nothing more: no header refuses 403 `write_token_required`, another
 token 403 `write_token_invalid`, and a share stored without a token (a guest's, imported from the
 website) refuses every token. A replace of a snapshot then refuses 409 `share_not_replaceable`.
+A `DELETE` of a share already taken down answers 204 to the holder of its token, so a client
+whose first 204 was lost can retry it, and 404 `not_found` to any other caller.
 
 `POST /api/presentation/shares/{share_id}/snapshot` turns a live share into a snapshot in place,
 under the same URLs, with the share's token. Each slot keeps the frame it serves now (its last
@@ -75,6 +77,7 @@ retryable 503.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -621,15 +624,30 @@ async def replace_share(
     return await _run(deps, job)
 
 
+def _holds_token(share_id: str, *, presented: str | None, deps: SharesDeps) -> bool:
+    """Whether `presented` is the write token of the share `share_id`, taken down or not."""
+    if presented is None:
+        return False
+    held = deps.share_store.prior_create(write_token_sha256=write_token_digest(presented))
+    return held is not None and held.share_id == share_id
+
+
 async def delete_share(
     share_id: str, deps: SharesDepsDep, write_token: WriteTokenHeader = None
 ) -> Response:
     require_share_id(share_id)
 
     def job() -> Response:
-        current = deps.share_store.read_share(share_id=share_id)
+        try:
+            current = deps.share_store.read_share(share_id=share_id)
+        except ShareNotFound:
+            if not _holds_token(share_id, presented=write_token, deps=deps):
+                raise
+            return Response(status_code=204)
         authorise_share_write(current, presented=write_token)
-        deps.share_store.delete_share(share_id=share_id)
+        # A concurrent delete by the holder took it down first, so this delete succeeded too.
+        with contextlib.suppress(ShareNotFound):
+            deps.share_store.delete_share(share_id=share_id)
         return Response(status_code=204)
 
     return await _run(deps, job)

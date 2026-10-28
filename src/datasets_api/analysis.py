@@ -33,6 +33,15 @@ its `population`: the runner fills both, the populations from the tree
 (`dfo_analysis_engine.rolling.anchor_populations`) and each period from the one latest period of
 the roots.
 
+A request may name `anchor_roots`, the roots the latest period is taken over in place of the
+tree's own: the roots `POST /api/datasets/analysis/anchor` was asked about, such as both sides of
+a pairing when the tree grows one side. The runner reads them as it reads the tree's roots, at
+the versions `latest` gives, and takes the period over them by the anchor route's function
+(`dfo_analysis_engine.anchor.latest_period`), so a rolling literal the anchor route gave is the
+period the run checks it against. They are the top node's `anchor_roots` in the recipe's tree,
+so the recipe's normal form names them, its `roots` hold them after the tree's own, and a replay
+of the stored recipe takes its period over them again.
+
 A derived root is expanded into its stored recipe, so the runner computes the whole chain from
 its root datasets. A request whose whole `tree` is a derived root computes that recipe again
 under its own ids, which is how a client reads a derived frame on its datasets' newest versions. With `latest` false every root is read at the version it names. With `latest`
@@ -44,8 +53,9 @@ A run (`run_analysis`) resolves every root first, so a root still building answe
 `AnalysisPending` with every rebuild it waits on submitted. It then holds one materialise permit
 while it reads the root frames, evaluates the tree (`dfo_analysis_engine.evaluate`), takes the
 output digest (`datasets_api.output_digest`) and stores the result: the frame through
-`publish_built_frame`, as its canonical frame and its bare frame-layout Parquet file, and its
-recipe through the recipe store, unless the frame file is stored and servable already, in which
+`publish_built_frame`, as its canonical frame and its bare frame-layout Parquet file with the
+step list its description record names (`described_steps`), and its recipe through the recipe
+store, unless the frame file is stored and servable already, in which
 case it writes the recipe alone, which the store keeps once. A rerun of one tree on the same
 roots therefore stores nothing new and answers the same ref. The ref's `artifact.digest` names
 the frame file (`render.FRAME_FILE_OPTIONS`), as a dataset ref names the file it was read as. The recipe carries `left_out`, every
@@ -67,6 +77,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Protocol
 
+from dfo_descriptions import StepsError, check_steps
 from dfo_frame_grammar import Frame, FrameError, RollingError, shift_period
 from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN
 from pydantic import (
@@ -88,6 +99,7 @@ from datasets_api.mint_models import GroupbyOptions
 from datasets_api.output_digest import output_digest
 from datasets_api.publish_models import (
     MAX_RECIPE_LEFT_OUT_SERIES,
+    MAX_STEPS,
     Recipe,
     RecipeDroppedSeries,
     RecipeLeftOut,
@@ -96,6 +108,7 @@ from datasets_api.publish_models import (
 from datasets_api.recipe_store import RecipeStore
 from datasets_api.render import frame_file_location
 from datasets_api.versions import VersionRecordWriter
+from description.steps import Step
 from dfo_analysis_engine.anchor import ResolvedPeriods, latest_period
 from dfo_analysis_engine.calls import admit
 from dfo_analysis_engine.evaluate import Evaluation, Policy, RootFrame, evaluate
@@ -145,6 +158,7 @@ _SLOTS: Mapping[str, tuple[str, str | None]] = {
 
 _PRIMARY_SLOT = "frame_ref"
 _ROLLING = "rolling"
+_ANCHOR_ROOTS = "anchor_roots"
 _WINDOW_BOUNDS = ("window_start", "window_end")
 _DEFAULT_RULE = "half1"
 
@@ -323,6 +337,15 @@ class AnalysisRequest(BaseModel):
         Discriminator(_node_kind),
     ]
     latest: bool = False
+    anchor_roots: (
+        list[
+            Annotated[
+                Annotated[SpecRoot, Tag("spec")] | Annotated[DatasetRoot, Tag("dataset")],
+                Discriminator(_node_kind),
+            ]
+        ]
+        | None
+    ) = Field(default=None, min_length=1, max_length=DEFAULT_MAX_NODES)
 
 
 # --- Refusals and outcomes -----------------------------------------------------------------------
@@ -677,13 +700,16 @@ def _expand(
     if "root" in tree:
         return plan.root(source.dataset_root(records[tree["root"]]))
     op_spec = tree["op_spec"]
-    return {
+    expanded: dict[str, Any] = {
         "op_spec": {"verb": op_spec["verb"], "parameters": copy.deepcopy(op_spec["parameters"])},
         "inputs": {
             slot: _expand(child, records, plan, source=source)
             for slot, child in tree["inputs"].items()
         },
     }
+    if anchors := tree.get(_ANCHOR_ROOTS):
+        expanded[_ANCHOR_ROOTS] = [_expand(root, records, plan, source=source) for root in anchors]
+    return expanded
 
 
 # --- Caller vocabulary to op-specs ---------------------------------------------------------------
@@ -852,10 +878,12 @@ class _Engine:
     def tree(self, node: Mapping[str, Any]) -> dict[str, Any]:
         if "root" in node:
             return {"root": node["root"]}
+        anchors = {_ANCHOR_ROOTS: node[_ANCHOR_ROOTS]} if _ANCHOR_ROOTS in node else {}
         if "op_spec" in node:
             return {
                 "op_spec": node["op_spec"],
                 "inputs": {slot: self.tree(child) for slot, child in node["inputs"].items()},
+                **anchors,
             }
         step: StepNode = node["step"]
         data_slot, other_slot = _SLOTS[step.verb]
@@ -876,12 +904,14 @@ class _Engine:
         return {
             "op_spec": {"verb": str(step.verb), "parameters": parameters},
             "inputs": {slot: self.tree(child) for slot, child in slots.items()},
+            **anchors,
         }
 
 
 def _renumbered(tree: dict[str, Any], count: int) -> tuple[dict[str, Any], list[int]]:
     """`tree` with its roots numbered in the order a depth-first walk first reaches them,
-    slots in `recipe.input_slots` order, and the old index of each new one."""
+    slots in `recipe.input_slots` order and then a node's anchor roots, and the old index of
+    each new one."""
     order: list[int] = []
 
     def walk(node: dict[str, Any]) -> dict[str, Any]:
@@ -892,7 +922,10 @@ def _renumbered(tree: dict[str, Any], count: int) -> tuple[dict[str, Any], list[
         inputs = node["inputs"]
         ordered = [_PRIMARY_SLOT, *sorted(slot for slot in inputs if slot != _PRIMARY_SLOT)]
         walked = {slot: walk(inputs[slot]) for slot in ordered if slot in inputs}
-        return {"op_spec": node["op_spec"], "inputs": walked}
+        renumbered = {"op_spec": node["op_spec"], "inputs": walked}
+        if _ANCHOR_ROOTS in node:
+            renumbered[_ANCHOR_ROOTS] = [walk(root) for root in node[_ANCHOR_ROOTS]]
+        return renumbered
 
     renumbered = walk(tree)
     assert len(order) <= count
@@ -933,7 +966,8 @@ _POPULATIONS: TypeAdapter[Populations] = TypeAdapter(Populations)
 def _anchor_of(
     tree: Mapping[str, Any], frames: Sequence[Frame], resolved: Sequence[ResolvedRoot]
 ) -> ResolvedPeriods:
-    """The latest period of `tree`'s rolling roots, as `evaluate` takes it."""
+    """The latest period of `tree`'s rolling roots, or of its anchor roots where it names
+    them, as `evaluate` takes it."""
     stated = next(
         node["op_spec"]["parameters"][_ROLLING]["population"]
         for node in derived_nodes(tree)
@@ -946,7 +980,8 @@ def _anchor_of(
             EngineRefusal.op_spec_invalid(detail=f"rolling.population: {exc}")
         ) from exc
     reached: dict[int, tuple[str, Any]] = {}
-    for node in rolling_roots(tree):
+    anchors = [root for node in derived_nodes(tree) for root in node.get(_ANCHOR_ROOTS, ())]
+    for node in anchors or rolling_roots(tree):
         index = node["root"]
         ref = resolved[index].frame
         reached.setdefault(
@@ -1076,6 +1111,75 @@ def _recipe(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> Recipe:
     )
 
 
+_STEPS: TypeAdapter[list[Step]] = TypeAdapter(list[Step])
+
+
+def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> list[Step] | None:
+    """The step list of `evaluation`'s frame, as `common.steps.assemble_steps` in dfo-ai joins
+    the steps of a frame the MCP published: each root as a `retrieve` step whose input is its
+    dataset pair and whose `options` are its mint options, and each derived node as its call's
+    step (`EvaluatedStep.step`), each once, after the steps of the frames it reads, in the
+    order a depth-first walk of the inputs first finishes them. Steps are numbered `s1`,
+    `s2`, ..., and each input names the step of the frame in that role. A list over the kit's
+    bounds (`MAX_STEPS`, `MAX_STEPS_BYTES`) is logged and gives `None`, which publishes the
+    frame without steps."""
+    calls = iter(evaluation.steps)
+    ids: dict[tuple[str, str], str] = {}
+    steps: list[dict[str, Any]] = []
+
+    def emit(pair: Mapping[str, str], step: dict[str, Any]) -> str:
+        key = (pair["spec_id"], pair["content_version"])
+        if key not in ids:
+            ids[key] = step["id"] = f"s{len(steps) + 1}"
+            steps.append(step)
+        return ids[key]
+
+    def walk(node: Mapping[str, Any]) -> str:
+        if "root" in node:
+            root = roots[node["root"]]
+            return emit(
+                node["frame"],
+                {
+                    "op": "retrieve",
+                    "input": {
+                        "id": root.dataset.spec_id,
+                        "content_version": root.dataset.content_version,
+                    },
+                    "options": dict(root.record.get("options") or {}),
+                },
+            )
+        step = next(calls).step.model_dump(mode="json")
+        read = {slot: walk(child) for slot, child in node["inputs"].items()}
+        by_pair = {
+            (child["frame"]["spec_id"], child["frame"]["content_version"]): read[slot]
+            for slot, child in node["inputs"].items()
+        }
+
+        def named(ref: Mapping[str, str]) -> str:
+            return by_pair[ref["id"], ref["content_version"]]
+
+        if "input" in step:
+            step["input"] = named(step["input"])
+        else:
+            step["inputs"] = {role: named(ref) for role, ref in step["inputs"].items()}
+        return emit(node["frame"], step)
+
+    walk(evaluation.tree)
+    try:
+        if len(steps) > MAX_STEPS:
+            raise ValueError(f"{len(steps)} steps, over MAX_STEPS={MAX_STEPS}")
+        check_steps(steps)
+    except (StepsError, ValueError):
+        logger.warning(
+            "The steps of %s %s pass the kit's bounds; publishing it without steps",
+            evaluation.ref.spec_id,
+            evaluation.ref.content_version,
+            exc_info=True,
+        )
+        return None
+    return _STEPS.validate_python(steps)
+
+
 def _stored_file_digest(
     stores: AnalysisStores, *, spec_id: str, content_version: str
 ) -> str | None:
@@ -1121,6 +1225,8 @@ def _store(
         trace_id=trace_id,
         recipe=recipe,
         recipe_store=stores.recipe_store,
+        steps=described_steps(evaluation, roots),
+        enrichment=stores.enrichment,
         file_enrichment=stores.enrichment,
         site=stores.site,
         prepared_at=stores.now(),
@@ -1148,6 +1254,9 @@ def plan_roots(
     top = request.tree
     verb = top.verb if isinstance(top, StepNode) else ""
     tree = _plan_node(top, plan, source=source, verb=verb, side="data")
+    if request.anchor_roots is not None:
+        plan.nodes += len(request.anchor_roots)
+        tree[_ANCHOR_ROOTS] = [plan.root(root) for root in request.anchor_roots]
     if plan.nodes > bounds.max_nodes:
         raise AnalysisTooLarge(
             ceiling_kind="analysis_nodes", count=plan.nodes, cap=bounds.max_nodes
@@ -1363,6 +1472,7 @@ __all__ = [
     "StepNode",
     "column_for",
     "compute_analysis",
+    "described_steps",
     "left_out_of",
     "plan_roots",
     "recorded_dataset_root",

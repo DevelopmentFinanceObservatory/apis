@@ -17,7 +17,9 @@ from datasets_api.analysis import (
     DatasetRoot,
     ResolvedRoot,
     RootNotStored,
+    RootRendering,
     SpecRoot,
+    recorded_dataset_root,
 )
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionRecordWriter
@@ -61,7 +63,7 @@ def aid_frame(*, scale: float = 1.0) -> Frame:
     )
 
 
-def population_frame() -> Frame:
+def population_frame(*, years: tuple[str, ...] = ("2021", "2022")) -> Frame:
     rows = [
         {
             "stat_var": _POPULATION_STAT_VAR,
@@ -76,16 +78,30 @@ def population_frame() -> Frame:
             ("country/NGA", "2021", 200.0),
             ("country/NGA", "2022", 210.0),
         )
+        if year in years
     ]
     return build_frame(role_keys=["observationAbout"], rows=rows)
 
 
-def _record(dataset: FrameRef) -> dict[str, Any]:
+def _options(rendering: RootRendering) -> dict[str, Any]:
+    """The mint options a root of `rendering` is read with, as `analysis_roots.mint_options`
+    states them, with no enrichment columns where `rendering` names none."""
+    options: dict[str, Any] = {"format": "parquet", "bundle": False, "layout": "frame"}
+    if rendering.columns:
+        options["columns"] = list(rendering.columns)
+    if rendering.without_party_totals:
+        options["without_party_totals"] = True
+    if rendering.groupby is not None:
+        options["groupby"] = rendering.groupby.model_dump(mode="json", exclude_none=True)
+    return options
+
+
+def _record(dataset: FrameRef, options: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "frame": dataset.model_dump(),
         "dataset": dataset.model_dump(),
-        "options": {"format": "parquet", "bundle": False, "layout": "frame"},
+        "options": dict(options),
         "scope": {},
     }
 
@@ -123,11 +139,9 @@ class FakeRootSource:
                 spec_id=root.spec_id, content_version=content_version, reason="not held"
             )
         dataset = FrameRef(spec_id=root.spec_id, content_version=content_version)
+        options = _options(root.rendering)
         return ResolvedRoot(
-            frame=dataset,
-            dataset=dataset,
-            record=_record(dataset),
-            rendering={"format": "parquet", "bundle": False, "layout": "frame"},
+            frame=dataset, dataset=dataset, record=_record(dataset, options), rendering=options
         )
 
     def read(self, root: ResolvedRoot) -> Frame:
@@ -141,8 +155,7 @@ class FakeRootSource:
         return None if record is None else record.body
 
     def dataset_root(self, record: Mapping[str, Any]) -> DatasetRoot:
-        dataset = record["dataset"]
-        return DatasetRoot(spec_id=dataset["spec_id"], content_version=dataset["content_version"])
+        return recorded_dataset_root(record)
 
 
 class Stores:

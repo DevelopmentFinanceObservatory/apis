@@ -13,7 +13,7 @@ just local-stack down    # stop dfo-apis, remove the containers and runs/local-s
 
 ## Start
 
-`up` starts the two containers of `compose.yaml` (project `dfo-local-stack`), creates the buckets `dfo-local-working` and `dfo-local-pinned` on the emulator, and runs `python -m dataset_store.migrate up` and `python -m presentation_store.migrate up`. It then publishes the graph release and origin catalogue the test suite uses under `runs/local-stack/` (`publish_inputs.py`) and starts uvicorn on `local_app:create_app` in the background. It returns once both `/api/datasets/healthz` and `/api/presentation/healthz` answer 200. The server log is `runs/local-stack/server.log`.
+`up` starts the two containers of `compose.yaml` (project `dfo-local-stack`), creates the buckets `dfo-local-working` and `dfo-local-pinned` on the emulator, and runs `python -m dataset_store.migrate up` and `python -m presentation_store.migrate up`. It then publishes the graph release and origin catalogue the test suite uses under `runs/local-stack/` (`publish_inputs.py`), the catalogue's base table naming the fixture's population variable `Total population` where the test sample holds it empty and starts uvicorn on `local_app:create_app` in the background. It returns once both `/api/datasets/healthz` and `/api/presentation/healthz` answer 200. The server log is `runs/local-stack/server.log`.
 
 | Service         | Address                  |
 | --------------- | ------------------------ |
@@ -47,7 +47,7 @@ dfo-apis reads its graph, SDMX endpoint and coverage index from doubles that `up
 - `GET .../observations` answers every fixture series with the fixture's points.
 - Each artifact's `files/{digest}` link answers 302, and the bytes at the location hash to the digest.
 
-It ends with `analysis_step` in `smoke.py`, which divides the German ODA reading by Kenya's population through `POST /api/datasets/analysis`, pairing the recipient with the place. It reads the derived frame's manifest and Parquet file at `/api/datasets/derived/{ops}/{ocv}` and checks the six Kenya rows against the fixture's quotients, and reads the bare derived root under `latest`, which answers the same `ops_` and `ocv_`. It then makes a table card of the frame from the release's minimal table intent, checks that the card's provenance names the sources the derived manifest cites, in its order, and makes a live share of the card, checks the share's page, embed and data URLs and its `shw_` write token, replaces the share with the token, sends a wrong token for a 403 `write_token_invalid`, and deletes the share.
+It ends with `analysis_step` in `smoke.py`, which divides the German ODA reading by Kenya's population through `POST /api/datasets/analysis`, pairing the recipient with the place. It reads the derived frame's manifest and Parquet file at `/api/datasets/derived/{ops}/{ocv}` and checks the six Kenya rows against the fixture's quotients, and reads the bare derived root under `latest`, which answers the same `ops_` and `ocv_`. It then makes a table card of the frame from the release's minimal table intent, checks that the card's description names the frame's two roots as its sources, in the ref's order, makes a stat card and prints its title, series label and unit, and makes a live share of the card, checks the share's page, embed and data URLs and its `shw_` write token, replaces the share with the token, sends a wrong token for a 403 `write_token_invalid`, deletes the share, and deletes it again with the token for a second 204.
 
 ## Download links
 

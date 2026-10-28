@@ -46,6 +46,10 @@ _PROVENANCE_COLUMN = "provenance"  # frame-grammar's FACET_IDENTITY_COLUMNS name
 _RESERVED_COLUMNS = frozenset(
     {STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN, UNIT_COLUMN, STATUS_COLUMN}
 )
+# The suffixes of the columns that describe the place or party another column names: its type,
+# and a party's kind, class and whole cell (`dfo_analysis_engine.place_type.enrichment_role`).
+# A derived frame keeps them beside the role they describe.
+_ENRICHMENT_SUFFIXES = ("_type", "_party_kind", "_party_class", "_party_whole")
 
 
 @dataclass(frozen=True)
@@ -179,13 +183,26 @@ def series_label_parts(
 
 
 def role_columns(*, columns: Sequence[str]) -> tuple[str, ...]:
-    """Entity-role columns in frame order, excluding reserved and facet-identity columns.
+    """Entity-role columns in frame order, excluding reserved and facet-identity columns and
+    the enrichment columns that describe another of `columns` (`_describes_a_role`).
 
     Used for series labels and table-row dimensions."""
+    present = frozenset(columns)
     return tuple(
         column
         for column in columns
-        if column not in _RESERVED_COLUMNS and column not in FACET_IDENTITY_COLUMNS
+        if column not in _RESERVED_COLUMNS
+        and column not in FACET_IDENTITY_COLUMNS
+        and not _describes_a_role(column, columns=present)
+    )
+
+
+def _describes_a_role(column: str, *, columns: frozenset[str]) -> bool:
+    """Whether `column` is the type, party kind, class or whole column of another of
+    `columns`, which is a function of that column's entity, so it splits no series."""
+    return any(
+        column.endswith(suffix) and column.removesuffix(suffix) in columns
+        for suffix in _ENRICHMENT_SUFFIXES
     )
 
 

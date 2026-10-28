@@ -31,7 +31,10 @@ rewrites it: on an op-spec whose `rolling` parameter is an object, each member
 that is a rolling reference (an object with an `anchor`) names the sibling
 parameter it governs, and a predicate whose `rolling` is set has its `value`
 governed. The overlay itself stays. Two frames computed by one recipe from
-different versions of the same datasets therefore share a normal form.
+different versions of the same datasets therefore share a normal form. A derived
+node that names `anchor_roots`, the roots its tree's latest period is taken over
+(`dfo_analysis_engine.evaluate`), keeps them as their roots' normal forms, in order,
+and each is a root of `roots` in the walk order, after the node's inputs.
 
 `normal_form_hash` is `rnf_` and 32 hex digits of the SHA-256 of the RFC 8785
 form of `{"identity_version": "rnf1", "recipe": <normal form>}`.
@@ -106,6 +109,7 @@ _DIGEST_HEX_LENGTH = 32
 _PRIMARY_SLOT = "frame_ref"
 _SLOT_SUFFIX = "_frame_ref"
 _ROLLING = "rolling"
+_ANCHOR_ROOTS = "anchor_roots"
 
 
 class RecipeError(Exception):
@@ -239,12 +243,15 @@ def normal_form(tree: Mapping[str, Any], roots: Sequence[Mapping[str, Any]]) -> 
         return {"spec_id": root["dataset"]["spec_id"], "rendering": root["options"]}
     op_spec = tree["op_spec"]
     inputs = tree["inputs"]
-    return {
+    normal = {
         "identity_version": op_spec["identity_version"],
         "verb": op_spec["verb"],
         "parameters": _normal_parameters(op_spec["parameters"], slots=inputs),
         "inputs": {slot: normal_form(node, roots) for slot, node in inputs.items()},
     }
+    if anchors := tree.get(_ANCHOR_ROOTS):
+        normal[_ANCHOR_ROOTS] = [normal_form(node, roots) for node in anchors]
+    return normal
 
 
 def normal_form_hash(normal: Mapping[str, Any]) -> str:

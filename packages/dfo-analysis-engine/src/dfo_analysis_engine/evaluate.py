@@ -14,7 +14,11 @@ are those the verbs give called one at a time on the same frames.
 A tree whose op-specs hold a rolling overlay has its latest period found once,
 before any verb runs (`anchor.latest_period`), over the root frames a path
 through a rolling op-spec reaches (`rolling.rolling_roots`) and the one
-population list every rolling op-spec carries. Rolling op-specs that carry
+population list every rolling op-spec carries. A derived node may name the
+roots the period is taken over instead, in `anchor_roots`, a list of root nodes
+no slot reads: the roots a caller found the period over beside this tree, such
+as both sides of a pairing whose one side the tree grows. The period is then
+taken over the anchor roots of every node, and over no other root. Rolling op-specs that carry
 different lists refuse `rolling_populations_differ`, even where the lists give
 one period, since the recipe then names no single latest period. Under
 `Policy(latest=False)` each rolling literal must already be the latest period
@@ -53,10 +57,12 @@ from dfo_analysis_engine.op_spec import Populations
 from dfo_analysis_engine.recipe import derived_nodes, pair
 from dfo_analysis_engine.refusal import AnalysisRefused, CompositeComponent, Refusal
 from dfo_analysis_engine.rolling import canonical_populations, rolling_roots
+from dfo_analysis_engine.steps import Step
 
 __all__ = ["EvaluatedStep", "Evaluation", "Policy", "RootFrame", "evaluate"]
 
 _ROLLING = "rolling"
+_ANCHOR_ROOTS = "anchor_roots"
 
 _POPULATIONS: TypeAdapter[Populations] = TypeAdapter(Populations)
 
@@ -95,13 +101,15 @@ class EvaluatedStep:
     """One derived node's call: `node`, its index in `recipe.derived_nodes`
     order over the tree, its `verb`, the engine side each of its call's `data`
     and `other` fills where the call names them (`calls.VerbCall.summary`'s
-    `sides`, `None` otherwise), and the series it dropped for a data gap
-    (`calls.VerbCall.dropped`)."""
+    `sides`, `None` otherwise), the series it dropped for a data gap
+    (`calls.VerbCall.dropped`), and its step record (`calls.VerbCall.step`), whose inputs
+    name the pairs of the frames it read."""
 
     node: int
     verb: str
     sides: Mapping[str, str] | None
     dropped: tuple[DroppedSeries, ...]
+    step: Step
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -172,8 +180,13 @@ def _root_indices(tree: Mapping[str, Any]) -> Iterator[int]:
     if "root" in tree:
         yield tree["root"]
         return
-    for node in tree["inputs"].values():
+    for node in (*tree["inputs"].values(), *tree.get(_ANCHOR_ROOTS, ())):
         yield from _root_indices(node)
+
+
+def _anchor_roots(tree: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The anchor root nodes every derived node of `tree` names, in walk order."""
+    return [root for node in derived_nodes(tree) for root in node.get(_ANCHOR_ROOTS, ())]
 
 
 def _admitted_roots(
@@ -212,7 +225,7 @@ def _latest_period(tree: Mapping[str, Any], roots: Mapping[int, _Root]) -> Resol
     except (ValidationError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisRefused(Refusal.op_spec_invalid(detail=f"rolling.population: {exc}")) from exc
     reached: dict[tuple[str, str], tuple[str, Input]] = {}
-    for node in rolling_roots(tree):
+    for node in _anchor_roots(tree) or rolling_roots(tree):
         root = roots[node["root"]]
         reached.setdefault(
             (root.ref.spec_id, root.ref.content_version), (root.ref.spec_id, root.input)
@@ -324,12 +337,18 @@ class _Walk:
             max_frame_rows=self.policy.max_frame_rows,
         )
         tree = {"frame": pair(call.ref), "op_spec": call.canonical_op_spec, "inputs": trees}
+        if anchors := node.get(_ANCHOR_ROOTS):
+            tree[_ANCHOR_ROOTS] = [
+                {"frame": pair(self.roots[anchor["root"]].ref), "root": anchor["root"]}
+                for anchor in anchors
+            ]
         self.steps.append(
             EvaluatedStep(
                 node=index,
                 verb=str(op_spec["verb"]),
                 sides=call.summary.get("sides"),
                 dropped=call.dropped,
+                step=call.step,
             )
         )
         return call, tree

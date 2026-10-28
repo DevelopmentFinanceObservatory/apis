@@ -89,12 +89,7 @@ variable no step names takes the name `description.steps_text.composed_names` wo
 record's `computed.composed` entry, a body stored before steps named their variables. A
 version with no record, before the backfill describes it or after its publish could not,
 words the composed variables its stored lineage holds (`composed_stat_vars`) the same way. A
-version whose record names no step and no composed entry, as the analysis route publishes one,
-takes its composed variables from its recipe tree (`_recipe_composition`): each `quotient_of`,
-`share_of`, `sum_of` and `compare` node writes its frame's spec id as a variable over its
-inputs, each root counts as the one variable its dataset's description record resolved to,
-labelled as that record labels it, and a node of any other verb keeps its input's variable. A
-variable named by none of these keeps its ref. The graph read leaves out the variables the record
+variable named by neither keeps its ref. The graph read leaves out the variables the record
 names and reads the variables of composed entries' sides first, so the entries' sides are
 labelled in the same read. A record that arrives or changes after the first load re-reads all
 the frame's labels as the first load reads them, under a fresh generation stamp. That load
@@ -539,63 +534,6 @@ def _composed(
         return []
 
 
-# The relation each verb that writes a new variable composes, and the input slots of its first
-# and second sides, as `description.steps_text.composed_names` words them. A slot the node does
-# not name is its `frame_ref`.
-_RECIPE_RELATIONS: dict[str, tuple[str, str, str]] = {
-    "quotient_of": ("quotient", "frame_ref", "denominator_frame_ref"),
-    "share_of": ("share", "frame_ref", "denominator_frame_ref"),
-    "sum_of": ("sum", "frame_ref", "right_frame_ref"),
-    # A comparison gives its `right_frame_ref` side less its `frame_ref` side.
-    "compare": ("difference", "right_frame_ref", "frame_ref"),
-}
-
-
-def _recipe_composition(
-    tree: Mapping[str, object], *, root_variables: Sequence[str]
-) -> list[ComposedVariable]:
-    """The composed variables `tree`, a recipe's tree, writes, in the order a node's inputs
-    precede it. A root node counts as `root_variables[root]`, a node whose verb is in
-    `_RECIPE_RELATIONS` as its frame's spec id, and a node of another verb as its
-    `frame_ref` input."""
-    composed: list[ComposedVariable] = []
-
-    def variable(node: Mapping[str, object]) -> str:
-        if "root" in node:
-            return root_variables[cast(int, node["root"])]
-        inputs = cast("Mapping[str, Mapping[str, object]]", node["inputs"])
-        verb = cast("Mapping[str, object]", node["op_spec"])["verb"]
-        if not isinstance(verb, str) or verb not in _RECIPE_RELATIONS:
-            return variable(inputs["frame_ref"])
-        relation, first, second = _RECIPE_RELATIONS[verb]
-        sides = [variable(inputs.get(slot, inputs["frame_ref"])) for slot in (first, second)]
-        written = cast(str, cast("Mapping[str, object]", node["frame"])["spec_id"])
-        composed.append(
-            ComposedVariable(
-                variable=written, relation=relation, first=[sides[0]], second=[sides[1]]
-            )
-        )
-        return written
-
-    variable(tree)
-    return composed
-
-
-def _root_variable(
-    root: Mapping[str, object], *, records: Mapping[tuple[str, str], DescriptionRecord]
-) -> tuple[str, str | None]:
-    """The variable a recipe root counts as and its label: the one variable its dataset's
-    record resolved to, labelled as the record labels it, else the dataset's spec id, which
-    the label read names as a family."""
-    dataset = cast("Mapping[str, str]", root["dataset"])
-    record = records.get((dataset["spec_id"], dataset["content_version"]))
-    variables = record.variables if record is not None else None
-    if record is None or variables is None or variables.variable is None:
-        return dataset["spec_id"], None
-    labels = {one.ref: one.label for one in record.evidence.labels or ()}
-    return variables.variable, labels.get(variables.variable)
-
-
 def _settled(record: DescriptionRecord) -> bool:
     """Whether `record` holds every member Datasets fills after the write. A computed record
     holding `steps: null` does not, since a later publish fills its steps
@@ -908,12 +846,10 @@ class LiveFrameStore:
             data = self._fetch_bytes(canonical)
             doc, size_bytes = _decode_frame(data, location=canonical, max_rows=self._frame_max_rows)
             graph_generation, catalogue_build = self._read_under()
-            composed, side_labels = self._composition(frame_ref, record=record, stored=stored)
             labels, descriptions, labels_resolved = self._resolve_labels(
                 doc,
                 record=record,
-                composed=composed,
-                side_labels=side_labels,
+                composed=_composed(record, stored=stored),
                 inputs=inputs,
                 warned=warned_refs(manifest=document),
                 deadline=deadline,
@@ -976,12 +912,10 @@ class LiveFrameStore:
                 citation_due, anchor_final = True, False
                 words_read_at = now
                 graph_generation, catalogue_build = self._read_under()
-                composed, side_labels = self._composition(frame_ref, record=record, stored=stored)
                 labels, descriptions, labels_resolved = self._resolve_labels(
                     frame.frame,
                     record=record,
-                    composed=composed,
-                    side_labels=side_labels,
+                    composed=_composed(record, stored=stored),
                     inputs=inputs,
                     warned=warned_refs(manifest=document),
                     deadline=deadline,
@@ -1091,76 +1025,6 @@ class LiveFrameStore:
         if self._graph is None:
             return None, None
         return self._graph.generation_stamp().token, current_words_build()
-
-    def _composition(
-        self, frame_ref: FrameRef, *, record: DescriptionRecord | None, stored: StoredVersion
-    ) -> tuple[Sequence[ComposedVariable], dict[str, str]]:
-        """The composed variables of the version (`_composed`) and the labels of their sides
-        by bare dcid that no graph read gives. A derived version whose record names no step
-        and no composed entry takes them from its recipe tree (`_recipe_composition`), each
-        root labelled by its dataset's description record (`_root_variable`). A version with
-        no recipe yet names none. A recipe tree that does not read is logged and names none,
-        so no stored recipe fails a load.
-
-        Raises:
-            DatasetsStoreUnavailable: A root's description record could not be read.
-        """
-        composed = _composed(record, stored=stored)
-        if (
-            self._recipe_reader is None
-            or not frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX)
-            or composed
-            or (record is not None and record.steps)
-        ):
-            return composed, {}
-        recipe = self._recipe_reader.read_recipe(
-            spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
-        )
-        if recipe is None:
-            return (), {}
-        try:
-            roots = cast("Sequence[Mapping[str, object]]", recipe.body["roots"])
-            datasets = [cast("Mapping[str, str]", root["dataset"]) for root in roots]
-            records = self._root_records(
-                [(dataset["spec_id"], dataset["content_version"]) for dataset in datasets]
-            )
-            named = [_root_variable(root, records=records) for root in roots]
-            composed = _recipe_composition(
-                cast("Mapping[str, object]", recipe.body["tree"]),
-                root_variables=[variable for variable, _ in named],
-            )
-        except (KeyError, TypeError, IndexError, ValidationError):
-            logger.warning(
-                "Recipe tree of spec_id %s content_version %s does not read; naming its "
-                "variables by ref",
-                frame_ref.spec_id,
-                frame_ref.content_version,
-                exc_info=True,
-            )
-            return (), {}
-        return composed, {variable: label for variable, label in named if label is not None}
-
-    def _root_records(
-        self, versions: Sequence[tuple[str, str]]
-    ) -> Mapping[tuple[str, str], DescriptionRecord]:
-        """The description records `versions` hold, none for a store with no description
-        reader. A record that fails validation is logged and leaves none.
-
-        Raises:
-            DatasetsStoreUnavailable: The records could not be read.
-        """
-        if self._description_reader is None:
-            return {}
-        try:
-            return self._description_reader.read_descriptions(
-                versions=list(dict.fromkeys(versions))
-            )
-        except ValidationError:
-            logger.error(
-                "A recipe root's description record failed validation; naming it by id",
-                exc_info=True,
-            )
-            return {}
 
     def _description_records(
         self, frame_ref: FrameRef
@@ -1669,7 +1533,6 @@ class LiveFrameStore:
         *,
         record: DescriptionRecord | None,
         composed: Sequence[ComposedVariable],
-        side_labels: Mapping[str, str],
         inputs: Sequence[DescriptionRecord],
         warned: Sequence[str],
         deadline: float,
@@ -1680,8 +1543,7 @@ class LiveFrameStore:
         each of `inputs` names in its title (`datasets_api.description_record.title_named`) and the
         entities `record`'s steps record on their sides (`bound_entities`) under their bare dcids,
         then add the name of each variable `record` and `composed` name
-        (`_computed_labels`, a side the graph does not label read from `side_labels`), under
-        the ref its `stat_var` cells hold, and read the description
+        (`_computed_labels`), under the ref its `stat_var` cells hold, and read the description
         of the World Development Indicators variable `record` resolved to
         (`_world_bank_descriptions`). The returned flag says both reads succeeded."""
         worded = set(_step_entities(record))
@@ -1698,15 +1560,7 @@ class LiveFrameStore:
             deadline=deadline,
         )
         labels.update(
-            self._computed_labels(
-                record,
-                composed=composed,
-                inputs=inputs,
-                labels={
-                    **{f"{STAT_VAR_REF_PREFIX}{ref}": one for ref, one in side_labels.items()},
-                    **labels,
-                },
-            )
+            self._computed_labels(record, composed=composed, inputs=inputs, labels=labels)
         )
         descriptions, described = self._world_bank_descriptions(record, deadline=deadline)
         return labels, descriptions, resolved and described

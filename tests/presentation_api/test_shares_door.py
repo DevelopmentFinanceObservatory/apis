@@ -556,14 +556,22 @@ def test_a_malformed_share_id_refuses_request_invalid(door: _Door, share_id: str
     _assert_refused(door.read(share_id), status=400, code="request_invalid")
 
 
-def test_a_deleted_share_answers_not_found_on_every_route(door: _Door):
+def test_a_deleted_share_answers_not_found_on_every_route_but_its_holders_delete(door: _Door):
+    """A retried delete by the token's holder answers 204 again, so a lost 204 is safe to
+    retry; any other delete of the taken-down share answers as a share that never was."""
     created = door.share(["cmp_a"], latest=True).json()
     share_id, token = created["id"], created["write_token"]
+    other = door.share(["cmp_b"], latest=True).json()
     assert door.unshare(share_id, token=token).status_code == 204
 
     _assert_refused(door.read(share_id), status=404, code="not_found")
     _assert_refused(door.replace(share_id, ["cmp_b"], token=token), status=404, code="not_found")
-    _assert_refused(door.unshare(share_id, token=token), status=404, code="not_found")
+    assert door.unshare(share_id, token=token).status_code == 204
+    _assert_refused(
+        door.unshare(share_id, token=other["write_token"]), status=404, code="not_found"
+    )
+    _assert_refused(door.unshare(share_id, token=None), status=404, code="not_found")
+    _assert_refused(door.unshare("Zz9yXw8v", token=token), status=404, code="not_found")
 
 
 def test_a_surface_over_test_doubles_without_a_share_store_mounts_no_share_route(

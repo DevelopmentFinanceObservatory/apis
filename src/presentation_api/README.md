@@ -81,7 +81,7 @@ Publishes cards under one public `/s/<id>` id (`presentation_api.doors.shares`, 
 | `POST`   | `/api/presentation/shares/{share_id}/snapshot` | Turns a live share into a snapshot under the same URLs. Needs `x-dfo-write-token`. Answers 200 `{id, url, embed_url, data_urls, revision, latest: false}`; a snapshot answers as it is. |
 | `GET`    | `/api/presentation/shares/{share_id}/slots/{slot}/data` | Public, with `Access-Control-Allow-Origin: *`. `?format=json` (default), `csv` or `parquet`: the rows behind the slot's card. |
 | `GET`    | `/api/presentation/shares/{share_id}/history` | Public, with `Access-Control-Allow-Origin: *`: `{id, served: [{slot, component_id, revision, frame, rendering, first_served_at, retention, fetchable}]}`, newest first. |
-| `DELETE` | `/api/presentation/shares/{share_id}`  | Takes the share down, 204. Needs `x-dfo-write-token`. |
+| `DELETE` | `/api/presentation/shares/{share_id}`  | Takes the share down, 204, and answers 204 again to the token's holder once it is down. Needs `x-dfo-write-token`. |
 
 A share id is 8 characters from the case-sensitive `[A-Za-z0-9]` alphabet, the shape of the website's `/s/<id>` links, so shares imported from the website keep their ids. `url` is `<DFO_PUBLIC_SITE_URL>/s/<id>`, `embed_url` is `/embed/<id>` under the same origin, and slot n's data URL is `/api/v1/presentation/shares/<id>/slots/<n>/data` under it.
 

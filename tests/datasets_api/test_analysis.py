@@ -40,6 +40,7 @@ from ._analysis_doubles import (
     source,
     step,
 )
+from ._description_doubles import read_record
 
 _REF_SCHEMA = json.loads(
     (files("dfo_client_contract") / "dataset-ref.schema.json").read_text(encoding="utf-8")
@@ -107,6 +108,52 @@ def test_a_two_sided_tree_pairs_roles_by_column_and_stores_its_frame() -> None:
     assert result.body()["summary"]["verb"] == "quotient_of"
 
 
+def test_a_derived_record_names_each_step_and_the_inputs_its_roots_retrieve() -> None:
+    """The record of a computed frame holds a step per operation, its inputs naming earlier
+    steps, and a `retrieve` step per root, so its inputs are named versions."""
+    stores = Stores()
+    summed = step(
+        "aggregate",
+        dataset(AID, AID_V1),
+        aggregation="sum",
+        group_by=["destination", "time_period"],
+    )
+    tree = step(
+        "quotient_of",
+        summed,
+        dataset(POPULATION, POPULATION_V1),
+        on={"destination": "place"},
+    )
+
+    result = _run(stores, tree)
+
+    record = read_record(
+        stores.store,
+        subject_id=result.evaluation.ref.spec_id,
+        content_version=result.evaluation.ref.content_version,
+    )
+    assert record is not None and record.steps is not None and record.computed is not None
+    steps = [
+        step.model_dump(mode="json", include={"id", "op", "input", "inputs"})
+        for step in record.steps
+    ]
+    assert steps == [
+        {"id": "s1", "op": "retrieve", "input": {"id": AID, "content_version": AID_V1}},
+        {"id": "s2", "op": "aggregate", "input": "s1"},
+        {
+            "id": "s3",
+            "op": "retrieve",
+            "input": {"id": POPULATION, "content_version": POPULATION_V1},
+        },
+        {"id": "s4", "op": "quotient", "inputs": {"numerator": "s2", "denominator": "s3"}},
+    ]
+    assert record.steps[-1].stat_var == result.evaluation.ref.spec_id
+    assert [(one.id, one.content_version) for one in record.computed.inputs] == [
+        (AID, AID_V1),
+        (POPULATION, POPULATION_V1),
+    ]
+
+
 def test_compare_gives_data_minus_other() -> None:
     stores = Stores()
 
@@ -167,9 +214,17 @@ def test_the_artifact_digest_does_not_depend_on_the_time_of_publish() -> None:
     assert again.artifact_digest == first.artifact_digest
 
 
-def test_a_derived_root_runs_as_the_chain_it_was_computed_by() -> None:
+@pytest.mark.parametrize(
+    "rendering",
+    [{}, {"columns": ["financingRecipient_party_kind"], "without_party_totals": True}],
+    ids=["default", "columns"],
+)
+def test_a_derived_root_runs_as_the_chain_it_was_computed_by(rendering: dict) -> None:
+    """A derived root expands into its recipe's roots read in their recorded rendering, so it
+    answers the ref of the chain it was computed by."""
     stores = Stores()
-    summed = step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["destination"])
+    root = {**dataset(AID, AID_V1), "rendering": rendering}
+    summed = step("aggregate", root, aggregation="sum", group_by=["destination"])
     stored = _run(stores, summed).evaluation.ref
 
     chained = _run(stores, step("rank", summed, rank_by=["destination"], limit=1))
@@ -209,6 +264,52 @@ def test_rolling_window_bounds_take_the_latest_period_and_their_populations() ->
     )
     assert result.ref()["members"][0]["resolved_periods"] == list(result.resolved_periods)
     jsonschema.validate(result.ref(), _REF_SCHEMA)
+
+
+def test_anchor_roots_take_the_latest_period_over_roots_the_tree_does_not_read() -> None:
+    """A rank over the aid data whose period the anchor route took over aid and population
+    answers from the year both hold, 2021, and a replay of its stored recipe takes the period
+    over the same roots. Without the anchor roots the tree reads no population root."""
+    stores = Stores()
+    roots = source(
+        stores,
+        frames={
+            (AID, AID_V1): aid_frame(),
+            (POPULATION, POPULATION_V1): population_frame(years=("2021",)),
+        },
+    )
+    latest = {"anchor": "latest", "offset": 0}
+    tree = step(
+        "rank",
+        dataset(AID, AID_V1),
+        rank_by=["destination"],
+        window_start=latest,
+        window_end=latest,
+        rolling={
+            "population": [
+                {"spec_id": AID, "bindings": {}},
+                {"spec_id": POPULATION, "bindings": {}},
+            ]
+        },
+    )
+    anchor_roots = [dataset(AID, AID_V1), dataset(POPULATION, POPULATION_V1)]
+
+    with pytest.raises(AnalysisRefused) as raised:
+        _run(stores, tree, root_source=roots)
+    result = run_analysis(
+        AnalysisRequest.model_validate({"tree": tree, "anchor_roots": anchor_roots}),
+        source=roots,
+        stores=stores.analysis(),
+    )
+    replayed = _run(stores, result.evaluation.ref.model_dump(), root_source=roots)
+
+    assert raised.value.code is RefusalCode.ROLLING_ANCHOR_UNRESOLVED
+    assert raised.value.refusal.fix["detail"] == "population_without_root"
+    parameters = result.evaluation.tree["op_spec"]["parameters"]
+    assert (parameters["window_start"], parameters["window_end"]) == ("2021", "2021")
+    assert [root["spec_id"] for root in result.ref()["members"][0]["roots"]] == [AID, POPULATION]
+    assert replayed.evaluation.ref == result.evaluation.ref
+    assert replayed.ref() == result.ref()
 
 
 def test_rolling_steps_over_different_populations_refuse_before_any_verb() -> None:

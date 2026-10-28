@@ -16,11 +16,11 @@ For each reading `seed.py` recorded in `$LOCAL_STACK_SEEDED`:
   fixture gives;
 - the bare derived root under `latest` answers the same `ops_` and `ocv_`;
 - `POST /api/presentation/components` makes a table card of the frame from the release's
-  minimal table intent, whose provenance names the sources the derived manifest cites, in
-  its order;
+  minimal table intent, whose description names the frame's two roots as its sources, in the
+  ref's order, and a stat card, whose title and series label it prints;
 - `POST /api/presentation/shares` makes a live share of the card with its page, embed and data
-  URLs and a `shw_` token, which replaces it; a wrong token refuses 403 and a delete takes it
-  down.
+  URLs and a `shw_` token, which replaces it; a wrong token refuses 403, a delete takes it
+  down, and the delete retried with the token answers 204 again.
 
 Exits 1 on the first failed check.
 
@@ -218,23 +218,37 @@ def check_latest(client: httpx.Client, derived: Mapping[str, str]) -> str:
     return "latest: the derived root answers the same ops_ and ocv_"
 
 
-def create_card(client: httpx.Client, derived: Mapping[str, str]) -> str:
-    """A table card on the derived frame, from the release's minimal table intent, citing the
-    sources the derived manifest cites."""
+def _card(client: httpx.Client, kind: str, derived: Mapping[str, str]) -> Mapping[str, Any]:
+    """A card of `kind` on the derived frame, from the release's minimal intent of that kind."""
     intents = _get(client, "/api/presentation/release").json()["minimal_intents"]
-    table = {
-        **intents["table"],
+    intent = {
+        **intents[kind],
         "frame_ref": dict(derived),
         "select": {"stat_var": f"dcid:{derived['spec_id']}"},
     }
-    card = _post(client, "/api/presentation/components", {"intent": table}, status=201).json()
+    card = _post(client, "/api/presentation/components", {"intent": intent}, status=201).json()
     if not card["component_id"].startswith("cmp_") or card["revision"] != 1:
-        raise SmokeFailure(f"card create answered {card}")
-    cited = _get(client, _derived_path(derived)).json()["citation"]["sources"]
-    named = [source["name"] for source in card["resolved_payload"]["provenance"]["sources"]]
-    if named != [source["label"] for source in cited]:
-        raise SmokeFailure(f"card cites {named}, the derived manifest {cited}")
+        raise SmokeFailure(f"{kind} create answered {card}")
+    return card
+
+
+def create_card(client: httpx.Client, member: Mapping[str, Any]) -> str:
+    """A table card on the derived frame, whose description names the frame's roots as its
+    sources, in the ref's order."""
+    card = _card(client, "table", _derived_pair(member))
+    named = [source["ref"] for source in card["resolved_payload"]["description"]["sources"]]
+    if named != [root["spec_id"] for root in member["roots"]]:
+        raise SmokeFailure(f"card describes sources {named}, the ref roots {member['roots']}")
     return card["component_id"]
+
+
+def stat_card(client: httpx.Client, derived: Mapping[str, str]) -> str:
+    """A stat card on the derived frame: its title and its series label."""
+    component = _card(client, "stat_card", derived)["resolved_payload"]["component"]
+    return (
+        f"stat card: title {component['title']['text']!r}, series label {component['label']!r}, "
+        f"unit {component['unit']}"
+    )
 
 
 def check_share(client: httpx.Client, component_id: str) -> str:
@@ -271,9 +285,12 @@ def check_share(client: httpx.Client, component_id: str) -> str:
     gone = client.get(path)
     if gone.status_code != 404 or gone.json()["code"] != "not_found":
         raise SmokeFailure(f"GET {path} after the delete answered {gone.status_code}")
+    retried = client.delete(path, headers={WRITE_TOKEN: token})
+    if retried.status_code != 204:
+        raise SmokeFailure(f"a retried DELETE {path} answered {retried.status_code}")
     return (
         f"share {share_id}: created live with its urls and token, replaced to revision 2, "
-        "a wrong token refused 403, deleted, then 404"
+        "a wrong token refused 403, deleted, then 404, and a retried delete 204"
     )
 
 
@@ -288,12 +305,13 @@ def analysis_step(
     member = check_quotient(client, oda, population)
     derived = _derived_pair(member)
     expected = _expected_quotients(readings[ODA_READING], readings[POPULATION_READING])
-    component_id = create_card(client, derived)
+    component_id = create_card(client, member)
     return [
         f"analysis: quotient_of answered {derived['spec_id']} {derived['content_version']}",
         check_derived_reads(client, member, [oda, population], expected),
         check_latest(client, derived),
-        f"card: {component_id} on the derived frame, citing the manifest's sources",
+        f"card: {component_id} on the derived frame, describing its roots as its sources",
+        stat_card(client, derived),
         check_share(client, component_id),
     ]
 

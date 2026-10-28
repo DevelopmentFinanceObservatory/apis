@@ -54,12 +54,40 @@ def _threshold(value: str, rolling: dict[str, Any] | None) -> dict[str, Any]:
     )
 
 
-def test_the_normal_form_names_no_frame_and_no_root_version() -> None:
-    assert normal_form(_growth("2013", "2023", None), _ROOTS) == {
+_ANCHOR_ROOT = {
+    "frame": {"spec_id": "spec_" + "b" * 32, "content_version": "cv_" + "2" * 32},
+    "root": 1,
+}
+_ANCHORED_ROOTS = [*_ROOTS, {"dataset": {"spec_id": "spec_" + "b" * 32}, "options": _OPTIONS}]
+
+
+@pytest.mark.parametrize(
+    ("anchors", "expected"),
+    [
+        pytest.param({}, {}, id="no-anchor-roots"),
+        pytest.param(
+            {"anchor_roots": [_ROOT_NODE, _ANCHOR_ROOT]},
+            {
+                "anchor_roots": [
+                    {"spec_id": "spec_" + "a" * 32, "rendering": _OPTIONS},
+                    {"spec_id": "spec_" + "b" * 32, "rendering": _OPTIONS},
+                ]
+            },
+            id="anchor-roots-as-their-roots",
+        ),
+    ],
+)
+def test_the_normal_form_names_no_frame_and_no_root_version(
+    anchors: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    """A node's anchor roots, which its tree's latest period is taken over, stay in the
+    normal form as roots do."""
+    assert normal_form(_growth("2013", "2023", None) | anchors, _ANCHORED_ROOTS) == {
         "identity_version": "ops1",
         "verb": "growth",
         "parameters": {"window_start": "2013", "window_end": "2023", "entity_by": ["r"]},
         "inputs": {"frame_ref": {"spec_id": "spec_" + "a" * 32, "rendering": _OPTIONS}},
+        **expected,
     }
 
 
