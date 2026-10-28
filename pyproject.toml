@@ -127,6 +127,8 @@ typecheck = [
     # ty resolves pyarrow.compute results against these stubs; without them
     # a compute call's return type is Unknown.
     "pyarrow-stubs>=20",
+    # ty resolves the package's own `dfo_analysis_engine.*` imports through the venv.
+    "dfo-analysis-engine",
 ]
 test = [
     "pytest>=8",
@@ -139,6 +141,8 @@ test = [
     "pytest-testmon>=2.2.0",
     # tests/contract/test_client_contract.py reads the recorded client scenarios.
     "dfo-spec-kit-client-contract",
+    # packages/dfo-analysis-engine/tests import the package.
+    "dfo-analysis-engine",
 ]
 
 [build-system]
@@ -159,6 +163,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 dfo-data-tools = { workspace = true }
+dfo-analysis-engine = { workspace = true }
 # dfo-data-tools's own pyproject.toml pins dfo-spec-kit-frame-grammar,
 # dfo-spec-kit-components, dfo-spec-kit-provenance-docs, and
 # dfo-spec-kit-descriptions to this same
@@ -285,7 +290,7 @@ markers = [
 # noise rather than defects; pytest is what guards the tests. promptlab is a
 # development tool, not shipped (see [tool.uv.build-backend]), but it is
 # still real source worth checking.
-include = ["src", "packages/dfo-data-tools/src", "promptlab"]
+include = ["src", "packages/dfo-data-tools/src", "packages/dfo-analysis-engine/src", "promptlab"]
 
 [tool.ty.environment]
 # Resolve imports against the project venv (python 3.12 + engine extras) rather
@@ -313,7 +318,7 @@ target-version = "py312"
 line-length = 100
 # isort first-party classification: without this, ruff treats the workspace
 # member's packages as third-party and reclassifies their imports repo-wide.
-src = [".", "src", "packages/dfo-data-tools/src"]
+src = [".", "src", "packages/dfo-data-tools/src", "packages/dfo-analysis-engine/src"]
 exclude = [
     ".git",
     ".venv",

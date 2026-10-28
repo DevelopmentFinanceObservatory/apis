@@ -256,6 +256,13 @@ jobs:
         # holds every current test and none that was deleted.
         run: uv run pytest -q -n auto --shard ${{ matrix.group }}/${{ strategy.job-total }} --store-durations --clean-durations
 
+      # The analysis engine package keeps its tests beside its source, outside the
+      # `tests/` tree the shards split. One shard runs them, so the `test` fan-in
+      # covers them through that shard's result.
+      - name: Run the analysis engine tests
+        if: matrix.group == 1
+        run: uv run pytest -q packages/dfo-analysis-engine
+
       - name: Upload this shard's durations
         if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
         uses: actions/upload-artifact@v7

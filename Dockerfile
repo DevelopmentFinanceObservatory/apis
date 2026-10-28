@@ -26,6 +26,7 @@ RUN apt-get update \
 # Manifests first for layer caching; install deps without the workspace members.
 COPY pyproject.toml uv.lock .python-version ./
 COPY packages/dfo-data-tools/pyproject.toml packages/dfo-data-tools/
+COPY packages/dfo-analysis-engine/pyproject.toml packages/dfo-analysis-engine/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv python install \
     && uv sync --no-install-workspace --extra engine --extra datasets --extra graph --no-default-groups --frozen
