@@ -7,13 +7,13 @@ systems besides the sector whose admitted code makes a part a restricted one.
 `PROVIDER_CONVENTIONS` names whose spending a part counts by default,
 `PROVIDER_SCOPE_RULES` the rule each provider scope names where no convention settles it,
 `REDISTRIBUTED_PROVIDERS` the providers no pool takes a scope counting multilateral aid with,
-and the group whose members fund each,
-`PUBLISHED_PROVIDER_SCOPES` the provider scope a published donor total counts, and
-`DONOR_ORGANISATIONS` the organisations a published donor total counts as donors. `OPTION_LABELS`
-words the options the rules build from code and group labels, and `REGION_READINGS` names
-the graph regions a DAC dataset counts as the OECD's region. `search.scope`
-reads them all, and `graph_release.declarations` hashes the tables beside the other
-declarations, so a change to one moves the declarations hash and the scope rule version.
+and the group whose members fund each, `PUBLISHED_PROVIDER_SCOPES` the provider scope a
+published donor total counts, and `DONOR_ORGANISATIONS` the organisations a published donor
+total counts as donors. `OPTION_LABELS` words the options the rules build from code and group
+labels, and `REGION_READINGS` names the graph regions a DAC dataset counts as the OECD's
+region. `search.scope` reads them all, and `graph_release.declarations` hashes the tables
+beside the other declarations, so a change to one moves the declarations hash and the scope
+rule version.
 """
 
 from __future__ import annotations
@@ -406,7 +406,7 @@ _EUROPEAN_UNION = "EuropeanUnion"
 # own flows and inside its funders' imputed shares, so it takes no inclusive scope. DAC1's
 # total ODA counts the same outflows twice for a pool of the EU institutions and an EU member
 # state, as the EU institutions' own aid and inside the member's core contributions to them,
-# so such a pool has no provider record there; a donor outside the European Union funds the
+# so such a pool has no provider record there. A donor outside the European Union funds the
 # institutions with no core contribution. The graph types every multilateral an
 # `Organization`, as it types a private foundation, and the code index marks none, so this
 # table is the only record of the grouping.
@@ -431,7 +431,7 @@ PROVIDER_SCOPE_RULES: tuple[ProviderScopeRule, ...] = (
 
 # The provider scope each DAC1 aid type counts for a bilateral donor. Total ODA counts the
 # donor's bilateral flows and its core contributions to the multilateral organisations, in the
-# year it pays them. The imputed multilateral table instead attributes the multilaterals' own
+# year it pays them. The imputed multilateral table attributes the multilaterals' own
 # spending back to their funders, so the two differ in what they count, in timing and in
 # amount. Bilateral ODA counts the bilateral flows alone. A part reading one row is offered
 # every other row of its dataset and code system as an option that binds that row's code.

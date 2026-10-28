@@ -7,8 +7,9 @@ The axis is present on a part the CRS serves and on a donor's published total
 (`provider_rule`). A published total holds the scope its declared row names
 (`code_index.scope_conventions.PUBLISHED_PROVIDER_SCOPES`): DAC1's total ODA the
 contributions scope, and DAC1's bilateral ODA the bilateral scope. Each offers the other's
-scope as an option binding the other's aid type, judged per donor against the years each
-donor the part names holds its own total in (`_published_table`). On a part the CRS serves,
+scope as an option binding the other's aid type. The option serves the years every donor
+holding its own total in a year also holds the other in, or, for a part asking for the
+latest year, the one year the pool's read elects (`_published_table`). On a part the CRS serves,
 the inclusive option serves the years both tables cover for the part (`inclusive_reach`):
 available when they cover every year the bilateral answer holds, partial with a shorter
 window of its own when they cover fewer, and, for a part asking for the latest year,
@@ -22,7 +23,7 @@ The default is declared (`code_index.scope_conventions.PROVIDER_CONVENTIONS`): a
 total of a CRS sector or recipient part counts both, when they cover every year asked for.
 `settle_provider` applies it, or the part's explicit or carried entry, on the parsed door,
 where the answer can serve it (`_served_in_pass`). A choice names the convention's rule only
-where the request matched the convention and the part holds its scope; otherwise it names
+where the request matched the convention and the part holds its scope. Otherwise it names
 the rule of the option it holds, its own scope's (`AxisTable.rules`), as every resubmit
 does.
 """
@@ -218,9 +219,9 @@ def _published_table(
     (`PUBLISHED_PROVIDER_SCOPES`) is an option binding that row's code, so a switch to it
     reads the total that counts its scope: on DAC1's total ODA, bilateral flows bind
     bilateral ODA, and on bilateral ODA, core contributions bind total ODA. Such an option
-    serves the years each donor of the part holds its total in (`_sibling_option`), or, on a
-    part asking for the latest year, the one year the pool's read elects
-    (`_latest_sibling_option`). The inclusive scope is unavailable with the total's dataset:
+    serves the years every donor holding the part's total in a year also holds the sibling in
+    (`_sibling_option`), or, on a part asking for the latest year, the one year the pool's
+    read elects (`_latest_sibling_option`). The inclusive scope is unavailable with the total's dataset:
     `contributions_counted` on a total counting core contributions, since it counts them in
     place of an imputed share of the multilaterals' spending, and `provider_not_offered` (why
     `dataset`) on any other, since the imputed table stacks on the CRS alone. Each option
@@ -443,8 +444,8 @@ def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProvid
     pool has no record: every scope a record would hold or offer for it is either one it
     double counts or one a switch leaves for one it double counts. A pool of the EU
     institutions and a donor outside the EU counts no contribution twice. Membership is
-    read over the part's window, so the United Kingdom counts as a member over any window
-    holding a year before it left in 2020."""
+    read over the part's window (`_window_days`), so the United Kingdom counts as a member
+    over any window holding a year before it left in 2020."""
     bound = {
         (slot.property, slot.binding.ref)
         for slot in identity.slots
@@ -492,8 +493,8 @@ def _members(party: str, index: CodeIndex) -> frozenset[str]:
 def _pools_funder(providers: Collection[str], window: IdentityWindow, index: CodeIndex) -> bool:
     """Whether `providers` pool a redistributed provider (`REDISTRIBUTED_PROVIDERS`) with a
     member of the group that funds it on any day of `window` (`_window_days`), or a total
-    that sums one (`_members`): the EU institutions with an EU member state, or with the G7.
-    A published total counts such a pool's core contributions to the provider twice. Where
+    that sums one (`_members`), such as the EU institutions with an EU member state or with
+    the G7. A published total counts such a pool's core contributions to the provider twice. Where
     the policy holds no members for the funding group, any pool with the provider counts as
     one."""
     first, last = _window_days(window)

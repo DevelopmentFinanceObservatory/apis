@@ -123,7 +123,7 @@ def policy_members(ref: str) -> frozenset[str]:
 
 def policy_members_between(ref: str, first: date, last: date) -> frozenset[str]:
     """The countries the membership policy holds for group or region `ref` on any day from
-    `first` to `last`, empty when it holds none: a country that joined or left inside those
+    `first` to `last`, empty when it holds none. A country that joined or left inside those
     days counts. An undated membership holds its members on every day."""
     policy = shared_membership_policy()
     if ref not in policy:

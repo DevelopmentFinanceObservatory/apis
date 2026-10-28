@@ -1484,8 +1484,8 @@ def test_a_pool_of_the_eu_institutions_reads_eu_membership_over_its_window(
 
 def test_a_convention_the_pass_cannot_serve_leaves_the_part_on_the_option_it_holds():
     """Where a matched convention's option is not served, the record holds the part's own
-    option before the bilateral one, so it never names a sibling total the answer does not
-    read: DAC1's total ODA keeps the contributions scope though bilateral ODA is available."""
+    option before the bilateral one, so it names only a total the answer reads. DAC1's total
+    ODA keeps the contributions scope though bilateral ODA is available."""
     facts = _dac1_facts(_DAC1_TOTAL_ODA, _DAC1_BILATERAL_ODA)
     table = provider_rule(_dac1_identity(_DAC1_TOTAL_ODA, (_USA,)), None, facts)
     (convention,) = (row for row in PROVIDER_CONVENTIONS if row.scope == "inclusive")
@@ -1598,7 +1598,7 @@ def test_a_stated_provider_scope_on_a_dac1_total_with_no_provider_axis_is_droppe
 
 def test_a_carried_inclusive_scope_on_dac1_bilateral_oda_is_dropped_with_the_reason():
     """DAC1's bilateral ODA is a total of another table than the CRS, so a carried
-    inclusive scope is not offered there: the part keeps bilateral ODA under its own rule and
+    inclusive scope is not offered there. The part keeps bilateral ODA under its own rule and
     reports the entry with the reason."""
     facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
     identity = _dac1_identity(_DAC1_BILATERAL_ODA, (_USA,))
@@ -1645,7 +1645,7 @@ def _held_choice(identity: BaseIdentity, facts: ScopeFacts) -> str:
 
 def _assert_holds_available(identity: BaseIdentity, facts: ScopeFacts) -> None:
     """A fresh search's record of `identity` and a resubmit of it each hold an option the
-    table marks available, where the axis applies; each record's rule, and the rule each
+    table marks available, where the axis applies. Each record's rule, and the rule each
     option names by default, describes that option's own scope."""
     table = provider_rule(identity, None, facts)
     record = settle_provider(identity, ScopeState(), facts)

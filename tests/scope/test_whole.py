@@ -171,8 +171,8 @@ def _resolve_inclusive_whole(entry: ResubmitIdentityEntry) -> Spec:
 
 
 def test_an_inclusive_parts_whole_is_the_inclusive_total_over_every_sector(monkeypatch):
-    """A named donor's total of health aid counts bilateral plus imputed multilateral flows; its
-    whole is the same composite over every purpose code, served from both tables over the
+    """A named donor's total of health aid counts bilateral plus imputed multilateral flows.
+    Its whole is the same composite over every purpose code, served from both tables over the
     part's years."""
     part = _inclusive_part(monkeypatch)
     assert _actives(part)["provider"] == "provider:inclusive"
@@ -195,8 +195,8 @@ def test_an_inclusive_parts_whole_is_the_inclusive_total_over_every_sector(monke
 
 def test_an_inclusive_whole_the_imputed_table_cannot_serve_refuses(monkeypatch):
     """Where the imputed table carries no row for the donor, the inclusive scope is not
-    offered on the whole, and the explicit entry holding it refuses rather than letting the
-    whole fall back to bilateral flows."""
+    offered on the whole, and the explicit entry holding it refuses, so the whole cannot fall
+    back to bilateral flows."""
     part = _inclusive_part(monkeypatch)
     rows, extra = provider_fixture._coverage_rows(provider_fixture._ALL_YEARS)
     imputed = set(provider_fixture._IMPUTED_MEMBERS)
