@@ -106,7 +106,6 @@ from datasets_api.doors.snapshot import read_under_served_id
 from datasets_api.pin_models import PinnedCoordinates, PinRequest, PinResponse
 from datasets_api.principals import (
     Grant,
-    PinNotPermitted,
     Principal,
     Principals,
     granted_route_class,
@@ -478,10 +477,6 @@ def build_pin_door(
             SnapshotRevoked,
             ArtifactExpired,
             ArtifactNotFound,
-            # The route admits every caller, so it no longer raises this. The code registry still
-            # maps `pin_not_permitted` on `datasets.pin`, and the declaration stays until the
-            # contract retires the mapping.
-            PinNotPermitted,
             CallerHeaderInvalid,
             CallerUnresolved,
             PinBackpressure,
@@ -500,7 +495,6 @@ def build_pin_door(
             ArtifactNotFound(
                 id="spec_exemplar", content_version="cv_exemplar", artifact_digest="sha256:exemplar"
             ),
-            PinNotPermitted(),
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),
             PinBackpressure(),

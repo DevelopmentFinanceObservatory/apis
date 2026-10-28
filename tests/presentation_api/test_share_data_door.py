@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import presentation_api.retention as presentation_retention
+from assembler.errors import FrameUnavailable
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import (
@@ -422,6 +423,34 @@ def test_a_slot_the_share_does_not_have_refuses(door: _Door, path: str, status: 
     resp = door.client.get(f"/api/presentation/shares/{share['id']}/{path}")
 
     assert (resp.status_code, resp.json()["code"]) == (status, code)
+
+
+@pytest.mark.parametrize(
+    ("reason", "status", "code", "retryable"),
+    [
+        ("io", 503, "service_unavailable", True),
+        ("revoked", 404, "frame_unavailable", False),
+    ],
+    ids=["read-failed", "frame-gone"],
+)
+def test_a_slot_whose_frame_does_not_load_answers_by_cause(
+    door: _Door,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+    status: int,
+    code: str,
+    retryable: bool,
+):
+    share = door.share(door.card(), latest=False)
+
+    def unloadable(*, frame_ref: FrameRef) -> ResolvedFrame:
+        raise FrameUnavailable(reason=reason, detail="exemplar")
+
+    monkeypatch.setattr(door.frame_store, "load", unloadable)
+    resp = door.data(share["id"])
+
+    body = resp.json()
+    assert (resp.status_code, body["code"], body["retryable"]) == (status, code, retryable)
 
 
 def test_an_emptied_slot_and_a_notes_slot_answer_not_found(door: _Door):

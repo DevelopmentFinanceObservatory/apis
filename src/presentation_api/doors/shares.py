@@ -7,7 +7,7 @@ data, and false a snapshot, which keeps the versions its cards drew. `kind` defa
 A `card` share takes 1 to 24 cards, a `canvas` 0 to 24, and a `search` or `conversation` share
 none, and a `conversation` share is a snapshot. `payload` is website-owned JSON of at most
 `presentation_store.MAX_SHARE_PAYLOAD_BYTES` (10 MiB) as compact UTF-8, stored as given and
-read back on GET; a larger one refuses 400 `request_invalid`. The create spends one unit of the
+read back on GET; a larger one refuses 413 `payload_too_large`. The create spends one unit of the
 caller's `share` allowance (`datasets_api.allowance`, caller named by
 `dfo_platform.caller.resolve_caller`), refusing 429 `allowance_exhausted` once it is spent, then
 pins the frame each card revision draws (`presentation_store.pin_card_frames`), live or
@@ -63,7 +63,9 @@ its stored read. A slot number the share has not had, or an empty slot, answers 
 the share's slots served, newest first, each with its retention counted from when DFO stored it
 and whether it is still fetchable (`share_slots.history_document`).
 
-A share id that names no share, or one taken down, answers 404 `not_found` on every route.
+A share id that names no share, or one taken down, answers 404 `not_found` on every route. A
+card's frame that is gone answers 404 `frame_unavailable`, and a frame read that fails answers
+retryable 503 `service_unavailable`.
 
 Handlers are module-level functions that read `SHARES_DEPS_SLOT`, which the door's lifespan
 sets. Every route runs on one executor behind a non-blocking semaphore, and saturation answers
@@ -162,6 +164,7 @@ from presentation_api.models import (
 )
 from presentation_api.newest_frames import NewestFrames
 from presentation_api.path_params import PathParamInvalid, require_component_id, require_share_id
+from presentation_api.refusals import frame_unavailable_spec
 from presentation_api.share_slots import (
     ShareSlotEmpty,
     SlotData,
@@ -310,8 +313,6 @@ class CreateShareBody(BaseModel):
             raise ValueError(refusal)
         if self.kind == "conversation" and self.latest:
             raise ValueError("a conversation share is a snapshot: send latest=false")
-        if refusal := payload_refusal(self.payload):
-            raise ValueError(refusal)
         return self
 
     def request_digest(self) -> bytes:
@@ -358,6 +359,10 @@ class ShareNotReplaceable(Exception):
             f"share {share_id!r} is a snapshot, whose cards are fixed for good; create a new "
             "share for new cards, or create it with latest=true to replace its cards later"
         )
+
+
+class SharePayloadTooLarge(Exception):
+    """A create's payload is over `MAX_SHARE_PAYLOAD_BYTES`. Maps to 413 `payload_too_large`."""
 
 
 class SharesUnavailable(Exception):
@@ -542,6 +547,8 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
     caller = resolve_caller(request, deps.caller)
 
     def job() -> Response:
+        if refusal := payload_refusal(body.payload):
+            raise SharePayloadTooLarge(refusal)
         if body.write_token is not None:
             token = require_client_write_token(body.write_token, prefix=SHARE_WRITE_TOKEN_PREFIX)
             request_sha256: bytes | None = body.request_digest()
@@ -773,8 +780,19 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         # retryable, so it answers `internal_error`.
         logger.error("Shares door cannot name a caller: %s", exc)
         return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
+    if isinstance(exc, SharePayloadTooLarge):
+        return ProblemSpec(status=413, code="payload_too_large", detail=str(exc), retryable=False)
     if isinstance(exc, SharesUnavailable):
         return ProblemSpec(status=503, code="service_unavailable", detail=str(exc), retryable=True)
+    if isinstance(exc, FrameUnavailable):
+        spec = frame_unavailable_spec(exc)
+        if spec.status == 503:
+            # presentation.shares maps `frame_unavailable` at 404 only, for a frame that is
+            # gone. A frame read that fails is a service fault.
+            return ProblemSpec(
+                status=503, code="service_unavailable", detail=spec.detail, retryable=True
+            )
+        return spec
     return classify_components_exception(exc) or classify_component_data_exception(exc)
 
 
@@ -1004,6 +1022,7 @@ def build_shares_door(
             ShareNotReplaceable,
             ShareNotFound,
             ShareSlotEmpty,
+            SharePayloadTooLarge,
             ComponentHoldsNoData,
             ComponentExportMismatch,
             SchemaInvalid,
@@ -1034,7 +1053,10 @@ def build_shares_door(
             ShareNotReplaceable("Ab3dEf7h"),
             ShareNotFound("Ab3dEf7h"),
             ShareSlotEmpty(share_id="Ab3dEf7h", slot=2),
+            SharePayloadTooLarge("exemplar"),
             SharesUnavailable(),
+            FrameUnavailable(reason="io", detail="exemplar"),
+            FrameUnavailable(reason="expired", detail="exemplar"),
             AllowanceExhausted(
                 kind=AllowanceKind.share, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
             ),

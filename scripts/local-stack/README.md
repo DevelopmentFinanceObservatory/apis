@@ -36,7 +36,7 @@ The containers keep no volume, so `down` discards every row and object, and the 
 
 The ODA readings use `Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal` under `provenance/OECDDAC2A` in current US dollars. The Kenya readings use `Count_Person` and `Amount_EconomicActivity_GrossNationalIncome_PurchasingPowerParity` under the World Development Indicators. Each StatVar's arcs are the dev graph's, copied from `tests/fixtures/graph_nodes.json`. The values and facet ids are synthesised at realistic magnitudes, because no recorded fixture holds these series' points. A change to `fixtures/readings.json` changes the content versions above.
 
-dfo-apis reads its graph, SDMX endpoint and coverage index from doubles that `upstream.py` builds over the same fixture, and admits every provenance through a fake origin catalogue. The mint and observations doors therefore read the fixture as they would read the live graph. `tests/scripts/test_local_stack_seed.py` mints each reading over in-memory stores in the default suite, so a mint change the fixture no longer satisfies fails there.
+dfo-apis reads its graph, SDMX endpoint and coverage index from doubles that `upstream.py` builds over the same fixture, and admits every provenance through a fake origin catalogue. The mint and observations doors therefore read the fixture as they would read the live graph. The Presentation surface builds its own graph client over HTTP, so `local_app.py` answers its `/v2/node` reads from the same fixture at `/local-stack/graph`, and a card names the fixture's places, variables and sources. `tests/scripts/test_local_stack_seed.py` mints each reading over in-memory stores in the default suite, so a mint change the fixture no longer satisfies fails there.
 
 ## Smoke
 
@@ -51,7 +51,7 @@ It ends with `analysis_step` in `smoke.py`, which divides the German ODA reading
 
 ## Download links
 
-In production the files routes answer 302 at a V4 URL that `artifact_store.signing.sign_get_url` signs through IAM `signBlob`, which needs Google credentials. With `STORAGE_EMULATOR_HOST` set, `sign_get_url` returns the object's unsigned media link on fake-gcs-server instead, for example `http://127.0.0.1:54443/download/storage/v1/b/dfo-local-working/o/sha256%3A...?alt=media`. The rest of the route runs unchanged: the version read, revocation, retention and renewal, and the 302 with `no-store`.
+In production the files routes answer 302 at a V4 URL that `artifact_store.signing.sign_get_url` signs through IAM `signBlob`, which needs Google credentials. With `STORAGE_EMULATOR_HOST` set, `sign_get_url` returns the object's unsigned media link instead, on `STORAGE_EMULATOR_LINK_BASE`, which `local.env` sets to the API's origin, for example `http://127.0.0.1:58083/download/storage/v1/b/dfo-local-working/o/sha256%3A...?alt=media&response-content-type=text%2Fcsv&response-content-disposition=...`. `local_app.py` serves that path: it streams the object from fake-gcs-server under the content type and disposition the link names, as a signed URL's overrides set them. A client that follows redirects only to the API's origin or `storage.googleapis.com` therefore downloads from the local stack unchanged. The rest of the route runs unchanged: the version read, revocation, retention and renewal, and the 302 with `no-store`.
 
 ## Environment
 
@@ -61,13 +61,15 @@ In production the files routes answer 302 at a V4 URL that `artifact_store.signi
 | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATASET_STORE_*`, `PRESENTATION_STORE_*`                                                     | Postgres on port 55418; migrator `dfo_local_migrator`, runtime roles `datasets_runtime`, `datasets_worker`, `presentation_runtime` (`postgres-init.sql`) |
 | `STORAGE_EMULATOR_HOST`                                                                       | `http://127.0.0.1:54443`                                                                                                                                 |
+| `STORAGE_EMULATOR_LINK_BASE`                                                                  | `http://127.0.0.1:58083`, the API's origin, which serves download links                                                                                 |
 | `DATASETS_ARTIFACT_BUCKET_WORKING`, `_PINNED`                                                 | `dfo-local-working`, `dfo-local-pinned`                                                                                                                  |
 | `DATASETS_FIRST_PARTY_PRINCIPAL` (publish)                                                    | `local-publish-principal`                                                                                                                                |
 | `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` (pin)                                                    | `local-pin-principal`                                                                                                                                    |
 | `LIVE_REFRESH_PRINCIPAL` (refresh)                                                            | `local-refresh-principal`                                                                                                                                |
 | `DFO_CALLER_PRINCIPAL`                                                                        | `local-caller-principal`                                                                                                                                 |
 | `DFO_CALLER_HMAC_KEY`                                                                         | `local-caller-hmac-key`                                                                                                                                  |
-| `DATASETS_GRAPH_BASE_URL`, `DATASETS_SDMX_BASE_URL`, `UN_GRAPH_BASE_URL`, `SEARCH_GRAPH_BASE` | `http://127.0.0.1:9`, which refuses connections                                                                                                          |
+| `DATASETS_GRAPH_BASE_URL`                                                                     | `http://127.0.0.1:58083/local-stack/graph/core/api`, `local_app.py`'s `/v2/node` double over the fixture                                                 |
+| `DATASETS_SDMX_BASE_URL`, `UN_GRAPH_BASE_URL`, `SEARCH_GRAPH_BASE`                            | `http://127.0.0.1:9`, which refuses connections                                                                                                          |
 | `DFO_PUBLIC_SITE_URL`                                                                         | `http://127.0.0.1:3000`                                                                                                                                  |
 
 A grant goes in the `x-dfo-principal` header. A caller without the pin grant is named from the rightmost `X-Forwarded-For` entry, which Cloud Run appends in production, so a direct local call sends one itself:
@@ -86,5 +88,5 @@ A caller standing in for the website sends `x-dfo-caller-principal: local-caller
 - Graph and Skills surfaces: not mounted.
 - Operations: the Datasets surface takes a `NullTaskClient` and no worker runs, so a mint too large to answer in the request refuses when it would enqueue.
 - Readings outside the fixture: a mint or definition read of any other StatVar or place finds nothing in the doubles.
-- Signed URLs: download links are unsigned emulator links, so neither IAM signing nor URL expiry is exercised.
+- Signed URLs: download links are unsigned, so neither IAM signing nor URL expiry is exercised.
 - Cloud SQL connector and IAM database auth: the stores connect over TCP with passwords.

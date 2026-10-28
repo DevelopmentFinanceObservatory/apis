@@ -8,9 +8,11 @@ The account needs `roles/iam.serviceAccountTokenCreator` on itself.
 This store caps URLs at one hour, below V4's seven-day maximum.
 
 With `STORAGE_EMULATOR_HOST` set, which `google-cloud-storage` also reads to send every call
-to a GCS emulator, `sign_get_url` returns the object's media link on that emulator. The
-emulator checks no signature and ignores the response-type and disposition overrides, so the
-link carries neither and needs no credentials.
+to a GCS emulator, `sign_get_url` returns the object's unsigned media link, with the
+response-type and disposition overrides in its query, and needs no credentials. The link is
+on `STORAGE_EMULATOR_LINK_BASE` when that is set, as the local stack sets it to the API's own
+origin, which serves the emulator's media path, and on the emulator otherwise. The emulator
+checks no signature and ignores the overrides.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ import os
 import threading
 from datetime import timedelta
 from typing import Protocol, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import google.auth
 from google.api_core.exceptions import GoogleAPICallError
@@ -43,6 +45,9 @@ SIGNED_URL_REUSE_WINDOW = timedelta(minutes=1)
 
 # The variable `google-cloud-storage` reads to point its client at a GCS emulator.
 STORAGE_EMULATOR_ENV = "STORAGE_EMULATOR_HOST"
+
+# The origin an emulator media link is served on, where it is not the emulator itself.
+STORAGE_EMULATOR_LINK_BASE_ENV = "STORAGE_EMULATOR_LINK_BASE"
 
 
 class _ServiceAccountCredentials(Protocol):
@@ -95,8 +100,8 @@ def sign_get_url(
     """Sign one GET URL for `object_name` with the requested response type and disposition
     in its query. `digest` names the bytes in a signing error.
 
-    With `STORAGE_EMULATOR_HOST` set, returns the emulator's unsigned media link for the
-    object instead.
+    With `STORAGE_EMULATOR_HOST` set, returns the object's unsigned media link instead, on
+    `STORAGE_EMULATOR_LINK_BASE` when that is set and on the emulator otherwise.
 
     Raises `ValueError` outside the store TTL bounds before credential or
     network work. Signing failures raise `ArtifactSigningError` with safe error details.
@@ -115,7 +120,13 @@ def sign_get_url(
             f"(V4 signed URLs cap at {V4_MAX_TTL!r} regardless)"
         )
     if emulator_host := os.environ.get(STORAGE_EMULATOR_ENV):
-        return _emulator_media_url(emulator_host, bucket=bucket, object_name=object_name)
+        return _emulator_media_url(
+            os.environ.get(STORAGE_EMULATOR_LINK_BASE_ENV) or emulator_host,
+            bucket=bucket,
+            object_name=object_name,
+            response_type=response_type,
+            response_disposition=response_disposition,
+        )
     signing_failed = False
     error_class_name: str | None = None
     error_status_code: int | None = None
@@ -147,7 +158,22 @@ def sign_get_url(
     raise AssertionError("unreachable: the try block above either returns or raises")
 
 
-def _emulator_media_url(host: str, *, bucket: str, object_name: str) -> str:
-    """The media download URL for `object_name` in `bucket` on the emulator at `host`."""
-    name = quote(object_name, safe="")
-    return f"{host.rstrip('/')}/download/storage/v1/b/{bucket}/o/{name}?alt=media"
+def emulator_media_path(*, bucket: str, object_name: str) -> str:
+    """The emulator's media download path for `object_name` in `bucket`, query included."""
+    return f"/download/storage/v1/b/{bucket}/o/{quote(object_name, safe='')}?alt=media"
+
+
+def _emulator_media_url(
+    base: str, *, bucket: str, object_name: str, response_type: str, response_disposition: str
+) -> str:
+    """The media download URL for `object_name` in `bucket` under `base`, with the response
+    overrides a signed URL carries."""
+    overrides = urlencode(
+        {
+            "response-content-type": response_type,
+            "response-content-disposition": response_disposition,
+        },
+        quote_via=quote,
+    )
+    path = emulator_media_path(bucket=bucket, object_name=object_name)
+    return f"{base.rstrip('/')}{path}&{overrides}"

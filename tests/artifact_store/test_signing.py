@@ -18,6 +18,7 @@ from artifact_store.signing import (
     SIGNED_URL_TTL_CEILING,
     SIGNED_URL_TTL_FLOOR,
     STORAGE_EMULATOR_ENV,
+    STORAGE_EMULATOR_LINK_BASE_ENV,
     sign_get_url,
 )
 
@@ -123,12 +124,25 @@ def test_ttl_at_the_ceiling_is_accepted(gcs_client, stub_signing):
     assert params["X-Goog-Expires"] == [str(int(SIGNED_URL_TTL_CEILING.total_seconds()))]
 
 
-def test_emulator_host_returns_the_media_link_without_credential_work(gcs_client, monkeypatch):
+@pytest.mark.parametrize(
+    ("link_base", "origin"),
+    [
+        pytest.param(None, "http://127.0.0.1:54443", id="on-the-emulator"),
+        pytest.param("http://127.0.0.1:58083/", "http://127.0.0.1:58083", id="on-the-link-base"),
+    ],
+)
+def test_emulator_host_returns_the_media_link_without_credential_work(
+    gcs_client, monkeypatch, link_base, origin
+):
     def _boom():
         raise AssertionError("google.auth.default() must not run against the emulator")
 
     monkeypatch.setattr(google.auth, "default", _boom)
     monkeypatch.setenv(STORAGE_EMULATOR_ENV, "http://127.0.0.1:54443/")
+    if link_base is None:
+        monkeypatch.delenv(STORAGE_EMULATOR_LINK_BASE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(STORAGE_EMULATOR_LINK_BASE_ENV, link_base)
 
     url = sign_get_url(
         client=gcs_client,
@@ -141,8 +155,9 @@ def test_emulator_host_returns_the_media_link_without_credential_work(gcs_client
     )
 
     assert url == (
-        "http://127.0.0.1:54443/download/storage/v1/b/dfo-local-working/o/"
-        "sha256%3Adeadbeef?alt=media"
+        f"{origin}/download/storage/v1/b/dfo-local-working/o/sha256%3Adeadbeef?alt=media"
+        "&response-content-type=text%2Fcsv"
+        "&response-content-disposition=attachment%3B%20filename%3D%22deadbeef.csv%22"
     )
 
 

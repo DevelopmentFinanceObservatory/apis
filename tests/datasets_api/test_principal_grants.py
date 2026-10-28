@@ -124,7 +124,7 @@ def test_the_table_names_every_gated_route(app) -> None:
     assert len(_GATED_ROUTES) == len(gated_templates)
 
 
-@pytest.mark.parametrize("grant", list(Grant))
+@pytest.mark.parametrize("grant", [Grant.publish, Grant.refresh])
 def test_a_refused_principal_carries_no_secret_in_its_repr_or_refusal(grant: Grant) -> None:
     """A caller presenting another grant's secret leaves that secret on no repr or refusal a
     later log line could print."""

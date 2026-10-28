@@ -72,6 +72,7 @@ from description.facts import (
     Evidence,
     FixedValue,
     InputVersion,
+    LabelEvidence,
     SeriesFacts,
     StatusCounts,
     VariableFacts,
@@ -1747,6 +1748,7 @@ def _computed_frame_store(
     clock: _Clock | None = None,
     stored_composed: list[object] | None = None,
     continuations: list[dict[str, object]] | None = None,
+    recipe_reader: _FakeRecipeReader | None = None,
 ) -> tuple[LiveFrameStore, FrameRef, _FakeGraphReader, _RecordReader]:
     """A store over one computed frame of `rows` under `columns`, whose version's record holds
     `composed` and `steps` and whose stored lineage holds `stored_composed` and
@@ -1806,6 +1808,7 @@ def _computed_frame_store(
         spec_reader=spec_reader,
         code_index=_code_index([_EDUCATION_ROW]),
         description_reader=reader,
+        recipe_reader=recipe_reader,
         now=clock if clock is not None else _Clock(),
     )
     return store, frame_ref, graph, reader
@@ -2429,6 +2432,83 @@ def test_load_words_a_composed_entry_from_bare_refs_when_the_graph_read_fails():
 
     assert labels["dcid:ops_sum"] == "Education plus Count_Person"
     assert sum("Count_Person" in call for call in graph.node_arcs_many_calls) == 2
+
+
+_AID_ROOT = ("spec_" + "1" * 32, "cv_" + "1" * 32)
+_POPULATION_ROOT = ("spec_" + "2" * 32, "cv_" + "2" * 32)
+
+
+def _quotient_recipe(frame_ref: FrameRef) -> _FakeRecipeReader:
+    """A recipe reader holding `frame_ref`'s recipe: a quotient of the aid root by the
+    population root, under a filter."""
+    recipes = _FakeRecipeReader()
+    recipes.put(
+        frame_ref,
+        anchor=None,
+        roots=[
+            {"dataset": {"spec_id": spec_id, "content_version": cv}}
+            for spec_id, cv in (_AID_ROOT, _POPULATION_ROOT)
+        ],
+    )
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    root = recipes.recipes[key]
+    tree = {
+        "frame": {"spec_id": frame_ref.spec_id, "content_version": frame_ref.content_version},
+        "op_spec": {"verb": "quotient_of"},
+        "inputs": {
+            "frame_ref": {
+                "frame": {"spec_id": "ops_" + "f" * 32, "content_version": "ocv_" + "f" * 32},
+                "op_spec": {"verb": "filter"},
+                "inputs": {"frame_ref": {"root": 0, "frame": {}}},
+            },
+            "denominator_frame_ref": {"root": 1, "frame": {}},
+        },
+    }
+    recipes.recipes[key] = dataclasses.replace(root, body={**root.body, "tree": tree})
+    return recipes
+
+
+@pytest.mark.parametrize(
+    ("aid_label", "expected"),
+    [
+        pytest.param("Gross ODA", "Gross ODA per Total population", id="record-labels-the-root"),
+        pytest.param(None, "Amount_Aid per Total population", id="no-label-keeps-the-ref"),
+    ],
+)
+def test_a_record_naming_no_variable_names_it_from_the_recipe_tree_and_its_roots(
+    aid_label: str | None, expected: str
+):
+    """A computed version published without steps or composed entries names the variable its
+    quotient wrote from its recipe tree: each root as the variable its record resolved to,
+    labelled by that record or the graph, and a filter between them keeps its input's."""
+    rows: list[list[object]] = [
+        ["dcid:" + "ops_" + "a" * 32, "country/ETH", "2015", 1.0, None, "src_oecd_dac"]
+    ]
+    frame_ref = FrameRef(spec_id="ops_" + "a" * 32, content_version="ocv_" + "b" * 32)
+    store, frame_ref, _, reader = _computed_frame_store(
+        rows=rows, recipe_reader=_quotient_recipe(frame_ref)
+    )
+    aid = _input_record(_AID_ROOT, variable="Amount_Aid", recipient="ETH")
+    if aid_label is not None:
+        aid = aid.model_copy(
+            update={
+                "evidence": aid.evidence.model_copy(
+                    update={
+                        "labels": [
+                            LabelEvidence(ref="Amount_Aid", label=aid_label, read=date(2026, 9, 28))
+                        ]
+                    }
+                )
+            }
+        )
+    reader.inputs = {
+        _AID_ROOT: aid,
+        _POPULATION_ROOT: _input_record(_POPULATION_ROOT, variable="Count_Person", recipient="ETH"),
+    }
+
+    labels = store.load(frame_ref=frame_ref).labels
+
+    assert labels["dcid:" + frame_ref.spec_id] == expected
 
 
 def test_load_leaves_a_variable_no_step_and_no_entry_names_with_its_ref():

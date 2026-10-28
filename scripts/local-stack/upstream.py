@@ -5,6 +5,11 @@ reaches none of the live ones, so `local_app.py` hands the surface these doubles
 one fixture: they serve each reading's StatVar arcs, labels, facets and points. The mint and
 observations doors then read the fixture as they would read the live graph. `seed.py` mints
 each reading through the running server.
+
+The Presentation surface builds its own graph client from `DATASETS_GRAPH_BASE_URL`, which
+`local.env` points at the server's own `/local-stack/graph` route. `node_reply` answers that
+client's `/v2/node` reads from the same fixture: each node's out-arcs, a labelled node's
+`name`, and no in-arcs.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import httpx
 
@@ -150,6 +156,43 @@ def graph_reader(fixture: Fixture) -> FakeMintGraphReader:
         **{dcid: stat_var.label for dcid, stat_var in fixture.stat_vars.items()},
     }
     return FakeMintGraphReader(arcs=arcs, facets=facets, labels=labels)
+
+
+def graph_nodes(fixture: Fixture) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Every node the fixture names, by dcid, with its out-arcs: a StatVar's arcs, each place
+    as a `Country` node, and a `name` for each labelled node."""
+    nodes: dict[str, dict[str, tuple[str, ...]]] = {
+        dcid: dict(stat_var.arcs) for dcid, stat_var in fixture.stat_vars.items()
+    }
+    for place, name in fixture.places.items():
+        nodes[place] = {"typeOf": ("Country",), "name": (name,)}
+    for dcid, label in fixture.labels.items():
+        nodes.setdefault(dcid, {}).setdefault("name", (label,))
+    return nodes
+
+
+def node_reply(nodes: Mapping[str, Mapping[str, tuple[str, ...]]], payload: Mapping) -> dict:
+    """The `/v2/node` reply to `payload`: for an out-arc read (`->p`, `->[p,q]` or `->*`) each
+    node's arcs among those named, `{}` for a node holding none, and for an in-arc read (`<-p`)
+    no subjects, since the local stack reads none. One page holds every node."""
+    spec = cast(str, payload["property"])
+    requested = cast("list[str]", payload["nodes"])
+    if spec.startswith("<-"):
+        return {"data": {dcid: {} for dcid in requested}}
+    if not spec.startswith("->"):
+        raise ValueError(f"local-stack graph double: unexpected arc spec {spec!r}")
+    named = spec[2:].strip("[]")
+    data: dict[str, object] = {}
+    for dcid in requested:
+        arcs = nodes.get(dcid, {})
+        properties = arcs if named == "*" else named.split(",")
+        held = {
+            prop: {"nodes": [{"value": value} for value in arcs[prop]]}
+            for prop in properties
+            if arcs.get(prop)
+        }
+        data[dcid] = {"arcs": held} if held else {}
+    return {"data": data}
 
 
 def _all_series(fixture: Fixture) -> dict[tuple[str, tuple[tuple[str, str], ...]], Series]:

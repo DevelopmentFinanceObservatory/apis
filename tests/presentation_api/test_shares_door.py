@@ -478,7 +478,6 @@ def test_replace_and_delete_spend_no_allowance(door: _Door):
         {"cards": [{"component_id": "cmp_x", "revision": 1}], "latest": True, "kind": "search"},
         {"latest": True, "kind": "deck"},
         {"latest": True, "kind": "conversation"},
-        {"latest": False, "kind": "search", "payload": "x" * MAX_SHARE_PAYLOAD_BYTES},
     ],
     ids=[
         "latest-missing",
@@ -489,13 +488,20 @@ def test_replace_and_delete_spend_no_allowance(door: _Door):
         "search-with-cards",
         "unknown-kind",
         "live-conversation",
-        "payload-over-bound",
     ],
 )
 def test_a_malformed_create_refuses_request_invalid_and_spends_nothing(door: _Door, body: dict):
     resp = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
 
     _assert_refused(resp, status=400, code="request_invalid")
+    assert door.allowances.spent == []
+
+
+def test_an_oversize_payload_refuses_payload_too_large_and_spends_nothing(door: _Door):
+    body = {"latest": False, "kind": "search", "payload": "x" * MAX_SHARE_PAYLOAD_BYTES}
+    resp = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
+
+    _assert_refused(resp, status=413, code="payload_too_large")
     assert door.allowances.spent == []
 
 

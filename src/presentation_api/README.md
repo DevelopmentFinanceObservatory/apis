@@ -75,7 +75,7 @@ Publishes cards under one public `/s/<id>` id (`presentation_api.doors.shares`, 
 
 | Method   | Endpoint                               | Description |
 | :------- | :------------------------------------- | :---------- |
-| `POST`   | `/api/presentation/shares`             | Body `{cards: [{component_id, revision}], latest, title?, kind?, payload?}`, at most 24 cards. `latest` has no default: `true` makes a live share, which follows new data, and `false` a snapshot, which keeps the versions its cards draw now. `kind` is `card` (the default, 1 to 24 cards), `canvas` (0 to 24), `search` or `conversation` (no cards; a conversation is a snapshot). `payload` is website-owned JSON of at most 1 MiB, stored as given. Answers 201 `{id, url, embed_url, data_urls, write_token, revision, latest}`. |
+| `POST`   | `/api/presentation/shares`             | Body `{cards: [{component_id, revision}], latest, title?, kind?, payload?}`, at most 24 cards. `latest` has no default: `true` makes a live share, which follows new data, and `false` a snapshot, which keeps the versions its cards draw now. `kind` is `card` (the default, 1 to 24 cards), `canvas` (0 to 24), `search` or `conversation` (no cards; a conversation is a snapshot). `payload` is website-owned JSON of at most 10 MiB as compact UTF-8, stored as given; a larger one refuses 413 `payload_too_large`. Answers 201 `{id, url, embed_url, data_urls, write_token, revision, latest}`. |
 | `GET`    | `/api/presentation/shares/{share_id}`  | Public, with `Access-Control-Allow-Origin: *`: `{id, kind, mode, title, revision, slots, payload, created_at}`, each slot `{slot, card, data_url}`. Never the write token. |
 | `PUT`    | `/api/presentation/shares/{share_id}`  | Body `{cards}`, which takes the card count the share's kind takes on create. Writes a live share's next revision; a snapshot refuses first. Needs `x-dfo-write-token`. Answers 200 `{id, url, embed_url, data_urls, revision, latest}`. |
 | `POST`   | `/api/presentation/shares/{share_id}/snapshot` | Turns a live share into a snapshot under the same URLs. Needs `x-dfo-write-token`. Answers 200 `{id, url, embed_url, data_urls, revision, latest: false}`; a snapshot answers as it is. |
@@ -105,8 +105,10 @@ The create returns a `shw_` write token once, and the store keeps its SHA-256 di
 | `edit_conflict`         | 409         | A snapshot conversion found the share replaced meanwhile. Retry. |
 | `allowance_exhausted`   | 429         | The caller has spent today's share allowance. Retryable after `Retry-After`, the next UTC midnight. |
 | `not_found`             | 404         | No share at the id, or it was taken down; on a create or replace, a card or revision the store lacks; on a data read, a slot the share has not had, one a replacement left empty, or a note's. |
-| `request_invalid`       | 400         | A malformed body (`latest` missing or not a boolean, a card count or `latest` the `kind` does not take, more than 24 cards, a payload over 1 MiB, an unknown field), id, slot or format, or a website request whose `x-dfo-caller` is missing or malformed. |
-| `frame_unavailable`     | 404 / 503   | A card's frame cannot be pinned, as on the component routes. |
+| `request_invalid`       | 400         | A malformed body (`latest` missing or not a boolean, a card count or `latest` the `kind` does not take, more than 24 cards, an unknown field), id, slot or format, or a website request whose `x-dfo-caller` is missing or malformed. |
+| `payload_too_large`     | 413         | A create's `payload` is over 10 MiB as compact UTF-8 (`presentation_store.MAX_SHARE_PAYLOAD_BYTES`). |
+| `frame_unavailable`     | 404         | A card's frame is gone: unknown, expired, revoked or quarantined, as on the component routes. |
+| `service_unavailable`   | 503         | A frame read or store call failed, or the door is at capacity. Retryable. |
 | `internal_error`        | 500         | The caller cannot be named: `DFO_CALLER_HMAC_KEY` is unset or the trusted `X-Forwarded-For` entry is missing. |
 
 The shares door mounts when the surface builds its stores live or is given a `share_store`. A surface composed over an injected `revision_store` without one serves no share route.

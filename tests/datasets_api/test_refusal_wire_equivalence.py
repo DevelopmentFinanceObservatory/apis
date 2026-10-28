@@ -85,7 +85,7 @@ from datasets_api.doors.refresh import (
 )
 from datasets_api.doors.register import RegistryBackpressure
 from datasets_api.doors.snapshot import SnapshotBackpressure
-from datasets_api.principals import PinNotPermitted, PublishNotPermitted, RefreshNotPermitted
+from datasets_api.principals import PublishNotPermitted, RefreshNotPermitted
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.recipe_store import RecipeDiverges, RecipeFrameNotStored, ReplayKeyHeld
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -362,7 +362,6 @@ CASES: tuple[tuple[str, BaseException], ...] = (
             id="spec_exemplar", content_version="cv_exemplar", artifact_digest="sha256:exemplar"
         ),
     ),
-    ("pin", PinNotPermitted()),
     ("pin", PinBackpressure()),
     ("pin", PinBudgetExhausted(pinned=0, limit=0)),
     ("pin", DatasetsStoreUnavailable("exemplar")),
@@ -528,7 +527,7 @@ _GOLDEN = Path(__file__).with_name("refusal_wire_golden.json")
 _DELIBERATE_DIFFS: dict[str, dict[str, object]] = {
     # A refusal renders its own alternatives. A facet refusal's alternatives reach the top level
     # only when it is raised outside aggregation with alternatives, which no raise site does.
-    "extra-134-FacetNotAvailableError": {
+    "extra-133-FacetNotAvailableError": {
         "alternatives": [{"ref": "Exemplar", "label": "Exemplar"}],
     },
     # A role-shaped currency refusal offers only the currency roles that bind a declared role,
@@ -536,9 +535,9 @@ _DELIBERATE_DIFFS: dict[str, dict[str, object]] = {
     "mint_errors-10-CurrencyRoleUndeclared": {"alternatives": []},
     # `/facets/unit` locates the failure in the materialisation request, not the posted body,
     # so it stays the refusal's `facet_pointer` and leaves the top level.
-    "extra-136-DefaultFacetUndefinedError": {"pointer": None},
+    "extra-135-DefaultFacetUndefinedError": {"pointer": None},
     # Publish stores the canonical frame, so its refusals name a stored frame in place of frame1.
-    "publish-105-PublishBytesDiverge": {
+    "publish-104-PublishBytesDiverge": {
         "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds a stored "
         "frame whose content differs from this publish call's frame; refusing to report success "
         "for a digest that was not actually recorded under this pair. This most likely means the "
@@ -547,7 +546,7 @@ _DELIBERATE_DIFFS: dict[str, dict[str, object]] = {
         "content_version for the corrected recipe; retrying with this same frame will refuse "
         "identically",
     },
-    "publish-106-PublishLineageDiverge": {
+    "publish-105-PublishLineageDiverge": {
         "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds a stored "
         "frame with this publish call's content but a different input_content_versions "
         "derivation trace than this publish call's own; refusing to report success for a "
@@ -557,7 +556,7 @@ _DELIBERATE_DIFFS: dict[str, dict[str, object]] = {
         "input_content_versions already held under this id; retrying with these same claimed "
         "inputs will refuse identically",
     },
-    "publish-108-PublishRecordMissing": {
+    "publish-107-PublishRecordMissing": {
         "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' rendered and wrote its "
         "canonical frame to the artifact store, but no version row is readable back through "
         "this door's own snapshot_reader immediately after recording one; this publish door was "

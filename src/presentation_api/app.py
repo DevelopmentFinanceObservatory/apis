@@ -37,7 +37,7 @@ from datasets_api.recipe_store import RecipeReader
 from dfo_platform.app import Surface
 from dfo_platform.codes import merge_catalogues
 from dfo_platform.config import CallerSettings
-from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
+from dfo_platform.doors import DoorContribution, classify_by_door, combine_classifiers, flatten
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
 from origin_catalogue import bound_catalogue
@@ -164,8 +164,10 @@ def presentation_surface(
         router=router,
         capability_version=capability_version,
         codes=merge_catalogues(PRESENTATION_CODE_CATALOGUE, SHARE_CODE_CATALOGUE),
-        # Request validation runs before route handlers, so the surface classifies it.
-        classify=combine_classifiers(*(door.classify for door in doors), request_validation_spec),
+        # The door whose route raised classifies first, so the shares door answers an I/O
+        # failure its own way. Request validation runs before route handlers, so the surface
+        # classifies it.
+        classify=combine_classifiers(classify_by_door(doors), request_validation_spec),
         exception_types=tuple(exc_type for door in doors for exc_type in door.exception_types),
         exception_exemplars=tuple(
             exemplar for door in doors for exemplar in door.exception_exemplars

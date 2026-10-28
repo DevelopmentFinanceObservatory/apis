@@ -27,28 +27,14 @@
             "select": {
               "stat_var": "dcid:LiveRefreshGrants",
               "recipient": [
-                "country/KEN",
-                "country/GHA"
+                "country/GHA",
+                "country/KEN"
               ]
             }
           },
           "fact_summary": {
             "changed": [],
             "series": [
-              {
-                "id": "s_f9203fe8883952e2",
-                "label": "Kenya",
-                "coordinates": {
-                  "measurementMethod": "GrantEquivalent",
-                  "provenance": "OECD_DAC2A",
-                  "recipient": "country/KEN",
-                  "stat_var": "dcid:LiveRefreshGrants",
-                  "unit": "USD"
-                },
-                "point_count": 3,
-                "first_value": "200",
-                "last_value": "220"
-              },
               {
                 "id": "s_f41b8d658de8187b",
                 "label": "Ghana",
@@ -62,6 +48,20 @@
                 "point_count": 3,
                 "first_value": "100",
                 "last_value": "120"
+              },
+              {
+                "id": "s_f9203fe8883952e2",
+                "label": "Kenya",
+                "coordinates": {
+                  "measurementMethod": "GrantEquivalent",
+                  "provenance": "OECD_DAC2A",
+                  "recipient": "country/KEN",
+                  "stat_var": "dcid:LiveRefreshGrants",
+                  "unit": "USD"
+                },
+                "point_count": 3,
+                "first_value": "200",
+                "last_value": "220"
               }
             ],
             "series_cut": 0,
@@ -116,26 +116,6 @@
               },
               "series": [
                 {
-                  "id": "s_f9203fe8883952e2",
-                  "label": "Kenya",
-                  "unit": "USD",
-                  "source_ref": "src_oecd_dac2a_6ec092e3",
-                  "points": [
-                    {
-                      "period": "2022",
-                      "value": 200
-                    },
-                    {
-                      "period": "2023",
-                      "value": 210
-                    },
-                    {
-                      "period": "2024",
-                      "value": 220
-                    }
-                  ]
-                },
-                {
                   "id": "s_f41b8d658de8187b",
                   "label": "Ghana",
                   "unit": "USD",
@@ -152,6 +132,26 @@
                     {
                       "period": "2024",
                       "value": 120
+                    }
+                  ]
+                },
+                {
+                  "id": "s_f9203fe8883952e2",
+                  "label": "Kenya",
+                  "unit": "USD",
+                  "source_ref": "src_oecd_dac2a_6ec092e3",
+                  "points": [
+                    {
+                      "period": "2022",
+                      "value": 200
+                    },
+                    {
+                      "period": "2023",
+                      "value": 210
+                    },
+                    {
+                      "period": "2024",
+                      "value": 220
                     }
                   ]
                 }
@@ -587,28 +587,14 @@
             "select": {
               "stat_var": "dcid:LiveRefreshGrants",
               "recipient": [
-                "country/KEN",
-                "country/GHA"
+                "country/GHA",
+                "country/KEN"
               ]
             }
           },
           "fact_summary": {
             "changed": [],
             "series": [
-              {
-                "id": "s_f9203fe8883952e2",
-                "label": "Kenya",
-                "coordinates": {
-                  "measurementMethod": "GrantEquivalent",
-                  "provenance": "OECD_DAC2A",
-                  "recipient": "country/KEN",
-                  "stat_var": "dcid:LiveRefreshGrants",
-                  "unit": "USD"
-                },
-                "point_count": 4,
-                "first_value": "200",
-                "last_value": "230"
-              },
               {
                 "id": "s_f41b8d658de8187b",
                 "label": "Ghana",
@@ -622,6 +608,20 @@
                 "point_count": 4,
                 "first_value": "100",
                 "last_value": "130"
+              },
+              {
+                "id": "s_f9203fe8883952e2",
+                "label": "Kenya",
+                "coordinates": {
+                  "measurementMethod": "GrantEquivalent",
+                  "provenance": "OECD_DAC2A",
+                  "recipient": "country/KEN",
+                  "stat_var": "dcid:LiveRefreshGrants",
+                  "unit": "USD"
+                },
+                "point_count": 4,
+                "first_value": "200",
+                "last_value": "230"
               }
             ],
             "series_cut": 0,
@@ -676,30 +676,6 @@
               },
               "series": [
                 {
-                  "id": "s_f9203fe8883952e2",
-                  "label": "Kenya",
-                  "unit": "USD",
-                  "source_ref": "src_oecd_dac2a_6ec092e3",
-                  "points": [
-                    {
-                      "period": "2022",
-                      "value": 200
-                    },
-                    {
-                      "period": "2023",
-                      "value": 210
-                    },
-                    {
-                      "period": "2024",
-                      "value": 220
-                    },
-                    {
-                      "period": "2025",
-                      "value": 230
-                    }
-                  ]
-                },
-                {
                   "id": "s_f41b8d658de8187b",
                   "label": "Ghana",
                   "unit": "USD",
@@ -720,6 +696,30 @@
                     {
                       "period": "2025",
                       "value": 130
+                    }
+                  ]
+                },
+                {
+                  "id": "s_f9203fe8883952e2",
+                  "label": "Kenya",
+                  "unit": "USD",
+                  "source_ref": "src_oecd_dac2a_6ec092e3",
+                  "points": [
+                    {
+                      "period": "2022",
+                      "value": 200
+                    },
+                    {
+                      "period": "2023",
+                      "value": 210
+                    },
+                    {
+                      "period": "2024",
+                      "value": 220
+                    },
+                    {
+                      "period": "2025",
+                      "value": 230
                     }
                   ]
                 }
@@ -795,7 +795,7 @@
           "cache-control": "no-store",
           "content-disposition": "attachment; filename=\"dfo_grants_<date>_r1.csv\""
         },
-        "body_starts": "series,stat_var,stat_var_label,recipient,recipient_label,time_period,value,unit,measurementMethod,provenance,provenance_label,status\r\nKenya,dcid:LiveRefreshGrants,Grants,country/KEN,Kenya,2022,200.0,USD,GrantEquivalent,OECD_DAC2A,OECD_DAC2A"
+        "body_starts": "series,stat_var,stat_var_label,recipient,recipient_label,time_period,value,unit,measurementMethod,provenance,provenance_label,status\r\nGhana,dcid:LiveRefreshGrants,Grants,country/GHA,Ghana,2022,100.0,USD,GrantEquivalent,OECD_DAC2A,OECD_DAC2A"
       }
     },
     "render_data.bundle": {

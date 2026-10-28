@@ -1142,8 +1142,8 @@ def test_a_cards_description_names_its_versions_measure_and_fixed_values_and_wha
     ]
     (recipients,) = about["drawn"]["dimensions"]
     assert recipients["values"] == [
-        {"ref": "country/KEN", "label": "Kenya"},
         {"ref": "country/ETH", "label": "Ethiopia"},
+        {"ref": "country/KEN", "label": "Kenya"},
     ]
 
 

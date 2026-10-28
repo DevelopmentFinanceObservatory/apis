@@ -76,6 +76,7 @@ from assembler.rolling import (
     resolve_rolling,
 )
 from assembler.select import (
+    canonical_select,
     check_select_nonempty,
     check_single_arrayed_dimension,
     has_arrayed_dimension,
@@ -138,10 +139,13 @@ def _build_candidate(
             member=member,
         )
         merged = merge_intent(current=current.stored_intent, patch=patch)
-
     _validate_intent(
         schema=release.intent_schemas[member], intent=merged, release=release, member=member
     )
+    if "select" in merged:
+        # The stored intent and the component it draws do not depend on the order a caller
+        # listed a dimension's values in.
+        merged["select"] = canonical_select(select=cast("Mapping[str, object]", merged["select"]))
 
     if member == "note_narration":
         # The write-side grammar names only {type, text} for this member --

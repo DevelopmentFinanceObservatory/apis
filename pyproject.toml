@@ -250,7 +250,7 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is 2765bc3 on spec-kit. It adds ref format 2 (derived members), the
+# The pin is 5a1959d on spec-kit. It adds ref format 2 (derived members), the
 # output-digest and analysis rule vectors, the datasets.analysis and
 # presentation.shares endpoints and their refusal codes. It registers slot_default_not_applied, the three source-code
 # refusals, whole_total_available and the scope-choice refusals
@@ -266,10 +266,15 @@ dfo-analysis-engine = { workspace = true }
 # columns and rows for reading, and states the client-identity, base-URL and
 # role-keys rules. Its registry maps the analysis engine's refusal codes and
 # the Datasets codes the datasets.analysis route serves, each at its status.
+# It maps the share routes' refusals on presentation.shares at the statuses the
+# presentation write and components routes use, adds `payload_too_large` (413)
+# for a share body over the routes' limit, maps `timeout` (504) on
+# datasets.analysis, and retires `pin_not_permitted`. The client contract adds
+# the `payload_too_large` action row and the `series_left_out` warning.
 # Follow-up: move all six to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4bcb6dc2e62917a09097f2bd873a5c785e593f7f", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4bcb6dc2e62917a09097f2bd873a5c785e593f7f", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5a1959de120553446ed1a0e31f76930bef919658", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5a1959de120553446ed1a0e31f76930bef919658", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

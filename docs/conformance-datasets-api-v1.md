@@ -344,7 +344,6 @@ Five routes are outside the V1 contract text. The code registry's mappings for `
 | upstream_version_changed    | 503           | missing     | The injected revision reader pins before == after, so the retry-then-refuse path never fires in this deployment. |
 | artifact_expired            | 410           | implemented |                                                                                                                                                |
 | snapshot_revoked            | 410           | implemented |                                                                                                                                                |
-| pin_not_permitted           | 403           | implemented | Still declared on `datasets.pin`, but the pin route no longer raises it: a caller without the pin grant pins under its own allowance (C12). Retiring the registry mapping removes it. Issue: none |
 | publish_conflict            | 409           | implemented | The publish route postdates the V1 contract, so the code registry's `datasets.publish` mappings are the normative source for both.             |
 | publish_not_permitted       | 403           | implemented |                                                                                                                                                |
 | recipe_not_found            | 404           | implemented | The recipe routes postdate the V1 contract, so the code registry's `datasets.recipe` mapping is the normative source.                          |
