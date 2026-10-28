@@ -13,13 +13,13 @@ An outcome is one of:
   frame as its `frame_sha256`, columns and canonical rows, a `UnitRequest`
   as `{"unit_request": {...}}`, and join's `MatchedKeys` as the list of its
   `MatchedKey` rows.
-- `{"refusal": {"code", "message", "fix"}}`: an engine exception the verb's
-  own tool maps to a refusal, through that tool's `_refusal_for_engine_error`,
-  read back from the JSON of the `to_tool_result` the tool returns. P1b: the
-  package does not map exceptions to codes yet, so `refusal_or_crash` raises
-  `NotImplementedError` and the replay test skips every record of this kind.
+- `{"refusal": {"code", "message", "fix"}}`: an engine exception the verb
+  refuses, mapped by `dfo_analysis_engine.refusal.refusal_for_engine_error`
+  and read back from the JSON of `Refusal.as_json`. The mapping is tried
+  before the `FrameError` check, so an exception the verb refuses is a
+  refusal whatever its type.
 - `{"frame_error": category}`: a `FrameError` from building the output frame.
-  The server turns it into `internal_error`; only its category is compared.
+  A service turns it into `internal_error`; only its category is compared.
 - `{"crash": {"stage", "type"}}`: any other exception, from the engine
   (`"engine"`) or from mapping the engine exception to a refusal and
   rendering it (`"refusal"`, such as a `TypeError` from a `fix` that holds
@@ -27,8 +27,8 @@ An outcome is one of:
   follow set iteration order.
 
 Record the fixture again, from `packages/dfo-analysis-engine/tests`, with
-`uv run python -m differential.harness`, once `refusal_or_crash` exists. Do so only
-when an engine change is meant to move an outcome, and review the diff.
+`uv run python -m differential.harness`. Do so only when an engine change is
+meant to move an outcome, and review the diff.
 """
 
 from __future__ import annotations
@@ -52,6 +52,7 @@ from dfo_analysis_engine.engine.join import MatchedKeys, run_join
 from dfo_analysis_engine.engine.rank import run_rank
 from dfo_analysis_engine.engine.share_of import run_share_of
 from dfo_analysis_engine.op_spec import Predicate
+from dfo_analysis_engine.refusal import refusal_for_engine_error
 
 FIXTURE_PATH = Path(__file__).with_name("engine_cases.jsonl")
 
@@ -128,14 +129,19 @@ def to_json(value: object) -> object:
     raise TypeError(f"no JSON form for {type(value)!r}")
 
 
-def refusal_or_crash(case: Case, exc: Exception) -> dict[str, object]:
-    """The outcome of `exc`, an exception other than a `FrameError` from the engine.
-
-    The recorded fixture maps an engine exception to the `{"code", "message",
-    "fix"}` refusal that the verb's MCP tool gave it; any other exception is a
-    `crash`. Both need the package-owned mapping from engine exceptions to codes.
-    """
-    raise NotImplementedError("P1b: the engine exception to refusal code mapping")
+def outcome_of_exception(case: Case, exc: Exception) -> dict[str, object]:
+    """The outcome of `exc`, an exception `case`'s engine raised: the refusal
+    the verb gives for it, else a `frame_error`, else a `crash`."""
+    try:
+        refusal = refusal_for_engine_error(case["verb"], exc)
+        emitted = None if refusal is None else json.loads(json.dumps(refusal.as_json()))
+    except Exception as mapping_exc:
+        return {"crash": {"stage": "refusal", "type": type(mapping_exc).__name__}}
+    if emitted is not None:
+        return {"refusal": {key: emitted[key] for key in ("code", "message", "fix")}}
+    if isinstance(exc, FrameError):
+        return {"frame_error": exc.category}
+    return {"crash": {"stage": "engine", "type": type(exc).__name__}}
 
 
 def run_case(case: Case, engine: Engine) -> dict[str, object]:
@@ -143,10 +149,8 @@ def run_case(case: Case, engine: Engine) -> dict[str, object]:
     frames = input_frames(case)
     try:
         result = engine(*frames, **_engine_kwargs(case))
-    except FrameError as exc:
-        return {"frame_error": exc.category}
     except Exception as exc:
-        return refusal_or_crash(case, exc)
+        return outcome_of_exception(case, exc)
     return {"result": to_json(result)}
 
 

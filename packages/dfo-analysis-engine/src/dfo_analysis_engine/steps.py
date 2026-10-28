@@ -11,9 +11,9 @@ declares none and the values are no ratio.
 
 Each verb tool builds its own step where its engine result meets its `Trace`,
 naming each input by the frame pair it read (`VersionRef`).
-`common.steps.assemble_steps` turns the steps along a frame's ancestry into one
+dfo-ai's `assemble_steps` turns the steps along a frame's ancestry into one
 list whose inputs name earlier steps. The reason names in `left_out` follow the
-engine's exclusion reasons (`analysis_mcp.engine.common.ExclusionReason`),
+engine's exclusion reasons (`dfo_analysis_engine.engine.common.ExclusionReason`),
 which the kit's operation list uses too.
 """
 
@@ -368,7 +368,7 @@ def build_step(
     own trace.
 
     The step's id is the result's `op_spec_hash`, until
-    `common.steps.assemble_steps` renumbers it. Its policy is the trace's
+    dfo-ai's `assemble_steps` renumbers it. Its policy is the trace's
     `applied_policy.policy_name`, and its `params` the op-spec parameters
     the caller set (`caller_params`), unless the verb names them itself. An
     operation in `NEW_VARIABLE_OPS` names the variable its rows are written

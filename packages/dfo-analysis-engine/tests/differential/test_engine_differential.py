@@ -25,16 +25,11 @@ from differential.harness import (
 
 RECORDS = load_fixture()
 
-# P1b: a refusal or crash outcome needs the package-owned mapping from engine
-# exceptions to codes, which `harness.refusal_or_crash` does not have yet.
-_NEEDS_ERROR_MAPPING = pytest.mark.skip(reason="P1b: engine exception to refusal code mapping")
-
 _REPLAYS = [
     pytest.param(
         record,
         engine,
         id=f"{record['id']}[{implementation_label(engine)}]",
-        marks=_NEEDS_ERROR_MAPPING if next(iter(record["outcome"])) in ("refusal", "crash") else (),
     )
     for record in RECORDS
     for engine in IMPLEMENTATIONS[record["verb"]]

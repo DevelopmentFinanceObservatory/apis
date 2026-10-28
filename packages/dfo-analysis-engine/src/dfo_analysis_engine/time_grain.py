@@ -4,9 +4,8 @@ point (`2018`) and an interval (`2018/2022`) at one grain classify alike.
 `is_interval` tells the two apart, and `span_label` writes the one cell that
 covers a set of periods.
 
-Lives here rather than in `analysis_mcp` so a materialisation-time check
-(data-mcp, coercing an upstream artifact's own `time_period` column) can
-reuse the identical classifier without a move.
+A materialisation-time check, coercing an upstream artifact's own
+`time_period` column, can reuse the identical classifier.
 """
 
 from __future__ import annotations

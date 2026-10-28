@@ -164,7 +164,7 @@ GrowthChange = Literal["relative", "absolute"]
 class EntityGrowth:
     """One entity's own growth result, addressed by its own `entity_by`-keyed
     identity -- the same "never trust row position" discipline
-    `analysis_mcp.engine.aggregate.GroupSummary` follows.
+    `dfo_analysis_engine.engine.aggregate.GroupSummary` follows.
 
     `growth_rate` is a relative rate (a dimensionless fraction) under
     `change="relative"`, and an absolute change in the input's own unit
@@ -186,12 +186,12 @@ class EntityGrowth:
 
 @dataclass(frozen=True, kw_only=True)
 class GrowthResult:
-    """Everything `growth_tool.py` needs to mint identity, write the store,
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to mint identity, write the store,
     and render the digest.
 
     `observed_periods` is every distinct `time_period` the computed
-    entities' rows carry inside the window, sorted. `growth_tool.py` passes
-    them to `frame_ref_resolution.build_interval` to say whether the window
+    entities' rows carry inside the window, sorted. `calls.call_verb` passes
+    them to the call's interval (`calls.call_verb`) to say whether the window
     is contiguous across them.
 
     `entities_left_out` counts the entities of the narrowed input each

@@ -18,10 +18,10 @@ with `"levels": {column: level}` beside them when a place-type column is held to
 one level of place. `bindings` keeps the series whose column holds one of the
 values. `levels` keeps the series whose place-type column, such as
 `observationAbout_type`, describes a place at the level, such as `Country`
-(`common.place_type.levels_of`): a rule over the cell, so it names no cell and
+(`dfo_analysis_engine.place_type.levels_of`): a rule over the cell, so it names no cell and
 holds however the data spells a place's types. A population carries no
 `content_version`, so it holds on newer data. `canonical_populations` gives a
-list of them its one spelling, the one `analysis_mcp.op_spec.Populations` hashes
+list of them its one spelling, the one `dfo_analysis_engine.op_spec.Populations` hashes
 into a rolling op-spec:
 
 - every column and value NFC-normalised, each column's values in code point
@@ -64,7 +64,7 @@ A keyed pairing verb whose two sides both hold a counted path gives one pairing
 population in place of its sides' populations, with the key map read from its
 own arguments: `denominator_by` for a `share_of` or `quotient_of`, and
 `join_keys`, each paired through `right_keys` or else with itself, for a
-`join`. A `join` with no `join_keys` leaves its keys to analysis-mcp's
+`join`. A `join` with no `join_keys` leaves its keys to the engine's
 auto-detection, which no tree records, so it raises `PairingKeysUnstatedError`.
 A verb that pairs no keys (`compare`, `sum_of`, and a `share_of` or
 `quotient_of` with no `denominator_by`, whose keys share one pooled
@@ -145,7 +145,7 @@ class PopulationEmptyError(ValueError):
 
 class PairingKeysUnstatedError(ValueError):
     """A `join` whose two sides both hold a counted path states no `join_keys`,
-    so which keys it pairs is left to analysis-mcp and no population can say."""
+    so which keys it pairs is left to the engine and no population can say."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -438,7 +438,7 @@ def anchor_populations(
     """The canonical populations of the recipe `tree`. See the module docstring.
 
     Args:
-        tree: The recipe's tree as `common.recipe.build_recipe` writes it. A
+        tree: The recipe's tree as `dfo_analysis_engine.recipe.build_recipe` writes it. A
             derived node is read for `op_spec.parameters` and `inputs`, a root
             node for `root`, so a tree written from a plan before any frame
             exists serves as well: a node needs no `frame`, and a rolling

@@ -157,9 +157,8 @@ def test_row_key_order_and_group_by_order_perturbation_produce_an_equivalent_res
     strings, so the identical mis-association instead produces a
     well-formed (but wrong) frame, which is what makes this test's own
     assertions the thing that actually catches it. `run_aggregate` never
-    canonicalises `group_by` itself (see `frame_ref_resolution.canonical_
-    columns_or_refusal`, which the tool boundary calls before this function
-    ever runs), so `group_key`'s own tuple order does move with the
+    canonicalises `group_by` itself (see `calls.canonical_columns`, which `calls.call_verb` calls before this
+    function ever runs), so `group_key`'s own tuple order does move with the
     perturbation; `_summary_key` is what makes the comparison honest about
     that instead of hiding it."""
     frame = _frame(

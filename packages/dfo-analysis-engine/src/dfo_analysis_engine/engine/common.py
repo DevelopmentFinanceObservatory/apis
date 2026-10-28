@@ -13,9 +13,8 @@ heterogeneity (`measurementMethod`, `provenance`) gets a softer rule (see
 common and usually resolvable without a caller's help, unlike a unit
 mismatch, which always is.
 
-Every exception raised here is caught only at its own verb's tool boundary
-(`aggregate_tool`, `compare_tool`, `growth_tool`, `join_tool`, `rank_tool`,
-`share_of_tool`, `sum_of_tool`, `quotient_of_tool`), never inside the engine
+Every exception raised here is mapped to its verb's refusal only by
+`dfo_analysis_engine.refusal.refusal_for_engine_error`, never inside the engine
 itself.
 
 Partial-overlap policy: `compare`, `sum_of`, `share_of`, `quotient_of` and
@@ -140,7 +139,7 @@ ExclusionReason = Literal[
 ExclusionSide = Literal["numerator", "denominator", "left", "right"]
 
 # Per-role-column cap `smallest_distinct` applies, mirroring
-# `analysis_mcp.artifact.ENTITY_CAP` (the engine layer does not import the
+# `dfo_analysis_engine.artifact.ENTITY_CAP` (the engine layer does not import the
 # pydantic model layer).
 _ENTITY_CAP = 20
 
@@ -171,7 +170,7 @@ _NOT_WHOLE_CELL = "false"
 class PlaceLevelsMixedError(Exception):
     """A verb would set places that share no level side by side: a role it
     ranks or pools carries a `{role}_type` column and holds several places
-    with no level of `common.place_type.PLACE_LEVELS` among every one's
+    with no level of `dfo_analysis_engine.place_type.PLACE_LEVELS` among every one's
     levels. For a flow party role (`without_party_totals`), several parties
     of which one has no kind, every one a total on a pooled role (whole
     totals alone aside), a whole total pooled beside members it may hold, or
@@ -183,7 +182,7 @@ class PlaceLevelsMixedError(Exception):
     those of its class or of none, or every member when it has no class:
     `member_count` of them, of which `members` names the first
     `_EXAMPLE_MEMBER_CAP`, sorted, as examples.
-    Maps to the tool boundary's `place_levels_mixed` refusal.
+    Maps to the `place_levels_mixed` refusal.
     """
 
     def __init__(
@@ -218,7 +217,7 @@ def pooled_roles(frame: Frame, keys: Iterable[str]) -> tuple[str, ...]:
     """The role columns a verb keyed by `keys` sums or averages across: every
     role column outside `keys`, less a place role whose type column is in
     `keys`, since grouping by a place's type keeps its levels apart. A flow
-    party role (`common.place_type.PARTY_ROLES`) outside `keys` is always
+    party role (`dfo_analysis_engine.place_type.PARTY_ROLES`) outside `keys` is always
     pooled, whatever its type or kind column: the parties of one kind or
     type can total one another, and `without_party_totals` reads the role."""
     kept = set(keys)
@@ -231,7 +230,7 @@ def pooled_roles(frame: Frame, keys: Iterable[str]) -> tuple[str, ...]:
 
 def require_one_place_level(frame: Frame, columns: Iterable[str]) -> None:
     """Refuse when a role in `columns` carries a place-type column and its
-    places are not at one level (`common.place_type.at_one_level`,
+    places are not at one level (`dfo_analysis_engine.place_type.at_one_level`,
     `PlaceLevelsMixedError`). A role with no such column, a role holding one
     place, and a frame with no rows pass, and so does a flow party role,
     which `without_party_totals` reads instead."""
@@ -260,7 +259,7 @@ def without_party_totals(
     adds to a sum but is no member to rank. Its residuals are one `party_residual`
     exclusion.
 
-    A role outside `common.place_type.PARTY_ROLES` and a role holding one
+    A role outside `dfo_analysis_engine.place_type.PARTY_ROLES` and a role holding one
     party keep every row, and so does a role in `ranked` whose parties are
     all totals: ranking totals beside each other sums nothing across them. So
     does a role whose parties are all totals with a `{role}_party_whole` cell of
@@ -380,7 +379,7 @@ def _totals_left_out(table: pa.Table, *, role: str, is_total: pa.Array, keyed: b
 def _party_classes(table: pa.Table, role: str) -> dict[str, str | None]:
     """The class of each `role` party in `table`: the `{role}_party_class` cell every one of
     its rows agrees on (`_agreed_cells`), or None when its rows disagree or agree on a cell
-    outside `common.place_type.PartyClass`, such as `untyped`. Empty when `table` carries no
+    outside `dfo_analysis_engine.place_type.PartyClass`, such as `untyped`. Empty when `table` carries no
     class column."""
     classes = class_column(role)
     if classes not in table.column_names:
@@ -404,7 +403,7 @@ def _all_whole(table: pa.Table, role: str) -> bool:
 class PooledParties:
     """The parties of one flow role a sum pooled: `count` distinct parties over
     `periods` periods, of which `private_count` are of the `private` class
-    (`common.place_type.PRIVATE_CLASS`), holding `private_value` of the summed
+    (`dfo_analysis_engine.place_type.PRIVATE_CLASS`), holding `private_value` of the summed
     rows' value. A private party sums like any other, so a total over the role
     includes this value and the digest says so.
 
@@ -515,7 +514,7 @@ def private_parties(table: pa.Table, roles: Iterable[str]) -> tuple[tuple[str, s
 def role_columns(frame: Frame) -> tuple[str, ...]:
     """Every column `frame` declares outside the fixed positions
     `grammar.derive_columns` always emits: the columns an
-    `analysis_mcp.artifact.Exclusion`'s `entities` mapping reports one entry
+    `dfo_analysis_engine.artifact.Exclusion`'s `entities` mapping reports one entry
     for."""
     return tuple(column for column in frame.columns if column not in _FIXED_COLUMNS)
 
@@ -524,7 +523,7 @@ def entity_roles(frame: Frame) -> tuple[str, ...]:
     """The role columns of `frame` that identify an entity: every role
     column less the `{role}_type` column and the `{role}_party_kind`,
     `{role}_party_class` and `{role}_party_whole` columns
-    (`common.place_type.enrichment_role`), which describe a place or party
+    (`dfo_analysis_engine.place_type.enrichment_role`), which describe a place or party
     another column names. A verb counts entities over these alone."""
     return tuple(
         column
@@ -540,7 +539,7 @@ def frame_keeping_role_types(
     source: Frame,
 ) -> Frame:
     """An output frame of `columns` declaring `role_keys`, plus the
-    enrichment columns (`common.place_type.enrichment_columns`: a place's type,
+    enrichment columns (`dfo_analysis_engine.place_type.enrichment_columns`: a place's type,
     a party's kind, class and whole cell) of every role in `role_keys` that
     `source`, the verb's `frame_ref` input, carries and `role_keys` leaves out.
 
@@ -605,9 +604,9 @@ def _agreed_cells(
 @dataclass(frozen=True, kw_only=True)
 class ExclusionRecord:
     """Rows one narrowing step dropped, and why. The raw material an
-    `analysis_mcp.artifact.Exclusion` is built from, once the tool layer
+    `dfo_analysis_engine.artifact.Exclusion` is built from, once the tool layer
     wraps it in that pydantic model
-    (`analysis_mcp.tool_pipeline.exclusions_for_trace`). A plain dataclass,
+    (`dfo_analysis_engine.calls.call_verb`). A plain dataclass,
     not the pydantic model itself, keeping every engine function free of a
     pydantic dependency.
 
@@ -1116,8 +1115,8 @@ class UnknownEntityColumnError(Exception):
     either the column does not appear in `frame.columns`, or it is a
     disallowed reduction/reserved column (`value`, `status`, `unit`,
     `stat_var`, `time_period`, or a facet axis). Same shape as
-    `analysis_mcp.engine.aggregate.UnknownGroupByColumnError` -- both map to
-    the tool boundary's `role_ambiguous` refusal.
+    `dfo_analysis_engine.engine.aggregate.UnknownGroupByColumnError` -- both map to
+    the `role_ambiguous` refusal.
     """
 
     def __init__(self, columns: Sequence[str], *, available: Sequence[str]) -> None:
@@ -1147,8 +1146,8 @@ def validate_entity_columns(frame: Frame, columns: Sequence[str]) -> tuple[str, 
 class StatVarUnresolvedError(Exception):
     """The input frame carries no rows, or more than one distinct
     `stat_var` with nothing telling them apart. Same shape as
-    `analysis_mcp.engine.aggregate.StatVarUnresolvedError` -- both map to
-    the tool boundary's `stat_var_unresolved` refusal.
+    `dfo_analysis_engine.engine.aggregate.StatVarUnresolvedError` -- both map to
+    the `stat_var_unresolved` refusal.
     """
 
     def __init__(self, *, reason: str, distinct_stat_vars: Sequence[str] = ()) -> None:

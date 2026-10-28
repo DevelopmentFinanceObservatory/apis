@@ -1,4 +1,4 @@
-"""`common.place_type`: the levels of every place typed Country beside another type, and
+"""`dfo_analysis_engine.place_type`: the levels of every place typed Country beside another type, and
 whether several places sit at one level.
 
 The cells are the `typeOf` values the development mixer holds for the places GDP

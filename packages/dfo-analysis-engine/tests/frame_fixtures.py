@@ -23,7 +23,7 @@ Every fixture shares one `stat_var` vocabulary (development-finance content:
 ODA disbursements, GNI, sized in the tens of rows).
 
 Policy language downstream should say "skips absent grid cells," not "skips
-nulls" -- `analysis_mcp.engine.aggregate` already states it that way, and
+nulls" -- `dfo_analysis_engine.engine.aggregate` already states it that way, and
 every later verb's coverage language should follow the same wording rather
 than the "null-bearing" framing above.
 """

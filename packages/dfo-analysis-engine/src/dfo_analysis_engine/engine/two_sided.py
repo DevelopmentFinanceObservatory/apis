@@ -7,7 +7,7 @@ matched cell.
 
 Which units, facets and keys may pair across the two sides is each verb's
 own rule and stays in its own engine module
-(`analysis_mcp.engine.share_of`, `analysis_mcp.engine.quotient_of`). The
+(`dfo_analysis_engine.engine.share_of`, `dfo_analysis_engine.engine.quotient_of`). The
 exceptions here carry no verb's name, so each verb surfaces them as its own
 refusal.
 """
@@ -99,7 +99,7 @@ class SideSums:
     what an absent key means for its own side. `row_counts` has the same
     shape and holds how many rows each sum read, and `entity_counts` how
     many entities those rows hold: distinct value combinations across the
-    entity roles (`common.entity_roles`) outside `by`. `stat_var` is the whole frame's sole
+    entity roles (`engine.common.entity_roles`) outside `by`. `stat_var` is the whole frame's sole
     `stat_var`. `table` is the side's narrowed rows, `cell_rows` the positions in
     `table` of each (key, period) sum's rows, and `pooled_roles` the flow party
     roles outside `entity` and `by`, which `pooled_over` reads.
@@ -119,7 +119,7 @@ class SideSums:
 
     def pooled_over(self, cells: Iterable[tuple[Key, str]]) -> tuple[PooledParties, ...]:
         """What the sums of `cells`, the (key, period) cells a result divides,
-        pooled in each of `pooled_roles` (`common.PooledParties`). A cell the
+        pooled in each of `pooled_roles` (`engine.common.PooledParties`). A cell the
         verb leaves out, such as a period the other side lacks, adds nothing."""
         rows = [self.cell_rows[cell] for cell in dict.fromkeys(cells)]
         contributing = self.table.take(pa.concat_arrays(rows)) if rows else self.table.slice(0, 0)

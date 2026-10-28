@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # error. `MaterialisationStore` keys its entries by the plain tuple
 # `(ref.spec_id, ref.content_version)`, not by this object, so hashability
 # is not needed and the model stays unfrozen, like
-# `analysis_mcp.op_spec.DatasetSnapshotRef`.
+# `dfo_analysis_engine.op_spec.DatasetSnapshotRef`.
 class FrameRef(BaseModel):
     """Names one frame by the `{spec_id, content_version}` pair a tool reply gives.
 

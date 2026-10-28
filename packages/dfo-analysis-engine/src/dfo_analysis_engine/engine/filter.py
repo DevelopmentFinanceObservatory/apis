@@ -1,5 +1,5 @@
 """The `filter` engine applies row-value predicate filtering over one
-frame's Arrow table, using `analysis_mcp.op_spec.FilterOpSpec`'s own closed
+frame's Arrow table, using `dfo_analysis_engine.op_spec.FilterOpSpec`'s own closed
 predicate vocabulary (`OrderedThresholdPredicate`, `CategoryMatchPredicate`,
 `PlaceLevelPredicate`), each evaluated as a mask over its column. It
 keeps a row only if the row satisfies every predicate (conjunction).
@@ -12,13 +12,13 @@ code-point order of Python's `str`. Neither column holds a null, and the
 op-spec and frame grammar keep every number finite. A `category_match` is
 `is_in`, under which a null cell matches none of the predicate's strings,
 as `None in values` does. A `place_level` reads each distinct cell of a
-place-type column with `common.place_type.levels_of` and keeps the rows
+place-type column with `dfo_analysis_engine.place_type.levels_of` and keeps the rows
 whose place sits at its level. A strict one refuses a place with no known
 level among the rows every other predicate keeps (`_keep_mask`).
 
 Filter is architecturally distinct from every other verb this toolkit
 implements. It never combines two rows' own values into one number, so
-there is nothing for `analysis_mcp.engine.common.narrow_and_resolve`
+there is nothing for `dfo_analysis_engine.engine.common.narrow_and_resolve`
 to protect against. Every reducing verb refuses on unit/facet
 heterogeneity because mixing a dollar figure with a percentage into one
 sum would be silently wrong. Filter inspects each row in isolation, so
@@ -216,7 +216,7 @@ class FilterRowSummary:
 
 @dataclass(frozen=True, kw_only=True)
 class FilterResult:
-    """Everything `filter_tool.py` needs to mint identity, write the store,
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to mint identity, write the store,
     and render the digest -- the frame is here for the store write and
     replay; the digest itself renders from `kept_row_summaries`, never
     `frame.rows`. `units` is every distinct unit the kept rows declare, with
@@ -397,7 +397,7 @@ def _predicate_mask(table: pa.Table, predicate: Predicate) -> pa.Array:
 
 def _level_mask(column: pa.Array, level: str | None) -> pa.Array:
     """Whether each place-type cell of `column` describes a place at `level`
-    (`common.place_type.levels_of`), decided once per distinct cell. A cell
+    (`dfo_analysis_engine.place_type.levels_of`), decided once per distinct cell. A cell
     with no known level matches no level, and `level=None` asks instead
     whether a cell has no known level."""
     encoded = array_kernel("dictionary_encode", column)

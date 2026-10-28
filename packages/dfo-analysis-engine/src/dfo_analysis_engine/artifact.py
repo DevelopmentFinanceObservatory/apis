@@ -4,7 +4,7 @@ narrowing dropped and why (`Exclusion`), and whether the output's
 span of more than one real period (`Observation`/`Interval`).
 
 `ExclusionReason` is the closed set of narrowing steps found across every
-engine (`analysis_mcp.engine`): `narrow_and_resolve`'s unit narrowing
+engine (`dfo_analysis_engine.engine`): `narrow_and_resolve`'s unit narrowing
 (`unit_unbound`, `unit_not_selected`) and entity narrowing
 (`entity_not_selected`), `growth`'s and `rank`'s window filters
 (`outside_window`), `growth`'s entities lacking a row in either endpoint
@@ -17,12 +17,12 @@ matched cells whose denominator sums to zero (`zero_denominator`), and the
 flow parties a sum or a rank leaves out because they total other parties
 (`party_total`) or, on a ranked role, because they are unallocated residuals
 (`party_residual`). A heterogeneous facet always refuses
-(`analysis_mcp.engine.common.FacetHeterogeneousError`); this set carries no
+(`dfo_analysis_engine.engine.common.FacetHeterogeneousError`); this set carries no
 facet reason.
 
 `entity_not_selected` and `period_unmatched` are recorded here and in
 `structuredContent` but never rendered in the digest's own exclusions block
-(`analysis_mcp.digest`): a caller's own `entity` binding asked for those rows
+(dfo-ai's verb digests): a caller's own `entity` binding asked for those rows
 to go, and an unmatched period already has its own single digest
 representation (`compare`'s coverage line).
 """
@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from dfo_analysis_engine.engine.common import ExclusionReason, ExclusionSide
 
 # Per-role-column cap on `Exclusion.entities`, mirroring
-# `analysis_mcp.engine.common._ENTITY_CAP`.
+# `dfo_analysis_engine.engine.common._ENTITY_CAP`.
 ENTITY_CAP = 20
 
 

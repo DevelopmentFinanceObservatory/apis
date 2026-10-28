@@ -2,7 +2,7 @@
 `Frame`'s table narrowed to one entity's time series, over the intersection
 of the periods each side offers. Periods are intersected, both realised
 coverages are recorded, and the comparison refuses only on an empty
-intersection -- the "proceed" side of `analysis_mcp.engine.common`'s
+intersection -- the "proceed" side of `dfo_analysis_engine.engine.common`'s
 partial-overlap policy.
 
 A "slice" is `frame_ref` (or `right_frame_ref`) plus an `entity` binding, a
@@ -16,8 +16,8 @@ different `entity` bindings is two slices of one frame; two different
 `delta` (right value minus left value) is a single subtraction, never a
 reduction over rows, so `math.fsum` is never used here. Every result row
 carries the caller-supplied `stat_var`, the operation's own ref
-(`dcid:<op_spec_hash>`, which `compare_tool` passes in), because a difference
-of two variables is a third variable, as `analysis_mcp.engine.sum_of` treats a sum.
+(`dcid:<op_spec_hash>`, which `calls.call_verb` passes in), because a difference
+of two variables is a third variable, as `dfo_analysis_engine.engine.sum_of` treats a sum.
 Two finite doubles of opposite sign and large magnitude can still subtract to
 an infinite result under IEEE-754, so `compare` checks `delta` the same way
 `aggregate` and `growth` check their own results.
@@ -37,7 +37,7 @@ runs when either side's slice is empty.
 intersection is checked.
 
 `slice_pair` (both slices and the unit check) and `align_periods` (the
-period intersection) serve `analysis_mcp.engine.sum_of` as well, which
+period intersection) serve `dfo_analysis_engine.engine.sum_of` as well, which
 pairs its two sides the same way and differs in the value it computes and
 in its facet policy.
 """
@@ -147,7 +147,7 @@ class CompareFacetMismatchError(Exception):
     and resolved their own facet selections independently, but they
     disagree on at least one axis -- a `provenance=dcid:P1` left slice
     compared against a `provenance=dcid:P2` right slice, say. Distinct from
-    `analysis_mcp.engine.common.FacetHeterogeneousError`, which fires when
+    `dfo_analysis_engine.engine.common.FacetHeterogeneousError`, which fires when
     *one* slice itself carries more than one declared value on an axis;
     here each side is internally uniform (or unbound) on its own, and it's
     the pairing across sides that's unsafe -- the same "each side resolves
@@ -182,7 +182,7 @@ class CompareNonFiniteResultError(Exception):
 class PeriodComparison:
     """One intersected period's own two values and their delta, addressed
     by `time_period` rather than by position -- the same "never trust row
-    order" discipline `analysis_mcp.engine.aggregate.GroupSummary` follows.
+    order" discipline `dfo_analysis_engine.engine.aggregate.GroupSummary` follows.
     """
 
     time_period: str
@@ -193,7 +193,7 @@ class PeriodComparison:
 
 @dataclass(frozen=True, kw_only=True)
 class CompareResult:
-    """Everything `compare_tool.py` needs to mint identity, write the store,
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to mint identity, write the store,
     and render the digest -- the frame is here for the store write and
     replay; the digest itself renders from `period_comparisons`, never
     `frame.rows`. `stat_var` labels every result row; `left_stat_vars` and
@@ -226,9 +226,9 @@ def _differing_facet_warning(axis: str, left_ref: str, right_ref: str) -> str:
     """One `cross_side_differing_facet_axes` finding, worded for compare's
     left/right vocabulary. It reaches a result only when the two slices
     share no StatVar, each read under its own selection, and the result
-    leaves the axis unbound, as `analysis_mcp.engine.common.agreed_facets`
+    leaves the axis unbound, as `dfo_analysis_engine.engine.common.agreed_facets`
     does for `sum_of` and `quotient_of`. Short enough to fit
-    `analysis_mcp.disambiguation.MAX_LABEL_CHARS` with refs of 45 characters
+    `dfo_analysis_engine.refusal.MAX_LABEL_CHARS` with refs of 45 characters
     each, the digest's cap on one warning line.
     """
     return (
@@ -411,7 +411,7 @@ def align_periods(
 
     # Every period each side offered but the intersection dropped, recorded
     # as an exclusion. The coverage fractions state the ratio, not which
-    # rows that ratio cost. `analysis_mcp.digest` renders only the coverage
+    # rows that ratio cost. dfo-ai's digest renders only the coverage
     # line, not a second line repeating these records.
     left_matched, left_unmatched = left.matched(intersected_periods)
     right_matched, right_unmatched = right.matched(intersected_periods)

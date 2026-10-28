@@ -3,7 +3,7 @@
 
 A "slice" is `frame_ref` (or `denominator_frame_ref`) plus an `entity`
 binding, the same `{role_column: value}` narrowing shape
-`analysis_mcp.engine.compare` uses. The one place `share_of` diverges from
+`dfo_analysis_engine.engine.compare` uses. The one place `share_of` diverges from
 `compare`: an `entity` binding that leaves more than one row per period on a
 side is not ambiguous here, it is summed -- `math.fsum` is used for any
 summed side -- because a share's denominator is very often a
@@ -26,7 +26,7 @@ either side's slice is empty; `ShareOfGrainMismatchError` names that real
 problem once the period sets are compared.
 
 The period policy is `quotient_of`'s, through the same
-`analysis_mcp.engine.two_sided.pair_periods`: each side's own summed
+`dfo_analysis_engine.engine.two_sided.pair_periods`: each side's own summed
 `{time_period: value}` series is computed independently, each numerator key
 divides over the periods it shares with its denominator group, and every
 (key, period) either side holds outside them is recorded as a
@@ -35,13 +35,13 @@ its group is left out of the result and named
 (`ShareOfResult.keys_without_shared_period`), as `quotient_of` leaves it
 out; the call refuses (`ShareOfGrainMismatchError`) only when no key shares
 a period. This is the proceeding side of the
-partial-overlap policy in `analysis_mcp.engine.common`. A denominator
+partial-overlap policy in `dfo_analysis_engine.engine.common`. A denominator
 period whose summed value is exactly zero makes the ratio undefined and
 refuses (`ShareOfNonFiniteResultError`) before any division is attempted.
 
 A side in a composed unit (dollars per person, a `quotient_of` result) is
 one figure per (key, period) or nothing: a cell holding more than one such
-row refuses (`analysis_mcp.engine.aggregate.ComposedUnitSumError`, naming
+row refuses (`dfo_analysis_engine.engine.aggregate.ComposedUnitSumError`, naming
 the side), since figures per head have no total. Two sides of one row per
 cell divide as any two figures in one unit do.
 
@@ -53,7 +53,7 @@ itself. `denominator_by` pairs each `numerator_by` column with the
 denominator's own column carrying the same role -- **by name, never by
 position**: two independently sorted column lists silently pair the wrong
 columns (`identity._normalise_parameters` and
-`frame_ref_resolution.canonical_columns_or_refusal` both sort every
+`calls.canonical_columns` both sort every
 array-shaped parameter, so two callers naming
 `numerator_by=["donor","sector"]` and `denominator_by` as a positional
 `["provider","area"]` list would see that sort to `["area","provider"]`
@@ -71,7 +71,7 @@ a single total, with no key.
 
 Every result row states what it holds. Its `value` is the share in per cent
 (numerator / denominator x 100), its `unit` is
-`common.unit_refs.PERCENT_UNIT`, the ref apis writes on a published
+`dfo_analysis_engine.unit_refs.PERCENT_UNIT`, the ref apis writes on a published
 share such as a "% of GDP" series, and its `stat_var` is the caller-supplied
 `stat_var`, the operation's own minted ref, as `quotient_of` labels its
 rows. A computed share and a published one therefore compare and plot
@@ -189,7 +189,7 @@ class ShareOfUnitUnboundError(Exception):
     disagree with, only a fact about `unbound_side`'s own data: none of its
     own rows ever declared one. Silently inheriting `bound_side`'s own
     resolved unit would state something `unbound_side`'s own rows never
-    declared -- the same distinction `analysis_mcp.engine.compare.
+    declared -- the same distinction `dfo_analysis_engine.engine.compare.
     CompareUnitUnboundError` already draws for `compare`.
     """
 
@@ -208,7 +208,7 @@ class ShareOfFacetMismatchError(Exception):
     selections independently, but they disagree on at least one axis, for
     example a `provenance=dcid:P1` numerator compared against a
     `provenance=dcid:P2` denominator. Distinct from
-    `analysis_mcp.engine.common.FacetHeterogeneousError`, which fires when
+    `dfo_analysis_engine.engine.common.FacetHeterogeneousError`, which fires when
     *one* slice itself carries more than one declared value on an axis;
     here each side is internally uniform (or unbound) on its own, and it's
     the pairing across sides that's unsafe -- the same "each side resolves
@@ -253,7 +253,7 @@ class ShareOfKeyUnmatchedError(Exception):
     """No numerator key has a denominator group under `denominator_by`'s
     mapping, so the call has no share to report.
     `numerator_keys`/`denominator_keys` are each side's sample of keys
-    (`analysis_mcp.engine.two_sided.key_sample`), each as `(column, value)`
+    (`dfo_analysis_engine.engine.two_sided.key_sample`), each as `(column, value)`
     pairs under that side's own column names;
     `numerator_key_count`/`denominator_key_count` are how many keys each side
     holds.
@@ -282,7 +282,7 @@ class PeriodShare:
     """One matched (key, period)'s own numerator/denominator values and
     their share in per cent, the `value` its output row holds, addressed by
     `time_period` and `key` -- the same "never trust row order" discipline
-    `analysis_mcp.engine.compare.PeriodComparison` follows. `key` is `()`
+    `dfo_analysis_engine.engine.compare.PeriodComparison` follows. `key` is `()`
     for an un-keyed call, where every row shares the one implicit key."""
 
     time_period: str
@@ -294,29 +294,29 @@ class PeriodShare:
 
 @dataclass(frozen=True, kw_only=True)
 class ShareOfResult:
-    """Everything `share_of_tool.py` needs to mint identity, write the
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to mint identity, write the
     store, and render the digest.
 
     Periods, coverage and the periods one side holds alone read as
-    `analysis_mcp.engine.quotient_of.QuotientOfResult`'s do
-    (`analysis_mcp.engine.two_sided.PeriodPairing`): `matched_periods` are
+    `dfo_analysis_engine.engine.quotient_of.QuotientOfResult`'s do
+    (`dfo_analysis_engine.engine.two_sided.PeriodPairing`): `matched_periods` are
     the periods some key shares with its denominator group, and each side's
     coverage fraction counts the (key, period) cells it shares over those it
     holds. `coverage` counts the keys and periods the result holds and the
     entities each period's denominator sums
-    (`analysis_mcp.engine.two_sided.ResultCoverage`).
+    (`dfo_analysis_engine.engine.two_sided.ResultCoverage`).
 
     Two sorted tuples name the dropped keys, the numerator keys the frame
     holds no row for: `unmatched_keys`, with no denominator group, and
     `keys_without_shared_period`, which pair and share no period with their
     group. `dropped_key_count` is their total, as
-    `analysis_mcp.engine.quotient_of.QuotientOfResult.dropped_key_count`
+    `dfo_analysis_engine.engine.quotient_of.QuotientOfResult.dropped_key_count`
     counts its own.
 
     `stat_var` labels every output row; `numerator_stat_var` and
     `denominator_stat_var` are the StatVars each side resolved to.
     `numerator_pooled` and `denominator_pooled` hold what each side's sums
-    pooled in each flow party role (`analysis_mcp.engine.common.PooledParties`),
+    pooled in each flow party role (`dfo_analysis_engine.engine.common.PooledParties`),
     read from the cells behind `frame`'s rows, so a cell left out adds nothing.
     """
 
@@ -368,7 +368,7 @@ def _differing_facet_warning(axis: str, numerator_ref: str, denominator_ref: str
     """One `cross_side_differing_facet_axes` finding, worded for share_of's
     numerator/denominator vocabulary. It reaches a result only when the two
     sides hold different StatVars, each read under its own selection. Short
-    enough to fit `analysis_mcp.disambiguation.MAX_LABEL_CHARS` with refs of
+    enough to fit `dfo_analysis_engine.refusal.MAX_LABEL_CHARS` with refs of
     45 characters each, the digest's cap on one warning line.
     """
     return (
@@ -401,7 +401,7 @@ def _one_sided_facet_warning(
 
 @contextmanager
 def _share_of_refusals() -> Iterator[None]:
-    """Re-raise `analysis_mcp.engine.two_sided`'s own exceptions as the
+    """Re-raise `dfo_analysis_engine.engine.two_sided`'s own exceptions as the
     `share_of` exceptions carrying the same fields."""
     try:
         yield
@@ -528,7 +528,7 @@ def run_share_of(
         # visibility a single slice's own auto-selection already gives --
         # worded here, not in the shared helper, because only this verb
         # knows its own rule for which side's facets a caller actually
-        # sees again: `share_of_tool.py`'s own trace records the
+        # sees again: the share_of tool's own trace records the
         # numerator's own facet selections as `resolved_facets`, never the
         # denominator's, regardless of which side happened to declare the
         # axis (`share_of`'s own output rows carry no facet columns at all

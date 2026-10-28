@@ -1,7 +1,7 @@
 """The `quotient_of` engine: one slice divided by another per key and
 period, in the unit the two sides compose.
 
-Each side is summed as `share_of` sums it (`analysis_mcp.engine.two_sided.
+Each side is summed as `share_of` sums it (`dfo_analysis_engine.engine.two_sided.
 sum_side`): `frame_ref` (or `denominator_frame_ref`) narrowed by an `entity`
 binding, unit and facets resolved over that slice, then one `math.fsum` per
 (key, period). `numerator_by` and `denominator_by` key the sum and pair the
@@ -18,11 +18,11 @@ resolved unit is itself composed refuses (`QuotientOfSideUnitUnsupportedError`).
 Facets: a quotient across two datasets differs in `provenance` and
 `measurementMethod` by construction, so an axis the sides disagree on, or
 that one side alone declares, is a warning. The result carries an axis only
-where both sides declare the same value (`analysis_mcp.engine.common.
+where both sides declare the same value (`dfo_analysis_engine.engine.common.
 agreed_facets`, `sum_of`'s policy).
 
 Periods and keys follow the proceeding side of the partial-overlap policy in
-`analysis_mcp.engine.common`. Each numerator key divides over the periods it
+`dfo_analysis_engine.engine.common`. Each numerator key divides over the periods it
 shares with its denominator group, and every (key, period) a paired key or
 its group holds outside that intersection is recorded as a
 `period_unmatched` exclusion with its side. A numerator key with no
@@ -112,7 +112,7 @@ class QuotientOfSideUnitUnsupportedError(Exception):
 class QuotientOfNoKeyMatchedError(Exception):
     """Both sides hold keys and no numerator key has a denominator group
     under `denominator_by`'s mapping. `numerator_keys`/`denominator_keys` are
-    each side's sample of keys (`analysis_mcp.engine.two_sided.key_sample`),
+    each side's sample of keys (`dfo_analysis_engine.engine.two_sided.key_sample`),
     each as `(column, value)` pairs under that side's own column names;
     `numerator_key_count`/`denominator_key_count` are how many keys each side
     holds.
@@ -192,7 +192,7 @@ class ZeroDenominatorCell:
 
 @dataclass(frozen=True, kw_only=True)
 class QuotientOfResult:
-    """Everything `quotient_of_tool.py` needs to mint identity, write the
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to mint identity, write the
     store and render the digest.
 
     `facet_selections` are the axes both sides agree on, the ones the result
@@ -214,7 +214,7 @@ class QuotientOfResult:
     `zero_denominator_cells` are the matched cells left out, whether or not
     their key has another row. `coverage` counts the keys and periods the
     result holds and the entities each period's denominator sums
-    (`analysis_mcp.engine.two_sided.ResultCoverage`).
+    (`dfo_analysis_engine.engine.two_sided.ResultCoverage`).
 
     `numerator_only_periods` and `denominator_only_periods` are, for each
     key of a keyed call that has a row, the periods it holds on that side
@@ -223,7 +223,7 @@ class QuotientOfResult:
     key's own, so `denominator_only_periods` is empty for it.
 
     `numerator_pooled` and `denominator_pooled` hold what each side's sums
-    pooled in each flow party role (`analysis_mcp.engine.common.PooledParties`),
+    pooled in each flow party role (`dfo_analysis_engine.engine.common.PooledParties`),
     read from the cells behind `frame`'s rows, so a cell left out adds nothing.
     """
 
@@ -325,7 +325,7 @@ def run_quotient_of(
     docstring for the unit, facet, period, key and zero-denominator
     policies, and each raised exception's docstring for its refusal
     condition. A side's sum or a quotient that overflows raises
-    `analysis_mcp.engine.two_sided.NonFiniteCellError` with
+    `dfo_analysis_engine.engine.two_sided.NonFiniteCellError` with
     `reason="overflow"`, and a `denominator_by` that leaves a `numerator_by`
     column out raises `DenominatorByPartialError`, which
     `QuotientOfOpSpec` refuses first.

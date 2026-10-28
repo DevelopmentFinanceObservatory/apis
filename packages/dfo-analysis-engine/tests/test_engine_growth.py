@@ -283,7 +283,7 @@ def test_row_key_order_and_entity_by_order_perturbation_produce_an_equivalent_re
     columns are disallowed as entity columns (`engine.common._DISALLOWED_
     ENTITY_COLUMNS`) -- so a fresh two-role, two-entity frame is built here
     instead of reusing `time_series_with_gap_year_frame`'s single reporter.
-    `run_growth` never canonicalises `entity_by` itself (the tool boundary
+    `run_growth` never canonicalises `entity_by` itself (`calls.call_verb`
     does, before this function ever runs), so `entity_key`'s own tuple
     order does move with the perturbation; `_entity_key` is what makes the
     comparison honest about that instead of hiding it."""

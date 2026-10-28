@@ -51,12 +51,12 @@ each of them, so its key is not the key of a replay under any single build.
 
 `anchor` is null for a tree with no rolling op-spec. For a tree with one it is
 `{"period", "rule", "left_out"}`, read from the anchor record
-(`common.materialisation.AnchorRecord`) the rolling calls were checked against:
+the rolling calls were checked against:
 the latest period, the rule that chose it, and each series that holds no value
 at it as `{"root", "coordinates"}`, `root` indexing the populations the rolling
 op-specs carry. `recipe_anchor` finds the record by recomputing its key from
 those populations and the root frames the tree's rolling periods are taken over
-(`common.rolling.rolling_roots`), which are the roots under its rolling op-specs. A
+(`dfo_analysis_engine.rolling.rolling_roots`), which are the roots under its rolling op-specs. A
 dataset joined beside a rolling step is no part of the key.
 
 A frame can be part of a wider plan than its own tree: its rolling op-specs then
@@ -65,7 +65,7 @@ period was taken over that dataset too. Such a frame has no anchor of its own.
 `build_recipe` raises `RecipeAnchorError` with reason
 `populations_outside_reach` and the rest of the recipe on the error, so a caller
 can replay it over the populations of its own tree
-(`common.rolling.anchor_populations`), which gives a frame with an anchor.
+(`dfo_analysis_engine.rolling.anchor_populations`), which gives a frame with an anchor.
 """
 
 from __future__ import annotations
@@ -85,9 +85,13 @@ __all__ = [
     "RecipeError",
     "RecipeRootUnrecoverableError",
     "RecipeTraceUnusableError",
+    "derived_nodes",
+    "input_slots",
     "normal_form",
     "normal_form_hash",
+    "pair",
     "replay_key",
+    "rolling_literals",
     "root_identity",
 ]
 
@@ -174,11 +178,12 @@ def _digest(preimage: Mapping[str, Any], *, prefix: str) -> str:
     return f"{prefix}{hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:_DIGEST_HEX_LENGTH]}"
 
 
-def _pair(ref: FrameRef) -> dict[str, str]:
+def pair(ref: FrameRef) -> dict[str, str]:
+    """`ref` as the `{spec_id, content_version}` object a tree node holds."""
     return {"spec_id": ref.spec_id, "content_version": ref.content_version}
 
 
-def _input_slots(op_spec: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
+def input_slots(op_spec: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
     """Each frame slot `op_spec` fills, with the pair in it: `frame_ref`, then every
     set parameter named `*_frame_ref`, by name."""
     parameters = op_spec["parameters"]
@@ -255,7 +260,7 @@ def root_identity(dataset: Mapping[str, str], *, enrichment_stamp: str | None) -
     minted from, and the enrichment stamp the frame was named under
     (`MintRecord.enrichment_stamp`) when it has one. apis keeps a version's
     `content_version` across a change of party kinds, so the stamp is what tells two
-    frames of one version apart (`data_mcp.frame_materialisation.frame_ref_for`).
+    frames of one version apart.
     Without a stamp the identity is the pair alone."""
     identity = {"spec_id": dataset["spec_id"], "content_version": dataset["content_version"]}
     if enrichment_stamp is not None:
@@ -292,7 +297,7 @@ def replay_key(
     )
 
 
-def _rolling_literals(parameters: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:
+def rolling_literals(parameters: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:
     """Each literal period of `parameters` a rolling reference governs, with the
     reference: a window bound named in `rolling`, and a rolling predicate's `value`."""
     overlay = parameters.get(_ROLLING)
@@ -305,9 +310,10 @@ def _rolling_literals(parameters: Mapping[str, Any]) -> Iterator[tuple[str, Mapp
             yield predicate["value"], predicate[_ROLLING]
 
 
-def _derived_nodes(tree: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
+def derived_nodes(tree: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
+    """Every derived node of `tree`, depth first, `tree` itself first."""
     if "root" in tree:
         return
     yield tree
     for node in tree["inputs"].values():
-        yield from _derived_nodes(node)
+        yield from derived_nodes(node)

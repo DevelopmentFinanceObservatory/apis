@@ -475,7 +475,7 @@ def test_quotient_of_refuses_a_denominator_by_that_does_not_map_numerator_by_exa
 def test_category_match_predicate_values_are_nfc_normalised() -> None:
     """An NFD-decomposed value (e.g. 'e' + combining acute) construction-time
     normalises to its NFC form -- the same normalisation `Frame.build`
-    applies to every cell, and `analysis_mcp.identity` applies again before
+    applies to every cell, and `dfo_analysis_engine.identity` applies again before
     hashing (idempotently)."""
     nfd = "café"  # "café" spelled with a combining acute accent
     nfc = "café"  # "café" as one precomposed code point
@@ -680,7 +680,7 @@ def test_populations_have_one_spelling() -> None:
     ]
     assert op_spec_hash_for(growth_over(listed)) == op_spec_hash_for(growth_over(respelled))
     assert op_spec_hash_for(growth_over(listed)) != op_spec_hash_for(growth_over([usa]))
-    # A pairing is spelled as `common.rolling` spells it, after every flat entry.
+    # A pairing is spelled as `dfo_analysis_engine.rolling` spells it, after every flat entry.
     paired = [_pairing(left=listed, keys={"recipient": "observationAbout"}), *listed]
     assert build_op_spec_preimage(growth_over(paired))["parameters"]["rolling"]["population"] == (
         canonical_populations(paired)

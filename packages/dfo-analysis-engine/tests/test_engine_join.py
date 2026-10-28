@@ -443,7 +443,7 @@ def test_row_key_order_and_join_keys_order_perturbation_produce_an_equivalent_re
     exercise a real order permutation -- so a fresh two-role frame pair is
     built here instead. `run_join` never canonicalises an explicit
     `join_keys` itself (`_resolve_join_keys` returns `tuple(join_keys)`
-    verbatim when given one; the tool boundary canonicalises before this
+    verbatim when given one; `calls.call_verb` canonicalises before this
     function ever runs), so `MatchedKey.key`'s own tuple order does move
     with the perturbation; `_matched_key` is what makes the comparison
     honest about that instead of hiding it."""

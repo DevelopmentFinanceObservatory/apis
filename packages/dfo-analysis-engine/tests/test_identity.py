@@ -138,8 +138,7 @@ def test_op_spec_hash_is_independent_of_denominator_by_key_order(
     model: type[ShareOfOpSpec | QuotientOfOpSpec],
 ) -> None:
     """Two calls differing only in `denominator_by`'s own key insertion
-    order mint one `op_spec_hash` and (via `frame_ref_resolution.
-    canonical_entity_binding`) execute over one order -- JCS sorts an
+    order mint one `op_spec_hash` and (via `calls.call_verb`, which sorts a binding's keys) execute over one order -- JCS sorts an
     object's own members regardless of Python dict insertion order, so this
     requires no explicit registration in `identity._normalise_parameters`,
     unlike an array-shaped field."""

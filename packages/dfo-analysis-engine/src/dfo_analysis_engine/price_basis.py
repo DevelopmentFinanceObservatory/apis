@@ -1,9 +1,9 @@
 """The plain-language price basis of a currency unit, such as "current prices,
 US dollars" or "constant 2020 prices, euros".
 
-data-mcp's `get_data` digest reads a recognised unit code this way, and
-analysis-mcp's unit refusals label a converted unit the same way, so a model
-meets one vocabulary for units across both services.
+The `get_data` digest reads a recognised unit code this way, and the unit
+refusals (`dfo_analysis_engine.refusal`) label a converted unit the same way, so a
+model meets one vocabulary for units across retrieval and analysis.
 """
 
 from __future__ import annotations

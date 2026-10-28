@@ -1,7 +1,7 @@
 """The `sum_of` engine: two single-series slices added period by period,
 over the intersection of the periods each side offers.
 
-The sides are paired exactly as `analysis_mcp.engine.compare` pairs them
+The sides are paired exactly as `dfo_analysis_engine.engine.compare` pairs them
 (`slice_pair`, `align_periods`): each is `frame_ref` (or `right_frame_ref`)
 narrowed by an `entity` binding to one row per `time_period`, the two
 resolved units must agree, and an empty period intersection refuses
@@ -17,7 +17,7 @@ facet axis only when both sides declare the same value on it, and leaves any
 other axis unbound, since neither side's value describes the sum.
 
 `stat_var` on every result row is the caller-supplied `stat_var`, the
-operation's own ref (`dcid:<op_spec_hash>`, which `sum_of_tool` passes in),
+operation's own ref (`dcid:<op_spec_hash>`, which `calls.call_verb` passes in),
 since the sum of two variables is a third. `left_stat_vars` and
 `right_stat_vars` keep what each side measured, for the digest's label.
 
@@ -82,7 +82,7 @@ class PeriodLeftOut:
 
 @dataclass(frozen=True, kw_only=True)
 class SumOfResult:
-    """Everything `sum_of_tool.py` needs to write the store and render the
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to write the store and render the
     digest. `facet_selections` are the axes both sides agree on, the ones
     the result carries; each side's own selections are kept for the trace."""
 
@@ -118,7 +118,7 @@ def run_sum_of(
     """Add `left_frame`'s (narrowed by `left_entity`) and `right_frame`'s
     (narrowed by `right_entity`) single-entity series over their
     intersected periods, labelling every result row `stat_var`. See the
-    module docstring for the facet policy and `analysis_mcp.engine.compare`
+    module docstring for the facet policy and `dfo_analysis_engine.engine.compare`
     for the refusals the pairing raises. A side whose resolved unit is
     composed raises `ComposedUnitSumError`, after the pairing's own unit
     rules.

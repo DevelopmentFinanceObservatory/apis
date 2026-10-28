@@ -19,7 +19,7 @@ parameter vocabulary shared across verbs today -- `filter`'s row-value
 predicates, closed to `OrderedThresholdPredicate`, `CategoryMatchPredicate` and
 `PlaceLevelPredicate`.
 
-`frame_ref` is `common.materialisation.FrameRef`: one pair type,
+`frame_ref` is `dfo_analysis_engine.frame_ref.FrameRef`: one pair type,
 `{spec_id, content_version}`, naming either a Datasets snapshot or a prior
 toolkit result -- see that model's own docstring for the two families it
 accepts.
@@ -191,7 +191,7 @@ class PairingPopulation(BaseModel):
     `pair` holds the populations of the verb's two sides, left then right,
     each flat or pairing. `keys` maps each key column of the left side's frame
     to the right side's column holding the same entities, as the verb's own
-    arguments state them (`common.rolling.anchor_populations`).
+    arguments state them (`dfo_analysis_engine.rolling.anchor_populations`).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -235,7 +235,7 @@ Population = Annotated[
 
 
 def _canonical_populations(populations: tuple[Population, ...]) -> tuple[Population, ...]:
-    """`populations` in its one spelling (`common.rolling`): flat entries
+    """`populations` in its one spelling (`dfo_analysis_engine.rolling`): flat entries
     ordered by `spec_id`, then pairings, each by its RFC 8785 bytes, with an
     entry stated twice kept once."""
     keyed = {
@@ -336,7 +336,7 @@ class OrderedThresholdPredicate(BaseModel):
 
     `rolling` marks a `time_period` threshold as following the latest period:
     `value` stays the literal period the comparison runs on. It sits on the
-    predicate because `analysis_mcp.identity` reorders predicates, so nothing
+    predicate because `dfo_analysis_engine.identity` reorders predicates, so nothing
     outside one could address it.
     """
 
@@ -401,7 +401,7 @@ class CategoryMatchPredicate(BaseModel):
         """NFC-normalise every value, the same normalisation `Frame.build`
         already applies to every cell it stores. `run_filter` matches a
         `category_match` verbatim against already-NFC cells, and
-        `analysis_mcp.identity` separately NFC-normalises this same field
+        `dfo_analysis_engine.identity` separately NFC-normalises this same field
         before hashing -- normalising here, at construction, is the one
         place that feeds both, so an NFD- and an NFC-spelled predicate carry
         identical values into each.
@@ -414,7 +414,7 @@ class PlaceLevelPredicate(BaseModel):
 
     Reads a `{role}_type` column such as the `observationAbout_type` column a
     `get_data(place_types=true)` frame carries (`Country`,
-    `AdministrativeArea1,State`), by `common.place_type.levels_of`: a place sits
+    `AdministrativeArea1,State`), by `dfo_analysis_engine.place_type.levels_of`: a place sits
     at each of its types, except that one carrying a Eurostat NUTS type is not
     at `Country`. `level="Country"` keeps every country and territory and
     leaves out Åland (`nuts/FI2`), whose figures Finland's include.
@@ -523,7 +523,7 @@ class AggregateOpSpec(_OpSpecBase):
     """`aggregate`'s own reduction parameters.
 
     `aggregation` is deliberately a plain, length-bounded `str` rather than a
-    pydantic `Literal`. The closed vocabulary (`analysis_mcp.engine.
+    pydantic `Literal`. The closed vocabulary (`dfo_analysis_engine.engine.
     aggregate.AGGREGATIONS`) is enforced by the engine at runtime, so a
     caller naming an aggregation outside the closed set reaches the tool's
     own `operation_uncovered` refusal, with the vocabulary listed in `fix`,
@@ -591,7 +591,7 @@ class GrowthOpSpec(_OpSpecBase):
     """`growth`'s own endpoint policy parameters.
 
     `window_start`/`window_end` are whole calendar years (`YYYY`) -- the
-    endpoint policy (`analysis_mcp.engine.growth`'s own docstring) reads each
+    endpoint policy (`dfo_analysis_engine.engine.growth`'s own docstring) reads each
     entity's rows in those two years and counts coverage over the integer
     calendar span between them, so both are pinned to that
     format at the schema layer rather than the general `time_period` grammar
@@ -606,7 +606,7 @@ class GrowthOpSpec(_OpSpecBase):
     `(value_end - value_start) / value_start`, undefined -- and refused --
     over a zero or sign-crossing base; `absolute` computes
     `value_end - value_start` directly, defined over any base including
-    zero or a sign crossing (`analysis_mcp.engine.growth`'s own docstring).
+    zero or a sign crossing (`dfo_analysis_engine.engine.growth`'s own docstring).
     A `Literal` rather than `AggregateOpSpec.aggregation`'s open,
     engine-enforced `str`: the vocabulary is fixed at two members forever,
     so there is no retry-friendlier engine refusal being traded away by
@@ -647,7 +647,7 @@ class RankOpSpec(_OpSpecBase):
     required and non-empty, since ranking with no entity-identifying column
     would rank a single, undifferentiated row. `aggregation`, left `None`,
     ranks each entity's own single already-present value directly; set to
-    one of `analysis_mcp.engine.aggregate.AGGREGATIONS`, it reduces each
+    one of `dfo_analysis_engine.engine.aggregate.AGGREGATIONS`, it reduces each
     entity's rows first (optionally windowed by `window_start`/`window_end`,
     which -- like `GrowthOpSpec`'s own fields -- must both be set or both be
     `None`) via the aggregate engine before ranking the reduced values.
@@ -657,7 +657,7 @@ class RankOpSpec(_OpSpecBase):
     `True`, the window's periods stay apart: each period is ranked on its
     own, and the output carries one row per entity per period whose own
     `value` is that entity's rank *position* in that period, not the
-    measured value the collapsing mode emits (`analysis_mcp.engine.rank`'s
+    measured value the collapsing mode emits (`dfo_analysis_engine.engine.rank`'s
     own module docstring). `aggregation` still means "reduce to one value
     before ranking", now per (entity, period) cell rather than per entity,
     needed only when a cell carries more than one row.
@@ -757,7 +757,7 @@ class ShareOfOpSpec(_TwoSidedOpSpec):
     own docstring explains). `numerator_entity`/`denominator_entity` narrow
     each side; empty binds nothing, and -- unlike `compare`'s ambiguous-
     slice refusal -- more than one row per period on a side is not an
-    error here, it is summed (`analysis_mcp.engine.share_of`'s own
+    error here, it is summed (`dfo_analysis_engine.engine.share_of`'s own
     docstring: "fsum for any summed side").
 
     `numerator_unit`/`denominator_unit` pin each side's unit independently,
@@ -768,15 +768,15 @@ class ShareOfOpSpec(_TwoSidedOpSpec):
     key the output by -- one row per (key, period) instead of one row per
     period. `denominator_by` pairs each `numerator_by` column with the
     denominator's own column carrying that same role, **by name, never by
-    position**: `analysis_mcp.identity._normalise_parameters` and
-    `frame_ref_resolution.canonical_columns_or_refusal` both sort every
+    position**: `dfo_analysis_engine.identity._normalise_parameters` and
+    `calls.canonical_columns` both sort every
     array-shaped field, so two independently sorted column lists would
     silently pair the wrong columns whenever the two sides' own
     alphabetical orders disagree. `denominator_by` is a JSON
     object precisely so JCS sorts its *members*, not the pairing itself --
     the same reason `numerator_entity`/`denominator_entity` need no
     canonicalisation of their own beyond key order (see
-    `frame_ref_resolution.canonical_entity_binding`'s own docstring).
+    `calls.call_verb`, which sorts a binding's keys).
     `denominator_by` left empty means a pooled denominator, the total every
     numerator key divides by; when non-empty it must name every
     `numerator_by` column -- a partial mapping is refused at the engine
@@ -789,7 +789,7 @@ class ShareOfOpSpec(_TwoSidedOpSpec):
 class QuotientOfOpSpec(_TwoSidedOpSpec):
     """`quotient_of`'s parameters: `ShareOfOpSpec`'s two slices and keying,
     divided per key and period over the periods each key shares with its
-    denominator (`analysis_mcp.engine.quotient_of`).
+    denominator (`dfo_analysis_engine.engine.quotient_of`).
 
     A non-empty `denominator_by` names every `numerator_by` column. A
     partial mapping pairs the columns it leaves out with nothing, so it is
@@ -821,7 +821,7 @@ class JoinOpSpec(_OpSpecBase):
 
     `join_keys` names the role columns to match rows on, beyond the
     `time_period` every join also matches on implicitly
-    (`analysis_mcp.engine.join`'s own docstring). Left empty (the default),
+    (`dfo_analysis_engine.engine.join`'s own docstring). Left empty (the default),
     the engine auto-detects the role columns both frames declare in common;
     a non-empty tuple pins the key list explicitly instead of relying on
     that auto-detection. The key list stays minimal and closed: no facet

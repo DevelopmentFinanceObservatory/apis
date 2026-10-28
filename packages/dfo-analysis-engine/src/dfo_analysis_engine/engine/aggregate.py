@@ -1,18 +1,18 @@
 """The `aggregate` engine: group-by reduction over a frame's Arrow table.
 
-Rows are grouped with `analysis_mcp.engine.columnar.group_rows`, and each
+Rows are grouped with `dfo_analysis_engine.engine.columnar.group_rows`, and each
 group's values are reduced in Python. `math.fsum` is used
 for every additive reduction -- a plain running `+=` accumulates IEEE-754
 rounding error across a group's rows, and `fsum` is exact (correctly-rounded
 to the nearest representable double) regardless of accumulation order, which
-is what makes the input-order-perturbation test in `tests/test_aggregate_tool.py`
+is what makes the input-order-perturbation test in dfo-ai's `test_aggregate_tool.py`
 meaningful: shuffle the input rows before `Frame.build` and the result must
 still be bit-identical.
 
 Coverage is over ABSENT GRAIN CELLS, not null values. `Frame.build` has no
 way to represent an in-frame null observation -- `value` must be a finite
 number and `status` is reserved, always `None` (see
-`analysis_mcp.fixtures`'s module docstring) -- so "skip nulls" for this verb
+`tests/frame_fixtures.py`'s module docstring) -- so "skip nulls" for this verb
 can only mean "skip grid cells the frame never materialised a row for."
 `expected_cell_count` is the cartesian product of each `group_by` column's
 own distinct values across the (unit-resolved) input rows; `present_cell_count`
@@ -20,7 +20,7 @@ is the number of group keys that actually appear; the difference is
 `skipped_cell_count`. This is exactly `sparse_coverage_frame`'s shape: some
 `(recipient, year)` cells are simply missing rows.
 
-The reduction runs after `analysis_mcp.engine.common.narrow_and_resolve`.
+The reduction runs after `dfo_analysis_engine.engine.common.narrow_and_resolve`.
 On the pinned path, narrowing to `pinned_unit`'s own rows already excludes
 a row leaving `unit` unbound for free (`None` never matches a real pinned
 unit). On the unpinned path, `narrow_and_resolve` resolves once first to
@@ -34,9 +34,8 @@ warning -- unit safety is load-bearing, so it is checked first, not folded
 into the reduction loop.
 
 Every function here raises a typed exception on refusal rather than
-returning one; only the tool boundary (`analysis_mcp.aggregate_tool`) catches
-these and converts them to a `ToolRefusal`, matching `data_mcp`'s own
-discipline of raising deep and converting once, at the top.
+returning one; `dfo_analysis_engine.refusal.refusal_for_engine_error` maps
+them to a `Refusal` once, at the top.
 """
 
 from __future__ import annotations
@@ -228,7 +227,7 @@ class GroupSummary:
 
 @dataclass(frozen=True, kw_only=True)
 class AggregateResult:
-    """Everything `aggregate_tool.py` needs to mint identity, write the store,
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to mint identity, write the store,
     and render the digest -- the frame is here for the store write and replay;
     the digest itself renders from `group_summaries`, never `frame.rows`.
 
@@ -236,12 +235,12 @@ class AggregateResult:
     input rows carried, across every group, sorted. `period_label` is the
     one `time_period` every row of `frame` carries under sum or mean with
     `time_period` outside `group_by`, `span_label(collapsed_periods)`, and
-    `None` otherwise. `aggregate_tool.py` passes `collapsed_periods` to
-    `frame_ref_resolution.build_interval` as `observed` when that label
+    `None` otherwise. `calls.call_verb` passes `collapsed_periods` to
+    the call's interval (`calls.call_verb`) as `observed` when that label
     collapses more than one point, to say whether the span is contiguous.
 
     `entity_count` is how many output entities hold a total: the distinct
-    value combinations across the entity roles (`common.entity_roles`) in
+    value combinations across the entity roles (`engine.common.entity_roles`) in
     `group_by`, and `None` when `group_by` names none. `period_entities`
     maps each of `collapsed_periods` to how many input entities its totals
     pool: the distinct value combinations, across all groups, of the entity

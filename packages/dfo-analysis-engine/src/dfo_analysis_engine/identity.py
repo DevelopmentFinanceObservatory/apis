@@ -5,7 +5,7 @@ JCS (RFC 8785) + SHA-256 discipline via `dfo_spec_kit.identity.canonicalize`
 `op_spec_hash` (domain separator `ops1`, prefix `ops_`): minted over the
 fully expanded op-spec -- verb, frame_ref, and that verb's own parameters.
 `frame_ref` here is always the `{spec_id, content_version}` pair
-(`common.materialisation.FrameRef`), content-addressed by construction: two
+(`dfo_analysis_engine.frame_ref.FrameRef`), content-addressed by construction: two
 callers naming the identical pair mint the identical hash, whether that pair
 names a Datasets snapshot or a prior toolkit result. The hash guarantees
 this: replaying the identical op-spec against the identical `frame_ref`
@@ -228,7 +228,7 @@ def build_op_spec_preimage(op_spec: OpSpecVariant) -> dict[str, Any]:
 def canonicalize_op_spec(op_spec: OpSpecVariant) -> bytes:
     """The canonical JCS bytes of `op_spec`'s `ops1` preimage.
 
-    This is exactly the byte string `analysis_mcp.trace.ExecutionRecord.content`
+    This is exactly the byte string a verb trace's execution record
     carries -- the trace's canonical serialisation of the fully expanded
     op-spec is this function's output, so a replayer holding only the trace
     can recompute `op_spec_hash` via `recompute_op_spec_hash` without ever

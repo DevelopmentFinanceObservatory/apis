@@ -1,28 +1,16 @@
-"""What every verb tool returns as `structuredContent`: `VerbResult`, its
-declared JSON Schema, and each verb's declared implementation version.
+"""What a verb call returns beside its frame: `VerbResult`, its declared JSON
+Schema, and each verb's declared implementation version.
 
-`server._register` passes `output_schema=VERB_OUTPUT_SCHEMA` and
-`version=IMPLEMENTATION_VERSIONS[wire_name]` to `mcp.tool(...)` at each
-verb's registration site. `-> ToolResult` stays the return annotation --
-`fastmcp` suppresses schema derivation for it on purpose -- so the schema
-is declared here, explicitly, from `VerbResult` itself, and
-`store_result_and_render` builds the returned `structured_content` from a
-real `VerbResult(...)` via `model_dump(mode="json")`, so the two can never
-drift apart. A refusal builds its own payload (`tool_errors.to_tool_result`)
-and never goes through `VerbResult` -- the MCP client validates
-`structuredContent` against `outputSchema` on success only, so an output
-schema is declared safely for refusals too.
+`calls.call_verb` builds a `VerbResult` for every result and puts its JSON
+form in the call's `summary`, so a service returning it and an MCP tool
+declaring `VERB_OUTPUT_SCHEMA` as its output schema state one shape. A
+refusal (`refusal.Refusal.as_json`) never goes through `VerbResult`.
 
-`role_keys` and `stat_var_count` are read off the frame `store_result_and_render`
-already holds, via `observed_shape` below -- no verb signature changes.
-`dropped_key_count` and `right_dropped_key_count` are the shape facts a
-frame cannot state, the keys a verb left out of it, so the verb passes them
-to `store_result_and_render`.
+`role_keys` and `stat_var_count` are read off the result frame via
+`observed_shape` below. `dropped_key_count` and `right_dropped_key_count` are
+the shape facts a frame cannot state, the keys a verb left out of it.
 
-Every verb declares version "1" until the toolkit's first release. Until
-then a deploy ships the harness's capability pins and the servers together,
-so no plan compiled against an earlier version outlives the deploy that
-changes a verb.
+Every verb declares version "1" until the toolkit's first release.
 """
 
 from __future__ import annotations

@@ -7,8 +7,8 @@ default. `HASHED_WHEN_SET` marks such a field in its own annotation, and
 still hold their default, so a saved record hashes as it did. Each hashed
 surface pins the fields it hashes unconditionally against recorded data:
 `planner.plan.plan_revision` in the harness's
-`tests/fixtures/revision_base_fields.json`, and analysis-mcp's `op_spec_hash`
-in its `op_spec_hash_vectors.json`.
+`tests/fixtures/revision_base_fields.json`, and the engine's `op_spec_hash`
+in `tests/fixtures/vectors/op_spec_hash_vectors.json`.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
-"""Tests for `common.rolling`: the canonical populations, the anchor key, and the
+"""Tests for `dfo_analysis_engine.rolling`: the canonical populations, the anchor key, and the
 populations of a recipe tree.
 
-`services/analysis-mcp/tests/test_rolling_tool.py` checks `anchor_populations`
-against the populations real verb calls hash.
+dfo-ai's `services/analysis-mcp/tests/test_rolling_tool.py` checks
+`anchor_populations` against the populations real verb calls hash.
 """
 
 from __future__ import annotations

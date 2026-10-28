@@ -3,7 +3,7 @@ reduced over a calendar window first, over a frame's Arrow table. `rank` ranks w
 present, reports per-entity coverage in the trace with a digest warning
 when it's unequal, and refuses below the coverage floor.
 
-Reuses `analysis_mcp.engine.aggregate`'s own reduction internals directly --
+Reuses `dfo_analysis_engine.engine.aggregate`'s own reduction internals directly --
 `AGGREGATIONS` (the closed vocabulary, one source of truth), `_reduce` (the
 reduction itself), `UnsupportedAggregationError`, and
 `NonFiniteAggregateResultError` -- rather than redefining them, since
@@ -142,7 +142,7 @@ class RankAmbiguousEntityError(Exception):
 @dataclass(frozen=True, kw_only=True)
 class EntityRank:
     """One entity's own ranked result, in *ranked order* -- unlike
-    `analysis_mcp.engine.aggregate.GroupSummary`, position here is load-
+    `dfo_analysis_engine.engine.aggregate.GroupSummary`, position here is load-
     bearing: `RankResult.entity_ranks` is the tie-broken order itself, not a
     canonical-but-arbitrary ordering a caller must re-sort.
 
@@ -168,7 +168,7 @@ class EntityRank:
 
 @dataclass(frozen=True, kw_only=True)
 class RankResult:
-    """Everything `rank_tool.py` needs to mint identity, write the store,
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to mint identity, write the store,
     and render the digest.
 
     `entity_ranks` is the whole ranking; `kept_ranks` is the part of it
@@ -463,7 +463,7 @@ def run_rank(
     output frame's own `value` column carries the rank *position* instead,
     below, where the two modes fork. `EntityRank.value` itself is always
     the measured value, in either mode -- only the output frame's own
-    column changes meaning, which is why the ordinal marker `rank_tool.py`
+    column changes meaning, which is why the ordinal marker `calls.call_verb`
     writes travels with the frame, not with `EntityRank`.
 
     `limit` cuts the output frame to `RankResult.kept_ranks`, and its
@@ -630,8 +630,7 @@ def run_rank(
     # The frame's own `value` is the rank position in per-period mode with
     # no `limit` and the measured value otherwise -- `EntityRank.value` is
     # always the measured value; only the frame's own column changes
-    # meaning, which is why the ordinal marker (`rank_tool.py`,
-    # `DerivedMarker.ordinal`) travels with the frame rather than with
+    # meaning, which is why the ordinal marker (`calls.DerivedMarker.ordinal`) travels with the frame rather than with
     # `EntityRank`. The frame's own `unit` follows the identical split: a
     # rank position has no unit.
     ordinal = _writes_positions(per_period=per_period, limit=limit)

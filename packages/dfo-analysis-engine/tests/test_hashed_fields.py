@@ -1,4 +1,4 @@
-"""Tests for `common.hashed_fields`: fields a content hash covers once they are set."""
+"""Tests for `dfo_analysis_engine.hashed_fields`: fields a content hash covers once they are set."""
 
 from __future__ import annotations
 

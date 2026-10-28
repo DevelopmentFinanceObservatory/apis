@@ -8,11 +8,11 @@ required-column set has one `value` position, full stop), so a row carrying
 both sides' own values side by side is not a shape this grammar can
 represent. The honest output is long-format instead -- one row per matched
 key *per side*, `stat_var` distinguishing which side a row's own value came
-from, exactly the shape `analysis_mcp.fixtures.join_compatible_frame_pair`'s
+from, exactly the shape `tests/frame_fixtures.py::join_compatible_frame_pair`'s
 own two frames (ODA disbursed, GNI) already model as two distinct StatVars
 sharing one `(reporter, time_period)` grain.
 
-This is a "proceed" instance of `analysis_mcp.engine.common`'s own
+This is a "proceed" instance of `dfo_analysis_engine.engine.common`'s own
 partial-overlap policy -- see that module's docstring for the reasoning.
 
 The join key is always `time_period` plus a set of role columns: either
@@ -77,7 +77,7 @@ from dfo_analysis_engine.engine.common import (
 )
 
 # Never a valid join key: `value`/`status` are reduction/reserved columns (the
-# same reasoning `analysis_mcp.engine.aggregate._DISALLOWED_GROUP_BY_COLUMNS`
+# same reasoning `dfo_analysis_engine.engine.aggregate._DISALLOWED_GROUP_BY_COLUMNS`
 # already applies), `unit` and the facet axes are resolved to a single value
 # before this engine runs, `stat_var` naming a join key would only ever match
 # rows sharing one StatVar (defeating the point of joining two different
@@ -247,7 +247,7 @@ class MatchedKeys:
 
 @dataclass(frozen=True, kw_only=True)
 class JoinResult:
-    """Everything `join_tool.py` needs to mint identity, write the store,
+    """Everything `dfo_analysis_engine.calls.call_verb` needs to mint identity, write the store,
     and render the digest -- the frame is here for the store write and
     replay; the digest itself renders from `matched_keys`, never
     `frame.rows`.
