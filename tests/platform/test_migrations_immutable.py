@@ -127,6 +127,9 @@ _PRESENTATION_STORE = {
     "0014_share_slot_next_check.sql": (
         "65eb5bf176ffeaac8e951e0f5f076cd2a169c201d25653f4ed3aa88f60fe3ac0"
     ),
+    "0015_share_create_token.sql": (
+        "aed4d316afc7180b4b8491ec7f161a708d231805643ca1bca66d7e432a6730f3"
+    ),
 }
 
 

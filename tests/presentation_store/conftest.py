@@ -256,26 +256,50 @@ class FakeTransaction:
 
         if sql.startswith("INSERT INTO presentation.share (id, "):
             assert "ON CONFLICT (id) DO NOTHING RETURNING id" in sql
-            if len(params) == 6:
-                share_id, kind, mode, title, write_token_sha256, payload = params
+            create_request_sha256 = None
+            if "create_request_sha256" in sql:
+                (
+                    share_id,
+                    kind,
+                    mode,
+                    title,
+                    write_token_sha256,
+                    create_request_sha256,
+                    payload,
+                ) = params
                 owner, created_at = None, datetime.now(UTC)
             else:
                 share_id, kind, mode, title, write_token_sha256, owner, payload, created_at = params
             share_id = cast(str, share_id)
             if share_id in s.shares:
                 return []
+            if write_token_sha256 is not None and any(
+                row["write_token_sha256"] == write_token_sha256 for row in s.shares.values()
+            ):
+                raise _unique_violation("share_write_token_sha256_key")
             s.shares[share_id] = {
                 "id": share_id,
                 "kind": kind,
                 "mode": mode,
                 "title": title,
                 "write_token_sha256": write_token_sha256,
+                "create_request_sha256": create_request_sha256,
                 "owner": owner,
                 "payload": json.loads(cast(str, payload)) if payload is not None else None,
                 "created_at": created_at,
                 "deleted_at": None,
             }
             return [{"id": share_id}]
+
+        if sql.startswith(
+            "SELECT id, create_request_sha256 FROM presentation.share WHERE write_token_sha256 = %s"
+        ):
+            (write_token_sha256,) = params
+            return [
+                {"id": row["id"], "create_request_sha256": row["create_request_sha256"]}
+                for row in s.shares.values()
+                if row["write_token_sha256"] == write_token_sha256
+            ]
 
         if sql.startswith("SELECT kind, created_at FROM presentation.share WHERE id = %s"):
             (share_id,) = params
@@ -295,7 +319,13 @@ class FakeTransaction:
             row = s.shares.get(share_id)
             if row is None or row["deleted_at"] is not None:
                 return []
-            return [{key: value for key, value in row.items() if key != "deleted_at"}]
+            return [
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in ("deleted_at", "create_request_sha256")
+                }
+            ]
 
         if sql.startswith("UPDATE presentation.share SET deleted_at = now() WHERE id = %s"):
             (share_id,) = params

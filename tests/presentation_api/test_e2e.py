@@ -208,7 +208,7 @@ def test_a_bar_chart_intent_carrying_log_scale_refuses_constraint_violation_at_s
     assert body["code"] == "constraint_violation"
     assert body["constraint_id"] == "bar_zero_in_domain"
     assert body["pointer"] == "/scale"
-    assert body["retryable"] is True
+    assert body["retryable"] is False
     assert "component_id" not in body
 
 

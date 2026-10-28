@@ -34,6 +34,7 @@ __all__ = [
     "ShareReadResponse",
     "ShareRetentionModel",
     "ShareServedModel",
+    "ShareSlotCardResponse",
     "ShareSlotDataResponse",
     "ShareSlotModel",
     "ShareWriteResponse",
@@ -243,6 +244,13 @@ class CreateReplyResponse(WriteReplyResponse):
         'this create started with composition_id "new", sent back as the x-dfo-write-token '
         "header. Present only on that create.",
     )
+    retention: RetentionModel | None = Field(
+        default=None,
+        description="how long the frame the new card draws can still be fetched, as a read "
+        "states it: held for 30 days from when DFO stored it, until a share first includes "
+        "the card. Null for a card that draws no frame, or one whose frame DFO holds no "
+        "version record of",
+    )
 
 
 # -- component read (presentation_api.doors.components) --------------------
@@ -275,7 +283,8 @@ class ComponentReadResponse(BaseModel):
         "when DFO stored it: the stored frame on a read, the named frame on a render. A card's "
         "frame stays in the 30-day working tier until a share first includes the card. Once "
         "`held_until` has passed the frame can refuse `frame_unavailable`; fetch the card's "
-        "data with latest=True to draw from current data. Null for a card that draws no frame",
+        "data with latest=True to draw from current data. Null for a card that draws no frame, "
+        "or one whose frame DFO holds no version record of",
     )
 
 
@@ -391,6 +400,24 @@ class ShareSlotDataResponse(BaseModel):
     rows: list[dict[str, object]] = Field(
         description="the rows behind every value the card shows, one object per row, keyed by "
         "the columns of the card's data file"
+    )
+
+
+class ShareSlotCardResponse(ComponentReadResponse):
+    """`GET /api/presentation/shares/{share_id}/slots/{slot}`'s body: the slot's card as a
+    component read states it, drawn on the frame the slot serves."""
+
+    retention: RetentionModel | None = Field(
+        default=None,
+        description="how long the frame the card is drawn on can still be fetched, counted "
+        "from when DFO stored it. Null for a card that draws no frame, or one whose frame DFO "
+        "holds no version record of",
+    )
+    freshness: Literal["current", "stale", "pending"] = Field(
+        description="as the slot's data route states it: current, the newest data DFO found "
+        "at its last check or a snapshot's own frame; pending, newer data is building and the "
+        "card is drawn on the last check's frame; stale, DFO could not check, or the card "
+        "cannot be drawn on the newer data, and the card is drawn on an older frame"
     )
 
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 from assembler.ports import FrameRef
 from dataset_store.clock import utc_now
 from dataset_store.snapshot import SnapshotReader
-from datasets_api.retention import version_retention
+from datasets_api.retention import RetentionUnreadable, version_retention
 
-__all__ = ["frame_retention"]
+__all__ = ["frame_retention", "stated_retention"]
 
 
 def frame_retention(
@@ -28,3 +28,14 @@ def frame_retention(
         now=utc_now(),
     )
     return retention.model_dump(mode="json")
+
+
+def stated_retention(
+    frame_ref: FrameRef, *, snapshot_reader: SnapshotReader | None
+) -> dict[str, object] | None:
+    """`frame_retention`, or `None` when the version has no record or links nothing to serve,
+    for a reply that states a stored card's frame rather than refusing over it."""
+    try:
+        return frame_retention(frame_ref, snapshot_reader=snapshot_reader)
+    except RetentionUnreadable:
+        return None

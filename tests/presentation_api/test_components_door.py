@@ -524,6 +524,8 @@ def test_a_revise_carrying_composition_id_is_binding_invalid(client: TestClient)
     body = resp.json()
     assert body["code"] == "binding_invalid"
     assert body["type"] == "/codes/binding_invalid"
+    # The intent must change before the write can succeed, so a client must not resend it.
+    assert body["retryable"] is False
 
 
 def test_a_missing_type_on_create_is_schema_invalid_and_names_the_legal_types(client: TestClient):

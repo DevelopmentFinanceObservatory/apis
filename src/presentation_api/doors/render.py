@@ -86,6 +86,7 @@ from presentation_api.path_params import (
     require_content_version,
     require_spec_id,
 )
+from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import frame_retention
 
 if TYPE_CHECKING:
@@ -367,14 +368,7 @@ def build_render_router(
                 retention = frame_retention(target, snapshot_reader=deps.snapshot_reader)
             return JSONResponse(
                 {
-                    "component_id": reply.component_id,
-                    "revision": reply.revision,
-                    "catalog_version": reply.catalog_version,
-                    "composition_id": reply.composition_id,
-                    "composition_revision": reply.composition_revision,
-                    "stored_intent": record.stored_intent,
-                    "fact_summary": reply.fact_summary,
-                    "resolved_payload": reply.resolved_payload,
+                    **serialize_read_reply(reply, stored_intent=record.stored_intent),
                     "retention": retention,
                 },
                 headers={"Cache-Control": "no-store"},

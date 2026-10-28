@@ -24,8 +24,15 @@ newest first.
 `create_share` mints the id (`ids.mint_share_id`) and inserts it with `ON CONFLICT DO NOTHING`,
 minting again while the id is taken, by a share made here or one imported from the website,
 up to `_MINT_ATTEMPTS` times before `GeneratedIdCollision`. The store checks no write token:
-it stores the digest it is given, and `read_share` returns it for the caller to compare.
-Driver failures become `PresentationStoreUnavailable` with the failure's SQLSTATE.
+it stores the digest it is given, and `read_share` returns it for the caller to compare. No two
+shares hold one token digest (migration 0015): a create given a digest another share holds,
+taken down or not, raises `ShareWriteTokenInUse`, and `prior_create` finds that share with the
+digest of the create request that stored it, so a create keyed by a client's token can answer
+its retry with the first share. Driver failures become `PresentationStoreUnavailable` with the
+failure's SQLSTATE.
+
+`MAX_SHARE_PAYLOAD_BYTES` bounds the payload a share stores, which the shares door and the
+website import both apply through `payload_refusal`.
 """
 
 from __future__ import annotations
@@ -40,12 +47,19 @@ from assembler.ports import EditConflict, FrameRef
 from dataset_store import DatasetStore
 from dataset_store.store import Transaction
 from presentation_store.ids import mint_share_id
-from presentation_store.store_errors import GeneratedIdCollision, PresentationStoreUnavailable
+from presentation_store.store_errors import (
+    GeneratedIdCollision,
+    PresentationStoreUnavailable,
+    is_unique_violation,
+    violated_constraint,
+)
 
 __all__ = [
+    "MAX_SHARE_PAYLOAD_BYTES",
     "Freshness",
     "ImportedShare",
     "LiveShareStore",
+    "PriorShareCreate",
     "ServedFrame",
     "ShareCard",
     "ShareIdTaken",
@@ -55,7 +69,9 @@ __all__ = [
     "ShareRecord",
     "ShareSlot",
     "ShareStore",
+    "ShareWriteTokenInUse",
     "SlotCheck",
+    "payload_refusal",
 ]
 
 type ShareKind = Literal["card", "canvas", "search", "conversation"]
@@ -68,6 +84,20 @@ _MINT_ATTEMPTS = 5
 
 _SHARE_COLUMNS = "id, kind, mode, title, write_token_sha256, owner, payload, created_at"
 
+_SHARE_WRITE_TOKEN_INDEX = "share_write_token_sha256_key"
+
+MAX_SHARE_PAYLOAD_BYTES = 10 * 1024 * 1024
+"""The largest `payload` a share stores, as compact UTF-8 JSON: 10 MiB, the website's limit."""
+
+
+def payload_refusal(payload: object) -> str | None:
+    """Why a share cannot store `payload`, or `None` when it can: its compact UTF-8 JSON is
+    over `MAX_SHARE_PAYLOAD_BYTES`."""
+    size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
+    if size <= MAX_SHARE_PAYLOAD_BYTES:
+        return None
+    return f"the payload is {size} bytes, over the {MAX_SHARE_PAYLOAD_BYTES}-byte bound"
+
 
 class ShareNotFound(Exception):
     """No share exists at this id, or it was taken down. Maps to `not_found`."""
@@ -75,6 +105,13 @@ class ShareNotFound(Exception):
     def __init__(self, share_id: str) -> None:
         self.share_id = share_id
         super().__init__(f"no share exists at id {share_id!r}")
+
+
+class ShareWriteTokenInUse(Exception):
+    """A create's write token digest is one another share holds."""
+
+    def __init__(self) -> None:
+        super().__init__("another share holds this write token")
 
 
 class ShareIdTaken(Exception):
@@ -120,6 +157,15 @@ class ShareRecord:
     revision: int
     revised_at: datetime
     slots: tuple[ShareSlot, ...]
+
+
+@dataclass(frozen=True)
+class PriorShareCreate:
+    """The share a write token digest names, taken down or not, and the digest of the create
+    request that stored it (`None` for a share created without one)."""
+
+    share_id: str
+    create_request_sha256: bytes | None
 
 
 @dataclass(frozen=True)
@@ -171,12 +217,23 @@ class ShareStore(Protocol):
         write_token_sha256: bytes | None,
         cards: Sequence[ShareCard],
         payload: object = None,
+        create_request_sha256: bytes | None = None,
     ) -> ShareRecord:
         """Store a new share at revision 1, one slot per card in order, under a minted id.
-        `payload` is stored as given; `None` stores none.
+        `payload` is stored as given; `None` stores none. `create_request_sha256` is the digest
+        of the create request a client's write token keys, which `prior_create` returns.
 
         Raises:
+            ShareWriteTokenInUse: Another share holds `write_token_sha256`.
             GeneratedIdCollision: Every minted id was taken.
+            PresentationStoreUnavailable: The store failed.
+        """
+        ...
+
+    def prior_create(self, *, write_token_sha256: bytes) -> PriorShareCreate | None:
+        """The share holding `write_token_sha256`, taken down or not, or `None` when none does.
+
+        Raises:
             PresentationStoreUnavailable: The store failed.
         """
         ...
@@ -308,6 +365,7 @@ class LiveShareStore:
         write_token_sha256: bytes | None,
         cards: Sequence[ShareCard],
         payload: object = None,
+        create_request_sha256: bytes | None = None,
     ) -> ShareRecord:
         def write(tx: Transaction) -> ShareRecord:
             share_id = self._insert_share(
@@ -316,6 +374,7 @@ class LiveShareStore:
                 mode=mode,
                 title=title,
                 write_token_sha256=write_token_sha256,
+                create_request_sha256=create_request_sha256,
                 payload=payload,
             )
             slots = tuple(ShareSlot(slot=n, card=card) for n, card in enumerate(cards, start=1))
@@ -323,6 +382,25 @@ class LiveShareStore:
             return _read(tx, share_id=share_id, for_update=False)
 
         return self._in_transaction("creating a share", write)
+
+    def prior_create(self, *, write_token_sha256: bytes) -> PriorShareCreate | None:
+        def read(tx: Transaction) -> PriorShareCreate | None:
+            row = tx.fetch_one(
+                "SELECT id, create_request_sha256 FROM presentation.share "
+                "WHERE write_token_sha256 = %s",
+                (write_token_sha256,),
+            )
+            if row is None:
+                return None
+            digest = row["create_request_sha256"]
+            return PriorShareCreate(
+                share_id=cast(str, row["id"]),
+                create_request_sha256=(
+                    bytes(cast("bytes | memoryview", digest)) if digest is not None else None
+                ),
+            )
+
+        return self._in_transaction("reading the share by write token digest", read)
 
     def read_share(self, *, share_id: str) -> ShareRecord:
         return self._in_transaction(
@@ -551,24 +629,46 @@ class LiveShareStore:
         mode: ShareMode,
         title: str | None,
         write_token_sha256: bytes | None,
+        create_request_sha256: bytes | None,
         payload: object,
     ) -> str:
-        """Insert the share row under the first minted id no share holds."""
+        """Insert the share row under the first minted id no share holds. A unique violation
+        on the write token index raises `ShareWriteTokenInUse`, after Postgres held the insert
+        until the transaction holding the digest ended."""
         for _ in range(_MINT_ATTEMPTS):
             share_id = self._mint_id()
-            row = tx.fetch_one(
-                "INSERT INTO presentation.share (id, kind, mode, title, write_token_sha256, "
-                "payload) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING "
-                "RETURNING id",
-                (share_id, kind, mode, title, write_token_sha256, _json_param(payload)),
-            )
+            in_use = False
+            try:
+                row = tx.fetch_one(
+                    "INSERT INTO presentation.share (id, kind, mode, title, write_token_sha256, "
+                    "create_request_sha256, payload) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO NOTHING RETURNING id",
+                    (
+                        share_id,
+                        kind,
+                        mode,
+                        title,
+                        write_token_sha256,
+                        create_request_sha256,
+                        _json_param(payload),
+                    ),
+                )
+            except Exception as exc:
+                if not (
+                    is_unique_violation(exc)
+                    and violated_constraint(exc) == _SHARE_WRITE_TOKEN_INDEX
+                ):
+                    raise
+                in_use = True
+            if in_use:
+                raise ShareWriteTokenInUse
             if row is not None:
                 return share_id
         raise GeneratedIdCollision(subject_kind="share")
 
     def _in_transaction[T](self, action: str, work: Callable[[Transaction], T]) -> T:
-        """Run `work` in one transaction. `ShareNotFound`, `ShareIdTaken`, `EditConflict` and
-        `GeneratedIdCollision` pass through, and any other failure becomes
+        """Run `work` in one transaction. `ShareNotFound`, `ShareIdTaken`, `ShareWriteTokenInUse`,
+        `EditConflict` and `GeneratedIdCollision` pass through, and any other failure becomes
         `PresentationStoreUnavailable`, raised after leaving `except` so driver context stays
         off it."""
         failure: PresentationStoreUnavailable | None = None
@@ -576,7 +676,13 @@ class LiveShareStore:
         try:
             with self._store.transaction() as tx:
                 result = work(tx)
-        except (ShareNotFound, ShareIdTaken, EditConflict, GeneratedIdCollision):
+        except (
+            ShareNotFound,
+            ShareIdTaken,
+            ShareWriteTokenInUse,
+            EditConflict,
+            GeneratedIdCollision,
+        ):
             raise
         except Exception as exc:
             failure = PresentationStoreUnavailable.from_driver_failure(f"{action} failed", exc)

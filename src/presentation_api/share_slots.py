@@ -16,14 +16,22 @@ check is due again after the retry time the refresh or the run gave, between one
 
 A snapshot slot states `current`, since its rows are the share's for good.
 
+`serve_on_slot_frame` makes that choice for both of a slot's reads, its data and its card, so
+the two never serve different frames. It draws the read on the frame the check chose, and when
+that fails on a newer frame it records the slot `stale` on the card's own frame and draws there.
+
 The rows are the card's data export (`assembler.pipeline.export_component.export_component_data`,
 unbundled), on the served frame as a target when it is not the frame the card revision is
 stored on. `format=json` turns the Parquet export into a JSON document of rows, and `csv` and
-`parquet` serve the export's bytes. Every read records the frame it served in `served_frame`
-with the card revision's recorded rendering.
+`parquet` serve the export's bytes. The card (`serve_slot_card`) is the components door's read
+of the card revision, drawn on the served frame (`assembler.pipeline.render_component`) when it
+is not the frame the revision is stored on, with that frame's retention and the freshness
+beside it. A note draws no frame, so its card is its stored read, `current`. Every read of a
+frame records the frame it served in `served_frame` with the card revision's recorded
+rendering.
 
 The history lists those records newest first, each with the retention of its frame counted
-from when DFO stored it (`presentation_api.retention.frame_retention`) and whether that
+from when DFO stored it (`presentation_api.retention.stated_retention`) and whether that
 retention still holds: pinned, or held past now. A frame with no version record states no
 retention and is not fetchable.
 """
@@ -35,13 +43,14 @@ import io
 import json
 import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
 import pyarrow.parquet as pq
 
+from assembler.pipeline import get_component, render_component
 from assembler.pipeline.export_component import (
     ComponentExportFile,
     ComponentHoldsNoData,
@@ -49,9 +58,9 @@ from assembler.pipeline.export_component import (
 )
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, RevisionRecord
-from datasets_api.retention import RetentionUnreadable
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
-from presentation_api.retention import frame_retention
+from presentation_api.reply import serialize_read_reply
+from presentation_api.retention import stated_retention
 from presentation_store import Freshness, ServedFrame, ShareCard, ShareRecord, SlotCheck
 
 if TYPE_CHECKING:
@@ -61,8 +70,11 @@ __all__ = [
     "ShareSlotEmpty",
     "SlotData",
     "SlotFormat",
+    "SlotServed",
     "history_document",
+    "serve_on_slot_frame",
     "serve_slot",
+    "serve_slot_card",
     "serving_frame",
     "slot_card",
 ]
@@ -90,16 +102,27 @@ class ShareSlotEmpty(Exception):
 @dataclass(frozen=True)
 class SlotData:
     """One read of a slot: the body, its media type and file name (`None` for JSON), the frame
-    served, its freshness, when a live slot's check ran (`None` for a snapshot), and the
-    body's strong ETag."""
+    served (`None` for a note's card), its freshness, when a live slot's check ran (`None` for
+    a snapshot or a note), and the body's strong ETag."""
 
     body: bytes
     media_type: str
     file_name: str | None
-    frame: FrameRef
+    frame: FrameRef | None
     freshness: Freshness
     checked_at: datetime | None
     etag: str
+
+
+@dataclass(frozen=True)
+class SlotServed[T]:
+    """What `serve_on_slot_frame` drew, the frame it drew on, that frame's freshness, and when
+    a live slot's check ran (`None` for a snapshot)."""
+
+    drawn: T
+    frame: FrameRef
+    freshness: Freshness
+    checked_at: datetime | None
 
 
 def slot_card(share: ShareRecord, slot: int) -> ShareCard:
@@ -126,6 +149,55 @@ def serving_frame(*, share: ShareRecord, slot: int, card: ShareCard, deps: Share
     return card.frame
 
 
+def serve_on_slot_frame[T](
+    *,
+    share: ShareRecord,
+    slot: int,
+    card: ShareCard,
+    record: RevisionRecord,
+    deps: SharesDeps,
+    draw: Callable[[FrameRef], T],
+) -> SlotServed[T]:
+    """Draw `card`, shown in slot `slot` of `share`, with `draw` on the frame the slot serves
+    now, and record the frame served. A snapshot serves its recorded frame. A live slot serves
+    its check's frame (`_live_check`), and when `draw` fails on a frame other than the card's
+    own, the slot is recorded `stale` on the card's own frame, which `draw` then draws on.
+    `card.frame` must be set and `record` must be the card revision.
+
+    Raises:
+        Any refusal of `draw` on the card's own frame.
+    """
+    assert card.frame is not None
+    if share.mode == "snapshot":
+        frame, freshness, checked_at = card.frame, "current", None
+        drawn = draw(frame)
+    else:
+        check = _live_check(share=share, slot=slot, card=card, deps=deps)
+        try:
+            drawn = draw(check.frame)
+        except Exception:
+            if check.frame == card.frame:
+                raise
+            # The newer frame no longer fits the card's intent, or cannot be read. The slot
+            # serves the card's own frame, which its share pinned, until the next check.
+            logger.warning(
+                "Share %s slot %s cannot draw %s on %s; serving its own frame",
+                share.id,
+                slot,
+                card.component_id,
+                check.frame,
+                exc_info=True,
+            )
+            check = replace(check, frame=card.frame, freshness="stale")
+            deps.share_store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
+            drawn = draw(card.frame)
+        frame, freshness, checked_at = check.frame, check.freshness, check.checked_at
+    deps.share_store.record_served(
+        share_id=share.id, slot=slot, card=card, frame=frame, rendering=record.frame_rendering
+    )
+    return SlotServed(drawn=drawn, frame=frame, freshness=freshness, checked_at=checked_at)
+
+
 def serve_slot(*, share: ShareRecord, slot: int, format: SlotFormat, deps: SharesDeps) -> SlotData:
     """Serve slot `slot` of `share` in `format` and record the frame served.
 
@@ -144,55 +216,118 @@ def serve_slot(*, share: ShareRecord, slot: int, format: SlotFormat, deps: Share
             revision=card.revision,
             detail=f"a {record.stored_intent['type']} draws no frame, so it has no rows to serve",
         )
-    if share.mode == "snapshot":
-        frame, freshness, checked_at = card.frame, "current", None
-        exported = _export(card, frame=frame, record=record, format=format, deps=deps)
-    else:
-        check = _live_check(share=share, slot=slot, card=card, deps=deps)
-        try:
-            exported = _export(card, frame=check.frame, record=record, format=format, deps=deps)
-        except Exception:
-            if check.frame == card.frame:
-                raise
-            # The newer frame no longer fits the card's intent, or cannot be read. The slot
-            # serves the card's own frame, which its share pinned, until the next check.
-            logger.warning(
-                "Share %s slot %s cannot draw %s on %s; serving its own frame",
-                share.id,
-                slot,
-                card.component_id,
-                check.frame,
-                exc_info=True,
-            )
-            check = replace(check, frame=card.frame, freshness="stale")
-            deps.share_store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
-            exported = _export(card, frame=card.frame, record=record, format=format, deps=deps)
-        frame, freshness, checked_at = check.frame, check.freshness, check.checked_at
-    deps.share_store.record_served(
-        share_id=share.id, slot=slot, card=card, frame=frame, rendering=record.frame_rendering
+    served = serve_on_slot_frame(
+        share=share,
+        slot=slot,
+        card=card,
+        record=record,
+        deps=deps,
+        draw=lambda frame: _export(card, frame=frame, record=record, format=format, deps=deps),
     )
     if format == "json":
         body = _json_document(
             share=share,
             slot=slot,
             card=card,
-            frame=frame,
-            freshness=freshness,
-            parquet=exported.data,
+            frame=served.frame,
+            freshness=served.freshness,
+            parquet=served.drawn.data,
         )
         media_type, file_name = _JSON_MEDIA_TYPE, None
     else:
+        exported = served.drawn
         body, media_type, file_name = exported.data, exported.media_type, exported.file_name
-    digest = hashlib.sha256(media_type.encode() + b"\0" + body).hexdigest()
     return SlotData(
         body=body,
         media_type=media_type,
         file_name=file_name,
+        frame=served.frame,
+        freshness=served.freshness,
+        checked_at=served.checked_at,
+        etag=_etag(media_type, body),
+    )
+
+
+def serve_slot_card(*, share: ShareRecord, slot: int, deps: SharesDeps) -> SlotData:
+    """Serve the card slot `slot` of `share` shows, as a component read with `freshness`,
+    drawn on the frame the slot serves (`serve_on_slot_frame`), and record the frame served. A
+    note's card is its stored read, `current`.
+
+    Raises:
+        ShareSlotEmpty: No such slot, or it holds no card.
+        Any refusal of drawing the card on the frame it serves.
+    """
+    card = slot_card(share, slot)
+    record = read_stored_revision(
+        component_id=card.component_id, revision=card.revision, revision_store=deps.revision_store
+    )
+    frame: FrameRef | None = None
+    freshness: Freshness = "current"
+    checked_at: datetime | None = None
+    if card.frame is None:
+        document = _card_document(card, frame=None, record=record, deps=deps)
+    else:
+        served = serve_on_slot_frame(
+            share=share,
+            slot=slot,
+            card=card,
+            record=record,
+            deps=deps,
+            draw=lambda on: _card_document(card, frame=on, record=record, deps=deps),
+        )
+        document, frame = served.drawn, served.frame
+        freshness, checked_at = served.freshness, served.checked_at
+    body = json.dumps(
+        {**document, "freshness": freshness},
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode()
+    return SlotData(
+        body=body,
+        media_type=_JSON_MEDIA_TYPE,
+        file_name=None,
         frame=frame,
         freshness=freshness,
         checked_at=checked_at,
-        etag=f'"{digest[:32]}"',
+        etag=_etag(_JSON_MEDIA_TYPE, body),
     )
+
+
+def _card_document(
+    card: ShareCard, *, frame: FrameRef | None, record: RevisionRecord, deps: SharesDeps
+) -> dict[str, object]:
+    """The components door's read of the card revision on `frame`: its stored read on the
+    frame it is stored on, or with none, else drawn on `frame`, with `frame`'s retention."""
+    if frame is None or record.stored_intent.get("frame_ref") == _frame_body(frame):
+        document = dict(
+            get_component(
+                component_id=card.component_id,
+                revision=card.revision,
+                revision_store=deps.revision_store,
+            )
+        )
+    else:
+        reply = render_component(
+            component_id=card.component_id,
+            revision=card.revision,
+            target_frame=frame,
+            frame_store=deps.frame_store,
+            revision_store=deps.revision_store,
+            release_registry=deps.release_registry,
+            vocabulary_source=deps.vocabulary_source,
+        )
+        document = serialize_read_reply(reply, stored_intent=record.stored_intent)
+    retention = (
+        stated_retention(frame, snapshot_reader=deps.snapshot_reader) if frame is not None else None
+    )
+    return {**document, "retention": retention}
+
+
+def _etag(media_type: str, body: bytes) -> str:
+    """A strong ETag over `body` served as `media_type`."""
+    digest = hashlib.sha256(media_type.encode() + b"\0" + body).hexdigest()
+    return f'"{digest[:32]}"'
 
 
 def history_document(
@@ -202,10 +337,7 @@ def history_document(
     now = deps.now()
     entries: list[dict[str, object]] = []
     for entry in served:
-        try:
-            retention = frame_retention(entry.frame, snapshot_reader=deps.snapshot_reader)
-        except RetentionUnreadable:
-            retention = None
+        retention = stated_retention(entry.frame, snapshot_reader=deps.snapshot_reader)
         entries.append(
             {
                 "slot": entry.slot,

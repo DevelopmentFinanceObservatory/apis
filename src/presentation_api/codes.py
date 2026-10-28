@@ -23,7 +23,8 @@ Frame unavailability returns 404 or transient 503. Release mismatch and service 
 return 503. Timeout returns 504, and internal errors return 500.
 
 Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
-`correct_and_retry`. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
+`correct_and_retry`, which `retryable_for` answers false: the request must change before it can
+succeed, and a client retries a retryable refusal unchanged. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
 refresh. Transient frame, release, service, and timeout failures retry after a delay. `not_found`,
 `write_refused`, `resource_exhausted`, `refresh_not_permitted`, `render_target_mismatch`, and
 `internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
@@ -185,15 +186,18 @@ if not frozenset(PLATFORM_CODE_CATALOGUE) >= _served_platform_codes:
     )
 
 
-def retryable_for(code: str) -> bool:
-    """Return whether the headline mode allows retry. Classifiers handle
-    `schema_invalid`, `frame_unavailable`, and `request_invalid` per occurrence.
-    """
-    return CODE_RETRY_MODE[code] != "do_not_retry"
-
-
 # The modes under which a request repeated unchanged may succeed.
 _UNCHANGED_RETRY_MODES = frozenset({"retry_after_delay", "refresh_then_retry"})
+
+
+def retryable_for(code: str) -> bool:
+    """Return whether the same request, sent again, may succeed: true for a
+    `retry_after_delay` or `refresh_then_retry` code. A `correct_and_retry` code answers false,
+    since the caller must change its request first, and a client retries a retryable refusal
+    unchanged. Classifiers handle `schema_invalid`, `frame_unavailable`, and `request_invalid`
+    per occurrence.
+    """
+    return CODE_RETRY_MODE[code] in _UNCHANGED_RETRY_MODES
 
 
 def replay_retryable(code: str, *, retryable: bool) -> bool:

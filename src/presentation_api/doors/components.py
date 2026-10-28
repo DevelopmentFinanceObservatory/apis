@@ -7,9 +7,9 @@ token in the body's `write_token`; a retry with the same token and request retur
 create's reply. These routes take no caller or session.
 
 No route pins a frame: a card's frame stays in the working tier until a share first includes
-the card (`presentation_store.pin_card_frames`). A read states the stored frame's retention
-(`datasets_api.retention.version_retention`): pinned, or held until 30 days after DFO stored
-it. A frame whose working copy has aged out refuses `frame_unavailable` on every route that
+the card (`presentation_store.pin_card_frames`). A create and a read state the stored frame's
+retention (`datasets_api.retention.version_retention`): pinned, or held until 30 days after DFO
+stored it. A frame whose working copy has aged out refuses `frame_unavailable` on every route that
 loads it, naming a fetch with latest=True as the way to current data.
 
 The door also carries `presentation_api.doors.component_data`'s export route and the two render
@@ -91,7 +91,7 @@ from presentation_api.models import ComponentReadResponse, CreateReplyResponse, 
 from presentation_api.path_params import PathParamInvalid, require_component_id
 from presentation_api.refusals import binding_invalid_spec, frame_unavailable_spec
 from presentation_api.reply import serialize_create_reply, serialize_write_reply
-from presentation_api.retention import frame_retention
+from presentation_api.retention import stated_retention
 from presentation_api.vocabulary import LiveVocabularySource
 from presentation_store import (
     GeneratedIdCollision,
@@ -407,6 +407,17 @@ def build_components_door(
             await asyncio.to_thread(door_executor.drain, _budget)
             _close_live_clients_built_here()
 
+    def _frame_ref_retention(frame_ref: object) -> dict[str, object] | None:
+        """The retention of the frame an intent's `frame_ref` names, `None` for a card that
+        draws none or a frame DFO holds no version record of."""
+        if frame_ref is None:
+            return None
+        frame = cast("Mapping[str, str]", frame_ref)
+        return stated_retention(
+            FrameRef(spec_id=frame["spec_id"], content_version=frame["content_version"]),
+            snapshot_reader=deps.snapshot_reader,
+        )
+
     async def _run[R: Response](job: Callable[[], R], /) -> R:
         with frame_reads_bounded_by(timeout_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS):
             return await asyncio.wait_for(
@@ -437,7 +448,10 @@ def build_components_door(
                 release_registry=deps.release_registry,
                 vocabulary_source=deps.vocabulary_source,
             )
-            return JSONResponse(serialize_create_reply(reply), status_code=201)
+            retention = _frame_ref_retention(body.intent.get("frame_ref"))
+            return JSONResponse(
+                {**serialize_create_reply(reply), "retention": retention}, status_code=201
+            )
 
         return await _run(job)
 
@@ -484,12 +498,7 @@ def build_components_door(
                 revision_store=deps.revision_store,
             )
             stored_intent = cast("Mapping[str, object]", document["stored_intent"])
-            frame = cast("Mapping[str, str] | None", stored_intent.get("frame_ref"))
-            retention = (
-                frame_retention(FrameRef(**frame), snapshot_reader=deps.snapshot_reader)
-                if frame is not None
-                else None
-            )
+            retention = _frame_ref_retention(stored_intent.get("frame_ref"))
             return JSONResponse({**document, "retention": retention}, status_code=200)
 
         return await _run(job)

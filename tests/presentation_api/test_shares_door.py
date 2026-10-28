@@ -219,6 +219,75 @@ def test_a_create_returns_the_page_embed_and_slot_data_urls_and_a_write_token(do
     assert len(share_id) == 8 and share_id.isalnum()
 
 
+def _create_with_token(door: _Door, token: str, *, names=("cmp_a",), title: str | None = None):
+    body: dict[str, object] = {
+        "cards": [{"component_id": door.cards[name], "revision": 1} for name in names],
+        "latest": True,
+        "write_token": token,
+    }
+    if title is not None:
+        body["title"] = title
+    return door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
+
+
+def test_a_retried_create_with_the_clients_token_answers_the_first_share(door: _Door):
+    token = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
+    first = _create_with_token(door, token)
+
+    retried = _create_with_token(door, token)
+
+    assert (first.status_code, retried.status_code) == (201, 201)
+    assert retried.json() == first.json()
+    assert first.json()["write_token"] == token
+    assert len(door.allowances.spent) == 1
+    # The token is the share's: it changes the share the create made.
+    replaced = door.replace(first.json()["id"], ["cmp_b"], token=token)
+    assert replaced.status_code == 200, replaced.json()
+
+
+@pytest.mark.parametrize(
+    ("change", "status", "code"),
+    [
+        ({"title": "Another"}, 400, "request_invalid"),
+        ({"names": ("cmp_a", "cmp_b")}, 400, "request_invalid"),
+        ({"unshared": True}, 404, "not_found"),
+    ],
+    ids=["other-title", "other-cards", "share-taken-down"],
+)
+def test_a_create_reusing_a_token_for_another_body_or_a_deleted_share_is_refused(
+    door: _Door, change: dict, status: int, code: str
+):
+    token = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
+    first = _create_with_token(door, token).json()
+    if change.pop("unshared", False):
+        assert door.unshare(first["id"], token=token).status_code == 204
+
+    resp = _create_with_token(door, token, **change)
+
+    body = _assert_refused(resp, status=status, code=code)
+    assert body["retryable"] is False
+    if code == "request_invalid":
+        assert body["pointer"] == "/write_token"
+    assert len(door.allowances.spent) == 1
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        mint_write_token(prefix="cmw_"),
+        SHARE_WRITE_TOKEN_PREFIX + "short",
+        mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX) + "x",
+    ],
+    ids=["component-prefix", "too-short", "too-long"],
+)
+def test_a_create_with_a_malformed_token_refuses_request_invalid_and_spends_nothing(
+    door: _Door, token: str
+):
+    body = _assert_refused(_create_with_token(door, token), status=400, code="request_invalid")
+    assert body["pointer"] == "/write_token"
+    assert door.allowances.spent == []
+
+
 def test_a_replace_keeps_every_slot_url(door: _Door):
     created = door.share(["cmp_a", "cmp_b"], latest=True).json()
 
@@ -507,5 +576,5 @@ def test_a_surface_over_test_doubles_without_a_share_store_mounts_no_share_route
 def test_every_share_route_handler_is_a_module_level_function():
     routes = [r for r in build_shares_door().router.routes if isinstance(r, APIRoute)]
 
-    assert len(routes) == 7
+    assert len(routes) == 8
     assert all("<locals>" not in getattr(route.endpoint, "__qualname__", "") for route in routes)

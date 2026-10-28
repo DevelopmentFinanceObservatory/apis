@@ -4,9 +4,10 @@ conversion, website imports, slot checks, served frames, and failure wrapping.""
 from __future__ import annotations
 
 import dataclasses
+import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -15,10 +16,12 @@ from assembler.write_token import write_token_digest
 from presentation_store.shares import (
     ImportedShare,
     LiveShareStore,
+    PriorShareCreate,
     ShareCard,
     ShareIdTaken,
     ShareNotFound,
     ShareSlot,
+    ShareWriteTokenInUse,
     SlotCheck,
 )
 from presentation_store.store_errors import GeneratedIdCollision, PresentationStoreUnavailable
@@ -34,9 +37,19 @@ def _card(name: str, *, revision: int = 1, frame: FrameRef | None = _FRAME) -> S
     return ShareCard(component_id=f"cmp_{name}", revision=revision, frame=frame)
 
 
-def _create(store: LiveShareStore, *cards: ShareCard, mode="live", digest=b"d" * 32):
+def _create(
+    store: LiveShareStore,
+    *cards: ShareCard,
+    mode="live",
+    digest: bytes | None | Literal["fresh"] = "fresh",
+):
+    """Create a card share, under a fresh token digest unless `digest` names one."""
     return store.create_share(
-        kind="card", mode=mode, title="Aid", write_token_sha256=digest, cards=cards
+        kind="card",
+        mode=mode,
+        title="Aid",
+        write_token_sha256=secrets.token_bytes(32) if digest == "fresh" else digest,
+        cards=cards,
     )
 
 
@@ -48,7 +61,7 @@ def test_a_create_stores_revision_one_with_a_slot_per_card_in_order():
     store = LiveShareStore(store=FakePresentationStore())
     note = _card("note", frame=None)
 
-    created = _create(store, _card("a"), note, _card("a"))
+    created = _create(store, _card("a"), note, _card("a"), digest=b"d" * 32)
 
     assert created.revision == 1
     assert created.mode == "live"
@@ -96,6 +109,31 @@ def test_the_mint_retries_an_id_another_share_holds_such_as_an_imported_one():
     # Ids are case-sensitive, so the second differs from the first.
     assert created.id == "K3qX8VtA"
     assert _shown(store.read_share(share_id="k3Qx8vTa").slots) == [(1, "cmp_a")]
+
+
+def test_a_create_holding_another_shares_digest_is_refused_and_prior_create_finds_that_share():
+    fake = FakePresentationStore()
+    store = LiveShareStore(store=fake)
+    digest, request = write_token_digest("shw_example"), b"r" * 32
+    first = store.create_share(
+        kind="card",
+        mode="live",
+        title=None,
+        write_token_sha256=digest,
+        cards=[_card("a")],
+        create_request_sha256=request,
+    )
+
+    with pytest.raises(ShareWriteTokenInUse):
+        _create(store, _card("b"), digest=digest)
+    store.delete_share(share_id=first.id)
+
+    assert list(fake.state.shares) == [first.id]
+    # A share taken down keeps its token, so a retry finds it.
+    assert store.prior_create(write_token_sha256=digest) == PriorShareCreate(
+        share_id=first.id, create_request_sha256=request
+    )
+    assert store.prior_create(write_token_sha256=b"o" * 32) is None
 
 
 def test_a_mint_that_only_finds_taken_ids_refuses_a_generated_id_collision():

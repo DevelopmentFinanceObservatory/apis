@@ -133,6 +133,7 @@ def presentation_surface(
                 frame_store=frame_store,
                 snapshot_reader=snapshot_reader,
                 newest=newest_frames,
+                vocabulary_source=vocabulary_source,
                 allowances=allowances,
                 caller=caller_settings,
             ),

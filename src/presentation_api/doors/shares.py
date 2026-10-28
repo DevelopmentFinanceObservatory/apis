@@ -2,17 +2,26 @@
 snapshots, deletes and reads shares.
 
 `POST /api/presentation/shares` takes `{cards: [{component_id, revision}], latest, title?, kind?,
-payload?}`. `latest` has no default: true makes a live share, which follows new data, and false
-a snapshot, which keeps the versions its cards drew. `kind` defaults to `card`. A `card` share
-takes 1 to 24 cards, a `canvas` 0 to 24, and a `search` or `conversation` share none, and a
-`conversation` share is a snapshot. `payload` is website-owned JSON of at most
-`MAX_SHARE_PAYLOAD_BYTES` as compact UTF-8, stored as given and read back on GET. The create spends one unit of the caller's `share`
-allowance (`datasets_api.allowance`, caller named by `dfo_platform.caller.resolve_caller`),
-refusing 429 `allowance_exhausted` once it is spent, then pins the frame each card revision
-draws (`presentation_store.pin_card_frames`), live or snapshot, since a share first including a
-card pins it. A unit stays spent when the pin or the write then fails. The reply carries the
-share's page, embed and per-slot data URLs under the public site, and the `shw_` write token,
-which appears only there; the store keeps its SHA-256 digest.
+payload?, write_token?}`. `latest` has no default: true makes a live share, which follows new
+data, and false a snapshot, which keeps the versions its cards drew. `kind` defaults to `card`.
+A `card` share takes 1 to 24 cards, a `canvas` 0 to 24, and a `search` or `conversation` share
+none, and a `conversation` share is a snapshot. `payload` is website-owned JSON of at most
+`presentation_store.MAX_SHARE_PAYLOAD_BYTES` (10 MiB) as compact UTF-8, stored as given and
+read back on GET; a larger one refuses 400 `request_invalid`. The create spends one unit of the
+caller's `share` allowance (`datasets_api.allowance`, caller named by
+`dfo_platform.caller.resolve_caller`), refusing 429 `allowance_exhausted` once it is spent, then
+pins the frame each card revision draws (`presentation_store.pin_card_frames`), live or
+snapshot, since a share first including a card pins it. A unit stays spent when the pin or the
+write then fails. The reply carries the share's page, embed and per-slot data URLs under the
+public site, and the `shw_` write token; the store keeps its SHA-256 digest.
+
+A create may carry its own `shw_` token in `write_token`, in the form the server mints
+(`assembler.write_token.require_client_write_token`). The token keys the create: a retry with
+the same token and the same body, defaults filled, answers the share the first create made,
+201 with its current URLs and revision, spending no allowance and pinning nothing. The same
+token with another body refuses 400 `request_invalid` at `/write_token`, and a token whose share
+was taken down answers 404 `not_found`. A server-minted token appears only in the create's
+reply.
 
 `PUT /api/presentation/shares/{share_id}` takes `{cards}` and writes the share's next revision.
 Slot n shows the nth card, and slots past the last card stay empty, so every slot keeps its URLs.
@@ -42,6 +51,14 @@ answers `If-None-Match` with 304. A live slot's reply is `no-cache`, so a cache 
 a snapshot's is `public, max-age=300`. A slot number the share has not had, or a slot a
 replacement left empty, answers 404 `not_found`, and so does a note's slot.
 
+`GET /api/presentation/shares/{share_id}/slots/{slot}` is public and allows any origin. It
+answers the slot's card as `GET /api/presentation/components/{component_id}` reads it, plus
+`freshness`, drawn on the frame the data route serves, chosen by the same function
+(`share_slots.serve_on_slot_frame`), with that frame's retention. Its `x-dfo-freshness` and
+`x-dfo-checked-at` headers, strong `ETag`, 304 and caching are the data route's. A note's card is
+its stored read. A slot number the share has not had, or an empty slot, answers 404
+`not_found`.
+
 `GET /api/presentation/shares/{share_id}/history` is public and allows any origin: every frame
 the share's slots served, newest first, each with its retention counted from when DFO stored it
 and whether it is still fetchable (`share_slots.history_document`).
@@ -56,7 +73,6 @@ retryable 503.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -96,10 +112,14 @@ from assembler.ports import (
     FrameStore,
     ReleaseRegistry,
     RevisionStore,
+    VocabularySource,
 )
 from assembler.write_token import (
     SHARE_WRITE_TOKEN_PREFIX,
+    CreateRequestInvalid,
     mint_write_token,
+    request_digest,
+    require_client_write_token,
     write_token_digest,
     write_token_matches,
 )
@@ -136,6 +156,7 @@ from presentation_api.models import (
     SharedResponse,
     ShareHistoryResponse,
     ShareReadResponse,
+    ShareSlotCardResponse,
     ShareSlotDataResponse,
     ShareWriteResponse,
 )
@@ -143,12 +164,16 @@ from presentation_api.newest_frames import NewestFrames
 from presentation_api.path_params import PathParamInvalid, require_component_id, require_share_id
 from presentation_api.share_slots import (
     ShareSlotEmpty,
+    SlotData,
     SlotFormat,
     history_document,
     serve_slot,
+    serve_slot_card,
     serving_frame,
 )
+from presentation_api.vocabulary import LiveVocabularySource
 from presentation_store import (
+    MAX_SHARE_PAYLOAD_BYTES,
     GeneratedIdCollision,
     LivePresentationStore,
     LiveShareStore,
@@ -157,7 +182,9 @@ from presentation_store import (
     ShareNotFound,
     ShareRecord,
     ShareStore,
+    ShareWriteTokenInUse,
     frame_reads_bounded_by,
+    payload_refusal,
     pin_card_frames,
 )
 from presentation_store import close_shared_pool as close_presentation_pool
@@ -183,13 +210,11 @@ SHARES_PATH = "/api/presentation/shares"
 SHARE_PATH = "/api/presentation/shares/{share_id}"
 SHARE_SNAPSHOT_PATH = f"{SHARE_PATH}/snapshot"
 SHARE_HISTORY_PATH = f"{SHARE_PATH}/history"
-SHARE_SLOT_DATA_PATH = f"{SHARE_PATH}/slots/{{slot}}/data"
+SHARE_SLOT_PATH = f"{SHARE_PATH}/slots/{{slot}}"
+SHARE_SLOT_DATA_PATH = f"{SHARE_SLOT_PATH}/data"
 
 MAX_SHARE_CARDS = 24
 """The most cards one create or replace takes, and so the most slots a write adds."""
-
-MAX_SHARE_PAYLOAD_BYTES = 1_048_576
-"""The largest `payload` a create takes, as compact UTF-8 JSON."""
 
 _MAX_TITLE_LENGTH = 300
 
@@ -269,6 +294,15 @@ class CreateShareBody(BaseModel):
         description="website-owned JSON stored with the share as given and read back on GET, "
         f"at most {MAX_SHARE_PAYLOAD_BYTES} bytes as compact UTF-8",
     )
+    write_token: str | None = Field(
+        default=None,
+        description='a shw_ token this client minted for the new share: "shw_" + '
+        "secrets.token_urlsafe(16) or an equivalent CSPRNG, 22 url-safe base64 characters "
+        "after the prefix. It becomes the share's write token and keys the create: a retry "
+        "with the same write_token and body answers the first share, spending no allowance, "
+        "and a different body with it is refused as request_invalid. Mint a new one for each "
+        "create.",
+    )
 
     @model_validator(mode="after")
     def _fits_its_kind(self) -> Self:
@@ -276,12 +310,20 @@ class CreateShareBody(BaseModel):
             raise ValueError(refusal)
         if self.kind == "conversation" and self.latest:
             raise ValueError("a conversation share is a snapshot: send latest=false")
-        size = len(json.dumps(self.payload, ensure_ascii=False, separators=(",", ":")).encode())
-        if size > MAX_SHARE_PAYLOAD_BYTES:
-            raise ValueError(
-                f"the payload is {size} bytes, over the {MAX_SHARE_PAYLOAD_BYTES}-byte bound"
-            )
+        if refusal := payload_refusal(self.payload):
+            raise ValueError(refusal)
         return self
+
+    def request_digest(self) -> bytes:
+        """The digest a client's write token keys: the body as sent, less the token, with its
+        defaults filled.
+
+        Raises:
+            CreateRequestInvalid: The payload holds a value RFC 8785 cannot represent.
+        """
+        return request_digest(
+            self.model_dump(mode="json", exclude={"write_token"}), pointer="/payload"
+        )
 
 
 class WriteTokenRequired(Exception):
@@ -342,6 +384,8 @@ class SharesDeps:
     snapshot_reader: SnapshotReader | None = None
     # Where a live slot asks for newer data; `None` leaves every live slot stale.
     newest: NewestFrames | None = None
+    # The words a card drawn on a newer frame is described in; `None` describes none.
+    vocabulary_source: VocabularySource | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
 
@@ -466,24 +510,76 @@ async def _run[R: Response](deps: SharesDeps, job: Callable[[], R], /) -> R:
         )
 
 
+def _created(share: ShareRecord, *, token: str, deps: SharesDeps) -> Response:
+    document = {**_locations(share, site=deps.site.public_site_url), "write_token": token}
+    return JSONResponse(document, status_code=201, headers={"Cache-Control": "no-store"})
+
+
+def _replay_create(
+    *, token: str, token_sha256: bytes, request_sha256: bytes, deps: SharesDeps
+) -> Response | None:
+    """The first share a client's token made, answered as its create was, or `None` when no
+    share holds the token.
+
+    Raises:
+        CreateRequestInvalid: The token's share was made from another request, or from none.
+        ShareNotFound: The token's share was taken down.
+    """
+    prior = deps.share_store.prior_create(write_token_sha256=token_sha256)
+    if prior is None:
+        return None
+    if prior.create_request_sha256 != request_sha256:
+        raise CreateRequestInvalid(
+            pointer="/write_token",
+            detail="write_token already names a share created from a different request; "
+            "mint a new write_token for each create",
+        )
+    share = deps.share_store.read_share(share_id=prior.share_id)
+    return _created(share, token=token, deps=deps)
+
+
 async def create_share(body: CreateShareBody, request: Request, deps: SharesDepsDep) -> Response:
     caller = resolve_caller(request, deps.caller)
 
     def job() -> Response:
+        if body.write_token is not None:
+            token = require_client_write_token(body.write_token, prefix=SHARE_WRITE_TOKEN_PREFIX)
+            request_sha256: bytes | None = body.request_digest()
+        else:
+            token = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
+            request_sha256 = None
+        token_sha256 = write_token_digest(token)
+        if request_sha256 is not None and (
+            replayed := _replay_create(
+                token=token, token_sha256=token_sha256, request_sha256=request_sha256, deps=deps
+            )
+        ):
+            return replayed
         cards = _read_cards(body.cards, revision_store=deps.revision_store)
         deps.allowances.spend(caller, AllowanceKind.share, deps.now())
         _pin(cards, deps=deps)
-        token = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
-        share = deps.share_store.create_share(
-            kind=body.kind,
-            mode="live" if body.latest else "snapshot",
-            title=body.title,
-            write_token_sha256=write_token_digest(token),
-            cards=cards,
-            payload=body.payload,
-        )
-        document = {**_locations(share, site=deps.site.public_site_url), "write_token": token}
-        return JSONResponse(document, status_code=201, headers={"Cache-Control": "no-store"})
+        try:
+            share = deps.share_store.create_share(
+                kind=body.kind,
+                mode="live" if body.latest else "snapshot",
+                title=body.title,
+                write_token_sha256=token_sha256,
+                cards=cards,
+                payload=body.payload,
+                create_request_sha256=request_sha256,
+            )
+        except ShareWriteTokenInUse:
+            # A create with the same token committed first, or a server-minted token collided,
+            # which 128 random bits make a broken minter.
+            if request_sha256 is None:
+                raise GeneratedIdCollision(subject_kind="share write token") from None
+            replayed = _replay_create(
+                token=token, token_sha256=token_sha256, request_sha256=request_sha256, deps=deps
+            )
+            if replayed is None:
+                raise EditConflict from None
+            return replayed
+        return _created(share, token=token, deps=deps)
 
     return await _run(deps, job)
 
@@ -594,6 +690,26 @@ def _matches(if_none_match: str | None, etag: str) -> bool:
     return "*" in tags or etag in tags
 
 
+def _slot_response(data: SlotData, *, share: ShareRecord, if_none_match: str | None) -> Response:
+    """A slot read's reply: its freshness, caching and strong ETag, 304 when `If-None-Match`
+    names that ETag."""
+    headers = {
+        "ETag": data.etag,
+        _FRESHNESS_HEADER: data.freshness,
+        "Cache-Control": _LIVE_CACHE_CONTROL if share.mode == "live" else _SNAPSHOT_CACHE_CONTROL,
+        # Any page may read a share's slots across origins.
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": _SLOT_DATA_EXPOSED,
+    }
+    if data.checked_at is not None:
+        headers[_CHECKED_AT_HEADER] = data.checked_at.isoformat()
+    if _matches(if_none_match, data.etag):
+        return Response(status_code=304, headers=headers)
+    if data.file_name is not None:
+        headers["Content-Disposition"] = artifact_content_disposition(data.file_name)
+    return Response(content=data.body, media_type=data.media_type, headers=headers)
+
+
 async def read_share_slot_data(
     share_id: str,
     deps: SharesDepsDep,
@@ -606,23 +722,23 @@ async def read_share_slot_data(
     def job() -> Response:
         share = deps.share_store.read_share(share_id=share_id)
         data = serve_slot(share=share, slot=slot, format=format_, deps=deps)
-        headers = {
-            "ETag": data.etag,
-            _FRESHNESS_HEADER: data.freshness,
-            "Cache-Control": (
-                _LIVE_CACHE_CONTROL if share.mode == "live" else _SNAPSHOT_CACHE_CONTROL
-            ),
-            # Any page may read a share's data across origins.
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Expose-Headers": _SLOT_DATA_EXPOSED,
-        }
-        if data.checked_at is not None:
-            headers[_CHECKED_AT_HEADER] = data.checked_at.isoformat()
-        if _matches(if_none_match, data.etag):
-            return Response(status_code=304, headers=headers)
-        if data.file_name is not None:
-            headers["Content-Disposition"] = artifact_content_disposition(data.file_name)
-        return Response(content=data.body, media_type=data.media_type, headers=headers)
+        return _slot_response(data, share=share, if_none_match=if_none_match)
+
+    return await _run(deps, job)
+
+
+async def read_share_slot_card(
+    share_id: str,
+    deps: SharesDepsDep,
+    slot: Annotated[int, Path(ge=1)],
+    if_none_match: Annotated[str | None, Header()] = None,
+) -> Response:
+    require_share_id(share_id)
+
+    def job() -> Response:
+        share = deps.share_store.read_share(share_id=share_id)
+        data = serve_slot_card(share=share, slot=slot, deps=deps)
+        return _slot_response(data, share=share, if_none_match=if_none_match)
 
     return await _run(deps, job)
 
@@ -670,6 +786,7 @@ def build_shares_door(
     frame_store: FrameStore | None = None,
     snapshot_reader: SnapshotReader | None = None,
     newest: NewestFrames | None = None,
+    vocabulary_source: VocabularySource | None = None,
     allowances: AllowanceLedger | None = None,
     caller: CallerSettings | None = None,
     now: Callable[[], datetime] | None = None,
@@ -682,6 +799,8 @@ def build_shares_door(
     A frame store built here brings its snapshot reader; with one given, `snapshot_reader` is
     the history's, and left out the history states no retention. `newest` answers live slots'
     newer-data checks; left out, every live slot serves its card's frame as stale.
+    `vocabulary_source` gives the words a slot's card drawn on a newer frame is described in,
+    and defaults to a `LiveVocabularySource` over the code index.
     `release_registry`, which a live slot draws its card on a newer frame under, defaults to the
     baked release. `caller`
     defaults to those settings' `caller`, and the public site to `DFO_PUBLIC_SITE_URL`.
@@ -758,6 +877,9 @@ def build_shares_door(
                 executor=executor,
                 snapshot_reader=effective_snapshot_reader,
                 newest=newest,
+                vocabulary_source=(
+                    vocabulary_source if vocabulary_source is not None else LiveVocabularySource()
+                ),
             )
             if now is not None:
                 deps.now = now
@@ -830,6 +952,25 @@ def build_shares_door(
         "origin may read it.",
     )
     router.add_api_route(
+        SHARE_SLOT_PATH,
+        read_share_slot_card,
+        methods=["GET"],
+        response_class=Response,
+        responses={
+            200: {
+                "description": "The slot's card as a component read states it, drawn on the "
+                "frame the slot's data route serves, with that frame's retention and the "
+                "freshness. x-dfo-freshness and a live slot's x-dfo-checked-at are the data "
+                "route's. A strong ETag answers If-None-Match with 304. Any origin may read it.",
+                "model": ShareSlotCardResponse,
+            },
+            304: {"description": "The If-None-Match ETag still names this card."},
+        },
+        description="Read the card a share's slot shows, drawn on the frame the slot serves: "
+        "a snapshot's recorded frame, or a live slot's newest data, checked at most every 15 "
+        "minutes, as the slot's data route chooses it.",
+    )
+    router.add_api_route(
         SHARE_SLOT_DATA_PATH,
         read_share_slot_data,
         methods=["GET"],
@@ -872,6 +1013,7 @@ def build_shares_door(
             ReleaseMismatch,
             SharesUnavailable,
             AllowanceExhausted,
+            CreateRequestInvalid,
             CallerHeaderInvalid,
             CallerUnresolved,
             PathParamInvalid,
@@ -896,6 +1038,7 @@ def build_shares_door(
             AllowanceExhausted(
                 kind=AllowanceKind.share, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
             ),
+            CreateRequestInvalid(pointer="/write_token", detail="exemplar"),
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),
             GeneratedIdCollision(subject_kind="share"),

@@ -310,22 +310,27 @@ def test_the_composed_app_passes_the_configured_principal_to_the_render_routes(
         ("pinned", {"pinned": True}),
     ],
 )
-def test_a_card_read_states_its_frames_retention_counted_from_storage(
+def test_a_card_create_and_read_state_its_frames_retention_counted_from_storage(
     client: TestClient, snapshots: FakeSnapshotReader, tier: str, retention: dict
 ):
     """The stored frame was stored on 1 June 2026, so a working copy is held for 30 days from
-    then, whenever the card was made."""
+    then, whenever the card was made. The create reply states what a read states."""
     key = (_STORED.spec_id, _STORED.content_version)
     snapshots.locations[key] = [
         dataclasses.replace(location, tier=tier) for location in snapshots.locations[key]
     ]
-    card = _create(client)
-    note = _create(client, "note_narration")
+    created = client.post(
+        "/api/presentation/components", json={"intent": _intent("line_chart")}
+    ).json()
+    note_created = client.post(
+        "/api/presentation/components", json={"intent": _intent("note_narration")}
+    ).json()
 
-    read = client.get(f"/api/presentation/components/{card}")
-    note_read = client.get(f"/api/presentation/components/{note}")
+    read = client.get(f"/api/presentation/components/{created['component_id']}")
+    note_read = client.get(f"/api/presentation/components/{note_created['component_id']}")
 
-    assert read.json()["retention"] == retention
+    assert created["retention"] == read.json()["retention"] == retention
+    assert note_created["retention"] is None
     assert note_read.json()["retention"] is None
 
 

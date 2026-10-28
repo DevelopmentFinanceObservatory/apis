@@ -13,7 +13,7 @@ import pytest
 from assembler.ports import DraftNotFound, FrameRef, RevisionRecord
 from assembler.write_token import write_token_digest
 from presentation_store.share_import import ImportCounts, import_shares
-from presentation_store.shares import LiveShareStore
+from presentation_store.shares import MAX_SHARE_PAYLOAD_BYTES, LiveShareStore
 
 from .conftest import FakePresentationStore
 
@@ -223,6 +223,10 @@ def test_export_slot_index_i_is_slot_i_plus_one_and_a_null_frame_takes_the_revis
             json.dumps({**_CASES["cardLive"], "slots": [_slot("cmp_note", 1, None)]}),
             "share cardLive",
         ),
+        (
+            json.dumps({**_CASES["canvNoRf"], "payload": {"text": "x" * MAX_SHARE_PAYLOAD_BYTES}}),
+            "share canvNoRf",
+        ),
     ],
     ids=[
         "not-json",
@@ -235,6 +239,7 @@ def test_export_slot_index_i_is_slot_i_plus_one_and_a_null_frame_takes_the_revis
         "unknown-card",
         "unknown-revision",
         "null-frame-on-a-note",
+        "payload-over-the-bound",
     ],
 )
 def test_a_line_the_import_cannot_place_is_refused_and_the_others_import(line: str, label: str):

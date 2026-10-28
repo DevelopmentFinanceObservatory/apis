@@ -15,8 +15,8 @@ guest's share (`owner` null) is stored with no token, so nobody can change or de
 The import is idempotent. A share whose id already holds a share of the same kind and
 `created_at` was imported by an earlier run: it is counted as unchanged, gets no new token and
 writes no report line, so a re-run changes nothing. A line the import cannot place is refused
-and counted, and the others carry on: a line that is not a share as the export defines it, a
-live conversation, a search or conversation share with slots, a slot naming a card revision
+and counted, and the others carry on: a line that is not a share as the export defines it, one
+whose payload is over `MAX_SHARE_PAYLOAD_BYTES` as a create's would be, a live conversation, a search or conversation share with slots, a slot naming a card revision
 this service does not hold or one drawing no frame, and an id that holds another share.
 """
 
@@ -43,7 +43,13 @@ from assembler.errors import RevisionNotFound
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import DraftNotFound, EditConflict, FrameRef, RevisionStore
 from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token, write_token_digest
-from presentation_store.shares import ImportedShare, ShareCard, ShareIdTaken, ShareStore
+from presentation_store.shares import (
+    ImportedShare,
+    ShareCard,
+    ShareIdTaken,
+    ShareStore,
+    payload_refusal,
+)
 
 __all__ = ["ImportCounts", "import_shares"]
 
@@ -87,6 +93,8 @@ class _ExportLine(BaseModel):
             raise ValueError("a conversation share is a snapshot, and this one is live")
         if self.kind in ("search", "conversation") and self.slots:
             raise ValueError(f"a {self.kind} share has no slots, and this one has some")
+        if refusal := payload_refusal(self.payload):
+            raise ValueError(refusal)
         return self
 
 

@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-import presentation_api.share_slots as share_slots
+import presentation_api.retention as presentation_retention
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import (
@@ -123,6 +123,9 @@ class _Door:
             f"/api/presentation/shares/{share_id}/slots/{slot}/data", params=params
         )
 
+    def slot_card(self, share_id: str, slot: int = 1, *, headers: dict[str, str] | None = None):
+        return self.client.get(f"/api/presentation/shares/{share_id}/slots/{slot}", headers=headers)
+
     def later(self, **delta: float) -> None:
         self.clock.at += timedelta(**delta)
 
@@ -154,6 +157,67 @@ def _stated(resp) -> tuple[str, str, str]:
     body = resp.json()
     assert resp.headers["x-dfo-freshness"] == body["freshness"]
     return body["freshness"], body["frame"]["content_version"], body["mode"]
+
+
+def _drawn_on(card: dict) -> str:
+    """The content version of the one frame a card read is drawn on."""
+    (frame,) = card["resolved_payload"]["provenance"]["inputs"]
+    return frame["content_version"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "freshness", "frame"),
+    [
+        (None, "current", _STORED),
+        (_MOVED, "current", _MOVED),
+        (NewestPending(retry_after_s=30), "pending", _STORED),
+        (RuntimeError("refresh refused"), "stale", _STORED),
+        (_UNREADABLE, "stale", _STORED),
+    ],
+    ids=["unchanged", "newer", "pending", "check-failed", "newer-unreadable"],
+)
+def test_a_live_slots_card_is_drawn_on_the_frame_its_data_serves(
+    door: _Door,
+    answer: FrameRef | NewestPending | Exception | None,
+    freshness: str,
+    frame: FrameRef,
+):
+    card = door.card()
+    share = door.share(card, latest=True)
+    door.newest.answer = answer
+
+    resp = door.slot_card(share["id"])
+    data = door.data(share["id"])
+
+    assert resp.status_code == 200, resp.json()
+    body = resp.json()
+    assert (body["component_id"], body["revision"]) == (card, 1)
+    assert body["freshness"] == resp.headers["x-dfo-freshness"] == freshness
+    assert _stated(data)[:2] == (freshness, frame.content_version)
+    assert _drawn_on(body) == frame.content_version
+    assert resp.headers["access-control-allow-origin"] == "*"
+    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers["x-dfo-checked-at"] == _START.isoformat()
+    assert door.newest.asked == [_STORED]
+
+
+def test_a_snapshot_slots_card_is_the_cards_read_with_a_strong_etag(door: _Door):
+    card = door.card()
+    share = door.share(card, latest=False)
+    read = door.client.get(f"/api/presentation/components/{card}").json()
+
+    resp = door.slot_card(share["id"], headers={"accept-encoding": "identity"})
+    etag = resp.headers["etag"]
+    again = door.slot_card(share["id"], headers={"if-none-match": etag})
+
+    assert resp.status_code == 200
+    assert resp.json() == {**read, "freshness": "current"}
+    assert resp.headers["cache-control"] == "public, max-age=300"
+    assert etag.startswith('"') and etag.endswith('"')
+    assert (again.status_code, again.content) == (304, b"")
+    served = door.client.get(f"/api/presentation/shares/{share['id']}/history").json()["served"]
+    assert [entry["frame"]["content_version"] for entry in served] == [_STORED.content_version]
+    assert door.newest.asked == []
 
 
 def test_a_snapshot_slot_serves_its_cards_frame_as_json_rows_any_origin_may_read(door: _Door):
@@ -370,9 +434,14 @@ def test_an_emptied_slot_and_a_notes_slot_answer_not_found(door: _Door):
     )
 
     note_slot, emptied = door.data(share["id"], 1), door.data(share["id"], 2)
+    note_card, emptied_card = door.slot_card(share["id"], 1), door.slot_card(share["id"], 2)
 
     assert (note_slot.status_code, note_slot.json()["code"]) == (404, "not_found")
     assert (emptied.status_code, emptied.json()["code"]) == (404, "not_found")
+    # A note draws no frame, so its card is its stored read.
+    assert note_card.status_code == 200, note_card.json()
+    assert (note_card.json()["freshness"], note_card.json()["retention"]) == ("current", None)
+    assert (emptied_card.status_code, emptied_card.json()["code"]) == (404, "not_found")
 
 
 def test_the_history_lists_each_frame_served_newest_first_with_its_retention(
@@ -388,7 +457,7 @@ def test_the_history_lists_each_frame_served_newest_first_with_its_retention(
             )
         return retention[frame_ref]
 
-    monkeypatch.setattr(share_slots, "frame_retention", stated)
+    monkeypatch.setattr(presentation_retention, "frame_retention", stated)
     card = door.card()
     share = door.share(card, latest=True)
     door.data(share["id"])
@@ -453,6 +522,7 @@ def test_a_snapshot_conversion_keeps_and_pins_the_frame_each_slot_serves(door: _
     door.newest.asked.clear()
     first = door.data(share["id"], 1)
     assert _stated(first) == ("current", _MOVED.content_version, "snapshot")
+    assert _drawn_on(door.slot_card(share["id"], 1).json()) == _MOVED.content_version
     assert door.newest.asked == []
     replaced = door.client.put(
         f"/api/presentation/shares/{share['id']}",
