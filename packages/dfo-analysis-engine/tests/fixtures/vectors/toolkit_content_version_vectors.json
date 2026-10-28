@@ -72,6 +72,24 @@
         }
       },
       "expected_failure_kind": "duplicate_member"
+    },
+    {
+      "name": "paired-sum-of-two-inputs",
+      "description": "a sum_of paired by on (sum-of-on-mapping) over two inputs",
+      "classification": "positive",
+      "input": {
+        "op_spec_hash": "ops_ca2389a568ff44d77a82a81cab7b722c",
+        "input_content_versions": [
+          "cv_4b825dc642cb6eb9a060e54bf8d69288",
+          "cv_22222222222222222222222222222222"
+        ],
+        "execution_identity": {
+          "engine_version": "0.1.0",
+          "frame_grammar_version": "1.0.0",
+          "reduction_policy_version": "0.1.0"
+        }
+      },
+      "expected_content_version": "ocv_7d66c6849b880176f207a23cca601d70"
     }
   ]
 }

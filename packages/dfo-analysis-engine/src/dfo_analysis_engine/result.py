@@ -46,11 +46,14 @@ class VerbResult(BaseModel):
       the numerator keys with no denominator group, those sharing no period
       with their group, and for `quotient_of` also those whose every
       matched cell has a zero denominator. For a `join` on role columns,
-      the left side's entities that matched in no period. 0 for an
-      un-keyed call and for every other verb.
+      the left side's entities that matched in no period. For a `compare`
+      or `sum_of` paired by `on`, the left side's members with no partner or
+      sharing no period with it. 0 for an un-keyed call and for every
+      other verb.
     - `right_dropped_key_count`: how many of a `join`'s right-side
-      (`right_frame_ref`) entities matched in no period. 0 for a join on
-      `time_period` alone and for every other verb.
+      (`right_frame_ref`) entities matched in no period, or of a paired
+      `compare`'s or `sum_of`'s right-side members it dropped. 0 for a join
+      on `time_period` alone, an unpaired call, and every other verb.
     - `ranked_before_limit`: how many entries a `rank` call with a `limit`
       ranked before the limit cut them to `rows`: entities, or entity
       periods with `per_period`. `None` for a call with no `limit` and for

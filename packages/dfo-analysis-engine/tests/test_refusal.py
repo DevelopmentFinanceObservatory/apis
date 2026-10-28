@@ -8,6 +8,8 @@ from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart
 
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
 from dfo_analysis_engine.engine.common import StatVarUnresolvedError
+from dfo_analysis_engine.engine.compare import CompareAmbiguousSliceError
+from dfo_analysis_engine.engine.paired import PairedNoKeyMatchedError, PairedUnknownColumnError
 from dfo_analysis_engine.engine.two_sided import NonFiniteCellError
 from dfo_analysis_engine.refusal import (
     CompositeComponent,
@@ -46,6 +48,42 @@ _PER_HEAD = ComposedUnit(numerator="dcid:USDollar", denominator=StatVarPart("dci
             "non_finite_result",
             {"group_key": {"time_period": "2022"}, "aggregation": "quotient_of"},
             id="quotient_of-overflow",
+        ),
+        *(
+            pytest.param(
+                verb,
+                PairedNoKeyMatchedError(
+                    left_keys=[(("destination", "country/KEN"),)],
+                    right_keys=[(("observationAbout", "country/NGA"),)],
+                    left_key_count=1,
+                    right_key_count=3,
+                ),
+                f"{verb}_no_key_matched",
+                {
+                    "left_keys": [{"destination": "country/KEN"}],
+                    "right_keys": [{"observationAbout": "country/NGA"}],
+                    "left_key_count": 1,
+                    "right_key_count": 3,
+                },
+                id=f"{verb}-no-member-pairs",
+            )
+            for verb in ("compare", "sum_of")
+        ),
+        pytest.param(
+            "sum_of",
+            PairedUnknownColumnError(side="left", columns=["recipient"], available=["donor"]),
+            "role_ambiguous",
+            {"parameter": "on", "columns": ["recipient"], "available": ["donor"]},
+            id="sum_of-on-names-an-unknown-column",
+        ),
+        pytest.param(
+            "compare",
+            CompareAmbiguousSliceError(
+                side="right", entity={}, available=["destination", "origin"], by=["destination"]
+            ),
+            "role_ambiguous",
+            {"parameter": "on", "columns": ["destination"], "available": ["destination", "origin"]},
+            id="compare-paired-member-ambiguous",
         ),
         pytest.param("join", ValueError("not an engine refusal"), None, None, id="other-exception"),
     ],

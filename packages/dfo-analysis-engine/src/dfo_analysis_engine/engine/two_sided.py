@@ -19,7 +19,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 import pyarrow as pa
 from dfo_frame_grammar import Frame
@@ -56,6 +56,14 @@ type KeyPeriods = tuple[KeyPairs, tuple[str, ...]]
 
 # The number of keys per side that the refusal for a call with no paired key samples.
 KEY_SAMPLE_CAP = 20
+
+
+class KeyedValues(Protocol):
+    """One side's values by key and period, as `SideSums.by_key` holds them,
+    which is all `split_keys` and `pair_periods` read of a side."""
+
+    @property
+    def by_key(self) -> Mapping[Key, Mapping[str, float]]: ...
 
 
 class NonFiniteCellError(Exception):
@@ -275,7 +283,7 @@ def divide_cell(*, numerator_value: float, denominator_value: float, time_period
 
 
 def split_keys(
-    numerator_keys: Iterable[Key], denominator: SideSums, *, pooled: bool
+    numerator_keys: Iterable[Key], denominator: KeyedValues, *, pooled: bool
 ) -> tuple[list[Key], list[Key]]:
     """`numerator_keys`, in the order given, split into the keys holding a
     denominator group (every key when `pooled`) and the keys holding none,
@@ -288,7 +296,7 @@ def split_keys(
     return paired, unmatched
 
 
-def key_sample(sums: SideSums, columns: Sequence[str]) -> tuple[KeyPairs, ...]:
+def key_sample(sums: KeyedValues, columns: Sequence[str]) -> tuple[KeyPairs, ...]:
     """The `KEY_SAMPLE_CAP` smallest of `sums`' keys, as `(column, value)`
     pairs under `columns`."""
     return tuple(
@@ -338,8 +346,8 @@ class PeriodPairing:
 
 
 def pair_periods(
-    numerator: SideSums,
-    denominator: SideSums,
+    numerator: KeyedValues,
+    denominator: KeyedValues,
     *,
     numerator_by: Sequence[str],
     paired_keys: Sequence[Key],

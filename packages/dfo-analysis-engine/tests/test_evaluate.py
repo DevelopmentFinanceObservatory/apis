@@ -16,6 +16,7 @@ from frame_fixtures import (
 
 from dfo_analysis_engine.calls import derive_frame_content_version
 from dfo_analysis_engine.engine.aggregate import run_aggregate
+from dfo_analysis_engine.engine.paired import run_paired_compare
 from dfo_analysis_engine.engine.rank import run_rank
 from dfo_analysis_engine.evaluate import Policy, RootFrame, evaluate
 from dfo_analysis_engine.execution_identity import current_execution_identity
@@ -135,6 +136,107 @@ def test_a_summary_states_the_verbs_counts_as_json() -> None:
     assert summary["time"] == {"kind": "observation"}
     assert "frame" not in summary["result"]
     assert summary["execution_identity"]["engine_version"] == "0.9.0"
+
+
+def _flows(role: str, cells: list[tuple[str, str, str, float]]) -> Frame:
+    """A frame of `(member, origin, year, value)` cells, its members under `role`."""
+    return Frame.build(
+        role_keys=[role, "origin"],
+        rows=[
+            {
+                "stat_var": f"dcid:Flow_{role}",
+                role: member,
+                "origin": origin,
+                "time_period": year,
+                "value": value,
+                "unit": "dcid:USDollar",
+            }
+            for member, origin, year, value in cells
+        ],
+    )
+
+
+def test_a_paired_compare_over_a_derived_side_gives_data_minus_other_per_member() -> None:
+    """compare's `data` (its right side) is an aggregate of CRS flows by
+    recipient, paired with net ODA by country through `on`."""
+    crs = _flows(
+        "destination",
+        [
+            ("country/KEN", "country/DEU", "2022", 200.0),
+            ("country/KEN", "country/FRA", "2022", 100.0),
+            ("country/GHA", "country/DEU", "2022", 90.0),
+        ],
+    )
+    wdi = Frame.build(
+        role_keys=["observationAbout"],
+        rows=[
+            {
+                "stat_var": "dcid:NetOda",
+                "observationAbout": place,
+                "time_period": "2022",
+                "value": value,
+                "unit": "dcid:USDollar",
+            }
+            for place, value in (
+                ("country/KEN", 280.0),
+                ("country/NGA", 50.0),
+                ("country/SOM", 7.0),
+            )
+        ],
+    )
+    on = {"destination": "observationAbout"}
+    tree = _node(
+        "compare",
+        {
+            "frame_ref": _root(1),
+            "right_frame_ref": _node(
+                "aggregate", {"frame_ref": _root(0)}, aggregation="sum", group_by=["destination"]
+            ),
+        },
+        on=on,
+    )
+
+    evaluation = evaluate(
+        tree, {0: RootFrame(ref=_ROOT, frame=crs), 1: RootFrame(ref=_OTHER_ROOT, frame=wdi)}
+    )
+
+    summed = run_aggregate(crs, group_by=["destination"], aggregation="sum").frame
+    summed_ref = _expected_ref(
+        {
+            "verb": "aggregate",
+            "frame_ref": _pair(_ROOT),
+            "aggregation": "sum",
+            "group_by": ["destination"],
+        },
+        [_ROOT.content_version],
+    )
+    expected_ref = _expected_ref(
+        {
+            "verb": "compare",
+            "frame_ref": _pair(_OTHER_ROOT),
+            "right_frame_ref": _pair(summed_ref),
+            "on": on,
+        },
+        [_OTHER_ROOT.content_version, derive_frame_content_version(summed)],
+    )
+    expected = run_paired_compare(
+        wdi,
+        summed,
+        stat_var=f"dcid:{expected_ref.spec_id}",
+        on=on,
+        left_entity={},
+        right_entity={},
+    )
+    assert evaluation.ref == expected_ref
+    assert frame_sha256(evaluation.frame) == frame_sha256(expected.frame)
+    columns = evaluation.frame.table.to_pydict()
+    assert (columns["destination"], columns["value"]) == (["country/KEN"], [20.0])
+    summary = json.loads(json.dumps(evaluation.summary))
+    assert summary["sides"] == {"data": "right", "other": "left"}
+    assert summary["parameters"]["on"] == on
+    assert summary["role_keys"] == ["destination"]
+    assert (summary["dropped_key_count"], summary["right_dropped_key_count"]) == (2, 1)
+    assert summary["result"]["right_unmatched_keys"] == [[["destination", "country/GHA"]]]
 
 
 def _rolling_growth(spec_id: str, *, window_start: str, window_end: str) -> dict[str, Any]:

@@ -576,6 +576,134 @@
         }
       },
       "expected_failure_kind": "schema_violation"
+    },
+    {
+      "name": "compare-on-empty-matches-minimal",
+      "description": "compare with an empty on mints the hash of compare-minimal, since an unset pairing stays out of the preimage",
+      "classification": "positive",
+      "op_spec": {
+        "verb": "compare",
+        "frame_ref": {
+          "spec_id": "spec_e3b0c44298fc1c149afbf4c8996fb924",
+          "content_version": "cv_4b825dc642cb6eb9a060e54bf8d69288"
+        },
+        "on": {}
+      },
+      "expected_op_spec_hash": "ops_23743f2c25cac218ac1df1dc73c1d3a1"
+    },
+    {
+      "name": "sum-of-on-mapping",
+      "description": "sum_of pairing data's destination with other's observationAbout across two frames",
+      "classification": "positive",
+      "op_spec": {
+        "verb": "sum_of",
+        "frame_ref": {
+          "spec_id": "spec_e3b0c44298fc1c149afbf4c8996fb924",
+          "content_version": "cv_4b825dc642cb6eb9a060e54bf8d69288"
+        },
+        "right_frame_ref": {
+          "spec_id": "spec_11111111111111111111111111111111",
+          "content_version": "cv_22222222222222222222222222222222"
+        },
+        "on": {
+          "destination": "observationAbout"
+        }
+      },
+      "expected_op_spec_hash": "ops_ca2389a568ff44d77a82a81cab7b722c"
+    },
+    {
+      "name": "sum-of-on-list",
+      "description": "sum_of naming observationAbout on both sides as a list",
+      "classification": "positive",
+      "op_spec": {
+        "verb": "sum_of",
+        "frame_ref": {
+          "spec_id": "spec_e3b0c44298fc1c149afbf4c8996fb924",
+          "content_version": "cv_4b825dc642cb6eb9a060e54bf8d69288"
+        },
+        "right_frame_ref": {
+          "spec_id": "spec_11111111111111111111111111111111",
+          "content_version": "cv_22222222222222222222222222222222"
+        },
+        "on": [
+          "observationAbout"
+        ]
+      },
+      "expected_op_spec_hash": "ops_f9e63acb19639864b13bebd73ec253bc"
+    },
+    {
+      "name": "sum-of-on-list-matches-mapping",
+      "description": "the same pairing as sum-of-on-list, written as a column mapped to itself, mints the identical hash",
+      "classification": "positive",
+      "op_spec": {
+        "verb": "sum_of",
+        "frame_ref": {
+          "spec_id": "spec_e3b0c44298fc1c149afbf4c8996fb924",
+          "content_version": "cv_4b825dc642cb6eb9a060e54bf8d69288"
+        },
+        "right_frame_ref": {
+          "spec_id": "spec_11111111111111111111111111111111",
+          "content_version": "cv_22222222222222222222222222222222"
+        },
+        "on": {
+          "observationAbout": "observationAbout"
+        }
+      },
+      "expected_op_spec_hash": "ops_f9e63acb19639864b13bebd73ec253bc"
+    },
+    {
+      "name": "compare-on-mapping",
+      "description": "compare pairing data's destination, in right_frame_ref, with other's observationAbout in frame_ref",
+      "classification": "positive",
+      "op_spec": {
+        "verb": "compare",
+        "frame_ref": {
+          "spec_id": "spec_e3b0c44298fc1c149afbf4c8996fb924",
+          "content_version": "cv_4b825dc642cb6eb9a060e54bf8d69288"
+        },
+        "right_frame_ref": {
+          "spec_id": "spec_11111111111111111111111111111111",
+          "content_version": "cv_22222222222222222222222222222222"
+        },
+        "on": {
+          "destination": "observationAbout"
+        }
+      },
+      "expected_op_spec_hash": "ops_4772d11faf48c5032c0aa8dbd5c8abc3"
+    },
+    {
+      "name": "sum-of-on-two-columns-to-one",
+      "description": "on pairing two columns of data with one column of other refuses at parse",
+      "classification": "negative",
+      "op_spec": {
+        "verb": "sum_of",
+        "frame_ref": {
+          "spec_id": "spec_e3b0c44298fc1c149afbf4c8996fb924",
+          "content_version": "cv_4b825dc642cb6eb9a060e54bf8d69288"
+        },
+        "on": {
+          "destination": "observationAbout",
+          "origin": "observationAbout"
+        }
+      },
+      "expected_failure_kind": "schema_violation"
+    },
+    {
+      "name": "compare-on-list-names-a-column-twice",
+      "description": "on listing one column twice refuses at parse",
+      "classification": "negative",
+      "op_spec": {
+        "verb": "compare",
+        "frame_ref": {
+          "spec_id": "spec_e3b0c44298fc1c149afbf4c8996fb924",
+          "content_version": "cv_4b825dc642cb6eb9a060e54bf8d69288"
+        },
+        "on": [
+          "observationAbout",
+          "observationAbout"
+        ]
+      },
+      "expected_failure_kind": "schema_violation"
     }
   ]
 }

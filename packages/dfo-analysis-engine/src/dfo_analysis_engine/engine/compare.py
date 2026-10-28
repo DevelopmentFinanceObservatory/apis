@@ -39,7 +39,9 @@ intersection is checked.
 `slice_pair` (both slices and the unit check) and `align_periods` (the
 period intersection) serve `dfo_analysis_engine.engine.sum_of` as well, which
 pairs its two sides the same way and differs in the value it computes and
-in its facet policy.
+in its facet policy. `slice_pair` and `compare_facets` also serve
+`dfo_analysis_engine.engine.paired`, the form of both verbs whose sides hold many
+members paired by `on`.
 """
 
 from __future__ import annotations
@@ -85,16 +87,26 @@ from dfo_analysis_engine.engine.common import (
 class CompareAmbiguousSliceError(Exception):
     """More than one row shares one side's `time_period` after narrowing by
     its `entity` binding -- the binding doesn't uniquely identify one row
-    per period, so there is no single value to compare for that period.
+    per period, so there is no single value to compare for that period. For
+    a call pairing members by role, `by` names the side's member columns, and
+    the rows that share a period also share a member.
     """
 
-    def __init__(self, *, side: str, entity: Mapping[str, str], available: Sequence[str]) -> None:
+    def __init__(
+        self,
+        *,
+        side: str,
+        entity: Mapping[str, str],
+        available: Sequence[str],
+        by: Sequence[str] = (),
+    ) -> None:
         self.side = side
         self.entity = dict(entity)
         self.available = tuple(available)
+        self.by = tuple(by)
+        per = "one row per time_period" if not by else f"one row per {[*by]!r} and time_period"
         super().__init__(
-            f"{side} side's entity binding {self.entity!r} does not uniquely identify "
-            "one row per time_period"
+            f"{side} side's entity binding {self.entity!r} does not uniquely identify {per}"
         )
 
 
@@ -311,15 +323,17 @@ def _slice(
     side: Literal["left", "right"],
     entity: Mapping[str, str],
     pinned_unit: UnitCell | None,
+    by: Sequence[str] = (),
 ) -> SideSlice:
     """Narrow `frame` to `entity`'s own rows and resolve unit/facets over
     exactly that slice.
 
-    Refuses (`UnknownEntityColumnError`) if `entity` names a column this
-    frame has no grain for. Refuses (`CompareAmbiguousSliceError`) if `entity`
-    fails to narrow the frame to exactly one row per period.
+    Refuses (`UnknownEntityColumnError`) if `entity` or `by` names a column
+    this frame has no grain for. Refuses (`CompareAmbiguousSliceError`) if
+    `entity` fails to narrow the frame to exactly one row per period, or per
+    `by` member and period when `by` is set.
     """
-    validate_entity_columns(frame, tuple(entity))
+    validate_entity_columns(frame, (*entity, *by))
     # `exclude_unitless=True`: a period whose row leaves `unit` unbound is
     # excluded from this pairing, shrinking this side's own
     # `left_periods`/`right_periods` list (and, if it empties the side
@@ -330,9 +344,9 @@ def _slice(
     table, resolved, exclusions = narrow_and_resolve(
         frame, entity=entity, pinned_unit=pinned_unit, exclude_unitless=True, side=side
     )
-    if not keys_unique(table, [TIME_PERIOD_COLUMN]):
+    if not keys_unique(table, [*by, TIME_PERIOD_COLUMN]):
         raise CompareAmbiguousSliceError(
-            side=side, entity=entity, available=available_entity_columns(frame)
+            side=side, entity=entity, available=available_entity_columns(frame), by=by
         )
     return SideSlice(
         table=table,
@@ -351,9 +365,13 @@ def slice_pair(
     right_entity: Mapping[str, str],
     left_pinned_unit: UnitCell | None,
     right_pinned_unit: UnitCell | None,
+    left_by: Sequence[str] = (),
+    right_by: Sequence[str] = (),
 ) -> tuple[SideSlice, SideSlice]:
     """Both sides' slices, refused (`CompareUnitUnboundError`,
-    `CompareUnitMismatchError`) unless their resolved units agree.
+    `CompareUnitMismatchError`) unless their resolved units agree. `left_by`
+    and `right_by` name each side's member columns for a call that pairs
+    members by role, each slice holding one row per member and period.
 
     The unit check runs only when both sides have rows. An empty slice
     resolves to `unit=None` with no facet selections
@@ -362,8 +380,12 @@ def slice_pair(
     resolved to. The real problem an empty side has is no periods at all,
     which `align_periods`' `ComparisonPeriodsDisjointError` names.
     """
-    left = _slice(left_frame, side="left", entity=left_entity, pinned_unit=left_pinned_unit)
-    right = _slice(right_frame, side="right", entity=right_entity, pinned_unit=right_pinned_unit)
+    left = _slice(
+        left_frame, side="left", entity=left_entity, pinned_unit=left_pinned_unit, by=left_by
+    )
+    right = _slice(
+        right_frame, side="right", entity=right_entity, pinned_unit=right_pinned_unit, by=right_by
+    )
     if not (left.populated and right.populated):
         return left, right
     left_unit, right_unit = left.unit, right.unit
@@ -442,33 +464,15 @@ def align_periods(
     )
 
 
-def run_compare(
-    left_frame: Frame,
-    right_frame: Frame,
-    *,
-    stat_var: str,
-    left_entity: Mapping[str, str],
-    right_entity: Mapping[str, str],
-    left_pinned_unit: UnitCell | None = None,
-    right_pinned_unit: UnitCell | None = None,
-) -> CompareResult:
-    """Compare `left_frame`'s (narrowed by `left_entity`) and `right_frame`'s
-    (narrowed by `right_entity`) own single-entity time series over their
-    intersected periods, labelling every result row `stat_var`. See the
-    module docstring for what a "slice" and "the two sides" mean; see each
-    raised exception's own docstring for its refusal condition.
+def compare_facets(
+    left: SideSlice, right: SideSlice
+) -> tuple[tuple[FacetSelection, ...], tuple[str, ...]]:
+    """The facet selections a compare result carries and the warnings it
+    gives: the left side's selections, less any axis the sides declare to
+    different values. Refuses (`CompareFacetMismatchError`) two slices that
+    share a StatVar and disagree on an axis. Runs only when both sides have
+    rows, for the reason `slice_pair` gives for its unit check.
     """
-    left, right = slice_pair(
-        left_frame,
-        right_frame,
-        left_entity=left_entity,
-        right_entity=right_entity,
-        left_pinned_unit=left_pinned_unit,
-        right_pinned_unit=right_pinned_unit,
-    )
-
-    # Runs only when both sides have rows, for the reason `slice_pair`
-    # gives for its unit check.
     cross_side_facet_warnings: tuple[str, ...] = ()
     output_facets = left.facet_selections
     if left.populated and right.populated:
@@ -514,6 +518,35 @@ def run_compare(
                 )
             ),
         )
+    return output_facets, cross_side_facet_warnings
+
+
+def run_compare(
+    left_frame: Frame,
+    right_frame: Frame,
+    *,
+    stat_var: str,
+    left_entity: Mapping[str, str],
+    right_entity: Mapping[str, str],
+    left_pinned_unit: UnitCell | None = None,
+    right_pinned_unit: UnitCell | None = None,
+) -> CompareResult:
+    """Compare `left_frame`'s (narrowed by `left_entity`) and `right_frame`'s
+    (narrowed by `right_entity`) own single-entity time series over their
+    intersected periods, labelling every result row `stat_var`. See the
+    module docstring for what a "slice" and "the two sides" mean; see each
+    raised exception's own docstring for its refusal condition.
+    """
+    left, right = slice_pair(
+        left_frame,
+        right_frame,
+        left_entity=left_entity,
+        right_entity=right_entity,
+        left_pinned_unit=left_pinned_unit,
+        right_pinned_unit=right_pinned_unit,
+    )
+
+    output_facets, cross_side_facet_warnings = compare_facets(left, right)
 
     alignment = align_periods(left, right, left_frame=left_frame, right_frame=right_frame)
     intersected_periods = alignment.intersected_periods

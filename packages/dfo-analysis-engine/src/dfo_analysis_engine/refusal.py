@@ -93,6 +93,7 @@ from dfo_analysis_engine.engine.join import (
     JoinResultTooLargeError,
     JoinUnknownKeyError,
 )
+from dfo_analysis_engine.engine.paired import PairedNoKeyMatchedError, PairedUnknownColumnError
 from dfo_analysis_engine.engine.quotient_of import (
     QuotientOfNoKeyMatchedError,
     QuotientOfPeriodsDisjointError,
@@ -168,6 +169,8 @@ class RefusalCode(StrEnum):
     SHARE_OF_KEY_UNMATCHED = "share_of_key_unmatched"
     QUOTIENT_OF_ZERO_DENOMINATOR = "quotient_of_zero_denominator"
     QUOTIENT_OF_NO_KEY_MATCHED = "quotient_of_no_key_matched"
+    COMPARE_NO_KEY_MATCHED = "compare_no_key_matched"
+    SUM_OF_NO_KEY_MATCHED = "sum_of_no_key_matched"
     QUOTIENT_OF_SIDE_UNIT_UNSUPPORTED = "quotient_of_side_unit_unsupported"
     COMPOSED_UNIT_SUM_UNSUPPORTED = "composed_unit_sum_unsupported"
     JOIN_OUTPUT_COLLISION = "join_output_collision"
@@ -862,6 +865,45 @@ class Refusal:
         )
 
     @classmethod
+    def slice_pair_no_key_matched(
+        cls,
+        *,
+        verb: Literal["compare", "sum_of"],
+        left_keys: list[dict[str, str]],
+        right_keys: list[dict[str, str]],
+        left_key_count: int,
+        right_key_count: int,
+    ) -> Self:
+        """A `compare` or `sum_of` paired by `on` where no member of one side
+        pairs with a member of the other. `left_keys` and `right_keys` are a
+        sorted sample of each side's members, each a `{column: value}` object
+        under that side's own column names, and the two counts are how many
+        members each side holds in all, as `quotient_of_no_key_matched`
+        reports them."""
+        code = (
+            RefusalCode.COMPARE_NO_KEY_MATCHED
+            if verb == "compare"
+            else RefusalCode.SUM_OF_NO_KEY_MATCHED
+        )
+        return cls(
+            code=code,
+            message=(
+                f"None of the left side's {left_key_count} member(s) pairs with any of the "
+                f"right side's {right_key_count}. Left members include "
+                f"{left_keys[:_KEY_SAMPLE_IN_MESSAGE]}; right members include "
+                f"{right_keys[:_KEY_SAMPLE_IN_MESSAGE]}. on must map each column of data to "
+                "the column of other holding the same entities. Retry with that mapping, or "
+                "with frames (or entity bindings) that hold the same entities."
+            ),
+            fix={
+                "left_keys": left_keys,
+                "right_keys": right_keys,
+                "left_key_count": left_key_count,
+                "right_key_count": right_key_count,
+            },
+        )
+
+    @classmethod
     def quotient_of_side_unit_unsupported(
         cls,
         *,
@@ -1322,6 +1364,8 @@ _SLICE_PAIR_ERRORS: tuple[type[Exception], ...] = (
     CompareUnitUnboundError,
     CompareFacetMismatchError,
     CompareNonFiniteResultError,
+    PairedNoKeyMatchedError,
+    PairedUnknownColumnError,
     UnitNotPresentError,
     UnitHeterogeneousError,
     UnknownEntityColumnError,
@@ -1554,6 +1598,14 @@ def _refusal(verb: str, vocabulary: _Vocabulary, exc: Exception) -> Refusal:
             return Refusal.filter_unit_conversion_unsupported(
                 column=exc.column, predicate_kind=exc.predicate_kind, actual_type=exc.actual_type
             )
+        case PairedNoKeyMatchedError():
+            return Refusal.slice_pair_no_key_matched(
+                verb="compare" if verb == "compare" else "sum_of",
+                left_keys=[dict(key) for key in exc.left_keys],
+                right_keys=[dict(key) for key in exc.right_keys],
+                left_key_count=exc.left_key_count,
+                right_key_count=exc.right_key_count,
+            )
         case _:
             return _two_sided_refusal(exc)
 
@@ -1561,11 +1613,19 @@ def _refusal(verb: str, vocabulary: _Vocabulary, exc: Exception) -> Refusal:
 def _two_sided_refusal(exc: Exception) -> Refusal:
     """`_refusal` for the exceptions of the verbs that read two sides."""
     match exc:
+        case CompareAmbiguousSliceError() if exc.by:
+            return Refusal.role_ambiguous(
+                parameter="on", columns=[*exc.entity, *exc.by], available=list(exc.available)
+            )
         case CompareAmbiguousSliceError():
             return Refusal.role_ambiguous(
                 parameter=f"{exc.side}_entity",
                 columns=list(exc.entity),
                 available=list(exc.available),
+            )
+        case PairedUnknownColumnError():
+            return Refusal.role_ambiguous(
+                parameter="on", columns=list(exc.columns), available=list(exc.available)
             )
         case ComparisonPeriodsDisjointError():
             return Refusal.comparison_periods_disjoint(

@@ -62,14 +62,15 @@ places the filter drops.
 
 A keyed pairing verb whose two sides both hold a counted path gives one pairing
 population in place of its sides' populations, with the key map read from its
-own arguments: `denominator_by` for a `share_of` or `quotient_of`, and
+own arguments: `denominator_by` for a `share_of` or `quotient_of`,
 `join_keys`, each paired through `right_keys` or else with itself, for a
-`join`. A `join` with no `join_keys` leaves its keys to the engine's
-auto-detection, which no tree records, so it raises `PairingKeysUnstatedError`.
-A verb that pairs no keys (`compare`, `sum_of`, and a `share_of` or
-`quotient_of` with no `denominator_by`, whose keys share one pooled
-denominator), and a keyed verb with one side counted, pass each side's
-populations through flat. A side that is itself a keyed pairing nests.
+`join`, and `on` for a `compare` or `sum_of`, turned to run from the
+`frame_ref` side for a `compare`, whose `data` is its right side. A `join`
+with no `join_keys` leaves its keys to the engine's auto-detection, which no
+tree records, so it raises `PairingKeysUnstatedError`. A verb that pairs no
+keys (`compare` and `sum_of` with no `on`, and a `share_of` or `quotient_of`
+with no `denominator_by`, whose keys share one pooled denominator), and a
+keyed verb with one side counted, pass each side's populations through flat. A side that is itself a keyed pairing nests.
 
 `anchor_key` is `rak_` and 32 hex digits of the SHA-256 of the RFC 8785 form of
 `{"populations", "roots", "rule"}`: the canonical populations, the
@@ -368,6 +369,11 @@ def _pairing(op_spec: Mapping[str, Any]) -> tuple[str, dict[str, str]] | None:
     parameters = op_spec.get("parameters", {})
     if denominator_by := parameters.get("denominator_by"):
         return "denominator_frame_ref", dict(denominator_by)
+    verb = op_spec.get("verb")
+    if (on := parameters.get("on")) and verb in ("compare", "sum_of"):
+        if verb == "compare":
+            return "right_frame_ref", {left: right for right, left in on.items()}
+        return "right_frame_ref", dict(on)
     # A stored recipe's op-spec names its verb. A tree the compiler writes from
     # a plan carries parameters alone, and writes `join_keys` on every join.
     if op_spec.get("verb") == "join" or "join_keys" in parameters:

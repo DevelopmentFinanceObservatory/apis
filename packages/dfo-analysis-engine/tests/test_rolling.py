@@ -332,6 +332,37 @@ def test_a_keyed_pairing_whose_sides_both_count_gives_one_pairing_population() -
 
 
 @pytest.mark.parametrize(
+    ("verb", "on"),
+    [
+        ("sum_of", {"recipient": "observationAbout"}),
+        # compare's `data` is its right side, so `on` runs from right to left.
+        ("compare", {"observationAbout": "recipient"}),
+    ],
+)
+def test_a_slice_pair_paired_by_on_gives_one_pairing_population(
+    verb: str, on: dict[str, str]
+) -> None:
+    tree = _node(
+        verb,
+        {"right_frame_ref": _RIGHT, "on": on},
+        frame_ref={"root": 0},
+        right_frame_ref={"root": 1},
+    )
+
+    populations = anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_COLUMNS, _GNI_COLUMNS])
+
+    assert populations == [
+        {
+            "pair": [
+                [{"spec_id": _AID, "bindings": {}}],
+                [{"spec_id": _GNI, "bindings": {}}],
+            ],
+            "keys": {"recipient": "observationAbout"},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
     "tree",
     [
         # Every numerator key divides by one pooled denominator, so no key is matched.

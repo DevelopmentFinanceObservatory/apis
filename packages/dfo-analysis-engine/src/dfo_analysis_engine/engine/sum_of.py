@@ -1,5 +1,6 @@
 """The `sum_of` engine: two single-series slices added period by period,
-over the intersection of the periods each side offers.
+over the intersection of the periods each side offers. A call that pairs
+many members on each side by `on` runs in `dfo_analysis_engine.engine.paired`.
 
 The sides are paired exactly as `dfo_analysis_engine.engine.compare` pairs them
 (`slice_pair`, `align_periods`): each is `frame_ref` (or `right_frame_ref`)

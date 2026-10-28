@@ -32,7 +32,9 @@ the composite components of the root it descends from through each first slot.
 `VerbCall.summary` is a JSON object of the facts a caller renders a digest
 from: the `result.VerbResult` fields, the verb, the canonical op-spec's
 parameters, the execution identity, the derived marker, and `result`, every
-field of the engine's result dataclass but its frame.
+field of the engine's result dataclass but its frame. A `compare` or `sum_of`
+summary adds `sides`, the engine side each of the call's `data` and `other`
+fills: `compare` gives right minus left, so its `data` is `right`.
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ from dfo_analysis_engine.engine.compare import run_compare
 from dfo_analysis_engine.engine.filter import run_filter
 from dfo_analysis_engine.engine.growth import run_growth
 from dfo_analysis_engine.engine.join import MatchedKeys, run_join
+from dfo_analysis_engine.engine.paired import run_paired_compare, run_paired_sum_of
 from dfo_analysis_engine.engine.quotient_of import run_quotient_of
 from dfo_analysis_engine.engine.rank import run_rank
 from dfo_analysis_engine.engine.share_of import run_share_of
@@ -481,6 +484,7 @@ class _Outcome:
     dropped_key_count: int = 0
     right_dropped_key_count: int = 0
     ranked_before_limit: int | None = None
+    sides: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -593,6 +597,8 @@ def _finished(
         "derived": None if outcome.marker is None else outcome.marker.detail(),
         "result": _facts(outcome.result, top=True),
     }
+    if outcome.sides is not None:
+        summary["sides"] = dict(outcome.sides)
     return VerbCall(
         ref=FrameRef(spec_id=op_spec_hash, content_version=content_version),
         frame=frame,
@@ -754,27 +760,40 @@ def _filter(op_spec: FilterOpSpec, frame: Input) -> _Outcome:
 
 
 def _slice_pair(op_spec: CompareOpSpec | SumOfOpSpec, left: Input, right: Input) -> _Outcome:
+    """`compare` or `sum_of`, one series a side or, with `on`, paired member by
+    member (`engine.paired`). `data` is compare's right side and sum_of's left."""
     stat_var = f"dcid:{op_spec_hash_checked(op_spec)}"
-    engine = run_compare if isinstance(op_spec, CompareOpSpec) else run_sum_of
-    result = _run(
-        str(op_spec.verb),
-        lambda: engine(
-            left.frame,
-            right.frame,
-            stat_var=stat_var,
-            left_entity=_binding(op_spec.left_entity),
-            right_entity=_binding(op_spec.right_entity),
-            left_pinned_unit=op_spec.left_unit,
-            right_pinned_unit=op_spec.right_unit,
-        ),
-        [left, right],
-    )
+    compare = isinstance(op_spec, CompareOpSpec)
+    arguments: dict[str, Any] = {
+        "stat_var": stat_var,
+        "left_entity": _binding(op_spec.left_entity),
+        "right_entity": _binding(op_spec.right_entity),
+        "left_pinned_unit": op_spec.left_unit,
+        "right_pinned_unit": op_spec.right_unit,
+    }
+    if op_spec.on:
+        paired = run_paired_compare if compare else run_paired_sum_of
+        result = _run(
+            str(op_spec.verb),
+            lambda: paired(left.frame, right.frame, on=_binding(op_spec.on), **arguments),
+            [left, right],
+        )
+        dropped = (result.left_dropped_key_count, result.right_dropped_key_count)
+    else:
+        engine = run_compare if compare else run_sum_of
+        result = _run(
+            str(op_spec.verb), lambda: engine(left.frame, right.frame, **arguments), [left, right]
+        )
+        dropped = (0, 0)
     return _Outcome(
         result=result,
         input_content_versions=_input_content_versions(
             left, right, second_set=op_spec.right_frame_ref is not None
         ),
         marker=_merged_marker([left.marker, right.marker]),
+        dropped_key_count=dropped[0],
+        right_dropped_key_count=dropped[1],
+        sides={"data": "right", "other": "left"} if compare else {"data": "left", "other": "right"},
     )
 
 

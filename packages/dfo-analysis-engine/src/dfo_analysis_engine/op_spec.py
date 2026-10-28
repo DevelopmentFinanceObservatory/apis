@@ -56,6 +56,7 @@ from dfo_frame_grammar.grammar import StatVarPart as StatVarPartCell
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Discriminator,
     Field,
@@ -545,6 +546,27 @@ class AggregateOpSpec(_OpSpecBase):
     unit: PinnedUnit | None = None
 
 
+_Column = Annotated[str, Field(min_length=1, max_length=_MAX_COLUMN_NAME_CHARS)]
+
+
+def _pairing_mapping(value: object) -> object:
+    """`on` as a mapping: a list names each column on both sides, so it is the
+    mapping of each column to itself, and both spellings hash alike."""
+    if not isinstance(value, list | tuple):
+        return value
+    if len(set(value)) != len(value):
+        raise ValueError(f"on names a column twice: {list(value)}")
+    return {column: column for column in value}
+
+
+def _one_other_column_each(on: dict[str, str]) -> dict[str, str]:
+    """Refuse two columns of `data` paired with one column of `other`."""
+    paired = list(on.values())
+    if len(set(paired)) != len(paired):
+        raise ValueError(f"on pairs two columns of data with one column of other: {on}")
+    return on
+
+
 class _SlicePairOpSpec(_OpSpecBase):
     """The two-slice parameters `compare` and `sum_of` share.
 
@@ -560,6 +582,15 @@ class _SlicePairOpSpec(_OpSpecBase):
     `left_unit`/`right_unit` pin each side's unit independently, the same
     disambiguation-retry shape `AggregateOpSpec.unit` uses -- one side's
     heterogeneous unit refusal never blocks resolving the other.
+
+    `on` pairs the two sides member by member
+    (`dfo_analysis_engine.engine.paired`). It maps each member column of the
+    call's `data` side to the column of its `other` side holding the same
+    entities, as `{"destination": "observationAbout"}`, or lists columns both
+    sides name alike, which it stores as each column mapped to itself. `data`
+    is `sum_of`'s `frame_ref` and `compare`'s `right_frame_ref` side, so a
+    call gives `data` plus or minus `other`. Left empty, each side is one
+    series, and the op-spec hashes as it did before `on` existed.
     """
 
     right_frame_ref: FrameRef | None = None
@@ -573,6 +604,14 @@ class _SlicePairOpSpec(_OpSpecBase):
     ] = Field(default_factory=dict)
     left_unit: PinnedUnit | None = None
     right_unit: PinnedUnit | None = None
+    on: Annotated[
+        dict[_Column, _Column],
+        BeforeValidator(
+            _pairing_mapping, json_schema_input_type=dict[_Column, _Column] | list[_Column]
+        ),
+        AfterValidator(_one_other_column_each),
+        HASHED_WHEN_SET,
+    ] = Field(default_factory=dict)
 
 
 class CompareOpSpec(_SlicePairOpSpec):
