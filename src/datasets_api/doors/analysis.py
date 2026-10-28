@@ -141,37 +141,28 @@ class AnchorAnswer(BaseModel):
     )
 
 
-def _problem(*, status: int, code: str, detail: str, retry_mode: str, fix: object) -> JSONResponse:
-    problem = _ENVELOPE.details(status=status, code=code, detail=detail, retryable=False)
+def _refused(exc: Exception) -> JSONResponse:
+    """The problem document of an analysis refusal (`classify_analysis_exception`), with its
+    retry mode and fix."""
+    spec = classify_analysis_exception(exc)
+    assert spec is not None
+    fix: object
+    if isinstance(exc, AnalysisRefused):
+        retry_mode, fix = exc.refusal.retry_mode.value, exc.refusal.fix
+    elif isinstance(exc, AnalysisTooLarge):
+        retry_mode = _CORRECT
+        fix = {"ceiling_kind": exc.ceiling_kind, "count": exc.count, "cap": exc.cap}
+    else:
+        assert isinstance(exc, SeveralMembers | FrameUnavailable)
+        retry_mode, fix = _CORRECT, exc.fix
+    problem = _ENVELOPE.details(
+        status=spec.status, code=spec.code, detail=spec.detail, retryable=False
+    )
     return JSONResponse(
-        status_code=status,
+        status_code=spec.status,
         content={**problem.to_json(), "retry_mode": retry_mode, "fix": fix},
         media_type="application/problem+json",
         headers={"Cache-Control": "no-store"},
-    )
-
-
-def _refused(exc: Exception) -> JSONResponse:
-    """The problem document of an analysis refusal, with its retry mode and fix."""
-    if isinstance(exc, AnalysisRefused):
-        refusal = exc.refusal
-        return _problem(
-            status=ANALYSIS_STATUSES[refusal.code.value],
-            code=refusal.code.value,
-            detail=refusal.message,
-            retry_mode=refusal.retry_mode.value,
-            fix=refusal.fix,
-        )
-    assert isinstance(exc, SeveralMembers | FrameUnavailable | AnalysisTooLarge)
-    spec = classify_analysis_exception(exc)
-    assert spec is not None
-    fix: object = (
-        {"ceiling_kind": exc.ceiling_kind, "count": exc.count, "cap": exc.cap}
-        if isinstance(exc, AnalysisTooLarge)
-        else exc.fix
-    )
-    return _problem(
-        status=spec.status, code=spec.code, detail=str(exc), retry_mode=_CORRECT, fix=fix
     )
 
 

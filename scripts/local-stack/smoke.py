@@ -16,7 +16,8 @@ For each reading `seed.py` recorded in `$LOCAL_STACK_SEEDED`:
   fixture gives;
 - the bare derived root under `latest` answers the same `ops_` and `ocv_`;
 - `POST /api/presentation/components` makes a table card of the frame from the release's
-  minimal table intent;
+  minimal table intent, whose provenance names the sources the derived manifest cites, in
+  its order;
 - `POST /api/presentation/shares` makes a live share of the card with its page, embed and data
   URLs and a `shw_` token, which replaces it; a wrong token refuses 403 and a delete takes it
   down.
@@ -218,7 +219,8 @@ def check_latest(client: httpx.Client, derived: Mapping[str, str]) -> str:
 
 
 def create_card(client: httpx.Client, derived: Mapping[str, str]) -> str:
-    """A table card on the derived frame, from the release's minimal table intent."""
+    """A table card on the derived frame, from the release's minimal table intent, citing the
+    sources the derived manifest cites."""
     intents = _get(client, "/api/presentation/release").json()["minimal_intents"]
     table = {
         **intents["table"],
@@ -228,6 +230,10 @@ def create_card(client: httpx.Client, derived: Mapping[str, str]) -> str:
     card = _post(client, "/api/presentation/components", {"intent": table}, status=201).json()
     if not card["component_id"].startswith("cmp_") or card["revision"] != 1:
         raise SmokeFailure(f"card create answered {card}")
+    cited = _get(client, _derived_path(derived)).json()["citation"]["sources"]
+    named = [source["name"] for source in card["resolved_payload"]["provenance"]["sources"]]
+    if named != [source["label"] for source in cited]:
+        raise SmokeFailure(f"card cites {named}, the derived manifest {cited}")
     return card["component_id"]
 
 
@@ -287,7 +293,7 @@ def analysis_step(
         f"analysis: quotient_of answered {derived['spec_id']} {derived['content_version']}",
         check_derived_reads(client, member, [oda, population], expected),
         check_latest(client, derived),
-        f"card: {component_id} on the derived frame",
+        f"card: {component_id} on the derived frame, citing the manifest's sources",
         check_share(client, component_id),
     ]
 

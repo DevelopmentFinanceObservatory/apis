@@ -1784,3 +1784,95 @@ def test_a_revise_with_a_heads_intent_over_a_computed_version(
     assert revised.revision == revision
     assert "description" in revised.resolved_payload
     assert _stored(revision_store, created.component_id)[0] == _bytes(created.resolved_payload)
+
+
+_WDI = "dc/base/WorldDevelopmentIndicators"
+_ROOTS_CITATION = {
+    "text": f"{_CRS_NAME}.\n\nWorld Development Indicators.",
+    "sources": [
+        {"ref": _CRS, "label": _CRS_NAME, "license": None, "url": ""},
+        {"ref": _WDI, "label": "World Development Indicators", "license": None, "url": ""},
+    ],
+}
+"""The citation the frame store gives a quotient of a CRS root over a WDI root
+(`datasets_api.derived.recipe_citation`)."""
+
+
+@pytest.mark.parametrize("member", ["line_chart", "table"])
+def test_a_card_over_a_computed_version_published_without_steps_cites_its_roots(
+    frame_store, revision_store, release_registry, member
+):
+    """A card over an `ops_` version whose rows name no source and whose record, written by a
+    publish without steps, knows no input id, carries no description: its rows name the first
+    source the roots cite, which the record does not list. Its provenance lists every source
+    the roots cite, and each `source_ref` names one of them."""
+    frame = dataclasses.replace(
+        _computed_frame(), manifest={"schema_version": 1, "citation": _ROOTS_CITATION}
+    )
+    record = _computed_record(frame)
+    assert record.computed is not None
+    unknown = [
+        InputVersion(id=None, content_version=one.content_version) for one in record.computed.inputs
+    ]
+    frame_store.put(
+        resolved_frame=_described(
+            frame,
+            record.model_copy(
+                update={"computed": record.computed.model_copy(update={"inputs": unknown})}
+            ),
+        )
+    )
+    created = _write(
+        _intent(frame, member, title="Malaria grants per dollar of GNI"),
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    payload = created.resolved_payload
+
+    assert "description" not in payload
+    sources = cast("list[dict[str, Any]]", cast("dict", payload["provenance"])["sources"])
+    assert [(one["name"], one["ref"]) for one in sources] == [
+        (_CRS_NAME, _CRS),
+        ("World Development Indicators", _WDI),
+    ]
+    assert set(_source_refs(payload["component"])) == {sources[0]["id"]}
+
+
+def test_a_card_whose_series_name_the_cited_source_and_none_carries_no_description(
+    frame_store, revision_store, release_registry
+):
+    """A line chart over an `ops_` version where Ethiopia's rows name the CRS and the other
+    rows name no source, both named by the CRS's provenance id, carries no description, since
+    the description would name Ethiopia's series by the version's first input."""
+    frame = build_resolved_frame(
+        frame_ref=_OPS_FRAME,
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "recipient": recipient,
+                "time_period": period,
+                "value": 100.0,
+                "unit": "CurrencyUSD",
+                "measurementMethod": None,
+                "provenance": _CRS if recipient == "country/ETH" else None,
+            }
+            for recipient in _RECIPIENTS
+            for period in _PERIODS
+        ],
+        manifest={"schema_version": 1, "citation": _ROOTS_CITATION},
+    )
+    frame_store.put(resolved_frame=_described(frame, _computed_record(frame)))
+    intent = _intent(frame, "line_chart", title="Malaria grants per dollar of GNI")
+    intent["select"] = {"stat_var": "dcid:MalariaGrantDisbursements"}
+    created = _write(
+        intent,
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    assert "description" not in created.resolved_payload
