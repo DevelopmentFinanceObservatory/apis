@@ -10,7 +10,7 @@ import logging
 import math
 import threading
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from functools import cache, partial
 from typing import TYPE_CHECKING, Literal
@@ -2026,9 +2026,17 @@ _DISPATCH_CHUNK_TARGET_MEMBERS = 8
 With one shared entity scope, using only `member_concurrency` lanes would
 place the whole group in its first dispatch wave and defeat row coalescing.
 `lanes = max(member_concurrency, ceil(request_count / 8))` bounds each
-chunk to about eight members and resident member tables to roughly
-`member_concurrency * 8`. Kenya-scale fetches use about 35 requests instead
-of 110."""
+chunk to about eight members. With the dispatch look-ahead
+(`_DISPATCH_LOOK_AHEAD_POOLS`), up to `2 * member_concurrency - 1` completed
+chunks wait ahead of the oldest one not yet consumed, so resident member
+tables reach about `(2 * member_concurrency - 1) * 8`, plus the members held
+in `pending_members` for a multi-batch group (`_GroupRowStreamer.stream_rows`).
+Kenya-scale fetches use about 35 requests instead of 110."""
+
+_DISPATCH_LOOK_AHEAD_POOLS = 2
+"""A group fetch dispatches chunks only within two pools' worth of the oldest chunk not yet
+consumed (`_GroupRowStreamer.stream_rows`), so a stalled chunk lets the workers run that far
+ahead and the completed chunks waiting on it stay bounded."""
 
 
 def dispatch_lanes(member_concurrency: int, request_count: int) -> int:
@@ -2278,10 +2286,11 @@ class _GroupRowStreamer:
     pooled totals, and both Parquet sinks. Every group yields at least one
     chunk, including groups whose members have zero rows.
 
-    `member_concurrency` bounds in-flight fetches. The drain waits in dcid
-    order, so that order selects the visible fetch error; up to
-    `member_concurrency - 1` later chunks can issue requests before it surfaces.
-    Successful rows and pooled coverage stay independent of concurrency.
+    `member_concurrency` bounds in-flight fetches. Results are consumed in
+    dcid order, so that order selects the visible fetch error; chunks already
+    in flight when a fetch fails finish before it surfaces, and no chunk is
+    submitted after it. Successful rows and pooled coverage stay independent
+    of concurrency and of completion order.
     """
 
     def __init__(
@@ -2462,19 +2471,23 @@ class _GroupRowStreamer:
         return frame
 
     def stream_rows(self) -> Iterator[Frame]:
-        """Dispatches `self._chunks` (already `dcid:`-sorted) on a bounded
-        sliding-window pool: at most `member_concurrency` chunks' own
-        fetches in flight at once, primed with the first `max_workers`
-        submissions and refilled one at a time as each ahead of it is
-        consumed. The drain loop pops the front pending future and blocks
-        on `.result()` in chunk submission order, so the first
-        still-pending future is what raises, regardless of which chunk's
-        fetch actually finishes first. An out-of-order completion is
-        simply not observed until the drain reaches it, which is what
-        bounds how far ahead dispatch can get past the coalescing cursor
-        below.
+        """Dispatches `self._chunks` (already `dcid:`-sorted) on a pool kept
+        full: at most `member_concurrency` chunks' own fetches in flight,
+        and a new chunk submitted, in chunk order, whenever any in-flight
+        chunk completes. A slow chunk therefore holds one worker. Dispatch
+        stays within `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency`
+        chunks of the oldest chunk not yet consumed, so a stalled chunk
+        lets the pool run that far ahead and no further. Completed chunks
+        wait in `ready` until every chunk before them has been consumed, so
+        results are consumed in chunk order whatever order the fetches
+        finish in, and the first failed chunk in that order is what raises.
+        Every pass of the dispatch loop first moves each finished fetch out
+        of the in-flight set without blocking, so a finished fetch frees its
+        worker for the submissions of that pass and a failure is seen before
+        them: once any chunk has failed, no further chunk is submitted, even
+        while the head chunk is already waiting in `ready`.
 
-        Each drained chunk's own member outcomes are recorded into
+        Each consumed chunk's own member outcomes are recorded into
         `pending_members`, keyed by dcid position, and `cursor` then walks
         forward through however much of that keyspace has become
         contiguous: while `cursor` names a position `pending_members`
@@ -2482,22 +2495,25 @@ class _GroupRowStreamer:
         currently being assembled (closing and yielding it first, via
         `_close_row_chunk`, when the next member would put it over
         `_FRAME_CHUNK_TARGET_ROWS`), and its own table is dropped from
-        `pending_members` in the same step. Because `chunks` is
-        dcid-sorted and drained in that same order, `cursor` almost always
-        advances to the end of `pending_members` in one pass per drained
-        chunk; it can fall behind only when the group spans more than one
-        entity-scope/`"latest"`-ness group, which interleaves dcid
-        positions across chunks. `pending_members` is exactly the
-        bounded buffer that gap waits in, never larger than the members
-        `member_concurrency` chunks ahead of `cursor` can carry. Peak
-        memory during this whole pass is bounded by that in-flight window
-        plus the one row chunk currently being assembled, never by the
-        group's own total row count.
+        `pending_members` in the same step. `_plan_collection_chunks`
+        splits each entity-scope/`"latest"`-ness batch into runs of
+        consecutive positions and sorts the chunks by first position, so
+        when the group is one batch `cursor` empties `pending_members`
+        after every consumed chunk. When the group spans several batches
+        their positions interleave across chunks, and a consumed chunk's
+        members wait in `pending_members` until the chunk of every lower
+        position has been consumed.
 
-        `finally: pool.shutdown(wait=True, cancel_futures=True)` drops any
-        chunk never submitted and blocks for every already-submitted
-        chunk's own fetch to finish, past whichever future raised, before
-        this generator re-raises.
+        Peak memory is the sum of three parts. `ready` holds at most
+        `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency - 1` completed
+        chunks ahead of the oldest one not yet consumed. `pending_members`
+        is empty for a one-batch group and holds up to every member of the
+        consumed chunks for a multi-batch group. The third part is the one
+        row chunk being assembled.
+
+        `finally: pool.shutdown(wait=True, cancel_futures=True)` blocks for
+        every already-submitted chunk's own fetch to finish, past whichever
+        future raised, before this generator re-raises.
         """
         chunks = self._chunks
         pending_members: dict[int, tuple[MaterialisationRequest, pa.Table]] = {}
@@ -2505,22 +2521,35 @@ class _GroupRowStreamer:
         accumulator_rows = 0
         cursor = 0
 
-        def _submit(
-            pool: ThreadPoolExecutor, chunk_index: int
-        ) -> Future[dict[int, _ConvertedMember]]:
-            return submit_with_context(pool, self._generate_one_chunk, chunks[chunk_index])
-
         max_workers = max(1, min(self._member_concurrency, len(chunks)))
+        look_ahead = _DISPATCH_LOOK_AHEAD_POOLS * max_workers
         pool = ThreadPoolExecutor(max_workers=max_workers)
-        try:
-            pending = [_submit(pool, i) for i in range(min(max_workers, len(chunks)))]
-            next_chunk = len(pending)
+        in_flight: dict[Future[dict[int, _ConvertedMember]], int] = {}
+        ready: dict[int, Future[dict[int, _ConvertedMember]]] = {}
+        next_chunk = 0
+        failed = False
 
-            for _shape_chunk in chunks:
-                result = pending.pop(0).result()
-                if next_chunk < len(chunks):
-                    pending.append(_submit(pool, next_chunk))
-                    next_chunk += 1
+        def collect(finished: set[Future[dict[int, _ConvertedMember]]]) -> bool:
+            for future in finished:
+                ready[in_flight.pop(future)] = future
+            return any(future.exception() is not None for future in finished)
+
+        try:
+            for head in range(len(chunks)):
+                while True:
+                    failed = collect(wait(in_flight, timeout=0)[0]) or failed
+                    dispatch_end = min(len(chunks), head + look_ahead)
+                    while not failed and next_chunk < dispatch_end and len(in_flight) < max_workers:
+                        future = submit_with_context(
+                            pool, self._generate_one_chunk, chunks[next_chunk]
+                        )
+                        in_flight[future] = next_chunk
+                        next_chunk += 1
+                    if head in ready:
+                        break
+                    completed, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                    failed = collect(completed) or failed
+                result = ready.pop(head).result()
                 for index, member in result.items():
                     request = self._dcid_requests[index][1]
                     table = member.table

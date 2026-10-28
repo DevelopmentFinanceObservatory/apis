@@ -213,9 +213,10 @@ def _client(
     coverage=None,
     settings: DatasetsBuildSettings | None = None,
     materialise_max_concurrency: int | None = None,
+    sdmx_hedge_after: float | None = None,
 ):
     """Builds a composed client with separate spec and version stores. A version store wires
-    live readers and inventory-aware artifacts."""
+    live readers and inventory-aware artifacts. `sdmx_hedge_after` hedges its SDMX reads."""
     store = store if store is not None else FakeDatasetStore()
     if version_store is not None:
         from artifact_store import LiveArtifactInventory
@@ -239,6 +240,7 @@ def _client(
         sdmx=SdmxClient(
             base_url=_BASE_URL,
             transport=sdmx_transport if sdmx_transport is not None else _sdmx_transport(),
+            hedge_after=sdmx_hedge_after,
         ),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         version_writer=version_writer,

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import csv
 import io
+import threading
+import time
+from collections import Counter
 from collections.abc import Mapping
 
 import httpx
@@ -147,6 +150,7 @@ def _composite_client(
     populated: Mapping[str, tuple[str, int, tuple[int, ...]]] | None = None,
     settings: DatasetsBuildSettings | None = None,
     transport: httpx.MockTransport | None = None,
+    sdmx_hedge_after: float | None = None,
 ) -> tuple[FakeArtifactStore | None, TestClient]:
     """A client over the composite's rows (`_populated` unless given), and the artifact store
     its renderings are put in. With `version_store`, the client writes heads and records there
@@ -170,6 +174,7 @@ def _composite_client(
         coverage=_coverage(populated),
         artifact_store=artifacts,
         settings=settings,
+        sdmx_hedge_after=sdmx_hedge_after,
     )
 
 
@@ -229,6 +234,56 @@ def test_a_composite_mints_one_frame_over_the_years_both_components_hold():
     ]
     provenance_facets = [f for f in manifest["trace"]["facets"] if f["axis"] == "provenance"]
     assert [f["ref"] for f in provenance_facets] == [_STACKED.provenance]
+
+
+def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
+    """The first SDMX request stalls past the hedge and then answers other values, so its
+    duplicate answers it. The pooled mint's frame, CSV and content version match a mint that
+    reads one request at a time, so the duplicate's answer is the one the mint used."""
+    populated = _populated()
+    stale = {
+        dcid: (facet, value + 1000, years) for dcid, (facet, value, years) in populated.items()
+    }
+    lock = threading.Lock()
+    sent: Counter[str] = Counter()
+    stalled: list[str] = []
+
+    def stall_first(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        with lock:
+            sent[url] += 1
+            stall = not stalled
+            if stall:
+                stalled.append(url)
+        if stall:
+            time.sleep(0.3)
+            return _sdmx_response(stale, request)
+        return _sdmx_response(populated, request)
+
+    def mint(concurrency: int, transport: httpx.MockTransport, hedge_after: float | None):
+        artifacts, client = _composite_client(
+            settings=DatasetsBuildSettings.from_env().model_copy(
+                update={"mint_member_max_concurrency": concurrency}
+            ),
+            transport=transport,
+            sdmx_hedge_after=hedge_after,
+        )
+        assert artifacts is not None
+        minted = _mint(client)
+        assert minted.status_code == 200, minted.text
+        manifest = minted.json()
+        return manifest["content_version"], _csv_rows(artifacts, manifest)
+
+    pooled = mint(4, httpx.MockTransport(stall_first), 0.05)
+    serial = mint(1, _sdmx_transport(populated), None)
+
+    [stalled_url] = stalled
+    assert sent[stalled_url] == 2
+    assert max(sent.values()) == 2
+    assert pooled[1]
+    assert pooled == serial
+    # The stalled request names members with rows, so its stale values would have shown.
+    assert any(dcid in stalled_url for dcid in populated)
 
 
 def test_a_groupby_collapse_of_a_composite_sums_both_components():
