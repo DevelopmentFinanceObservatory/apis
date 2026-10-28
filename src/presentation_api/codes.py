@@ -23,7 +23,7 @@ Frame unavailability returns 404 or transient 503. Release mismatch and service 
 return 503. Timeout returns 504, and internal errors return 500.
 
 Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
-`correct_and_retry`, which `retryable_for` answers false: the request must change before it can
+`correct_and_retry`, which `retryable_for` answers false. The request must change before it can
 succeed, and a client retries a retryable refusal unchanged. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
 refresh. Transient frame, release, service, and timeout failures retry after a delay. `not_found`,
 `write_refused`, `resource_exhausted`, `refresh_not_permitted`, `render_target_mismatch`, and
@@ -161,8 +161,8 @@ PRESENTATION_SERVED_PLATFORM_CODES: frozenset[str] = frozenset(
     }
 )
 
-# Platform codes the card and share writes render and the component catalogue's manifest
-# does not list: the daily allowance's refusal.
+# Platform codes the card and share writes render that the component catalogue's manifest
+# does not list. Today that is the daily allowance's refusal.
 WRITE_SERVED_PLATFORM_CODES: frozenset[str] = frozenset({"allowance_exhausted"})
 
 PRESENTATION_SERVED_CODES: frozenset[str] = (

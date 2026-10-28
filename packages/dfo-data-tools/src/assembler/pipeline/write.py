@@ -106,11 +106,11 @@ def write_component(
     everything a reader sees is a no-op (`_structurally_equal`). One that gains, loses or
     rewords a description, or changes a source, citation or warning, writes a revision.
 
-    A write pins nothing: a card's frame stays in the working tier, held 30 days from when DFO
+    A write pins nothing. A card's frame stays in the working tier, held 30 days from when DFO
     stored it, until a share first includes the card (`presentation_store.pin_card_frames`).
-    Each revision stores the rendering of the frame it draws (`RevisionRecord.frame_rendering`):
-    the one the frame's records give when the revision first draws that frame, and the one the
-    current revision holds while the frame stays the same.
+    Each revision stores the rendering of the frame it draws (`RevisionRecord.frame_rendering`).
+    That is the one the frame's records give when the revision first draws the frame, and the
+    one the current revision holds while the frame stays the same.
 
     `write_token` is the caller's `x-dfo-write-token`. A revise needs the component's own
     token, and a create into an existing composition needs that composition's token. Both

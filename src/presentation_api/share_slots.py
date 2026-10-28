@@ -6,7 +6,7 @@ the card's recorded frame and keeps the answer as the slot's `SlotCheck`
 (`presentation_store.shares`), which the reads before its `next_check_at` serve. One read claims
 a due check and runs it while the others serve the last check's answer. A `pending`
 check is due again after the retry time the refresh or the run gave, between one second and
-`FRESHNESS_WINDOW`; every other check is due after `FRESHNESS_WINDOW`. A check states the rows:
+`FRESHNESS_WINDOW`. Every other check is due after `FRESHNESS_WINDOW`. A check states the rows:
 
 - `current`: the frame the check found, which is the card's own frame until its data moves;
 - `pending`: newer data is building as a queued operation, and the slot serves the frame of its
@@ -19,7 +19,7 @@ check is due again after the retry time the refresh or the run gave, between one
 A snapshot slot states `current`, since its rows are the share's for good.
 
 `serve_on_slot_frame` makes that choice for both of a slot's reads, its data and its card, so
-the two never serve different frames. It draws the read on the frame the check chose, and when
+the two serve one frame. It draws the read on the frame the check chose, and when
 that fails on a newer frame it records the slot `stale` on the card's own frame and draws there.
 
 The rows are the card's data export (`assembler.pipeline.export_component.export_component_data`,
@@ -93,12 +93,12 @@ type SlotFormat = Literal["json", "csv", "xlsx", "parquet"]
 _JSON_MEDIA_TYPE = "application/json"
 
 _MIN_RETRY_S = 1.0
-
-# How long a claimed check holds off other reads before any may claim it again: twice the bound
-# on one request, so a claim outlives the read that runs its check, and one whose reader died
-# frees the slot after that time.
-_CLAIM_TTL = timedelta(seconds=2 * PRESENTATION_COMPONENTS_TIMEOUT_SECONDS)
 """The least a pending check waits, whatever retry time it was given."""
+
+# How long a claimed check holds off other reads before any may claim it again. It is twice the
+# bound on one request, so a claim outlives the read that runs its check, and one whose reader
+# died frees the slot after that time.
+_CLAIM_TTL = timedelta(seconds=2 * PRESENTATION_COMPONENTS_TIMEOUT_SECONDS)
 
 
 class ShareSlotEmpty(Exception):
@@ -193,7 +193,7 @@ def serve_on_slot_frame[T](
         except Exception:
             if check.frame == card.frame:
                 raise
-            # The newer frame no longer fits the card's intent, or cannot be read. The slot
+            # The newer frame does not fit the card's intent, or cannot be read. The slot
             # serves the card's own frame, which its share pinned, until the next check.
             logger.warning(
                 "Share %s slot %s cannot draw %s on %s; serving its own frame",

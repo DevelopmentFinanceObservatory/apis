@@ -22,9 +22,10 @@ Both routes admit every caller and spend no allowance. The caller is resolved
 service cannot name logs as unresolved. A website request whose caller header is malformed
 still refuses, as on every route that resolves callers. Every Datasets code the routes answer
 goes out at the status the code registry maps on `datasets.analysis`. A run takes a thread of
-the analysis executor (`DATASETS_ANALYSIS_MAX_CONCURRENCY`), refusing retryable `service_unavailable`
-(503) when every thread is busy, and one materialise permit for its frames; it answers timeout
-(504) after `DATASETS_ANALYSIS_TIMEOUT_SECONDS`, and its thread runs on to store the frame.
+the analysis executor (`DATASETS_ANALYSIS_MAX_CONCURRENCY`), refusing retryable
+`service_unavailable` (503) when every thread is busy, and one materialise permit for its frames.
+It answers timeout (504) after `DATASETS_ANALYSIS_TIMEOUT_SECONDS`, and its thread runs on to
+store the frame.
 
 A run is keyed (`analysis.prepare_analysis`) before it takes its materialise permit. A key that
 holds a stored answer whose frame file is still served answers that body

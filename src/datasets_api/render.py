@@ -3345,8 +3345,8 @@ def render_and_store_frame_file(
     record a version links it under.
 
     The frame layout reshapes nothing, reads no names and cuts no totals, so the render takes
-    no code index, and `prepared_at`, `site` and `enrichment` reach no byte: only a bundle
-    writes the date or a link, and the layout reads no name. The same frame stores the same
+    no code index, and `prepared_at`, `site` and `enrichment` reach no byte, because only a bundle
+    writes the date or a link and the layout reads no name. The same frame stores the same
     digest whenever it is published."""
     rendered = render_and_store(
         frame_chunks=frame_chunks,

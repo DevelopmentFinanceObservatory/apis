@@ -5,7 +5,7 @@ create allocates an id before the write transaction. A revise reads the current
 component first, since tolerant validation needs its `type`. The transaction
 rechecks current state and rebuilds the candidate if it changed. Revises keep the
 frame and its stored rendering because `frame_ref` is create-only. No write pins
-its frame: a share pins the frames of the cards it includes
+its frame. A share pins the frames of the cards it includes
 (`presentation_store.pin_card_frames`).
 
 A create may carry a client-minted `cmw_` token. `write_component` looks its digest up

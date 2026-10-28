@@ -20,8 +20,8 @@ result's frame `cv_` and output digest with the stored frame's. Its `Replay.outc
 - `frame_unreadable`: the stored frame itself is no longer held.
 
 `recipe_family` sorts a recipe as `compare` when any of its steps is a `compare`, else `sum_of`
-when any is a `sum_of`, else `other`, since role pairing changed how those two verbs pair their
-sides and their counts are read apart.
+when any is a `sum_of`, else `other`, since those two verbs pair their sides by role and their
+counts are read apart.
 """
 
 from __future__ import annotations

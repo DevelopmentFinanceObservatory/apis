@@ -52,7 +52,8 @@ STORAGE_EMULATOR_ENV = "STORAGE_EMULATOR_HOST"
 # The origin an emulator media link is served on, where it is not the emulator itself.
 STORAGE_EMULATOR_LINK_BASE_ENV = "STORAGE_EMULATOR_LINK_BASE"
 
-# Set to 1 by the local stack alone; the one setting under which the emulator's unsigned links go out.
+# Set to 1 by the local stack alone. It is the one setting under which the emulator's unsigned
+# links go out.
 LOCAL_STACK_ENV = "DFO_LOCAL_STACK"
 
 

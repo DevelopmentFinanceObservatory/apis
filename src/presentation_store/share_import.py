@@ -17,17 +17,18 @@ A signed-in user's share (`owner` set) gets a fresh `shw_` write token. The impo
 `{id, owner, write_token}` to `write_token`, which must make the line durable before it returns,
 after the share's rows are written and before they commit (`ShareStore.import_share`), so a
 stored token is always in the report. A crash between the two leaves a line naming a share that
-was never stored, which a re-run imports with a later line; the website's token import keeps
+was never stored, which a re-run imports with a later line. The website's token import keeps
 the last line for each id. A guest's share (`owner` null) is stored with no token, so nobody
 can change or delete it.
 
 The import is idempotent. A share whose id already holds a share of the same kind and
-`created_at` was imported by an earlier run: it is counted as unchanged, gets no new token and
+`created_at` was imported by an earlier run. It is counted as unchanged, gets no new token and
 writes no report line, so a re-run changes nothing. A line the import cannot place is refused
-and counted, and the others carry on: a line that is not a share as the export defines it, one
-whose payload is over `MAX_SHARE_PAYLOAD_BYTES` as a create's would be, a live conversation, a search or conversation share with slots, a slot naming a card revision
-this service does not hold or one drawing no frame, a frame that cannot be pinned, and an id
-that holds another share. The website's export puts no note in a slot (a note is a text card,
+and counted, and the others carry on. The refused lines are those that are not a share as the
+export defines it, those whose payload is over `MAX_SHARE_PAYLOAD_BYTES` as a create's would
+be, a live conversation, a search or conversation share with slots, a slot naming a card
+revision this service does not hold or one drawing no frame, a frame that cannot be pinned, and
+an id that holds another share. The website's export puts no note in a slot (a note is a text card,
 which has no slot), so a slot drawing no frame is not a share the export writes.
 """
 
@@ -206,7 +207,7 @@ def import_share_file(
     Raises:
         PresentationStoreUnavailable: The store failed, or the report could not be written.
     """
-    # Pinning promotes artifacts and records references; it reads no graph.
+    # Pinning promotes artifacts and records references. It reads no graph.
     frame_store = LiveFrameStore(
         snapshots=LiveSnapshotReader(store=dataset_store),
         artifacts=artifact_store,

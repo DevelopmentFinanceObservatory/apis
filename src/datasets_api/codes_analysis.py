@@ -2,7 +2,7 @@
 and `several_members`.
 
 Every one answers 422. `ANALYSIS_STATUSES` holds them, since the code registry maps only
-`rolling_populations_differ` and `several_members` on `datasets.analysis` so far.
+`rolling_populations_differ` and `several_members` on `datasets.analysis`.
 """
 
 from __future__ import annotations

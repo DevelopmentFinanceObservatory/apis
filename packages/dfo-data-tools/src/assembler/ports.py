@@ -151,11 +151,10 @@ class ResolvedFrame:
     nothing continues the frame's series. `descriptions` holds the graph `description` of the
     one variable the version's definition resolved to, by bare dcid, when that variable is a
     World Development Indicators variable, and defines the version's measure
-    (`description.world_bank`); it is empty otherwise. `rendering` is the rendering of its
-    dataset the frame is, as the frame's stored records say at this load, the JSON object a
-    card revision stores with the frame (`RevisionRecord.frame_rendering`): a dataset frame's
-    groupby and party-totals cut, a derived frame's recipe `normal_form_hash`. It is `None`
-    when the records do not say.
+    (`description.world_bank`); it is empty otherwise. `rendering` is the JSON object a card
+    revision stores with the frame (`RevisionRecord.frame_rendering`), as the frame's stored
+    records say at this load. It holds a dataset frame's groupby and party-totals cut, or a
+    derived frame's recipe `normal_form_hash`, and is `None` when the records do not say.
     """
 
     frame_ref: FrameRef

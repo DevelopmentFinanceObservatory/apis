@@ -105,8 +105,8 @@ line per version that fails and one `datasets_frame_summed_backfilled` line coun
 `sweep` reads. No deploy runs it, since a row that stays NULL would be read and cut again on
 every deploy.
 
-`diff-recipes --report PATH` runs by hand against an environment before the old analysis paths
-go. It computes every recipe in `datasets.frame_recipe` again on its own root versions through
+`diff-recipes --report PATH` runs by hand against an environment to check the analysis runner
+against its stored frames. It computes every recipe in `datasets.frame_recipe` again on its own root versions through
 the analysis runner (`recipe_replay.replay_recipe`) and compares the result frame's `cv_` and
 output digest with the stored frame's. It writes nothing to any store: roots are read only where
 their version already holds the frame or file (`recipe_replay.StoredRootSource`), nothing renders,
@@ -1266,7 +1266,7 @@ def _run_import_shares(
 class RecipeSkip(StrEnum):
     """Why `normalise-recipes` leaves a recipe whose root columns are out of order as it is."""
 
-    # The stored hashes are not the ones the analysis route computes from the stored recipe,
+    # The stored hashes differ from those the analysis route computes from the stored recipe,
     # as for a tree whose frames different engine builds computed.
     UNREPRODUCIBLE = "unreproducible"
     # Another frame's recipe holds the replay key the sorted recipe computes.

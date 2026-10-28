@@ -132,7 +132,7 @@ call, cache hit or not, so a later takedown refuses the next load.
 `load()` states the frame's rendering as `ResolvedFrame.rendering`. A dataset frame's is read
 on every load from the version record and the files linked under it, the read the revocation
 check makes (`datasets_api.doors.refresh.rendering_of`, as `StoredRendering.to_record`), since
-a later fetch can link a file of another rendering under the same version; a version whose
+a later fetch can link a file of another rendering under the same version. A version whose
 records do not say has none. A derived frame's is its recipe's `normal_form_hash`, read with
 the recipe and cached with it, and a derived frame with no recipe yet, or of a store with no
 recipe reader, has none.
@@ -1156,8 +1156,8 @@ class LiveFrameStore:
         """The manifest with its live citation, what each cited source's document says, and
         whether every citation read completed. One documented citation read
         (`_source_citations`) serves both. A derived frame whose recipe roots cite sources
-        (`_roots_citation`) is cited with them, filled as a root frame's stored citation is;
-        any other derived frame cites its provenance refs from the graph. A root frame's stored
+        (`_roots_citation`) is cited with them, filled as a root frame's stored citation is.
+        Any other derived frame cites its provenance refs from the graph. A root frame's stored
         citation has its empty fields filled
         (`datasets_api.manifest.citation_healed_from`) from a read of its distinct sources with
         an empty `HEALED_FIELDS` member, or of all its distinct sources when the frame holds a

@@ -57,16 +57,16 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 
 ### Schema Tables
 
-| Table                               | Primary Key                  | Description                                                                                                                                               |
-| ----------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `presentation.composition`          | `composition_id`             | Container tracking composition identity, creation timestamp, and the nullable `write_token_sha256` digest.                                                |
-| `presentation.composition_revision` | `(composition_id, revision)` | Append-only revision log. Stores `blocks` JSONB (ordered array of `{"component_id", "revision"}`) and `actor`.                                            |
-| `presentation.component`            | `component_id`               | Component registry row. Holds optional `composition_id` foreign key assigned at creation, the nullable unique `write_token_sha256` digest, and the nullable `create_request_sha256` digest. |
-| `presentation.share`                | `id`                         | One row per share: `kind` (`card`, `canvas`, `search`, `conversation`), `mode` (`live`, `snapshot`), `title`, the nullable `write_token_sha256` digest, `owner` (left NULL), website-owned `payload` JSONB, `created_at`, and `deleted_at` once taken down. |
-| `presentation.share_revision`       | `(share_id, revision)`       | Append-only revision log of a share, from 1, with `created_at`. |
-| `presentation.share_slot`           | `(share_id, revision, slot)` | Every slot of one share revision, from 1: the card revision it shows (`component_id`, `component_revision`, both NULL for an empty slot) and the frame that revision draws (`frame_spec_id`, `frame_content_version`, NULL for a card with none or an imported slot whose frame was not recorded). |
+| Table                               | Primary Key                  | Description                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `presentation.composition`          | `composition_id`             | Container tracking composition identity, creation timestamp, and the nullable `write_token_sha256` digest.                                                                                                                                                                                                                               |
+| `presentation.composition_revision` | `(composition_id, revision)` | Append-only revision log. Stores `blocks` JSONB (ordered array of `{"component_id", "revision"}`) and `actor`.                                                                                                                                                                                                                           |
+| `presentation.component`            | `component_id`               | Component registry row. Holds optional `composition_id` foreign key assigned at creation, the nullable unique `write_token_sha256` digest, and the nullable `create_request_sha256` digest.                                                                                                                                              |
+| `presentation.share`                | `id`                         | One row per share: `kind` (`card`, `canvas`, `search`, `conversation`), `mode` (`live`, `snapshot`), `title`, the nullable `write_token_sha256` digest, `owner` (left NULL), website-owned `payload` JSONB, `created_at`, and `deleted_at` once taken down.                                                                              |
+| `presentation.share_revision`       | `(share_id, revision)`       | Append-only revision log of a share, from 1, with `created_at`.                                                                                                                                                                                                                                                                          |
+| `presentation.share_slot`           | `(share_id, revision, slot)` | Every slot of one share revision, from 1: the card revision it shows (`component_id`, `component_revision`, both NULL for an empty slot) and the frame that revision draws (`frame_spec_id`, `frame_content_version`, NULL for a card with none or an imported slot whose frame was not recorded).                                       |
 | `presentation.served_frame`         | `id`                         | A timeline of what each share slot showed: an entry each time the slot's card revision and frame (`component_id`, `component_revision`, `frame_spec_id`, `frame_content_version`) differ from its newest entry, with the nullable `rendering` JSONB and `first_served_at`. An entry for a slot a replace left empty holds all five NULL. |
-| `presentation.component_revision`   | `(component_id, revision)`   | Append-only component state. Stores `stored_intent` JSONB, `resolved_payload` JSONB, `series_coordinates` JSONB, `catalog_version`, `schema_version`, the minting release's `formatter_profile` JSONB, and the nullable `frame_rendering` JSONB of the frame the revision draws. |
+| `presentation.component_revision`   | `(component_id, revision)`   | Append-only component state. Stores `stored_intent` JSONB, `resolved_payload` JSONB, `series_coordinates` JSONB, `catalog_version`, `schema_version`, the minting release's `formatter_profile` JSONB, and the nullable `frame_rendering` JSONB of the frame the revision draws.                                                         |
 
 ### Migration Sequence
 
@@ -130,11 +130,11 @@ Write operations follow a set sequence:
 `LiveShareStore` (`presentation_store.shares`) implements `ShareStore` over the share tables. Each method runs in one transaction.
 
 - `create_share(kind, mode, title, write_token_sha256, cards)` inserts the share under a minted id with `INSERT ... ON CONFLICT (id) DO NOTHING RETURNING id`, minting again while the id is taken, by a share made here or one imported from the website, up to five times before `GeneratedIdCollision(subject_kind="share")`. It then writes revision 1 with slot n holding the nth `ShareCard`.
-- `replace_share(share_id, revision, cards)` locks the share row (`FOR UPDATE`), refuses a snapshot with `ShareNotReplaceable` and a share no longer at `revision` with `EditConflict`, and writes the next revision with `max(len(cards), slots of the latest revision)` slots, slot n holding the nth card and every further slot empty.
+- `replace_share(share_id, revision, cards)` locks the share row (`FOR UPDATE`), refuses a snapshot with `ShareNotReplaceable` and a share whose latest revision is not `revision` with `EditConflict`, and writes the next revision with `max(len(cards), slots of the latest revision)` slots, slot n holding the nth card and every further slot empty.
 - `delete_share(share_id)` sets `deleted_at`.
 - `read_share(share_id)` returns the `ShareRecord` at its latest revision, with its slots and stored token digest.
 
-A share id with no row, or a taken-down one, raises `ShareNotFound` from every method. The store checks no token: `presentation_api.doors.shares` compares the presented token with `ShareRecord.write_token_sha256`. Driver failures become `PresentationStoreUnavailable`.
+A share id with no row, or a taken-down one, raises `ShareNotFound` from every method. `presentation_api.doors.shares` compares the presented token with `ShareRecord.write_token_sha256`. Driver failures become `PresentationStoreUnavailable`.
 
 ### Frame Store Operations
 
@@ -146,13 +146,13 @@ A share id with no row, or a taken-down one, raises `ShareNotFound` from every m
 2. Retrieves raw frame bytes from `ArtifactStore`, caching results in memory up to 64 MB.
 3. Computes the `StructuralView` with `assembler.frame_view.compute_structural_view`.
 4. Resolves display labels for `stat_var`, `entity`, and `provenance` IDs through `GraphReader.node_arcs_many`, capped at 300 references per call.
-5. States the frame's rendering as `ResolvedFrame.rendering`: a dataset frame's from its version record and linked files on every load, a derived frame's recipe `normal_form_hash`. A write stores it on the revision as `frame_rendering`.
+5. States the frame's rendering as `ResolvedFrame.rendering`. A dataset frame's comes from its version record and linked files on every load, and a derived frame's is its recipe `normal_form_hash`. A write stores it on the revision as `frame_rendering`.
 
 `pin(frame_ref, component_id)`:
 
 1. Promotes the canonical artifact from `working` to `pinned` tier in `ArtifactStore` when currently in the working tier.
 2. Inserts an artifact reference record (`reference_kind="presentation_draft"`, `principal="presentation:<component_id>"`) into `datasets.artifact_reference` using `ArtifactReferenceWriter`.
-3. For a derived (`ops_`) frame, pins each root version its recipe names (each root's `dataset`), and theirs in turn. A derived frame with no recipe yet pins alone; a store with no recipe reader, or a root naming no dataset version, refuses `frame_unavailable`.
+3. For a derived (`ops_`) frame, pins each root version its recipe names (each root's `dataset`), and theirs in turn. A derived frame with no recipe yet pins alone. A store with no recipe reader, or a root naming no dataset version, refuses `frame_unavailable`.
 
 No create, revise, or render pins. `pin_card_frames(component_id, revision, revision_store, frame_store)` pins the frame a card revision draws, and a share calls it for each card it first includes.
 

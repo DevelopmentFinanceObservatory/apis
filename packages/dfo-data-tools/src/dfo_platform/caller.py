@@ -32,8 +32,8 @@ request that carries `x-dfo-caller-principal` without matching it, or while `DFO
 is unset, refuses 503 `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
 address would put every client of the website on the website's own allowance. A request with no
 `x-dfo-caller-principal` is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places
-from the right, the entry the proxies in front of this service appended. `request.client` is never read:
-`ProxyHeadersMiddleware` sets it from the leftmost entry, which the client writes.
+from the right, the entry the proxies in front of this service appended. `request.client` goes
+unused, because `ProxyHeadersMiddleware` sets it from the leftmost entry, which the client writes.
 """
 
 from __future__ import annotations
@@ -199,8 +199,7 @@ _ADDRESS_KEY = re.compile(rf"{ADDRESS_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
 
 @dataclass(frozen=True, slots=True)
 class Caller:
-    """Who an allowance counts against. `kind="address"` keys a client by its network address,
-    the only kind there is until callers can present keys."""
+    """Who an allowance counts against. `kind="address"` keys a client by its network address."""
 
     kind: Literal["address"]
     key: str
@@ -221,8 +220,8 @@ class CallerHeaderInvalid(Refusal):
 
 
 class CallerUnresolved(Refusal):
-    """This service cannot name a caller: a presented `x-dfo-caller-principal` does not match
-    `DFO_CALLER_PRINCIPAL`, `DFO_CALLER_HMAC_KEY` is unset, or the X-Forwarded-For entry
+    """This service cannot name a caller, because a presented `x-dfo-caller-principal` does not
+    match `DFO_CALLER_PRINCIPAL`, `DFO_CALLER_HMAC_KEY` is unset, or the X-Forwarded-For entry
     `DFO_TRUSTED_PROXY_HOPS` names is missing or not an address. Each is a deployment fault, so
     it answers a 503 a retry does not clear, and is logged."""
 

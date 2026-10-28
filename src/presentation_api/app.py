@@ -15,7 +15,7 @@ or `cps_` id grants read of a draft, and the write token its create returned gra
 doors take no session. The two render routes of `presentation_api.doors.render` admit the
 live-refresh principal the composition passes in, and refuse every caller when it passes none.
 A card create or revise names its caller for the card allowance, and the share routes
-(`presentation_api.doors.shares`) for the share allowance; a replace or delete of a share takes
+(`presentation_api.doors.shares`) for the share allowance. A replace or delete of a share takes
 its write token.
 
 The surface maps refusals to RFC 9457 problem details through the platform `Envelope`.

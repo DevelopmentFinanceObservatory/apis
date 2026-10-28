@@ -15,7 +15,7 @@ A create or a revise spends one unit of its caller's daily `card` allowance
 its conversations, spends none. The door spends when it is given an allowance ledger or builds
 its stores live.
 
-No route pins a frame: a card's frame stays in the working tier until a share first includes
+No route pins a frame. A card's frame stays in the working tier until a share first includes
 the card (`presentation_store.pin_card_frames`). A create and a read state the stored frame's
 retention (`datasets_api.retention.version_retention`): pinned, or held until 30 days after DFO
 stored it. A frame whose working copy has aged out refuses `frame_unavailable` on every route that

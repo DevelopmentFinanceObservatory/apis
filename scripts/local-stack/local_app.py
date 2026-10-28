@@ -9,8 +9,8 @@ cell, so live share slots check for newer data in process. Serve it with
 
 The Datasets surface reads its graph, SDMX endpoint and coverage index from the doubles
 `upstream.py` builds over `fixtures/readings.json`, and admits every provenance through a fake
-origin catalogue. It takes a `NullTaskClient`: the live client needs Google credentials for
-Cloud Tasks, and no worker runs locally, so a mint too large to answer in the request refuses
+origin catalogue. It takes a `NullTaskClient`, because the live client needs Google credentials
+for Cloud Tasks and no worker runs locally. A mint too large to answer in the request refuses
 when it would enqueue.
 
 With `STORAGE_EMULATOR_HOST` set, as `local.env` sets it, the storage client talks to

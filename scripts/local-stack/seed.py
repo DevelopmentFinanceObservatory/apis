@@ -5,7 +5,7 @@ its scope, so its spec, version record, artifacts and inventory rows are the one
 mint writes, in the stack's Postgres and GCS emulator. The server's upstreams answer from the
 same fixture (`upstream.py`).
 
-A mint is idempotent: minting a reading again answers the version already stored, so a second
+A mint is idempotent. Minting a reading again answers the version already stored, so a second
 run leaves one version per reading. The spec ids and content versions go to
 `$LOCAL_STACK_SEEDED` for the smoke script.
 

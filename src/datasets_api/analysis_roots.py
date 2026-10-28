@@ -20,14 +20,14 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
 The frame is named by the pair `frame_ref_for` derives from the columns and the groupby, as
 data-mcp names it, so two renderings of one version are two frames.
 
-`enrichment_columns` gives the default `columns`: every flow party's type and kind columns for a
+`enrichment_columns` gives the default `columns`, every flow party's type and kind columns for a
 dataset whose identity names a flow role, else the place type, which the verbs read to keep
 group totals out of a sum or rank and to rank places at one level.
 
 A Spec root is served as the definition door serves a registered id (`doors.definition`): its
 newest version of the rendering, rebuilt when its head is stale. A dataset root under `latest`
-is served the same way with the rendering it records, so it is read by its rendering and never
-by its version alone, which can record two renderings that the newest data splits. A rebuild
+is served the same way with the rendering it records, so it is read by its rendering, since its
+version alone can record two renderings that the newest data splits. A rebuild
 over the inline budget answers `AnalysisPending` naming its operation.
 """
 

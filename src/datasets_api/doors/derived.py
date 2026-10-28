@@ -8,20 +8,20 @@ and `ocv_` content version, as a format 2 ref's member names it.
 - `GET /api/datasets/derived/{ops_id}/{ocv}/file?format=&bundle=&layout=` answers the frame's rows as
   a file (`derived.render_derived_file`), 200 with the bytes and a `Content-Disposition`
   naming the download. The query is the dataset file selector's (`doors.files.selector_options`)
-  with its defaults, a CSV bundle; a derived frame has one layout, the frame's, so `layout`
+  with its defaults, a CSV bundle. A derived frame has one layout, the frame's, so `layout`
   takes only `frame`.
 
-A ref's derived member names both: its `spec.spec_id` and `content_version` are the path, so a
-client derives the paths from the ref and `POST /api/datasets/analysis` answers no path of its
-own. Reading the frame on its datasets' newest versions is `POST /api/datasets/analysis` with
+A ref's derived member gives both paths, as its `spec.spec_id` and `content_version` are the path
+segments, so a client derives the paths from the ref and `POST /api/datasets/analysis` answers no
+path of its own. Reading the frame on its datasets' newest versions is `POST /api/datasets/analysis` with
 the derived root as the whole tree, `{"tree": {"spec_id": ops_id, "content_version": ocv},
 "latest": true}`, which computes the stored recipe again under its own ids.
 
 The manifest binds the `datasets.snapshot` registry endpoint, as a dataset version's manifest
-does, and answers its codes (`snapshot_not_found`, `snapshot_revoked`, `artifact_expired`); the
+does, and answers its codes (`snapshot_not_found`, `snapshot_revoked`, `artifact_expired`). The
 file binds `datasets.files`, whose writer refusals it also answers (`excel_limit`,
-`parquet_size_bound`). Both admit every caller. The manifest reads on the read executor; a file
-renders on the work executor under a materialise permit.
+`parquet_size_bound`). Both admit every caller. The manifest reads on the read executor, and a
+file renders on the work executor under a materialise permit.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ class DerivedManifest(BaseModel):
         description="each period the recipe states relative to the latest, with its period"
     )
     anchor: RecipeAnchor | None = Field(
-        description="the rolling anchor: the latest period and the series without a row at it"
+        description="the latest period of the rolling anchor and the series without a row at it"
     )
     left_out: list[RecipeDroppedSeries] | None = Field(
         description=(

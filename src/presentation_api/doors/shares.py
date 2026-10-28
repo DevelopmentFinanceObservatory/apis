@@ -2,23 +2,24 @@
 snapshots, deletes and reads shares.
 
 `POST /api/presentation/shares` takes `{cards: [{component_id, revision}], latest, title?, kind?,
-payload?, write_token?}`. `latest` has no default: true makes a live share, which follows new
+payload?, write_token?}`. `latest` has no default. True makes a live share, which follows new
 data, and false a snapshot, which keeps the versions its cards drew. `kind` defaults to `card`.
 A `card` share takes 1 to 24 cards, a `canvas` 0 to 24, and a `search` or `conversation` share
 none, and a `conversation` share is a snapshot. A live share holds at most
-`MAX_LIVE_SHARE_DATA_CARDS` (20) data cards, those that draw a frame, on create and on replace,
-the website's `LIVE_SHARE_MAX_DATA_CARDS`; more refuses 400 `request_invalid` at `/cards`. `payload` is website-owned JSON of at most
-`presentation_store.MAX_SHARE_PAYLOAD_BYTES` (10 MiB) as compact UTF-8, stored as given and
-read back on GET; a larger one refuses 413 `payload_too_large`. The create spends one unit of the
-caller's `share` allowance (`datasets_api.allowance`, caller named by
-`dfo_platform.caller.resolve_caller`), refusing 429 `allowance_exhausted` once it is spent, then
-pins the frame each card revision draws (`presentation_store.pin_card_frames`), live or
-snapshot, since a share first including a card pins it. A pin or write that then fails gives the
-unit back (`datasets_api.allowance.spending`), so a retry spends one unit in all. The reply carries the share's page, embed and per-slot data URLs under the
-public site, and the `shw_` write token; the store keeps its SHA-256 digest.
+`MAX_LIVE_SHARE_DATA_CARDS` (20) data cards, those that draw a frame, on create and on replace
+(the website's `LIVE_SHARE_MAX_DATA_CARDS`). More refuses 400 `request_invalid` at `/cards`.
+`payload` is website-owned JSON of at most `presentation_store.MAX_SHARE_PAYLOAD_BYTES` (10 MiB)
+as compact UTF-8, stored as given and read back on GET. A larger one refuses 413
+`payload_too_large`. The create spends one unit of the caller's `share` allowance
+(`datasets_api.allowance`, caller named by `dfo_platform.caller.resolve_caller`), refusing 429
+`allowance_exhausted` once it is spent. It then pins the frame each card revision draws
+(`presentation_store.pin_card_frames`), live or snapshot, since a share first including a card
+pins it. A pin or write that then fails gives the unit back (`datasets_api.allowance.spending`),
+so a retry spends one unit in all. The reply carries the share's page, embed and per-slot data
+URLs under the public site, and the `shw_` write token. The store keeps its SHA-256 digest.
 
 A create may carry its own `shw_` token in `write_token`, in the form the server mints
-(`assembler.write_token.require_client_write_token`). The token keys the create: a retry with
+(`assembler.write_token.require_client_write_token`). The token keys the create. A retry with
 the same token and the same body, defaults filled, answers the share the first create made,
 201 with its current URLs and revision, spending no allowance and pinning nothing. It records
 what the share shows again, so a share whose first record failed lists it in its history. The
@@ -40,25 +41,25 @@ whose first 204 was lost can retry it, and 404 `not_found` to any other caller.
 
 `POST /api/presentation/shares/{share_id}/snapshot` turns a live share into a snapshot in place,
 under the same URLs, with the share's token. Each slot keeps the frame it serves now (its last
-newest-data check, else its card's own frame): the door pins those frames, then writes the
+newest-data check, else its card's own frame). The door pins those frames, then writes the
 share's next revision with them and the snapshot mode. A snapshot answers as it is, and a share
 replaced meanwhile refuses 409 `edit_conflict`. No route turns a snapshot live.
 
-`GET /api/presentation/shares/{share_id}` is public and allows any origin: kind, mode, title,
-revision, slots, the website's payload and created_at, never the token.
+`GET /api/presentation/shares/{share_id}` is public and allows any origin. It returns kind,
+mode, title, revision, slots, the website's payload and created_at, and omits the token.
 
 `GET /api/presentation/shares/{share_id}/slots/{slot}/data?format=json|csv|xlsx|parquet&bundle=`
 is public and allows any origin. It serves the rows behind the slot's card, JSON by default, on
-the frame
-`presentation_api.share_slots` chooses: a snapshot's recorded frame, or a live slot's newest
-data, checked again once the last check is due: after `newest_frames.FRESHNESS_WINDOW`, or
-sooner for a `pending` check, after the retry time the refresh or the run gave. The JSON body and the
-`x-dfo-freshness` header state `current`, `stale` or `pending`; a live slot's
-`x-dfo-checked-at` says when the check ran. `csv`, `xlsx` and `parquet` are the card's data
-file as the components door's data route serves it, unbundled by default; `bundle=true` serves
-that route's zip, and with `json` refuses 400 `request_invalid`. The reply carries a strong `ETag` over its bytes and
-answers `If-None-Match` with 304. A live slot's reply is `no-cache`, so a cache revalidates it;
-a snapshot's is `public, max-age=300`. A slot number the share has not had, or a slot a
+the frame `presentation_api.share_slots` chooses. That is a snapshot's recorded frame, or a live
+slot's newest data, checked again when the last check falls due: after
+`newest_frames.FRESHNESS_WINDOW`, or sooner for a `pending` check, after the retry time the
+refresh or the run gave. The JSON body and the `x-dfo-freshness` header state `current`, `stale`
+or `pending`, and a live slot's `x-dfo-checked-at` says when the check ran. `csv`, `xlsx` and
+`parquet` are the card's data file as the components door's data route serves it, unbundled by
+default. `bundle=true` serves that route's zip, and with `json` refuses 400 `request_invalid`.
+The reply carries a strong `ETag` over its bytes and answers `If-None-Match` with 304. A live
+slot's reply is `no-cache`, so a cache revalidates it, and a snapshot's is
+`public, max-age=300`. A slot number the share has not had, or a slot a
 replacement left empty, answers 404 `not_found`, and so does a note's slot.
 
 `GET /api/presentation/shares/{share_id}/slots/{slot}` is public and allows any origin. It
@@ -69,9 +70,9 @@ answers the slot's card as `GET /api/presentation/components/{component_id}` rea
 its stored read. A slot number the share has not had, or an empty slot, answers 404
 `not_found`.
 
-`GET /api/presentation/shares/{share_id}/history` is public and allows any origin: a timeline
-of what each slot showed, newest first, each frame with its retention counted from when DFO
-stored it and whether it is still fetchable (`share_slots.history_document`). A create, replace
+`GET /api/presentation/shares/{share_id}/history` is public and allows any origin. It returns a
+timeline of what each slot showed, newest first, each frame with its retention counted from when
+DFO stored it and whether it is still fetchable (`share_slots.history_document`). A create, replace
 or snapshot conversion records each slot's frame as served at the write, as a read does, so the
 history lists what a share shows before any read. A slot a replace leaves empty records an
 entry with `component_id`, `revision`, `frame`, `rendering` and `retention` null and
@@ -245,7 +246,7 @@ MAX_SHARE_CARDS = 24
 """The most cards one create or replace takes, and so the most slots a write adds."""
 
 MAX_LIVE_SHARE_DATA_CARDS = 20
-"""The most data cards, those that draw a frame, a live share holds: the website's
+"""The most data cards, those that draw a frame, a live share holds. It matches the website's
 `LIVE_SHARE_MAX_DATA_CARDS`, since each one's slot checks for newer data on read."""
 
 _MAX_TITLE_LENGTH = 300
@@ -292,7 +293,7 @@ class ShareCardsBody(BaseModel):
 
     cards: list[ShareCardBody] = Field(
         max_length=MAX_SHARE_CARDS,
-        description="the cards in slot order; two entries may name the same revision. A card "
+        description="the cards in slot order. Two entries may name the same revision. A card "
         "share takes at least one, a canvas any number, a search or conversation share none",
     )
 
@@ -306,11 +307,11 @@ class CreateShareBody(BaseModel):
     cards: list[ShareCardBody] = Field(
         default_factory=list,
         max_length=MAX_SHARE_CARDS,
-        description="the cards in slot order; two entries may name the same revision. A card "
+        description="the cards in slot order. Two entries may name the same revision. A card "
         "share takes at least one, a canvas any number, a search or conversation share none",
     )
     latest: StrictBool = Field(
-        description="true for a live share that follows new data and takes replacements; "
+        description="true for a live share that follows new data and takes replacements, "
         "false for a snapshot that keeps the versions its cards draw now, for good"
     )
     title: str | None = Field(
@@ -318,7 +319,7 @@ class CreateShareBody(BaseModel):
     )
     kind: Literal["card", "canvas", "search", "conversation"] = Field(
         default="card",
-        description="what the share publishes; the website renders a canvas, search or "
+        description="what the share publishes. The website renders a canvas, search or "
         "conversation share from its payload. A conversation share is a snapshot",
     )
     payload: JsonValue = Field(
@@ -330,7 +331,7 @@ class CreateShareBody(BaseModel):
         default=None,
         description='a shw_ token this client minted for the new share: "shw_" + '
         "secrets.token_urlsafe(16) or an equivalent CSPRNG, 22 url-safe base64 characters "
-        "after the prefix. It becomes the share's write token and keys the create: a retry "
+        "after the prefix. It becomes the share's write token and keys the create. A retry "
         "with the same write_token and body answers the first share, spending no allowance, "
         "and a different body with it is refused as request_invalid. Mint a new one for each "
         "create.",
@@ -499,10 +500,9 @@ def _pin(cards: Iterable[ShareCard], *, deps: SharesDeps) -> None:
 
 
 def _record_shown(share: ShareRecord, *, deps: SharesDeps) -> None:
-    """Record what each slot of `share` shows: the frame its card draws, with the card
-    revision's recorded rendering, as a slot read records it, or no card for a slot a replace
-    left empty or whose card is a note. The share's history then lists from the write on what
-    it shows."""
+    """Record the frame each slot of `share` draws, with the card revision's recorded
+    rendering, as a slot read records it. A slot a replace left empty, or whose card is a note,
+    records no card. The share's history then lists from the write on what it shows."""
     renderings: dict[tuple[str, int], Mapping[str, object] | None] = {}
     for slot in share.slots:
         card = slot.card
@@ -652,9 +652,9 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
                     create_request_sha256=request_sha256,
                 )
         except ShareWriteTokenInUse:
-            # A create with the same token committed first, or a server-minted token collided,
-            # which 128 random bits make a broken minter. The unit went back, since the first
-            # create spent its own.
+            # A create with the same token committed first, so this one replays it. A collision of
+            # a server-minted token, 128 random bits, means the minter is broken. The unit went
+            # back, since the first create spent its own.
             if request_sha256 is None:
                 raise GeneratedIdCollision(subject_kind="share write token") from None
             replayed = _replay_create(
@@ -930,8 +930,8 @@ def build_shares_door(
     `vocabulary_source` gives the words a slot's card drawn on a newer frame is described in,
     and defaults to a `LiveVocabularySource` over the code index.
     `release_registry`, which a live slot draws its card on a newer frame under, defaults to the
-    baked release. `caller`
-    defaults to those settings' `caller`, and the public site to `DFO_PUBLIC_SITE_URL`.
+    baked release. `caller` defaults to those settings' `caller`, and the public site to
+    `DFO_PUBLIC_SITE_URL`.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     executor = build_door_executor(
@@ -1042,7 +1042,7 @@ def build_shares_door(
         methods=["GET"],
         response_model=ShareReadResponse,
         description="Read a share: its kind, mode, title, latest revision, slots and the "
-        "website's payload. Any origin may read it. It never carries the write token.",
+        "website's payload. Any origin may read it. It omits the write token.",
     )
     router.add_api_route(
         SHARE_PATH,
@@ -1066,9 +1066,9 @@ def build_shares_door(
         post_share_snapshot,
         methods=["POST"],
         response_model=ShareWriteResponse,
-        description="Turn a live share into a snapshot under the same URLs: each slot keeps "
+        description="Turn a live share into a snapshot under the same URLs. Each slot keeps "
         "the frame it serves now, pinned. Needs the share's write token in x-dfo-write-token. "
-        "A snapshot answers as it is; no route turns a snapshot live.",
+        "A snapshot answers as it is. No route turns a snapshot live.",
     )
     router.add_api_route(
         SHARE_HISTORY_PATH,
@@ -1095,9 +1095,9 @@ def build_shares_door(
             },
             304: {"description": "The If-None-Match ETag still names this card."},
         },
-        description="Read the card a share's slot shows, drawn on the frame the slot serves: "
-        "a snapshot's recorded frame, or a live slot's newest data, checked at most every 15 "
-        "minutes, as the slot's data route chooses it.",
+        description="Read the card a share's slot shows, drawn on the frame the slot serves. "
+        "That is a snapshot's recorded frame, or a live slot's newest data, checked at most "
+        "every 15 minutes, as the slot's data route chooses it.",
     )
     router.add_api_route(
         SHARE_SLOT_DATA_PATH,
@@ -1117,8 +1117,8 @@ def build_shares_door(
             },
             304: {"description": "The If-None-Match ETag still names these rows."},
         },
-        description="Read the rows a share's slot serves: a snapshot's recorded frame, or a "
-        "live slot's newest data, checked at most every 15 minutes.",
+        description="Read the rows a share's slot serves. The frame is a snapshot's recorded "
+        "frame, or a live slot's newest data, checked at most every 15 minutes.",
     )
 
     return DoorContribution(

@@ -1,5 +1,5 @@
 -- Runs once, when the empty Postgres container first starts. Creates the two databases and
--- the runtime and worker roles the migrations grant to; the migrator is the container's
+-- the runtime and worker roles the migrations grant to. The migrator is the container's
 -- superuser (POSTGRES_USER in compose.yaml). Names and passwords match local.env.
 CREATE DATABASE datasets;
 CREATE DATABASE presentation;

@@ -21,10 +21,11 @@ vocabulary. `data` and `other` fill the verb's frame slots: `frame_ref` and `rig
 `sum_of` and `join`, `frame_ref` and `denominator_frame_ref` for `share_of` and `quotient_of`, and
 for `compare`, which subtracts its left side from its right, `data` the right and `other` the left,
 so a call gives `data` minus `other`. `on` maps a column of `data` to the column of `other` holding
-the same entities, or lists columns both name alike. `compare` and `sum_of` take it as it is; for
+the same entities, or lists columns both name alike. `compare` and `sum_of` take it as it is. For
 `share_of` and `quotient_of` it names `numerator_by` and `denominator_by`, and for `join` its
-`join_keys` and, where a pair names two columns, `right_keys`. A column may be named by its role: `place` reads as `observationAbout`, and
-`origin` or `destination` as the one column of that flow axis the side's frame carries
+`join_keys` and, where a pair names two columns, `right_keys`. A column may be named by its role.
+`place` reads as `observationAbout`, and `origin` or `destination` as the one column of that flow
+axis the side's frame carries
 (`dfo_platform.roles.role_key_axis`), so `{"destination": "place"}` pairs a recipient with a
 place. A side's columns are those of the root its `data` chain reaches, since every verb names
 its output's keys as `data` names them. A window bound or a threshold may be a rolling reference
@@ -44,8 +45,8 @@ of the stored recipe takes its period over them again.
 
 A derived root is expanded into its stored recipe, so the runner computes the whole chain from
 its root datasets. A request whose whole `tree` is a derived root computes that recipe again
-under its own ids, which is how a client reads a derived frame on its datasets' newest versions. With `latest` false every root is read at the version it names. With `latest`
-true a Spec or dataset root is read at its dataset's current version of the same rendering, and
+under its own ids, which is how a client reads a derived frame on its datasets' newest versions.
+With `latest` false every root is read at the version it names. With `latest` true a Spec or dataset root is read at its dataset's current version of the same rendering, and
 each rolling literal follows the latest period of that data. Both read their roots through one
 `RootSource`.
 
@@ -58,8 +59,8 @@ step list its description record names (`described_steps`), and its recipe throu
 store, unless the frame file is stored and servable already, in which
 case it writes the recipe alone, which the store keeps once. A rerun of one tree on the same
 roots therefore stores nothing new and answers the same ref. The ref's `artifact.digest` names
-the frame file (`render.FRAME_FILE_OPTIONS`), as a dataset ref names the file it was read as. The recipe carries `left_out`, every
-series a step of the tree dropped for a data gap (`left_out_of`), which the derived reads serve
+the frame file (`render.FRAME_FILE_OPTIONS`), as a dataset ref names the file it was read as. The
+recipe carries `left_out`, every series a step of the tree dropped for a data gap (`left_out_of`), which the derived reads serve
 (`datasets_api.derived`). `compute_analysis` computes a tree as a run does and stores nothing.
 
 A run is prepared (`prepare_analysis`) before any frame is read: its roots resolved and its
@@ -488,7 +489,7 @@ _CEILING_NOUNS = {
 class AnalysisStoreDiverges(Refusal):
     """The pair a run computed already holds a recipe, a replay key or frame bytes that differ
     from the run's own. The pair is minted from the run's inputs, so this is a fault of the
-    runner or the stores, never of the request. Maps to non-retryable `internal_error` (500),
+    runner or the stores. Maps to non-retryable `internal_error` (500),
     logged with both identities."""
 
     code = "internal_error"
@@ -1478,8 +1479,8 @@ def compute_analysis(
         return _evaluated(working, resolved, source=source, bounds=bounds, latest=request.latest)
 
 
-# The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so a
-# body of another shape is never answered. Raise it whenever the body changes.
+# The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
+# only a body of this format is answered. Raise it whenever the body changes.
 ANSWER_FORMAT = "analysis_answer/1"
 
 

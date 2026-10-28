@@ -247,8 +247,8 @@ class CreateReplyResponse(WriteReplyResponse):
     retention: RetentionModel | None = Field(
         default=None,
         description="how long the frame the new card draws can still be fetched, as a read "
-        "states it: held for 30 days from when DFO stored it, until a share first includes "
-        "the card. Null for a card that draws no frame, or one whose frame DFO holds no "
+        "states it. The frame is held for 30 days from when DFO stored it, until a share first "
+        "includes the card. Null for a card that draws no frame, or one whose frame DFO holds no "
         "version record of",
     )
 
@@ -280,10 +280,10 @@ class ComponentReadResponse(BaseModel):
     retention: RetentionModel | None = Field(
         default=None,
         description="how long the frame this reply draws can still be fetched, counted from "
-        "when DFO stored it: the stored frame on a read, the named frame on a render. A card's "
-        "frame stays in the 30-day working tier until a share first includes the card. Once "
-        "`held_until` has passed the frame can refuse `frame_unavailable`; fetch the card's "
-        "data with latest=True to draw from current data. Null for a card that draws no frame, "
+        "when DFO stored it. It is the stored frame on a read and the named frame on a render. "
+        "A card's frame stays in the 30-day working tier until a share first includes the "
+        "card. Once `held_until` has passed the frame can refuse `frame_unavailable`. Fetch "
+        "the card's data with latest=True to draw from current data. Null for a card that draws no frame, "
         "or one whose frame DFO holds no version record of",
     )
 
@@ -305,7 +305,7 @@ class ShareWriteResponse(BaseModel):
     )
     revision: int = Field(description="the share revision this write made, 1 on a create")
     latest: bool = Field(
-        description="true for a live share, which follows new data; false for a snapshot, "
+        description="true for a live share, which follows new data, false for a snapshot, "
         "which keeps the versions its cards drew when it was made"
     )
 
@@ -315,7 +315,7 @@ class SharedResponse(ShareWriteResponse):
 
     write_token: str = Field(
         description="the shw_ token that grants replacing and deleting this share, sent back as "
-        "the x-dfo-write-token header. It appears only in this reply; keep it as a secret"
+        "the x-dfo-write-token header. It appears only in this reply, so keep it secret"
     )
 
 
@@ -355,8 +355,7 @@ class ShareSlotModel(BaseModel):
 
 
 class ShareReadResponse(BaseModel):
-    """`GET /api/presentation/shares/{share_id}`'s 200 body. It never carries the write
-    token."""
+    """`GET /api/presentation/shares/{share_id}`'s 200 body. It omits the write token."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -365,7 +364,7 @@ class ShareReadResponse(BaseModel):
         description="what the share publishes"
     )
     mode: Literal["live", "snapshot"] = Field(
-        description="live follows new data; snapshot keeps the versions its cards drew when it "
+        description="live follows new data, snapshot keeps the versions its cards drew when it "
         "was made"
     )
     title: str | None = Field(description="the share's title, null when it has none")
@@ -430,7 +429,7 @@ class ShareRetentionModel(BaseModel):
     held_until: str | None = Field(
         default=None,
         description="when a working-tier frame stops being guaranteed, 30 days after DFO "
-        "stored it; absent when pinned",
+        "stored it, and absent when pinned",
     )
 
 
@@ -462,7 +461,7 @@ class ShareServedModel(BaseModel):
         "was empty"
     )
     fetchable: bool = Field(
-        description="whether the frame's retention still holds; false when the slot was empty"
+        description="whether the frame's retention still holds, false when the slot was empty"
     )
 
 

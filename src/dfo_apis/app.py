@@ -98,8 +98,8 @@ def build_presentation_surface(
     with its render routes admitting the Datasets live-refresh principal from the environment.
     `datasets_cell` is the mounted Datasets surface's dependency cell, which live share slots
     check for newer data through; without one they serve their cards' own frames as stale.
-    Takes the shared `rate_cache` for the gated-surface factory signature; Presentation reads
-    no rate tables."""
+    Presentation reads no rate tables, so `rate_cache` is taken only to fit the gated-surface
+    factory signature."""
     from datasets_api.config import DatasetsBuildSettings
     from datasets_api.live_refresh import LiveRefreshPrincipal
     from presentation_api.app import presentation_surface

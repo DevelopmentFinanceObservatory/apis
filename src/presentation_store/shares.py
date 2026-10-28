@@ -7,8 +7,8 @@ from 1, and a slot holds one card revision or none. A create writes revision 1 w
 card. A replace writes the next revision with every slot the share has had, so a replacement
 with fewer cards leaves the later slots empty and keeps their URLs. It locks the share row and
 refuses a snapshot, or a share whose revision moved since the caller read it, so a replace
-racing a snapshot conversion cannot write new cards into the snapshot. Revision rows are never
-updated or deleted. A delete sets `deleted_at`, after which every read and write answers
+racing a snapshot conversion cannot write new cards into the snapshot. Revision rows are
+append-only. A delete sets `deleted_at`, after which every read and write answers
 `ShareNotFound`.
 
 A snapshot conversion (`snapshot_share`) writes the next revision with the frame each slot
@@ -32,9 +32,9 @@ entry and a read of an unchanged slot takes no lock.
 
 `create_share` mints the id (`ids.mint_share_id`) and inserts it with `ON CONFLICT DO NOTHING`,
 minting again while the id is taken, by a share made here or one imported from the website,
-up to `_MINT_ATTEMPTS` times before `GeneratedIdCollision`. The store checks no write token:
-it stores the digest it is given, and `read_share` returns it for the caller to compare. No two
-shares hold one token digest (migration 0015): a create given a digest another share holds,
+up to `_MINT_ATTEMPTS` times before `GeneratedIdCollision`. The store keeps
+the write token digest it is given, and `read_share` returns it for the caller to compare. No
+two shares hold one token digest (migration 0015). A create given a digest another share holds,
 taken down or not, raises `ShareWriteTokenInUse`, and `prior_create` finds that share with the
 digest of the create request that stored it, so a create keyed by a client's token can answer
 its retry with the first share. Driver failures become `PresentationStoreUnavailable` with the
@@ -97,12 +97,12 @@ _SHARE_COLUMNS = "id, kind, mode, title, write_token_sha256, owner, payload, cre
 _SHARE_WRITE_TOKEN_INDEX = "share_write_token_sha256_key"
 
 MAX_SHARE_PAYLOAD_BYTES = 10 * 1024 * 1024
-"""The largest `payload` a share stores, as compact UTF-8 JSON: 10 MiB, the website's limit."""
+"""The largest `payload` a share stores, as compact UTF-8 JSON (10 MiB, the website's limit)."""
 
 
 def payload_refusal(payload: object) -> str | None:
-    """Why a share cannot store `payload`, or `None` when it can: its compact UTF-8 JSON is
-    over `MAX_SHARE_PAYLOAD_BYTES`."""
+    """Why a share cannot store `payload`, or `None` when it can. A share refuses a payload
+    whose compact UTF-8 JSON is over `MAX_SHARE_PAYLOAD_BYTES`."""
     size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
     if size <= MAX_SHARE_PAYLOAD_BYTES:
         return None
@@ -136,7 +136,7 @@ class ShareWriteTokenInUse(Exception):
 
 
 class ShareIdTaken(Exception):
-    """An imported share's id holds another share: one made here, or a website share of
+    """An imported share's id holds another share, either one made here or a website share of
     another kind or creation time."""
 
     def __init__(self, share_id: str) -> None:
@@ -280,7 +280,7 @@ class ShareStore(Protocol):
         Raises:
             ShareNotFound: No share exists at `share_id`, or it was taken down.
             ShareNotReplaceable: The share is a snapshot.
-            EditConflict: The share's latest revision is no longer `revision`.
+            EditConflict: The share's latest revision is not `revision`.
             PresentationStoreUnavailable: The store failed.
         """
         ...
@@ -303,7 +303,7 @@ class ShareStore(Protocol):
 
         Raises:
             ShareNotFound: No share exists at `share_id`, or it was taken down.
-            EditConflict: The share's latest revision is no longer `revision`.
+            EditConflict: The share's latest revision is not `revision`.
             PresentationStoreUnavailable: The store failed.
         """
         ...
@@ -845,7 +845,7 @@ def _record_shown(
     rendering: Mapping[str, object] | None,
 ) -> None:
     """Record that `slot` shows `shown` (component id, component revision, frame spec id, frame
-    content version; all `None` for no card) from now, unless the slot's newest entry already
+    content version, all `None` for no card) from now, unless the slot's newest entry already
     shows it. Most reads find it does, so the newest entry is read first without a lock. When it
     differs, the share row lock serialises a second check and the insert across readers of one
     share, and `clock_timestamp()` dates the entry after any entry the lock waited on."""

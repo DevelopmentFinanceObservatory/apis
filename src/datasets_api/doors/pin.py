@@ -16,7 +16,7 @@ cannot spend the budget the grant's holders draw on, and one unit of the caller'
 allowance (`DATASETS_PIN_DAILY_ALLOWANCE`, default 50 a UTC day), refusing 429
 `allowance_exhausted` once it is spent. A pin spends its units of the daily budget, the open
 budget and the allowance together (`allowance.SharedAllowanceLedger.spend_together`), so a
-refusal by one spends none of the others; a unit stays spent when the copy then fails. A repeat
+refusal by one spends none of the others. A unit stays spent when the copy then fails. A repeat
 pin of an artifact that already has a pinned copy spends nothing.
 
 The door checks the spec, then the version, its revocation and its base version's, and the
@@ -398,7 +398,7 @@ def build_pin_door(
             "its base version's frame. Every format then stays fetchable and the version "
             "reports `retention.pinned`. When no such frame's bytes survive, the named artifact "
             "still pins, and `retention` keeps the frames' `held_until`. Only the named "
-            "artifact's copy spends the daily pin budget; the frame copy spends none. A caller "
+            "artifact's copy spends the daily pin budget, and the frame copy spends none. A caller "
             "without the pin grant also spends one unit of its daily pin allowance on a new "
             "copy, within a daily budget shared by every such caller; a repeat pin of an "
             "artifact already pinned spends nothing."
