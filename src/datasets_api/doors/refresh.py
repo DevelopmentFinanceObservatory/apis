@@ -37,7 +37,7 @@ one to answer with. So does a derived version linking files of two or more diffe
 options, which two renderings producing the same rows share, such as a cut and a groupby that
 left the cut frame unchanged.
 
-Freshness is the definition door's (`current.serve_current` through `_serve_spec`): a head
+Freshness is the definition door's (`current.serve_current` through `serve_spec`): a head
 confirmed within `head_recheck_seconds` answers with no read, a later call compares the head's
 dependency fingerprint in one graph read, and a changed fingerprint or a head older than
 `head_max_age_seconds` rebuilds. A rebuild mints the options `ai` mints a frame with (bare
@@ -89,9 +89,9 @@ from datasets_api.deps import DepsCell
 from datasets_api.doors.definition import (
     SERVING_EXCEPTION_TYPES,
     _run_retrieval,
-    _serve_spec,
-    _served_spec,
     request_definition_deps,
+    serve_spec,
+    served_spec,
 )
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest_models import Manifest
@@ -551,7 +551,7 @@ def _refuse_differing_renderings(
     raise RenderingNotRecorded(spec_id=spec_id, content_version=content_version, ambiguous=True)
 
 
-def _refresh_frame(
+def answer_frame_refresh(
     *, spec_id: str, content_version: str, deps: DefinitionDeps, trace_id: str | None
 ) -> FrameCurrent | FrameMoved | FramePending:
     """Answer the refresh of one dataset frame. Runs on the refresh door's executor.
@@ -561,7 +561,7 @@ def _refresh_frame(
     use the served id (`kinds.spec_id.resolve_served_definition`), so such a frame answers
     `moved` to its served dataset's current frame."""
     with phase("resolve"):
-        served = _served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
+        served = served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
         rendering = stored_rendering(
             spec_id=spec_id, content_version=content_version, snapshot_reader=deps.snapshot_reader
         )
@@ -609,7 +609,7 @@ def _refresh_frame(
         return FrameMoved(frame=frame)
 
     try:
-        manifest = _serve_spec(
+        manifest = serve_spec(
             stored=served,
             options=options,
             trigger="refresh",
@@ -656,7 +656,7 @@ def build_refresh_door(
         with door_call("frame_refresh", logger=logger) as call:
             answer = await _run_retrieval(
                 current.work_executor,
-                _refresh_frame,
+                answer_frame_refresh,
                 deps=request_definition_deps(current),
                 timings=call.timings,
                 refuse=RefreshBackpressure,
@@ -673,8 +673,8 @@ def build_refresh_door(
         router=router,
         registry_endpoints=route_registry_endpoints(router, "datasets.refresh"),
         classify=classify_refresh_exception,
-        # `_refresh_frame` serves the frame's dataset as the definition door serves a registered
-        # id, rendering the frame's parquet and its groupby sum.
+        # `answer_frame_refresh` serves the frame's dataset as the definition door serves a
+        # registered id, rendering the frame's parquet and its groupby sum.
         exception_types=(
             *SERVING_EXCEPTION_TYPES,
             ParquetSizeBoundError,
@@ -706,6 +706,7 @@ __all__ = [
     "RefreshRebuildFailed",
     "RenderingNotRecorded",
     "StoredRendering",
+    "answer_frame_refresh",
     "build_refresh_door",
     "classify_refresh_exception",
     "refresh_can_answer",

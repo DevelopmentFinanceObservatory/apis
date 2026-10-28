@@ -33,6 +33,11 @@ _CV = "cv_" + "1" * 32
     ("identity", "columns"),
     [
         pytest.param({"entities": {"origin": ["country/DEU"]}}, FLOW_ENRICHMENT_COLUMNS, id="flow"),
+        pytest.param(
+            {"entities": {"financingProvider": ["country/DEU"]}},
+            FLOW_ENRICHMENT_COLUMNS,
+            id="flow-column",
+        ),
         pytest.param({"open_roles": ["destination"]}, FLOW_ENRICHMENT_COLUMNS, id="open-flow"),
         pytest.param(
             {"entities": {"observationAbout": ["country/KEN"]}},

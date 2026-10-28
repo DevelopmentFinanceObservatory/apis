@@ -65,8 +65,8 @@ from datasets_api.analysis import (
     SpecRoot,
 )
 from datasets_api.current import DefinitionDeps, head_rendering, load_stored
-from datasets_api.doors.definition import _serve_spec, _served_spec
-from datasets_api.doors.refresh import FramePending, _refresh_frame
+from datasets_api.doors.definition import serve_spec, served_spec
+from datasets_api.doors.refresh import FramePending, answer_frame_refresh
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
@@ -104,9 +104,11 @@ _UNIT_TYPE = canonical_frame_schema((UNIT_COLUMN,)).field(UNIT_COLUMN).type
 
 
 def enrichment_columns(identity: Mapping[str, Any]) -> tuple[str, ...]:
-    """The enrichment columns a root of a dataset with `identity` is read with by default."""
+    """The enrichment columns a root of a dataset with `identity` is read with by default.
+    An identity names a flow role by its role word (`origin`) or its column
+    (`financingProvider`)."""
     roles = {*(identity.get("entities") or {}), *(identity.get("open_roles") or ())}
-    if roles & FLOW_ROLE_COLUMNS.keys():
+    if roles & (FLOW_ROLE_COLUMNS.keys() | PARTY_ROLES):
         return FLOW_ENRICHMENT_COLUMNS
     return (type_column(PLACE_ROLE),)
 
@@ -253,10 +255,10 @@ class LiveRootSource:
     ) -> ResolvedRoot:
         deps = self._deps
         if isinstance(root, SpecRoot):
-            served = _served_spec(spec_id=root.spec_id, deps=deps, trace_id=trace_id)
+            served = served_spec(spec_id=root.spec_id, deps=deps, trace_id=trace_id)
             options = mint_options(root.rendering, identity=served.identity)
             try:
-                manifest = _serve_spec(
+                manifest = serve_spec(
                     stored=served,
                     options=MintOptions.model_validate(options),
                     trigger="get",
@@ -273,7 +275,7 @@ class LiveRootSource:
             )
         spec_id, content_version = root.spec_id, root.content_version
         if latest:
-            answer = _refresh_frame(
+            answer = answer_frame_refresh(
                 spec_id=spec_id, content_version=content_version, deps=deps, trace_id=trace_id
             )
             if isinstance(answer, FramePending):

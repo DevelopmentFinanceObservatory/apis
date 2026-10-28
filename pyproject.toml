@@ -264,11 +264,12 @@ dfo-analysis-engine = { workspace = true }
 # refusals at the write routes' statuses, and its client contract, recorded at
 # dfo-apis d80df9f5f, leaves party totals out by default, orders a dataset's
 # columns and rows for reading, and states the client-identity, base-URL and
-# role-keys rules.
+# role-keys rules. Its registry maps the analysis engine's refusal codes and
+# the Datasets codes the datasets.analysis route serves, each at its status.
 # Follow-up: move all six to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2765bc329c4b475b66a977c601f2c466218ca31d", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2765bc329c4b475b66a977c601f2c466218ca31d", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4bcb6dc2e62917a09097f2bd873a5c785e593f7f", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4bcb6dc2e62917a09097f2bd873a5c785e593f7f", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

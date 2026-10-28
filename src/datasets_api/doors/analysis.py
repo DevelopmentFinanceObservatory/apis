@@ -18,9 +18,9 @@ storing nothing.
 Both routes admit every caller and spend no allowance. The caller is resolved
 (`dfo_platform.caller.resolve_caller`) for the call's log line alone, and a caller this
 service cannot name logs as unresolved. A website request whose caller header is malformed
-still refuses, as on every route that resolves callers. Until the code registry maps the reused Datasets codes on `datasets.analysis`, such a refusal goes
-out at the one status the registry gives it on every other endpoint. A run takes a thread of the analysis
-executor (`DATASETS_ANALYSIS_MAX_CONCURRENCY`), refusing retryable `service_unavailable`
+still refuses, as on every route that resolves callers. Every Datasets code the routes answer
+goes out at the status the code registry maps on `datasets.analysis`. A run takes a thread of
+the analysis executor (`DATASETS_ANALYSIS_MAX_CONCURRENCY`), refusing retryable `service_unavailable`
 (503) when every thread is busy, and one materialise permit for its frames; it answers timeout
 (504) after `DATASETS_ANALYSIS_TIMEOUT_SECONDS`.
 """
@@ -70,7 +70,6 @@ from dfo_analysis_engine.refusal import Refusal as EngineRefusal
 from dfo_platform import ProblemSpec
 from dfo_platform.caller import CallerHeaderInvalid, CallerUnresolved, resolve_caller
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
-from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Envelope, Refusal
 from dfo_platform.trace import get_trace_id
@@ -206,18 +205,7 @@ def classify_analysis_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=False,
             detail=exc.refusal.message,
         )
-    try:
-        return classify_datasets_refusal(exc)
-    except LookupError:
-        # The registry maps two codes on `datasets.analysis` so far. A Datasets refusal a run
-        # raises (a spec not found, a rebuild's refusal, a full pool) goes out at the one
-        # status the registry gives it everywhere else, and the gap is logged.
-        logger.warning(
-            "code %s has no status on datasets.analysis; answering its status elsewhere",
-            getattr(exc, "code", type(exc).__name__),
-        )
-        with bound_registry_endpoint(None):
-            return classify_datasets_refusal(exc)
+    return classify_datasets_refusal(exc)
 
 
 def _stores(current: Deps) -> AnalysisStores:
