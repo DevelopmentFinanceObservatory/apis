@@ -198,10 +198,8 @@ def test_a_dataset_card_is_redrawn_when_its_data_moves_and_only_then(rig: _Rig):
     assert head["stored_intent"]["frame_ref"] == stored
     assert _points(head["resolved_payload"]) == _expected([_KENYA, _GHANA], [2022, 2023, 2024])
     assert _refusal(rig.read(card, revision=2)) == (404, "not_found")
-    # The render pinned the target frame for the component.
-    pin = (f"presentation:{card}", DATASET, target["content_version"])
-    assert pin not in pinned_before
-    assert pin in rig.composed.pins()
+    # The render left the target frame in the working tier.
+    assert rig.composed.pins() == pinned_before
     # The export holds the rows the payload draws.
     assert _exported_points(rig.export(card, target)) == _points(payload)
 
@@ -475,7 +473,7 @@ def test_a_derived_card_is_redrawn_on_the_replay_of_its_recipe(rig: _Rig):
     }
     assert _coverage_gaps(payload) == ["1 series has no 2025 value: Uganda"]
     assert payload["provenance"]["warnings"][0]["kind"] == "coverage_gap"
-    assert (f"presentation:{card}", replay["spec_id"], replay["content_version"]) in (
+    assert (f"presentation:{card}", replay["spec_id"], replay["content_version"]) not in (
         rig.composed.pins()
     )
     assert _exported_points(rig.export(card, replay)) == _points(payload)

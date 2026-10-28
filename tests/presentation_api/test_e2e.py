@@ -17,6 +17,7 @@ from assembler.testing import (
 )
 from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
+from presentation_api.refusals import EXPIRED_FRAME_FIX
 
 
 def _frame_ref_dict(ref: FrameRef) -> dict[str, str]:
@@ -527,6 +528,7 @@ def test_an_expired_frame_is_frame_unavailable_and_retryable(release: CatalogueR
     body = resp.json()
     assert body["code"] == "frame_unavailable"
     assert body["retryable"] is True
+    assert body["detail"].endswith(EXPIRED_FRAME_FIX)
 
 
 def test_a_never_stored_frame_is_frame_unavailable_and_not_retryable(release: CatalogueRelease):

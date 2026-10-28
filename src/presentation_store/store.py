@@ -7,8 +7,8 @@ composition row also stores the SHA-256 digest of its write token, written once 
 An unknown id raises `DraftNotFound`. A component's write-token digest is unique, and its create
 may also store the SHA-256 of the create request; `prior_create()` finds a component by digest.
 
-`allocate_component_id()` mints an ID without I/O or locking. The pipeline can pin a frame
-before `begin_write()` opens its transaction. `begin_write` holds one transaction across
+`allocate_component_id()` mints an ID without I/O or locking, before `begin_write()` opens
+its transaction. `begin_write` holds one transaction across
 composition locking, component checks, append, and commit. It locks compositions before
 components, making component and composition writes atomic. A create whose write-token
 digest another component stores becomes `WriteTokenInUse`; Postgres holds the insert until a
@@ -53,7 +53,7 @@ __all__ = ["LivePresentationStore"]
 
 _REVISION_COLUMNS = (
     "revision, stored_intent, resolved_payload, catalog_version, schema_version, "
-    "formatter_profile, series_coordinates, created_at"
+    "formatter_profile, series_coordinates, created_at, frame_rendering"
 )
 
 # Migration 0008's unique index on `presentation.component (write_token_sha256)`.
@@ -88,6 +88,7 @@ def _row_to_record(component_id: str, row: Mapping[str, object]) -> RevisionReco
         formatter_profile=cast(dict, row["formatter_profile"]),
         series_coordinates=cast("list[dict] | None", row["series_coordinates"]),
         created_at=cast(datetime, row["created_at"]),
+        frame_rendering=cast("dict | None", row["frame_rendering"]),
     )
 
 
@@ -491,8 +492,8 @@ class _LiveWriteContext:
             tx.execute(
                 "INSERT INTO presentation.component_revision "
                 "(component_id, revision, stored_intent, resolved_payload, catalog_version, "
-                "schema_version, formatter_profile, series_coordinates) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "schema_version, formatter_profile, series_coordinates, frame_rendering) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     self.component_id,
                     record.revision,
@@ -506,6 +507,7 @@ class _LiveWriteContext:
                         if record.series_coordinates is not None
                         else None
                     ),
+                    (dict(record.frame_rendering) if record.frame_rendering is not None else None),
                 ),
             )
         except Exception as exc:

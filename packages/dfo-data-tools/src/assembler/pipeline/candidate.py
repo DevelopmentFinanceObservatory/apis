@@ -509,7 +509,7 @@ def _finish_candidate(
     described: DescribedRevision | None = None,
 ) -> _Candidate:
     """Mints, checks constraints, and enforces `MAX_ENVELOPE_BYTES` before returning a
-    candidate. The size check runs before a create pins its frame and repeats
+    candidate. The size check runs before the write and repeats
     if the transaction rebuilds the candidate.
 
     The component is minted from `merged_intent`. The candidate stores `stored_intent`,

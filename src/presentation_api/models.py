@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from datasets_api.manifest_models import RetentionModel
+
 __all__ = [
     "AppliedDefaultModel",
     "CapabilitiesResponse",
@@ -257,6 +259,14 @@ class ComponentReadResponse(BaseModel):
         description="the closed, token-capped fact summary this revision reports"
     )
     resolved_payload: dict[str, object] = Field(description=_RESOLVED_PAYLOAD_DESCRIPTION)
+    retention: RetentionModel | None = Field(
+        default=None,
+        description="how long the frame this reply draws can still be fetched, counted from "
+        "when DFO stored it: the stored frame on a read, the named frame on a render. A card's "
+        "frame stays in the 30-day working tier until a share first includes the card. Once "
+        "`held_until` has passed the frame can refuse `frame_unavailable`; fetch the card's "
+        "data with latest=True to draw from current data. Null for a card that draws no frame",
+    )
 
 
 # -- meta (presentation_api.doors.meta) -------------------------------------

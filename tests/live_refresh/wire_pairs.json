@@ -171,6 +171,10 @@
                 }
               }
             }
+          },
+          "retention": {
+            "pinned": false,
+            "held_until": "<timestamp>"
           }
         }
       }
@@ -735,6 +739,10 @@
                 }
               }
             }
+          },
+          "retention": {
+            "pinned": false,
+            "held_until": "<timestamp>"
           }
         }
       }
@@ -1098,6 +1106,10 @@
                 }
               }
             }
+          },
+          "retention": {
+            "pinned": false,
+            "held_until": "<timestamp>"
           }
         }
       }

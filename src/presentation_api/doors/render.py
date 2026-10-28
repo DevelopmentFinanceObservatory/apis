@@ -4,8 +4,9 @@
 revision answers, built from the revision's stored intent on the frame the body names, through
 `assembler.pipeline.render_component`. Its envelope's `provenance.inputs` names that frame and
 `provenance.refreshed_from` names the revision. `stored_intent` is the revision's own, so its
-`frame_ref` names the frame the revision was stored on. No revision is appended, and the
-frame is pinned for the component.
+`frame_ref` names the frame the revision was stored on, and `retention` is the named frame's.
+No revision is appended and nothing is pinned, so a live render leaves the frame it draws in
+the working tier.
 
 `GET .../render/data` serves the rows behind that rendering as the component data route serves
 a stored revision's, through `export_component_data(target_frame=...)`. It pins nothing, and
@@ -22,14 +23,18 @@ The door accepts the target frame before it renders, in `_accept_target`:
 - the frame the revision is stored on is always accepted;
 - a dataset frame (`spec_`) is accepted for a revision stored on a frame of the same `spec_id`
   when it is a frame the refresh of the stored frame answers with
-  (`datasets_api.doors.refresh.refresh_can_answer`). A plain card accepts any raw version of
+  (`datasets_api.doors.refresh.refresh_can_answer`). The stored frame's rendering is the one
+  the revision recorded when the card was made (`RevisionRecord.frame_rendering`), so a file of
+  another rendering linked later under the stored version changes nothing; a revision stored
+  before renderings were recorded is read from the stored frame's records. A plain card accepts any raw version of
   its dataset, whatever files are linked under it. A card on a groupby sum accepts a collapse
   recording that groupby, and a raw version linking a file of it. A stored raw version
   linking a plain file and groupby files accepts only a raw version linking a file of each
   of those groupbys. One linking files of several different groupbys and no plain file,
   and a collapse linking files of several different groupbys, accept no other frame;
-- a derived frame (`ops_`) is accepted for a revision stored on a derived frame when the recipe
-  store holds a recipe for each with one `normal_form_hash`.
+- a derived frame (`ops_`) is accepted for a revision stored on a derived frame when the
+  target's recipe has the `normal_form_hash` the revision recorded, or, for a revision stored
+  before renderings were recorded, the stored frame's recipe holds.
 
 Any other target refuses `render_target_mismatch` (409): another dataset or rendering, a frame
 of the other kind, a version or recipe the stores do not hold, and a door with no reader for
@@ -62,6 +67,7 @@ from dataset_store.snapshot import SnapshotNotFound, SnapshotReader
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.doors.refresh import (
     RenderingNotRecorded,
+    StoredRendering,
     refresh_can_answer,
     stored_rendering,
 )
@@ -80,6 +86,7 @@ from presentation_api.path_params import (
     require_content_version,
     require_spec_id,
 )
+from presentation_api.retention import frame_retention
 
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
@@ -182,38 +189,62 @@ def _target_frame(*, spec_id: str, content_version: str) -> FrameRef:
 
 
 def _same_dataset_rendering(
-    *, stored: FrameRef, target: FrameRef, snapshot_reader: SnapshotReader | None
+    *,
+    stored: FrameRef,
+    recorded: Mapping[str, object] | None,
+    target: FrameRef,
+    snapshot_reader: SnapshotReader | None,
 ) -> bool:
-    """Whether `target` is a frame the refresh of `stored` answers with: one dataset, and the
-    rendering `datasets_api.doors.refresh.refresh_can_answer` accepts."""
+    """Whether `target` is a frame the refresh of `stored`, of the `recorded` rendering, answers
+    with: one dataset, and the rendering `datasets_api.doors.refresh.refresh_can_answer`
+    accepts. With no `recorded` rendering the stored frame's records give it."""
     if snapshot_reader is None or stored.spec_id != target.spec_id:
         return False
     try:
-        stored_as, target_as = (
-            stored_rendering(
-                spec_id=frame.spec_id,
-                content_version=frame.content_version,
+        stored_as = (
+            StoredRendering.from_record(recorded)
+            if recorded is not None
+            else stored_rendering(
+                spec_id=stored.spec_id,
+                content_version=stored.content_version,
                 snapshot_reader=snapshot_reader,
             )
-            for frame in (stored, target)
         )
-    except (SnapshotNotFound, RenderingNotRecorded):
+        target_as = stored_rendering(
+            spec_id=target.spec_id,
+            content_version=target.content_version,
+            snapshot_reader=snapshot_reader,
+        )
+    except (SnapshotNotFound, RenderingNotRecorded, ValueError):
         return False
     return refresh_can_answer(stored=stored_as, target=target_as)
 
 
-def _same_recipe(*, stored: FrameRef, target: FrameRef, recipe_reader: RecipeReader | None) -> bool:
-    """Whether two derived frames hold recipes with one normal form."""
+def _same_recipe(
+    *,
+    stored: FrameRef,
+    recorded: Mapping[str, object] | None,
+    target: FrameRef,
+    recipe_reader: RecipeReader | None,
+) -> bool:
+    """Whether `target`'s recipe has the normal form the revision `recorded`, or with no
+    `recorded` rendering, the normal form of `stored`'s recipe."""
     if recipe_reader is None:
         return False
-    recipes = [
-        recipe_reader.read_recipe(spec_id=frame.spec_id, content_version=frame.content_version)
-        for frame in (stored, target)
-    ]
+    if recorded is not None:
+        normal_form_hash = recorded.get("normal_form_hash")
+    else:
+        stored_recipe = recipe_reader.read_recipe(
+            spec_id=stored.spec_id, content_version=stored.content_version
+        )
+        normal_form_hash = stored_recipe.normal_form_hash if stored_recipe is not None else None
+    target_recipe = recipe_reader.read_recipe(
+        spec_id=target.spec_id, content_version=target.content_version
+    )
     return (
-        recipes[0] is not None
-        and recipes[1] is not None
-        and recipes[0].normal_form_hash == recipes[1].normal_form_hash
+        normal_form_hash is not None
+        and target_recipe is not None
+        and target_recipe.normal_form_hash == normal_form_hash
     )
 
 
@@ -242,11 +273,19 @@ def _accept_target(*, record: RevisionRecord, target: FrameRef, deps: Components
     prefixes = (stored.spec_id.split("_", 1)[0], target.spec_id.split("_", 1)[0])
     if prefixes == ("spec", "spec"):
         accepted = _same_dataset_rendering(
-            stored=stored, target=target, snapshot_reader=deps.snapshot_reader
+            stored=stored,
+            recorded=record.frame_rendering,
+            target=target,
+            snapshot_reader=deps.snapshot_reader,
         )
         rule = "the same dataset and rendering as"
     elif prefixes == ("ops", "ops"):
-        accepted = _same_recipe(stored=stored, target=target, recipe_reader=deps.recipe_reader)
+        accepted = _same_recipe(
+            stored=stored,
+            recorded=record.frame_rendering,
+            target=target,
+            recipe_reader=deps.recipe_reader,
+        )
         rule = "a recipe with the same normal_form_hash as"
     else:
         accepted = False
@@ -325,6 +364,7 @@ def build_render_router(
                     release_registry=deps.release_registry,
                     vocabulary_source=deps.vocabulary_source,
                 )
+                retention = frame_retention(target, snapshot_reader=deps.snapshot_reader)
             return JSONResponse(
                 {
                     "component_id": reply.component_id,
@@ -335,6 +375,7 @@ def build_render_router(
                     "stored_intent": record.stored_intent,
                     "fact_summary": reply.fact_summary,
                     "resolved_payload": reply.resolved_payload,
+                    "retention": retention,
                 },
                 headers={"Cache-Control": "no-store"},
             )

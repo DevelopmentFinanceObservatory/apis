@@ -806,21 +806,17 @@ def test_an_unpublished_ops_frame_ref_is_frame_unavailable_and_retryable(
         ("quarantined", 404, "frame_unavailable", False),
     ],
 )
-@pytest.mark.parametrize("stage", ["load", "pin"])
 def test_a_create_whose_frame_registry_read_fails_answers_a_declared_refusal(
-    stage: str,
     fault: str,
     status: int,
     code: str,
     retryable: bool,
-    frame_store: FakeFrameStore,
     revision_store: FakeRevisionStore,
     release_registry: FakeReleaseRegistry,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """A real frame store reads the registry to scope a frame ref's revocation check when it
-    loads and when it pins. Each fault that read can raise at either stage answers a declared
-    refusal through the create route, never 500, and writes no component."""
+    loads. Each fault that read can raise answers a declared refusal through the create route,
+    never 500, and writes no component. A create pins nothing, so the load is the only read."""
     spec_reader = _FakeSpecReader()
     if fault == "quarantined":
         spec_reader.quarantined = frozenset({malaria_ethiopia_frame_ref().spec_id})
@@ -831,11 +827,8 @@ def test_a_create_whose_frame_registry_read_fails_answers_a_declared_refusal(
             else SpecRegistryStoreError("spec registry read failed")
         )
     live_store = _store(spec_reader=spec_reader)
-    if stage == "pin":
-        # The fake loads the frame, so the create reaches the real store's pin.
-        monkeypatch.setattr(frame_store, "pin", live_store.pin)
     surface = presentation_surface(
-        frame_store=frame_store if stage == "pin" else live_store,
+        frame_store=live_store,
         revision_store=revision_store,
         release_registry=release_registry,
     )

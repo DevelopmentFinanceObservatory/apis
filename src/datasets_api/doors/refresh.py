@@ -73,14 +73,15 @@ The door records no reference and pins nothing.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from dataset_store.snapshot import SnapshotNotFound, SnapshotReader
+from dataset_store.snapshot import SnapshotNotFound, SnapshotReader, StoredVersion
 from datasets_api.backpressure import Backpressure
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.current import DefinitionDeps, head_rendering, load_stored
@@ -94,7 +95,7 @@ from datasets_api.doors.definition import (
 )
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest_models import Manifest
-from datasets_api.mint_models import MintOptions
+from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.principals import Grant, Principals, RefreshNotPermitted, granted_route_class
 from datasets_api.recorded_rendering import (
@@ -268,6 +269,58 @@ class StoredRendering:
         """The options a mint of this rendering takes (`_frame_options`)."""
         return _frame_options(self.minting)
 
+    def to_record(self) -> dict[str, object]:
+        """This rendering as the JSON object a card revision stores
+        (`presentation.component_revision.frame_rendering`), read back by `from_record`."""
+        return {
+            "base_content_version": self.base_content_version,
+            "minting": _minting_record(self.minting),
+            "ambiguous": self.ambiguous,
+            "collapsed": self.collapsed,
+            "mintings": [_minting_record(minting) for minting in self.mintings],
+        }
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, object]) -> StoredRendering:
+        """The rendering `to_record` wrote.
+
+        Raises:
+            ValueError: `record` is not an object `to_record` writes, or holds a groupby this
+                build's grammar refuses.
+        """
+        try:
+            mintings = cast("Sequence[Mapping[str, object]]", record["mintings"])
+            return cls(
+                base_content_version=cast(str, record["base_content_version"]),
+                minting=_minting_of(cast("Mapping[str, object] | None", record["minting"])),
+                ambiguous=cast(bool, record["ambiguous"]),
+                collapsed=cast(bool, record["collapsed"]),
+                mintings=tuple(cast(MintingOptions, _minting_of(minting)) for minting in mintings),
+            )
+        except (KeyError, TypeError, ValidationError) as exc:
+            raise ValueError(f"not a stored rendering record: {exc}") from exc
+
+
+def _minting_record(minting: MintingOptions | None) -> dict[str, object] | None:
+    if minting is None:
+        return None
+    return {
+        "groupby": (
+            minting.groupby.model_dump(mode="json") if minting.groupby is not None else None
+        ),
+        "without_party_totals": minting.without_party_totals,
+    }
+
+
+def _minting_of(record: Mapping[str, object] | None) -> MintingOptions | None:
+    if record is None:
+        return None
+    groupby = record["groupby"]
+    return MintingOptions(
+        groupby=GroupbyOptions.model_validate(groupby) if groupby is not None else None,
+        without_party_totals=cast(bool, record["without_party_totals"]),
+    )
+
 
 def stored_rendering(
     *, spec_id: str, content_version: str, snapshot_reader: SnapshotReader
@@ -294,10 +347,27 @@ def stored_rendering(
     version = snapshot_reader.read_version(spec_id, content_version)
     if version is None:
         raise SnapshotNotFound(id=spec_id, content_version=content_version)
-    renderings = [
-        location.rendering
-        for location in snapshot_reader.read_artifact_locations(spec_id, content_version)
-    ]
+    return rendering_of(
+        spec_id=spec_id,
+        version=version,
+        renderings=[
+            location.rendering
+            for location in snapshot_reader.read_artifact_locations(spec_id, content_version)
+        ],
+    )
+
+
+def rendering_of(
+    *, spec_id: str, version: StoredVersion, renderings: Iterable[Mapping[str, object]]
+) -> StoredRendering:
+    """The rendering of `version`, stored under `spec_id` and linking files of `renderings`,
+    by the rule `stored_rendering` states.
+
+    Raises:
+        RenderingNotRecorded: As `stored_rendering` does.
+    """
+    content_version = version.content_version
+    renderings = list(renderings)
     mintings: tuple[MintingOptions, ...] = ()
     for recorded in recorded_mintings(renderings):
         if recorded not in mintings:

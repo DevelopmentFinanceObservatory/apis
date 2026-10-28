@@ -151,7 +151,11 @@ class ResolvedFrame:
     nothing continues the frame's series. `descriptions` holds the graph `description` of the
     one variable the version's definition resolved to, by bare dcid, when that variable is a
     World Development Indicators variable, and defines the version's measure
-    (`description.world_bank`); it is empty otherwise.
+    (`description.world_bank`); it is empty otherwise. `rendering` is the rendering of its
+    dataset the frame is, as the frame's stored records say at this load, the JSON object a
+    card revision stores with the frame (`RevisionRecord.frame_rendering`): a dataset frame's
+    groupby and party-totals cut, a derived frame's recipe `normal_form_hash`. It is `None`
+    when the records do not say.
     """
 
     frame_ref: FrameRef
@@ -169,6 +173,7 @@ class ResolvedFrame:
     input_records: Sequence[DescriptionRecord] = ()
     continuation: Continuation | None = None
     descriptions: Mapping[str, str] = field(default_factory=dict)
+    rendering: Mapping[str, object] | None = None
 
 
 class FrameUnavailable(Exception):
@@ -204,6 +209,11 @@ class RevisionRecord:
     # The instant the store recorded the revision, which never changes. `None` only on a record
     # the write path builds before the store stamps it. Every read returns it set.
     created_at: datetime.datetime | None = None
+    # The rendering of the frame `stored_intent.frame_ref` names, recorded when the revision
+    # first drew that frame (`ResolvedFrame.rendering`) and kept by every revision on the same
+    # frame, so a draw on a later frame matches the rendering the card was made from. `None`
+    # for a note, a frame whose records did not say, and revisions stored before it was kept.
+    frame_rendering: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)

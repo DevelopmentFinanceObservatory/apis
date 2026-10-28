@@ -5,6 +5,7 @@ entrypoint.
 
 from __future__ import annotations
 
+from presentation_store.card_pins import pin_card_frames
 from presentation_store.connection import PresentationStoreSettings
 from presentation_store.errors import PresentationStoreConfigError, PresentationStoreError
 from presentation_store.frame_store import (
@@ -29,5 +30,6 @@ __all__ = [
     "PresentationStoreUnavailable",
     "close_shared_pool",
     "frame_reads_bounded_by",
+    "pin_card_frames",
     "shared_pool",
 ]

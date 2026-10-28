@@ -159,7 +159,8 @@ class FakeTransaction:
 
         if sql.startswith(
             "SELECT revision, stored_intent, resolved_payload, catalog_version, schema_version, "
-            "formatter_profile, series_coordinates, created_at FROM presentation.component_revision"
+            "formatter_profile, series_coordinates, created_at, frame_rendering "
+            "FROM presentation.component_revision"
         ):
             revisions = s.component_revisions.get(params[0], [])
             if "AND revision = %s" in sql:
@@ -179,6 +180,7 @@ class FakeTransaction:
                 schema_version,
                 formatter_profile,
                 series_coordinates,
+                frame_rendering,
             ) = params
             revisions = s.component_revisions.setdefault(component_id, [])
             if any(row["revision"] == revision for row in revisions):
@@ -196,6 +198,7 @@ class FakeTransaction:
                     ),
                     # The column default, `now()` at insert.
                     "created_at": datetime.now(UTC),
+                    "frame_rendering": frame_rendering,
                 }
             )
             return []

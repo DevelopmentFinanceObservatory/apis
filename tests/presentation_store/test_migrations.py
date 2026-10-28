@@ -44,6 +44,7 @@ def test_presentation_store_migrations_apply_in_order_and_are_idempotent():
         "0008_idempotent_create.sql",
         "0009_drop_draft_lease.sql",
         "0010_revision_formatter_profile.sql",
+        "0011_revision_frame_rendering.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert statements[0] == "CREATE SCHEMA IF NOT EXISTS presentation"

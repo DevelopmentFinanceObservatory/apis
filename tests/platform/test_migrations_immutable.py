@@ -117,6 +117,9 @@ _PRESENTATION_STORE = {
     "0010_revision_formatter_profile.sql": (
         "41bac2559d6a5999ff756cf65e3e73133240fa0b463e0465f53becd445134b48"
     ),
+    "0011_revision_frame_rendering.sql": (
+        "956cc50b9e0285883089f082f663aa37b311974d0ac1b46cb1ee51e78a0889f0"
+    ),
 }
 
 

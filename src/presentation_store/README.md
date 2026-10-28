@@ -61,7 +61,7 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 | `presentation.composition`          | `composition_id`             | Container tracking composition identity, creation timestamp, and the nullable `write_token_sha256` digest.                                                |
 | `presentation.composition_revision` | `(composition_id, revision)` | Append-only revision log. Stores `blocks` JSONB (ordered array of `{"component_id", "revision"}`) and `actor`.                                            |
 | `presentation.component`            | `component_id`               | Component registry row. Holds optional `composition_id` foreign key assigned at creation, the nullable unique `write_token_sha256` digest, and the nullable `create_request_sha256` digest. |
-| `presentation.component_revision`   | `(component_id, revision)`   | Append-only component state. Stores `stored_intent` JSONB, `resolved_payload` JSONB, `series_coordinates` JSONB, `catalog_version`, `schema_version`, and the minting release's `formatter_profile` JSONB. |
+| `presentation.component_revision`   | `(component_id, revision)`   | Append-only component state. Stores `stored_intent` JSONB, `resolved_payload` JSONB, `series_coordinates` JSONB, `catalog_version`, `schema_version`, the minting release's `formatter_profile` JSONB, and the nullable `frame_rendering` JSONB of the frame the revision draws. |
 
 ### Migration Sequence
 
@@ -75,6 +75,7 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 - `0008_idempotent_create.sql`: Adds the partial unique index `component_write_token_sha256_key` on non-NULL `component.write_token_sha256` and the nullable `create_request_sha256` bytea column on `component`.
 - `0009_drop_draft_lease.sql`: Drops the `draft_lease` table and its index.
 - `0010_revision_formatter_profile.sql`: Adds the `formatter_profile` JSONB column to `component_revision`, fills it with the 2026.8.0 profile on rows stamped `2026.8.0`, and makes it NOT NULL with that profile as its default. Any row stamped with another release fails the migration.
+- `0011_revision_frame_rendering.sql`: Adds the nullable `frame_rendering` JSONB column to `component_revision`, with no backfill.
 
 ### Running Migrations
 
@@ -109,7 +110,7 @@ with store.begin_write(
 
 Write operations follow a set sequence:
 
-1. `allocate_component_id()` mints component IDs before opening the transaction, allowing callers to pin frames before database writes begin.
+1. `allocate_component_id()` mints component IDs before opening the transaction, so a card's description can name its component.
 2. Lock acquisition follows a strict hierarchy: composition rows first, then component rows. When modifying an existing composition, a `SELECT ... FOR UPDATE` locks the composition row.
 3. A `composition_id` other than `"new"` that names no composition, or a revise of a component id that names no component, raises `assembler.ports.DraftNotFound`.
 4. A create whose `write_token_sha256` another component already stores raises `assembler.ports.WriteTokenInUse`, and the transaction rolls back, including any composition it minted. When the other create has inserted but not committed, Postgres holds this insert until that transaction ends: a commit raises `WriteTokenInUse` here, a rollback lets this create proceed. The store tells the two apart by the constraint name pg8000 reports with `SQLSTATE 23505`.
@@ -127,11 +128,15 @@ Write operations follow a set sequence:
 2. Retrieves raw frame bytes from `ArtifactStore`, caching results in memory up to 64 MB.
 3. Computes the `StructuralView` with `assembler.frame_view.compute_structural_view`.
 4. Resolves display labels for `stat_var`, `entity`, and `provenance` IDs through `GraphReader.node_arcs_many`, capped at 300 references per call.
+5. States the frame's rendering as `ResolvedFrame.rendering`: a dataset frame's from its version record and linked files on every load, a derived frame's recipe `normal_form_hash`. A write stores it on the revision as `frame_rendering`.
 
 `pin(frame_ref, component_id)`:
 
 1. Promotes the canonical artifact from `working` to `pinned` tier in `ArtifactStore` when currently in the working tier.
 2. Inserts an artifact reference record (`reference_kind="presentation_draft"`, `principal="presentation:<component_id>"`) into `datasets.artifact_reference` using `ArtifactReferenceWriter`.
+3. For a derived (`ops_`) frame, pins each root version its recipe names (each root's `dataset`), and theirs in turn. A derived frame with no recipe yet pins alone; a store with no recipe reader, or a root naming no dataset version, refuses `frame_unavailable`.
+
+No create, revise, or render pins. `pin_card_frames(component_id, revision, revision_store, frame_store)` pins the frame a card revision draws, and a share calls it for each card it first includes.
 
 `release_pin(frame_ref, component_id)`:
 Removes the `presentation_draft` reference via `ArtifactReferenceWriter.remove_reference`. Cleanup tasks use it after confirming that the referenced component is absent.

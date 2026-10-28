@@ -6,6 +6,12 @@ composition needs that composition's token in the same header. A create may carr
 token in the body's `write_token`; a retry with the same token and request returns the first
 create's reply. These routes take no caller or session.
 
+No route pins a frame: a card's frame stays in the working tier until a share first includes
+the card (`presentation_store.pin_card_frames`). A read states the stored frame's retention
+(`datasets_api.retention.version_retention`): pinned, or held until 30 days after DFO stored
+it. A frame whose working copy has aged out refuses `frame_unavailable` on every route that
+loads it, naming a fetch with latest=True as the way to current data.
+
 The door also carries `presentation_api.doors.component_data`'s export route and the two render
 routes of `presentation_api.doors.render`, which admit the live-refresh principal alone. All six
 routes share one executor and a non-blocking semaphore. Saturation returns retryable 503. Each permit
@@ -18,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import cast
@@ -42,7 +48,13 @@ from assembler.errors import (
     WriteRefused,
 )
 from assembler.pipeline import get_component, write_component
-from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore, VocabularySource
+from assembler.ports import (
+    FrameRef,
+    FrameStore,
+    ReleaseRegistry,
+    RevisionStore,
+    VocabularySource,
+)
 from assembler.write_token import CreateRequestInvalid
 from dataset_store import LiveDatasetStore
 from dataset_store import close_shared_pool as close_dataset_pool
@@ -79,6 +91,7 @@ from presentation_api.models import ComponentReadResponse, CreateReplyResponse, 
 from presentation_api.path_params import PathParamInvalid, require_component_id
 from presentation_api.refusals import binding_invalid_spec, frame_unavailable_spec
 from presentation_api.reply import serialize_create_reply, serialize_write_reply
+from presentation_api.retention import frame_retention
 from presentation_api.vocabulary import LiveVocabularySource
 from presentation_store import (
     GeneratedIdCollision,
@@ -300,7 +313,8 @@ class ComponentsDeps:
     release_registry: ReleaseRegistry
     # The public website card exports link to, read from the environment in the lifespan.
     site: PublicSiteSettings
-    # What the render routes accept a target frame from. `None` accepts no frame by that rule.
+    # What the render routes accept a target frame from, and the reader of the retention a read
+    # and a render state. `None` accepts no frame by that rule and states no retention.
     snapshot_reader: SnapshotReader | None = None
     recipe_reader: RecipeReader | None = None
     # The words cards' descriptions are composed from, set in the lifespan.
@@ -469,7 +483,14 @@ def build_components_door(
                 revision=revision,
                 revision_store=deps.revision_store,
             )
-            return JSONResponse(document, status_code=200)
+            stored_intent = cast("Mapping[str, object]", document["stored_intent"])
+            frame = cast("Mapping[str, str] | None", stored_intent.get("frame_ref"))
+            retention = (
+                frame_retention(FrameRef(**frame), snapshot_reader=deps.snapshot_reader)
+                if frame is not None
+                else None
+            )
+            return JSONResponse({**document, "retention": retention}, status_code=200)
 
         return await _run(job)
 
