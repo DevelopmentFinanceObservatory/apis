@@ -32,7 +32,7 @@ from search.engine.region.grounding import (
 )
 from search.engine.region.refs import provenance_labels
 from search.engine.region.result import FacetAxisFilter
-from search.engine.region.whole_totals import identity_years, whole_reading
+from search.engine.region.whole_totals import containing_reading, identity_years, whole_reading
 from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.retrieval.facts import read_constraints
 from search.engine.spec_build import NamedGroup
@@ -594,7 +594,9 @@ def _whole_named_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
     """The group of each flow role whose entities the dataset elected for `identity`
     (`bound_values.identity_dataset`) reads as the whole population of the role's side over
     its requested window (`whole_totals.whole_reading`), by role key: one whole total ("ODA
-    to Ethiopia" binds `DACOfficialDonors`) or the members of one whole total set. Empty for
+    to Ethiopia" binds `DACOfficialDonors`) or the members of one whole total set, or the
+    containing total of the side (`whole_totals.containing_reading`: DAC1's
+    `DACCountriesTotal`) with its registry group. Empty for
     an identity whose dataset the code index does not elect."""
     dataset = identity_dataset(identity)
     if dataset is None:
@@ -603,6 +605,8 @@ def _whole_named_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
     groups: dict[str, NamedGroup] = {}
     for role, dcids in identity.entities.items():
         reading = whole_reading(dcids, datasets=(dataset,), years=years)
+        if reading is None and len(dcids) == 1:
+            reading = containing_reading(dcids[0], datasets=(dataset,))
         if reading is not None and reading.axis == role_key_axis(role):
             groups[role] = reading.named_group()
     return groups

@@ -1637,6 +1637,80 @@ def test_the_opt_in_measure_alternative_mints_the_identity_electing_it():
     assert alternative.definition.identity == elected.definition.identity
 
 
+# DAC2a's imputed multilateral ODA line, on the five-tuple of the imputed table's rows.
+_DAC2A_IMPUTED_MEMBER = "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal"
+_IMPUTED_LINES = (_IMPUTED_MEMBER, _DAC2A_IMPUTED_MEMBER)
+
+
+def _imputed_lines_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The imputed table's member and DAC2a's imputed line each hold France's series to
+    Kenya under their own dataset."""
+    patch_coverage(
+        monkeypatch,
+        [
+            (_IMPUTED_MEMBER, "imputed", _FRA, _KEN, [2019, 2020, 2021]),
+            (_DAC2A_IMPUTED_MEMBER, "dac2a", _FRA, _KEN, [2019, 2020, 2021]),
+        ],
+        role_names=dict.fromkeys(
+            _IMPUTED_LINES, RoleNames(donor="financingProvider", recipient="financingRecipient")
+        ),
+        facet_metadata={
+            "imputed": FacetMetadata(provenance_id=IMPUTED_PROVENANCE, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("variable", "members", "source"),
+    [
+        pytest.param("imputed multilateral ODA", _IMPUTED_LINES, _DAC2A, id="imputed-first"),
+        pytest.param("imputed multilateral ODA", _IMPUTED_LINES[::-1], _DAC2A, id="dac2a-first"),
+        pytest.param(
+            "imputed multilateral aid to education",
+            _IMPUTED_LINES,
+            IMPUTED_PROVENANCE,
+            id="sector",
+        ),
+    ],
+)
+def test_an_unnamed_imputed_question_answers_from_dac2a_unless_it_asks_a_sector(
+    monkeypatch: pytest.MonkeyPatch, variable: str, members: tuple[str, ...], source: str
+):
+    """The scripted bind elects the first shape it is offered. A question naming no table
+    answers from DAC2a's own imputed line, whichever line recall finds first, so the bind
+    is offered no imputed table. A question naming a sector, a breakdown only the
+    imputed table holds, answers from it."""
+    _imputed_lines_coverage(monkeypatch)
+    llm = _ScriptedLLM(variable)
+
+    response = _resolve_scripted(
+        f"{variable} to Kenya", llm, graph=_graph(variable, members=members)
+    )
+
+    (spec,) = _specs(response)
+    assert identity_dataset(spec.definition.identity) == source
+    offered = any(_IMPUTED_LABEL in prompt for prompt in llm.bind_prompts)
+    assert offered == (source == IMPUTED_PROVENANCE)
+
+
+def test_a_question_naming_the_imputed_table_answers_from_it(monkeypatch: pytest.MonkeyPatch):
+    """A part naming the imputed table answers from it with DAC2a's imputed line recalled
+    first."""
+    _imputed_lines_coverage(monkeypatch)
+    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
+    variable = "imputed multilateral ODA"
+
+    response = _resolve_scripted(
+        f"{variable} to Kenya",
+        _ScriptedLLM(variable),
+        graph=_graph(variable, members=_IMPUTED_LINES[::-1]),
+    )
+
+    (spec,) = _specs(response)
+    assert identity_dataset(spec.definition.identity) == IMPUTED_PROVENANCE
+
+
 def test_a_parsed_part_naming_no_dataset_answers_the_crs():
     llm = _ScriptedLLM()
 

@@ -51,6 +51,7 @@ from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetToo
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.whole_totals import (
     WholeReading,
+    containing_reading,
     covers_unpublished,
     named_whole_label,
     requested_years,
@@ -1082,8 +1083,9 @@ def whole_total_candidates(
     The candidates read no binding and no coverage, so the role keys each gives are fixed
     before any binding is settled under them. A side offers a total where every dataset the
     shape answers from (`bound_values.declared_datasets`) reads its parties whole over the
-    part's period (`whole_totals.whole_reading`), the shape declares a role on that side,
-    and `assignment` leaves it unnamed. Each side the part totals (`totalled_axes`) offers
+    part's period (`whole_totals.whole_reading`), or serves it as the side's containing
+    total (`whole_totals.containing_reading`: DAC1's DAC countries' total), the shape
+    declares a role on that side, and `assignment` leaves it unnamed. Each side the part totals (`totalled_axes`) offers
     the total of every party there, origin first: both sides unnamed offer the donors'
     total, then the recipients' total, one at a time, since the source publishes no figure
     between two whole totals. For the same reason a side a text names a whole population on
@@ -1099,6 +1101,8 @@ def whole_total_candidates(
 
     def offered(dcids: Sequence[str]) -> WholeReading | None:
         reading = whole_reading(dcids, datasets=datasets, years=years)
+        if reading is None and len(dcids) == 1:
+            reading = containing_reading(dcids[0], datasets=datasets)
         if reading is None or reading.axis not in declared or reading.axis in assignment.sets:
             return None
         return reading

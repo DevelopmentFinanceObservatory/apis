@@ -1,8 +1,8 @@
 """The provider axis: a named donor's total of a CRS sector counts its bilateral flows plus
 its imputed share of multilateral spending when both tables cover the years asked for; a
 window the imputed table covers in part offers the inclusive scope over the years it covers,
-which only a switch applies; a typed "bilateral" applies; a latest window elects the latest
-year both tables cover; and a resubmit of a composite with its own entries keeps its spec_id.
+which a switch or a stated scope applies; a typed "bilateral" applies; a latest window elects
+the latest year both tables cover; and a resubmit of a composite with its own entries keeps its spec_id.
 
 The parts resolve through the parsed door over the fixture graph of `test_basis`: CRS health
 members under CRS 120 and 130 from the United States to Kenya. The imputed multilateral table
@@ -363,6 +363,9 @@ def test_a_composite_answer_cites_both_tables_and_names_its_measure_by_the_decla
     sentence = spec.resolved.rendered_sentence or ""
     assert declaration.measure_noun in sentence
     assert all(source.label.split(" (")[0] in sentence for source in sources)
+    # The tables are named with no provider scope, and the concept is the bilateral part's.
+    assert spec.resolved.published_tables == " and ".join(source.label for source in sources)
+    assert spec.resolved.concept_label == bilateral.resolved.concept_label == "health"
 
 
 def test_a_window_the_imputed_table_covers_in_part_is_offered_shortened_and_switched_back(
@@ -383,6 +386,7 @@ def test_a_window_the_imputed_table_covers_in_part_is_offered_shortened_and_swit
         "kind": "provider",
         "scope": "inclusive",
         "window": (2011, 2024),
+        "provenance": _INCLUSIVE_SOURCE,
     }
     assert inclusive.label == "bilateral plus imputed multilateral, 2011 to 2024"
     assert choice.active == "provider:bilateral"
@@ -402,23 +406,135 @@ def test_a_window_the_imputed_table_covers_in_part_is_offered_shortened_and_swit
     assert back.spec_id == first.spec_id
 
 
-def test_a_stated_inclusive_scope_over_a_part_covered_window_is_reported_not_applied(
-    monkeypatch,
+def _ask_part(message: str, *, time: str | None) -> DefinitePart:
+    response = offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text="health aid",
+                        entities=[
+                            ParsedEntity(text="United States", role_text="from"),
+                            ParsedEntity(text="Kenya", role_text="to"),
+                        ],
+                        time_text=time,
+                    )
+                ],
+                user_message=message,
+            )
+        ),
+        graph=_graph("health aid", _CRS_MEMBERS),
+        llm=_PickingLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    return part
+
+
+@pytest.mark.parametrize(
+    ("message", "time", "base_window", "text"),
+    [
+        pytest.param(
+            "health aid from the United States to Kenya including imputed multilateral",
+            None,
+            {"kind": "all"},
+            "Imputed multilateral aid covers only 2011 to 2024, so this shows those years.",
+            id="no-years",
+        ),
+        pytest.param(
+            "health aid from the United States to Kenya including multilateral, 2005 to 2024",
+            "2005-2024",
+            {"kind": "range", "start_year": 2005, "end_year": 2024},
+            "You asked for 2005 to 2024. Imputed multilateral aid covers only 2011 to 2024, "
+            "so this shows those years.",
+            id="stated-range",
+        ),
+    ],
+)
+def test_a_stated_inclusive_scope_the_imputed_table_covers_in_part_serves_its_years(
+    monkeypatch, message, time, base_window, text
 ):
+    """Bilateral series from 2005 and imputed ones from 2011: a stated inclusive scope is
+    served over 2011 to 2024, as a switch to it is, and the answer states the years it
+    leaves out. The base keeps the years asked for, so a switch back serves the bilateral
+    answer over them."""
+    _cover(monkeypatch, _FROM_2011)
+    bilateral = _ask("health aid from the United States to Kenya", time=time)
+
+    part = _ask_part(message, time=time)
+
+    spec = part.spec
+    scope = _scope(spec)
+    choice = _provider(spec)
+    assert (choice.active, choice.provenance) == ("provider:inclusive", "explicit")
+    assert _source(spec) == _INCLUSIVE_SOURCE
+    assert spec.definition.identity.requested_window == IdentityWindowRange(
+        start_year=2011, end_year=2024
+    )
+    assert not [d for d in scope.dropped_entries if d.entry.axis == "provider"]
+    assert scope.base.identity.requested_window.model_dump(exclude_none=True) == base_window
+    assert scope.base.spec_id == bilateral.spec_id
+    assert [(d.code, d.binding_ref, d.text) for d in part.departures] == [
+        ("year_unavailable", "when:", text)
+    ]
+
+    again = _resubmit(scope.base.identity, list(scope.entries))
+    assert again.spec_id == spec.spec_id
+    back = _resubmit(scope.base.identity, [_switch("provider:bilateral", choice)])
+    assert back.spec_id == bilateral.spec_id
+
+
+def test_a_stated_inclusive_scope_both_tables_cover_departs_nothing(monkeypatch):
     _cover(monkeypatch, _FROM_2011)
 
-    spec = _ask(
-        "health aid from the United States to Kenya including multilateral, 2005 to 2024",
-        time="2005-2024",
+    part = _ask_part(
+        "health aid from the United States to Kenya including imputed multilateral, 2023",
+        time="2023",
+    )
+
+    assert _provider(part.spec).active == "provider:inclusive"
+    assert part.spec.definition.identity.requested_window == IdentityWindowRange(
+        start_year=2023, end_year=2023
+    )
+    assert part.departures == []
+
+
+def test_a_carried_inclusive_scope_the_imputed_table_covers_in_part_is_dropped(monkeypatch):
+    """Only the user's own words or a switch accept fewer years than asked for, so an
+    inclusive scope carried from an earlier part is reported with the option's reason and
+    the part stays bilateral."""
+    _cover(monkeypatch, _FROM_2011)
+    entry = Entry(
+        axis="provider",
+        option_id="provider:inclusive",
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id="earlier:provider"),
+    )
+
+    spec = _resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text="health aid",
+                        entities=[
+                            ParsedEntity(text="United States", role_text="from"),
+                            ParsedEntity(text="Kenya", role_text="to"),
+                        ],
+                        time_text="2005-2024",
+                    )
+                ],
+                user_message="health aid from the United States to Kenya, 2005 to 2024",
+                carried_entries=[entry],
+            )
+        )
     )
 
     assert _provider(spec).active == "provider:bilateral"
     (dropped,) = (d for d in _scope(spec).dropped_entries if d.entry.axis == "provider")
-    assert (dropped.entry.option_id, dropped.code, dropped.cause) == (
-        "provider:inclusive",
-        "stated_choice_not_applied",
-        "imputed_coverage",
-    )
+    assert (dropped.code, dropped.cause) == ("carried_choice_not_applied", "imputed_coverage")
 
 
 def test_a_latest_window_elects_the_latest_year_both_tables_cover_and_switches_back(
@@ -596,12 +712,18 @@ def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(
 
 def test_the_bilateral_and_inclusive_edits_are_inverses():
     base = _bilateral_identity()
-    inclusive = apply_binding(base, ProviderBinding(scope="inclusive"), [])
+    inclusive = apply_binding(
+        base, ProviderBinding(scope="inclusive", provenance=_INCLUSIVE_SOURCE), []
+    )
     back = apply_binding(inclusive, ProviderBinding(scope="bilateral"), [])
 
     assert (inclusive.facets or {})["provenance"] == IdentityBindingValue(ref=_INCLUSIVE_SOURCE)
     assert identity_spec_id(back) == identity_spec_id(base)
-    windowed = apply_binding(base, ProviderBinding(scope="inclusive", window=(2011, 2024)), [])
+    windowed = apply_binding(
+        base,
+        ProviderBinding(scope="inclusive", window=(2011, 2024), provenance=_INCLUSIVE_SOURCE),
+        [],
+    )
     assert windowed.requested_window == IdentityWindowRange(start_year=2011, end_year=2024)
 
 
@@ -718,7 +840,7 @@ def test_a_latest_window_elects_the_latest_year_both_tables_hold():
     facts = _facts(rows)
     identity = _bilateral_identity(latest=True)
 
-    reach = inclusive_reach(identity, facts)
+    reach = inclusive_reach(identity, facts, composite=_INCLUSIVE_SOURCE)
     table = provider_rule(identity, None, facts)
 
     assert reach.latest == 2022
@@ -743,7 +865,7 @@ def test_the_inclusive_scope_serves_the_years_the_imputed_table_covers_not_those
     )
     identity = _bilateral_identity()
 
-    reach = inclusive_reach(identity, facts)
+    reach = inclusive_reach(identity, facts, composite=_INCLUSIVE_SOURCE)
     table = provider_rule(identity, None, facts)
 
     assert reach.covered == reach.asked == frozenset(range(2015, 2021))
@@ -759,6 +881,7 @@ _DAC1 = basis._DAC1
 _HEADLINE = basis._HEADLINE
 _DAC1_TOTAL_ODA = "DAC1AidType1010"
 _DAC1_BILATERAL_ODA = "DAC1AidType1015"
+_DAC1_MULTILATERAL_ODA = "DAC1AidType2000"
 _DAC_MULTILATERALS = "DACMultilaterals"
 _DAC1_TOTAL_MEMBERS = basis._DAC1_MEMBERS
 _DAC1_BILATERAL_MEMBERS = (
@@ -766,10 +889,24 @@ _DAC1_BILATERAL_MEMBERS = (
     "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1015_Nominal",
     "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1015_Nominal",
 )
+_DAC1_MULTILATERAL_MEMBERS = (
+    "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000_Nominal",
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType2000_Nominal",
+    "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType2000_Nominal",
+)
 _DAC1_MEMBERS_BY_CODE = {
     _DAC1_TOTAL_ODA: _DAC1_TOTAL_MEMBERS,
     _DAC1_BILATERAL_ODA: _DAC1_BILATERAL_MEMBERS,
+    _DAC1_MULTILATERAL_ODA: _DAC1_MULTILATERAL_MEMBERS,
 }
+_DAC1_ROWS = tuple(row for row in PUBLISHED_PROVIDER_SCOPES if row.dataset == _DAC1)
+_DAC1_PAIRS = [
+    pytest.param(row, sibling, id=f"{row.code}-offers-{sibling.code}")
+    for row in _DAC1_ROWS
+    for sibling in _DAC1_ROWS
+    if sibling is not row
+]
+"""Each DAC1 total and each other DAC1 total it offers as an option binding its aid type."""
 
 
 def _provider_options(spec: Spec) -> dict[str, tuple[str, str | None, dict[str, str]]]:
@@ -781,9 +918,9 @@ def _provider_options(spec: Spec) -> dict[str, tuple[str, str | None, dict[str, 
 
 
 def _ask_dac1(monkeypatch: pytest.MonkeyPatch, cell: str, *, message: str | None = None) -> Spec:
-    """`basis._CELLS[cell]` asked with `message`, over US series of DAC1's total and
-    bilateral ODA."""
-    basis._cover(monkeypatch, (*_DAC1_TOTAL_MEMBERS, *_DAC1_BILATERAL_MEMBERS))
+    """`basis._CELLS[cell]` asked with `message`, over US series of DAC1's total, bilateral
+    and multilateral ODA."""
+    basis._cover(monkeypatch, tuple(m for ms in _DAC1_MEMBERS_BY_CODE.values() for m in ms))
     row = basis._CELLS[cell]
     return basis._ask(row.variable, time=row.time, recipient=row.recipient, message=message)
 
@@ -795,13 +932,14 @@ def _slot_ref(identity: BaseIdentity, prop: str) -> str | None:
 
 
 @pytest.mark.parametrize("cell", ["donor-only-2019", "donor-only-2016", "donor-only-2010-2024"])
-def test_a_dac1_total_holds_the_contributions_it_counts_and_offers_bilateral_oda(
+def test_a_dac1_total_holds_the_contributions_it_counts_and_offers_bilateral_and_multilateral_oda(
     monkeypatch, cell: str
 ):
     """DAC1's total ODA counts core contributions to multilaterals, on every basis and on
     the OECD headline composite. It holds the contributions scope, offers bilateral flows as
-    DAC1's bilateral ODA, and the inclusive scope as unavailable since it counts the
-    contributions in place of an imputed share."""
+    DAC1's bilateral ODA and core contributions alone as its multilateral ODA, and the
+    inclusive scope as unavailable since it counts the contributions in place of an imputed
+    share."""
     spec = _ask_dac1(monkeypatch, cell)
 
     choice = _provider(spec)
@@ -814,11 +952,20 @@ def test_a_dac1_total_holds_the_contributions_it_counts_and_offers_bilateral_oda
         "provider:bilateral": ("available", None, {}),
         "provider:inclusive": ("unavailable", "contributions_counted", {"dataset": _DAC1}),
         "provider:contributions": ("available", None, {}),
+        "provider:multilateral": ("available", None, {}),
     }
     (bilateral,) = (o for o in choice.options if o.option_id == "provider:bilateral")
     assert bilateral.binding == SlotBinding(
         slot="dac1AidType", state="value", refs=[_DAC1_BILATERAL_ODA]
     )
+    (multilateral,) = (o for o in choice.options if o.option_id == "provider:multilateral")
+    assert multilateral.binding == SlotBinding(
+        slot="dac1AidType", state="value", refs=[_DAC1_MULTILATERAL_ODA]
+    )
+    assert multilateral.label == OPTION_LABELS.provider_multilateral
+    # On every basis, the OECD headline included, the series count ODA from DAC1's table.
+    assert spec.resolved.concept_label == "official development assistance"
+    assert spec.resolved.published_tables == get_index().datasets[_DAC1].label
 
 
 @pytest.mark.parametrize("cell", ["donor-only-2019", "donor-only-2010-2024"])
@@ -1010,7 +1157,7 @@ def _dac1_facts(*codes: str, extra: Sequence[tuple] = ()) -> ScopeFacts:
         ),
         *((dcid, "dac1", donor, ABSENT_ENTITY, list(years)) for dcid, donor, years in extra),
     ]
-    members = (*_DAC1_TOTAL_MEMBERS, *_DAC1_BILATERAL_MEMBERS)
+    members = tuple(m for code_members in _DAC1_MEMBERS_BY_CODE.values() for m in code_members)
     index = build_coverage_index(
         rows,
         role_names=dict.fromkeys(members, RoleNames(donor="financingProvider", recipient=None)),
@@ -1019,37 +1166,49 @@ def _dac1_facts(*codes: str, extra: Sequence[tuple] = ()) -> ScopeFacts:
     return ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
 
 
+_EVERY_DAC1_SCOPE = ["bilateral", "contributions", "multilateral"]
+
+
 @pytest.mark.parametrize(
     ("aid_type", "origin", "expected"),
     [
         pytest.param(
             _DAC1_TOTAL_ODA,
             (_USA,),
-            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            ("contributions", "contribution_total", _EVERY_DAC1_SCOPE),
             id="total-oda",
         ),
         pytest.param(
             _DAC1_BILATERAL_ODA,
             (_USA,),
-            ("bilateral", "bilateral_total", ["bilateral", "contributions"]),
+            ("bilateral", "bilateral_total", _EVERY_DAC1_SCOPE),
             id="bilateral-oda",
+        ),
+        pytest.param(
+            _DAC1_MULTILATERAL_ODA,
+            (_USA,),
+            ("multilateral", "multilateral_total", _EVERY_DAC1_SCOPE),
+            id="multilateral-oda",
+        ),
+        pytest.param(
+            _DAC1_MULTILATERAL_ODA, (_DEU, _EU_INSTITUTIONS), None, id="multilateral-pool-with-eu"
         ),
         pytest.param(
             _DAC1_TOTAL_ODA,
             (_DAC_COUNTRIES,),
-            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            ("contributions", "contribution_total", _EVERY_DAC1_SCOPE),
             id="group-of-countries",
         ),
         pytest.param(
             _DAC1_TOTAL_ODA,
             (_GROUP_OF_SEVEN,),
-            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            ("contributions", "contribution_total", _EVERY_DAC1_SCOPE),
             id="g7",
         ),
         pytest.param(
             _DAC1_TOTAL_ODA,
             (_EU_INSTITUTIONS,),
-            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            ("contributions", "contribution_total", _EVERY_DAC1_SCOPE),
             id="eu-institutions",
         ),
         # A pool of an EU member and the EU institutions counts the member's core
@@ -1068,7 +1227,7 @@ def _dac1_facts(*codes: str, extra: Sequence[tuple] = ()) -> ScopeFacts:
         pytest.param(
             _DAC1_TOTAL_ODA,
             (_USA, _EU_INSTITUTIONS),
-            ("contributions", "contribution_total", ["bilateral", "contributions"]),
+            ("contributions", "contribution_total", _EVERY_DAC1_SCOPE),
             id="pool-of-a-non-member-and-eu-institutions",
         ),
         pytest.param(
@@ -1088,12 +1247,12 @@ def test_each_dac1_aid_type_holds_its_declared_provider_scope_for_donors(
     origin: tuple[str, ...],
     expected: tuple[ProviderScope, str, list[ProviderScope]] | None,
 ):
-    """Total ODA holds the contributions scope and bilateral ODA the bilateral one, each
-    under its row's rule, for a part naming countries, the EU institutions or totals of a
-    group of countries alone. A part naming the multilaterals' total, a total of no
+    """Total ODA holds the contributions scope, bilateral ODA the bilateral one and
+    multilateral ODA the multilateral one, each under its row's rule, for a part naming
+    countries, the EU institutions or totals of a group of countries alone. A part naming the multilaterals' total, a total of no
     declared group, a pool of the EU institutions and a member, or no provider, has no
     provider record."""
-    facts = _dac1_facts(_DAC1_TOTAL_ODA, _DAC1_BILATERAL_ODA)
+    facts = _dac1_facts(*_DAC1_MEMBERS_BY_CODE)
     identity = _dac1_identity(aid_type, origin)
 
     table = provider_rule(identity, None, facts)
@@ -1116,7 +1275,7 @@ def _members_on(code: str, prefix: str) -> tuple[str, ...]:
     return tuple(m for m in _DAC1_MEMBERS_BY_CODE[code] if m.startswith(prefix))
 
 
-@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(("row", "sibling"), _DAC1_PAIRS)
 @pytest.mark.parametrize(
     ("donor", "prefix", "years", "available"),
     [
@@ -1128,13 +1287,12 @@ def _members_on(code: str, prefix: str) -> tuple[str, ...]:
     ],
 )
 def test_a_dac1_total_offers_its_sibling_total_only_where_a_series_covers_the_part(
-    row, donor: str | None, prefix: str, years: tuple[int, ...], available: bool
+    row, sibling, donor: str | None, prefix: str, years: tuple[int, ...], available: bool
 ):
     """An option binding the other DAC1 aid type is available where that aid type holds a
     series from the part's donor, on its basis, in its window, and unavailable with
     `option_not_covered` otherwise. The part keeps the total it holds either way. The part
     is a 2019 grant-equivalent total from the United States."""
-    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     extra = [] if donor is None else [(m, donor, years) for m in _members_on(sibling.code, prefix)]
     facts = _dac1_facts(row.code, extra=extra)
     identity = _dac1_identity(row.code, (_USA,))
@@ -1155,6 +1313,7 @@ _GE = "GrantEquivalent_"
 _SCOPE_LABELS = {
     "bilateral": OPTION_LABELS.provider_bilateral,
     "contributions": OPTION_LABELS.provider_contributions,
+    "multilateral": OPTION_LABELS.provider_multilateral,
 }
 _NET = "Amount_FinancialFlow_Net_"
 _GROSS = "Amount_FinancialFlow_Gross_"
@@ -1166,7 +1325,7 @@ def _partial(*years: tuple[int, int]) -> tuple[str, str, list[tuple[int, int]]]:
     return ("partial", "option_not_covered", list(years))
 
 
-@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(("row", "sibling"), _DAC1_PAIRS)
 @pytest.mark.parametrize(
     ("origin", "covered", "expected"),
     [
@@ -1188,13 +1347,12 @@ def _partial(*years: tuple[int, int]) -> tuple[str, str, list[tuple[int, int]]]:
     ],
 )
 def test_a_dac1_sibling_option_serves_the_years_every_donor_holds(
-    row, origin: tuple[str, ...], covered: dict[str, tuple[int, int]], expected
+    row, sibling, origin: tuple[str, ...], covered: dict[str, tuple[int, int]], expected
 ):
     """A 2015 to 2020 grant-equivalent total offers the other DAC1 aid type over the years
     each donor it names holds a series of it: available where they hold every year the
     total holds, partial over the years they hold where those are fewer, and unavailable
     where a donor of the pool holds none."""
-    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     extra = [
         (member, donor, range(first, last + 1))
         for donor, (first, last) in covered.items()
@@ -1211,7 +1369,7 @@ def test_a_dac1_sibling_option_serves_the_years_every_donor_holds(
     assert (availability.status, availability.code, availability.years) == expected
 
 
-@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(("row", "sibling"), _DAC1_PAIRS)
 @pytest.mark.parametrize(
     ("origin", "sibling_years", "expected", "window"),
     [
@@ -1247,6 +1405,7 @@ def test_a_dac1_sibling_option_serves_the_years_every_donor_holds(
 )
 def test_a_dac1_sibling_option_on_a_latest_window_serves_the_year_its_pool_shares(
     row,
+    sibling,
     origin: tuple[str, ...],
     sibling_years: dict[str, tuple[int, int]],
     expected,
@@ -1257,7 +1416,6 @@ def test_a_dac1_sibling_option_on_a_latest_window_serves_the_year_its_pool_share
     elects among those years: available where that year is 2023, partial over that one
     year otherwise, stated in its label, and unavailable where the donors share no year. A
     switch reads that year."""
-    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     extra = [
         *(
             (member, donor, range(2005, 2024))
@@ -1295,7 +1453,7 @@ def test_a_dac1_sibling_option_on_a_latest_window_serves_the_year_its_pool_share
     )
 
 
-@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(("row", "sibling"), _DAC1_PAIRS)
 @pytest.mark.parametrize(
     ("prefixes", "expected"),
     [
@@ -1305,11 +1463,10 @@ def test_a_dac1_sibling_option_on_a_latest_window_serves_the_year_its_pool_share
     ],
 )
 def test_a_dac1_sibling_option_on_the_headline_reads_each_basis_it_splices(
-    row, prefixes: tuple[str, ...], expected
+    row, sibling, prefixes: tuple[str, ...], expected
 ):
     """On the OECD headline over 2016 to 2019, the other DAC1 aid type serves the years its
     net series hold before 2018 and its grant-equivalent series hold from 2018."""
-    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     extra = [
         (member, _USA, _ALL_YEARS)
         for prefix in prefixes
@@ -1401,12 +1558,11 @@ def test_two_switches_whose_options_conflict_refuse_the_conflict_whatever_each_e
     )
 
 
-@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
-def test_a_partial_dac1_sibling_option_serves_the_years_the_part_holds_over_their_run(row):
+@pytest.mark.parametrize(("row", "sibling"), _DAC1_PAIRS)
+def test_a_partial_dac1_sibling_option_serves_the_years_the_part_holds_over_their_run(row, sibling):
     """A 2015 to 2020 total the United States holds from 2015 to 2017, whose other DAC1 aid
     type it holds from 2016 to 2020: the option serves 2016 and 2017, the years both hold,
     and a switch reads that run."""
-    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     extra = [
         *((member, _USA, range(2015, 2018)) for member in _members_on(row.code, _GE)),
         *((member, _USA, range(2016, 2021)) for member in _members_on(sibling.code, _GE)),
@@ -1432,7 +1588,7 @@ def test_a_partial_dac1_sibling_option_serves_the_years_the_part_holds_over_thei
     )
 
 
-@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize(("row", "sibling"), _DAC1_PAIRS)
 @pytest.mark.parametrize(
     ("own", "sibling_years", "expected"),
     [
@@ -1469,14 +1625,17 @@ def test_a_partial_dac1_sibling_option_serves_the_years_the_part_holds_over_thei
     ],
 )
 def test_a_dac1_sibling_option_is_measured_against_the_years_any_donor_of_the_pool_holds(
-    row, own: dict[str, tuple[int, int]], sibling_years: dict[str, tuple[int, int]], expected
+    row,
+    sibling,
+    own: dict[str, tuple[int, int]],
+    sibling_years: dict[str, tuple[int, int]],
+    expected,
 ):
     """A pool's answer holds the years any of its donors holds the part's own total in. A
     year is covered when every donor holding the part's total in it holds the other total
     in it, so a donor holding neither places no demand, and a donor holding the other total
     over part of its own run leaves the option partial over the years covered. A partial
     option states its years in its label."""
-    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     extra = [
         *(
             (member, donor, range(first, last + 1))
@@ -1508,12 +1667,11 @@ def test_a_dac1_sibling_option_is_measured_against_the_years_any_donor_of_the_po
         assert option.label == f"{label}, {years}"
 
 
-@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
-def test_a_latest_dac1_sibling_option_no_donor_demands_is_unavailable(monkeypatch, row):
+@pytest.mark.parametrize(("row", "sibling"), _DAC1_PAIRS)
+def test_a_latest_dac1_sibling_option_no_donor_demands_is_unavailable(monkeypatch, row, sibling):
     """Where the series count elects a year for the part's latest read and the donor scan
     finds no donor holding its own total in it, no donor demands the year, and the other
     DAC1 aid type is unavailable with `option_not_covered`."""
-    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
     facts = _dac1_facts(row.code, sibling.code)
     monkeypatch.setattr(provider, "donor_years", lambda table, *, facts: {})
 
@@ -1751,7 +1909,7 @@ def test_every_declared_provider_rule_names_one_scope():
     assert len(scopes) == len(set(scopes))
 
 
-@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+@pytest.mark.parametrize("row", _DAC1_ROWS, ids=lambda row: row.code)
 @pytest.mark.parametrize("covered", [True, False], ids=["both-covered", "own-covered"])
 @pytest.mark.parametrize(
     "origin",
@@ -1770,7 +1928,7 @@ def test_a_dac1_record_never_holds_an_option_it_marks_unavailable(row, covered, 
     """For every declared DAC1 row and every kind of provider set, with the other aid type's
     series or without them, the record's active option, fresh or carried to a resubmit, is
     available on the table it reads."""
-    codes = (_DAC1_TOTAL_ODA, _DAC1_BILATERAL_ODA) if covered else (row.code,)
+    codes = tuple(_DAC1_MEMBERS_BY_CODE) if covered else (row.code,)
     _assert_holds_available(_dac1_identity(row.code, origin), _dac1_facts(*codes))
 
 
@@ -1801,7 +1959,9 @@ def test_a_crs_record_never_holds_an_option_it_marks_unavailable(inclusive, late
     where the composite the part holds is not."""
     identity = _bilateral_identity(latest=latest)
     if inclusive:
-        identity = apply_binding(identity, ProviderBinding(scope="inclusive"), [])
+        identity = apply_binding(
+            identity, ProviderBinding(scope="inclusive", provenance=_INCLUSIVE_SOURCE), []
+        )
     _assert_holds_available(identity, _facts(rows))
 
 
@@ -1834,7 +1994,9 @@ def test_a_record_of_the_bilateral_scope_strips_the_composite_the_part_holds():
     ]
     facts = _facts(rows)
     bilateral = _bilateral_identity(latest=True)
-    identity = apply_binding(bilateral, ProviderBinding(scope="inclusive"), [])
+    identity = apply_binding(
+        bilateral, ProviderBinding(scope="inclusive", provenance=_INCLUSIVE_SOURCE), []
+    )
 
     record = settle_provider(identity, ScopeState(), facts)
     assert record is not None
@@ -1846,3 +2008,347 @@ def test_a_record_of_the_bilateral_scope_strips_the_composite_the_part_holds():
     assert (choice.active, choice.rule) == ("provider:bilateral", "bilateral_flows")
     assert built.compiled.identity == bilateral
     assert built.base.identity == bilateral
+
+
+# DAC2a's total ODA to a recipient counts a donor's bilateral flows, and stacks on DAC2a's own
+# imputed multilateral ODA (aid type 106, published gross alone) for the inclusive scope, on
+# gross and net flows. DAC2a reads a missing row as unknown, so the inclusive scope serves the
+# years both lines hold for the part.
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2A_INCLUSIVE = "provenance/ONEDAC2aBilateralAndImputedMultilateral"
+_DAC2A_ODA = {
+    "Gross": "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+    "Net": "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal",
+}
+_DAC2A_IMPUTED = "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal"
+
+
+def _dac2a_identity(
+    netting: str, *, window: tuple[int, int] = (2015, 2020), donor: str = _USA
+) -> BaseIdentity:
+    """DAC2a ODA from `donor` to Kenya on the `netting` basis over `window`."""
+    return BaseIdentity.model_validate(
+        {
+            "identity_version": "spec1",
+            "shape": {
+                "kind": "statvar_schema",
+                "population_type": "FinancialFlow",
+                "measured_property": "amount",
+                "stat_type": "measuredValue",
+                "measurement_qualifier": "Nominal",
+            },
+            "slots": [
+                {
+                    "property": "dac2aAidType",
+                    "binding": {"state": "value", "ref": "DAC2aAidType206"},
+                },
+                {
+                    "property": "financialFlowType",
+                    "binding": {"state": "value", "ref": "Disbursement"},
+                },
+                {"property": "nettingBasis", "binding": {"state": "value", "ref": netting}},
+            ],
+            "entities": {"origin": [donor], "destination": [_KEN]},
+            "requested_window": {"kind": "range", "start_year": window[0], "end_year": window[1]},
+        }
+    )
+
+
+def _dac2a_facts(imputed_years: Sequence[int], *, donor: str = _USA) -> ScopeFacts:
+    """The fixture code index and a coverage snapshot holding DAC2a's gross and net ODA from
+    `donor` to Kenya in every year from 2005 to 2024, and its imputed multilateral ODA in
+    `imputed_years`."""
+    members = (*_DAC2A_ODA.values(), _DAC2A_IMPUTED)
+    rows = [
+        *((dcid, "dac2a", donor, _KEN, list(_ALL_YEARS)) for dcid in _DAC2A_ODA.values()),
+        *([(_DAC2A_IMPUTED, "dac2a", donor, _KEN, list(imputed_years))] if imputed_years else []),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names=dict.fromkeys(members, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    return ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
+
+
+@pytest.mark.parametrize(
+    ("netting", "label"),
+    [
+        pytest.param("Gross", OPTION_LABELS.provider_inclusive, id="gross"),
+        pytest.param("Net", OPTION_LABELS.provider_inclusive_net, id="net"),
+    ],
+)
+def test_a_dac2a_total_offers_bilateral_plus_its_own_imputed_line_on_gross_and_net(
+    netting: str, label: str
+):
+    """A donor's DAC2a ODA holds the bilateral scope by default and offers the inclusive
+    scope from DAC2a's own imputed line on gross and on net flows, a net part adding the
+    gross imputed line as published under a label that says so. A switch binds the DAC2a
+    composite and keeps the part's basis, and a switch back compiles to the part's spec_id."""
+    facts = _dac2a_facts(_ALL_YEARS)
+    identity = _dac2a_identity(netting)
+
+    table = provider_rule(identity, None, facts)
+    record = settle_provider(identity, _total(), facts)
+
+    assert table is not None and record is not None
+    assert (record.active, record.rule) == ("provider:bilateral", "bilateral_recipient_total")
+    inclusive = table.option("provider:inclusive")
+    assert inclusive is not None
+    assert inclusive.availability.status == "available"
+    assert inclusive.label == label
+    assert inclusive.binding == ProviderBinding(scope="inclusive", provenance=_DAC2A_INCLUSIVE)
+
+    switched = build_part_scope(
+        base=identity, entries=[switch("provider:inclusive")], records={}, facts=facts
+    )
+    assert isinstance(switched, PartScope)
+    compiled = switched.compiled.identity
+    assert (compiled.facets or {})["provenance"] == IdentityBindingValue(ref=_DAC2A_INCLUSIVE)
+    assert _slot_ref(compiled, "nettingBasis") == netting
+    held = build_part_scope(base=compiled, entries=[], records={}, facts=facts)
+    back = build_part_scope(
+        base=compiled, entries=[switch("provider:bilateral")], records={}, facts=facts
+    )
+    assert isinstance(held, PartScope) and isinstance(back, PartScope)
+    (choice,) = (c for c in held.choices if c.axis == "provider")
+    assert choice.active == "provider:inclusive"
+    assert back.compiled.spec_id == identity_spec_id(identity)
+
+
+@pytest.mark.parametrize(
+    ("imputed_years", "expected"),
+    [
+        pytest.param(range(2018, 2025), ("partial", [(2018, 2020)]), id="imputed-from-2018"),
+        pytest.param((), ("unavailable", None), id="no-imputed-series"),
+    ],
+)
+def test_a_dac2a_inclusive_option_serves_the_years_both_lines_hold(
+    imputed_years: Sequence[int], expected: tuple[str, list[tuple[int, int]] | None]
+):
+    """DAC2a reads a missing row as unknown, so a 2015 to 2020 part whose imputed line starts
+    in 2018 is offered the inclusive scope over 2018 to 2020 alone, and one with no imputed
+    line is not offered it."""
+    table = provider_rule(_dac2a_identity("Net"), None, _dac2a_facts(imputed_years))
+
+    assert table is not None
+    inclusive = table.option("provider:inclusive")
+    assert inclusive is not None
+    status, years = expected
+    assert (inclusive.availability.status, inclusive.availability.years) == (status, years)
+    assert inclusive.availability.code == (
+        "imputed_coverage" if status == "partial" else "provider_not_offered"
+    )
+
+
+@pytest.mark.parametrize(
+    ("donor", "offered"),
+    [
+        # The DAC countries, whose members the membership policy lists, hold no multilateral.
+        pytest.param("DACCountriesTotal", True, id="dac-countries"),
+        # DAC2a's official donors hold the multilaterals, whose outflows its total ODA counts
+        # and its imputed line would add a second time.
+        pytest.param("DACOfficialDonors", False, id="official-donors"),
+    ],
+)
+def test_the_dac2a_inclusive_scope_serves_no_donor_total_holding_a_multilateral(
+    donor: str, offered: bool
+):
+    """A DAC2a donor total whose population holds a multilateral already counts the
+    multilaterals' outflows, so the part has no provider table and a stated or switched
+    inclusive scope stacks no imputed line on it. A total of countries alone is offered the
+    scope as a single donor is."""
+    facts = _dac2a_facts(_ALL_YEARS, donor=donor)
+    identity = _dac2a_identity("Gross", donor=donor)
+
+    table = provider_rule(identity, None, facts)
+    typed = settle_provider(
+        identity, ScopeState(entries=(explicit("provider:inclusive"),), total=True), facts
+    )
+    switched = build_part_scope(
+        base=identity, entries=[switch("provider:inclusive")], records={}, facts=facts
+    )
+
+    if offered:
+        assert table is not None and typed is not None
+        inclusive = table.option("provider:inclusive")
+        assert inclusive is not None and inclusive.availability.status == "available"
+        assert typed.active == "provider:inclusive"
+        assert isinstance(switched, PartScope)
+    else:
+        assert (table, typed) == (None, None)
+        assert switched == Refusal(
+            code="requested_option_unavailable", entry=0, cause="axis_absent"
+        )
+
+
+_RULE_OF = {
+    "provider:bilateral": "bilateral_recipient_total",
+    "provider:inclusive": "bilateral_plus_imputed",
+}
+
+
+@pytest.mark.parametrize(
+    ("message", "active", "source"),
+    [
+        pytest.param(None, "provider:bilateral", None, id="default"),
+        pytest.param(
+            "aid from the United States to Kenya in 2019 including imputed multilateral",
+            "provider:inclusive",
+            _DAC2A_INCLUSIVE,
+            id="stated-inclusive",
+        ),
+    ],
+)
+def test_a_dac2a_recipient_answer_serves_its_own_inclusive_composite_when_asked(
+    monkeypatch, message: str | None, active: str, source: str | None
+):
+    """A donor's aid to a recipient, which DAC2a serves on net flows, holds the bilateral
+    scope by default. Asked to include imputed multilateral aid, the fresh search answers
+    DAC2a's own composite on the same net basis, not ONE's imputed table."""
+    members = (*basis._DAC2A_MEMBERS, _DAC2A_IMPUTED)
+    patch_coverage(
+        monkeypatch,
+        [(dcid, "dac2a", _USA, _KEN, list(_ALL_YEARS)) for dcid in members],
+        role_names=dict.fromkeys(members, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    row = basis._CELLS["recipient-all-sectors"]
+
+    spec = basis._ask(row.variable, time=row.time, recipient=row.recipient, message=message)
+
+    choice = _provider(spec)
+    assert (choice.active, choice.rule) == (active, _RULE_OF[active])
+    assert _source(spec) == source
+    assert _slot_ref(spec.definition.identity, "nettingBasis") == "Net"
+    assert _provider_options(spec)["provider:inclusive"] == ("available", None, {})
+
+
+_OFFICIAL_DONORS = "DACOfficialDonors"
+
+
+def _dac2a_inclusive_answer(monkeypatch) -> Spec:
+    """US aid to Kenya, asked to include imputed multilateral aid, over DAC2a series from the
+    United States and from every official donor to Kenya: DAC2a's inclusive composite."""
+    members = (*basis._DAC2A_MEMBERS, _DAC2A_IMPUTED)
+    patch_coverage(
+        monkeypatch,
+        [
+            (dcid, "dac2a", donor, _KEN, list(_ALL_YEARS))
+            for dcid in members
+            for donor in (_USA, _OFFICIAL_DONORS)
+        ],
+        role_names=dict.fromkeys(members, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    row = basis._CELLS["recipient-all-sectors"]
+    spec = basis._ask(
+        row.variable,
+        time=row.time,
+        recipient=row.recipient,
+        message="aid from the United States to Kenya in 2019 including imputed multilateral",
+    )
+    assert _source(spec) == _DAC2A_INCLUSIVE
+    return spec
+
+
+def _resubmitted(identity: BaseIdentity, scope_entries: list[Entry] | None) -> Spec:
+    """`identity` posted on a dataset resubmit with `scope_entries`."""
+    row = basis._CELLS["recipient-all-sectors"]
+    members = basis._ALL_MEMBERS
+    graph = FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _OFFICIAL_DONORS: {"label": "Official Donors, Total", "type": "Organization"},
+            **{dcid: basis._member_node(dcid) for dcid in members},
+        },
+        detect={row.variable: {"svs": list(members), "cosine_scores": [0.9] * len(members)}},
+        resolve={"United States": _USA, "Kenya": _KEN},
+    )
+    response = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=row.variable, identity=identity, scope_entries=scope_entries
+                    )
+                ]
+            )
+        ),
+        graph=graph,
+        llm=_PickingLLM(0),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    return part.spec
+
+
+@pytest.mark.parametrize(
+    ("origin", "entries"),
+    [
+        # A client posting the inclusive answer with its donor edited to the official donors'
+        # total, which already counts the multilaterals' outflows.
+        pytest.param([_OFFICIAL_DONORS], None, id="official-donors"),
+        pytest.param([_OFFICIAL_DONORS], [], id="official-donors-no-entries"),
+        # The harness's donor whole of the part: the base identity with origin dropped, the
+        # part's provider scope as a carried entry and its basis as a switch.
+        pytest.param(None, "harness", id="donor-whole"),
+    ],
+)
+def test_an_inclusive_composite_over_providers_it_counts_twice_serves_the_bilateral_line(
+    monkeypatch, origin: list[str] | None, entries: str | list[Entry] | None
+):
+    """DAC2a's inclusive composite adds the named donors' imputed share of multilateral
+    spending. Posted over a total that holds the multilaterals, or over every donor, it would
+    count their outflows twice, so the resubmit serves the bilateral line and reports the
+    inclusive scope dropped as a carried entry the part cannot take."""
+    spec = _dac2a_inclusive_answer(monkeypatch)
+    base = _scope(spec).base.identity
+    others = {role: refs for role, refs in base.entities.items() if role != "origin"}
+    posted = base.model_copy(
+        update={"entities": others if origin is None else {**others, "origin": origin}}
+    )
+    choice = _provider(spec)
+    carried = Entry(
+        axis="provider",
+        option_id="provider:inclusive",
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id=choice.id),
+    )
+    if entries == "harness":
+        (basis_choice,) = (c for c in _scope(spec).choices if c.axis == "measure_basis")
+        switch_basis = Entry(
+            axis="measure_basis",
+            option_id=basis_choice.active,
+            provenance="explicit",
+            origin=ChoiceOrigin(choice_id=basis_choice.id),
+        )
+        entries = [switch_basis, carried]
+        expected = carried
+    else:
+        expected = carried.model_copy(
+            update={"origin": ChoiceOrigin(choice_id=f"{identity_spec_id(posted)}:provider")}
+        )
+
+    served = _resubmitted(posted, entries)
+
+    assert _source(served) is None
+    assert served.definition.identity.entities.get("origin") == origin
+    scope = served.resolved.scope_choices
+    assert scope is not None
+    assert [(d.entry, d.code, d.cause) for d in scope.dropped_entries] == [
+        (expected, "carried_choice_not_applied", "axis_absent")
+    ]
+
+
+def test_an_inclusive_composite_over_a_donor_keeps_it_on_resubmit(monkeypatch):
+    """The posted inclusive answer of a named donor answers the composite as it reads."""
+    spec = _dac2a_inclusive_answer(monkeypatch)
+
+    served = _resubmitted(spec.definition.identity, None)
+
+    assert _source(served) == _DAC2A_INCLUSIVE
+    assert served.spec_id == spec.spec_id

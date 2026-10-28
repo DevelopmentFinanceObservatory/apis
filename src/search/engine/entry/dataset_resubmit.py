@@ -43,6 +43,10 @@ An identity entry that posts `scope_entries` compiles them over its identity
 scope on its definite part (`_compiled_scope`, `_served_scope`). A composite identity, posted
 or compiled, resolves the identity its option was set on
 (`identity_edit.composite_table_identity`) and answers as the composite (`_as_composite`). A
+posted inclusive composite whose providers would count the multilaterals' outflows twice, a
+donor total holding multilaterals or no provider at all, answers its bilateral line, and its
+scope reports the inclusive scope dropped as a carried entry
+(`scope.provider.without_uncounted_inclusive`). A
 posted one asking for the latest year reads the year its tables elect, as a compiled one does
 (`scope.provider.elect_latest_window`).
 
@@ -99,6 +103,7 @@ from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import with_composite_answer, with_runnable_operations
 from search.engine.region.sentence_events import answer_events, response_sentence_events
 from search.engine.region.state import EngineOptions
+from search.engine.region.whole_totals import with_containing_total
 from search.engine.response_cache_flow import PartMemoScope
 from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.spec_id import identity_spec_id
@@ -120,7 +125,7 @@ from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
 from search.scope.composite import assemble_composite
-from search.scope.provider import elect_latest_window
+from search.scope.provider import elect_latest_window, without_uncounted_inclusive
 from search.scope.region import region_groups
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -353,6 +358,18 @@ async def handle(
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
         # A composite its components cannot serve refuses before its scope compiles.
         composite_table_identity(entry.identity, pointer=f"/input/entries/{index}/identity")
+        # A side the identity leaves open reads its dataset's containing total where a fresh
+        # search would bind it, so a no-op resubmit of a fresh answer answers the same Spec.
+        bound = with_containing_total(entry.identity, coverage=params.coverage.index)
+        if bound is not entry.identity:
+            entry = entry.model_copy(update={"identity": bound})
+        # An inclusive composite over providers it would count twice serves the bilateral
+        # line, and its scope drops the inclusive scope as a carried entry.
+        served, scope_entries = without_uncounted_inclusive(
+            entry.identity, entry.scope_entries, index=get_index()
+        )
+        if served is not entry.identity:
+            entry = entry.model_copy(update={"identity": served, "scope_entries": scope_entries})
         # The scope build reads coverage and scans families, so it runs off the event loop.
         scope = (
             None

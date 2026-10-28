@@ -116,4 +116,9 @@ def test_a_dac1_total_offers_every_provider_scope_with_a_label():
         option_id for option_id in _labels("dac1-total") if option_id.startswith("provider:")
     }
 
-    assert provider == {"provider:bilateral", "provider:inclusive", "provider:contributions"}
+    assert provider == {
+        "provider:bilateral",
+        "provider:inclusive",
+        "provider:contributions",
+        "provider:multilateral",
+    }

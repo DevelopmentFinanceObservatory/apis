@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from typing import Any, cast, get_args
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from datasets_api.description_store import (
     DESCRIPTION_RECORD_INVALID_MARKER,
@@ -17,6 +19,7 @@ from datasets_api.description_store import (
     LiveDescriptionStore,
     insert_description,
 )
+from description.compose import describe_version
 from description.facts import (
     SCHEMA_VERSION,
     Builds,
@@ -24,10 +27,17 @@ from description.facts import (
     DescriptionRecord,
     Evidence,
     InputVersion,
+    LabelEvidence,
     LateField,
     SeriesFacts,
     StatusCounts,
 )
+from tests.datasets_api.test_description_record import (
+    STAMPED_BINDINGS,
+    _mint,
+    family_raw_bound,
+)
+from tests.description.test_accept_compose import _words
 
 from ._version_record_store import FakeVersionRecordDatasetStore
 
@@ -58,7 +68,7 @@ def _record(*, title: str = "Gross ODA per capita", **overrides: Any) -> Descrip
     fields: dict[str, Any] = {
         "id": _OPS_ID,
         "content_version": _OCV,
-        "schema_version": 1,
+        "schema_version": 2,
         "basis": "publish",
         "index_stamp": None,
         "variables": None,
@@ -197,10 +207,149 @@ def test_a_row_of_a_later_schema_reads_as_none_and_stands(
     assert not [r for r in caplog.records if DESCRIPTION_RECORD_INVALID_MARKER in r.getMessage()]
 
 
+def _store_version_1_row(dataset_store: FakeVersionRecordDatasetStore, record: DescriptionRecord):
+    """Store `record` as an image of schema version 1 wrote it: its JSON and its column both
+    say 1, and it holds no member version 2 added. Returns the stored JSON."""
+    stored = {**record.model_dump(mode="json"), "schema_version": 1}
+    with dataset_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.description_record "
+            "(subject_id, content_version, schema_version, basis, record, recorded_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (_OPS_ID, _OCV, 1, record.basis, json.dumps(stored), _RECORDED),
+        )
+    return stored
+
+
+def _stored_row(dataset_store: FakeVersionRecordDatasetStore) -> tuple[int, dict[str, Any]]:
+    with dataset_store.transaction() as tx:
+        row = tx.fetch_one("SELECT schema_version, record FROM datasets.description_record")
+    assert row is not None
+    return cast(int, row["schema_version"]), cast(dict[str, Any], row["record"])
+
+
+_VERSION_1_RECORD = _record(
+    basis="backfill",
+    steps=[],
+    evidence=_evidence("A version 1 title").model_copy(
+        update={
+            "labels": [
+                LabelEvidence(ref="country/KEN", label="Kenya", read=datetime(2026, 10, 1).date())
+            ]
+        }
+    ),
+    late_fields=[LateField(field="steps", arrived=_RECORDED, basis="publish")],
+)
+
+
+def test_a_version_1_row_reads_as_version_2_and_is_not_rewritten(
+    dataset_store: FakeVersionRecordDatasetStore, store: LiveDescriptionStore
+) -> None:
+    """A record an earlier image wrote reads whole, its basis, label evidence and late fields
+    kept, at this image's schema version, which its description serves; the read leaves the
+    row as it was."""
+    stored = _store_version_1_row(dataset_store, _VERSION_1_RECORD)
+
+    read = store.read_description(id=_OPS_ID, content_version=_OCV)
+    batched = store.read_descriptions(versions=[(_OPS_ID, _OCV)])
+
+    assert read == _VERSION_1_RECORD
+    assert batched == {(_OPS_ID, _OCV): _VERSION_1_RECORD}
+    assert describe_version(read, _words())["built_from"]["facts_schema"] == 2
+    assert _stored_row(dataset_store) == (1, stored)
+
+
+def test_a_filled_version_1_row_stays_at_version_1(
+    dataset_store: FakeVersionRecordDatasetStore, store: LiveDescriptionStore
+) -> None:
+    """A fill writes the record at the lowest version that describes it, its column with it,
+    so a record that holds nothing version 2 added stays readable by an earlier image."""
+    _store_version_1_row(dataset_store, _VERSION_1_RECORD)
+
+    filled = store.fill_late_fields(
+        id=_OPS_ID, content_version=_OCV, values={"series.status.estimated": 4}, basis="publish"
+    )
+
+    assert filled == ["series.status.estimated"]
+    column, record = _stored_row(dataset_store)
+    assert (column, record["schema_version"]) == (1, 1)
+    assert record["series"]["status"]["estimated"] == 4
+
+
+@pytest.mark.parametrize(("binding", "stamp"), STAMPED_BINDINGS)
+def test_a_stored_record_reads_on_the_shape_of_the_version_it_is_stamped(
+    dataset_store: FakeVersionRecordDatasetStore,
+    store: LiveDescriptionStore,
+    binding: Mapping[str, Any] | None,
+    stamp: int,
+) -> None:
+    """A record holding nothing version 2 added is stored at version 1, and its JSON is one
+    an image of version 1 validates; a record narrowing a dimension to a set is stored at
+    version 2, whose shape reads it and version 1's refuses it. Both read back here whole, and
+    a fill keeps the stamp."""
+    record = _mint(family_raw_bound(binding)).model_copy(update={"schema_version": 2})
+
+    assert _insert(dataset_store, record) is True
+    column, stored = _stored_row(dataset_store)
+
+    assert (column, stored["schema_version"]) == (stamp, stamp)
+    assert not list(Draft202012Validator(_record_shape(stamp)).iter_errors(stored))
+    as_version_1 = {**stored, "schema_version": 1}
+    assert Draft202012Validator(_record_shape(1)).is_valid(as_version_1) is (stamp == 1)
+    assert store.read_description(id=record.id, content_version=record.content_version) == record
+    store.fill_late_fields(
+        id=record.id,
+        content_version=record.content_version,
+        values={"series.status.estimated": 4},
+        basis="publish",
+    )
+    assert _stored_row(dataset_store)[0] == stamp
+
+
 # The digest of `DescriptionRecord.model_json_schema()` under each `SCHEMA_VERSION`.
 _RECORD_SCHEMA_DIGESTS = {
     1: "0bb8f26a863e0a7ed2a4a5500a078dcb45e96133bf78700fae694df77d640b42",
+    2: "d23afdaef1a2f273b0145014153dc85f16d96a9266b652f298b94f9827cf2148",
 }
+
+# The members each schema version added to the record's models, by model name.
+_ADDED_IN = {2: (("DimensionFacts", "within_set"),)}
+
+# The digest of each schema version's record shape (`_record_shape`). Version 1's is that of
+# the version 1 image's own model, descriptions aside.
+_RECORD_SHAPE_DIGESTS = {
+    1: "e3197940e10137db6cf5e84378cc620b245468c7a176dc0e19e87e97b3b8aa66",
+    2: "f4e469419b8dccce899ed42093ff5c21a009e879af0838f48bfde403fd366af0",
+}
+
+
+def _without_descriptions(schema: object) -> object:
+    if isinstance(schema, dict):
+        return {k: _without_descriptions(v) for k, v in schema.items() if k != "description"}
+    if isinstance(schema, list):
+        return [_without_descriptions(v) for v in schema]
+    return schema
+
+
+def _record_shape(version: int) -> dict[str, Any]:
+    """The JSON schema an image of schema `version` validates a stored record against, read
+    from this model: its `schema_version` is `version`, and it lacks each member a later
+    version added. Descriptions are left out, since they do not change what reads."""
+    schema = copy.deepcopy(DescriptionRecord.model_json_schema())
+    schema["properties"]["schema_version"] = {
+        "const": version,
+        "title": "Schema Version",
+        "type": "integer",
+    }
+    for added, members in _ADDED_IN.items():
+        if added > version:
+            for model, member in members:
+                del schema["$defs"][model]["properties"][member]
+    return cast(dict[str, Any], _without_descriptions(schema))
+
+
+def _digest(schema: object) -> str:
+    return hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
 
 
 def test_the_record_model_is_the_one_its_schema_version_names() -> None:
@@ -209,12 +358,19 @@ def test_the_record_model_is_the_one_its_schema_version_names() -> None:
     after a rollback. A changed model either takes a new `SCHEMA_VERSION` or, while no
     released image has written the old one, a new digest here."""
     annotation = DescriptionRecord.model_fields["schema_version"].annotation
-    digest = hashlib.sha256(
-        json.dumps(DescriptionRecord.model_json_schema(), sort_keys=True).encode()
-    ).hexdigest()
 
-    assert get_args(annotation) == (SCHEMA_VERSION,)
-    assert _RECORD_SCHEMA_DIGESTS.get(SCHEMA_VERSION) == digest
+    assert get_args(annotation) == tuple(range(1, SCHEMA_VERSION + 1))
+    assert _RECORD_SCHEMA_DIGESTS.get(SCHEMA_VERSION) == _digest(
+        DescriptionRecord.model_json_schema()
+    )
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_each_schema_version_reads_the_shape_its_image_validates(version: int) -> None:
+    """A record stamped `version` is one an image of that version reads: this model at
+    `version` keeps the shape that version's model had, so a change to the record's models
+    that an earlier image would refuse takes a new version."""
+    assert _RECORD_SHAPE_DIGESTS[version] == _digest(_record_shape(version))
 
 
 def test_insert_strips_nul_from_text_the_model_did_not_validate(

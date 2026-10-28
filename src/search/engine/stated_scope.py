@@ -9,8 +9,9 @@ Two axes are read:
   negation or exclusion ("excluding multilateral", "not multilateral institutions",
   `bind_repair.occurrence_negated`). "including multilateral" (also "incl.", "inclusive of",
   "plus", and "bilateral plus imputed multilateral") states `provider:inclusive`. Any other
-  mention of "multilateral" ("multilateral development banks", "bilateral/multilateral")
-  names a kind of provider and leaves the axis unstated, even beside a "bilateral".
+  mention of "multilateral" ("multilateral development banks", "bilateral/multilateral",
+  "including multilateral lenders") names a kind of provider and leaves the axis unstated,
+  even beside a "bilateral".
 - Measure basis. "net", "gross", "grant equivalent(s)" and "commitments" state their
   basis. The singular "commitment" is a pledge ("has the US kept its commitment") and
   states none. A word that heads another measure ("net worth", "gross national income", "ODA net
@@ -21,6 +22,12 @@ nothing. An axis whose words state two options ("both gross and net ODA", "commi
 gross disbursements") is left unstated, since the text asks for both and neither is the
 scope. "total" ("total health aid", "totalled across donors") states the total intent the
 provider default reads. It is a fact about the request and sits outside the entries.
+
+A phrase that states the provider scope and names nothing else a table holds ("including
+imputed multilateral", "not including multilateral") leaves the text a part's binders and
+qualifier matching read, and the raw-text door's dropped phrases (`without_scope_phrases`),
+so its words bind the scope alone. It stays where the part's own words state no provider entry,
+and a dropped phrase stays on a request of several parts.
 
 Which text a part is read from is the door's choice (`part_scope_intakes`): a request of one
 part reads the user's message, and a request of several reads each part's own text, so
@@ -87,11 +94,28 @@ _BASIS_WORDS: tuple[tuple[re.Pattern[str], MeasureBasis], ...] = (
     (re.compile(r"\bgross\b" + _heads(_GROSS_HEADS), re.IGNORECASE), "gross"),
     (re.compile(r"\bcommitments\b", re.IGNORECASE), "commitments"),
 )
+# Nouns that, after "multilateral", name a kind of provider ("including multilateral
+# development banks", "plus multilateral lenders"), so the phrase states no scope.
+_PROVIDER_HEADS = (
+    "development",
+    "banks?",
+    "institutions?",
+    "organi[sz]ations?",
+    "agency",
+    "agencies",
+    "bodies",
+    "donors?",
+    "creditors?",
+    "lenders?",
+    "funds?",
+    "providers?",
+    "partners?",
+)
 _BILATERAL = re.compile(r"\bbilateral\b", re.IGNORECASE)
 _MULTILATERAL = re.compile(r"\bmultilaterals?\b", re.IGNORECASE)
 _INCLUSIVE = re.compile(
     r"\b(?:bilateral\s+)?(?:including|incl\b\.?|inclusive\s+of|plus)\s+"
-    r"(?:the\s+)?(?:imputed\s+)?multilaterals?\b",
+    r"(?:the\s+)?(?:imputed\s+)?multilaterals?\b" + _heads(_PROVIDER_HEADS),
     re.IGNORECASE,
 )
 _TOTAL = re.compile(r"\btotal(?:s|led|ed|ling|ing)?\b", re.IGNORECASE)
@@ -181,6 +205,49 @@ def _provider_stated(text: str) -> list[_Stated] | None:
             return None
         found.append(_Stated(provider_option_id("bilateral"), _cue_start(text, m.start()), m.end()))
     return found
+
+
+def without_scope_phrases(text: str, intake: ScopeIntake | None) -> str:
+    """`text` less each phrase that states the provider entry the part's `intake` read from
+    its words: the inclusive scope ("including imputed multilateral", "bilateral plus imputed
+    multilateral") for a `provider:inclusive` entry or, negated, the bilateral one ("not
+    including multilateral") for a `provider:bilateral` entry. Whitespace collapses around
+    them, and the result is empty when nothing else is left. Every other phrase stays, and
+    `text` is itself when no phrase goes. Words stating two provider options ("bilateral aid
+    including imputed multilateral") state no entry, and a phrase another part's words state
+    is not this part's, so each stays, reaches the binders and the dropped-qualifier warning,
+    and the part says what it did not apply.
+
+    Such a phrase states the provider scope and names nothing else a table holds, so the
+    scope entry it states is its whole reading. Left in the text, its words would read
+    again as code terms ("imputed" names DAC2a's imputed multilateral aid type), which the
+    part's tables do not hold. The other scope words stay: "bilateral", "net", "gross" and
+    "commitments" also name measures and parties outside the scope axes ("net FDI
+    inflows", "bilateral creditors")."""
+    stated = _stated_provider(intake)
+    rest = text
+    for m in reversed(list(_INCLUSIVE.finditer(text))):
+        negated = occurrence_negated(text, m.start(), m.end())
+        if provider_option_id("bilateral" if negated else "inclusive") != stated:
+            continue
+        start = _cue_start(text, m.start()) if negated else m.start()
+        rest = f"{rest[:start]} {rest[m.end() :]}"
+    return text if rest is text else " ".join(rest.split())
+
+
+def _stated_provider(intake: ScopeIntake | None) -> str | None:
+    """The option of the explicit provider entry `intake` read from the part's words, None
+    when it holds none."""
+    return next(
+        (
+            entry.option_id
+            for entry in (intake.entries if intake is not None else ())
+            if entry.axis == "provider"
+            and entry.provenance == "explicit"
+            and isinstance(entry.origin, TextOrigin)
+        ),
+        None,
+    )
 
 
 def _cue_start(text: str, start: int) -> int:

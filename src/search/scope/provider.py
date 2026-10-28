@@ -1,23 +1,29 @@
 """The provider axis: whose spending a part counts, the donor's bilateral flows alone, with
-its imputed share of multilateral spending, or with its core contributions to multilaterals.
+its imputed share of multilateral spending, with its core contributions to multilaterals, or
+the core contributions alone.
 
-The inclusive scope binds the stacked composite of the CRS and ONE's imputed multilateral
-table (`edits.INCLUSIVE_PROVENANCE`) as the identity's source; the bilateral scope removes it.
-The axis is present on a part the CRS serves and on a donor's published total
-(`provider_rule`). A published total holds the scope its declared row names
+The inclusive scope binds a stacked composite of the part's bilateral flows and an imputed
+multilateral line as the identity's source; the bilateral scope removes it. Each table that
+offers the scope declares its composite and the measure bases it adds on
+(`code_index.scope_conventions.INCLUSIVE_SOURCES`): the CRS with ONE's imputed multilateral
+table on gross disbursements, and DAC2a's total ODA with its own imputed multilateral ODA on
+gross and net flows. The axis is present on a part the CRS serves and on a donor's published
+total (`provider_rule`). A published total holds the scope its declared row names
 (`code_index.scope_conventions.PUBLISHED_PROVIDER_SCOPES`): DAC1's total ODA the
-contributions scope, and DAC1's bilateral ODA the bilateral scope. Each offers the other's
-scope as an option binding the other's aid type. The option serves the years every donor
+contributions scope, its bilateral ODA the bilateral scope and its multilateral ODA the
+multilateral scope, and DAC2a's total ODA the bilateral scope. Each DAC1 total offers the
+others' scopes as options binding their aid types. Such an option serves the years every donor
 holding its own total in a year also holds the other in, or, for a part asking for the
-latest year, the one year the pool's read elects (`_published_table`). On a part the CRS serves,
-the inclusive option serves the years both tables cover for the part (`inclusive_reach`):
-available when they cover every year the bilateral answer holds, partial with a shorter
-window of its own when they cover fewer, and, for a part asking for the latest year,
-available over the year a `latest` read elects among those both cover. It is not offered
-(`provider_not_offered`) where the imputed table cannot serve what the part binds, or
+latest year, the one year the pool's read elects (`_published_table`). Where a table declares
+an inclusive source, the inclusive option serves the years both lines cover for the part
+(`inclusive_reach`): available when they cover every year the bilateral answer holds, partial
+with a shorter window of its own when they cover fewer, and, for a part asking for the latest
+year, available over the year a `latest` read elects among those both cover. It is not
+offered (`provider_not_offered`) where the imputed line cannot serve what the part binds, or
 cannot count the providers it names (`_providers_not_offered`): a part naming no provider,
-a provider the table carries no rows for, or a pool naming a multilateral whose outflows
-the table attributes to its funders.
+a provider the line carries no rows for, or a pool naming a multilateral whose outflows
+the line attributes to its funders. On any other basis the source does not add on it
+conflicts with the measure-basis option (`AxisTable.conflicts`).
 
 The default is declared (`code_index.scope_conventions.PROVIDER_CONVENTIONS`): a named donor's
 total of a CRS sector or recipient part counts both, when they cover every year asked for.
@@ -34,10 +40,9 @@ import dataclasses
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import get_args
+from typing import cast, get_args
 
 from code_index.composites import (
-    DECLARED_COMPOSITES,
     CompositeNotServable,
     component_identities,
     composite_ref,
@@ -47,19 +52,25 @@ from code_index.composites import (
 from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.query import CodeIndex
 from code_index.scope_conventions import (
+    BASIS_MEASURES,
     DONOR_ORGANISATIONS,
+    INCLUSIVE_SOURCES,
     OPTION_LABELS,
     PROVIDER_CONVENTIONS,
     PROVIDER_SCOPE_RULES,
     PUBLISHED_PROVIDER_SCOPES,
     REDISTRIBUTED_PROVIDERS,
+    InclusiveSource,
     ProviderConvention,
     PublishedProviderScope,
 )
 from materialise.composite import spans
 from search.catalogue.counts import COUNTRY_PREFIX
+from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
+    ChoiceOrigin,
+    Entry,
     IdentityBindingValue,
     IdentityFacetValueRequest,
     IdentityShapeSchema,
@@ -77,11 +88,11 @@ from search.models import (
 )
 from search.scope.basis import held_measure, identity_part_shape
 from search.scope.composite import component_years, donor_years, served_components
-from search.scope.edits import INCLUSIVE_PROVENANCE, applies_in_pass, apply_binding
+from search.scope.edits import applies_in_pass, apply_binding
 from search.scope.region import policy_members, policy_members_between
 from search.scope.state import AxisRecord, ScopeState
-from search.scope.tables import AxisTable, ScopeFacts
-from search.scope.vocabulary import provider_option_id
+from search.scope.tables import AxisTable, Conflict, ScopeFacts
+from search.scope.vocabulary import measure_basis_option_id, provider_option_id
 from series_coverage.index import elected_year
 
 BILATERAL = provider_option_id("bilateral")
@@ -92,15 +103,23 @@ _SCOPE_LABELS: Mapping[ProviderScope, str] = {
     "bilateral": OPTION_LABELS.provider_bilateral,
     "inclusive": OPTION_LABELS.provider_inclusive,
     "contributions": OPTION_LABELS.provider_contributions,
+    "multilateral": OPTION_LABELS.provider_multilateral,
 }
 
-_STACKED = DECLARED_COMPOSITES[INCLUSIVE_PROVENANCE]
-_BILATERAL_TABLE = next(r.dataset for r in _STACKED.components if r.role == "bilateral")
+_SOURCES: Mapping[str, InclusiveSource] = {row.dataset: row for row in INCLUSIVE_SOURCES}
+"""The inclusive source of each table that declares one, by the table's provenance."""
+_SOURCE_COMPOSITES = frozenset(row.composite for row in INCLUSIVE_SOURCES)
+_PUBLISHED_DATASETS = frozenset(row.dataset for row in PUBLISHED_PROVIDER_SCOPES)
+"""The tables whose provider axis their published rows declare, on those totals alone."""
+_COUNTS_CONTRIBUTIONS: frozenset[ProviderScope] = frozenset({"contributions", "multilateral"})
+"""The scopes that count a donor's core contributions to multilaterals as it pays them, which
+an imputed share of the multilaterals' spending would count a second time."""
+_INCLUSIVE_BASIS_CAUSE = "imputed_gross_disbursements_only"
 _REDISTRIBUTED = frozenset(row.provider for row in REDISTRIBUTED_PROVIDERS)
 _SCOPE_RULES: Mapping[ProviderScope, str] = {row.scope: row.rule for row in PROVIDER_SCOPE_RULES}
 """The rule each provider scope names where no convention or published row settles it."""
 _DONOR_ORGANISATIONS = frozenset(DONOR_ORGANISATIONS)
-_GROSS = "gross"
+_NET = "net"
 _CONSTANT = "RealValue"
 _SLOT_WHY: Mapping[str, str] = {
     "crsCooperationModality": "modality",
@@ -123,38 +142,39 @@ class InclusiveReach:
     latest: int | None = None
 
 
-def inclusive_reach(identity: BaseIdentity, facts: ScopeFacts) -> InclusiveReach:
-    """The years the inclusive scope serves of a part whose bilateral identity is
-    `identity` (`InclusiveReach`), read from the coverage snapshot in memory. Raises
-    `code_index.composites.CompositeNotServable` where the imputed table cannot serve what
+def inclusive_reach(identity: BaseIdentity, facts: ScopeFacts, *, composite: str) -> InclusiveReach:
+    """The years the inclusive scope binding `composite` serves of a part whose bilateral
+    identity is `identity` (`InclusiveReach`), read from the coverage snapshot in memory: the
+    years every component serves (`composite.served_components`), so a line that reads a
+    missing row as unknown leaves out the years it holds none in. Raises
+    `code_index.composites.CompositeNotServable` where the imputed line cannot serve what
     `identity` binds."""
     document = identity.model_dump(mode="json", exclude_none=True)
-    bilateral, imputed = served_components(
-        {**document, "facets": {**document.get("facets", {}), "provenance": _inclusive()}},
-        facts=facts,
-    )
-    covered = bilateral.served
+    served = served_components(_with_composite(document, composite), facts=facts)
+    bilateral = next(c for c in served if c.component.role == "bilateral")
+    covered = frozenset[int].intersection(*(c.served for c in served))
     if document["requested_window"]["kind"] == "latest":
-        counts = {
-            year: bilateral.years.counts[year] + imputed.years.counts[year] for year in covered
-        }
+        counts = {year: sum(c.years.counts[year] for c in served) for year in covered}
         return InclusiveReach(
             asked=bilateral.years.held, covered=covered, latest=elected_year(counts)
         )
     return InclusiveReach(asked=bilateral.years.held, covered=covered)
 
 
-def _inclusive() -> dict[str, str]:
-    return {"state": "value", "ref": INCLUSIVE_PROVENANCE}
+def _with_composite(document: Mapping[str, object], composite: str) -> dict[str, object]:
+    """`document` binding `composite` as its source."""
+    facets = cast("Mapping[str, object]", document.get("facets") or {})
+    return {**document, "facets": {**facets, "provenance": {"state": "value", "ref": composite}}}
 
 
 def provider_rule(
     base: BaseIdentity, record: AxisRecord | None, facts: ScopeFacts
 ) -> AxisTable | None:
     """The provider table of a part whose identity is `base`, None where the axis does not
-    apply to it: `base` counts no published total (`_published_row`), and binds another
-    composite than the inclusive one or, without the inclusive composite, is an identity the
-    CRS does not serve.
+    apply to it: `base` counts no published total (`_published_row`), and binds a composite
+    other than its table's inclusive source or, without it, is served from a table that
+    declares no inclusive source (`INCLUSIVE_SOURCES`) or one whose published rows declare its
+    provider axis (`PUBLISHED_PROVIDER_SCOPES`).
 
     Read from `base`, so a resubmit of a served identity offers what its search offered. A
     published total offers what `_published_table` states. On a part the CRS serves, the
@@ -182,13 +202,18 @@ def _table(base: BaseIdentity, facts: ScopeFacts) -> AxisTable | None:
         ref = composite_ref(base.model_dump(mode="json", include={"facets"}))
     except CompositeNotServable:
         return None
-    if ref is not None and ref != INCLUSIVE_PROVENANCE:
+    if ref is not None and ref not in _SOURCE_COMPOSITES:
         return None
     bilateral = _without_inclusive(base, ref)
-    if _dataset(bilateral, facts) != _BILATERAL_TABLE:
+    dataset = _dataset(bilateral, facts)
+    source = _SOURCES.get(dataset) if dataset not in _PUBLISHED_DATASETS else None
+    if source is None or ref not in (None, source.composite):
         return None
     held = BILATERAL if ref is None else INCLUSIVE
-    options = (_option("bilateral"), _inclusive_option(bilateral, facts, held=held == INCLUSIVE))
+    options = (
+        _option("bilateral"),
+        _inclusive_option(bilateral, source, facts, held=held == INCLUSIVE),
+    )
     rules = {BILATERAL: _SCOPE_RULES["bilateral"], INCLUSIVE: _SCOPE_RULES["inclusive"]}
     return AxisTable(
         axis="provider",
@@ -196,13 +221,25 @@ def _table(base: BaseIdentity, facts: ScopeFacts) -> AxisTable | None:
         preference=(held, BILATERAL if held == INCLUSIVE else INCLUSIVE),
         held=held,
         rules=rules,
+        conflicts=_basis_conflicts(source),
+    )
+
+
+def _basis_conflicts(source: InclusiveSource) -> tuple[Conflict, ...]:
+    """The inclusive option's conflict with each measure-basis option whose basis `source`
+    does not add its imputed line on (`InclusiveSource.bases`)."""
+    return tuple(
+        Conflict(INCLUSIVE, measure_basis_option_id(row.basis), _INCLUSIVE_BASIS_CAUSE)
+        for row in BASIS_MEASURES
+        if row.basis not in source.bases
     )
 
 
 def _without_inclusive(identity: BaseIdentity, ref: str | None) -> BaseIdentity:
-    """`identity`, whose composite is `ref`, without the inclusive composite: the identity
-    the CRS serves its bilateral flows on. `identity` itself when `ref` is another one."""
-    if ref != INCLUSIVE_PROVENANCE:
+    """`identity`, whose composite is `ref`, without an inclusive source's composite: the
+    identity its table serves its bilateral flows on. `identity` itself when `ref` is another
+    one."""
+    if ref not in _SOURCE_COMPOSITES:
         return identity
     return BaseIdentity.model_validate(
         without_composite(identity.model_dump(mode="json", exclude_none=True))
@@ -215,29 +252,36 @@ def _published_table(
     """The provider table of a part counting the published total `row` declares, whose
     identity is `identity` (`_published_row`).
 
-    The part holds `row`'s scope. Every other row of its dataset and code system
+    The part holds `row`'s scope, or the inclusive one where `identity` binds its dataset's
+    inclusive source (`INCLUSIVE_SOURCES`). Every other row of its dataset and code system
     (`PUBLISHED_PROVIDER_SCOPES`) is an option binding that row's code, so a switch to it
     reads the total that counts its scope: on DAC1's total ODA, bilateral flows bind
-    bilateral ODA, and on bilateral ODA, core contributions bind total ODA. Such an option
-    serves the years every donor holding the part's total in a year also holds the sibling in
-    (`_sibling_option`), or, on a part asking for the latest year, the one year the pool's
-    read elects (`_latest_sibling_option`). The inclusive scope is unavailable with the total's dataset:
-    `contributions_counted` on a total counting core contributions, since it counts them in
-    place of an imputed share of the multilaterals' spending, and `provider_not_offered` (why
-    `dataset`) on any other, since the imputed table stacks on the CRS alone. Each option
-    names its row's rule. No preference but the held scope leads, so no default moves the
-    part to another total."""
+    bilateral ODA and core contributions alone multilateral ODA, and on bilateral ODA, core
+    contributions bind total ODA. Such an option serves the years every donor holding the
+    part's total in a year also holds the sibling in (`_sibling_option`), or, on a part asking
+    for the latest year, the one year the pool's read elects (`_latest_sibling_option`).
+    Where the dataset declares an inclusive source, the inclusive option is offered as on a
+    part the CRS serves (`_inclusive_option`), with its basis conflicts. Otherwise it is
+    unavailable with the total's dataset: `contributions_counted` on a total counting core
+    contributions, since it counts them in place of an imputed share of the multilaterals'
+    spending, and `provider_not_offered` (why `dataset`) on any other. Each option names its
+    row's rule, and the inclusive one its scope's. No preference but the held scope leads, so
+    no default moves the part to another total."""
     rows = {
         sibling.scope: sibling
         for sibling in PUBLISHED_PROVIDER_SCOPES
         if (sibling.dataset, sibling.code_system) == (row.dataset, row.code_system)
     }
+    source = _SOURCES.get(row.dataset)
+    ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
+    inclusive_held = source is not None and ref == source.composite
+    bilateral = _without_inclusive(identity, ref)
     options: list[Option] = []
     rules: dict[str, str] = {}
-    own = _donor_years(identity, facts)
+    own = _donor_years(bilateral, facts)
     own_year = (
-        elected_year(_year_counts(identity, facts))
-        if identity.requested_window.kind == "latest"
+        elected_year(_year_counts(bilateral, facts))
+        if bilateral.requested_window.kind == "latest"
         else None
     )
     for scope in get_args(ProviderScope):
@@ -247,31 +291,22 @@ def _published_table(
         option_id = provider_option_id(scope)
         rules[option_id] = sibling.rule if sibling is not None else _SCOPE_RULES[scope]
         if sibling is None:
-            counted = row.scope == "contributions"
-            options.append(
-                _option(
-                    scope,
-                    _unavailable(
-                        "contributions_counted" if counted else "provider_not_offered",
-                        {"dataset": row.dataset} if counted else {"why": "dataset"},
-                    ),
-                )
-            )
+            options.append(_published_inclusive(row, source, bilateral, facts, held=inclusive_held))
             continue
         if sibling is row:
             options.append(_option(scope, binding=ProviderBinding(scope=scope)))
             continue
         binding = SlotBinding(slot=sibling.code_system, state="value", refs=[sibling.code])
-        switched = apply_binding(identity, binding, [])
+        switched = apply_binding(bilateral, binding, [])
         sibling_years = _donor_years(switched, facts)
         options.append(
             _sibling_option(scope, binding, own, sibling_years)
-            if identity.requested_window.kind != "latest"
+            if bilateral.requested_window.kind != "latest"
             else _latest_sibling_option(
                 scope, binding, own, sibling_years, _year_counts(switched, facts), own_year
             )
         )
-    held = provider_option_id(row.scope)
+    held = INCLUSIVE if inclusive_held else provider_option_id(row.scope)
     return AxisTable(
         axis="provider",
         options=tuple(options),
@@ -279,7 +314,25 @@ def _published_table(
         held=held,
         rules=rules,
         published=True,
+        conflicts=_basis_conflicts(source) if source is not None else (),
     )
+
+
+def _published_inclusive(
+    row: PublishedProviderScope,
+    source: InclusiveSource | None,
+    bilateral: BaseIdentity,
+    facts: ScopeFacts,
+    *,
+    held: bool,
+) -> Option:
+    """The inclusive option of the published total `row` whose identity without the
+    inclusive source is `bilateral` (`_published_table`)."""
+    if source is not None:
+        return _inclusive_option(bilateral, source, facts, held=held)
+    if row.scope in _COUNTS_CONTRIBUTIONS:
+        return _option("inclusive", _unavailable("contributions_counted", {"dataset": row.dataset}))
+    return _option("inclusive", _unavailable("provider_not_offered", {"why": "dataset"}))
 
 
 def _sibling_option(
@@ -402,22 +455,27 @@ def _option(
     *,
     binding: OptionBinding | None = None,
     window: YearSpan | None = None,
+    source: str | None = None,
+    label: str | None = None,
 ) -> Option:
     """The option of `scope`, with `availability`, available when None, binding `binding` or
-    else the scope itself over `window`. A `window` also states its years in the label
-    (`OPTION_LABELS.provider_years`): the years both tables of the inclusive scope cover, or
+    else the scope itself over `window` with the composite `source`, labelled `label` or else
+    its scope's label. A `window` also states its years in the label
+    (`OPTION_LABELS.provider_years`): the years both lines of the inclusive scope cover, or
     the run a partial sibling total serves."""
-    label = (
-        _SCOPE_LABELS[scope]
-        if window is None
-        else OPTION_LABELS.provider_years.format(
-            label=_SCOPE_LABELS[scope], years=_years_label(window)
-        )
-    )
+    named = label or _SCOPE_LABELS[scope]
     return Option(
         option_id=provider_option_id(scope),
-        label=label,
-        binding=binding if binding is not None else ProviderBinding(scope=scope, window=window),
+        label=(
+            named
+            if window is None
+            else OPTION_LABELS.provider_years.format(label=named, years=_years_label(window))
+        ),
+        binding=(
+            binding
+            if binding is not None
+            else ProviderBinding(scope=scope, window=window, provenance=source)
+        ),
         availability=availability or OptionAvailability(status="available"),
     )
 
@@ -452,12 +510,7 @@ def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProvid
         if isinstance(slot.binding, IdentityBindingValue)
     }
     rows = [row for row in PUBLISHED_PROVIDER_SCOPES if (row.code_system, row.code) in bound]
-    providers = identity.entities.get("origin") or []
-    if not rows or not providers:
-        return None
-    if _pools_funder(providers, identity.requested_window, facts.index) or not all(
-        _counts_as_donor(provider, facts.index) for provider in providers
-    ):
+    if not rows or not _names_donors_alone(identity, facts.index):
         return None
     try:
         document = table_identity(facts.index, identity.model_dump(mode="json", exclude_none=True))
@@ -465,6 +518,68 @@ def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProvid
         return None
     dataset = _dataset(BaseIdentity.model_validate(document), facts)
     return next((row for row in rows if row.dataset == dataset), None)
+
+
+def provider_total_code(code_system: str, code: str, index: CodeIndex) -> str | None:
+    """The published total a provider option on `code_system` reads `code` as a scope of: the
+    outermost code at or above `code` (`CodeRow.parent`) that `PUBLISHED_PROVIDER_SCOPES`
+    declares on `code_system`. DAC1's bilateral ODA (1015) and multilateral ODA (2000) read
+    total ODA (1010). None where no row declares `code` on `code_system`."""
+    declared = {row.code for row in PUBLISHED_PROVIDER_SCOPES if row.code_system == code_system}
+    if code not in declared:
+        return None
+    total = code
+    while (row := index.code_by_dcid(total)) is not None and row.parent is not None:
+        if row.parent not in declared:
+            break
+        total = row.parent
+    return total
+
+
+def _names_donors_alone(identity: BaseIdentity, index: CodeIndex) -> bool:
+    """Whether `identity` names one or more providers, every one a donor
+    (`_counts_as_donor`), with no redistributed provider pooled with one of its funders
+    (`_pools_funder`): the providers whose published total and imputed share count no
+    multilateral's outflows twice."""
+    providers = identity.entities.get("origin") or []
+    return (
+        bool(providers)
+        and not _pools_funder(providers, identity.requested_window, index)
+        and all(_counts_as_donor(provider, index) for provider in providers)
+    )
+
+
+def without_uncounted_inclusive(
+    identity: BaseIdentity, entries: Sequence[Entry] | None, *, index: CodeIndex
+) -> tuple[BaseIdentity, Sequence[Entry] | None]:
+    """A posted `identity` and its scope `entries`, with the inclusive scope its identity
+    binds read as a carried entry where its providers cannot take it.
+
+    The inclusive composite adds the imputed share of multilateral spending to what the
+    named donors' bilateral line counts. A part naming no provider, or a provider that is no
+    donor alone (`_names_donors_alone`), such as "Official Donors, Total", already counts the
+    multilaterals' outflows, so the composite would count them twice. Such an identity is
+    served its bilateral line (`_without_inclusive`), and `provider:inclusive` joins its
+    entries as a carried entry from the posted identity's provider choice, unless they hold
+    a provider entry, so the scope drops it as it drops any carried entry the part cannot
+    take (`compile`), and says so. `identity` and `entries` themselves otherwise."""
+    try:
+        ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
+    except CompositeNotServable:
+        return identity, entries
+    if ref not in _SOURCE_COMPOSITES or _names_donors_alone(identity, index):
+        return identity, entries
+    held = list(entries or ())
+    if not any(entry.axis == "provider" for entry in held):
+        held.append(
+            Entry(
+                axis="provider",
+                option_id=INCLUSIVE,
+                provenance="carried",
+                origin=ChoiceOrigin(choice_id=f"{identity_spec_id(identity)}:provider"),
+            )
+        )
+    return _without_inclusive(identity, ref), held
 
 
 def _counts_as_donor(party: str, index: CodeIndex) -> bool:
@@ -544,47 +659,63 @@ def _dataset(identity: BaseIdentity, facts: ScopeFacts) -> str | None:
     return family.provenance if family is not None else None
 
 
-def _inclusive_option(bilateral: BaseIdentity, facts: ScopeFacts, *, held: bool) -> Option:
-    """The inclusive option over `bilateral`, the part's identity without the composite.
-    It is not offered for what `_not_offered` and `_providers_not_offered` refuse, or where
-    the imputed table cannot serve a slot `bilateral` binds, even when the part holds it.
-    For a part asking for the latest year it is available over the year `inclusive_reach`
-    elects, which its window states (`elect_latest_window`). Otherwise it is available when
-    both tables cover every year the bilateral answer holds; partial over the latest run of
-    years they cover, with that run as its window, when they cover fewer; and unavailable
-    when they cover none. The option a part holds over a range or every year is available
-    over its own window."""
+def _inclusive_option(
+    bilateral: BaseIdentity, source: InclusiveSource, facts: ScopeFacts, *, held: bool
+) -> Option:
+    """The inclusive option binding `source`'s composite over `bilateral`, the part's
+    identity without it. It is not offered for what `_not_offered` and
+    `_providers_not_offered` refuse, or where the imputed line cannot serve a slot
+    `bilateral` binds, even when the part holds it. For a part asking for the latest year it
+    is available over the year `inclusive_reach` elects, which its window states
+    (`elect_latest_window`). Otherwise it is available when both lines cover every year the
+    bilateral answer holds; partial over the latest run of years they cover, with that run as
+    its window, when they cover fewer; and unavailable when they cover none. The option a part
+    holds over a range or every year is available over its own window. On a part counted on
+    net flows its label says the imputed line is added as published
+    (`OPTION_LABELS.provider_inclusive_net`)."""
     try:
-        why = _not_offered(bilateral) or _providers_not_offered(bilateral, facts)
+        why = _not_offered(bilateral, source) or _providers_not_offered(bilateral, source, facts)
     except CompositeNotServable as exc:
         prop = _slot_at(bilateral, exc.pointer)
         why = _SLOT_WHY.get(prop, prop)
     if why is not None:
         return _option("inclusive", _unavailable("provider_not_offered", {"why": why}))
+    measure = held_measure(bilateral)
+    label = (
+        OPTION_LABELS.provider_inclusive_net
+        if measure is not None and measure.basis == _NET
+        else None
+    )
+
+    def option(
+        availability: OptionAvailability | None = None, window: YearSpan | None = None
+    ) -> Option:
+        return _option(
+            "inclusive", availability, window=window, source=source.composite, label=label
+        )
+
     latest = bilateral.requested_window.kind == "latest"
     if held and not latest:
-        return _option("inclusive")
-    reach = inclusive_reach(bilateral, facts)
+        return option()
+    reach = inclusive_reach(bilateral, facts, composite=source.composite)
     if latest:
         if reach.latest is None:
-            return _option("inclusive", _unavailable("imputed_coverage"))
-        return _option("inclusive", window=(reach.latest, reach.latest))
+            return option(_unavailable("imputed_coverage"))
+        return option(window=(reach.latest, reach.latest))
     if not reach.covered:
-        return _option("inclusive", _unavailable("imputed_coverage"))
+        return option(_unavailable("imputed_coverage"))
     if reach.covered >= reach.asked:
-        return _option("inclusive")
+        return option()
     runs = spans(reach.covered)
-    return _option(
-        "inclusive",
-        OptionAvailability(status="partial", years=runs, code="imputed_coverage"),
-        window=runs[-1],
+    return option(
+        OptionAvailability(status="partial", years=runs, code="imputed_coverage"), runs[-1]
     )
 
 
 def elect_latest_window(identity: BaseIdentity, facts: ScopeFacts) -> BaseIdentity:
     """`identity`, served as it reads: a provider-inclusive composite asking for the latest
-    year is read over the year `inclusive_reach` elects among those both its tables cover, a
-    one-year range, since its tables can elect different latest years and the Datasets mint
+    year is read over the year `inclusive_reach` elects among those both its lines cover, a
+    one-year range, since its lines can elect different latest years and the Datasets mint
     refuses a composite's `latest` window. Any other identity, or one whose tables elect no year, is
     `identity` itself.
 
@@ -597,10 +728,10 @@ def elect_latest_window(identity: BaseIdentity, facts: ScopeFacts) -> BaseIdenti
         ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
     except CompositeNotServable:
         return identity
-    if ref != INCLUSIVE_PROVENANCE:
+    if ref not in _SOURCE_COMPOSITES:
         return identity
     try:
-        year = inclusive_reach(_without_inclusive(identity, ref), facts).latest
+        year = inclusive_reach(_without_inclusive(identity, ref), facts, composite=ref).latest
     except CompositeNotServable:
         return identity
     if year is None:
@@ -615,15 +746,15 @@ def _years_label(window: YearSpan) -> str:
     return str(first) if first == last else f"{first} to {last}"
 
 
-def _not_offered(identity: BaseIdentity) -> str | None:
-    """Why the inclusive scope cannot serve `identity`, None when it can: the identity pins
-    a provenance (`provenance_pinned`), is counted on a basis other than gross disbursements,
-    the imputed table's only one (`basis`), or at constant prices, which the table does not
-    publish (`constant_prices`)."""
+def _not_offered(identity: BaseIdentity, source: InclusiveSource) -> str | None:
+    """Why the inclusive scope binding `source`'s composite cannot serve `identity`, None
+    when it can: the identity pins a provenance (`provenance_pinned`), is counted on a basis
+    the source does not add its imputed line on (`basis`, `InclusiveSource.bases`), or at
+    constant prices, which the imputed lines are not published at (`constant_prices`)."""
     if (identity.facets or {}).get("provenance") is not None:
         return "provenance_pinned"
     measure = held_measure(identity)
-    if measure is None or measure.basis != _GROSS:
+    if measure is None or measure.basis not in source.bases:
         return "basis"
     shape = identity.shape
     unit = (identity.facets or {}).get("unit")
@@ -634,10 +765,13 @@ def _not_offered(identity: BaseIdentity) -> str | None:
     return None
 
 
-def _providers_not_offered(identity: BaseIdentity, facts: ScopeFacts) -> str | None:
-    """Why the inclusive scope cannot count the providers `identity` names, None when it can.
+def _providers_not_offered(
+    identity: BaseIdentity, source: InclusiveSource, facts: ScopeFacts
+) -> str | None:
+    """Why the inclusive scope binding `source`'s composite cannot count the providers
+    `identity` names, None when it can.
 
-    The imputed table attributes each multilateral's spending to the providers that fund it,
+    The imputed line attributes each multilateral's spending to the providers that fund it,
     each by its own share of the multilateral's core resources, so the imputed shares of two
     providers are disjoint and add. The scope serves a part when the table carries rows for
     every provider it names, in the family the scope reads, in any year and to any recipient,
@@ -652,10 +786,7 @@ def _providers_not_offered(identity: BaseIdentity, facts: ScopeFacts) -> str | N
     if not providers:
         return "all_providers"
     document = identity.model_dump(mode="json", exclude_none=True)
-    components = component_identities(
-        facts.index,
-        {**document, "facets": {**document.get("facets", {}), "provenance": _inclusive()}},
-    )
+    components = component_identities(facts.index, _with_composite(document, source.composite))
     assert components is not None
     imputed = next(c.identity for c in components if c.role == "imputed")
     carried = all(
@@ -715,9 +846,11 @@ def settle_provider(
     the axis does not apply (`provider_rule`).
 
     The first entry on the axis (`ScopeState.entries_on`, explicit before carried) whose
-    option the pass can serve (`_served_in_pass`) settles it. A partial option is not
-    applied from words or a carried entry, since only a switch accepts fewer years than
-    asked for. Otherwise the declared convention matching the part (`provider_convention`,
+    option the pass can serve (`_served_in_pass`) settles it. An explicit entry on a partial
+    option settles it too: the scope compiles the option over the latest run of years it
+    covers (`ProviderBinding.window`), as a switch to it does, and the answer states the
+    narrowing as a departure. A carried entry on a partial option is not applied, since
+    only the user's own words or a switch accept fewer years than asked for. Otherwise the declared convention matching the part (`provider_convention`,
     with the request's total intent) settles its scope where the pass can serve it, else the
     scope `identity` holds, else the bilateral scope, else the first available option
     (`_settled`). Every convention reads the CRS, so a published total reads none and holds
@@ -751,7 +884,7 @@ def _settled(
         return table.rule_of(active)
 
     for entry in state.entries_on("provider"):
-        if _served_in_pass(table, entry.option_id):
+        if _served_in_pass(table, entry.option_id, explicit=entry.provenance == "explicit"):
             return AxisRecord(
                 axis="provider",
                 rule=rule(entry.option_id),
@@ -766,11 +899,15 @@ def _settled(
     return AxisRecord(axis="provider", rule=rule(active), active=active, provenance="default")
 
 
-def _served_in_pass(table: AxisTable, option_id: str) -> bool:
+def _served_in_pass(table: AxisTable, option_id: str, *, explicit: bool = False) -> bool:
     """Whether a fresh search serves option `option_id` of `table` as its answer: it is
-    available, and it is the option the answer holds or one binding a composite, which the
-    scope applies to the answer (`edits.applies_in_pass`, `build._with_recorded_composites`)."""
+    the option the answer holds or one binding a composite, which the scope applies to the
+    answer (`edits.applies_in_pass`, `build._with_recorded_composites`), and it is
+    available or, asked for by an `explicit` entry, partial, served over its own window."""
     option = table.option(option_id)
-    if option is None or option.availability.status != "available":
+    if option is None:
+        return False
+    status = option.availability.status
+    if status != "available" and not (explicit and status == "partial"):
         return False
     return option_id == table.held or applies_in_pass(option.binding)

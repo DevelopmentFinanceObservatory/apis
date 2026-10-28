@@ -8,7 +8,11 @@ from __future__ import annotations
 import pytest
 
 from code_index.declarations import DATASETS
-from search.engine.stated_scope import part_scope_intakes, read_stated_scope
+from search.engine.stated_scope import (
+    part_scope_intakes,
+    read_stated_scope,
+    without_scope_phrases,
+)
 from search.models import ChoiceOrigin, Entry, TextOrigin
 
 _NET = "measure_basis:net"
@@ -110,6 +114,18 @@ _INCLUSIVE = "provider:inclusive"
             False,
         ),
         ("non-bilateral ODA to Kenya", [], False),
+        # "multilateral" heading a kind of provider after "including" or "plus" states no
+        # scope.
+        ("ODA to Kenya including multilateral development banks", [], False),
+        ("aid to Ghana plus multilateral lenders", [], False),
+        ("aid incl. the multilateral agencies", [], False),
+        # Negated, it excludes that kind of provider, as "not multilateral institutions" does.
+        (
+            "aid from France not including multilateral institutions",
+            [(_BILATERAL, "not including multilateral")],
+            False,
+        ),
+        ("ODA to Kenya including multilaterals", [(_INCLUSIVE, "including multilaterals")], False),
         ("ODA as a share of gross national income", [], False),
         ("ODA net of debt relief", [], False),
     ],
@@ -126,6 +142,79 @@ def test_read_stated_scope(text, stated, total):
         read.append((entry.option_id, origin.text))
     assert read == stated
     assert scope.total is total
+
+
+@pytest.mark.parametrize(
+    ("text", "rest"),
+    [
+        ("France's health ODA including imputed multilateral", "France's health ODA"),
+        ("ODA to Kenya, bilateral plus imputed multilateral, in 2020", "ODA to Kenya, , in 2020"),
+        ("aid from France not including multilateral", "aid from France"),
+        ("including imputed multilateral", ""),
+        # Scope words that also name measures and parties stay, and a text without a scope
+        # phrase stays as it is.
+        ("net bilateral  ODA", "net bilateral  ODA"),
+        # Words stating two provider options state no entry, so the phrase stays for the
+        # binders and the dropped-qualifier warning.
+        (
+            "France's bilateral aid including imputed multilateral",
+            "France's bilateral aid including imputed multilateral",
+        ),
+        # A phrase naming a kind of provider states no scope and stays whole.
+        (
+            "ODA to Kenya including multilateral development banks",
+            "ODA to Kenya including multilateral development banks",
+        ),
+    ],
+)
+def test_a_scope_phrase_leaves_the_text_with_any_negation_of_it(text, rest):
+    (intake,) = part_scope_intakes(message=text, part_texts=[text])
+
+    assert without_scope_phrases(text, intake) == rest
+
+
+_PHRASED = "France's health ODA including imputed multilateral"
+
+
+@pytest.mark.parametrize(
+    ("intake_text", "text", "rest"),
+    [
+        pytest.param(None, _PHRASED, _PHRASED, id="no-intake"),
+        pytest.param("France's health ODA", _PHRASED, _PHRASED, id="no-entry"),
+        # Only the entry a phrase reads licenses it: a bilateral entry leaves an inclusive
+        # phrase and an inclusive entry a negated one.
+        pytest.param("France's bilateral health ODA", _PHRASED, _PHRASED, id="bilateral-entry"),
+        pytest.param(
+            "health ODA including multilateral",
+            "health ODA not including multilateral",
+            "health ODA not including multilateral",
+            id="inclusive-entry-negated-phrase",
+        ),
+        pytest.param(
+            "health ODA excluding multilateral",
+            "health ODA not including multilateral",
+            "health ODA",
+            id="bilateral-entry-negated-phrase",
+        ),
+    ],
+)
+def test_a_scope_phrase_goes_only_where_the_part_states_the_entry_it_reads(intake_text, text, rest):
+    intake = (
+        None
+        if intake_text is None
+        else part_scope_intakes(message=None, part_texts=[intake_text])[0]
+    )
+
+    assert without_scope_phrases(text, intake) == rest
+
+
+def test_a_carried_provider_entry_reads_no_phrase():
+    """A carried provider entry, or a switch, is no reading of the part's words, so the
+    phrase stays."""
+    text = "France's health ODA including imputed multilateral"
+    (carried,) = part_scope_intakes(message=None, part_texts=["health ODA"], carried=[_CARRIED])
+
+    assert without_scope_phrases(text, carried) == text
 
 
 def test_the_provider_word_is_one_the_crs_states_of_its_rows():

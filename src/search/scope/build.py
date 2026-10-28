@@ -49,11 +49,13 @@ def build_part_scope(
 
     Each rule (`rules.AXIS_RULES` unless `rules` is given) reads `base`, its axis's record
     and `facts`, in `SCOPE_AXES` order, and the axes whose rule returns a table are
-    compiled under `conflicts` (`rules.CONFLICTS` unless given). What compiles is
+    compiled under `conflicts` (`rules.CONFLICTS` unless given) and the conflicts each table
+    declares for its part (`AxisTable.conflicts`). What compiles is
     `entries`, the entries posted for the part (a dataset_resubmit's `scope_entries`, a
     same-shape merge's members' entries), and the entry each binder applied
     (`AxisRecord.entry`) while its axis's table holds the option the record settled
-    (`AxisTable.held`). An entry posted with no concept on an axis whose table was asked for
+    (`AxisTable.held`), or the explicit entry on a partial option the record settled, which
+    compile applies over the option's own window (`_compiles_over_window`). An entry posted with no concept on an axis whose table was asked for
     one takes the table's concept, so the entry the scope echoes attaches only to parts of
     that concept. `read` are the entries a fresh search read for the part
     (`ScopeState.attached`): none of them compiles of its own, so the choices state only
@@ -83,7 +85,7 @@ def build_part_scope(
         for record in records.values()
         if record.entry is not None
         and (table := tables.get(record.axis)) is not None
-        and table.held == record.active
+        and (table.held == record.active or _compiles_over_window(record, table))
     ]
     posted = [_with_concept(entry, tables) for entry in entries]
     compiling = [*posted, *(entry for entry in applied if entry not in posted)]
@@ -100,10 +102,7 @@ def build_part_scope(
         compiled := compile(
             base,
             compiling,
-            CompileFacts(
-                axes=_requested_tables(base, compiling, tables, records, facts, rules, conflicts),
-                conflicts=conflicts,
-            ),
+            _compile_facts(base, compiling, tables, records, facts, rules, conflicts),
         ),
         Refusal,
     ):
@@ -122,6 +121,24 @@ def build_part_scope(
         refused,
         rule_version=scope_rules.rule_version(rules, conflicts),
         facts=facts,
+    )
+
+
+def _compile_facts(
+    base: BaseIdentity,
+    entries: Sequence[Entry],
+    tables: Mapping[ScopeAxis, AxisTable],
+    records: Mapping[ScopeAxis, AxisRecord],
+    facts: ScopeFacts,
+    rules: Mapping[ScopeAxis, AxisRule],
+    conflicts: Sequence[Conflict],
+) -> CompileFacts:
+    """What `entries` compile under: the tables `_requested_tables` reads, and `conflicts`
+    with those the tables declare for the part (`AxisTable.conflicts`)."""
+    held = (*conflicts, *(c for table in tables.values() for c in table.conflicts))
+    axes = _requested_tables(base, entries, tables, records, facts, rules, held)
+    return CompileFacts(
+        axes=axes, conflicts=(*conflicts, *(c for table in axes for c in table.conflicts))
     )
 
 
@@ -195,7 +212,9 @@ def _with_recorded_composites(
     (`provider.settle_provider`), or the OECD headline per year
     (`phase_election._record_basis`), with the records it then holds. The base keeps its
     own window: an option's window is applied when the scope compiles
-    (`provider.elect_latest_window`). An option the part cannot serve
+    (`provider.elect_latest_window`). A partial option an explicit entry asked for is left
+    to compile, which applies it over its own window (`_compiles_over_window`), so the base
+    keeps the years the part asked for. Any other option the part cannot serve
     (`OptionAvailability.status` not `available`) is not applied. Its axis keeps the option
     the base holds, settled by default, under that option's own rule (`AxisTable.rule_of`),
     or `SERVED_DIFFERS_RULE` on the measure basis, since the served basis is then not the
@@ -207,7 +226,11 @@ def _with_recorded_composites(
         if record is None or record.active == table.held:
             continue
         option = table.option(record.active)
-        if option is None or not applies_in_pass(option.binding):
+        if (
+            option is None
+            or not applies_in_pass(option.binding)
+            or _compiles_over_window(record, table)
+        ):
             continue
         if option.availability.status != "available":
             settled[axis] = AxisRecord(
@@ -222,6 +245,19 @@ def _with_recorded_composites(
             binding = binding.model_copy(update={"window": None})
         base = apply_binding(base, binding, [o.binding for o in table.options])
     return base, settled
+
+
+def _compiles_over_window(record: AxisRecord, table: AxisTable) -> bool:
+    """Whether `record` settled a partial option of `table` on an explicit entry, which the
+    scope compiles as a switch to it compiles: over the latest run of years the option
+    covers, the window its binding sets."""
+    option = table.option(record.active)
+    return (
+        record.entry is not None
+        and record.entry.provenance == "explicit"
+        and option is not None
+        and option.availability.status == "partial"
+    )
 
 
 def _with_concept(entry: Entry, tables: Mapping[ScopeAxis, AxisTable]) -> Entry:

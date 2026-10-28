@@ -56,6 +56,10 @@ class Entity(StrictModel):
     role: EntityRole = Field(description="always present; defaults to the subject role")
 
 
+def _is_none(value: object) -> bool:
+    return value is None
+
+
 class ResolvedEntity(StrictModel):
     """One resolved entity on the wire, under `resolved.entities`: the flat
     projection of the engine's own `Entity` -- `ref`/`entity_type` collapse from
@@ -72,6 +76,16 @@ class ResolvedEntity(StrictModel):
     role: EntityRoleKey = Field(
         description="the role key this entity plays; observationAbout, origin, or destination"
     )
+    multilateral: bool | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "true for an origin entity that is a multilateral organisation, an official "
+            "organisation such as IDA or the EU institutions, whose outflows spend the core "
+            "contributions its funders made to it, so a donor total counting those "
+            "contributions already holds them; absent for every other entity"
+        ),
+    )
     confidence: Confidence | None = Field(
         default=None,
         description=(
@@ -80,10 +94,6 @@ class ResolvedEntity(StrictModel):
             "on every entity today"
         ),
     )
-
-
-def _is_none(value: object) -> bool:
-    return value is None
 
 
 _ENTITY_GROUP_LABEL_MAX_LENGTH = 120
@@ -105,7 +115,9 @@ class EntityGroup(StrictModel):
     type. `entity_type` is informational, and the reading keys on `ref`. When
     the role binds the total its dataset publishes
     for the group ("Africa (DAC)") in place of the members, `total` names that
-    party and the role's one dcid is it. A role read as the whole population of
+    party and the role's one dcid is it, and `members` lists the group's members as the
+    membership registry holds them, so a caller can tell whether a party sits inside the
+    total. A role read as the whole population of
     its side, the source's total of every party there ("Official Donors, Total")
     or a union of such totals ("all donors including private"), states the
     classes of party that population covers in `whole_of`, and the classes the answer's
@@ -147,6 +159,18 @@ class EntityGroup(StrictModel):
         ),
     )
 
+    members: list[IdentityString] | None = Field(
+        default=None,
+        max_length=1024,
+        exclude_if=_is_none,
+        description=(
+            "for a role that binds the group's published total (total), the group's members "
+            "as the membership registry lists them, sorted, e.g. the 32 DAC member countries "
+            "for DAC countries, total; the residuals a regional total counts beside them are "
+            "not listed. Absent when the role binds the members or the registry lists none "
+            "for the group. Derived on every answer; a posted value is ignored"
+        ),
+    )
     whole_of: list[PartyClass] | None = Field(
         default=None,
         exclude_if=_is_none,
@@ -154,6 +178,18 @@ class EntityGroup(StrictModel):
             "the classes of party the role's whole population covers, sorted: official, "
             'private or residual, e.g. ["official"] for Official Donors, Total, which holds '
             "every official donor and no private one; absent for any other group"
+        ),
+    )
+    holds_multilaterals: bool | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "for a donor role that binds a published total (total) or reads as its whole "
+            "population (whole_of), whether that population holds a multilateral organisation "
+            "(see ResolvedEntity.multilateral): false for DAC countries, total, whose members "
+            "are countries, true for Official Donors, Total in DAC2a. Absent for any other "
+            "group and for a total whose members the registry does not list. Derived on every "
+            "answer; a posted value is ignored"
         ),
     )
     side_classes: list[PartyClass] | None = Field(

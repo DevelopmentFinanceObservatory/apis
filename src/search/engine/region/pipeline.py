@@ -101,7 +101,7 @@ from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
 from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Spec, Warning
-from search.scope.basis import identity_basis_record
+from search.scope.basis import basis_dataset, identity_basis_record
 from search.scope.build import build_part_scope
 from search.scope.composite import assemble_composite
 from search.scope.provider import settle_provider
@@ -564,16 +564,18 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
 def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     built from the axis records the pass's binders hold (`ResolveState.scope_selection`)
-    and, on a part whose binders settled some axis, the provider scope settled over the
-    answer's identity (`provider.settle_provider`). Only the entries a binder applied
+    and the provider scope settled over the answer's identity (`provider.settle_provider`). Only the entries a binder applied
     compile (`AxisRecord.entry`), so every choice states the option the answer serves. The
     other entries that attach to the part (`ScopeState.attached`: those on an axis a binder
     settled, for the concept it was asked for, and the stated ones on an axis the part
-    lacks) are reported in `PartScope.dropped_entries`. A result that is not definite, or
-    whose pass settled no axis, states none, and so does one whose answer the recorded axes
-    do not reach, as a region read at its published total. The scope is built in memory,
+    lacks) are reported in `PartScope.dropped_entries`. A result that is not definite
+    states none, and so does one whose answer the recorded axes do not reach, as a region
+    read at its published total. The scope is built in memory,
     and the rules read the bound release's code index, the request's coverage snapshot and
-    the part's operations, groups and served datasets (`scope_facts`). A fresh search does
+    the part's operations, groups and served datasets (`scope_facts`). A part whose binders
+    settled no axis, such as one naming no place, states the scope of its served identity
+    where the measure-basis axis applies to it, as a resubmit of that identity does
+    (`basis.identity_basis_record`). A fresh search does
     not refuse its scope (`build_part_scope` with `refuse` false). Only a dataset_resubmit's
     posted `scope_entries` refuse 422.
 
@@ -581,11 +583,20 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     headline per year), the scope's base is the composite, and the answer is restated as it
     (`composite.assemble_composite`)."""
     selection = state.scope_selection
-    if result.status != "definite" or not selection.records:
+    if result.status != "definite":
         return result
     spec = result.spec
+    identity = spec.definition.identity
+    records = dict(selection.records)
+    if not records:
+        # No binder settled an axis, as on a part naming no place. Where the basis axis
+        # applies to the served identity, the scope reads it as a resubmit of it does.
+        if basis_dataset(identity, get_index()) is None:
+            return result
+        if (basis := identity_basis_record(identity, get_index(), [])) is not None:
+            records[basis.axis] = basis
     facts = scope_facts(spec, operations=state.operations, coverage=state.coverage)
-    settled = ScopeState(entries=selection.entries, records=dict(selection.records))
+    settled = ScopeState(entries=selection.entries, records=records)
     provider = settle_provider(spec.definition.identity, selection, facts)
     if provider is not None:
         settled.write(provider)

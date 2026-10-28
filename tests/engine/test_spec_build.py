@@ -8,6 +8,7 @@ import pytest
 
 from code_index.members import antichain_minimal_rows
 from code_index.shared import get_index
+from entity_resolution.shared import shared_membership_policy
 from search.engine.bind import SlotBindingDraft
 from search.engine.retrieval.bound_values import (
     StatedMembers,
@@ -24,6 +25,7 @@ from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.spec_build import (
     NamedGroup,
     RoleAxisFactInput,
+    _shared_qualifiers,
     build_shape_model,
     build_spec,
     build_stat_vars,
@@ -69,6 +71,14 @@ def _shape_draft(*, meas_denom_dcid: str | None, meas_denom_unresolved: bool) ->
         slot_keys=(),
         meas_denom_unresolved=meas_denom_unresolved,
     )
+
+
+def _registry_members(group: str) -> list[str]:
+    """The members the membership registry lists for `group` under its default projection,
+    sorted: what a group whose role binds the group's total serves (`EntityGroup.members`)."""
+    held = shared_membership_policy().members(group).members
+    assert isinstance(held, tuple) and held, group
+    return sorted(held)
 
 
 class TestBuildShapeModelDenominator:
@@ -234,8 +244,15 @@ class TestBuildSpecStatVars:
             role_axis_facts=[RoleAxisFactInput(role="origin", member_dcids=population)],
         )
 
+        # The index's first parties are organisations: the Adaptation Fund, a multilateral,
+        # among them.
         assert spec.resolved.role_axis_facts == [
-            RoleAxisFact(role="origin", member_count=3, members_available=True)
+            RoleAxisFact(
+                role="origin",
+                member_count=3,
+                members_available=True,
+                holds_multilaterals="AdaptationFund" in members,
+            )
         ]
 
     def test_a_walk_of_the_identitys_own_query_states_the_served_count_and_digest(self):
@@ -383,6 +400,42 @@ def _gender_slots() -> list[Slot]:
             binding=BindingUnbound(),
             expansion=None,
         ),
+    ]
+
+
+def _aid_type_slot(code: str) -> Slot:
+    """A how slot binding DAC1 aid type `code`, labelled as the code index labels it."""
+    row = get_index().code_by_dcid(code)
+    assert row is not None
+    return Slot(
+        key=SlotKey(
+            axis="how", property=GraphRef(ref="dac1AidType", label="aid type"), label="aid type"
+        ),
+        binding=BindingValue(
+            value=SlotValue(ref=GraphRef(ref=code, label=row.label), value_kind="enum_value")
+        ),
+        expansion=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "shape_qualifier"),
+    [
+        pytest.param("DAC1AidType1010", "official development assistance", id="1010"),
+        pytest.param("DAC1AidType1015", "bilateral ODA", id="1015"),
+        pytest.param("DAC1AidType2000", "multilateral ODA", id="2000"),
+    ],
+)
+def test_the_concept_of_a_dac1_provider_scope_names_the_total_it_scopes(
+    code: str, shape_qualifier: str
+):
+    """DAC1's total ODA and its bilateral and multilateral ODA name one concept, total ODA's,
+    since the provider options state the scope; the shape label keeps each code's own."""
+    slots = [_aid_type_slot(code)]
+
+    assert _shared_qualifiers([], slots, None) == [shape_qualifier]
+    assert _shared_qualifiers([], slots, None, concept_of=get_index()) == [
+        "official development assistance"
     ]
 
 
@@ -550,7 +603,14 @@ class TestBuildSpecEntityGroups:
         spec = self._spec(origin_dcids, named_groups=(g7,))
 
         assert spec.resolved.entity_groups == {
-            "origin": EntityGroup(ref=None, label="G7", total=total)
+            "origin": EntityGroup(
+                ref=None,
+                label="G7",
+                total=total,
+                members=None if total is None else _registry_members("GroupOfSeven"),
+                # The G7's members are countries.
+                holds_multilaterals=None if total is None else False,
+            )
         }
         assert spec.resolved.group_totals == ({} if total else {"origin": "GroupOfSeven"})
         assert [group.total for group in spec_named_groups(spec)] == ["GroupOfSeven"]

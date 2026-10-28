@@ -22,7 +22,6 @@ from search.scope.region import region_rule
 from search.scope.sector import sector_rule
 from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, Conflict, ScopeFacts
-from search.scope.vocabulary import measure_basis_option_id
 
 type AxisRule = Callable[[BaseIdentity, AxisRecord | None, ScopeFacts], AxisTable | None]
 
@@ -34,16 +33,11 @@ AXIS_RULES: Mapping[ScopeAxis, AxisRule] = {
 }
 """The rule of every live axis."""
 
-CONFLICTS: tuple[Conflict, ...] = (
-    *(
-        Conflict(INCLUSIVE, measure_basis_option_id(basis), "imputed_gross_disbursements_only")
-        for basis in ("net", "grant_equivalent", "commitments")
-    ),
-    Conflict(INCLUSIVE, HEADLINE_OPTION, "both_composite_sources"),
-)
-"""The pairs of options of different axes that cannot hold together. The inclusive provider
-scope holds only with gross disbursements, the imputed table's one basis, and both it and the
-OECD headline bind the identity's source."""
+CONFLICTS: tuple[Conflict, ...] = (Conflict(INCLUSIVE, HEADLINE_OPTION, "both_composite_sources"),)
+"""The pairs of options of different axes that cannot hold together on every part: the
+inclusive provider scope and the OECD headline both bind the identity's source. A table adds
+the conflicts of its own part (`AxisTable.conflicts`), as the provider table does for the
+measure bases its inclusive source does not add on (`provider.provider_rule`)."""
 
 
 def rule_version(rules: Mapping[ScopeAxis, AxisRule], conflicts: tuple[Conflict, ...]) -> str:
@@ -60,6 +54,7 @@ def rule_version(rules: Mapping[ScopeAxis, AxisRule], conflicts: tuple[Conflict,
         scope_conventions.PROVIDER_SCOPE_RULES,
         scope_conventions.REDISTRIBUTED_PROVIDERS,
         scope_conventions.PUBLISHED_PROVIDER_SCOPES,
+        scope_conventions.INCLUSIVE_SOURCES,
         scope_conventions.DONOR_ORGANISATIONS,
         scope_conventions.BASIS_MEASURES,
         scope_conventions.BASIS_RESTRICTIONS,
@@ -80,6 +75,7 @@ def _version(
     provider_scope_rules: tuple[scope_conventions.ProviderScopeRule, ...],
     redistributed_providers: tuple[scope_conventions.RedistributedProvider, ...],
     published_provider_scopes: tuple[scope_conventions.PublishedProviderScope, ...],
+    inclusive_sources: tuple[scope_conventions.InclusiveSource, ...],
     donor_organisations: tuple[str, ...],
     basis_measures: tuple[scope_conventions.BasisMeasure, ...],
     basis_restrictions: tuple[str, ...],
@@ -95,6 +91,7 @@ def _version(
         "provider_scope_rules": [dataclasses.asdict(row) for row in provider_scope_rules],
         "redistributed_providers": [dataclasses.asdict(row) for row in redistributed_providers],
         "published_provider_scopes": [dataclasses.asdict(row) for row in published_provider_scopes],
+        "inclusive_sources": [dataclasses.asdict(row) for row in inclusive_sources],
         "donor_organisations": list(donor_organisations),
         "basis_measures": [dataclasses.asdict(row) for row in basis_measures],
         "basis_restrictions": list(basis_restrictions),

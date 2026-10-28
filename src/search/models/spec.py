@@ -375,6 +375,10 @@ class OpenConstraintAxisFact(StrictModel):
     )
 
 
+def _is_none(value: object) -> bool:
+    return value is None
+
+
 class RoleAxisFact(StrictModel):
     """One directional role axis (origin or destination) a role-bearing
     Spec's query left open, and what this Spec's own confirmation already
@@ -407,6 +411,16 @@ class RoleAxisFact(StrictModel):
             "could be enumerated (e.g. through entity_options or the options door), "
             "not just counted. False exactly when member_count is None"
         )
+    )
+    holds_multilaterals: bool | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "for the origin axis, whether its open population holds a multilateral "
+            "organisation (see ResolvedEntity.multilateral), read from the member list "
+            "where it is known and otherwise from the parties the served datasets publish "
+            "on the axis: true for the CRS's donors. Absent for the destination axis"
+        ),
     )
 
 
@@ -850,6 +864,30 @@ class ResolvedSpec(StrictModel):
             "on it, in the same order, including values the query never named (a "
             "declared default such as Gross or Nominal). Labels come from the measure "
             "index. Always [] when measure_label is None. Never a member of "
+            "BaseIdentity, never hashed."
+        ),
+    )
+    concept_label: str | None = Field(
+        default=None,
+        description=(
+            "what this Spec's series count, in a reader's words, with no measure basis, "
+            "codes, provider scope or dataset: the sector the identity binds where it "
+            "binds one ('health' for CRS 120 and 130 together, ONE's grouping; 'basic "
+            "health' for CRS 122), else the values the served members share outside the "
+            "measure axes, which shape.label states in brackets after measure_label "
+            "('official development assistance'). A composite carries its table "
+            "identity's concept label. None when the shape has no measure partition and "
+            "binds no sector. Never a member of BaseIdentity, never hashed."
+        ),
+    )
+    published_tables: str | None = Field(
+        default=None,
+        description=(
+            "the names of the tables this Spec's figures are published in, with no "
+            "provider scope: the elected dataset's label ('OECD Creditor Reporting System "
+            "(CRS)'), or for a composite the labels of the tables its components read, "
+            "joined ('OECD Creditor Reporting System (CRS) and ONE Imputed Multilateral "
+            "Sectors'). None when no provenance was elected. Never a member of "
             "BaseIdentity, never hashed."
         ),
     )

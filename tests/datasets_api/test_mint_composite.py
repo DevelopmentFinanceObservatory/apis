@@ -20,8 +20,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from artifact_store import Tier
-from code_index.composites import CompositeNotServable, component_identities
-from code_index.declarations import COMPOSITES
+from code_index.composites import (
+    DECLARED_COMPOSITES,
+    CompositeNotServable,
+    component_identities,
+)
+from code_index.declarations import CRS_INCLUSIVE
 from code_index.shared import get_index
 from datasets_api import serve
 from datasets_api.adapter import resolve_definition_members
@@ -49,7 +53,7 @@ from ._member_bounds import mint_bounds
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
 
-_STACKED = COMPOSITES[0]
+_STACKED = DECLARED_COMPOSITES[CRS_INCLUSIVE]
 _PROVIDER = "country/FRA"
 _RECIPIENT = "country/KEN"
 _CRS_FACET = "facet_crs"
