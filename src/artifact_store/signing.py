@@ -8,8 +8,11 @@ The account needs `roles/iam.serviceAccountTokenCreator` on itself.
 This store caps URLs at one hour, below V4's seven-day maximum.
 
 With `STORAGE_EMULATOR_HOST` set, which `google-cloud-storage` also reads to send every call
-to a GCS emulator, `sign_get_url` returns the object's unsigned media link, with the
-response-type and disposition overrides in its query, and needs no credentials. The link is
+to a GCS emulator, and `DFO_LOCAL_STACK=1`, which only the local stack's `local.env` sets,
+`sign_get_url` returns the object's unsigned media link, with the response-type and disposition
+overrides in its query, and needs no credentials. `STORAGE_EMULATOR_HOST` set without
+`DFO_LOCAL_STACK=1` refuses with `StorageEmulatorRefused` when a `LiveArtifactStore` is built,
+at start-up, and on every signing (`emulator_host`). The link is
 on `STORAGE_EMULATOR_LINK_BASE` when that is set, as the local stack sets it to the API's own
 origin, which serves the emulator's media path, and on the emulator otherwise. The emulator
 checks no signature and ignores the overrides.
@@ -28,7 +31,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from google.auth.transport.requests import Request as _GoogleAuthRequest
 from google.cloud import storage
 
-from artifact_store.errors import ArtifactSigningError
+from artifact_store.errors import ArtifactSigningError, StorageEmulatorRefused
 
 # V4's maximum signed-URL lifetime.
 V4_MAX_TTL = timedelta(days=7)
@@ -48,6 +51,23 @@ STORAGE_EMULATOR_ENV = "STORAGE_EMULATOR_HOST"
 
 # The origin an emulator media link is served on, where it is not the emulator itself.
 STORAGE_EMULATOR_LINK_BASE_ENV = "STORAGE_EMULATOR_LINK_BASE"
+
+# Set to 1 by the local stack alone; the one setting under which the emulator's unsigned links go out.
+LOCAL_STACK_ENV = "DFO_LOCAL_STACK"
+
+
+def emulator_host() -> str | None:
+    """The GCS emulator `STORAGE_EMULATOR_HOST` names, or `None` when it is unset.
+
+    Raises:
+        StorageEmulatorRefused: It is set and `DFO_LOCAL_STACK` is not `1`.
+    """
+    host = os.environ.get(STORAGE_EMULATOR_ENV)
+    if not host:
+        return None
+    if os.environ.get(LOCAL_STACK_ENV) != "1":
+        raise StorageEmulatorRefused
+    return host
 
 
 class _ServiceAccountCredentials(Protocol):
@@ -100,11 +120,12 @@ def sign_get_url(
     """Sign one GET URL for `object_name` with the requested response type and disposition
     in its query. `digest` names the bytes in a signing error.
 
-    With `STORAGE_EMULATOR_HOST` set, returns the object's unsigned media link instead, on
+    On the local stack (`emulator_host`), returns the object's unsigned media link instead, on
     `STORAGE_EMULATOR_LINK_BASE` when that is set and on the emulator otherwise.
 
     Raises `ValueError` outside the store TTL bounds before credential or
-    network work. Signing failures raise `ArtifactSigningError` with safe error details.
+    network work, and `StorageEmulatorRefused` for an emulator outside the local stack.
+    Signing failures raise `ArtifactSigningError` with safe error details.
     """
     if ttl <= timedelta(0):
         raise ValueError(f"ttl must be positive, got {ttl!r}")
@@ -119,9 +140,9 @@ def sign_get_url(
             f"ttl {ttl!r} exceeds this store's {SIGNED_URL_TTL_CEILING!r} ceiling "
             f"(V4 signed URLs cap at {V4_MAX_TTL!r} regardless)"
         )
-    if emulator_host := os.environ.get(STORAGE_EMULATOR_ENV):
+    if emulator := emulator_host():
         return _emulator_media_url(
-            os.environ.get(STORAGE_EMULATOR_LINK_BASE_ENV) or emulator_host,
+            os.environ.get(STORAGE_EMULATOR_LINK_BASE_ENV) or emulator,
             bucket=bucket,
             object_name=object_name,
             response_type=response_type,

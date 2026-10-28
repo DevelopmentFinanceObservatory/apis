@@ -5,7 +5,9 @@ the frames each slot served (`served_frame`), and each live slot's newest-data c
 A share publishes cards under one `/s/<id>` id. Each revision lists the share's slots, numbered
 from 1, and a slot holds one card revision or none. A create writes revision 1 with one slot per
 card. A replace writes the next revision with every slot the share has had, so a replacement
-with fewer cards leaves the later slots empty and keeps their URLs. Revision rows are never
+with fewer cards leaves the later slots empty and keeps their URLs. It locks the share row and
+refuses a snapshot, or a share whose revision moved since the caller read it, so a replace
+racing a snapshot conversion cannot write new cards into the snapshot. Revision rows are never
 updated or deleted. A delete sets `deleted_at`, after which every read and write answers
 `ShareNotFound`.
 
@@ -16,10 +18,11 @@ and payload, and finds a share it imported before by its id, kind and `created_a
 
 A live slot's data read keeps one `SlotCheck` per slot and card revision: the frame the slot
 serves, its freshness, when the check ran and when the next one is due. `claim_slot_check`
-moves a due check's times forward in one statement, so of two reads finding it due only one runs
-the check. Each frame a
-read serves is recorded once in `served_frame` (`record_served`), which `served_frames` reads
-newest first.
+claims a due check in one statement, so of two reads finding it due only one runs the check. The
+claim moves only the due time, to when the claim expires, and leaves the frame, freshness and
+check time of the last check for the reads that lose it. A slot's first claim inserts its row as
+`pending` on the card's own frame with no check time. Each frame a read serves is recorded once
+in `served_frame` (`record_served`), which `served_frames` reads newest first.
 
 `create_share` mints the id (`ids.mint_share_id`) and inserts it with `ON CONFLICT DO NOTHING`,
 minting again while the id is taken, by a share made here or one imported from the website,
@@ -66,6 +69,7 @@ __all__ = [
     "ShareKind",
     "ShareMode",
     "ShareNotFound",
+    "ShareNotReplaceable",
     "ShareRecord",
     "ShareSlot",
     "ShareStore",
@@ -105,6 +109,17 @@ class ShareNotFound(Exception):
     def __init__(self, share_id: str) -> None:
         self.share_id = share_id
         super().__init__(f"no share exists at id {share_id!r}")
+
+
+class ShareNotReplaceable(Exception):
+    """A replace names a snapshot. Maps to 409 `share_not_replaceable`."""
+
+    def __init__(self, share_id: str) -> None:
+        self.share_id = share_id
+        super().__init__(
+            f"share {share_id!r} is a snapshot, whose cards are fixed for good; create a new "
+            "share for new cards, or create it with latest=true to replace its cards later"
+        )
 
 
 class ShareWriteTokenInUse(Exception):
@@ -186,11 +201,12 @@ class ImportedShare:
 @dataclass(frozen=True)
 class SlotCheck:
     """A live slot's newest-data check: the frame the slot serves until the next check, its
-    freshness, when the check ran, and when the next one is due."""
+    freshness, when the check ran (`None` while the slot's first check runs), and when the next
+    one is due."""
 
     frame: FrameRef
     freshness: Freshness
-    checked_at: datetime
+    checked_at: datetime | None
     next_check_at: datetime
 
 
@@ -247,12 +263,16 @@ class ShareStore(Protocol):
         """
         ...
 
-    def replace_share(self, *, share_id: str, cards: Sequence[ShareCard]) -> ShareRecord:
-        """Write the share's next revision: `cards` in slots 1 to `len(cards)`, and every
-        further slot the latest revision has left empty.
+    def replace_share(
+        self, *, share_id: str, revision: int, cards: Sequence[ShareCard]
+    ) -> ShareRecord:
+        """Write the live share's next revision after `revision`: `cards` in slots 1 to
+        `len(cards)`, and every further slot the latest revision has left empty.
 
         Raises:
             ShareNotFound: No share exists at `share_id`, or it was taken down.
+            ShareNotReplaceable: The share is a snapshot.
+            EditConflict: The share's latest revision is no longer `revision`.
             PresentationStoreUnavailable: The store failed.
         """
         ...
@@ -280,10 +300,13 @@ class ShareStore(Protocol):
         """
         ...
 
-    def import_share(self, share: ImportedShare) -> bool:
-        """Store a website share under its own id. Returns `False`, changing nothing, when the
-        id already holds a share of the same kind and `created_at`, which an earlier import
-        stored.
+    def import_share(
+        self, share: ImportedShare, *, on_stored: Callable[[], None] | None = None
+    ) -> bool:
+        """Store a website share under its own id, calling `on_stored` after its rows are
+        written and before they commit, so a failure of `on_stored` stores nothing. Returns
+        `False`, changing nothing and calling nothing, when the id already holds a share of the
+        same kind and `created_at`, which an earlier import stored.
 
         Raises:
             ShareIdTaken: The id holds another share.
@@ -302,9 +325,10 @@ class ShareStore(Protocol):
     def claim_slot_check(
         self, *, share_id: str, slot: int, card: ShareCard, now: datetime, claim_until: datetime
     ) -> bool:
-        """Move the check's time to `now` and its next due time to `claim_until` when it is due
-        at `now`. Returns whether it did, so the caller runs the check; `False` too when no
-        check is stored.
+        """Claim the check of `card`, which must draw a frame, in `slot` until `claim_until`
+        when it is due at `now`: move its next due time to `claim_until`, or insert it `pending`
+        on `card.frame` with no check time when none is stored. Returns whether it did, so the
+        caller runs the check.
 
         Raises:
             PresentationStoreUnavailable: The store failed.
@@ -408,9 +432,18 @@ class LiveShareStore:
             lambda tx: _read(tx, share_id=share_id, for_update=False),
         )
 
-    def replace_share(self, *, share_id: str, cards: Sequence[ShareCard]) -> ShareRecord:
+    def replace_share(
+        self, *, share_id: str, revision: int, cards: Sequence[ShareCard]
+    ) -> ShareRecord:
         def write(tx: Transaction) -> ShareRecord:
             current = _read(tx, share_id=share_id, for_update=True)
+            if current.mode == "snapshot":
+                raise ShareNotReplaceable(share_id)
+            if current.revision != revision:
+                raise EditConflict(
+                    f"share {share_id!r} moved to revision {current.revision} while it was "
+                    f"replaced at revision {revision}; retry"
+                )
             count = max(len(current.slots), len(cards))
             slots = tuple(
                 ShareSlot(slot=n, card=cards[n - 1] if n <= len(cards) else None)
@@ -466,7 +499,9 @@ class LiveShareStore:
 
         return self._in_transaction(f"turning share {share_id!r} into a snapshot", write)
 
-    def import_share(self, share: ImportedShare) -> bool:
+    def import_share(
+        self, share: ImportedShare, *, on_stored: Callable[[], None] | None = None
+    ) -> bool:
         def write(tx: Transaction) -> bool:
             row = tx.fetch_one(
                 "INSERT INTO presentation.share (id, kind, mode, title, write_token_sha256, "
@@ -499,6 +534,8 @@ class LiveShareStore:
             _insert_revision(
                 tx, share_id=share.id, revision=1, slots=slots, created_at=share.created_at
             )
+            if on_stored is not None:
+                on_stored()
             return True
 
         return self._in_transaction(f"importing share {share.id!r}", write)
@@ -519,7 +556,7 @@ class LiveShareStore:
                     content_version=cast(str, row["frame_content_version"]),
                 ),
                 freshness=cast("Freshness", row["freshness"]),
-                checked_at=cast(datetime, row["checked_at"]),
+                checked_at=cast("datetime | None", row["checked_at"]),
                 next_check_at=cast(datetime, row["next_check_at"]),
             )
 
@@ -528,12 +565,27 @@ class LiveShareStore:
     def claim_slot_check(
         self, *, share_id: str, slot: int, card: ShareCard, now: datetime, claim_until: datetime
     ) -> bool:
+        frame = card.frame
+        assert frame is not None
+
         def write(tx: Transaction) -> bool:
             row = tx.fetch_one(
-                "UPDATE presentation.share_slot_check SET checked_at = %s, next_check_at = %s "
-                "WHERE share_id = %s AND slot = %s AND component_id = %s "
-                "AND component_revision = %s AND next_check_at <= %s RETURNING slot",
-                (now, claim_until, share_id, slot, card.component_id, card.revision, now),
+                "INSERT INTO presentation.share_slot_check AS held (share_id, slot, component_id, "
+                "component_revision, frame_spec_id, frame_content_version, freshness, "
+                "checked_at, next_check_at) VALUES (%s, %s, %s, %s, %s, %s, 'pending', NULL, %s) "
+                "ON CONFLICT (share_id, slot, component_id, component_revision) DO UPDATE SET "
+                "next_check_at = EXCLUDED.next_check_at WHERE held.next_check_at <= %s "
+                "RETURNING slot",
+                (
+                    share_id,
+                    slot,
+                    card.component_id,
+                    card.revision,
+                    frame.spec_id,
+                    frame.content_version,
+                    claim_until,
+                    now,
+                ),
             )
             return row is not None
 
@@ -667,8 +719,8 @@ class LiveShareStore:
         raise GeneratedIdCollision(subject_kind="share")
 
     def _in_transaction[T](self, action: str, work: Callable[[Transaction], T]) -> T:
-        """Run `work` in one transaction. `ShareNotFound`, `ShareIdTaken`, `ShareWriteTokenInUse`,
-        `EditConflict` and `GeneratedIdCollision` pass through, and any other failure becomes
+        """Run `work` in one transaction. `ShareNotFound`, `ShareNotReplaceable`, `ShareIdTaken`,
+        `ShareWriteTokenInUse`, `EditConflict` and `GeneratedIdCollision` pass through, and any other failure becomes
         `PresentationStoreUnavailable`, raised after leaving `except` so driver context stays
         off it."""
         failure: PresentationStoreUnavailable | None = None
@@ -678,6 +730,7 @@ class LiveShareStore:
                 result = work(tx)
         except (
             ShareNotFound,
+            ShareNotReplaceable,
             ShareIdTaken,
             ShareWriteTokenInUse,
             EditConflict,

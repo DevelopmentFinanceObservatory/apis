@@ -10,16 +10,19 @@ from typing import ClassVar
 
 import pytest
 
+from assembler.errors import FrameUnavailable
 from assembler.ports import DraftNotFound, FrameRef, RevisionRecord
 from assembler.write_token import write_token_digest
 from presentation_store.share_import import ImportCounts, import_shares
-from presentation_store.shares import MAX_SHARE_PAYLOAD_BYTES, LiveShareStore
+from presentation_store.shares import MAX_SHARE_PAYLOAD_BYTES, LiveShareStore, ShareNotFound
+from presentation_store.store_errors import PresentationStoreUnavailable
 
 from .conftest import FakePresentationStore
 
 _DATASET = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "b" * 32)
 _REFRESHED = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "c" * 32)
 _DERIVED = FrameRef(spec_id="ops_" + "d" * 32, content_version="ocv_" + "e" * 32)
+_UNPINNABLE = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "f" * 32)
 
 
 class _Revisions:
@@ -57,6 +60,19 @@ class _Revisions:
         if component_id in {key[0] for key in self._FRAMES} | {"cmp_note"}:
             return self.read_revision(component_id=component_id, revision=1)
         raise DraftNotFound(subject_kind="component", subject_id=component_id)
+
+
+class _Pins:
+    """A frame store recording each pin, refusing `_UNPINNABLE`."""
+
+    def __init__(self) -> None:
+        self.pins: list[tuple[FrameRef, str]] = []
+
+    def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool:
+        if frame_ref == _UNPINNABLE:
+            raise FrameUnavailable(reason="expired", detail=f"{frame_ref} is gone")
+        self.pins.append((frame_ref, component_id))
+        return True
 
 
 def _slot(component_id: str, revision: int, frame: FrameRef | None) -> dict[str, object]:
@@ -120,13 +136,16 @@ _CASES = {
 }
 
 
-def _run(store: LiveShareStore, lines: list[str]) -> tuple[ImportCounts, list[dict], list]:
+def _run(
+    store: LiveShareStore, lines: list[str], *, pins: _Pins | None = None
+) -> tuple[ImportCounts, list[dict], list]:
     tokens: list[dict] = []
     refused: list[tuple[str, str]] = []
     counts = import_shares(
         lines,
         share_store=store,
         revision_store=_Revisions(),
+        frame_store=pins or _Pins(),
         write_token=lambda text: tokens.append(json.loads(text)),
         refuse=lambda label, reason: refused.append((label, reason)),
     )
@@ -224,6 +243,10 @@ def test_export_slot_index_i_is_slot_i_plus_one_and_a_null_frame_takes_the_revis
             "share cardLive",
         ),
         (
+            json.dumps({**_CASES["canvSnap"], "slots": [_slot("cmp_chart", 1, _UNPINNABLE)]}),
+            "share canvSnap",
+        ),
+        (
             json.dumps({**_CASES["canvNoRf"], "payload": {"text": "x" * MAX_SHARE_PAYLOAD_BYTES}}),
             "share canvNoRf",
         ),
@@ -239,6 +262,7 @@ def test_export_slot_index_i_is_slot_i_plus_one_and_a_null_frame_takes_the_revis
         "unknown-card",
         "unknown-revision",
         "null-frame-on-a-note",
+        "unpinnable-frame",
         "payload-over-the-bound",
     ],
 )
@@ -262,3 +286,40 @@ def test_an_id_holding_a_share_made_here_refuses_the_line():
 
     assert (counts, tokens) == (ImportCounts(imported=0, unchanged=0, refused=1), [])
     assert refused[0][0] == "share cardLive"
+
+
+@pytest.mark.parametrize("case", ["canvLive", "canvSnap"])
+def test_an_import_pins_each_card_revisions_frame_and_each_slots_frame(case: str):
+    pins = _Pins()
+
+    _run(LiveShareStore(store=FakePresentationStore()), _lines(_CASES[case]), pins=pins)
+
+    expected = {
+        "canvLive": {(_DATASET, "cmp_chart"), (_DERIVED, "cmp_derived")},
+        "canvSnap": {(_DATASET, "cmp_chart"), (_REFRESHED, "cmp_chart")},
+    }[case]
+    assert set(pins.pins) == expected
+
+
+def test_a_token_line_is_written_before_its_share_commits_and_a_failed_write_stores_nothing():
+    store = LiveShareStore(store=FakePresentationStore())
+    written: list[str] = []
+
+    def write_token(text: str) -> None:
+        written.append(json.loads(text)["id"])
+        raise OSError("disk full")
+
+    with pytest.raises(PresentationStoreUnavailable):
+        import_shares(
+            _lines(_CASES["cardLive"]),
+            share_store=store,
+            revision_store=_Revisions(),
+            frame_store=_Pins(),
+            write_token=write_token,
+            refuse=lambda label, reason: None,
+        )
+
+    # The share rolled back with the failed write, so a re-run mints and reports its token.
+    assert written == ["cardLive"]
+    with pytest.raises(ShareNotFound):
+        store.read_share(share_id="cardLive")

@@ -7,7 +7,7 @@ from __future__ import annotations
 import csv
 import io
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
 
 import openpyxl
@@ -25,13 +25,14 @@ from assembler.testing import (
     malaria_ethiopia_frame_ref,
     malaria_ethiopia_rows,
 )
+from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
 from datasets_api.retention import RetentionUnreadable
 from dfo_platform.app import create_app
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
 from presentation_api.doors.shares import SHARES_DEPS_SLOT
 from presentation_api.newest_frames import NewestPending
-from presentation_store import LiveShareStore
+from presentation_store import LiveShareStore, PresentationStoreUnavailable
 from tests.presentation_api.test_shares_door import _Allowances
 from tests.presentation_store.conftest import FakePresentationStore
 
@@ -42,6 +43,7 @@ _MOVED = FrameRef(spec_id=_STORED.spec_id, content_version="cv_" + "b" * 32)
 _UNREADABLE = FrameRef(spec_id=_STORED.spec_id, content_version="cv_" + "e" * 32)
 _MOVED_BY = 1000.0
 _START = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
+_SITE = "https://dfo.example"
 
 
 def _frame(frame_ref: FrameRef, *, moved_by: float = 0.0) -> ResolvedFrame:
@@ -59,14 +61,19 @@ def _frame(frame_ref: FrameRef, *, moved_by: float = 0.0) -> ResolvedFrame:
 
 class _Newest:
     """`NewestFrames` answering `answer`: `None` for the frame asked about, a frame, a
-    `NewestPending`, or an exception to raise. Records every frame asked about."""
+    `NewestPending`, or an exception to raise. Records every frame asked about, and calls
+    `during` once, as another read arriving while the check runs."""
 
     def __init__(self) -> None:
         self.answer: FrameRef | NewestPending | Exception | None = None
         self.asked: list[FrameRef] = []
+        self.during: Callable[[], None] | None = None
 
     def newest(self, frame: FrameRef) -> FrameRef | NewestPending:
         self.asked.append(frame)
+        if (during := self.during) is not None:
+            self.during = None
+            during()
         if isinstance(self.answer, Exception):
             raise self.answer
         return frame if self.answer is None else self.answer
@@ -136,6 +143,17 @@ class _Door:
 
 @pytest.fixture
 def door(release_registry: FakeReleaseRegistry) -> Iterator[_Door]:
+    yield from _serve_door(release_registry, cors_origins=())
+
+
+@pytest.fixture
+def cors_door(release_registry: FakeReleaseRegistry) -> Iterator[_Door]:
+    yield from _serve_door(release_registry, cors_origins=(_SITE,))
+
+
+def _serve_door(
+    release_registry: FakeReleaseRegistry, *, cors_origins: tuple[str, ...]
+) -> Iterator[_Door]:
     frame_store = FakeFrameStore()
     frame_store.put(resolved_frame=_frame(_STORED))
     frame_store.put(resolved_frame=_frame(_MOVED, moved_by=_MOVED_BY))
@@ -149,7 +167,8 @@ def door(release_registry: FakeReleaseRegistry) -> Iterator[_Door]:
         caller_settings=CallerSettings(caller_hmac_key=SecretStr("share-data-test-key")),
         newest_frames=newest,
     )
-    with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
+    app = create_app([surface], cors_origins=cors_origins)
+    with TestClient(app, raise_server_exceptions=False) as client:
         yield _Door(client, frame_store=frame_store, newest=newest)
 
 
@@ -240,6 +259,42 @@ def test_a_snapshot_slot_serves_its_cards_frame_as_json_rows_any_origin_may_read
     assert (body["share_id"], body["slot"], body["revision"]) == (share["id"], 1, 1)
     assert body["rows"] and {"series", "value", "time_period"} <= set(body["rows"][0])
     assert door.newest.asked == []
+
+
+@pytest.mark.parametrize("origin", [_SITE, "https://news.example"], ids=["listed", "other"])
+def test_with_cors_on_any_origin_reads_a_slots_headers_and_sends_if_none_match(
+    cors_door: _Door, origin: str
+):
+    share = cors_door.share(cors_door.card(), latest=True)
+    url = f"/api/presentation/shares/{share['id']}/slots/1/data"
+
+    preflight = cors_door.client.options(
+        url,
+        headers={
+            "origin": origin,
+            "access-control-request-method": "GET",
+            "access-control-request-headers": "if-none-match",
+        },
+    )
+    read = cors_door.client.get(url, headers={"origin": origin})
+    again = cors_door.client.get(
+        url, headers={"origin": origin, "if-none-match": read.headers["etag"]}
+    )
+    write = cors_door.client.options(
+        f"/api/presentation/shares/{share['id']}",
+        headers={"origin": "https://news.example", "access-control-request-method": "PUT"},
+    )
+
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "*"
+    assert "if-none-match" in preflight.headers["access-control-allow-headers"].lower()
+    assert read.headers["access-control-allow-origin"] in {origin, "*"}
+    exposed = {
+        name.strip().lower() for name in read.headers["access-control-expose-headers"].split(",")
+    }
+    assert {"etag", "x-dfo-freshness", "x-dfo-checked-at", "x-dfo-trace-id"} <= exposed
+    assert again.status_code == 304
+    assert "access-control-allow-origin" not in write.headers
 
 
 def test_a_matching_if_none_match_answers_304_and_gzip_carries_the_etag_weak(door: _Door):
@@ -340,6 +395,54 @@ def test_a_live_slot_checks_for_newer_data_at_most_once_per_fifteen_minutes(door
     assert within.headers["x-dfo-checked-at"] == _START.isoformat()
     assert after.headers["x-dfo-checked-at"] == (_START + timedelta(minutes=15)).isoformat()
     assert first.headers["etag"] == within.headers["etag"] == after.headers["etag"]
+
+
+def test_a_read_during_a_check_states_the_last_check_and_runs_none_of_its_own(door: _Door):
+    share = door.share(door.card(), latest=True)
+    during = []
+    door.newest.during = lambda: during.append(door.data(share["id"]))
+    first = door.data(share["id"])
+    door.later(minutes=15)
+    door.newest.answer = _MOVED
+    door.newest.during = lambda: during.append(door.data(share["id"]))
+    due = door.data(share["id"])
+
+    (in_first, in_due) = during
+    assert door.newest.asked == [_STORED, _STORED]
+    assert _stated(in_first)[:2] == ("pending", _STORED.content_version)
+    assert "x-dfo-checked-at" not in in_first.headers
+    assert _stated(first)[0] == "current"
+    assert _stated(in_due)[:2] == ("current", _STORED.content_version)
+    assert in_due.headers["x-dfo-checked-at"] == _START.isoformat()
+    assert _stated(due)[:2] == ("current", _MOVED.content_version)
+    assert due.headers["x-dfo-checked-at"] == (_START + timedelta(minutes=15)).isoformat()
+
+
+def test_a_claim_whose_read_never_records_its_check_expires_within_two_minutes(door: _Door):
+    share = door.share(door.card(), latest=True)
+    door.data(share["id"])
+    door.later(minutes=15)
+    deps = getattr(door.client.app.state, SHARES_DEPS_SLOT.name)
+    card = deps.share_store.read_share(share_id=share["id"]).slots[0].card
+    claims = []
+    door.newest.during = lambda: claims.append(
+        deps.share_store.slot_check(share_id=share["id"], slot=1, card=card)
+    )
+    door.data(share["id"])
+    # Put back the claim as a read that died before recording its check would have left it.
+    (claim,) = claims
+    deps.share_store.record_slot_check(share_id=share["id"], slot=1, card=card, check=claim)
+
+    door.clock.at = claim.next_check_at - timedelta(seconds=1)
+    held = door.data(share["id"])
+    door.later(seconds=1)
+    door.newest.answer = _MOVED
+    freed = door.data(share["id"])
+
+    assert claim.next_check_at - (_START + timedelta(minutes=15)) <= timedelta(minutes=2)
+    assert len(door.newest.asked) == 3
+    assert held.headers["x-dfo-checked-at"] == _START.isoformat()
+    assert _stated(freed)[:2] == ("current", _MOVED.content_version)
 
 
 @pytest.mark.parametrize(
@@ -567,6 +670,59 @@ def test_the_history_lists_each_frame_served_newest_first_with_its_retention(
         None,
         False,
     )
+
+
+def test_a_create_and_a_replace_record_what_the_slots_show_before_any_read(door: _Door):
+    first, second = door.card(), door.card()
+    share = door.share(first, latest=True)
+    history_path = f"/api/presentation/shares/{share['id']}/history"
+
+    def shown() -> set[tuple[int, str, str]]:
+        served = door.client.get(history_path).json()["served"]
+        return {
+            (entry["slot"], entry["component_id"], entry["frame"]["content_version"])
+            for entry in served
+        }
+
+    created = shown()
+    door.client.put(
+        f"/api/presentation/shares/{share['id']}",
+        json={"cards": [{"component_id": second, "revision": 1}]},
+        headers={_TOKEN: share["write_token"]},
+    )
+
+    assert created == {(1, first, _STORED.content_version)}
+    assert shown() == {(1, first, _STORED.content_version), (1, second, _STORED.content_version)}
+    assert door.newest.asked == []
+
+
+def test_a_retried_create_records_what_the_first_create_failed_to_record(
+    door: _Door, monkeypatch: pytest.MonkeyPatch
+):
+    card = door.card()
+    share_store = getattr(door.client.app.state, SHARES_DEPS_SLOT.name).share_store
+    record_served = share_store.record_served
+
+    def unavailable(**_: object) -> None:
+        raise PresentationStoreUnavailable("recording a served frame")
+
+    monkeypatch.setattr(share_store, "record_served", unavailable)
+    body = {
+        "cards": [{"component_id": card, "revision": 1}],
+        "latest": True,
+        "write_token": mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX),
+    }
+    failed = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
+    monkeypatch.setattr(share_store, "record_served", record_served)
+
+    retried = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
+
+    assert (failed.status_code, retried.status_code) == (503, 201)
+    history = door.client.get(f"/api/presentation/shares/{retried.json()['id']}/history")
+    assert [
+        (entry["slot"], entry["component_id"], entry["frame"]["content_version"])
+        for entry in history.json()["served"]
+    ] == [(1, card, _STORED.content_version)]
 
 
 def test_a_snapshot_conversion_keeps_and_pins_the_frame_each_slot_serves(door: _Door):

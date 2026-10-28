@@ -90,7 +90,7 @@ Cloud Run workloads execute under a service account without downloadable private
 2. The `roles/iam.serviceAccountTokenCreator` role on the service account authorizes the `iamcredentials.googleapis.com` `signBlob` RPC.
 3. `Blob.generate_signed_url` receives the access token and service account email, invoking the remote `signBlob` endpoint.
 
-With `STORAGE_EMULATOR_HOST` set, which `google-cloud-storage` also reads to send every call to a GCS emulator, `sign_get_url` skips credentials and signing and returns the object's media link, with the `response-content-type` and `response-content-disposition` overrides in its query. The link is on `STORAGE_EMULATOR_LINK_BASE` when that is set and on the emulator otherwise. The local stack in `scripts/local-stack/` sets it to the API's origin, which serves the emulator's media path.
+With `STORAGE_EMULATOR_HOST` set, which `google-cloud-storage` also reads to send every call to a GCS emulator, and `DFO_LOCAL_STACK=1`, which only the local stack sets, `sign_get_url` skips credentials and signing and returns the object's media link, with the `response-content-type` and `response-content-disposition` overrides in its query. The link is on `STORAGE_EMULATOR_LINK_BASE` when that is set and on the emulator otherwise. The local stack in `scripts/local-stack/` sets it to the API's origin, which serves the emulator's media path. `STORAGE_EMULATOR_HOST` set without `DFO_LOCAL_STACK=1` raises `StorageEmulatorRefused` when a `LiveArtifactStore` is built and on every signing, so a deployment that sets it by mistake fails at start-up.
 
 ### URL Constraints and Caching
 

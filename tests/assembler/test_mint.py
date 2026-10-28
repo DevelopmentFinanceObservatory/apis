@@ -1678,9 +1678,9 @@ _ROOTS_CITATION = {
 over a WDI root."""
 
 
-def _mint_on_a_quotient_frame(member, *, release):
-    """`member` drawn on a derived frame whose rows name no provenance, since a quotient of
-    two roots' figures has no one source, under its roots' citation."""
+def _mint_on_a_quotient_frame(member, *, release, frame_ref=_DERIVED_FRAME_REF):
+    """`member` drawn on a frame at `frame_ref` whose rows name no provenance, as a quotient of
+    two roots' figures has no one source, under a citation of two sources."""
     rows = [
         {
             "stat_var": "dcid:ops_quotient",
@@ -1694,7 +1694,7 @@ def _mint_on_a_quotient_frame(member, *, release):
         for period, value in (("2020", 1.5), ("2021", 2.5))
     ]
     resolved_frame = build_resolved_frame(
-        frame_ref=_DERIVED_FRAME_REF,
+        frame_ref=frame_ref,
         role_keys=("recipient",),
         rows=rows,
         manifest={"schema_version": 1, "citation": _ROOTS_CITATION},
@@ -1713,8 +1713,8 @@ def _mint_on_a_quotient_frame(member, *, release):
     intent = {
         "type": member,
         "frame_ref": {
-            "spec_id": _DERIVED_FRAME_REF.spec_id,
-            "content_version": _DERIVED_FRAME_REF.content_version,
+            "spec_id": frame_ref.spec_id,
+            "content_version": frame_ref.content_version,
         },
         "select": {"stat_var": "dcid:ops_quotient", "recipient": "country/KEN"},
     }
@@ -1750,6 +1750,17 @@ def test_a_card_on_a_derived_frame_cites_its_roots_sources(release, member):
     assert named and named <= listed
     assert minted.provenance["citation"].startswith("OECD DAC2a and World Development Indicators")
     stamp_envelope(minted=minted, component_id="cmp_" + "s" * 20, revision=1, release=release)
+
+
+@pytest.mark.parametrize("member", ["table", "line_chart", "source_card"])
+def test_a_card_on_a_dataset_frame_leaves_a_row_with_no_provenance_unattributed(release, member):
+    """A dataset row with no provenance names none of its version's sources, so the card
+    names the unattributed source for it rather than the first source cited."""
+    dataset_frame = FrameRef(spec_id="spec_" + "c" * 32, content_version="cv_" + "d" * 32)
+
+    minted = _mint_on_a_quotient_frame(member, release=release, frame_ref=dataset_frame)
+
+    assert [source["name"] for source in minted.provenance["sources"]] == ["Unattributed source"]
 
 
 def test_sources_carry_the_citation_s_source_and_data_commons_as_id_and_name(release):

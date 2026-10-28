@@ -21,7 +21,8 @@ class DoorContribution:
     together. Middleware checks run synchronously before FastAPI parses the request body. Each
     check decides for itself, for example by path, whether a request concerns it.
     `registry_endpoints` maps each route path to the code registry endpoint it serves
-    (`dfo_platform.app.Surface.registry_endpoints`).
+    (`dfo_platform.app.Surface.registry_endpoints`), and `public_paths` names the route paths any
+    origin may read (`dfo_platform.app.Surface.public_paths`).
     """
 
     router: APIRouter
@@ -31,6 +32,7 @@ class DoorContribution:
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
     registry_endpoints: Mapping[str, str] = field(default_factory=dict)
+    public_paths: frozenset[str] = frozenset()
 
 
 def combine_classifiers(

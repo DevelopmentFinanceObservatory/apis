@@ -20,6 +20,7 @@ from presentation_store.shares import (
     ShareCard,
     ShareIdTaken,
     ShareNotFound,
+    ShareNotReplaceable,
     ShareSlot,
     ShareWriteTokenInUse,
     SlotCheck,
@@ -77,8 +78,10 @@ def test_a_replace_with_fewer_cards_keeps_the_later_slots_empty_and_more_cards_f
     store = LiveShareStore(store=FakePresentationStore())
     created = _create(store, _card("a"), _card("b"), _card("c"))
 
-    fewer = store.replace_share(share_id=created.id, cards=[_card("d")])
-    more = store.replace_share(share_id=created.id, cards=[_card("a"), _card("b"), _card("e")])
+    fewer = store.replace_share(share_id=created.id, revision=1, cards=[_card("d")])
+    more = store.replace_share(
+        share_id=created.id, revision=2, cards=[_card("a"), _card("b"), _card("e")]
+    )
 
     assert (fewer.revision, _shown(fewer.slots)) == (2, [(1, "cmp_d"), (2, None), (3, None)])
     assert (more.revision, _shown(more.slots)) == (
@@ -92,7 +95,7 @@ def test_a_replace_past_the_slots_the_share_has_adds_slots():
     store = LiveShareStore(store=FakePresentationStore())
     created = _create(store, _card("a"))
 
-    grown = store.replace_share(share_id=created.id, cards=[_card("b"), _card("c")])
+    grown = store.replace_share(share_id=created.id, revision=1, cards=[_card("b"), _card("c")])
 
     assert _shown(grown.slots) == [(1, "cmp_b"), (2, "cmp_c")]
 
@@ -157,7 +160,7 @@ def test_a_deleted_share_is_absent_to_every_read_and_write():
     with pytest.raises(ShareNotFound):
         store.read_share(share_id=created.id)
     with pytest.raises(ShareNotFound):
-        store.replace_share(share_id=created.id, cards=[_card("b")])
+        store.replace_share(share_id=created.id, revision=1, cards=[_card("b")])
     with pytest.raises(ShareNotFound):
         store.delete_share(share_id=created.id)
 
@@ -216,7 +219,7 @@ def test_a_create_stores_its_kind_and_payload_as_given():
 def test_a_snapshot_conversion_writes_the_served_frames_and_answers_a_snapshot_as_it_is():
     store = LiveShareStore(store=FakePresentationStore())
     created = _create(store, _card("a"), _card("b"))
-    emptied = store.replace_share(share_id=created.id, cards=[_card("a")])
+    emptied = store.replace_share(share_id=created.id, revision=1, cards=[_card("a")])
     assert _shown(emptied.slots) == [(1, "cmp_a"), (2, None)]
 
     snapshot = store.snapshot_share(share_id=created.id, revision=2, frames={1: _NEWER})
@@ -231,12 +234,29 @@ def test_a_snapshot_conversion_writes_the_served_frames_and_answers_a_snapshot_a
 def test_a_snapshot_conversion_of_a_share_replaced_meanwhile_is_an_edit_conflict():
     store = LiveShareStore(store=FakePresentationStore())
     created = _create(store, _card("a"))
-    store.replace_share(share_id=created.id, cards=[_card("b")])
+    store.replace_share(share_id=created.id, revision=1, cards=[_card("b")])
 
     with pytest.raises(EditConflict):
         store.snapshot_share(share_id=created.id, revision=1, frames={})
 
     assert store.read_share(share_id=created.id).mode == "live"
+
+
+def test_a_replace_refuses_a_share_that_became_a_snapshot_or_moved_since_it_was_read():
+    store = LiveShareStore(store=FakePresentationStore())
+    live = _create(store, _card("a"))
+    frozen = _create(store, _card("a"))
+    # Each replace read revision 1, then another write committed before its own.
+    store.replace_share(share_id=live.id, revision=1, cards=[_card("b")])
+    store.snapshot_share(share_id=frozen.id, revision=1, frames={})
+
+    with pytest.raises(EditConflict):
+        store.replace_share(share_id=live.id, revision=1, cards=[_card("c")])
+    with pytest.raises(ShareNotReplaceable):
+        store.replace_share(share_id=frozen.id, revision=1, cards=[_card("c")])
+
+    assert _shown(store.read_share(share_id=live.id).slots) == [(1, "cmp_b")]
+    assert store.read_share(share_id=frozen.id).revision == 2
 
 
 _IMPORTED = ImportedShare(
@@ -295,27 +315,43 @@ def test_a_slot_check_is_claimed_once_when_due_and_reset_by_another_card():
     share = _create(store, _card("a"))
     card = _card("a")
     due = _AT + timedelta(seconds=30)
-    check = SlotCheck(frame=_NEWER, freshness="pending", checked_at=_AT, next_check_at=due)
-    until = due + timedelta(minutes=15)
+    check = SlotCheck(frame=_NEWER, freshness="current", checked_at=_AT, next_check_at=due)
+    until = due + timedelta(minutes=1)
 
     def claim(now):
         return store.claim_slot_check(
             share_id=share.id, slot=1, card=card, now=now, claim_until=until
         )
 
-    assert store.slot_check(share_id=share.id, slot=1, card=card) is None
-    assert not claim(_AT)
     store.record_slot_check(share_id=share.id, slot=1, card=card, check=check)
-
     early = claim(due - timedelta(seconds=1))
     first = claim(due)
     second = claim(due)
+    expired = claim(until)
 
-    assert (early, first, second) == (False, True, False)
-    assert store.slot_check(share_id=share.id, slot=1, card=card) == SlotCheck(
-        frame=_NEWER, freshness="pending", checked_at=due, next_check_at=until
+    assert (early, first, second, expired) == (False, True, False, True)
+    # The claim moves only the due time; readers that lose it see the last check as it was.
+    assert store.slot_check(share_id=share.id, slot=1, card=card) == dataclasses.replace(
+        check, next_check_at=until
     )
     assert store.slot_check(share_id=share.id, slot=1, card=_card("a", revision=2)) is None
+
+
+def test_a_slots_first_check_is_claimed_once_as_pending_with_no_check_time():
+    store = LiveShareStore(store=FakePresentationStore())
+    share = _create(store, _card("a"))
+    card = _card("a")
+    until = _AT + timedelta(minutes=1)
+
+    claims = [
+        store.claim_slot_check(share_id=share.id, slot=1, card=card, now=_AT, claim_until=until)
+        for _ in range(2)
+    ]
+
+    assert claims == [True, False]
+    assert store.slot_check(share_id=share.id, slot=1, card=card) == SlotCheck(
+        frame=_FRAME, freshness="pending", checked_at=None, next_check_at=until
+    )
 
 
 def test_a_served_frame_is_recorded_once_and_read_newest_first():

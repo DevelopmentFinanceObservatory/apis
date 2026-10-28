@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from datetime import timedelta
+from typing import cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import google.auth
@@ -13,8 +14,10 @@ from google.api_core.exceptions import PermissionDenied
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import storage
 
-from artifact_store.errors import ArtifactSigningError
+from artifact_store import ArtifactInventory, LiveArtifactStore, Tier
+from artifact_store.errors import ArtifactSigningError, StorageEmulatorRefused
 from artifact_store.signing import (
+    LOCAL_STACK_ENV,
     SIGNED_URL_TTL_CEILING,
     SIGNED_URL_TTL_FLOOR,
     STORAGE_EMULATOR_ENV,
@@ -139,6 +142,7 @@ def test_emulator_host_returns_the_media_link_without_credential_work(
 
     monkeypatch.setattr(google.auth, "default", _boom)
     monkeypatch.setenv(STORAGE_EMULATOR_ENV, "http://127.0.0.1:54443/")
+    monkeypatch.setenv(LOCAL_STACK_ENV, "1")
     if link_base is None:
         monkeypatch.delenv(STORAGE_EMULATOR_LINK_BASE_ENV, raising=False)
     else:
@@ -341,3 +345,31 @@ def test_signings_in_one_process_discover_adc_once_and_refresh_only_on_expiry(
     for _ in range(3):
         _sign()
     assert (len(discoveries), credentials.refresh_count) == (1, 2)
+
+
+@pytest.mark.parametrize("local_stack", [None, "0"], ids=["unset", "not-one"])
+def test_an_emulator_outside_the_local_stack_refuses_the_store_and_every_link(
+    gcs_client, monkeypatch, local_stack
+):
+    monkeypatch.setenv(STORAGE_EMULATOR_ENV, "http://127.0.0.1:54443/")
+    if local_stack is None:
+        monkeypatch.delenv(LOCAL_STACK_ENV, raising=False)
+    else:
+        monkeypatch.setenv(LOCAL_STACK_ENV, local_stack)
+
+    with pytest.raises(StorageEmulatorRefused):
+        LiveArtifactStore(
+            buckets={Tier.working: "w", Tier.pinned: "p"},
+            inventory=cast("ArtifactInventory", object()),
+            client=gcs_client,
+        )
+    with pytest.raises(StorageEmulatorRefused):
+        sign_get_url(
+            client=gcs_client,
+            bucket="dfo-local-working",
+            object_name="sha256:deadbeef",
+            digest="sha256:deadbeef",
+            ttl=timedelta(minutes=5),
+            response_type="text/csv",
+            response_disposition='attachment; filename="deadbeef.csv"',
+        )

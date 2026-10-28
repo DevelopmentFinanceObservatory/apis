@@ -3,13 +3,15 @@
 A snapshot slot serves the frame its share revision records for the card. A live slot serves the
 newest data its card's intent can be drawn on. It asks `NewestFrames.newest` for the frame of
 the card's recorded frame and keeps the answer as the slot's `SlotCheck`
-(`presentation_store.shares`), which the reads before its `next_check_at` serve. A `pending`
+(`presentation_store.shares`), which the reads before its `next_check_at` serve. One read claims
+a due check and runs it while the others serve the last check's answer. A `pending`
 check is due again after the retry time the refresh or the run gave, between one second and
 `FRESHNESS_WINDOW`; every other check is due after `FRESHNESS_WINDOW`. A check states the rows:
 
 - `current`: the frame the check found, which is the card's own frame until its data moves;
 - `pending`: newer data is building as a queued operation, and the slot serves the frame of its
-  last check until a check after the retry time finds it built;
+  last check until a check after the retry time finds it built; a read during the slot's first
+  check states it too, on the card's own frame with no check time;
 - `stale`: the check failed, the card cannot be drawn on the newer frame, or no Datasets surface
   answers in this app; the slot serves the frame of its last check, or the card's own frame
   when the newer one cannot be drawn.
@@ -61,6 +63,7 @@ from assembler.pipeline.export_component import (
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, RevisionRecord
 from materialise.formats import ExcelIllegalCharacterError
+from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
@@ -89,6 +92,11 @@ type SlotFormat = Literal["json", "csv", "xlsx", "parquet"]
 _JSON_MEDIA_TYPE = "application/json"
 
 _MIN_RETRY_S = 1.0
+
+# How long a claimed check holds off other reads before any may claim it again: twice the bound
+# on one request, so a claim outlives the read that runs its check, and one whose reader died
+# frees the slot after that time.
+_CLAIM_TTL = timedelta(seconds=2 * PRESENTATION_COMPONENTS_TIMEOUT_SECONDS)
 """The least a pending check waits, whatever retry time it was given."""
 
 
@@ -378,20 +386,24 @@ def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool
 
 
 def _live_check(*, share: ShareRecord, slot: int, card: ShareCard, deps: SharesDeps) -> SlotCheck:
-    """The slot's check, run again once the last one is due (`SlotCheck.next_check_at`). Of two
-    reads finding it due, the one whose claim moves its time runs it, and the other serves the
-    last answer."""
+    """The slot's check, run once none is stored and again once the last one is due
+    (`SlotCheck.next_check_at`). Of reads finding it due, the one whose claim succeeds runs it,
+    and the others serve what the last check recorded: its frame, freshness and check time, or
+    `pending` on the card's own frame before the first check ends. A claim whose reader never
+    records its check expires after `_CLAIM_TTL`."""
     assert card.frame is not None
     store = deps.share_store
     now = deps.now()
     prior = store.slot_check(share_id=share.id, slot=slot, card=card)
-    if prior is not None:
-        if prior.next_check_at > now:
-            return prior
-        if not store.claim_slot_check(
-            share_id=share.id, slot=slot, card=card, now=now, claim_until=now + FRESHNESS_WINDOW
-        ):
-            return store.slot_check(share_id=share.id, slot=slot, card=card) or prior
+    if prior is not None and prior.next_check_at > now:
+        return prior
+    if not store.claim_slot_check(
+        share_id=share.id, slot=slot, card=card, now=now, claim_until=now + _CLAIM_TTL
+    ):
+        held = store.slot_check(share_id=share.id, slot=slot, card=card)
+        # A lost claim means another read stored or claimed the check, and nothing removes one.
+        assert held is not None
+        return held
     last = prior.frame if prior is not None else card.frame
     check = _check(card.frame, last=last, now=now, deps=deps, label=f"{share.id} slot {slot}")
     store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)

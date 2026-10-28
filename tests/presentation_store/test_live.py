@@ -601,7 +601,7 @@ def test_a_share_keeps_its_slots_across_replacements_and_reads_absent_once_delet
         write_token_sha256=digest,
         cards=[_share_card("cmp_a"), ShareCard(component_id="cmp_n", revision=2, frame=None)],
     )
-    replaced = shares.replace_share(share_id=created.id, cards=[_share_card("cmp_c")])
+    replaced = shares.replace_share(share_id=created.id, revision=1, cards=[_share_card("cmp_c")])
 
     assert shares.read_share(share_id=created.id) == replaced
     assert replaced.revision == 2
@@ -658,7 +658,7 @@ def test_a_live_share_converts_to_a_snapshot_keeping_the_frames_its_slots_serve(
         other = shares.create_share(
             kind="card", mode="live", title=None, write_token_sha256=None, cards=[]
         )
-        shares.replace_share(share_id=other.id, cards=[_share_card("cmp_c")])
+        shares.replace_share(share_id=other.id, revision=1, cards=[_share_card("cmp_c")])
         shares.snapshot_share(share_id=other.id, revision=1, frames={})
 
 
@@ -733,9 +733,18 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
             share_id=share.id, slot=1, card=card, frame=frame, rendering={"columns": ["a"]}
         )
 
+    first_claims = [
+        shares.claim_slot_check(share_id=share.id, slot=2, card=card, now=at, claim_until=until)
+        for _ in range(2)
+    ]
+
     assert claims == [False, True, False]
+    assert first_claims == [True, False]
     assert shares.slot_check(share_id=share.id, slot=1, card=card) == SlotCheck(
-        frame=newer, freshness="current", checked_at=later, next_check_at=until
+        frame=newer, freshness="current", checked_at=at, next_check_at=until
+    )
+    assert shares.slot_check(share_id=share.id, slot=2, card=card) == SlotCheck(
+        frame=stored, freshness="pending", checked_at=None, next_check_at=until
     )
     served = shares.served_frames(share_id=share.id)
     assert [entry.frame for entry in served] == [stored, newer]

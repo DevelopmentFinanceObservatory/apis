@@ -98,6 +98,9 @@ _DATASET_STORE = {
     "0039_caller_allowance.sql": (
         "f157414916f3846f52c50569bcf6b5c550bed67e123ec160b0cacc3024f0b706"
     ),
+    "0040_caller_allowance_budgets.sql": (
+        "29c6abfdfae3f078aa2f1d1de79cd745e116aca295707629567ccfa54938bbc7"
+    ),
 }
 
 _PRESENTATION_STORE = {
@@ -129,6 +132,9 @@ _PRESENTATION_STORE = {
     ),
     "0015_share_create_token.sql": (
         "aed4d316afc7180b4b8491ec7f161a708d231805643ca1bca66d7e432a6730f3"
+    ),
+    "0016_share_slot_check_claim.sql": (
+        "1b59cb708b9acedc7ade57cebde3210accc38be5fc7adb2014512e4fbd705d8c"
     ),
 }
 

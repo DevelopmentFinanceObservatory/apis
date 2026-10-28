@@ -18,10 +18,11 @@ public site, and the `shw_` write token; the store keeps its SHA-256 digest.
 A create may carry its own `shw_` token in `write_token`, in the form the server mints
 (`assembler.write_token.require_client_write_token`). The token keys the create: a retry with
 the same token and the same body, defaults filled, answers the share the first create made,
-201 with its current URLs and revision, spending no allowance and pinning nothing. The same
-token with another body refuses 400 `request_invalid` at `/write_token`, and a token whose share
-was taken down answers 404 `not_found`. A server-minted token appears only in the create's
-reply.
+201 with its current URLs and revision, spending no allowance and pinning nothing. It records
+what the share shows again, so a share whose first record failed lists it in its history. The
+same token with another body refuses 400 `request_invalid` at `/write_token`, and a token whose
+share was taken down answers 404 `not_found`. A server-minted token appears only in the
+create's reply.
 
 `PUT /api/presentation/shares/{share_id}` takes `{cards}` and writes the share's next revision.
 Slot n shows the nth card, and slots past the last card stay empty, so every slot keeps its URLs.
@@ -29,7 +30,9 @@ It pins the card revisions the share did not show before. `DELETE` takes the sha
 need the share's token in `x-dfo-write-token`, checked before anything else about the share, so
 a caller without it learns nothing more: no header refuses 403 `write_token_required`, another
 token 403 `write_token_invalid`, and a share stored without a token (a guest's, imported from the
-website) refuses every token. A replace of a snapshot then refuses 409 `share_not_replaceable`.
+website) refuses every token. A replace of a snapshot then refuses 409 `share_not_replaceable`,
+also when the share became one while the replace ran, and a replace of a share replaced
+meanwhile refuses 409 `edit_conflict`.
 A `DELETE` of a share already taken down answers 204 to the holder of its token, so a client
 whose first 204 was lost can retry it, and 404 `not_found` to any other caller.
 
@@ -66,7 +69,9 @@ its stored read. A slot number the share has not had, or an empty slot, answers 
 
 `GET /api/presentation/shares/{share_id}/history` is public and allows any origin: every frame
 the share's slots served, newest first, each with its retention counted from when DFO stored it
-and whether it is still fetchable (`share_slots.history_document`).
+and whether it is still fetchable (`share_slots.history_document`). A create, replace or
+snapshot conversion records each slot's frame as served at the write, as a read does, so the
+history lists what a share shows before any read.
 
 A share id that names no share, or one taken down, answers 404 `not_found` on every route. A
 card's frame that is gone answers 404 `frame_unavailable`, and a frame read that fails answers
@@ -193,6 +198,7 @@ from presentation_store import (
     PresentationStoreUnavailable,
     ShareCard,
     ShareNotFound,
+    ShareNotReplaceable,
     ShareRecord,
     ShareStore,
     ShareWriteTokenInUse,
@@ -360,17 +366,6 @@ class WriteTokenInvalid(Exception):
         )
 
 
-class ShareNotReplaceable(Exception):
-    """A replace names a snapshot. Maps to 409 `share_not_replaceable`."""
-
-    def __init__(self, share_id: str) -> None:
-        self.share_id = share_id
-        super().__init__(
-            f"share {share_id!r} is a snapshot, whose cards are fixed for good; create a new "
-            "share for new cards, or create it with latest=true to replace its cards later"
-        )
-
-
 class SharePayloadTooLarge(Exception):
     """A create's payload is over `MAX_SHARE_PAYLOAD_BYTES`. Maps to 413 `payload_too_large`."""
 
@@ -465,6 +460,31 @@ def _pin(cards: Iterable[ShareCard], *, deps: SharesDeps) -> None:
         )
 
 
+def _record_shown(share: ShareRecord, *, deps: SharesDeps) -> None:
+    """Record the frame each slot of `share` shows as served, with its card revision's recorded
+    rendering, as a slot read records it, so the share's history lists from the write on what
+    it shows."""
+    renderings: dict[tuple[str, int], Mapping[str, object] | None] = {}
+    for slot in share.slots:
+        card = slot.card
+        if card is None or card.frame is None:
+            continue
+        key = (card.component_id, card.revision)
+        if key not in renderings:
+            renderings[key] = read_stored_revision(
+                component_id=card.component_id,
+                revision=card.revision,
+                revision_store=deps.revision_store,
+            ).frame_rendering
+        deps.share_store.record_served(
+            share_id=share.id,
+            slot=slot.slot,
+            card=card,
+            frame=card.frame,
+            rendering=renderings[key],
+        )
+
+
 def _locations(share: ShareRecord, *, site: str) -> dict[str, object]:
     return {
         "id": share.id,
@@ -534,7 +554,8 @@ def _replay_create(
     *, token: str, token_sha256: bytes, request_sha256: bytes, deps: SharesDeps
 ) -> Response | None:
     """The first share a client's token made, answered as its create was, or `None` when no
-    share holds the token.
+    share holds the token. It records what the share shows, as the create does, since the first
+    create's record runs after its write commits and may have failed.
 
     Raises:
         CreateRequestInvalid: The token's share was made from another request, or from none.
@@ -550,6 +571,7 @@ def _replay_create(
             "mint a new write_token for each create",
         )
     share = deps.share_store.read_share(share_id=prior.share_id)
+    _record_shown(share, deps=deps)
     return _created(share, token=token, deps=deps)
 
 
@@ -596,6 +618,7 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
             if replayed is None:
                 raise EditConflict from None
             return replayed
+        _record_shown(share, deps=deps)
         return _created(share, token=token, deps=deps)
 
     return await _run(deps, job)
@@ -625,7 +648,10 @@ async def replace_share(
             if slot.card is not None
         }
         _pin((card for card in cards if (card.component_id, card.revision) not in shown), deps=deps)
-        share = deps.share_store.replace_share(share_id=share_id, cards=cards)
+        share = deps.share_store.replace_share(
+            share_id=share_id, revision=current.revision, cards=cards
+        )
+        _record_shown(share, deps=deps)
         return JSONResponse(_locations(share, site=deps.site.public_site_url))
 
     return await _run(deps, job)
@@ -696,6 +722,7 @@ async def post_share_snapshot(
             current = deps.share_store.snapshot_share(
                 share_id=share_id, revision=current.revision, frames=frames
             )
+            _record_shown(current, deps=deps)
         return JSONResponse(_locations(current, site=deps.site.public_site_url))
 
     return await _run(deps, job)
@@ -1050,6 +1077,9 @@ def build_shares_door(
     return DoorContribution(
         router=router,
         registry_endpoints=route_registry_endpoints(router, SHARES_ENDPOINT),
+        public_paths=frozenset(
+            (SHARE_PATH, SHARE_HISTORY_PATH, SHARE_SLOT_PATH, SHARE_SLOT_DATA_PATH)
+        ),
         classify=classify_shares_exception,
         exception_types=(
             WriteTokenRequired,

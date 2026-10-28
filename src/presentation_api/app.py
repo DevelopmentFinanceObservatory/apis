@@ -177,4 +177,5 @@ def presentation_surface(
             path: endpoint for door in doors for path, endpoint in door.registry_endpoints.items()
         },
         request_scope=request_scope,
+        public_paths=frozenset(path for door in doors for path in door.public_paths),
     )

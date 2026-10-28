@@ -129,7 +129,7 @@ Write operations follow a set sequence:
 `LiveShareStore` (`presentation_store.shares`) implements `ShareStore` over the share tables. Each method runs in one transaction.
 
 - `create_share(kind, mode, title, write_token_sha256, cards)` inserts the share under a minted id with `INSERT ... ON CONFLICT (id) DO NOTHING RETURNING id`, minting again while the id is taken, by a share made here or one imported from the website, up to five times before `GeneratedIdCollision(subject_kind="share")`. It then writes revision 1 with slot n holding the nth `ShareCard`.
-- `replace_share(share_id, cards)` locks the share row (`FOR UPDATE`) and writes the next revision with `max(len(cards), slots of the latest revision)` slots, slot n holding the nth card and every further slot empty.
+- `replace_share(share_id, revision, cards)` locks the share row (`FOR UPDATE`), refuses a snapshot with `ShareNotReplaceable` and a share no longer at `revision` with `EditConflict`, and writes the next revision with `max(len(cards), slots of the latest revision)` slots, slot n holding the nth card and every further slot empty.
 - `delete_share(share_id)` sets `deleted_at`.
 - `read_share(share_id)` returns the `ShareRecord` at its latest revision, with its slots and stored token digest.
 
