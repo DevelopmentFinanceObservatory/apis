@@ -38,7 +38,7 @@ from presentation_store.shares import (
     ShareNotFound,
     SlotCheck,
 )
-from presentation_store.store import LivePresentationStore
+from presentation_store.store import LivePresentationStore, rehash_derived_rendering
 from presentation_store.store_errors import GeneratedIdCollision
 
 _DSN = os.environ.get("DFO_PRESENTATION_STORE_LIVE_DSN")
@@ -757,3 +757,59 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
         (card.component_id, newer),
     ]
     assert [entry.rendering for entry in served[:2]] == [{"columns": ["a"]}, None]
+
+
+def test_rehash_derived_rendering_moves_only_the_revisions_drawing_the_frame(live_store):
+    """`datasets-maintenance normalise-recipes` moves a frame's cards to its recipe's new hash
+    through the jsonb comparisons of `rehash_derived_rendering`."""
+    _apply()
+    suffix = secrets.token_hex(4)
+    frame = {"spec_id": f"ops_{suffix}", "content_version": f"ocv_{suffix}"}
+    old, new = f"rnf_old_{suffix}", f"rnf_new_{suffix}"
+    rows = {
+        f"cmp_drawn_{suffix}": (frame, old),
+        f"cmp_other_frame_{suffix}": ({**frame, "content_version": f"ocv_x_{suffix}"}, old),
+        f"cmp_other_hash_{suffix}": (frame, f"rnf_x_{suffix}"),
+    }
+    with live_store.transaction() as tx:
+        for component_id, (frame_ref, normal_hash) in rows.items():
+            _seed_component(tx, component_id)
+            tx.execute(
+                "INSERT INTO presentation.component_revision (component_id, revision, "
+                "stored_intent, resolved_payload, catalog_version, schema_version, "
+                "frame_rendering) VALUES (%s, 1, %s, %s, 'test', 1, %s)",
+                (
+                    component_id,
+                    {"type": "line_chart", "frame_ref": frame_ref},
+                    {},
+                    {"normal_form_hash": normal_hash},
+                ),
+            )
+
+    def rehash(*, dry_run: bool) -> int:
+        return rehash_derived_rendering(
+            live_store,
+            spec_id=frame["spec_id"],
+            content_version=frame["content_version"],
+            old_hash=old,
+            new_hash=new,
+            dry_run=dry_run,
+        )
+
+    def stored() -> dict[str, object]:
+        with live_store.transaction() as tx:
+            found = tx.fetch_all(
+                "SELECT component_id, frame_rendering FROM presentation.component_revision "
+                "WHERE component_id = ANY(%s)",
+                (list(rows),),
+            )
+        return {row["component_id"]: row["frame_rendering"]["normal_form_hash"] for row in found}
+
+    assert rehash(dry_run=True) == 1
+    assert stored()[f"cmp_drawn_{suffix}"] == old
+    assert (rehash(dry_run=False), rehash(dry_run=False)) == (1, 0)
+    assert stored() == {
+        f"cmp_drawn_{suffix}": new,
+        f"cmp_other_frame_{suffix}": old,
+        f"cmp_other_hash_{suffix}": f"rnf_x_{suffix}",
+    }

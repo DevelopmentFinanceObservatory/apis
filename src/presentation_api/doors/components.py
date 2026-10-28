@@ -4,7 +4,7 @@ pipeline refusals to HTTP. The `cmp_` id grants read to any caller. Revising a c
 the write token its create returned, sent as `x-dfo-write-token`, and a create into an existing
 composition needs that composition's token in the same header. A create may carry its own `cmw_`
 token in the body's `write_token`; a retry with the same token and request returns the first
-create's reply. These routes take no session.
+create's reply and spends no card allowance. These routes take no session.
 
 A create or a revise spends one unit of its caller's daily `card` allowance
 (`datasets_api.allowance`, `DATASETS_CARD_DAILY_ALLOWANCE`, default 500), the caller named by
@@ -65,7 +65,7 @@ from assembler.ports import (
     RevisionStore,
     VocabularySource,
 )
-from assembler.write_token import CreateRequestInvalid
+from assembler.write_token import CreateRequestInvalid, write_token_digest
 from dataset_store import LiveDatasetStore
 from dataset_store import close_shared_pool as close_dataset_pool
 from dataset_store import shared_pool as dataset_shared_pool
@@ -540,7 +540,16 @@ def build_components_door(
         spender = _card_spender(request)
 
         def job() -> JSONResponse:
-            with _spending_card(spender):
+            # A create retried with its `cmw_` token replays the first create's reply, which
+            # spent the unit already.
+            replays = (
+                body.write_token is not None
+                and deps.revision_store.prior_create(
+                    write_token_sha256=write_token_digest(body.write_token)
+                )
+                is not None
+            )
+            with _spending_card(None if replays else spender):
                 reply = write_component(
                     intent=body.intent,
                     component_id=None,

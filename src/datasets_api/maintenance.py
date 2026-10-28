@@ -137,6 +137,19 @@ line it cannot place gets one `presentation_share_import_refused` `ERROR` line n
 `ERROR` severity and exiting 1 when any was refused. It reads the Presentation store's runtime
 database settings and the settings `sweep` reads.
 
+`normalise-recipes [--dry-run]` runs by hand once, after `import-shares`. For each recipe in
+`datasets.frame_recipe` whose root `options.columns` are not sorted and listed once, as
+`analysis_roots.mint_options` writes them, it sorts them, recomputes `normal_form_hash` and
+`replay_key` as the analysis route does, moves the card revisions drawing that frame from the
+old hash to the new one in the Presentation database
+(`presentation_store.store.rehash_derived_rendering`), then rewrites the recipe row. Each
+database commits on its own, revisions first, so a run stopped between them leaves the recipe
+to the next run. It skips a recipe whose stored hashes the stored recipe does not reproduce and
+one whose new replay key another frame's recipe holds (`RecipeSkip`), with one
+`datasets_recipe_normalise_skipped` line each. It writes one `datasets_recipes_normalised` line
+with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
+second run changes nothing. It reads the runtime database settings of both stores.
+
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
 of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
 """
@@ -152,7 +165,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from typing import TextIO, cast
+from typing import Any, TextIO, cast
 
 import pg8000.exceptions
 import pyarrow as pa
@@ -231,6 +244,7 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
 from description.facts import SCHEMA_VERSION, DescriptionRecord
+from dfo_analysis_engine.recipe import normal_form, normal_form_hash, replay_key, root_identity
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
@@ -1249,6 +1263,151 @@ def _run_import_shares(
     return counts.refused
 
 
+class RecipeSkip(StrEnum):
+    """Why `normalise-recipes` leaves a recipe whose root columns are out of order as it is."""
+
+    # The stored hashes are not the ones the analysis route computes from the stored recipe,
+    # as for a tree whose frames different engine builds computed.
+    UNREPRODUCIBLE = "unreproducible"
+    # Another frame's recipe holds the replay key the sorted recipe computes.
+    REPLAY_KEY_HELD = "replay_key_held"
+
+
+def _recipe_hashes(recipe: Mapping[str, Any]) -> tuple[str, str]:
+    """The `normal_form_hash` and `replay_key` of `recipe`, computed as the analysis route
+    computes them for the frame it runs (`datasets_api.analysis._recipe_hashes`)."""
+    roots = recipe["roots"]
+    normal_hash = normal_form_hash(normal_form(recipe["tree"], roots))
+    key = replay_key(
+        normal_form_hash=normal_hash,
+        root_datasets=[
+            root_identity(root["dataset"], enrichment_stamp=root.get("enrichment_stamp"))
+            for root in roots
+        ],
+        execution_identities=[recipe["execution_identity"]],
+    )
+    return normal_hash, key
+
+
+def _with_sorted_columns(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`recipe` with each root's `options.columns` sorted and listed once, as
+    `analysis_roots.mint_options` writes them, or `None` when every root's already are."""
+    roots: list[Mapping[str, Any]] = []
+    for root in recipe["roots"]:
+        columns = root.get("options", {}).get("columns")
+        if columns is not None and columns != sorted(set(columns)):
+            root = {**root, "options": {**root["options"], "columns": sorted(set(columns))}}
+        roots.append(root)
+    if roots == recipe["roots"]:
+        return None
+    return {**recipe, "roots": roots}
+
+
+def run_normalise_recipes(
+    *, datasets: DatasetStore, presentation: DatasetStore, dry_run: bool = False
+) -> int:
+    """Sort the root columns of every stored recipe that lists them out of order, recompute its
+    two hashes, and move the card revisions drawing its frame to the new `normal_form_hash`.
+    Return how many recipes it skipped (`RecipeSkip`).
+
+    The revisions move first, in the Presentation database, then the recipe row, in the
+    Datasets one, so a run stopped between the two leaves the recipe to the next run. With
+    `dry_run` it counts and changes nothing."""
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store.store import rehash_derived_rendering
+
+    with datasets.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, content_version, normal_form_hash, replay_key, recipe "
+            "FROM datasets.frame_recipe ORDER BY recorded_at, subject_id, content_version"
+        )
+    normalised = revisions = 0
+    skipped: dict[RecipeSkip, int] = dict.fromkeys(RecipeSkip, 0)
+    for row in rows:
+        spec_id, content_version = str(row["subject_id"]), str(row["content_version"])
+        stored = cast(Mapping[str, Any], row["recipe"])
+        sorted_recipe = _with_sorted_columns(stored)
+        if sorted_recipe is None:
+            continue
+        old_hash, old_key = str(row["normal_form_hash"]), str(row["replay_key"])
+        new_hash, new_key = _recipe_hashes(sorted_recipe)
+        skip: RecipeSkip | None = None
+        if _recipe_hashes(stored) != (old_hash, old_key):
+            skip = RecipeSkip.UNREPRODUCIBLE
+        else:
+            with datasets.transaction() as tx:
+                holder = tx.fetch_one(
+                    "SELECT subject_id, content_version FROM datasets.frame_recipe "
+                    "WHERE replay_key = %s",
+                    (new_key,),
+                )
+            if holder is not None:
+                skip = RecipeSkip.REPLAY_KEY_HELD
+        if skip is not None:
+            skipped[skip] += 1
+            emit(
+                "datasets_recipe_normalise_skipped",
+                severity="WARNING",
+                spec_id=spec_id,
+                content_version=content_version,
+                reason=skip.value,
+                replay_key=new_key,
+            )
+            continue
+        normalised += 1
+        revisions += rehash_derived_rendering(
+            presentation,
+            spec_id=spec_id,
+            content_version=content_version,
+            old_hash=old_hash,
+            new_hash=new_hash,
+            dry_run=dry_run,
+        )
+        if dry_run:
+            continue
+        with datasets.transaction() as tx:
+            tx.execute(
+                "UPDATE datasets.frame_recipe "
+                "SET normal_form_hash = %s, replay_key = %s, recipe = %s "
+                "WHERE subject_id = %s AND content_version = %s AND replay_key = %s",
+                (
+                    new_hash,
+                    new_key,
+                    {**sorted_recipe, "normal_form_hash": new_hash, "replay_key": new_key},
+                    spec_id,
+                    content_version,
+                    old_key,
+                ),
+            )
+    emit(
+        "datasets_recipes_normalised",
+        severity="WARNING" if any(skipped.values()) else "INFO",
+        dry_run=dry_run,
+        normalised=normalised,
+        revisions=revisions,
+        **{reason.value: count for reason, count in skipped.items()},
+    )
+    return sum(skipped.values())
+
+
+def _normalise_recipes(dry_run: bool) -> int:
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store import provider as presentation_provider
+
+    datasets = LiveDatasetStore(connections=shared_pool())
+    try:
+        presentation = LiveDatasetStore(connections=presentation_provider.shared_pool())
+        try:
+            skipped = run_normalise_recipes(
+                datasets=datasets, presentation=presentation, dry_run=dry_run
+            )
+        finally:
+            presentation_provider.close_shared_pool()
+    finally:
+        close_shared_pool()
+    return 1 if skipped else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="datasets-maintenance")
     tasks = parser.add_subparsers(dest="task", required=True)
@@ -1294,6 +1453,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     shares.add_argument("--in", dest="in_path", type=Path, required=True)
     shares.add_argument("--tokens", type=Path, default=Path("share-tokens.jsonl"))
     shares.set_defaults(run=_import_shares)
+    normalise = tasks.add_parser(
+        "normalise-recipes",
+        help="sort each stored recipe's root columns and move its cards to the new hash",
+    )
+    normalise.add_argument("--dry-run", action="store_true")
+    normalise.set_defaults(run=_normalise_recipes)
     args = parser.parse_args(argv)
     options = {key: value for key, value in vars(args).items() if key not in ("task", "run")}
     return args.run(**options)

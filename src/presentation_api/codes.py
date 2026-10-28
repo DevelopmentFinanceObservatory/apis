@@ -32,9 +32,11 @@ release manifest.
 
 The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` beside these:
 `write_token_required` and `write_token_invalid` at 403, `share_not_replaceable` at 409 and
-`payload_too_large` at 413, none retryable, and the platform's `allowance_exhausted` at 429, retryable after `Retry-After`. The
-component catalogue's release manifest lists no share code, so they stay out of
-`CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface serves.
+`payload_too_large` at 413, none retryable. A card create or revise and a share create refuse
+the platform's `allowance_exhausted` at 429, retryable after `Retry-After`
+(`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists none of these,
+so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface
+serves.
 
 Problem details expose fixed extension fields and no generic extra-data slot. Legal-value lists
 use `alternatives`, structured facet failures use `issues`, and details such as `minimal_intent`,
@@ -52,7 +54,7 @@ __all__ = [
     "PRESENTATION_SERVED_CODES",
     "PRESENTATION_SERVED_PLATFORM_CODES",
     "SHARE_CODE_CATALOGUE",
-    "SHARE_SERVED_PLATFORM_CODES",
+    "WRITE_SERVED_PLATFORM_CODES",
     "replay_retryable",
     "retryable_for",
 ]
@@ -159,14 +161,15 @@ PRESENTATION_SERVED_PLATFORM_CODES: frozenset[str] = frozenset(
     }
 )
 
-# Platform codes the shares door renders and the component catalogue does not.
-SHARE_SERVED_PLATFORM_CODES: frozenset[str] = frozenset({"allowance_exhausted"})
+# Platform codes the card and share writes render and the component catalogue's manifest
+# does not list: the daily allowance's refusal.
+WRITE_SERVED_PLATFORM_CODES: frozenset[str] = frozenset({"allowance_exhausted"})
 
 PRESENTATION_SERVED_CODES: frozenset[str] = (
     frozenset(PRESENTATION_CODE_CATALOGUE)
     | PRESENTATION_SERVED_PLATFORM_CODES
     | frozenset(SHARE_CODE_CATALOGUE)
-    | SHARE_SERVED_PLATFORM_CODES
+    | WRITE_SERVED_PLATFORM_CODES
 )
 
 _expected_codes = set(PRESENTATION_CODE_CATALOGUE) | (
@@ -181,7 +184,7 @@ if set(CODE_RETRY_MODE) != _expected_codes:
         "needs a matching entry on the other"
     )
 
-_served_platform_codes = PRESENTATION_SERVED_PLATFORM_CODES | SHARE_SERVED_PLATFORM_CODES
+_served_platform_codes = PRESENTATION_SERVED_PLATFORM_CODES | WRITE_SERVED_PLATFORM_CODES
 if not frozenset(PLATFORM_CODE_CATALOGUE) >= _served_platform_codes:
     raise AssertionError(
         f"the served platform codes name code(s) "

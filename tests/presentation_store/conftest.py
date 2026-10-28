@@ -222,6 +222,25 @@ class FakeTransaction:
             )
             return []
 
+        if sql.startswith(
+            (
+                "SELECT component_id FROM presentation.component_revision WHERE frame_rendering",
+                "UPDATE presentation.component_revision SET frame_rendering",
+            )
+        ):
+            # `presentation_store.store.rehash_derived_rendering`.
+            *new, old, pair = (json.loads(cast(str, param)) for param in params)
+            matched = [
+                (component_id, row)
+                for component_id, rows in s.component_revisions.items()
+                for row in rows
+                if row["frame_rendering"] == old and row["stored_intent"].get("frame_ref") == pair
+            ]
+            for _component_id, row in matched:
+                if new:
+                    row["frame_rendering"] = new[0]
+            return [{"component_id": component_id} for component_id, _row in matched]
+
         if sql.startswith("SELECT revision, blocks FROM presentation.composition_revision"):
             (composition_id,) = params
             revisions = s.composition_revisions.get(composition_id, [])

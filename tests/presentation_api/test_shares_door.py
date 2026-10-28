@@ -26,6 +26,7 @@ from datasets_api.principals import Grant, Principals
 from dfo_platform import ProblemDetails
 from dfo_platform.app import create_app
 from dfo_platform.caller import Caller, address_key
+from dfo_platform.codes import bound_registry_endpoint, registered_status
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
 from presentation_api.config import PRESENTATION_COMPONENTS_MAX_CONCURRENCY
@@ -581,10 +582,24 @@ def test_a_spent_card_allowance_refuses_create_and_revise_429_with_retry_after(d
         headers={**_HEADERS, _TOKEN_HEADER: created["write_token"]},
     )
 
+    with bound_registry_endpoint("presentation.write"):
+        registered = registered_status("allowance_exhausted")
     for resp in (create, revise):
-        body = _assert_refused(resp, status=429, code="allowance_exhausted")
+        body = _assert_refused(resp, status=registered, code="allowance_exhausted")
         assert body["retryable"] is True
         assert int(resp.headers["retry-after"]) >= 1
+
+
+def test_a_card_create_retried_with_its_token_spends_one_unit(door: _Door):
+    held = len(door.allowances.cards)
+    body = {**_card_body("Card"), "write_token": mint_write_token(prefix="cmw_")}
+
+    first = door.client.post("/api/presentation/components", json=body, headers=_HEADERS)
+    retried = door.client.post("/api/presentation/components", json=body, headers=_HEADERS)
+
+    assert (first.status_code, retried.status_code) == (201, 201)
+    assert retried.json()["component_id"] == first.json()["component_id"]
+    assert len(door.allowances.cards) == held + 1
 
 
 def test_a_refused_card_write_gives_its_unit_back(door: _Door):

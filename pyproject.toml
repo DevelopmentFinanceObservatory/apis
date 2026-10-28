@@ -273,8 +273,8 @@ dfo-analysis-engine = { workspace = true }
 # the `payload_too_large` action row and the `series_left_out` warning.
 # Follow-up: move all six to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5a1959de120553446ed1a0e31f76930bef919658", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5a1959de120553446ed1a0e31f76930bef919658", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3e309689ad77fbcd75ec5a06a4ca07f8114e2089", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "3e309689ad77fbcd75ec5a06a4ca07f8114e2089", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

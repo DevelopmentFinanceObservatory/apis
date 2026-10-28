@@ -17,6 +17,9 @@ concurrent create with the same digest commits or rolls back. Other generated-ID
 become `EditConflict`. A revised component whose stored composition row is missing also
 raises `EditConflict`. Other store failures become `PresentationStoreUnavailable`, which
 records whether the driver failure meant a dead connection so the presentation pool discards it.
+
+`rehash_derived_rendering` moves the revisions drawing one derived frame from its recipe's old
+`normal_form_hash` to a new one, for `datasets-maintenance normalise-recipes`.
 """
 
 from __future__ import annotations
@@ -49,7 +52,7 @@ from presentation_store.store_errors import (
     violated_constraint,
 )
 
-__all__ = ["LivePresentationStore"]
+__all__ = ["LivePresentationStore", "rehash_derived_rendering"]
 
 _REVISION_COLUMNS = (
     "revision, stored_intent, resolved_payload, catalog_version, schema_version, "
@@ -409,6 +412,41 @@ class LivePresentationStore:
             for component_id in referenced_component_ids
             if component_id not in existing
         )
+
+
+# The revisions drawing one frame (`stored_intent.frame_ref`) under one stored rendering.
+_RENDERING_REVISIONS = (
+    "WHERE frame_rendering = %s::jsonb AND stored_intent -> 'frame_ref' = %s::jsonb"
+)
+
+
+def rehash_derived_rendering(
+    store: DatasetStore,
+    *,
+    spec_id: str,
+    content_version: str,
+    old_hash: str,
+    new_hash: str,
+    dry_run: bool = False,
+) -> int:
+    """Rewrite the `frame_rendering` of every revision drawing the derived frame `spec_id`,
+    `content_version` under the recipe hash `old_hash` to `new_hash`, in one transaction, and
+    return how many revisions that is. `dry_run` counts them and changes nothing."""
+    pair = json.dumps({"spec_id": spec_id, "content_version": content_version})
+    old = json.dumps({"normal_form_hash": old_hash})
+    with store.transaction() as tx:
+        if dry_run:
+            rows = tx.fetch_all(
+                f"SELECT component_id FROM presentation.component_revision {_RENDERING_REVISIONS}",
+                (old, pair),
+            )
+        else:
+            rows = tx.fetch_all(
+                "UPDATE presentation.component_revision SET frame_rendering = %s::jsonb "
+                f"{_RENDERING_REVISIONS} RETURNING component_id",
+                (json.dumps({"normal_form_hash": new_hash}), old, pair),
+            )
+    return len(rows)
 
 
 def _insert_generated_subject(

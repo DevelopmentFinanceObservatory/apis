@@ -9,7 +9,7 @@ from assembler.fakes import FakeReleaseRegistry
 from presentation_api.codes import (
     CODE_RETRY_MODE,
     SHARE_CODE_CATALOGUE,
-    SHARE_SERVED_PLATFORM_CODES,
+    WRITE_SERVED_PLATFORM_CODES,
     retryable_for,
 )
 
@@ -29,9 +29,9 @@ def test_every_single_mode_code_a_door_can_classify_matches_retryable_for(
     from presentation_api.app import presentation_surface
 
     codes_computed_at_the_raise_site = {"schema_invalid", "frame_unavailable", "request_invalid"}
-    # The share codes sit outside the component catalogue's manifest; the shares door states
-    # their retryability itself, and `test_shares_door` asserts it.
-    share_codes = set(SHARE_CODE_CATALOGUE) | SHARE_SERVED_PLATFORM_CODES
+    # The share and allowance codes sit outside the component catalogue's manifest; their doors
+    # state their retryability themselves, and `test_shares_door` asserts it.
+    share_codes = set(SHARE_CODE_CATALOGUE) | WRITE_SERVED_PLATFORM_CODES
     surface = presentation_surface(release_registry=release_registry)
     checked = 0
     for exemplar in surface.exception_exemplars:
