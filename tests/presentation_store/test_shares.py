@@ -1,20 +1,33 @@
-"""Checks `LiveShareStore`: slots by revision, id minting against stored ids, take-down, and
-failure wrapping."""
+"""Checks `LiveShareStore`: slots by revision, id minting against stored ids, take-down, snapshot
+conversion, website imports, slot checks, served frames, and failure wrapping."""
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
-from assembler.ports import FrameRef
+from assembler.ports import EditConflict, FrameRef
 from assembler.write_token import write_token_digest
-from presentation_store.shares import LiveShareStore, ShareCard, ShareNotFound, ShareSlot
+from presentation_store.shares import (
+    ImportedShare,
+    LiveShareStore,
+    ShareCard,
+    ShareIdTaken,
+    ShareNotFound,
+    ShareSlot,
+    SlotCheck,
+)
 from presentation_store.store_errors import GeneratedIdCollision, PresentationStoreUnavailable
 
 from .conftest import FakePresentationStore, SqlstateExplodingFakePresentationStore
 
 _FRAME = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "b" * 32)
+_NEWER = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "c" * 32)
+_AT = datetime(2026, 9, 1, 10, 0, 0, 1, tzinfo=UTC)
 
 
 def _card(name: str, *, revision: int = 1, frame: FrameRef | None = _FRAME) -> ShareCard:
@@ -143,3 +156,140 @@ def test_a_driver_failure_becomes_presentation_store_unavailable_with_its_sqlsta
 
     assert raised.value.sqlstate == "40001"
     assert raised.value.__context__ is None
+
+
+def test_a_create_stores_its_kind_and_payload_as_given():
+    store = LiveShareStore(store=FakePresentationStore())
+    payload = {"widgets": [{"kind": "chart", "slot": 0}], "pinnedIds": []}
+
+    created = store.create_share(
+        kind="canvas",
+        mode="live",
+        title=None,
+        write_token_sha256=None,
+        cards=[_card("a")],
+        payload=payload,
+    )
+
+    read = store.read_share(share_id=created.id)
+    assert (read.kind, read.payload) == ("canvas", payload)
+
+
+def test_a_snapshot_conversion_writes_the_served_frames_and_answers_a_snapshot_as_it_is():
+    store = LiveShareStore(store=FakePresentationStore())
+    created = _create(store, _card("a"), _card("b"))
+    emptied = store.replace_share(share_id=created.id, cards=[_card("a")])
+    assert _shown(emptied.slots) == [(1, "cmp_a"), (2, None)]
+
+    snapshot = store.snapshot_share(share_id=created.id, revision=2, frames={1: _NEWER})
+    again = store.snapshot_share(share_id=created.id, revision=2, frames={1: _FRAME})
+
+    assert (snapshot.mode, snapshot.revision) == ("snapshot", 3)
+    assert snapshot.slots == (ShareSlot(slot=1, card=_card("a", frame=_NEWER)), ShareSlot(2, None))
+    assert again == snapshot
+    assert store.read_share(share_id=created.id) == snapshot
+
+
+def test_a_snapshot_conversion_of_a_share_replaced_meanwhile_is_an_edit_conflict():
+    store = LiveShareStore(store=FakePresentationStore())
+    created = _create(store, _card("a"))
+    store.replace_share(share_id=created.id, cards=[_card("b")])
+
+    with pytest.raises(EditConflict):
+        store.snapshot_share(share_id=created.id, revision=1, frames={})
+
+    assert store.read_share(share_id=created.id).mode == "live"
+
+
+_IMPORTED = ImportedShare(
+    id="k3Qx8vTa",
+    kind="canvas",
+    mode="snapshot",
+    title="Aid to Kenya",
+    owner="user_1",
+    payload={"widgets": []},
+    created_at=_AT,
+    write_token_sha256=b"t" * 32,
+    cards=(_card("a"),),
+)
+
+
+def _imported(**changes: Any) -> ImportedShare:
+    return dataclasses.replace(_IMPORTED, **changes)
+
+
+def test_an_import_keeps_the_website_id_owner_and_creation_time_and_a_second_changes_nothing():
+    fake = FakePresentationStore()
+    store = LiveShareStore(store=fake)
+
+    assert store.import_share(_imported()) is True
+    stored = store.read_share(share_id="k3Qx8vTa")
+    assert store.import_share(_imported(write_token_sha256=b"u" * 32, title="Other")) is False
+
+    assert store.read_share(share_id="k3Qx8vTa") == stored
+    assert (stored.owner, stored.created_at, stored.revised_at) == ("user_1", _AT, _AT)
+    assert (stored.title, stored.payload, stored.write_token_sha256) == (
+        "Aid to Kenya",
+        {"widgets": []},
+        b"t" * 32,
+    )
+    assert _shown(stored.slots) == [(1, "cmp_a")]
+
+
+@pytest.mark.parametrize(
+    "held",
+    [
+        {"kind": "card"},
+        {"created_at": _AT + timedelta(microseconds=1)},
+    ],
+    ids=["other-kind", "other-creation-time"],
+)
+def test_an_import_onto_an_id_holding_another_share_refuses(held: dict[str, Any]):
+    store = LiveShareStore(store=FakePresentationStore())
+    store.import_share(_imported(**held))
+
+    with pytest.raises(ShareIdTaken):
+        store.import_share(_imported())
+
+
+def test_a_slot_check_is_claimed_once_when_due_and_reset_by_another_card():
+    store = LiveShareStore(store=FakePresentationStore())
+    share = _create(store, _card("a"))
+    card = _card("a")
+    check = SlotCheck(frame=_NEWER, freshness="current", checked_at=_AT)
+
+    assert store.slot_check(share_id=share.id, slot=1, card=card) is None
+    assert not store.claim_slot_check(share_id=share.id, slot=1, card=card, now=_AT, due_before=_AT)
+    store.record_slot_check(share_id=share.id, slot=1, card=card, check=check)
+    later = _AT + timedelta(minutes=15)
+
+    early = store.claim_slot_check(
+        share_id=share.id, slot=1, card=card, now=later, due_before=_AT - timedelta(seconds=1)
+    )
+    first = store.claim_slot_check(share_id=share.id, slot=1, card=card, now=later, due_before=_AT)
+    second = store.claim_slot_check(share_id=share.id, slot=1, card=card, now=later, due_before=_AT)
+
+    assert (early, first, second) == (False, True, False)
+    assert store.slot_check(share_id=share.id, slot=1, card=card) == SlotCheck(
+        frame=_NEWER, freshness="current", checked_at=later
+    )
+    assert store.slot_check(share_id=share.id, slot=1, card=_card("a", revision=2)) is None
+
+
+def test_a_served_frame_is_recorded_once_and_read_newest_first():
+    store = LiveShareStore(store=FakePresentationStore())
+    share = _create(store, _card("a"))
+    rendering = {"without_party_totals": False}
+
+    for frame in (_FRAME, _NEWER, _FRAME):
+        store.record_served(
+            share_id=share.id, slot=1, card=_card("a"), frame=frame, rendering=rendering
+        )
+
+    served = store.served_frames(share_id=share.id)
+    assert [entry.frame for entry in served] == [_NEWER, _FRAME]
+    assert served[0].rendering == rendering
+    assert served[0].first_served_at >= served[1].first_served_at
+    store.delete_share(share_id=share.id)
+    with pytest.raises(ShareNotFound):
+        store.served_frames(share_id=share.id)

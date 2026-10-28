@@ -774,6 +774,33 @@
     "surface": "presentation"
   },
   {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_share_history",
+    "operation_id": "presentation_read_share_history",
+    "path": "/api/presentation/shares/{share_id}/history",
+    "summary": "Read Share History",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_share_slot_data",
+    "operation_id": "presentation_read_share_slot_data",
+    "path": "/api/presentation/shares/{share_id}/slots/{slot}/data",
+    "summary": "Read Share Slot Data",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_share_snapshot",
+    "operation_id": "presentation_post_share_snapshot",
+    "path": "/api/presentation/shares/{share_id}/snapshot",
+    "summary": "Post Share Snapshot",
+    "surface": "presentation"
+  },
+  {
     "has_description": false,
     "method": "GET",
     "name": "get_capabilities",

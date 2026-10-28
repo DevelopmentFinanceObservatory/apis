@@ -16,12 +16,17 @@ from presentation_store.frame_store import (
 )
 from presentation_store.provider import close_shared_pool, shared_pool
 from presentation_store.shares import (
+    Freshness,
+    ImportedShare,
     LiveShareStore,
+    ServedFrame,
     ShareCard,
+    ShareIdTaken,
     ShareNotFound,
     ShareRecord,
     ShareSlot,
     ShareStore,
+    SlotCheck,
 )
 from presentation_store.store import LivePresentationStore
 from presentation_store.store_errors import GeneratedIdCollision, PresentationStoreUnavailable
@@ -29,7 +34,9 @@ from presentation_store.store_errors import GeneratedIdCollision, PresentationSt
 __all__ = [
     "FRAME1_MEDIA_TYPE",
     "PRESENTATION_PIN_REFERENCE_KIND",
+    "Freshness",
     "GeneratedIdCollision",
+    "ImportedShare",
     "LiveFrameStore",
     "LivePresentationStore",
     "LiveShareStore",
@@ -37,11 +44,14 @@ __all__ = [
     "PresentationStoreError",
     "PresentationStoreSettings",
     "PresentationStoreUnavailable",
+    "ServedFrame",
     "ShareCard",
+    "ShareIdTaken",
     "ShareNotFound",
     "ShareRecord",
     "ShareSlot",
     "ShareStore",
+    "SlotCheck",
     "close_shared_pool",
     "frame_reads_bounded_by",
     "pin_card_frames",

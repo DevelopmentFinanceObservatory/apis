@@ -208,7 +208,8 @@ def classify_analysis_exception(exc: BaseException) -> ProblemSpec | None:
     return classify_datasets_refusal(exc)
 
 
-def _stores(current: Deps) -> AnalysisStores:
+def analysis_stores(current: Deps) -> AnalysisStores:
+    """What a run over the surface's `Deps` stores its frame and recipe through."""
     return AnalysisStores(
         snapshot_reader=current.snapshot_reader,
         version_writer=current.version_writer,
@@ -218,7 +219,8 @@ def _stores(current: Deps) -> AnalysisStores:
     )
 
 
-def _bounds(current: Deps) -> AnalysisBounds:
+def analysis_bounds(current: Deps) -> AnalysisBounds:
+    """The tree-size, root-row and join-row bounds the settings give a run."""
     settings = current.settings
     return AnalysisBounds(
         max_nodes=settings.analysis_max_nodes,
@@ -227,7 +229,8 @@ def _bounds(current: Deps) -> AnalysisBounds:
     )
 
 
-def _permit(current: Deps, deps: DefinitionDeps) -> functools.partial[Any]:
+def analysis_permit(current: Deps, deps: DefinitionDeps) -> functools.partial[Any]:
+    """The materialise permit a run holds while it reads its root frames."""
     return functools.partial(
         bounded_materialise_slot,
         current.materialise_semaphore,
@@ -242,9 +245,9 @@ def _analysis_job(
     result = run_analysis(
         body,
         source=LiveRootSource(deps=deps, recipes=current.recipe_store),
-        stores=_stores(current),
-        bounds=_bounds(current),
-        permit=_permit(current, deps),
+        stores=analysis_stores(current),
+        bounds=analysis_bounds(current),
+        permit=analysis_permit(current, deps),
         trace_id=trace_id,
     )
     return AnalysisReady.model_validate(result.body()).model_dump(mode="json")
@@ -256,7 +259,7 @@ def _anchor_job(
     anchor, roots = run_anchor(
         body,
         source=LiveRootSource(deps=deps, recipes=current.recipe_store),
-        permit=_permit(current, deps),
+        permit=analysis_permit(current, deps),
         trace_id=trace_id,
     )
     return AnchorAnswer(
@@ -383,6 +386,9 @@ __all__ = [
     "AnalysisPendingBody",
     "AnalysisReady",
     "AnchorAnswer",
+    "analysis_bounds",
+    "analysis_permit",
+    "analysis_stores",
     "build_analysis_door",
     "classify_analysis_exception",
 ]

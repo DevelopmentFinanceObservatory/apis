@@ -30,7 +30,11 @@ __all__ = [
     "ReleaseDocumentResponse",
     "ShareCardModel",
     "ShareFrameModel",
+    "ShareHistoryResponse",
     "ShareReadResponse",
+    "ShareRetentionModel",
+    "ShareServedModel",
+    "ShareSlotDataResponse",
     "ShareSlotModel",
     "ShareWriteResponse",
     "SharedResponse",
@@ -365,6 +369,70 @@ class ShareReadResponse(BaseModel):
         description="website-owned JSON stored with the share as given, null when there is none"
     )
     created_at: str = Field(description="when the share was made, as an ISO 8601 timestamp")
+
+
+class ShareSlotDataResponse(BaseModel):
+    """`GET /api/presentation/shares/{share_id}/slots/{slot}/data`'s JSON body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    share_id: str = Field(description="the share's id")
+    slot: int = Field(description="the slot's number, from 1")
+    mode: Literal["live", "snapshot"] = Field(description="the share's mode")
+    freshness: Literal["current", "stale", "pending"] = Field(
+        description="current: the newest data DFO found at its last check, at most 15 minutes "
+        "ago, or a snapshot's own rows; pending: newer data is building and these rows are the "
+        "last check's; stale: DFO could not check, or the card cannot be drawn on the newer "
+        "data, and these rows are older"
+    )
+    component_id: str = Field(description="the card the slot shows")
+    revision: int = Field(description="the card revision the slot shows")
+    frame: ShareFrameModel = Field(description="the frame these rows come from")
+    rows: list[dict[str, object]] = Field(
+        description="the rows behind every value the card shows, one object per row, keyed by "
+        "the columns of the card's data file"
+    )
+
+
+class ShareRetentionModel(BaseModel):
+    """How long a served frame can still be fetched."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pinned: bool = Field(description="whether the frame is in the pinned tier, with no expiry")
+    held_until: str | None = Field(
+        default=None,
+        description="when a working-tier frame stops being guaranteed, 30 days after DFO "
+        "stored it; absent when pinned",
+    )
+
+
+class ShareServedModel(BaseModel):
+    """One frame a share's slot served."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: int = Field(description="the slot that served it, from 1")
+    component_id: str = Field(description="the card the slot showed")
+    revision: int = Field(description="the card revision the slot showed")
+    frame: ShareFrameModel = Field(description="the frame served")
+    rendering: dict[str, object] | None = Field(
+        description="the rendering the card revision recorded for its frame, null when unrecorded"
+    )
+    first_served_at: str = Field(description="when a read first served it, ISO 8601")
+    retention: ShareRetentionModel | None = Field(
+        description="the frame's retention, null when DFO holds no record of it"
+    )
+    fetchable: bool = Field(description="whether the frame's retention still holds")
+
+
+class ShareHistoryResponse(BaseModel):
+    """`GET /api/presentation/shares/{share_id}/history`'s 200 body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="the share's id")
+    served: list[ShareServedModel] = Field(description="every frame served, newest first")
 
 
 # -- meta (presentation_api.doors.meta) -------------------------------------

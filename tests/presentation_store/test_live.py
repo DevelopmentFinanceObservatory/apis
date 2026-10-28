@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import os
 import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 import pytest
@@ -17,6 +19,7 @@ from assembler.fakes import FakeFrameStore
 from assembler.pipeline import write_component
 from assembler.ports import (
     DraftNotFound,
+    EditConflict,
     FrameRef,
     PriorCreate,
     RevisionRecord,
@@ -27,7 +30,14 @@ from assembler.write_token import write_token_digest
 from dataset_store import ConnectionPool, LiveDatasetStore, connect
 from dataset_store.migrate import apply_pending
 from presentation_store.migrate import MIGRATIONS_DIR
-from presentation_store.shares import LiveShareStore, ShareCard, ShareNotFound
+from presentation_store.shares import (
+    ImportedShare,
+    LiveShareStore,
+    ShareCard,
+    ShareIdTaken,
+    ShareNotFound,
+    SlotCheck,
+)
 from presentation_store.store import LivePresentationStore
 from presentation_store.store_errors import GeneratedIdCollision
 
@@ -621,3 +631,106 @@ def test_a_share_mint_moves_past_an_id_already_stored(live_store):
 
     assert created.id != taken.id
     assert shares.read_share(share_id=taken.id).write_token_sha256 is None
+
+
+def test_a_live_share_converts_to_a_snapshot_keeping_the_frames_its_slots_serve(live_store):
+    _apply()
+    shares = LiveShareStore(store=live_store)
+    created = shares.create_share(
+        kind="canvas",
+        mode="live",
+        title=None,
+        write_token_sha256=None,
+        cards=[_share_card("cmp_a"), _share_card("cmp_b")],
+        payload=[{"slot": 0}],
+    )
+    newer = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "c" * 32)
+
+    snapshot = shares.snapshot_share(share_id=created.id, revision=1, frames={1: newer})
+
+    assert (snapshot.mode, snapshot.revision, snapshot.payload) == ("snapshot", 2, [{"slot": 0}])
+    assert [slot.card.frame for slot in snapshot.slots if slot.card] == [
+        newer,
+        _share_card("cmp_b").frame,
+    ]
+    assert shares.snapshot_share(share_id=created.id, revision=2, frames={}) == snapshot
+    with pytest.raises(EditConflict):
+        other = shares.create_share(
+            kind="card", mode="live", title=None, write_token_sha256=None, cards=[]
+        )
+        shares.replace_share(share_id=other.id, cards=[_share_card("cmp_c")])
+        shares.snapshot_share(share_id=other.id, revision=1, frames={})
+
+
+def test_an_import_keeps_its_id_and_time_once_and_refuses_an_id_holding_another_share(
+    live_store,
+):
+    _apply()
+    shares = LiveShareStore(store=live_store)
+    at = datetime(2026, 9, 1, 10, 0, 0, 1, tzinfo=UTC)
+    imported = ImportedShare(
+        id="Im" + secrets.token_hex(3),
+        kind="search",
+        mode="live",
+        title="Aid",
+        owner="user_1",
+        payload={"query": "aid", "parts": []},
+        created_at=at,
+        write_token_sha256=None,
+        cards=(),
+    )
+
+    assert shares.import_share(imported) is True
+    assert shares.import_share(dataclasses.replace(imported, title="Other")) is False
+    with pytest.raises(ShareIdTaken):
+        shares.import_share(dataclasses.replace(imported, created_at=at + timedelta(seconds=1)))
+    stored = shares.read_share(share_id=imported.id)
+    assert (stored.title, stored.owner, stored.created_at, stored.revised_at) == (
+        "Aid",
+        "user_1",
+        at,
+        at,
+    )
+
+
+def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
+    _apply()
+    shares = LiveShareStore(store=live_store)
+    card = _share_card("cmp_a")
+    share = shares.create_share(
+        kind="card", mode="live", title=None, write_token_sha256=None, cards=[card]
+    )
+    at = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
+    newer = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "c" * 32)
+    stored = card.frame
+    assert stored is not None
+
+    shares.record_slot_check(
+        share_id=share.id,
+        slot=1,
+        card=card,
+        check=SlotCheck(frame=stored, freshness="pending", checked_at=at),
+    )
+    shares.record_slot_check(
+        share_id=share.id,
+        slot=1,
+        card=card,
+        check=SlotCheck(frame=newer, freshness="current", checked_at=at),
+    )
+    later = at + timedelta(minutes=15)
+    claims = [
+        shares.claim_slot_check(share_id=share.id, slot=1, card=card, now=later, due_before=at)
+        for _ in range(2)
+    ]
+    for frame in (newer, newer, stored):
+        shares.record_served(
+            share_id=share.id, slot=1, card=card, frame=frame, rendering={"columns": ["a"]}
+        )
+
+    assert claims == [True, False]
+    assert shares.slot_check(share_id=share.id, slot=1, card=card) == SlotCheck(
+        frame=newer, freshness="current", checked_at=later
+    )
+    served = shares.served_frames(share_id=share.id)
+    assert [entry.frame for entry in served] == [stored, newer]
+    assert served[0].rendering == {"columns": ["a"]}

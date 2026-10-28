@@ -141,6 +141,7 @@ def datasets_surface(
     publish_allowed_principals: frozenset[str] | None = None,
     catalogue: CatalogueService | None = None,
     release: ReleaseService | None = None,
+    deps_cell: DepsCell | None = None,
 ) -> Surface:
     """Build the Datasets `Surface` from its doors.
 
@@ -170,11 +171,14 @@ def datasets_surface(
     Each request also binds `release`'s served release, and a swap holds every materialise
     permit. `release` defaults to the process-wide service, so an unset `GRAPH_RELEASE_URI` or
     an unreadable release fails startup.
+
+    `deps_cell` is the cell the lifespan sets the surface's `Deps` in, given when another
+    surface reads them too (`dfo_apis.app` gives Presentation's live share slots the same cell).
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
     _release = release if release is not None else get_release_service()
-    cell = DepsCell()
+    cell = deps_cell if deps_cell is not None else DepsCell()
     # The doors read the code index as they are built, so they are built under the release a
     # request would bind, and keep none of what they read.
     with bound_served_release(_release):

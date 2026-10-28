@@ -46,6 +46,7 @@ def test_presentation_store_migrations_apply_in_order_and_are_idempotent():
         "0010_revision_formatter_profile.sql",
         "0011_revision_frame_rendering.sql",
         "0012_share.sql",
+        "0013_share_slot_check.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert statements[0] == "CREATE SCHEMA IF NOT EXISTS presentation"
@@ -53,7 +54,7 @@ def test_presentation_store_migrations_apply_in_order_and_are_idempotent():
     assert any("CREATE TABLE presentation.composition_revision (" in sql for sql in statements)
     assert any("CREATE TABLE presentation.component (" in sql for sql in statements)
     assert any("CREATE TABLE presentation.component_revision (" in sql for sql in statements)
-    for table in ("share", "share_revision", "share_slot", "served_frame"):
+    for table in ("share", "share_revision", "share_slot", "served_frame", "share_slot_check"):
         assert any(f"CREATE TABLE presentation.{table} (" in sql for sql in statements), table
     assert any("CREATE TABLE presentation.draft_lease (" in sql for sql in statements)
     assert any(

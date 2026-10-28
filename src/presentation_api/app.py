@@ -48,6 +48,7 @@ from presentation_api.doors.frames import build_frames_door
 from presentation_api.doors.meta import build_meta_door
 from presentation_api.doors.release import build_release_door
 from presentation_api.doors.shares import build_shares_door
+from presentation_api.newest_frames import NewestFrames
 from presentation_api.refusals import request_validation_spec
 from presentation_api.version import compute_presentation_capability_version
 from presentation_store import ShareStore
@@ -69,6 +70,7 @@ def presentation_surface(
     share_store: ShareStore | None = None,
     allowances: AllowanceLedger | None = None,
     caller_settings: CallerSettings | None = None,
+    newest_frames: NewestFrames | None = None,
 ) -> Surface:
     """Build the Presentation `Surface`. Unset stores use live dependencies. Injected stores
     are shared across doors. The pinned release supplies the surface capability version.
@@ -85,7 +87,9 @@ def presentation_surface(
     `share_store`, `allowances` and `caller_settings` serve the share routes: the share
     records, the ledger of each caller's daily share allowance, and how a caller is named. The
     shares door mounts with a share store given or with no `revision_store` given, and builds
-    whichever of the three is left out.
+    whichever of the three is left out. `newest_frames` answers a live share slot's check for
+    newer data (`presentation_api.newest_frames`); with none, every live slot serves its card's
+    own frame and states it stale.
 
     Each request binds the origin catalogue's loaded snapshot and the release service's served
     graph release, so an unset `GRAPH_RELEASE_URI` or an unreadable release fails startup.
@@ -123,9 +127,12 @@ def presentation_surface(
         doors = (
             *doors,
             build_shares_door(
+                release_registry=effective_release_registry,
                 share_store=share_store,
                 revision_store=revision_store,
                 frame_store=frame_store,
+                snapshot_reader=snapshot_reader,
+                newest=newest_frames,
                 allowances=allowances,
                 caller=caller_settings,
             ),

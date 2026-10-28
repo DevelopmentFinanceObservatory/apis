@@ -121,6 +121,9 @@ _PRESENTATION_STORE = {
         "956cc50b9e0285883089f082f663aa37b311974d0ac1b46cb1ee51e78a0889f0"
     ),
     "0012_share.sql": "af08f2b8183f5347fca21e7b4392adfd88161a854587c40cb7eef3fc6b134a51",
+    "0013_share_slot_check.sql": (
+        "e016def5442e46ed88a276ed0a8a21b46c8293f60add7135b8802a796735a3ac"
+    ),
 }
 
 

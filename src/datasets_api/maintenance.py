@@ -123,6 +123,19 @@ case directory each labelled `NAME` (default `dfo-dev`) (`recipe_golden.record_c
 a recipe whose frames together pass `B` bytes (default 2,000,000). It reads the stores as `diff-recipes` does and writes only under
 `DIR`, one `datasets_recipe_golden_recorded` line counting the cases written and skipped.
 
+`import-shares --in PATH [--tokens TOKENS]` runs by hand to move the website's shares to this
+service. It reads the JSON lines the website's `scripts/export-shares.ts` writes and stores each
+share in the Presentation store under its own id (`presentation_store.share_import`). A
+signed-in user's share gets a fresh write token, appended to `TOKENS` (default
+`share-tokens.jsonl`, created readable by its owner alone) as one `{id, owner, write_token}`
+line for the website to keep; a guest's share gets none. A share an earlier run imported is
+left as it is and gets no line, so a re-run changes nothing and keeps the earlier report. Each
+line it cannot place gets one `presentation_share_import_refused` `ERROR` line naming it
+(`share <id>`, or `line <n>` when its id is unreadable) and the reason, and the others carry on. It writes one
+`presentation_shares_imported` line counting the shares imported, unchanged and refused, at
+`ERROR` severity and exiting 1 when any was refused. It reads only the Presentation store's
+runtime database settings.
+
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
 of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
 """
@@ -131,6 +144,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 from collections.abc import Callable, Mapping, Sequence
@@ -1202,6 +1216,44 @@ def _record_recipe_golden(out: Path, limit: int, max_bytes: int, origin: str) ->
     )
 
 
+def _import_shares(in_path: Path, tokens: Path) -> int:
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store import LivePresentationStore, LiveShareStore
+    from presentation_store import close_shared_pool as close_presentation_pool
+    from presentation_store import shared_pool as presentation_pool
+    from presentation_store.share_import import import_shares
+
+    store = LiveDatasetStore(connections=presentation_pool())
+    descriptor = os.open(tokens, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        with (
+            in_path.open(encoding="utf-8") as lines,
+            os.fdopen(descriptor, "a", encoding="utf-8") as report,
+        ):
+            counts = import_shares(
+                lines,
+                share_store=LiveShareStore(store=store),
+                revision_store=LivePresentationStore(store=store),
+                write_token=lambda line: print(line, file=report),
+                refuse=lambda label, reason: emit(
+                    "presentation_share_import_refused",
+                    severity="ERROR",
+                    share=label,
+                    reason=reason,
+                ),
+            )
+    finally:
+        close_presentation_pool()
+    emit(
+        "presentation_shares_imported",
+        severity="ERROR" if counts.refused else "INFO",
+        imported=counts.imported,
+        unchanged=counts.unchanged,
+        refused=counts.refused,
+    )
+    return 1 if counts.refused else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="datasets-maintenance")
     tasks = parser.add_subparsers(dest="task", required=True)
@@ -1241,6 +1293,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     golden.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     golden.add_argument("--origin", default="dfo-dev")
     golden.set_defaults(run=_record_recipe_golden)
+    shares = tasks.add_parser(
+        "import-shares", help="store the website's exported shares under their own ids"
+    )
+    shares.add_argument("--in", dest="in_path", type=Path, required=True)
+    shares.add_argument("--tokens", type=Path, default=Path("share-tokens.jsonl"))
+    shares.set_defaults(run=_import_shares)
     args = parser.parse_args(argv)
     options = {key: value for key, value in vars(args).items() if key not in ("task", "run")}
     return args.run(**options)

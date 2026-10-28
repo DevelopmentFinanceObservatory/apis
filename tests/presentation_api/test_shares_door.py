@@ -21,7 +21,7 @@ from dfo_platform.app import create_app
 from dfo_platform.caller import Caller, address_key
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
-from presentation_api.doors.shares import build_shares_door
+from presentation_api.doors.shares import MAX_SHARE_PAYLOAD_BYTES, build_shares_door
 from presentation_store import LiveShareStore, ShareCard
 from tests.presentation_store.conftest import FakePresentationStore
 
@@ -259,6 +259,35 @@ def test_a_read_carries_the_stored_record_and_never_the_token(door: _Door):
     datetime.fromisoformat(body["created_at"])
 
 
+@pytest.mark.parametrize(
+    ("kind", "names", "latest", "payload"),
+    [
+        ("canvas", ["cmp_a", "cmp_b"], True, {"widgets": [{"id": "w1", "slot": 0}]}),
+        ("canvas", [], False, {"widgets": [{"id": "w1", "value": 3}]}),
+        ("search", [], True, {"query": "aid to Kenya", "parts": []}),
+        ("conversation", [], False, [{"role": "user", "text": "aid"}]),
+    ],
+    ids=["canvas-live", "canvas-without-slots", "search", "conversation"],
+)
+def test_a_create_stores_its_kind_and_payload_and_reads_them_back(
+    door: _Door, kind: str, names: list[str], latest: bool, payload: object
+):
+    resp = door.client.post(
+        "/api/presentation/shares",
+        json={
+            "cards": [{"component_id": door.cards[name], "revision": 1} for name in names],
+            "latest": latest,
+            "kind": kind,
+            "payload": payload,
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.json()
+    body = door.read(resp.json()["id"]).json()
+    assert (body["kind"], body["payload"], len(body["slots"])) == (kind, payload, len(names))
+
+
 @pytest.mark.parametrize("latest", [True, False], ids=["live", "snapshot"])
 def test_a_create_pins_the_frame_each_card_draws(door: _Door, frame_ref: FrameRef, latest: bool):
     resp = door.share(["cmp_a", "cmp_b", "cmp_a"], latest=latest)
@@ -316,9 +345,23 @@ def test_replace_and_delete_spend_no_allowance(door: _Door):
         {"cards": [{"component_id": "cmp_x", "revision": 1}], "latest": "true"},
         {"cards": [], "latest": True},
         {"cards": [{"component_id": "cmp_x", "revision": 0}], "latest": True},
+        {"cards": [{"component_id": "cmp_x", "revision": 1}], "latest": True, "style": "x"},
         {"cards": [{"component_id": "cmp_x", "revision": 1}], "latest": True, "kind": "search"},
+        {"latest": True, "kind": "deck"},
+        {"latest": True, "kind": "conversation"},
+        {"latest": False, "kind": "search", "payload": "x" * MAX_SHARE_PAYLOAD_BYTES},
     ],
-    ids=["latest-missing", "latest-not-a-boolean", "no-cards", "revision-zero", "unknown-field"],
+    ids=[
+        "latest-missing",
+        "latest-not-a-boolean",
+        "no-cards",
+        "revision-zero",
+        "unknown-field",
+        "search-with-cards",
+        "unknown-kind",
+        "live-conversation",
+        "payload-over-bound",
+    ],
 )
 def test_a_malformed_create_refuses_request_invalid_and_spends_nothing(door: _Door, body: dict):
     resp = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
@@ -404,5 +447,5 @@ def test_a_surface_over_test_doubles_without_a_share_store_mounts_no_share_route
 def test_every_share_route_handler_is_a_module_level_function():
     routes = [r for r in build_shares_door().router.routes if isinstance(r, APIRoute)]
 
-    assert len(routes) == 4
+    assert len(routes) == 7
     assert all("<locals>" not in getattr(route.endpoint, "__qualname__", "") for route in routes)

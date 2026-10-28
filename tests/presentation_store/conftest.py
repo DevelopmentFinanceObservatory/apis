@@ -25,10 +25,13 @@ class FakePresentationState:
     composition_write_token_digests: dict[str, bytes | None] = field(default_factory=dict)
     composition_revisions: dict[str, list[dict]] = field(default_factory=dict)
     # `presentation.share` rows by id, `share_revision` rows by share id, and `share_slot` rows
-    # by (share id, revision).
+    # by (share id, revision). `share_slot_check` rows by (share id, slot, component id,
+    # component revision), and `served_frame` rows in insertion order.
     shares: dict[str, dict] = field(default_factory=dict)
     share_revisions: dict[str, list[dict]] = field(default_factory=dict)
     share_slots: dict[tuple[str, int], list[dict]] = field(default_factory=dict)
+    slot_checks: dict[tuple[str, int, str, int], dict] = field(default_factory=dict)
+    served_frames: list[dict] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> FakePresentationState:
@@ -41,6 +44,8 @@ class FakePresentationState:
             shares=copy.deepcopy(self.shares),
             share_revisions=copy.deepcopy(self.share_revisions),
             share_slots=copy.deepcopy(self.share_slots),
+            slot_checks=copy.deepcopy(self.slot_checks),
+            served_frames=copy.deepcopy(self.served_frames),
         )
 
     def restore_from(self, other: FakePresentationState) -> None:
@@ -52,6 +57,8 @@ class FakePresentationState:
         self.shares = other.shares
         self.share_revisions = other.share_revisions
         self.share_slots = other.share_slots
+        self.slot_checks = other.slot_checks
+        self.served_frames = other.served_frames
 
 
 class FakeTransaction:
@@ -248,9 +255,13 @@ class FakeTransaction:
         s = self._state
 
         if sql.startswith("INSERT INTO presentation.share (id, "):
-            share_id, kind, mode, title, write_token_sha256 = params
-            share_id = cast(str, share_id)
             assert "ON CONFLICT (id) DO NOTHING RETURNING id" in sql
+            if len(params) == 6:
+                share_id, kind, mode, title, write_token_sha256, payload = params
+                owner, created_at = None, datetime.now(UTC)
+            else:
+                share_id, kind, mode, title, write_token_sha256, owner, payload, created_at = params
+            share_id = cast(str, share_id)
             if share_id in s.shares:
                 return []
             s.shares[share_id] = {
@@ -259,12 +270,22 @@ class FakeTransaction:
                 "mode": mode,
                 "title": title,
                 "write_token_sha256": write_token_sha256,
-                "owner": None,
-                "payload": None,
-                "created_at": datetime.now(UTC),
+                "owner": owner,
+                "payload": json.loads(cast(str, payload)) if payload is not None else None,
+                "created_at": created_at,
                 "deleted_at": None,
             }
             return [{"id": share_id}]
+
+        if sql.startswith("SELECT kind, created_at FROM presentation.share WHERE id = %s"):
+            (share_id,) = params
+            row = s.shares.get(share_id)
+            return [] if row is None else [{"kind": row["kind"], "created_at": row["created_at"]}]
+
+        if sql.startswith("UPDATE presentation.share SET mode = 'snapshot' WHERE id = %s"):
+            (share_id,) = params
+            s.shares[share_id]["mode"] = "snapshot"
+            return []
 
         if sql.startswith(
             "SELECT id, kind, mode, title, write_token_sha256, owner, payload, created_at "
@@ -284,14 +305,15 @@ class FakeTransaction:
             row["deleted_at"] = datetime.now(UTC)
             return [{"id": share_id}]
 
-        if sql.startswith("INSERT INTO presentation.share_revision (share_id, revision)"):
+        if sql.startswith("INSERT INTO presentation.share_revision (share_id, revision"):
             share_id, revision = cast(str, params[0]), cast(int, params[1])
+            created_at = params[2] if len(params) == 3 else datetime.now(UTC)
             if share_id not in s.shares:
                 raise _foreign_key_violation("share_revision_share_id_fkey")
             revisions = s.share_revisions.setdefault(share_id, [])
             if any(row["revision"] == revision for row in revisions):
                 raise _unique_violation("share_revision_pkey")
-            revisions.append({"revision": revision, "created_at": datetime.now(UTC)})
+            revisions.append({"revision": revision, "created_at": created_at})
             return []
 
         if sql.startswith("SELECT revision, created_at FROM presentation.share_revision"):
@@ -325,7 +347,81 @@ class FakeTransaction:
             share_id, revision = params
             return sorted(s.share_slots.get((share_id, revision), []), key=lambda row: row["slot"])
 
+        if sql.startswith("SELECT frame_spec_id, frame_content_version, freshness, checked_at"):
+            key = cast("tuple[str, int, str, int]", tuple(params))
+            row = s.slot_checks.get(key)
+            return [] if row is None else [dict(row)]
+
+        if sql.startswith("UPDATE presentation.share_slot_check SET checked_at = %s"):
+            now, *key, due_before = params
+            row = s.slot_checks.get(cast("tuple[str, int, str, int]", tuple(key)))
+            if row is None or cast(datetime, row["checked_at"]) > cast(datetime, due_before):
+                return []
+            row["checked_at"] = now
+            return [{"slot": key[1]}]
+
+        if sql.startswith("INSERT INTO presentation.share_slot_check ("):
+            share_id, slot, component_id, revision, spec_id, cv, freshness, checked_at = params
+            if share_id not in s.shares:
+                raise _foreign_key_violation("share_slot_check_share_id_fkey")
+            s.slot_checks[
+                cast("tuple[str, int, str, int]", (share_id, slot, component_id, revision))
+            ] = {
+                "frame_spec_id": spec_id,
+                "frame_content_version": cv,
+                "freshness": freshness,
+                "checked_at": checked_at,
+            }
+            return []
+
+        if sql.startswith("INSERT INTO presentation.served_frame ("):
+            assert sql.endswith("ON CONFLICT DO NOTHING")
+            share_id, slot, component_id, revision, spec_id, cv, rendering = params
+            if share_id not in s.shares:
+                raise _foreign_key_violation("served_frame_share_id_fkey")
+            key = (share_id, slot, component_id, revision, spec_id, cv)
+            if any(
+                tuple(row[name] for name in _SERVED_FRAME_KEY) == key for row in s.served_frames
+            ):
+                return []
+            s.served_frames.append(
+                {
+                    "share_id": share_id,
+                    "slot": slot,
+                    "component_id": component_id,
+                    "component_revision": revision,
+                    "frame_spec_id": spec_id,
+                    "frame_content_version": cv,
+                    "rendering": json.loads(cast(str, rendering))
+                    if rendering is not None
+                    else None,
+                    "first_served_at": datetime.now(UTC),
+                }
+            )
+            return []
+
+        if sql.startswith(
+            "SELECT slot, component_id, component_revision, frame_spec_id, "
+            "frame_content_version, rendering, first_served_at FROM presentation.served_frame"
+        ):
+            (share_id,) = params
+            rows = [row for row in s.served_frames if row["share_id"] == share_id]
+            # ORDER BY first_served_at DESC, slot: a stable sort by slot first, then by time.
+            rows.sort(key=lambda row: row["slot"])
+            rows.sort(key=lambda row: row["first_served_at"], reverse=True)
+            return [dict(row) for row in rows]
+
         return None
+
+
+_SERVED_FRAME_KEY = (
+    "share_id",
+    "slot",
+    "component_id",
+    "component_revision",
+    "frame_spec_id",
+    "frame_content_version",
+)
 
 
 class _DriverError(Exception):

@@ -17,7 +17,7 @@ The surface exposes five doors through a single router, error classifier, and li
 ├── /release                              (Release door)
 ├── /frames/{spec_id}/{content_version}   (Frames door)
 ├── /components[/{component_id}]          (Components door)
-└── /shares[/{share_id}]                  (Shares door)
+└── /shares[/{share_id}[/snapshot|/history|/slots/{slot}/data]]  (Shares door)
 ```
 
 ### 1. Meta Door
@@ -75,9 +75,12 @@ Publishes cards under one public `/s/<id>` id (`presentation_api.doors.shares`, 
 
 | Method   | Endpoint                               | Description |
 | :------- | :------------------------------------- | :---------- |
-| `POST`   | `/api/presentation/shares`             | Body `{cards: [{component_id, revision}], latest, title?}`, at most 24 cards. `latest` has no default: `true` makes a live share, which follows new data, and `false` a snapshot, which keeps the versions its cards draw now. Answers 201 `{id, url, embed_url, data_urls, write_token, revision, latest}`. |
+| `POST`   | `/api/presentation/shares`             | Body `{cards: [{component_id, revision}], latest, title?, kind?, payload?}`, at most 24 cards. `latest` has no default: `true` makes a live share, which follows new data, and `false` a snapshot, which keeps the versions its cards draw now. `kind` is `card` (the default, 1 to 24 cards), `canvas` (0 to 24), `search` or `conversation` (no cards; a conversation is a snapshot). `payload` is website-owned JSON of at most 1 MiB, stored as given. Answers 201 `{id, url, embed_url, data_urls, write_token, revision, latest}`. |
 | `GET`    | `/api/presentation/shares/{share_id}`  | Public, with `Access-Control-Allow-Origin: *`: `{id, kind, mode, title, revision, slots, payload, created_at}`, each slot `{slot, card, data_url}`. Never the write token. |
 | `PUT`    | `/api/presentation/shares/{share_id}`  | Body `{cards}`. Writes a live share's next revision. Needs `x-dfo-write-token`. Answers 200 `{id, url, embed_url, data_urls, revision, latest}`. |
+| `POST`   | `/api/presentation/shares/{share_id}/snapshot` | Turns a live share into a snapshot under the same URLs. Needs `x-dfo-write-token`. Answers 200 `{id, url, embed_url, data_urls, revision, latest: false}`; a snapshot answers as it is. |
+| `GET`    | `/api/presentation/shares/{share_id}/slots/{slot}/data` | Public, with `Access-Control-Allow-Origin: *`. `?format=json` (default), `csv` or `parquet`: the rows behind the slot's card. |
+| `GET`    | `/api/presentation/shares/{share_id}/history` | Public, with `Access-Control-Allow-Origin: *`: `{id, served: [{slot, component_id, revision, frame, rendering, first_served_at, retention, fetchable}]}`, newest first. |
 | `DELETE` | `/api/presentation/shares/{share_id}`  | Takes the share down, 204. Needs `x-dfo-write-token`. |
 
 A share id is 8 characters from the case-sensitive `[A-Za-z0-9]` alphabet, the shape of the website's `/s/<id>` links, so shares imported from the website keep their ids. `url` is `<DFO_PUBLIC_SITE_URL>/s/<id>`, `embed_url` is `/embed/<id>` under the same origin, and slot n's data URL is `/api/v1/presentation/shares/<id>/slots/<n>/data` under it.
@@ -86,6 +89,12 @@ Slots are numbered from 1. A create puts the nth card in slot n. A replace puts 
 
 A create names its caller with `dfo_platform.caller.resolve_caller` and spends one unit of the caller's daily `share` allowance (`DATASETS_SHARE_DAILY_ALLOWANCE`, default 10, `datasets_api.allowance`) after it has read every card and before it pins or writes anything, so a malformed request or an unknown card spends nothing and a unit stays spent when the pin or the write fails. Every share pins the frames its cards draw when it first includes them (`presentation_store.pin_card_frames`): a create pins every card, live or snapshot, and a replace pins the card revisions the share did not show before. Replace and delete spend no allowance.
 
+A slot's data route serves the card's data export, unbundled, on the frame the slot serves (`presentation_api.share_slots`). A snapshot slot serves the frame its revision records. A live slot draws its card's intent on the newest data: it asks for the newest frame of the card's frame at most once every 15 minutes and keeps the answer in `presentation.share_slot_check`, which the reads in between serve. A dataset (`spec_`) frame moves as the Datasets frame refresh moves it, and a derived (`ops_`) frame is the analysis runner's answer for the bare derived root with `latest=true` (`presentation_api.newest_frames`), both in process when the app mounts Datasets beside Presentation. The JSON body `{share_id, slot, mode, freshness, component_id, revision, frame, rows}` and the `x-dfo-freshness` header state the rows `current` (the newest data at the last check, or a snapshot's rows), `pending` (newer data is building, and these are the last check's rows) or `stale` (the check failed, the card cannot be drawn on the newer frame, or no Datasets surface answers, and these rows are older). A live slot's `x-dfo-checked-at` names the check's time. Each reply carries a strong `ETag` over its bytes, weak on a gzip body, and `If-None-Match` answers 304. A live slot answers `Cache-Control: no-cache`, a snapshot `public, max-age=300`. Every read records the frame it served in `presentation.served_frame`, which the history route lists with each frame's retention counted from when DFO stored it (`pinned`, `held_until`) and `fetchable`, whether that retention still holds.
+
+A snapshot conversion keeps, for each slot, the frame it serves now (its last check's, else its card's own), pins those frames under the card's own reference, and writes the share's next revision with them and the `snapshot` mode. A share replaced while it converts refuses `edit_conflict`. No route turns a snapshot live.
+
+`datasets-maintenance import-shares --in <jsonl> [--tokens <jsonl>]` stores the website's exported shares (website `docs/share-export.md`) under their own ids, owners, payloads and creation times (`presentation_store.share_import`). The export's 0-based `slot` index `i` is slot `i + 1`, and a slot exported with `frame: null` draws the frame its card revision is stored on. A signed-in user's share gets a fresh token, appended to the token report as `{id, owner, write_token}`; a guest's share gets none. A re-run imports nothing twice, and a line it cannot place is refused without stopping the others.
+
 The create returns a `shw_` write token once, and the store keeps its SHA-256 digest. A replace or delete checks the token before the share's mode, so a caller without the token learns nothing more about the share. A share stored without a token, as a guest's share imports from the website, refuses every token.
 
 | Error Code              | HTTP Status | When |
@@ -93,9 +102,10 @@ The create returns a `shw_` write token once, and the store keeps its SHA-256 di
 | `write_token_required`  | 403         | A replace or delete sent no `x-dfo-write-token`. |
 | `write_token_invalid`   | 403         | The token sent is not the share's, or the share has none. |
 | `share_not_replaceable` | 409         | A replace names a snapshot. |
+| `edit_conflict`         | 409         | A snapshot conversion found the share replaced meanwhile. Retry. |
 | `allowance_exhausted`   | 429         | The caller has spent today's share allowance. Retryable after `Retry-After`, the next UTC midnight. |
-| `not_found`             | 404         | No share at the id, or it was taken down; on a create or replace, a card or revision the store lacks. |
-| `request_invalid`       | 400         | A malformed body (`latest` missing or not a boolean, no cards, more than 24, an unknown field) or id, or a website request whose `x-dfo-caller` is missing or malformed. |
+| `not_found`             | 404         | No share at the id, or it was taken down; on a create or replace, a card or revision the store lacks; on a data read, a slot the share has not had, one a replacement left empty, or a note's. |
+| `request_invalid`       | 400         | A malformed body (`latest` missing or not a boolean, a card count or `latest` the `kind` does not take, more than 24 cards, a payload over 1 MiB, an unknown field), id, slot or format, or a website request whose `x-dfo-caller` is missing or malformed. |
 | `frame_unavailable`     | 404 / 503   | A card's frame cannot be pinned, as on the component routes. |
 | `internal_error`        | 500         | The caller cannot be named: `DFO_CALLER_HMAC_KEY` is unset or the trusted `X-Forwarded-For` entry is missing. |
 

@@ -1,8 +1,12 @@
-"""The shares door publishes cards under one `/s/<id>` id, and replaces, deletes and reads them.
+"""The shares door publishes cards under one `/s/<id>` id, serves each slot's data, and replaces,
+snapshots, deletes and reads shares.
 
-`POST /api/presentation/shares` takes `{cards: [{component_id, revision}], latest, title?}`.
-`latest` has no default: true makes a live share, which follows new data, and false a snapshot,
-which keeps the versions its cards drew. The create spends one unit of the caller's `share`
+`POST /api/presentation/shares` takes `{cards: [{component_id, revision}], latest, title?, kind?,
+payload?}`. `latest` has no default: true makes a live share, which follows new data, and false
+a snapshot, which keeps the versions its cards drew. `kind` defaults to `card`. A `card` share
+takes 1 to 24 cards, a `canvas` 0 to 24, and a `search` or `conversation` share none, and a
+`conversation` share is a snapshot. `payload` is website-owned JSON of at most
+`MAX_SHARE_PAYLOAD_BYTES` as compact UTF-8, stored as given and read back on GET. The create spends one unit of the caller's `share`
 allowance (`datasets_api.allowance`, caller named by `dfo_platform.caller.resolve_caller`),
 refusing 429 `allowance_exhausted` once it is spent, then pins the frame each card revision
 draws (`presentation_store.pin_card_frames`), live or snapshot, since a share first including a
@@ -18,9 +22,30 @@ a caller without it learns nothing more: no header refuses 403 `write_token_requ
 token 403 `write_token_invalid`, and a share stored without a token (a guest's, imported from the
 website) refuses every token. A replace of a snapshot then refuses 409 `share_not_replaceable`.
 
+`POST /api/presentation/shares/{share_id}/snapshot` turns a live share into a snapshot in place,
+under the same URLs, with the share's token. Each slot keeps the frame it serves now (its last
+newest-data check, else its card's own frame): the door pins those frames, then writes the
+share's next revision with them and the snapshot mode. A snapshot answers as it is, and a share
+replaced meanwhile refuses 409 `edit_conflict`. No route turns a snapshot live.
+
 `GET /api/presentation/shares/{share_id}` is public and allows any origin: kind, mode, title,
-revision, slots, the website's payload and created_at, never the token. A share id that names no
-share, or one taken down, answers 404 `not_found` on every route.
+revision, slots, the website's payload and created_at, never the token.
+
+`GET /api/presentation/shares/{share_id}/slots/{slot}/data?format=json|csv|parquet` is public
+and allows any origin. It serves the rows behind the slot's card, JSON by default, on the frame
+`presentation_api.share_slots` chooses: a snapshot's recorded frame, or a live slot's newest
+data, checked at most once per `newest_frames.FRESHNESS_WINDOW`. The JSON body and the
+`x-dfo-freshness` header state `current`, `stale` or `pending`; a live slot's
+`x-dfo-checked-at` says when the check ran. The reply carries a strong `ETag` over its bytes and
+answers `If-None-Match` with 304. A live slot's reply is `no-cache`, so a cache revalidates it;
+a snapshot's is `public, max-age=300`. A slot number the share has not had, or a slot a
+replacement left empty, answers 404 `not_found`, and so does a note's slot.
+
+`GET /api/presentation/shares/{share_id}/history` is public and allows any origin: every frame
+the share's slots served, newest first, each with its retention counted from when DFO stored it
+and whether it is still fetchable (`share_slots.history_document`).
+
+A share id that names no share, or one taken down, answers 404 `not_found` on every route.
 
 Handlers are module-level functions that read `SHARES_DEPS_SLOT`, which the door's lifespan
 sets. Every route runs on one executor behind a non-blocking semaphore, and saturation answers
@@ -30,21 +55,47 @@ retryable 503.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import Annotated, Literal, Self, cast
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
-from assembler.errors import FrameUnavailable, RevisionNotFound
+from assembler.catalogue import BakedReleaseRegistry
+from assembler.errors import (
+    BindingInvalid,
+    ConstraintViolation,
+    FrameUnavailable,
+    ReleaseMismatch,
+    ResourceExhausted,
+    RevisionNotFound,
+    SchemaInvalid,
+)
+from assembler.pipeline.export_component import ComponentExportMismatch, ComponentHoldsNoData
 from assembler.pipeline.stored_revision import read_stored_revision
-from assembler.ports import DraftNotFound, EditConflict, FrameRef, FrameStore, RevisionStore
+from assembler.ports import (
+    DraftNotFound,
+    EditConflict,
+    FrameRef,
+    FrameStore,
+    ReleaseRegistry,
+    RevisionStore,
+)
 from assembler.write_token import (
     SHARE_WRITE_TOKEN_PREFIX,
     mint_write_token,
@@ -54,6 +105,7 @@ from assembler.write_token import (
 from dataset_store import LiveDatasetStore
 from dataset_store import close_shared_pool as close_dataset_pool
 from dataset_store import shared_pool as dataset_shared_pool
+from dataset_store.snapshot import SnapshotReader
 from datasets_api.allowance import (
     AllowanceExhausted,
     AllowanceKind,
@@ -61,6 +113,7 @@ from datasets_api.allowance import (
     LiveAllowanceLedger,
     allowance_limits,
 )
+from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.shutdown import ShutdownBudget
@@ -75,10 +128,25 @@ from presentation_api.config import (
     PRESENTATION_COMPONENTS_TIMEOUT_SECONDS,
     PresentationSettings,
 )
+from presentation_api.doors.component_data import classify_component_data_exception
 from presentation_api.doors.components import WRITE_TOKEN_HEADER, classify_components_exception
 from presentation_api.live import build_live_frame_store
-from presentation_api.models import SharedResponse, ShareReadResponse, ShareWriteResponse
+from presentation_api.models import (
+    SharedResponse,
+    ShareHistoryResponse,
+    ShareReadResponse,
+    ShareSlotDataResponse,
+    ShareWriteResponse,
+)
+from presentation_api.newest_frames import NewestFrames
 from presentation_api.path_params import PathParamInvalid, require_component_id, require_share_id
+from presentation_api.share_slots import (
+    ShareSlotEmpty,
+    SlotFormat,
+    history_document,
+    serve_slot,
+    serving_frame,
+)
 from presentation_store import (
     GeneratedIdCollision,
     LivePresentationStore,
@@ -97,6 +165,7 @@ from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
 __all__ = [
     "MAX_SHARE_CARDS",
+    "MAX_SHARE_PAYLOAD_BYTES",
     "SHARES_DEPS_SLOT",
     "SHARES_ENDPOINT",
     "SharesDeps",
@@ -111,11 +180,31 @@ SHARES_ENDPOINT = "presentation.shares"
 
 SHARES_PATH = "/api/presentation/shares"
 SHARE_PATH = "/api/presentation/shares/{share_id}"
+SHARE_SNAPSHOT_PATH = f"{SHARE_PATH}/snapshot"
+SHARE_HISTORY_PATH = f"{SHARE_PATH}/history"
+SHARE_SLOT_DATA_PATH = f"{SHARE_PATH}/slots/{{slot}}/data"
 
 MAX_SHARE_CARDS = 24
 """The most cards one create or replace takes, and so the most slots a write adds."""
 
+MAX_SHARE_PAYLOAD_BYTES = 1_048_576
+"""The largest `payload` a create takes, as compact UTF-8 JSON."""
+
 _MAX_TITLE_LENGTH = 300
+
+_FRESHNESS_HEADER = "x-dfo-freshness"
+_CHECKED_AT_HEADER = "x-dfo-checked-at"
+_SLOT_DATA_EXPOSED = f"ETag, {_FRESHNESS_HEADER}, {_CHECKED_AT_HEADER}"
+_LIVE_CACHE_CONTROL = "no-cache"
+_SNAPSHOT_CACHE_CONTROL = "public, max-age=300"
+
+# How many cards each kind takes on create, and whether it may be live.
+_KIND_CARDS: Mapping[str, tuple[int, int]] = {
+    "card": (1, MAX_SHARE_CARDS),
+    "canvas": (0, MAX_SHARE_CARDS),
+    "search": (0, 0),
+    "conversation": (0, 0),
+}
 
 
 class ShareCardBody(BaseModel):
@@ -139,10 +228,18 @@ class ShareCardsBody(BaseModel):
     )
 
 
-class CreateShareBody(ShareCardsBody):
+class CreateShareBody(BaseModel):
     """A create's body. `latest` has no default, because a live link and a fixed one answer
     different questions under a public URL."""
 
+    model_config = ConfigDict(extra="forbid")
+
+    cards: list[ShareCardBody] = Field(
+        default_factory=list,
+        max_length=MAX_SHARE_CARDS,
+        description="the cards in slot order; two entries may name the same revision. A card "
+        "share takes at least one, a canvas any number, a search or conversation share none",
+    )
     latest: StrictBool = Field(
         description="true for a live share that follows new data and takes replacements; "
         "false for a snapshot that keeps the versions its cards draw now, for good"
@@ -150,6 +247,31 @@ class CreateShareBody(ShareCardsBody):
     title: str | None = Field(
         default=None, min_length=1, max_length=_MAX_TITLE_LENGTH, description="the share's title"
     )
+    kind: Literal["card", "canvas", "search", "conversation"] = Field(
+        default="card",
+        description="what the share publishes; the website renders a canvas, search or "
+        "conversation share from its payload. A conversation share is a snapshot",
+    )
+    payload: JsonValue = Field(
+        default=None,
+        description="website-owned JSON stored with the share as given and read back on GET, "
+        f"at most {MAX_SHARE_PAYLOAD_BYTES} bytes as compact UTF-8",
+    )
+
+    @model_validator(mode="after")
+    def _fits_its_kind(self) -> Self:
+        least, most = _KIND_CARDS[self.kind]
+        if not least <= len(self.cards) <= most:
+            wanted = "none" if most == 0 else f"{least} to {most}"
+            raise ValueError(f"a {self.kind} share takes {wanted} cards, not {len(self.cards)}")
+        if self.kind == "conversation" and self.latest:
+            raise ValueError("a conversation share is a snapshot: send latest=false")
+        size = len(json.dumps(self.payload, ensure_ascii=False, separators=(",", ":")).encode())
+        if size > MAX_SHARE_PAYLOAD_BYTES:
+            raise ValueError(
+                f"the payload is {size} bytes, over the {MAX_SHARE_PAYLOAD_BYTES}-byte bound"
+            )
+        return self
 
 
 class WriteTokenRequired(Exception):
@@ -201,10 +323,15 @@ class SharesDeps:
     share_store: ShareStore
     revision_store: RevisionStore
     frame_store: FrameStore
+    release_registry: ReleaseRegistry
     allowances: AllowanceLedger
     caller: CallerSettings
     site: PublicSiteSettings
     executor: DoorExecutor
+    # The version records history entries take their retention from; `None` states none.
+    snapshot_reader: SnapshotReader | None = None
+    # Where a live slot asks for newer data; `None` leaves every live slot stale.
+    newest: NewestFrames | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
 
@@ -338,11 +465,12 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
         _pin(cards, deps=deps)
         token = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
         share = deps.share_store.create_share(
-            kind="card",
+            kind=body.kind,
             mode="live" if body.latest else "snapshot",
             title=body.title,
             write_token_sha256=write_token_digest(token),
             cards=cards,
+            payload=body.payload,
         )
         document = {**_locations(share, site=deps.site.public_site_url), "write_token": token}
         return JSONResponse(document, status_code=201, headers={"Cache-Control": "no-store"})
@@ -404,6 +532,87 @@ async def read_share(share_id: str, deps: SharesDepsDep) -> Response:
     return await _run(deps, job)
 
 
+async def post_share_snapshot(
+    share_id: str, deps: SharesDepsDep, write_token: WriteTokenHeader = None
+) -> Response:
+    require_share_id(share_id)
+
+    def job() -> Response:
+        current = deps.share_store.read_share(share_id=share_id)
+        authorise_share_write(current, presented=write_token)
+        if current.mode == "live":
+            frames: dict[int, FrameRef] = {}
+            pins: dict[tuple[str, FrameRef], None] = {}
+            for slot in current.slots:
+                if slot.card is None or slot.card.frame is None:
+                    continue
+                frame = serving_frame(share=current, slot=slot.slot, card=slot.card, deps=deps)
+                frames[slot.slot] = frame
+                pins[(slot.card.component_id, frame)] = None
+            for component_id, frame in pins:
+                deps.frame_store.pin(frame_ref=frame, component_id=component_id)
+            current = deps.share_store.snapshot_share(
+                share_id=share_id, revision=current.revision, frames=frames
+            )
+        return JSONResponse(_locations(current, site=deps.site.public_site_url))
+
+    return await _run(deps, job)
+
+
+async def read_share_history(share_id: str, deps: SharesDepsDep) -> Response:
+    require_share_id(share_id)
+
+    def job() -> Response:
+        served = deps.share_store.served_frames(share_id=share_id)
+        return JSONResponse(
+            history_document(share_id=share_id, served=served, deps=deps),
+            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
+        )
+
+    return await _run(deps, job)
+
+
+def _matches(if_none_match: str | None, etag: str) -> bool:
+    """Whether `If-None-Match` names `etag`, compared weakly as RFC 9110 says for it."""
+    if if_none_match is None:
+        return False
+    tags = {tag.strip().removeprefix("W/") for tag in if_none_match.split(",")}
+    return "*" in tags or etag in tags
+
+
+async def read_share_slot_data(
+    share_id: str,
+    deps: SharesDepsDep,
+    slot: Annotated[int, Path(ge=1)],
+    format_: Annotated[SlotFormat, Query(alias="format")] = "json",
+    if_none_match: Annotated[str | None, Header()] = None,
+) -> Response:
+    require_share_id(share_id)
+
+    def job() -> Response:
+        share = deps.share_store.read_share(share_id=share_id)
+        data = serve_slot(share=share, slot=slot, format=format_, deps=deps)
+        headers = {
+            "ETag": data.etag,
+            _FRESHNESS_HEADER: data.freshness,
+            "Cache-Control": (
+                _LIVE_CACHE_CONTROL if share.mode == "live" else _SNAPSHOT_CACHE_CONTROL
+            ),
+            # Any page may read a share's data across origins.
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": _SLOT_DATA_EXPOSED,
+        }
+        if data.checked_at is not None:
+            headers[_CHECKED_AT_HEADER] = data.checked_at.isoformat()
+        if _matches(if_none_match, data.etag):
+            return Response(status_code=304, headers=headers)
+        if data.file_name is not None:
+            headers["Content-Disposition"] = artifact_content_disposition(data.file_name)
+        return Response(content=data.body, media_type=data.media_type, headers=headers)
+
+    return await _run(deps, job)
+
+
 def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
     """The share refusals, then the components door's for the card, store and frame failures
     the share routes share with it."""
@@ -417,7 +626,7 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         return ProblemSpec(
             status=409, code="share_not_replaceable", detail=str(exc), retryable=False
         )
-    if isinstance(exc, ShareNotFound):
+    if isinstance(exc, ShareNotFound | ShareSlotEmpty):
         return ProblemSpec(status=404, code="not_found", detail=str(exc), retryable=False)
     if isinstance(exc, AllowanceExhausted):
         return ProblemSpec(
@@ -436,14 +645,17 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
     if isinstance(exc, SharesUnavailable):
         return ProblemSpec(status=503, code="service_unavailable", detail=str(exc), retryable=True)
-    return classify_components_exception(exc)
+    return classify_components_exception(exc) or classify_component_data_exception(exc)
 
 
 def build_shares_door(
     *,
+    release_registry: ReleaseRegistry | None = None,
     share_store: ShareStore | None = None,
     revision_store: RevisionStore | None = None,
     frame_store: FrameStore | None = None,
+    snapshot_reader: SnapshotReader | None = None,
+    newest: NewestFrames | None = None,
     allowances: AllowanceLedger | None = None,
     caller: CallerSettings | None = None,
     now: Callable[[], datetime] | None = None,
@@ -453,7 +665,12 @@ def build_shares_door(
     """Build the shares door. The lifespan builds each store left out over the live pools: the
     share and revision stores over the presentation pool, the frame store over the datasets
     pool, and the allowance ledger over the datasets pool with `DatasetsBuildSettings`' limits.
-    `caller` defaults to those settings' `caller`, and the public site to `DFO_PUBLIC_SITE_URL`.
+    A frame store built here brings its snapshot reader; with one given, `snapshot_reader` is
+    the history's, and left out the history states no retention. `newest` answers live slots'
+    newer-data checks; left out, every live slot serves its card's frame as stale.
+    `release_registry`, which a live slot draws its card on a newer frame under, defaults to the
+    baked release. `caller`
+    defaults to those settings' `caller`, and the public site to `DFO_PUBLIC_SITE_URL`.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     executor = build_door_executor(
@@ -487,11 +704,13 @@ def build_shares_door(
                 presentation_db = LiveDatasetStore(connections=presentation_shared_pool())
                 opened_presentation_pool = True
             effective_frame_store = frame_store
+            effective_snapshot_reader = snapshot_reader
             if effective_frame_store is None:
                 live = build_live_frame_store(settings=PresentationSettings.from_env())
                 dataset_borrows += 1
                 owned_graph = live.graph
                 effective_frame_store = live.frame_store
+                effective_snapshot_reader = live.snapshot_reader
             effective_allowances = allowances
             effective_caller = caller
             if effective_caller is None:
@@ -516,10 +735,15 @@ def build_shares_door(
                     else LivePresentationStore(store=cast(LiveDatasetStore, presentation_db))
                 ),
                 frame_store=effective_frame_store,
+                release_registry=(
+                    release_registry if release_registry is not None else BakedReleaseRegistry()
+                ),
                 allowances=effective_allowances,
                 caller=effective_caller,
                 site=site,
                 executor=executor,
+                snapshot_reader=effective_snapshot_reader,
+                newest=newest,
             )
             if now is not None:
                 deps.now = now
@@ -573,6 +797,47 @@ def build_shares_door(
         response_class=Response,
         description="Take a share down. Needs the share's write token in x-dfo-write-token.",
     )
+    router.add_api_route(
+        SHARE_SNAPSHOT_PATH,
+        post_share_snapshot,
+        methods=["POST"],
+        response_model=ShareWriteResponse,
+        description="Turn a live share into a snapshot under the same URLs: each slot keeps "
+        "the frame it serves now, pinned. Needs the share's write token in x-dfo-write-token. "
+        "A snapshot answers as it is; no route turns a snapshot live.",
+    )
+    router.add_api_route(
+        SHARE_HISTORY_PATH,
+        read_share_history,
+        methods=["GET"],
+        response_model=ShareHistoryResponse,
+        description="Every frame the share's slots served, newest first, each with its "
+        "retention counted from when DFO stored it and whether it is still fetchable. Any "
+        "origin may read it.",
+    )
+    router.add_api_route(
+        SHARE_SLOT_DATA_PATH,
+        read_share_slot_data,
+        methods=["GET"],
+        response_class=Response,
+        responses={
+            200: {
+                "description": "The rows behind the slot's card. JSON (the default) states "
+                "the slot, its card and frame and the freshness beside the rows; csv and "
+                "parquet are the card's data file. x-dfo-freshness states current, stale or "
+                "pending, and a live slot's x-dfo-checked-at when DFO last checked for newer "
+                "data. A strong ETag answers If-None-Match with 304. Any origin may read it.",
+                "model": ShareSlotDataResponse,
+                "content": {
+                    "text/csv": {},
+                    "application/vnd.apache.parquet": {},
+                },
+            },
+            304: {"description": "The If-None-Match ETag still names these rows."},
+        },
+        description="Read the rows a share's slot serves: a snapshot's recorded frame, or a "
+        "live slot's newest data, checked at most every 15 minutes.",
+    )
 
     return DoorContribution(
         router=router,
@@ -583,6 +848,14 @@ def build_shares_door(
             WriteTokenInvalid,
             ShareNotReplaceable,
             ShareNotFound,
+            ShareSlotEmpty,
+            ComponentHoldsNoData,
+            ComponentExportMismatch,
+            SchemaInvalid,
+            BindingInvalid,
+            ConstraintViolation,
+            ResourceExhausted,
+            ReleaseMismatch,
             SharesUnavailable,
             AllowanceExhausted,
             CallerHeaderInvalid,
@@ -604,6 +877,7 @@ def build_shares_door(
             WriteTokenInvalid("Ab3dEf7h"),
             ShareNotReplaceable("Ab3dEf7h"),
             ShareNotFound("Ab3dEf7h"),
+            ShareSlotEmpty(share_id="Ab3dEf7h", slot=2),
             SharesUnavailable(),
             AllowanceExhausted(
                 kind=AllowanceKind.share, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
