@@ -1,10 +1,11 @@
-"""Platform-wide environment settings: CORS, shared executor capacity and the public website."""
+"""Platform-wide environment settings: CORS, shared executor capacity, the public website and
+caller resolution."""
 
 from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -84,6 +85,34 @@ class PublicSiteSettings(BaseSettings):
     @classmethod
     def from_env(cls) -> PublicSiteSettings:
         """Read both variables. Raises `ValueError` naming the variable at fault."""
+        try:
+            return cls()
+        except ValidationError as exc:
+            raise ValueError(env_validation_error_message(exc, env_prefix="DFO_")) from exc
+
+
+class CallerSettings(BaseSettings):
+    """How `dfo_platform.caller.resolve_caller` names the caller of a request.
+
+    `caller_principal` (`DFO_CALLER_PRINCIPAL`) is the secret the website sends in
+    `x-dfo-caller-principal` beside the caller it resolved (`x-dfo-caller`). Empty trusts no
+    `x-dfo-caller`. `caller_hmac_key` (`DFO_CALLER_HMAC_KEY`) keys the caller digest of a request
+    that reaches this service directly, and must equal the website's `CALLER_HMAC_KEY` so both
+    paths name a client by one key. Empty refuses such callers wherever an allowance applies.
+    `trusted_proxy_hops` (`DFO_TRUSTED_PROXY_HOPS`, default 0) is how many X-Forwarded-For
+    entries from the right the proxies in front of this service appended after the client's,
+    as the website's `TRUSTED_PROXY_HOPS` counts them.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="DFO_")
+
+    caller_principal: SecretStr = SecretStr("")
+    caller_hmac_key: SecretStr = SecretStr("")
+    trusted_proxy_hops: int = Field(default=0, ge=0)
+
+    @classmethod
+    def from_env(cls) -> CallerSettings:
+        """Read the three variables. Raises `ValueError` naming the variable at fault."""
         try:
             return cls()
         except ValidationError as exc:

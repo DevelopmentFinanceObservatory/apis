@@ -11,15 +11,15 @@ import sqlite3
 import threading
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 
 from datasets_api.version_store import _ROLE_COLUMNS_SQL
 from datasets_api.versions import MaterialisationRecord, Trigger
 
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
 
-# The schema covers version records, artifacts, revocations, references, inventory, frame recipes,
-# description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
+# The schema covers version records, artifacts, revocations, references, caller allowances,
+# inventory, frame recipes, description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
 _VERSION_RECORD_SCHEMA = """
@@ -77,6 +77,13 @@ CREATE TABLE datasets.artifact_reference (
     created_at TEXT NOT NULL,
     removed_at TEXT,
     PRIMARY KEY (principal, artifact_digest, subject_id, content_version, reference_kind)
+);
+CREATE TABLE datasets.caller_allowance (
+    caller_key TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('share', 'pin')),
+    day TEXT NOT NULL,
+    count INTEGER NOT NULL CHECK (count > 0),
+    PRIMARY KEY (caller_key, kind, day)
 );
 CREATE TABLE datasets.artifact_inventory (
     artifact_digest TEXT PRIMARY KEY,
@@ -155,10 +162,10 @@ def _to_sqlite(sql: str) -> str:
 
 
 def _sqlite_param(value: object) -> object:
-    """Encode dicts and datetimes as SQLite text for JSONB and timestamp columns."""
+    """Encode dicts, datetimes and dates as SQLite text for JSONB, timestamp and date columns."""
     if isinstance(value, dict):
         return json.dumps(value)
-    if isinstance(value, datetime):
+    if isinstance(value, date):
         return value.isoformat()
     return value
 

@@ -42,6 +42,7 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import SnapshotReader
+from datasets_api.allowance import AllowanceLedger
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell, DepsOverrides, open_deps
@@ -122,6 +123,7 @@ def datasets_surface(
     recipe_store: RecipeStore | None = None,
     description_store: LiveDescriptionStore | None = None,
     reference_writer: PinReferenceWriter | None = None,
+    allowances: AllowanceLedger | None = None,
     graph: GraphReader | None = None,
     sdmx: SdmxClient | None = None,
     artifact_store: ArtifactStore | None = None,
@@ -209,6 +211,7 @@ def datasets_surface(
         recipe_store=recipe_store,
         description_store=description_store,
         reference_writer=reference_writer,
+        allowances=allowances,
         graph=graph,
         sdmx=sdmx,
         artifact_store=artifact_store,

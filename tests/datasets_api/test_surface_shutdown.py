@@ -25,7 +25,7 @@ from materialise import facet_profile, shared_profiles
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 
-from ._app_factories import offline_recipe_stores
+from ._app_factories import offline_allowances, offline_recipe_stores
 from ._artifact_doubles import FakeArtifactStore, RecordingArtifactStore
 from ._identity_builders import pinned_identity, register_body
 from ._snapshot_doubles import (
@@ -198,6 +198,7 @@ def test_composed_surface_shutdown_fits_the_shared_budget(
                 head_writer=NullHeadWriter(),
                 operation_store=NullOperationStore(),
                 task_client=FakeTaskClient(),
+                allowances=offline_allowances(),
                 **offline_recipe_stores(),
             )
         ]

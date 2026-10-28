@@ -21,18 +21,37 @@ The caller writes the value, so it is logged with non-printable characters remov
 and clipped, as `client_header`, and split into `client_name`, `client_version` and
 `client_runtime` when it has that shape. A request without the header logs none of
 these fields.
+
+`resolve_caller` names the caller an allowance counts against, as a `Caller` whose key is
+`ip:` and the first 32 hex digits of HMAC-SHA-256 over the client's address, folded
+(`fold_address`), under `DFO_CALLER_HMAC_KEY`. The website computes the same key for the
+callers it forwards (its `src/lib/proxy/caller.ts`), so a client has one key on either path
+and no raw address is stored. A request whose `x-dfo-caller-principal` matches
+`DFO_CALLER_PRINCIPAL` comes from the website, which names its client in `x-dfo-caller`; any
+other request is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places from the
+right, the entry the proxies in front of this service appended. `request.client` is never read:
+`ProxyHeadersMiddleware` sets it from the leftmost entry, which the client writes.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
+import ipaddress
 import json
 import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from dfo_platform.config import CallerSettings
+from dfo_platform.problem import Refusal
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 SERVERLESS_AUTHORIZATION_HEADER = "x-serverless-authorization"
 AUTHORIZATION_HEADER = "authorization"
@@ -158,3 +177,126 @@ def log_request(*, method: str, path: str, status: int | None, headers: Mapping[
             }
         },
     )
+
+
+CALLER_HEADER = "x-dfo-caller"
+"""The caller the website resolved for a request it forwards, as `ip:<32 hex digits>`."""
+CALLER_PRINCIPAL_HEADER = "x-dfo-caller-principal"
+"""The secret that vouches for `CALLER_HEADER`, `DFO_CALLER_PRINCIPAL`."""
+FORWARDED_FOR_HEADER = "x-forwarded-for"
+
+ADDRESS_KEY_PREFIX = "ip:"
+"""The prefix of every `kind="address"` caller key. Reference rows keyed by a caller start with
+it, which tells them from the `secret-sha256:` labels of principals."""
+
+_DIGEST_LENGTH = 32
+_ADDRESS_KEY = re.compile(rf"{ADDRESS_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
+
+
+@dataclass(frozen=True, slots=True)
+class Caller:
+    """Who an allowance counts against. `kind="address"` keys a client by its network address,
+    the only kind there is until callers can present keys."""
+
+    kind: Literal["address"]
+    key: str
+
+
+class CallerHeaderInvalid(Refusal):
+    """The website vouched for a request with `CALLER_PRINCIPAL_HEADER` but sent no single
+    well-formed `CALLER_HEADER`. Counting it by address would put every client of the site on
+    one allowance, so it answers 400."""
+
+    code = "request_invalid"
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"the request carries a valid {CALLER_PRINCIPAL_HEADER} but no single "
+            f"{CALLER_HEADER} of the form ip:<32 lowercase hex digits>"
+        )
+
+
+class CallerUnresolved(Refusal):
+    """This service cannot name a direct caller: `DFO_CALLER_HMAC_KEY` is unset, or the
+    X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` names is missing or not an address. Either is a
+    deployment fault, so it answers a 503 a retry does not clear, and is logged."""
+
+    code = "service_unavailable"
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"this service cannot name the caller a write counts against: {reason}")
+
+
+def fold_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """The text a caller digest hashes for `address`, the website's `limiterBucket`.
+
+    IPv4 is its dotted form. An IPv4-mapped IPv6 address is its IPv4 form. Any other IPv6
+    address is its /64, one subscriber's usual block: the first four groups in lowercase hex
+    without leading zeros, then `::/64`, so `2001:db8::1` folds to `2001:db8:0:0::/64`.
+    """
+    if isinstance(address, ipaddress.IPv4Address):
+        return str(address)
+    if address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    # The integer drops any zone id, which `exploded` cannot parse back on Python 3.12.
+    value = int(address)
+    return ":".join(f"{(value >> shift) & 0xFFFF:x}" for shift in (112, 96, 80, 64)) + "::/64"
+
+
+def address_key(address: str, *, hmac_key: str) -> str:
+    """The `kind="address"` caller key for `address`, which must parse as an IP address."""
+    folded = fold_address(ipaddress.ip_address(address))
+    digest = hmac.new(hmac_key.encode(), folded.encode(), hashlib.sha256).hexdigest()
+    return ADDRESS_KEY_PREFIX + digest[:_DIGEST_LENGTH]
+
+
+def _single(request: Request, header: str) -> str | None:
+    values = request.headers.getlist(header)
+    return values[0] if len(values) == 1 else None
+
+
+def _vouched(request: Request, settings: CallerSettings) -> bool:
+    """Whether `request` carries the configured caller principal, compared in constant time."""
+    secret = settings.caller_principal.get_secret_value()
+    presented = _single(request, CALLER_PRINCIPAL_HEADER)
+    return (
+        bool(secret)
+        and presented is not None
+        and hmac.compare_digest(presented.encode(), secret.encode())
+    )
+
+
+def resolve_caller(request: Request, settings: CallerSettings) -> Caller:
+    """Name the caller of `request` for an allowance. See the module docstring.
+
+    Raises:
+        CallerHeaderInvalid: The caller principal matches, and `x-dfo-caller` is missing,
+            repeated or malformed.
+        CallerUnresolved: The request is named by address, and `DFO_CALLER_HMAC_KEY` is unset
+            or the trusted X-Forwarded-For entry is missing or not an IP address.
+    """
+    if _vouched(request, settings):
+        named = _single(request, CALLER_HEADER)
+        if named is None or not _ADDRESS_KEY.fullmatch(named):
+            raise CallerHeaderInvalid()
+        return Caller(kind="address", key=named)
+
+    hmac_key = settings.caller_hmac_key.get_secret_value()
+    if not hmac_key:
+        raise CallerUnresolved("DFO_CALLER_HMAC_KEY is unset")
+    # Each proxy appends the address it saw, to the one header or as a further header line.
+    entries = [
+        entry.strip()
+        for value in request.headers.getlist(FORWARDED_FOR_HEADER)
+        for entry in value.split(",")
+    ]
+    position = len(entries) - 1 - settings.trusted_proxy_hops
+    address = entries[position] if position >= 0 else ""
+    try:
+        return Caller(kind="address", key=address_key(address, hmac_key=hmac_key))
+    except ValueError:
+        raise CallerUnresolved(
+            f"X-Forwarded-For holds {len(entries)} entries, and the one "
+            f"DFO_TRUSTED_PROXY_HOPS={settings.trusted_proxy_hops} places from the right is "
+            "missing or not an IP address"
+        ) from None

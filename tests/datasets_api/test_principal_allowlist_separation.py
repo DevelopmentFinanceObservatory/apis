@@ -1,6 +1,7 @@
 """Pin and publish principals use separate allowlists. Pinning has no unpin route, so a
-principal trusted to publish must not gain that irreversible capability. Tests cover surface
-wiring and the pin door's `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` fallback. A publish dependency
+principal trusted to publish must not gain the pin grant's budget, and pins as any open caller
+does. Tests cover surface wiring and the pin door's `DATASETS_PIN_FIRST_PARTY_PRINCIPAL`
+fallback. A publish dependency
 test also checks the all-or-nothing store configuration.
 """
 
@@ -8,9 +9,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from artifact_store import Tier
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import pin as pin_door
+from dfo_platform.caller import address_key
 from spec_registry import LiveSpecRegistry
 
 from ._app_factories import make_client
@@ -54,10 +58,14 @@ def _publish_body() -> dict[str, object]:
     }
 
 
-def test_surface_pin_and_publish_allowed_principals_are_independent() -> None:
-    """The surface wires each allowlist to one door.
-    Each door accepts its own principal and refuses the other's.
-    """
+def test_surface_pin_and_publish_allowed_principals_are_independent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The surface wires each allowlist to one door. Each door grants its own principal, the
+    publish door refuses the pin principal, and the pin door takes the publish principal for an
+    open caller, named by its address."""
+    monkeypatch.setenv("DFO_CALLER_HMAC_KEY", "test-caller-key")
+    writer = FakeArtifactReferenceWriter()
     # Pinned-tier storage skips retention checks against the door's real clock.
     store = FakeArtifactStore()
     location = _store_and_locate(store, b"pin-vs-publish-separation", tier=Tier.pinned)
@@ -72,7 +80,7 @@ def test_surface_pin_and_publish_allowed_principals_are_independent() -> None:
         sdmx=object(),
         artifact_store=store,
         snapshot_reader=reader,
-        reference_writer=FakeArtifactReferenceWriter(),
+        reference_writer=writer,
         pin_allowed_principals=frozenset({_PIN_PRINCIPAL}),
         publish_allowed_principals=frozenset({_PUBLISH_PRINCIPAL}),
     )
@@ -84,15 +92,17 @@ def test_surface_pin_and_publish_allowed_principals_are_independent() -> None:
     )
     assert pin_accepts_its_own.status_code == 200, pin_accepts_its_own.text
 
-    pin_refuses_the_publish_principal = client.post(
+    pin_opens_to_the_publish_principal = client.post(
         f"/api/datasets/{_SPEC_ID}/{_CONTENT_VERSION}/pin",
         json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": _PUBLISH_PRINCIPAL},
+        headers={"x-dfo-principal": _PUBLISH_PRINCIPAL, "x-forwarded-for": "203.0.113.7"},
     )
-    assert pin_refuses_the_publish_principal.status_code == 403, (
-        pin_refuses_the_publish_principal.text
+    assert pin_opens_to_the_publish_principal.status_code == 200, (
+        pin_opens_to_the_publish_principal.text
     )
-    assert pin_refuses_the_publish_principal.json()["code"] == "pin_not_permitted"
+    opened, granted = sorted({key[0] for key in writer.records})
+    assert opened == address_key("203.0.113.7", hmac_key="test-caller-key")
+    assert granted.startswith("secret-sha256:")
 
     publish_refuses_the_pin_principal = client.post(
         "/api/datasets/frames/publish",

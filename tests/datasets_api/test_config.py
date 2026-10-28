@@ -20,7 +20,7 @@ from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 
-from ._app_factories import offline_recipe_stores
+from ._app_factories import offline_allowances, offline_recipe_stores
 from ._artifact_doubles import FakeArtifactStore
 from ._snapshot_doubles import FakeSnapshotReader
 from .conftest import FakeDatasetStore
@@ -154,6 +154,7 @@ def test_datasets_settings_from_env_is_actually_invoked_by_the_surfaces_own_life
         reference_writer=FakeArtifactReferenceWriter(),
         artifact_store=FakeArtifactStore(),
         task_client=FakeTaskClient(),
+        allowances=offline_allowances(),
         **offline_recipe_stores(),
     )
 

@@ -35,6 +35,7 @@ from dataset_store.snapshot import (
     SnapshotRevoked,
     VersionFactsMissing,
 )
+from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowanceLedger
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.doors.pin import pin_artifact
@@ -57,6 +58,7 @@ from datasets_api.versions import (
     SubjectHead,
     VersionRecord,
 )
+from dfo_platform.caller import ADDRESS_KEY_PREFIX, Caller
 from series_coverage.index import Estimate
 from spec_registry import (
     IdentityQuarantined,
@@ -2228,6 +2230,72 @@ def test_artifact_reference_upsert_repeat_pin_of_a_live_row_keeps_the_original_c
     assert row is not None
     assert row["created_at"] == first_pin  # never bumped by the repeat pin
     assert row["removed_at"] is None
+
+
+def test_concurrent_allowance_spends_stop_at_the_limit(live_store):
+    """Spends racing on one caller's day pass the limit by none, under Postgres row locking."""
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    ledger = LiveAllowanceLedger(store=live_store, limits={AllowanceKind.pin: 3})
+    now = datetime.now(UTC)
+    outcomes: list[str] = []
+
+    def spend() -> None:
+        try:
+            ledger.spend(caller, AllowanceKind.pin, now)
+            outcomes.append("spent")
+        except AllowanceExhausted:
+            outcomes.append("refused")
+
+    threads = [threading.Thread(target=spend) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert sorted(outcomes) == ["refused"] * 3 + ["spent"] * 3
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT day, count FROM datasets.caller_allowance WHERE caller_key = %s",
+            (caller.key,),
+        )
+    assert row == {"day": now.date(), "count": 3}
+
+
+def test_the_open_pin_count_reads_only_references_a_caller_key_holds(live_store):
+    """`principal_prefix` selects the copies whose `pin` reference names a caller key."""
+    now = datetime.now(UTC)
+    writer = LiveArtifactReferenceWriter(store=live_store)
+    suffix = uuid4().hex
+
+    def open_count() -> int:
+        return writer.count_pinned_copies_since(
+            reference_kind=PIN_REFERENCE_KIND,
+            since=now - timedelta(hours=24),
+            principal_prefix=ADDRESS_KEY_PREFIX,
+        )
+
+    baseline = open_count()
+    for name, principal in (("open", "ip:" + suffix[:32]), ("granted", "secret-sha256:x")):
+        digest = f"sha256:test-live-open-count-{name}-{suffix}"
+        subject_id = f"spec:test-live-open-count-{name}-{suffix}"
+        _seed_reference_fk_targets(live_store, digest=digest, subject_id=subject_id)
+        writer.record_reference(
+            principal=principal,
+            artifact_digest=digest,
+            subject_id=subject_id,
+            content_version="cv1",
+            reference_kind=PIN_REFERENCE_KIND,
+            now=now,
+        )
+        with live_store.transaction() as tx:
+            tx.execute(
+                "INSERT INTO datasets.artifact_location "
+                "(artifact_digest, tier, bucket, object_name, stored_at) "
+                "VALUES (%s, 'pinned', 'b', %s, %s)",
+                (digest, digest, now - timedelta(hours=1)),
+            )
+
+    assert open_count() == baseline + 1
 
 
 def test_pinned_copy_count_counts_each_pin_door_promotion_once(live_store):

@@ -3,7 +3,7 @@
 `open_deps` builds one `Deps` for the surface's lifespan, and every door reads it through the
 surface's `DepsCell`. Doors build no client and no store. The bundle holds one graph client, one
 SDMX client, one artifact store, the stores over one `dataset_store` pool borrow, the task client,
-the coverage service and rate cache, the source of the code index each request reads, the
+the allowance ledger, the coverage service and rate cache, the source of the code index each request reads, the
 whole-variable breadth reader, one materialise semaphore, and two executors.
 
 The read executor runs snapshot, description, observations, operations polls, members, pin, register,
@@ -33,6 +33,7 @@ from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader
 from datasets_api.admission import MaterialisePermits, RebuildFlights
+from datasets_api.allowance import AllowanceLedger, LiveAllowanceLedger, allowance_limits
 from datasets_api.config import DatasetsBuildSettings, DatasetsSettings
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.door_executor import DoorExecutor, build_door_executor
@@ -88,6 +89,8 @@ class Deps:
     recipe_store: RecipeStore
     description_store: LiveDescriptionStore
     reference_writer: PinReferenceWriter
+    # The daily allowances of callers without a grant (`datasets_api.allowance`).
+    allowances: AllowanceLedger
     graph: GraphReader
     sdmx: SdmxClient
     artifact_store: ArtifactStore
@@ -166,6 +169,7 @@ class DepsOverrides:
     recipe_store: RecipeStore | None = None
     description_store: LiveDescriptionStore | None = None
     reference_writer: PinReferenceWriter | None = None
+    allowances: AllowanceLedger | None = None
     graph: GraphReader | None = None
     sdmx: SdmxClient | None = None
     artifact_store: ArtifactStore | None = None
@@ -187,6 +191,7 @@ class DepsOverrides:
                 self.recipe_store,
                 self.description_store,
                 self.reference_writer,
+                self.allowances,
                 self.artifact_store,
             )
         )
@@ -347,6 +352,10 @@ async def open_deps(
             ),
             reference_writer=_given_or(
                 overrides.reference_writer, lambda: LiveArtifactReferenceWriter(store=_store())
+            ),
+            allowances=_given_or(
+                overrides.allowances,
+                lambda: LiveAllowanceLedger(store=_store(), limits=allowance_limits(settings)),
             ),
             graph=graph,
             sdmx=sdmx,

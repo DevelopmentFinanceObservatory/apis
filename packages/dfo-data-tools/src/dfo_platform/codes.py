@@ -101,6 +101,12 @@ PLATFORM_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "The authenticated caller is not the live-refresh principal, or live refresh is "
         "not configured on this deployment.",
     ),
+    # Served by the Datasets pin door and the Presentation share routes.
+    "allowance_exhausted": (
+        "Allowance Exhausted",
+        "The caller has spent today's allowance for this kind of write; Retry-After names the "
+        "next UTC midnight, when it resets.",
+    ),
 }
 
 

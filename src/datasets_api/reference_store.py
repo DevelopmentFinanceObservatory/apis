@@ -10,7 +10,8 @@ under the subject id and every id in `revoked_under`, in the upsert statement, a
 for a digest the version keeps. A pin naming a served id honours revocations under it, and a
 pin naming a posted id passes both ids. `remove_reference` soft-deletes a live row.
 `count_pinned_copies_since` counts pinned-tier locations by `stored_at` whose digest holds a
-reference of one kind, which the pin door's daily budget reads.
+reference of one kind, optionally only references whose principal starts with a prefix, which
+the pin door's daily budget and its ceiling for open callers read.
 `list_live_reference_principals` is a read-only diagnostic query.
 """
 
@@ -59,9 +60,11 @@ def _revocations(
 class PinReferenceWriter(ArtifactReferenceWriter, Protocol):
     """A reference writer that can also count the pinned copies the budget limits."""
 
-    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
+    def count_pinned_copies_since(
+        self, *, reference_kind: str, since: datetime, principal_prefix: str = ""
+    ) -> int:
         """Count pinned-tier locations stored at or after `since` whose digest holds a
-        `reference_kind` reference."""
+        `reference_kind` reference whose principal starts with `principal_prefix`."""
         ...
 
 
@@ -259,14 +262,18 @@ class LiveArtifactReferenceWriter:
             )
         return ReferenceWrite(created_at=cast(datetime, row["created_at"]), changed=changed)
 
-    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
+    def count_pinned_copies_since(
+        self, *, reference_kind: str, since: datetime, principal_prefix: str = ""
+    ) -> int:
         """Count pinned-tier locations stored at or after `since` whose digest holds a
-        `reference_kind` reference, removed ones too, since their copy was made.
+        `reference_kind` reference whose principal starts with `principal_prefix`, removed ones
+        too, since their copy was made.
 
         One location exists per digest and tier, and a deduplicated copy keeps its `stored_at`,
         so this counts promotions: a second reference to a pinned digest, a repaired reference,
         and a repeat pin add nothing. Copies only another kind references, such as a
-        presentation pin's, are left out.
+        presentation pin's, are left out. `principal_prefix` is a literal prefix: the caller
+        keys it selects (`dfo_platform.caller.ADDRESS_KEY_PREFIX`) hold no LIKE wildcard.
         """
         failure: str | None = None
         sqlstate: str | None = None
@@ -277,8 +284,9 @@ class LiveArtifactReferenceWriter:
                     "SELECT count(*) AS n FROM datasets.artifact_location al "
                     "WHERE al.tier = 'pinned' AND al.stored_at >= %s "
                     "AND al.artifact_digest IN (SELECT r.artifact_digest "
-                    "FROM datasets.artifact_reference r WHERE r.reference_kind = %s)",
-                    (since, reference_kind),
+                    "FROM datasets.artifact_reference r WHERE r.reference_kind = %s "
+                    "AND r.principal LIKE %s)",
+                    (since, reference_kind, f"{principal_prefix}%"),
                 )
         except Exception as exc:
             failure = (

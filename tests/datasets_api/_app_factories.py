@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from dataset_store.clock import Clock
+from datasets_api.allowance import AllowanceLedger, LiveAllowanceLedger, allowance_limits
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.description_store import LiveDescriptionStore
@@ -40,6 +41,15 @@ def offline_recipe_stores() -> dict[str, object]:
     }
 
 
+def offline_allowances(settings: DatasetsBuildSettings | None = None) -> LiveAllowanceLedger:
+    """An allowance ledger over its own empty SQLite-backed store, with `settings`' limits
+    (the environment's by default), so the lifespan opens no pool for it."""
+    resolved = settings if settings is not None else DatasetsBuildSettings.from_env()
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(), limits=allowance_limits(resolved)
+    )
+
+
 def make_app(
     *,
     registry: SpecRegistry,
@@ -55,6 +65,7 @@ def make_app(
     head_writer=None,
     snapshot_reader=None,
     reference_writer=None,
+    allowances: AllowanceLedger | None = None,
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
     recipe_store=None,
@@ -77,7 +88,8 @@ def make_app(
     reader. `task_client` defaults to `FakeTaskClient`.
     `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test
     injects both over the store its version writer shares. `description_store` defaults to one
-    over an empty SQLite-backed store. Every other omitted client is
+    over an empty SQLite-backed store, and `allowances` to `offline_allowances` under the
+    resolved settings. Every other omitted client is
     `Unwired`. Publish verification under the null writer raises `PublishRecordMissing` (500),
     so a successful publish test injects a writer sharing the snapshot reader's store.
     The concurrency keywords replace the matching `settings` fields. `catalogue` replaces the
@@ -121,6 +133,7 @@ def make_app(
         "reference_writer": (
             reference_writer if reference_writer is not None else Unwired("reference_writer")
         ),
+        "allowances": allowances if allowances is not None else offline_allowances(resolved),
         "task_client": task_client if task_client is not None else FakeTaskClient(),
         **recipe_stores,
     }

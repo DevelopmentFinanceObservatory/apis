@@ -78,6 +78,7 @@ from assembler.ports import ReleaseRegistry
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.allowance import LiveAllowanceLedger, allowance_limits
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.description_store import LiveDescriptionStore
@@ -924,6 +925,9 @@ def compose(
                 head_writer=head_store,
                 snapshot_reader=snapshot_reader,
                 reference_writer=reference_writer,
+                allowances=LiveAllowanceLedger(
+                    store=version_store, limits=allowance_limits(settings)
+                ),
                 recipe_store=recipe_store,
                 description_store=description_store,
                 version_lister=version_lister,

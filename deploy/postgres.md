@@ -73,6 +73,24 @@ Datasets surface is mounted. `infra` generates it as the
 website, and `ai`. Unset or empty, the service starts and those routes refuse
 every caller with `refresh_not_permitted`.
 
+`DFO_CALLER_PRINCIPAL` and `DFO_CALLER_HMAC_KEY` are optional secrets with no
+safe default. The pin door names a caller without the pin grant by them
+(`dfo_platform.caller.resolve_caller`). `DFO_CALLER_PRINCIPAL` must equal the
+website's `DFO_CALLER_PRINCIPAL`, which vouches for the `x-dfo-caller` it
+sends, and `DFO_CALLER_HMAC_KEY` must equal the website's `CALLER_HMAC_KEY`, so
+both name a client by one key. Unset, the service starts, and an open pin
+refuses `service_unavailable` (503) unless the website vouches for its caller.
+`DFO_TRUSTED_PROXY_HOPS` (default `0`) counts the X-Forwarded-For entries the
+proxies in front of this service append after the client's.
+`DATASETS_PIN_DAILY_ALLOWANCE` (default `50`), `DATASETS_PIN_OPEN_DAILY_MAX`
+(default `200`) and `DATASETS_SHARE_DAILY_ALLOWANCE` (default `10`) bound what
+such callers write (`src/datasets_api/README.md`).
+
+Caller allowances live in `datasets.caller_allowance`, which migration
+`0039_caller_allowance.sql` creates. The pin door writes it as the datasets
+runtime role whenever a caller without the pin grant pins, so the migration
+must be applied before the image that opens the pin door takes traffic.
+
 Derived-frame recipes live in `datasets.frame_recipe`, which migration
 `0023_frame_recipe.sql` creates. The publish door writes to it when a publish
 carries a recipe, the recipe routes read and write it, and the Presentation

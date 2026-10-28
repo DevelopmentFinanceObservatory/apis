@@ -20,23 +20,31 @@ from dataset_store.snapshot import (
     SnapshotRevoked,
 )
 from datasets_api import door_executor
+from datasets_api.allowance import AllowanceKind, LiveAllowanceLedger
 from datasets_api.codes_snapshot import (
     ArtifactExpired,
     SpecNotFound,
 )
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.doors.pin import PinBudgetExhausted, build_pin_door, pin_artifact
+from datasets_api.doors.pin import (
+    OpenPin,
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    build_pin_door,
+    pin_artifact,
+)
 from datasets_api.reference_store import (
     ARTIFACT_REFERENCE_WRITE_FAILED_MARKER,
     PIN_REFERENCE_KIND,
 )
 from datasets_api.render import servable_frame_location
 from datasets_api.store_errors import DatasetsStoreUnavailable
+from dfo_platform.caller import Caller, address_key
 from materialise.formats import FRAME1_MEDIA_TYPE
 from spec_registry import LiveSpecRegistry
 from spec_registry.errors import SpecRegistryStoreError
 
-from ._app_factories import make_client
+from ._app_factories import make_client, offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._executor_doubles import BrokenSubmitExecutor
@@ -48,6 +56,7 @@ from ._snapshot_doubles import (
     _version,
     make_client_for_door,
 )
+from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
 
 _NOW = datetime(2026, 6, 1, tzinfo=UTC)
@@ -117,8 +126,14 @@ class FakeArtifactReferenceWriter(ArtifactReferenceWriter):
             now=now,
         )
 
-    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
-        referenced = {key[1] for key in self.records if key[4] == reference_kind}
+    def count_pinned_copies_since(
+        self, *, reference_kind: str, since: datetime, principal_prefix: str = ""
+    ) -> int:
+        referenced = {
+            key[1]
+            for key in self.records
+            if key[4] == reference_kind and key[0].startswith(principal_prefix)
+        }
         return sum(
             1
             for digest, stored_at in self.pinned_copies.items()
@@ -644,6 +659,61 @@ def test_pin_budget_counts_pinned_copies_not_references():
     assert (location.artifact_digest, Tier.pinned.value) in store._objects
 
 
+@dataclass
+class _RecordingLedger:
+    spent: list[tuple[Caller, AllowanceKind]] = field(default_factory=list)
+
+    def spend(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
+        self.spent.append((caller, kind))
+
+
+_OPEN_CALLER = Caller(kind="address", key="ip:" + "0" * 32)
+
+
+@pytest.mark.parametrize(
+    ("seed_principal", "refused"),
+    [("ip:" + "1" * 32, True), ("secret-sha256:0123456789abcdef", False)],
+    ids=["open-callers-copy-counts", "grant-holders-copy-does-not"],
+)
+def test_the_open_ceiling_counts_only_copies_a_caller_key_references(
+    seed_principal: str, refused: bool
+):
+    """One copy already made inside the window fills a ceiling of one only when a caller key
+    references it, and a refusal by the ceiling spends no allowance."""
+    store = _CopyForbiddenArtifactStore() if refused else FakeArtifactStore()
+    location = _store_and_locate(store, b"open-ceiling")
+    reader = FakeSnapshotReader(
+        versions={("spec_a", "cv1"): _version()},
+        locations={("spec_a", "cv1"): [location]},
+    )
+    writer = FakeArtifactReferenceWriter(pinned_copies={"sha256:seed": _NOW - timedelta(hours=1)})
+    writer.records[(seed_principal, "sha256:seed", "spec_seed", "cv1", PIN_REFERENCE_KIND)] = _NOW
+    ledger = _RecordingLedger()
+
+    def pin() -> datetime:
+        return pin_artifact(
+            id="spec_a",
+            content_version="cv1",
+            artifact_digest=location.artifact_digest,
+            principal=_OPEN_CALLER.key,
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            reference_writer=writer,
+            daily_max=_DAILY_MAX,
+            now=lambda: _NOW,
+            open_pin=OpenPin(caller=_OPEN_CALLER, allowances=ledger, ceiling=1),
+        )
+
+    if refused:
+        with pytest.raises(OpenPinBudgetExhausted):
+            pin()
+        assert ledger.spent == []
+    else:
+        assert pin() == _NOW
+        assert ledger.spent == [(_OPEN_CALLER, AllowanceKind.pin)]
+
+
 def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_marker(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -965,83 +1035,182 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     assert "permanently broken" in caplog.text
 
 
-def _build_client(*, allowed_principals=frozenset({_PRINCIPAL}), reference_writer=None):
-    from ._artifact_doubles import FakeArtifactStore
-
-    store = FakeArtifactStore()
-    location = _store_and_locate(store, b"pin-me-over-http")
+def _build_client(
+    *,
+    allowed_principals=frozenset({_PRINCIPAL}),
+    reference_writer=None,
+    allowances=None,
+    artifact_store=None,
+    tier: Tier = Tier.working,
+):
+    """A client over the pin door alone, with the environment's settings read now."""
+    store = artifact_store if artifact_store is not None else FakeArtifactStore()
+    location = _store_and_locate(store, b"pin-me-over-http", tier=tier)
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()},
         locations={("spec_a", "cv1"): [location]},
     )
+    settings = DatasetsBuildSettings.from_env()
     door = build_pin_door(
         deps=fake_deps_cell(
+            settings=settings,
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=reference_writer
             if reference_writer is not None
             else FakeArtifactReferenceWriter(),
+            allowances=allowances if allowances is not None else offline_allowances(settings),
             now=lambda: _NOW,
         ),
-        settings=DatasetsBuildSettings.from_env(),
+        settings=settings,
         allowed_principals=allowed_principals,
     )
     return make_client_for_door(door), location
 
 
-def test_pin_without_a_principal_header_refuses_pin_not_permitted():
-    client, location = _build_client()
+_HMAC_KEY = "test-caller-key"
+_CLIENT_ADDRESS = "203.0.113.7"
 
-    resp = client.post(
+
+@pytest.fixture
+def caller_key(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Configure the caller digest key, and return the key of a caller at `_CLIENT_ADDRESS`."""
+    monkeypatch.setenv("DFO_CALLER_HMAC_KEY", _HMAC_KEY)
+    return address_key(_CLIENT_ADDRESS, hmac_key=_HMAC_KEY)
+
+
+def _pin(client, location, headers=()):
+    return client.post(
         "/api/datasets/spec_a/cv1/pin",
         json={"schema_version": 1, "artifact_digest": location.artifact_digest},
+        headers=[("x-forwarded-for", f"198.51.100.1, {_CLIENT_ADDRESS}"), *headers],
     )
 
-    assert resp.status_code == 403, resp.text
-    assert resp.json()["code"] == "pin_not_permitted"
 
-
-def test_pin_with_an_unlisted_principal_refuses_pin_not_permitted():
-    client, location = _build_client()
-
-    resp = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": "some-other-caller"},
+@pytest.mark.parametrize(
+    ("allowed_principals", "headers"),
+    [
+        (frozenset({_PRINCIPAL}), []),
+        (frozenset({_PRINCIPAL}), [("x-dfo-principal", "some-other-caller")]),
+        (
+            frozenset({_PRINCIPAL}),
+            [("x-dfo-principal", _PRINCIPAL), ("x-dfo-principal", "some-other-caller")],
+        ),
+        (frozenset({_PRINCIPAL}), [("x-dfo-principal", "presentation-mcp")]),
+        (frozenset(), [("x-dfo-principal", _PRINCIPAL)]),
+    ],
+    ids=[
+        "no-principal",
+        "unlisted-principal",
+        "repeated-principal",
+        "publish-principal",
+        "no-pin-principal-configured",
+    ],
+)
+def test_a_caller_without_the_pin_grant_pins_under_its_caller_key_and_allowance(
+    caller_key: str, allowed_principals: frozenset[str], headers: list[tuple[str, str]]
+):
+    writer = FakeArtifactReferenceWriter()
+    store = FakeVersionRecordDatasetStore()
+    client, location = _build_client(
+        allowed_principals=allowed_principals,
+        reference_writer=writer,
+        allowances=LiveAllowanceLedger(store=store, limits={AllowanceKind.pin: 50}),
     )
 
-    assert resp.status_code == 403, resp.text
-    assert resp.json()["code"] == "pin_not_permitted"
+    resp = _pin(client, location, headers)
+
+    assert resp.status_code == 200, resp.text
+    assert {key[0] for key in writer.records} == {caller_key}
+    with store.transaction() as tx:
+        spent = tx.fetch_all("SELECT caller_key, kind, day, count FROM datasets.caller_allowance")
+    assert spent == [
+        {"caller_key": caller_key, "kind": "pin", "day": _NOW.date().isoformat(), "count": 1}
+    ]
 
 
-def test_pin_with_two_principal_header_values_refuses_regardless_of_order(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Repeated principal headers are refused in either order.
+def test_an_open_pin_without_a_caller_key_configured_refuses_503_before_copying(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("DFO_CALLER_HMAC_KEY", raising=False)
+    client, location = _build_client(artifact_store=_CopyForbiddenArtifactStore())
 
-    `Headers.get` returns only the first value, so a forged second value would pass a `get` check.
-    """
-    client, location = _build_client()
-    body = {"schema_version": 1, "artifact_digest": location.artifact_digest}
+    resp = _pin(client, location)
 
-    with caplog.at_level(logging.WARNING):
-        allowed_first = client.post(
-            "/api/datasets/spec_a/cv1/pin",
-            json=body,
-            headers=[("x-dfo-principal", _PRINCIPAL), ("x-dfo-principal", "some-other-caller")],
-        )
-    assert allowed_first.status_code == 403, allowed_first.text
-    assert allowed_first.json()["code"] == "pin_not_permitted"
-    assert "2 values" in caplog.text
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["code"] == "service_unavailable"
+    assert body["retryable"] is False
 
-    allowed_second = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json=body,
-        headers=[("x-dfo-principal", "some-other-caller"), ("x-dfo-principal", _PRINCIPAL)],
+
+def test_an_open_caller_past_its_allowance_refuses_429_until_utc_midnight(caller_key: str):
+    client, location = _build_client(
+        artifact_store=_CopyForbiddenArtifactStore(),
+        allowances=LiveAllowanceLedger(
+            store=FakeVersionRecordDatasetStore(), limits={AllowanceKind.pin: 0}
+        ),
     )
-    assert allowed_second.status_code == 403, allowed_second.text
-    assert allowed_second.json()["code"] == "pin_not_permitted"
+
+    resp = _pin(client, location)
+
+    assert resp.status_code == 429, resp.text
+    body = resp.json()
+    assert body["code"] == "allowance_exhausted"
+    assert body["retryable"] is True
+    # `_NOW` is a UTC midnight, so the allowance resets a day later.
+    assert resp.headers["retry-after"] == "86400"
+
+
+def test_an_open_callers_repin_of_a_pinned_artifact_spends_no_allowance(caller_key: str):
+    writer = FakeArtifactReferenceWriter()
+    client, location = _build_client(
+        reference_writer=writer,
+        tier=Tier.pinned,
+        allowances=LiveAllowanceLedger(
+            store=FakeVersionRecordDatasetStore(), limits={AllowanceKind.pin: 0}
+        ),
+    )
+
+    resp = _pin(client, location)
+
+    assert resp.status_code == 200, resp.text
+    assert {key[0] for key in writer.records} == {caller_key}
+
+
+def test_the_pin_grant_spends_no_allowance(caller_key: str):
+    writer = FakeArtifactReferenceWriter()
+    client, location = _build_client(
+        reference_writer=writer,
+        allowances=LiveAllowanceLedger(
+            store=FakeVersionRecordDatasetStore(), limits={AllowanceKind.pin: 0}
+        ),
+    )
+
+    resp = _pin(client, location, [("x-dfo-principal", _PRINCIPAL)])
+
+    assert resp.status_code == 200, resp.text
+    (principal,) = {key[0] for key in writer.records}
+    assert principal.startswith("secret-sha256:")
+
+
+def test_a_caller_the_website_vouches_for_pins_under_the_key_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The website's caller digest stands in for this service's own, which needs no key."""
+    monkeypatch.setenv("DFO_CALLER_PRINCIPAL", "website-secret")
+    named = "ip:" + "ab" * 16
+    writer = FakeArtifactReferenceWriter()
+    client, location = _build_client(reference_writer=writer)
+
+    resp = _pin(
+        client,
+        location,
+        [("x-dfo-caller-principal", "website-secret"), ("x-dfo-caller", named)],
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert {key[0] for key in writer.records} == {named}
 
 
 def test_pin_with_the_first_party_principal_succeeds():
@@ -1127,39 +1296,6 @@ def test_pin_reactivates_a_soft_deleted_reference_through_the_door():
     assert second.json()["pinned"]["pinned_at"] == later.isoformat()
     assert reference_writer.removed_at[key] is None
     assert reference_writer.records[key] == later
-
-
-def test_pin_with_no_allowed_principals_configured_refuses_everyone():
-    client, location = _build_client(allowed_principals=frozenset())
-
-    resp = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": _PRINCIPAL},
-    )
-
-    assert resp.status_code == 403, resp.text
-
-
-def test_pin_door_scoped_to_the_pin_principal_refuses_the_publish_principal() -> None:
-    """The pin allowlist accepts its configured principal and refuses the publish principal."""
-    publish_principal = "presentation-mcp"
-    client, location = _build_client(allowed_principals=frozenset({_PRINCIPAL}))
-
-    accepted = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": _PRINCIPAL},
-    )
-    assert accepted.status_code == 200, accepted.text
-
-    refused = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": publish_principal},
-    )
-    assert refused.status_code == 403, refused.text
-    assert refused.json()["code"] == "pin_not_permitted"
 
 
 def test_pin_body_omitting_schema_version_is_accepted():
